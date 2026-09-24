@@ -4,11 +4,11 @@
 //! forward jumps with patching, and tracking source locations for tracebacks.
 
 use super::{
-    code::{Code, ExceptionEntry, HandlerKind, LocationEntry, SuspendPosition},
+    code::{Code, ExceptionEntry, HandlerKind, LocationEntry},
     compiler::CompileError,
     op::{Opcode, Operand},
 };
-use crate::{intern::StringId, parse::CodeRange, source_map::SourceMap, value::Value};
+use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Builder for emitting bytecode during compilation.
 ///
@@ -27,10 +27,6 @@ pub struct CodeBuilder {
 
     /// Source location entries for traceback generation.
     location_table: Vec<LocationEntry>,
-
-    /// Offset and range of each instruction that can suspend, resolved to
-    /// lines and columns by [`Self::build`].
-    suspend_sites: Vec<(u32, CodeRange)>,
 
     /// Exception handler entries.
     exception_table: Vec<ExceptionEntry>,
@@ -441,47 +437,30 @@ impl CodeBuilder {
     }
 
     /// Finishes a compiled body, transferring its buffers and metadata to `Code`.
-    ///
-    /// `lines` indexes the source every recorded range points into; each
-    /// suspending instruction's range is resolved to a line and column here,
-    /// once, so suspensions need not.
     #[must_use]
-    pub fn build(self, lines: &SourceMap<'_>) -> Code {
+    pub fn build(self) -> Code {
         // Unnamed slots use the sentinel understood by local-name lookup.
         let local_names = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
-        let suspend_positions = self
-            .suspend_sites
-            .into_iter()
-            .map(|(offset, range)| {
-                let (start, end) = lines.resolve_span(range);
-                SuspendPosition::new(offset, range.filename, start, end)
-            })
-            .collect();
         Code::new(
             self.bytecode,
             self.constants,
             self.location_table,
-            suspend_positions,
             self.exception_table,
             local_names,
         )
     }
 
-    /// Records the current location for `op`, if set: in the location table,
-    /// and as a suspend site when `op` can suspend.
+    /// Records the current location in the location table if set.
     ///
     /// Returns a `CompileError` if the bytecode offset has grown past
     /// `u32::MAX` — the i16 jump-offset cap means this is practically
     /// unreachable, but `LocationEntry`'s offset is `u32` so we surface the
     /// limit cleanly rather than panic.
-    fn record_location(&mut self, op: Opcode) -> Result<(), CompileError> {
+    fn record_location(&mut self) -> Result<(), CompileError> {
         if let Some(range) = self.current_location {
             let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
             self.location_table
                 .push(LocationEntry::new(offset, range, self.current_focus));
-            if op.can_suspend() {
-                self.suspend_sites.push((offset, range));
-            }
         }
         Ok(())
     }
@@ -531,7 +510,7 @@ impl CodeBuilder {
         if self.is_dead() {
             return Ok(());
         }
-        self.record_location(op)?;
+        self.record_location()?;
         self.bytecode.push(op as u8);
         match operand {
             Operand::None => {}
@@ -811,7 +790,7 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap();
         builder.emit(Opcode::Pop).unwrap();
 
-        let code = builder.build(&SourceMap::new(""));
+        let code = builder.build();
         assert_eq!(code.bytecode(), &[Opcode::LoadNone as u8, Opcode::Pop as u8]);
     }
 
@@ -821,7 +800,7 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u8(Opcode::LoadLocal, 42).unwrap();
 
-        let code = builder.build(&SourceMap::new(""));
+        let code = builder.build();
         assert_eq!(code.bytecode(), &[Opcode::LoadLocal as u8, 42]);
     }
 
@@ -831,7 +810,7 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u16(Opcode::LoadConst, 0x1234).unwrap();
 
-        let code = builder.build(&SourceMap::new(""));
+        let code = builder.build();
         assert_eq!(code.bytecode(), &[Opcode::LoadConst as u8, 0x34, 0x12]);
     }
 
@@ -847,7 +826,7 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap(); // Return value
         builder.emit(Opcode::ReturnValue).unwrap();
 
-        let code = builder.build(&SourceMap::new(""));
+        let code = builder.build();
         assert_eq!(
             code.bytecode(),
             &[
@@ -871,7 +850,7 @@ mod tests {
         builder.emit(Opcode::Pop).unwrap(); // offset 1, 1 byte
         builder.emit_jump_to(Opcode::Jump, loop_start).unwrap(); // offset 2, target 0
 
-        let code = builder.build(&SourceMap::new(""));
+        let code = builder.build();
         // Jump at offset 2, target at offset 0
         // Offset = 0 - (2 + 3) = -5
         let expected_offset = (-5i16).to_le_bytes();
@@ -898,7 +877,7 @@ mod tests {
         builder.emit_load_local(4).unwrap();
         builder.emit_load_local(256).unwrap();
 
-        let code = builder.build(&SourceMap::new(""));
+        let code = builder.build();
         assert_eq!(
             code.bytecode(),
             &[

@@ -313,10 +313,8 @@ impl Recorder {
                     call_id = c.call_id,
                     object_id = c.object_id.as_ref().map(MontyUuid::to_string),
                     sandbox.code.file.path = position.file,
-                    sandbox.code.line.start = position.line_start,
-                    sandbox.code.line.end = position.line_end,
-                    sandbox.code.column.start = position.column_start,
-                    sandbox.code.column.end = position.column_end,
+                    sandbox.code.offset.start = position.start,
+                    sandbox.code.offset.end = position.end,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
@@ -341,10 +339,8 @@ impl Recorder {
                     "name lookup {name}",
                     name = name,
                     sandbox.code.file.path = position.file,
-                    sandbox.code.line.start = position.line_start,
-                    sandbox.code.line.end = position.line_end,
-                    sandbox.code.column.start = position.column_start,
-                    sandbox.code.column.end = position.column_end,
+                    sandbox.code.offset.start = position.start,
+                    sandbox.code.offset.end = position.end,
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
                     // filled in by the answering `ResumeNameLookup`, or an `AbortFeed`
@@ -364,10 +360,8 @@ impl Recorder {
                     "resolve futures",
                     pending_call_ids = pending_call_ids,
                     sandbox.code.file.path = position.file,
-                    sandbox.code.line.start = position.line_start,
-                    sandbox.code.line.end = position.line_end,
-                    sandbox.code.column.start = position.column_start,
-                    sandbox.code.column.end = position.column_end,
+                    sandbox.code.offset.start = position.start,
+                    sandbox.code.offset.end = position.end,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
@@ -668,16 +662,15 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
 /// The `sandbox.code.*` attributes locating a suspension in the sandboxed
 /// source; OpenTelemetry's `code.*` keys describe the host code instead.
 ///
-/// Every value is absent when the child sent no position. Numbers are `i64`
-/// because the span visitor renders unsigned values as strings.
+/// Every value is absent when the child sent no position. Offsets are UTF-8
+/// byte offsets into the source, `i64` because the span visitor renders
+/// unsigned values as strings.
 struct PositionAttrs {
     /// The child-supplied filename, capped like every other attribute.
     file: Option<String>,
     cut: bool,
-    line_start: Option<i64>,
-    line_end: Option<i64>,
-    column_start: Option<i64>,
-    column_end: Option<i64>,
+    start: Option<i64>,
+    end: Option<i64>,
 }
 
 impl PositionAttrs {
@@ -687,10 +680,8 @@ impl PositionAttrs {
         Self {
             file,
             cut,
-            line_start: position.map(|p| i64::from(p.start.line)),
-            line_end: position.map(|p| i64::from(p.end.line)),
-            column_start: position.map(|p| i64::from(p.start.column)),
-            column_end: position.map(|p| i64::from(p.end.column)),
+            start: position.map(|p| i64::from(p.start)),
+            end: position.map(|p| i64::from(p.end)),
         }
     }
 }
@@ -727,10 +718,8 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
                 $($($key).+ = $value,)*
                 call_id = call_id,
                 sandbox.code.file.path = position.file,
-                sandbox.code.line.start = position.line_start,
-                sandbox.code.line.end = position.line_end,
-                sandbox.code.column.start = position.column_start,
-                sandbox.code.column.end = position.column_end,
+                sandbox.code.offset.start = position.start,
+                sandbox.code.offset.end = position.end,
                 total_execution_micros = micros,
                 max_feed_duration_micros = max_feed_duration,
                 // filled in by the answering `ResumeCall`, or an `AbortFeed`
@@ -1059,7 +1048,7 @@ mod tests {
 
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
-    use monty_types::{CallArgs, CodeLoc, MontyObject, NameLookupResult, SourceRange};
+    use monty_types::{CallArgs, MontyObject, NameLookupResult, SourceRange};
     use opentelemetry::{logs::AnyValue, trace::SpanId};
     use opentelemetry_sdk::{
         logs::{InMemoryLogExporter, SimpleLogProcessor},
@@ -1072,8 +1061,8 @@ mod tests {
     fn position() -> SourceRange {
         SourceRange {
             filename: "main.py".to_owned(),
-            start: CodeLoc { line: 1, column: 1 },
-            end: CodeLoc { line: 1, column: 8 },
+            start: 0,
+            end: 7,
         }
     }
     /// Every subscriber these tests install, held for the life of the process.
@@ -1195,10 +1184,8 @@ mod tests {
         assert_eq!(attr(call, "return_value"), Some(4.into()));
         // where in the sandboxed source the call sits, from the event's position
         assert_eq!(attr(call, "sandbox.code.file.path"), Some("main.py".into()));
-        assert_eq!(attr(call, "sandbox.code.line.start"), Some(1.into()));
-        assert_eq!(attr(call, "sandbox.code.line.end"), Some(1.into()));
-        assert_eq!(attr(call, "sandbox.code.column.start"), Some(1.into()));
-        assert_eq!(attr(call, "sandbox.code.column.end"), Some(8.into()));
+        assert_eq!(attr(call, "sandbox.code.offset.start"), Some(0.into()));
+        assert_eq!(attr(call, "sandbox.code.offset.end"), Some(7.into()));
         assert!(logs.get_emitted_logs().unwrap().is_empty());
     }
 

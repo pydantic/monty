@@ -344,11 +344,11 @@ message CodeLoc {
 // Where the expression that suspended execution is in the source. `filename`
 // names the source as a traceback frame does: `<python-input-N>` for the
 // session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
-// `end` is exclusive.
+// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
 message SourceRange {
   string filename = 1;
-  CodeLoc start = 2;
-  CodeLoc end = 3;
+  uint32 start = 2;
+  uint32 end = 3;
 }
 
 message StackFrame {
@@ -819,7 +819,7 @@ message FunctionCall {
   // twice crosses once.
   Arena values = 7;
   // Where the call expression is in the source. Absent from a child that
-  // predates the field; the parent then reports zero lines and columns.
+  // predates the field; the parent then reports an empty range at offset 0.
   SourceRange position = 8;
 }
 

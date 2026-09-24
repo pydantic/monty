@@ -243,8 +243,8 @@ impl From<&SourceRange> for pb::SourceRange {
     fn from(range: &SourceRange) -> Self {
         Self {
             filename: range.filename.clone(),
-            start: Some(range.start.into()),
-            end: Some(range.end.into()),
+            start: range.start,
+            end: range.end,
         }
     }
 }
@@ -255,21 +255,20 @@ impl From<SourceRange> for pb::SourceRange {
     fn from(range: SourceRange) -> Self {
         Self {
             filename: range.filename,
-            start: Some(range.start.into()),
-            end: Some(range.end.into()),
+            start: range.start,
+            end: range.end,
         }
     }
 }
 
-/// Total: nothing renders carets from a suspension's range, so no column check
-/// is needed (cf. `StackFrame`), and a missing endpoint reads as line and
-/// column 0, like a missing range (see [`SourceRange::unknown`]).
+/// Total: nothing renders carets from a suspension's range, so no bounds check
+/// is needed (cf. `StackFrame`).
 impl From<pb::SourceRange> for SourceRange {
     fn from(range: pb::SourceRange) -> Self {
         Self {
             filename: range.filename,
-            start: wire_loc(range.start),
-            end: wire_loc(range.end),
+            start: range.start,
+            end: range.end,
         }
     }
 }
@@ -279,15 +278,10 @@ impl From<&pb::SourceRange> for SourceRange {
     fn from(range: &pb::SourceRange) -> Self {
         Self {
             filename: range.filename.clone(),
-            start: wire_loc(range.start),
-            end: wire_loc(range.end),
+            start: range.start,
+            end: range.end,
         }
     }
-}
-
-/// A wire endpoint, absent reading as line and column 0.
-fn wire_loc(loc: Option<pb::CodeLoc>) -> CodeLoc {
-    loc.map_or(CodeLoc { line: 0, column: 0 }, CodeLoc::from)
 }
 
 impl From<CodeLoc> for pb::CodeLoc {

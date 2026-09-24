@@ -21,10 +21,8 @@ export interface NativeFrame {
  *  `SourceRange` of `errors.ts`, as the native binding ships it. */
 export interface NativeSourceRange {
   filename: string
-  startLine: number
-  startColumn: number
-  endLine: number
-  endColumn: number
+  start: number
+  end: number
 }
 
 /** A sandbox exception: type name, message, the worker-rendered Python

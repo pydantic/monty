@@ -404,16 +404,16 @@ pub struct CodeLoc {
 /// Where the expression that suspended execution is in the source. `filename`
 /// names the source as a traceback frame does: `<python-input-N>` for the
 /// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
-/// `end` is exclusive.
+/// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct SourceRange {
     #[prost(string, tag = "1")]
     pub filename: crate::budgeted_prost::alloc::string::String,
-    #[prost(message, optional, tag = "2")]
-    pub start: ::core::option::Option<CodeLoc>,
-    #[prost(message, optional, tag = "3")]
-    pub end: ::core::option::Option<CodeLoc>,
+    #[prost(uint32, tag = "2")]
+    pub start: u32,
+    #[prost(uint32, tag = "3")]
+    pub end: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]

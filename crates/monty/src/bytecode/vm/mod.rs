@@ -2393,19 +2393,10 @@ impl<'h> VM<'h> {
 
     /// Returns the position a suspension at the current instruction reports.
     ///
-    /// `instruction_ip` still names the suspending opcode, and its line and
-    /// column were resolved at compile time, so this reads no source.
+    /// `instruction_ip` still names the suspending opcode; its location entry
+    /// gives the byte range, so this reads no source.
     pub(crate) fn suspension_position(&self) -> SourceRange {
-        let position = self
-            .current_frame
-            .code
-            .suspend_position(self.instruction_ip, self.interns);
-        debug_assert!(
-            position.is_some(),
-            "no suspend position at offset {}: is the opcode missing from `Opcode::can_suspend`?",
-            self.instruction_ip
-        );
-        position.unwrap_or_else(SourceRange::unknown)
+        self.code_position(self.current_frame.code, self.instruction_ip)
     }
 
     /// Returns the source position of the `await` the main task is blocked on.
@@ -2417,16 +2408,27 @@ impl<'h> VM<'h> {
         if self.is_main_task() && !self.current_frame.is_parked {
             self.suspension_position()
         } else {
+            // `save_task_context` pushes the executing frame last.
             self.scheduler
                 .main_task()
-                .and_then(|task| {
-                    // `save_task_context` pushes the executing frame last.
-                    let frame = task.frames.last()?;
-                    frame_code(self.interns, self.module_code, frame.function_id)
-                        .suspend_position(task.instruction_ip, self.interns)
+                .and_then(|task| Some((task.frames.last()?, task.instruction_ip)))
+                .map_or_else(SourceRange::unknown, |(frame, ip)| {
+                    self.code_position(frame_code(self.interns, self.module_code, frame.function_id), ip)
                 })
-                .unwrap_or_else(SourceRange::unknown)
         }
+    }
+
+    /// The byte range of the instruction at `offset` in `code`, named by its source.
+    fn code_position(&self, code: &Code, offset: usize) -> SourceRange {
+        code.location_for_offset(offset)
+            .map_or_else(SourceRange::unknown, |entry| {
+                let range = entry.range();
+                SourceRange {
+                    filename: self.interns.get_filename(range.filename).to_owned(),
+                    start: range.start_byte,
+                    end: range.end_byte,
+                }
+            })
     }
 
     /// Captures the caller's current bytecode offset for a call site, or `None`

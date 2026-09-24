@@ -1013,37 +1013,6 @@ impl Opcode {
             _ => panic!("Opcode::jump_taken_delta: {self:?} is not a jump opcode"),
         }
     }
-
-    /// Whether executing this opcode can yield to the host, so the compiler
-    /// records the line and column a suspension reports.
-    ///
-    /// Must list every opcode whose handler can return a host-bound `FrameExit`;
-    /// a suspension at an unlisted opcode reports an unknown position.
-    #[must_use]
-    pub fn can_suspend(self) -> bool {
-        matches!(
-            self,
-            // calls: external and OS functions, host methods, implicit awaits
-            Self::CallFunction
-                | Self::CallBuiltinFunction
-                | Self::CallFunctionKw
-                | Self::CallAttr
-                | Self::CallAttrKw
-                | Self::CallFunctionExtended
-                | Self::CallAttrExtended
-                // `with` on a host object calls its `__enter__` / `__exit__`
-                | Self::BeforeWith
-                | Self::WithExit
-                | Self::WithExceptStart
-                // host attribute lookups
-                | Self::LoadAttr
-                | Self::LoadAttrImport
-                // host name lookups
-                | Self::LoadGlobal
-                | Self::LoadName
-                | Self::Await
-        )
-    }
 }
 
 /// Computes an FNV-1a hash over the canonical opcode table.

@@ -533,15 +533,13 @@ fn node_len(node: &MontyNode) -> usize {
 fn encode_source_range(tag: u32, range: &SourceRange, buf: &mut impl BufMut) {
     encode_message_key(tag, source_range_len(range), buf);
     encode_str(1, &range.filename, buf);
-    encoding::message::encode(2, &pb::CodeLoc::from(range.start), buf);
-    encoding::message::encode(3, &pb::CodeLoc::from(range.end), buf);
+    encode_uint32(2, range.start, buf);
+    encode_uint32(3, range.end, buf);
 }
 
 /// Body length of [`encode_source_range`]'s message.
 fn source_range_len(range: &SourceRange) -> usize {
-    str_len(1, &range.filename)
-        + encoding::message::encoded_len(2, &pb::CodeLoc::from(range.start))
-        + encoding::message::encoded_len(3, &pb::CodeLoc::from(range.end))
+    str_len(1, &range.filename) + uint32_len(2, range.start) + uint32_len(3, range.end)
 }
 
 /// Writes the key and length prefix of a length-delimited field.

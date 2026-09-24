@@ -82,22 +82,26 @@ if __name__ == '__main__':
 
 ## Where a snapshot stopped
 
-Every snapshot exposes `position`, a `SourceRange` with `filename`, `start_line`, `start_column`, `end_line` and `end_column`
-locating the suspending expression: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the
-`await` the main task is blocked on for a `FutureSnapshot`.
-Lines and columns are 1-based and `end_column` is exclusive; `filename` is the traceback filename of the source
-(`<python-input-N>` for the session's N-th feed, `<string>` inside `eval()` / `exec()`).
+Every snapshot exposes `position`, a `SourceRange` with `filename`, `start` and `end` locating the suspending
+expression: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
+blocked on for a `FutureSnapshot`.
+`start` and `end` are UTF-8 byte offsets into the source, `end` exclusive, so slice the encoded source rather than the
+string; `filename` is the traceback filename of the source (`<python-input-N>` for the session's N-th feed, `<string>`
+inside `eval()` / `exec()`).
 
 ```python
 from pydantic_monty import FunctionSnapshot, Monty
 
 with Monty() as pool:
     with pool.checkout() as session:
-        snapshot = session.feed_start('x = 1\ny = greet(x)')
+        code = 'x = 1\ny = greet(x)'
+        snapshot = session.feed_start(code)
         assert isinstance(snapshot, FunctionSnapshot)
         position = snapshot.position
-        print(position.start_line, position.start_column, position.end_column)
-        #> 2 5 13
+        print(position.start, position.end)
+        #> 10 18
+        print(code.encode()[position.start : position.end].decode())
+        #> greet(x)
 ```
 
 ## Tracing snapshot handlers

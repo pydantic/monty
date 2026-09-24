@@ -855,7 +855,7 @@ mod tests {
 
     use logfire::{Logfire, config::MetricsOptions};
     use monty_proto::{WireFunctionCall, ext_result_to_proto, pb, pb::os_call::Call};
-    use monty_types::{CallArgs, CodeLoc, ExtFunctionResult, MontyObject, NameLookupResult, SourceRange};
+    use monty_types::{CallArgs, ExtFunctionResult, MontyObject, NameLookupResult, SourceRange};
     use opentelemetry::{
         KeyValue,
         trace::{SpanId, TraceId},
@@ -875,8 +875,8 @@ mod tests {
     fn position() -> SourceRange {
         SourceRange {
             filename: "main.py".to_owned(),
-            start: CodeLoc { line: 1, column: 1 },
-            end: CodeLoc { line: 1, column: 8 },
+            start: 0,
+            end: 7,
         }
     }
     /// A cumulative aggregate exported from the test's Logfire provider.

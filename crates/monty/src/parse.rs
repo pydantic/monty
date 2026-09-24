@@ -2503,6 +2503,19 @@ pub enum ParseError {
 }
 
 impl ParseError {
+    /// Moves the error `bytes` later in the source, for a parse of a suffix
+    /// of the caller's text (`eval()` trims leading whitespace) so the line
+    /// number is counted from the start of what the caller passed.
+    pub(crate) fn shifted(mut self, bytes: u32) -> Self {
+        let (Self::Syntax { position, .. }
+        | Self::NotImplemented { position, .. }
+        | Self::NotSupported { position, .. }
+        | Self::Import { position, .. }) = &mut self;
+        position.start_byte = position.start_byte.saturating_add(bytes);
+        position.end_byte = position.end_byte.saturating_add(bytes);
+        self
+    }
+
     pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
             msg: msg.into(),

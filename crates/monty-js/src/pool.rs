@@ -1045,10 +1045,8 @@ fn exception_to_js<'env>(env: &'env Env, exc: &MontyException) -> Result<Object<
 fn source_range_to_js<'env>(env: &'env Env, range: &SourceRange) -> Result<Object<'env>> {
     let mut obj = Object::new(env)?;
     obj.set("filename", range.filename.as_str())?;
-    obj.set("startLine", range.start.line)?;
-    obj.set("startColumn", range.start.column)?;
-    obj.set("endLine", range.end.line)?;
-    obj.set("endColumn", range.end.column)?;
+    obj.set("start", range.start)?;
+    obj.set("end", range.end)?;
     Ok(obj)
 }
 

@@ -319,15 +319,14 @@ class SourceRange:
     Every snapshot exposes one as `position`: the call expression of a
     `FunctionSnapshot`, the name (or attribute access) of a
     `NameLookupSnapshot`, and the `await` the main task is blocked on
-    for a `FutureSnapshot`. Positions are 1-based lines and character
-    columns as in `Frame`, with `end_column` exclusive. A worker that predates
-    the field reports none: `filename` is then empty and every line and
-    column 0.
+    for a `FutureSnapshot`. `start` and `end` are UTF-8 byte offsets into
+    the source, `end` exclusive, so slice the encoded source:
+    `source.encode()[position.start:position.end].decode()`. A worker that
+    predates the field reports none: `filename` is then empty and both
+    offsets 0.
     """
 
-    def __new__(
-        cls, *, filename: str, start_line: int, start_column: int, end_line: int, end_column: int
-    ) -> SourceRange: ...
+    def __new__(cls, *, filename: str, start: int, end: int) -> SourceRange: ...
     @property
     def filename(self) -> str:
         """The source the range indexes, named as in a traceback `Frame`:
@@ -336,20 +335,12 @@ class SourceRange:
         `<string>` inside an `eval()` / `exec()` string."""
 
     @property
-    def start_line(self) -> int:
-        """Start line number (1-based)."""
+    def start(self) -> int:
+        """UTF-8 byte offset where the expression starts."""
 
     @property
-    def start_column(self) -> int:
-        """Start column number (1-based)."""
-
-    @property
-    def end_line(self) -> int:
-        """End line number (1-based)."""
-
-    @property
-    def end_column(self) -> int:
-        """End column number (1-based, exclusive)."""
+    def end(self) -> int:
+        """UTF-8 byte offset where the expression ends (exclusive)."""
 
     def dict(self) -> dict[str, int | str]:
         """dict of attributes."""

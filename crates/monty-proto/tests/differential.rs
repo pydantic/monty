@@ -20,9 +20,8 @@ use std::time::Instant;
 use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
-    CallArgs, CodeLoc, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
-    MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
-    SourceRange,
+    CallArgs, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, SourceRange,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -1123,8 +1122,8 @@ fn corrupt_frames_fail_cleanly() {
 fn position() -> SourceRange {
     SourceRange {
         filename: "main.py".to_owned(),
-        start: CodeLoc { line: 3, column: 5 },
-        end: CodeLoc { line: 3, column: 19 },
+        start: 30,
+        end: 44,
     }
 }
 
@@ -1132,8 +1131,8 @@ fn position() -> SourceRange {
 fn oracle_position() -> oracle::SourceRange {
     oracle::SourceRange {
         filename: "main.py".to_owned(),
-        start: Some(oracle::CodeLoc { line: 3, column: 5 }),
-        end: Some(oracle::CodeLoc { line: 3, column: 19 }),
+        start: 30,
+        end: 44,
     }
 }
 
@@ -1153,16 +1152,16 @@ fn repeated_position_fields_merge_like_the_oracle() {
         values: Some(to_oracle(graph)),
         position: Some(oracle::SourceRange {
             filename: "main.py".to_owned(),
-            start: Some(oracle::CodeLoc { line: 3, column: 5 }),
-            end: None,
+            start: 30,
+            end: 0,
         }),
     }
     .encode_to_vec();
     // the second occurrence carries only the end
     let tail = oracle::SourceRange {
         filename: String::new(),
-        start: None,
-        end: Some(oracle::CodeLoc { line: 3, column: 19 }),
+        start: 0,
+        end: 44,
     }
     .encode_to_vec();
     encode_key(8, WireType::LengthDelimited, &mut bytes);
@@ -1187,8 +1186,8 @@ fn repeated_position_fields_merge_like_the_oracle() {
         values: Some(to_oracle(graph)),
         position: Some(oracle::SourceRange {
             filename: filename.clone(),
-            start: Some(oracle::CodeLoc { line: 1, column: 1 }),
-            end: Some(oracle::CodeLoc { line: 1, column: 2 }),
+            start: 0,
+            end: 1,
         }),
     }
     .encode_to_vec();

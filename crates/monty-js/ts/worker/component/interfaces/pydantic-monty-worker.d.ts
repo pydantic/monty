@@ -490,10 +490,8 @@ export interface StackFrame {
 }
 export interface SourceRange {
   filename: string
-  startLine: number
-  startColumn: number
-  endLine: number
-  endColumn: number
+  start: number
+  end: number
 }
 export interface RaisedException {
   excType: string

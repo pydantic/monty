@@ -264,15 +264,13 @@ impl PreparedOsEvent {
 fn component_source_range(range: monty_types::SourceRange) -> SourceRange {
     SourceRange {
         filename: range.filename,
-        start_line: range.start.line,
-        start_column: range.start.column,
-        end_line: range.end.line,
-        end_column: range.end.column,
+        start: range.start,
+        end: range.end,
     }
 }
 
 /// Lifts a suspension's position; a self-produced event always carries one,
-/// and a missing one reads as zero lines and columns, as in the pool.
+/// and a missing one reads as an empty range, as in the pool.
 fn source_range_from_proto(position: Option<pb::SourceRange>) -> SourceRange {
     component_source_range(position.map_or_else(monty_types::SourceRange::unknown, monty_types::SourceRange::from))
 }

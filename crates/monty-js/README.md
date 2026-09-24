@@ -259,17 +259,20 @@ while (!(snap instanceof MontyComplete)) {
 console.log(snap.output) // 'hello Ada!'
 ```
 
-All three snapshot types expose `position`, a `SourceRange` (`filename`, `startLine`, `startColumn`, `endLine`, `endColumn`)
-locating the suspending expression: the call, the name, or the `await` the main task is blocked on. Lines and
-columns are 1-based and `endColumn` is exclusive; `filename` is the traceback filename of the source
-(`<python-input-N>` for the session's N-th feed, `<string>` inside `eval()` / `exec()`).
+All three snapshot types expose `position`, a `SourceRange` (`filename`, `start`, `end`) locating the suspending
+expression: the call, the name, or the `await` the main task is blocked on. `start` and `end` are UTF-8 byte offsets
+into the source, `end` exclusive, so slice the encoded source (`new TextEncoder().encode(code)`) rather than the
+string; `filename` is the traceback filename of the source (`<python-input-N>` for the session's N-th feed,
+`<string>` inside `eval()` / `exec()`).
 
 ```ts
 import { FunctionSnapshot } from '@pydantic/monty'
 
-const snap = await session.feedStart('x = 1\ny = greet(x)')
+const code = 'x = 1\ny = greet(x)'
+const snap = await session.feedStart(code)
 if (snap instanceof FunctionSnapshot) {
-  console.log(snap.position) // { filename: '<python-input-0>', startLine: 2, startColumn: 5, endLine: 2, endColumn: 13 }
+  const { start, end } = snap.position // { filename: '<python-input-0>', start: 10, end: 18 }
+  console.log(new TextDecoder().decode(new TextEncoder().encode(code).subarray(start, end))) // 'greet(x)'
 }
 ```
 

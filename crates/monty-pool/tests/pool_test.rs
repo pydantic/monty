@@ -2705,10 +2705,10 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
 }
 
 /// A child that predates the position field announces suspensions without
-/// it; the parent reports zero lines and columns rather than rejecting them.
+/// it; the parent reports an unknown range rather than rejecting them.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_suspension_without_a_position_reads_as_zero() {
+async fn a_suspension_without_a_position_reads_as_unknown() {
     let dir = tempfile::tempdir().unwrap();
     let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
     replies.extend(framed(&child_event(pb::child_event::Kind::NameLookup(
@@ -2736,7 +2736,6 @@ async fn a_suspension_without_a_position_reads_as_zero() {
     };
     assert_eq!(name, "x");
     assert_eq!(position, SourceRange::unknown());
-    assert_eq!(position.start.line, 0);
 }
 
 /// A second raw `Feed` restarts the parent's feed clock, as `Checkout::feed`
@@ -2837,7 +2836,7 @@ async fn a_disabled_grace_leaves_the_sandbox_limit_in_charge() {
 fn position() -> pb::SourceRange {
     pb::SourceRange {
         filename: "main.py".to_owned(),
-        start: Some(pb::CodeLoc { line: 1, column: 1 }),
-        end: Some(pb::CodeLoc { line: 1, column: 2 }),
+        start: 0,
+        end: 1,
     }
 }

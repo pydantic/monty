@@ -337,10 +337,8 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
     assert {k: v for k, v in call.attributes.items() if k.startswith('sandbox.')} == snapshot(
         {
             'sandbox.code.file.path': '<python-input-0>',
-            'sandbox.code.line.start': 2,
-            'sandbox.code.line.end': 2,
-            'sandbox.code.column.start': 20,
-            'sandbox.code.column.end': 27,
+            'sandbox.code.offset.start': 24,
+            'sandbox.code.offset.end': 31,
         }
     )
     assert call.parent is not None and run.context is not None

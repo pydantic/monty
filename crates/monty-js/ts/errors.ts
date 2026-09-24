@@ -21,18 +21,17 @@ export interface Frame {
 
 /**
  * Where the expression that suspended execution is in the source, as
- * `snapshot.position`. Positions follow `Frame`: 1-based line and character
- * column, exclusive end. `filename` names the source as a traceback frame
- * does: `<python-input-N>` for the session's N-th feed, or `<string>` inside
- * an `eval()` / `exec()` string. A worker that predates the field reports
- * none: `filename` is then empty and every line and column 0.
+ * `snapshot.position`. `start` and `end` are UTF-8 byte offsets into the
+ * source, `end` exclusive: slice `new TextEncoder().encode(source)`, not the
+ * string. `filename` names the source as a traceback frame does:
+ * `<python-input-N>` for the session's N-th feed, or `<string>` inside an
+ * `eval()` / `exec()` string. A worker that predates the field reports none:
+ * `filename` is then empty and both offsets 0.
  */
 export interface SourceRange {
   filename: string
-  startLine: number
-  startColumn: number
-  endLine: number
-  endColumn: number
+  start: number
+  end: number
 }
 
 /** Inner Python exception summary. */

@@ -423,15 +423,15 @@ pub struct CodeLoc {
 /// Where the expression that suspended execution is in the source. `filename`
 /// names the source as a traceback frame does: `<python-input-N>` for the
 /// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
-/// `end` is exclusive.
+/// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SourceRange {
     #[prost(string, tag = "1")]
     pub filename: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "2")]
-    pub start: ::core::option::Option<CodeLoc>,
-    #[prost(message, optional, tag = "3")]
-    pub end: ::core::option::Option<CodeLoc>,
+    #[prost(uint32, tag = "2")]
+    pub start: u32,
+    #[prost(uint32, tag = "3")]
+    pub end: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StackFrame {
@@ -1025,7 +1025,7 @@ pub struct FunctionCall {
     #[prost(message, optional, tag = "7")]
     pub values: ::core::option::Option<Arena>,
     /// Where the call expression is in the source. Absent from a child that
-    /// predates the field; the parent then reports zero lines and columns.
+    /// predates the field; the parent then reports an empty range at offset 0.
     #[prost(message, optional, tag = "8")]
     pub position: ::core::option::Option<SourceRange>,
 }

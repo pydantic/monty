@@ -89,7 +89,8 @@ In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` an
 Every snapshot carries `position`, a [`SourceRange`][pydantic_monty.SourceRange] locating the expression that
 suspended: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
 blocked on for a `FutureSnapshot`.
-Lines and columns are 1-based and `end_column` / `endColumn` is exclusive, as in a traceback `Frame`.
+`start` and `end` are UTF-8 byte offsets into the source, `end` exclusive, so slice the encoded source rather than
+the string.
 
 === "Python"
 
@@ -98,11 +99,14 @@ Lines and columns are 1-based and `end_column` / `endColumn` is exclusive, as in
 
     with Monty() as pool:
         with pool.checkout() as session:
-            snapshot = session.feed_start('x = 1\ny = greet(x)')
+            code = 'x = 1\ny = greet(x)'
+            snapshot = session.feed_start(code)
             assert isinstance(snapshot, FunctionSnapshot)
             position = snapshot.position
-            print(position.start_line, position.start_column, position.end_column)
-            #> 2 5 13
+            print(position.start, position.end)
+            #> 10 18
+            print(code.encode()[position.start : position.end].decode())
+            #> greet(x)
     ```
 
 === "TypeScript"
@@ -112,9 +116,11 @@ Lines and columns are 1-based and `end_column` / `endColumn` is exclusive, as in
 
     await using pool = await Monty.create()
     await using session = await pool.checkout()
-    const snapshot = await session.feedStart('x = 1\ny = greet(x)')
+    const code = 'x = 1\ny = greet(x)'
+    const snapshot = await session.feedStart(code)
     if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
-    console.log(snapshot.position) // { filename: '<python-input-0>', startLine: 2, startColumn: 5, endLine: 2, endColumn: 13 }
+    const { start, end } = snapshot.position // { filename: '<python-input-0>', start: 10, end: 18 }
+    console.log(new TextDecoder().decode(new TextEncoder().encode(code).subarray(start, end))) // 'greet(x)'
     ```
 
 `filename` names the source the range indexes the way a traceback frame does: `<python-input-N>` for the session's
@@ -122,7 +128,7 @@ N-th feed, so a suspension inside a function defined by an earlier feed points i
 `eval()` / `exec()` string.
 The position is part of the suspended state, so a restored snapshot reports the same one.
 A worker that predates the field (an older `monty` binary or server) reports none, and the snapshot then carries an
-empty `filename` with every line and column 0.
+empty `filename` with both offsets 0.
 
 A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
 Only one suspension is live per session.

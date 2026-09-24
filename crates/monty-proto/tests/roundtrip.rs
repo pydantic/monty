@@ -906,8 +906,8 @@ fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
     let position = SourceRange {
         filename: "main.py".to_owned(),
-        start: CodeLoc { line: 2, column: 1 },
-        end: CodeLoc { line: 2, column: 9 },
+        start: 10,
+        end: 18,
     };
     let bytes = os_call_to_proto(3, call, false, &position).encode_to_vec();
     let decoded = decode_frame::<pb::OsCall>(bytes.as_slice()).expect("wire bytes -> OsCall failed");
@@ -1131,23 +1131,4 @@ fn out_of_range_now_timezone_is_rejected() {
         OsFunctionCall::try_from(call).unwrap_err().to_string(),
         "invalid value for TimeZone.offset_seconds: -2147483648 is outside the range -86399..=86399"
     );
-}
-
-/// A position from a peer that omits its endpoints reads as line and column 0,
-/// the same as no position at all.
-#[test]
-fn source_range_without_endpoints_reads_as_zero() {
-    let bare = pb::SourceRange {
-        filename: "main.py".to_owned(),
-        start: None,
-        end: None,
-    };
-    assert_eq!(
-        SourceRange::from(bare),
-        SourceRange {
-            filename: "main.py".to_owned(),
-            ..SourceRange::unknown()
-        }
-    );
-    assert_eq!(SourceRange::unknown().start, CodeLoc { line: 0, column: 0 });
 }

@@ -758,29 +758,31 @@ impl CodeLoc {
 /// The source range of the expression that suspended execution, carried by
 /// every suspension.
 ///
-/// Positions follow [`StackFrame`]: 1-based lines and character columns,
-/// `end` exclusive. A peer that sends no position reads as [`Self::unknown`].
+/// `start` and `end` are UTF-8 byte offsets into the named source, `end`
+/// exclusive: slice the source's bytes (in Python, `source.encode()[start:end]`)
+/// rather than indexing the string. A peer that sends no position reads as
+/// [`Self::unknown`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceRange {
     /// The source the range indexes, named as a traceback frame names it: an
     /// in-process one-shot run's script name, `<python-input-N>` for a feed,
     /// `<string>` in `eval()` / `exec()`.
     pub filename: String,
-    /// Where the expression starts.
-    pub start: CodeLoc,
-    /// Where the expression ends (exclusive).
-    pub end: CodeLoc,
+    /// Byte offset where the expression starts.
+    pub start: u32,
+    /// Byte offset where the expression ends (exclusive).
+    pub end: u32,
 }
 
 impl SourceRange {
     /// The range a host reports when its peer sent no position: an empty
-    /// filename and zero lines and columns, which no real range has.
+    /// filename and an empty range at offset zero.
     #[must_use]
     pub fn unknown() -> Self {
         Self {
             filename: String::new(),
-            start: CodeLoc { line: 0, column: 0 },
-            end: CodeLoc { line: 0, column: 0 },
+            start: 0,
+            end: 0,
         }
     }
 }

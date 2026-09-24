@@ -26,7 +26,6 @@ use crate::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
         resume_with_result,
     },
-    source_map::SourceMap,
     types::str::StringRepr,
     value::Value,
     virtual_path::{canonical_cwd, posix_join},
@@ -510,7 +509,7 @@ impl Executor {
             .emit(Opcode::ReturnValue)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        let module_code = builder.build(&SourceMap::new(&code));
+        let module_code = builder.build();
         overlay.commit();
         let tables = SessionTables {
             global_names: existing_globals,
@@ -870,7 +869,7 @@ fn compile_module_source(
         parse_with_interner(code, script_name, &mut interns).map_err(|e| e.into_python_exc(script_name, code))?;
     let nodes =
         prepare_with_existing_names(nodes, &interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let module_code = Compiler::compile_module(&nodes, code, &mut interns, globals, options)
+    let module_code = Compiler::compile_module(&nodes, &mut interns, globals, options)
         .map_err(|e| e.into_python_exc(script_name, code))?;
     interns.commit();
     Ok((module_code, input_slots))

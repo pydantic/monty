@@ -21,7 +21,7 @@ use monty_pool::{
     ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{CallArgs, CodeLoc, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -2040,7 +2040,7 @@ async fn a_dropped_connection_is_a_disconnect() {
 fn position() -> SourceRange {
     SourceRange {
         filename: "main.py".to_owned(),
-        start: CodeLoc { line: 1, column: 1 },
-        end: CodeLoc { line: 1, column: 8 },
+        start: 0,
+        end: 7,
     }
 }

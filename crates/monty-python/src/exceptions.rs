@@ -565,8 +565,8 @@ impl PyFrame {
 }
 
 /// Where the expression that suspended execution is in the source, exposed as
-/// `snapshot.position`. Same conventions as [`PyFrame`]: 1-based line and
-/// character column, exclusive end.
+/// `snapshot.position`. `start` and `end` are UTF-8 byte offsets, `end`
+/// exclusive: slice `source.encode()`, not the string.
 #[pyclass(name = "SourceRange", module = "pydantic_monty", frozen, eq, skip_from_py_object)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct PySourceRange {
@@ -574,28 +574,20 @@ pub struct PySourceRange {
     /// `<python-input-N>` for a feed, `<string>` inside `eval()` / `exec()`.
     #[pyo3(get)]
     pub filename: String,
-    /// Start line number (1-based).
+    /// Byte offset where the expression starts.
     #[pyo3(get)]
-    pub start_line: u32,
-    /// Start column number (1-based).
+    pub start: u32,
+    /// Byte offset where the expression ends (exclusive).
     #[pyo3(get)]
-    pub start_column: u32,
-    /// End line number (1-based).
-    #[pyo3(get)]
-    pub end_line: u32,
-    /// End column number (1-based, exclusive).
-    #[pyo3(get)]
-    pub end_column: u32,
+    pub end: u32,
 }
 
 impl From<&SourceRange> for PySourceRange {
     fn from(range: &SourceRange) -> Self {
         Self {
             filename: range.filename.clone(),
-            start_line: range.start.line,
-            start_column: range.start.column,
-            end_line: range.end.line,
-            end_column: range.end.column,
+            start: range.start,
+            end: range.end,
         }
     }
 }
@@ -604,36 +596,26 @@ impl From<&SourceRange> for PySourceRange {
 impl PySourceRange {
     /// Builds a range by hand, e.g. to compare against `snapshot.position`.
     #[new]
-    #[pyo3(signature = (*, filename, start_line, start_column, end_line, end_column))]
-    fn new(filename: String, start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
-        Self {
-            filename,
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-        }
+    #[pyo3(signature = (*, filename, start, end))]
+    fn new(filename: String, start: u32, end: u32) -> Self {
+        Self { filename, start, end }
     }
 
     fn dict<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let dict = PyDict::new(py);
         dict.set_item("filename", &self.filename).unwrap();
-        dict.set_item("start_line", self.start_line).unwrap();
-        dict.set_item("start_column", self.start_column).unwrap();
-        dict.set_item("end_line", self.end_line).unwrap();
-        dict.set_item("end_column", self.end_column).unwrap();
+        dict.set_item("start", self.start).unwrap();
+        dict.set_item("end", self.end).unwrap();
         dict
     }
 
     fn __repr__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
         py_format!(
             py,
-            "SourceRange(filename='{}', start_line={}, start_column={}, end_line={}, end_column={})",
+            "SourceRange(filename='{}', start={}, end={})",
             self.filename,
-            self.start_line,
-            self.start_column,
-            self.end_line,
-            self.end_column
+            self.start,
+            self.end
         )
     }
 }

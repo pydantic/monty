@@ -140,26 +140,21 @@ fn compile_and_push(
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
     let mut overlay = CompileInterns::new(vm.interns);
-    // Like CPython, `eval` skips leading spaces and tabs (not newlines, so line
-    // numbers hold); every range, runtime or compile error, indexes the
-    // stripped text, which is therefore the source recorded and rendered.
-    let text: Arc<str> = match builtin {
-        Builtin::Exec => Arc::clone(source),
-        Builtin::Eval => match source.trim_start_matches([' ', '\t']) {
-            trimmed if trimmed.len() == source.len() => Arc::clone(source),
-            trimmed => Arc::from(trimmed),
-        },
-    };
-    let filename_id = overlay.add_eval_source(Arc::clone(&text));
+    let filename_id = overlay.add_eval_source(Arc::clone(source));
     let options = vm.env.options;
     let nodes = match builtin {
-        Builtin::Exec => parse_module_with_filename_id(&text, filename_id, &mut overlay, options.source_scan_threshold),
+        Builtin::Exec => {
+            parse_module_with_filename_id(source, filename_id, &mut overlay, options.source_scan_threshold)
+        }
         Builtin::Eval => {
-            parse_expression_with_interner(&text, filename_id, &mut overlay, options.source_scan_threshold)
+            let trimmed = source.trim_start();
+            let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
+            parse_expression_with_interner(trimmed, filename_id, &mut overlay, options.source_scan_threshold)
                 .map(|expr| vec![Node::Return(Some(expr))])
+                .map_err(|e| e.shifted(skipped))
         }
     }
-    .map_err(|e| e.into_run_error(&text))?;
+    .map_err(|e| e.into_run_error(source))?;
 
     let globals_by_name = names == SnippetNames::NameOverDict;
     let mut scratch = NameMap::new();
@@ -168,14 +163,14 @@ fn compile_and_push(
     } else {
         &mut *vm.global_names
     };
-    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(&text))?;
-    let code = Compiler::compile_snippet(&nodes, &text, &mut overlay, globals, options, globals_by_name)
-        .map_err(|e| e.into_run_error(&text))?;
+    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(source))?;
+    let code = Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name)
+        .map_err(|e| e.into_run_error(source))?;
 
     let position = CodeRange {
         filename: filename_id,
         start_byte: 0,
-        end_byte: u32::try_from(text.len()).unwrap_or(u32::MAX),
+        end_byte: u32::try_from(source.len()).unwrap_or(u32::MAX),
     };
     let function = Function::new(
         Identifier::new(overlay.intern_static(StaticStrings::Module), position),

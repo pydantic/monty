@@ -210,51 +210,40 @@ def test_future_mechanism_sync(session: MontySession):
 
 
 def test_function_call_position(session: MontySession):
-    snap = session.feed_start('x = 1\ny = add(x, 2) + 1')
+    code = 'x = 1\ny = add(x, 2) + 1'
+    snap = session.feed_start(code)
     assert isinstance(snap, FunctionSnapshot)
-    assert snap.position.dict() == snapshot(
-        {'filename': '<python-input-0>', 'start_line': 2, 'start_column': 5, 'end_line': 2, 'end_column': 14}
-    )
-    assert repr(snap.position) == snapshot(
-        "SourceRange(filename='<python-input-0>', start_line=2, start_column=5, end_line=2, end_column=14)"
-    )
-    assert snap.position == SourceRange(
-        filename='<python-input-0>', start_line=2, start_column=5, end_line=2, end_column=14
-    )
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 10, 'end': 19})
+    assert repr(snap.position) == snapshot("SourceRange(filename='<python-input-0>', start=10, end=19)")
+    assert snap.position == SourceRange(filename='<python-input-0>', start=10, end=19)
+    # offsets are UTF-8 bytes: slice the encoded source
+    assert code.encode()[snap.position.start : snap.position.end].decode() == snapshot('add(x, 2)')
 
 
 def test_position_inside_a_function_from_an_earlier_feed(session: MontySession):
     session.feed_run('def helper(n):\n    return fetch(n)')
     snap = session.feed_start('helper(3)')
     assert isinstance(snap, FunctionSnapshot)
-    assert snap.position.dict() == snapshot(
-        {'filename': '<python-input-0>', 'start_line': 2, 'start_column': 12, 'end_line': 2, 'end_column': 20}
-    )
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 26, 'end': 34})
 
 
 def test_position_inside_eval_indexes_the_stripped_string(session: MontySession):
     snap = session.feed_start("eval('  1 + fetch()')")
     assert isinstance(snap, FunctionSnapshot)
-    assert snap.position.dict() == snapshot(
-        {'filename': '<string>', 'start_line': 1, 'start_column': 5, 'end_line': 1, 'end_column': 12}
-    )
+    assert snap.position.dict() == snapshot({'filename': '<string>', 'start': 4, 'end': 11})
 
 
 def test_name_lookup_position(session: MontySession):
     snap = session.feed_start('total = 1 + missing')
     assert isinstance(snap, NameLookupSnapshot)
-    assert snap.position.dict() == snapshot(
-        {'filename': '<python-input-0>', 'start_line': 1, 'start_column': 13, 'end_line': 1, 'end_column': 20}
-    )
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 12, 'end': 19})
 
 
 def test_os_call_position(session: MontySession):
     snap = session.feed_start("from pathlib import Path\nPath('/etc/x').read_text()")
     assert isinstance(snap, FunctionSnapshot)
     assert snap.is_os_function == snapshot(True)
-    assert snap.position.dict() == snapshot(
-        {'filename': '<python-input-0>', 'start_line': 2, 'start_column': 1, 'end_line': 2, 'end_column': 27}
-    )
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 25, 'end': 51})
 
 
 def test_future_snapshot_position_is_the_top_level_await(session: MontySession):
@@ -262,16 +251,12 @@ def test_future_snapshot_position_is_the_top_level_await(session: MontySession):
         'import asyncio\n\nasync def go():\n    return await fetch()\n\nawait asyncio.gather(go(), go())'
     )
     assert isinstance(snap, FunctionSnapshot)
-    assert snap.position.dict() == snapshot(
-        {'filename': '<python-input-0>', 'start_line': 4, 'start_column': 18, 'end_line': 4, 'end_column': 25}
-    )
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 49, 'end': 56})
     second = snap.resume({'future': ...})
     assert isinstance(second, FunctionSnapshot)
     futures = second.resume({'future': ...})
     assert isinstance(futures, FutureSnapshot)
-    assert futures.position.dict() == snapshot(
-        {'filename': '<python-input-0>', 'start_line': 6, 'start_column': 1, 'end_line': 6, 'end_column': 33}
-    )
+    assert futures.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 58, 'end': 90})
 
 
 def test_position_survives_dump_and_load(pool: Monty):
@@ -283,9 +268,7 @@ def test_position_survives_dump_and_load(pool: Monty):
     with pool.checkout() as session:
         loaded_snap = session.load_snapshot(blob)
         assert isinstance(loaded_snap, FunctionSnapshot)
-        assert loaded_snap.position.dict() == snapshot(
-            {'filename': '<python-input-0>', 'start_line': 1, 'start_column': 5, 'end_line': 1, 'end_column': 12}
-        )
+        assert loaded_snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 4, 'end': 11})
 
 
 def test_future_cannot_resolve_to_future(session: MontySession):
