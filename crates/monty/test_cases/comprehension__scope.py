@@ -85,6 +85,9 @@ assert [f() for f in [lambda: a for a in [[[d for d in [b]] for b in [1]] for c 
 assert [f() + g() for f, g in [(lambda: a, lambda: e) for a in [[b for b in [1]] for c in [1]] for e in [[2]]]] == [
     [1, 2]
 ]
+assert [f() for f in [lambda: a for a in [[b for b in [1]] + [d for d in [2]] for c in [1]]]] == [[1, 2]]
+assert [f() for f in (lambda: a for a in [[b for b in [1]] for c in [1]])] == [[1]]
+assert [f() for f in [lambda: a for a in [[g() for g in [lambda: b for b in [1, 2]]] for c in [1]]]] == [[2, 2]]
 # Later iterables are prepared after every target, so their comprehensions get fresh slot IDs.
 assert [f() for f in [lambda: a for x in [1] for a in [b for b in [2, 3]]]] == [3, 3]
 
