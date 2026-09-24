@@ -1356,15 +1356,31 @@ impl Checkout {
             None => self.turn_io(request, &mut *on_print).await,
         };
         self.turn_in_flight = false;
-        let outcome = match outcome {
-            Err(PoolError::Shutdown { dump: Some(state) }) if self.can_resume(request) => {
-                // boxed: it recurses into this turn, and its state machine must
-                // not enlarge every turn's future for a path taken once per shutdown
-                Box::pin(self.resume_after_shutdown(state, request, deadline, on_print)).await
-            }
+        match outcome {
+            // boxed: it recurses into this turn, and its state machine must not
+            // enlarge every turn's future for a path taken once per shutdown.
+            // The other arm hands the turn's result straight back: every move
+            // of it here is a copy of the generator's state on the hot path.
+            Err(PoolError::Shutdown { dump }) => Box::pin(self.after_shutdown(dump, request, deadline, on_print)).await,
             outcome => outcome,
+        }
+    }
+
+    /// Answers a `Shutdown`: resumes the session when the relay named what to
+    /// load and auto-resume applies, else ends it. The worker is already released.
+    async fn after_shutdown(
+        &mut self,
+        dump: Option<Vec<u8>>,
+        request: &pb::ParentRequest,
+        deadline: Option<Duration>,
+        on_print: OnPrint<'_>,
+    ) -> Result<ControlEvent, PoolError> {
+        let outcome = match dump {
+            Some(state) if self.can_resume(request) => {
+                self.resume_after_shutdown(state, request, deadline, on_print).await
+            }
+            dump => Err(PoolError::Shutdown { dump }),
         };
-        // the worker that shut down is already released; this ends the session
         if matches!(outcome, Err(PoolError::Shutdown { .. })) {
             #[cfg(feature = "telemetry")]
             self.record_finish("error");
@@ -1377,6 +1393,7 @@ impl Checkout {
     /// the relay named the session, and `request` is not session setup or teardown.
     /// The caller also requires the shutdown to carry what to load: a relay with no
     /// state to load sends none, and a session cannot resume from nothing.
+    #[cold]
     fn can_resume(&self, request: &pb::ParentRequest) -> bool {
         self.redial.is_some()
             && self.session_id.is_some()
