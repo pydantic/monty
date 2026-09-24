@@ -35,6 +35,23 @@ pub static LIVE_MEMORY: AtomicUsize = AtomicUsize::new(0);
 /// costs to exist, before any session ran.
 pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
 
+/// Runs `build` and adds what it leaves allocated to [`BASELINE_MEMORY`], so a
+/// structure the worker keeps for life (the type checker) is not charged to the
+/// session that happened to build it first.
+///
+/// Only accurate while no other thread allocates. An unset baseline is left
+/// alone: the first arming counts the structure anyway.
+pub fn allocate_into_baseline<T>(build: impl FnOnce() -> T) -> T {
+    let before = LIVE_MEMORY.load(Ordering::Relaxed);
+    let value = build();
+    let cost = LIVE_MEMORY.load(Ordering::Relaxed).saturating_sub(before);
+    // `Err` just means the baseline is still unset
+    let _ = BASELINE_MEMORY.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |baseline| {
+        (baseline != usize::MAX).then(|| baseline.saturating_add(cost))
+    });
+    value
+}
+
 /// Headroom for exception machinery and work between interpreter checkpoints.
 const MEMORY_LIMIT_HEADROOM: usize = 4 * 1024 * 1024;
 /// Extra headroom for type-checker stubs and caches outside Python execution.

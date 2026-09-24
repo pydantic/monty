@@ -100,7 +100,8 @@ without one is unlimited.
     with type checking. Use `max_processes` and an OS-level limit to bound a host.
 - **Per session, but against a fixed baseline.** A worker serves many checkouts
     and re-derives the cap for each session, always from the leanest the process
-    has been. Memory retained between sessions therefore consumes the headroom
+    has been, plus the type checker once a session has needed it.
+    Memory retained between sessions therefore consumes the headroom
     rather than raising the cap, and a worker whose residue outgrows it is killed
     and replaced rather than allowed to grow indefinitely.
 - **Restoring a dump is bounded by the checkout it lands in.** `load_session` /
