@@ -6,7 +6,7 @@
 //! component boundary or enter the TypeScript host.
 #![expect(unsafe_code, reason = "generated canonical-ABI exports require unsafe code")]
 
-use std::{cell::RefCell, io};
+use std::{cell::RefCell, collections::hash_map::RandomState, io, time::Instant};
 
 use monty_proto::{
     BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
@@ -37,7 +37,19 @@ use bindings::exports::pydantic::monty::worker::{
 
 thread_local! {
     /// The session worker, retained for the lifetime of this component instance.
-    static CHILD: RefCell<Child> = RefCell::new(Child::default());
+    static CHILD: RefCell<Child> = RefCell::new(new_child());
+}
+
+/// Builds the worker after warming the WASI adapter, so the adapter's buffers
+/// join the memory baseline instead of the first session's budget.
+///
+/// The preview1 adapter allocates through the component's allocator on the
+/// first clock read and the first `random_get`, both of which the interpreter
+/// would otherwise make during its first feed, after the allocator is armed.
+fn new_child() -> Child {
+    let _ = Instant::now();
+    let _ = RandomState::new();
+    Child::default()
 }
 
 /// Counts component allocations against the session's `max_memory` limit.
