@@ -18,7 +18,7 @@ from pathlib import Path
 # of the table in docs/index.md; each bar is their sum, the "Combined" column
 ROWS: list[tuple[str, float, float, bool]] = [
     ('OSS Monty', 0.8, 0.4, True),
-    ('Full Monty', 1.6, 3.9, True),
+    ('Full Monty', 1.7, 5.3, True),
     ('WASI / wasmtime', 16, 180, False),
     ('Docker', 195, 700, False),
     ('Sandboxing service', 1500, 400, False),

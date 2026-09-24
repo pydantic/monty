@@ -20,7 +20,7 @@
 <text x='160.0' y='59.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>1.2 ms</text>
 <text x='140' y='93.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>Full Monty</text>
 <path d='M150,78 H151.0 A1.0,1.0 0 0 1 152.0,79.0 V99.0 A1.0,1.0 0 0 1 151.0,100 H150 Z' fill='#e520e9'/>
-<text x='160.0' y='93.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>5.5 ms</text>
+<text x='160.0' y='93.4' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>7 ms</text>
 <text x='140' y='127.4' text-anchor='end' fill='#8a8f98' font-size='14' font-family='ui-sans-serif, system-ui, sans-serif'>WASI / wasmtime</text>
 <path d='M150,112 H181.0 A3.0,3.0 0 0 1 184.0,115.0 V131.0 A3.0,3.0 0 0 1 181.0,134 H150 Z' fill='#e39b3b'/>
 <rect x='150' y='112' width='2.8' height='22' fill='#4a7fd4'/>

@@ -28,7 +28,7 @@ It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you i
 | Sandbox                | New sandbox¹ | Agent run² | Combined³ | Execution env⁴ |
 | ---------------------- | ------------ | ---------- | --------- | -------------- |
 | OSS Monty              | 0.80 ms      | 0.40 ms    | 1.20 ms   | local          |
-| Full Monty (WebSocket) | 1.60 ms      | 3.90 ms    | 5.50 ms   | remote         |
+| Full Monty (WebSocket) | 1.70 ms      | 5.30 ms    | 7.00 ms   | remote         |
 | WASI / wasmtime        | 16 ms        | 180 ms     | 200 ms    | local          |
 | local Docker           | 195 ms       | 700 ms     | 900 ms    | local          |
 | Sandboxing service     | 1500 ms      | 400 ms     | 1900 ms   | remote         |
