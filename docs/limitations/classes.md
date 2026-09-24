@@ -173,6 +173,11 @@ with these divergences:
     sandbox object to resolve to: passing it back re-enters as a host-backed
     copy built from its `attributes`, not the host's original object.
 
+A proxy does not carry its class's `__eq__` / `__hash__`, so a Python host approximates them:
+
+- Dataclass proxies compare by class name and all attributes, even with `eq=False` or for two distinct classes sharing a name.
+- Other proxies compare by `.id`, even when the class defines its own `__eq__`.
+
 ```python test="skip"
 from pydantic_monty import Monty
 

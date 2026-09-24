@@ -375,6 +375,11 @@ class MontyClassProxy:
     instance's `id`, so passed back in it resolves to the live sandbox object
     (`attributes` not applied; a freed one raises) or, after a restore, re-enters
     as a host-backed copy built from `attributes`.
+
+    Proxies are hashable, so they can be set members and dict keys. Dataclass
+    proxies are equal when `name` and `attributes` match; other proxies only
+    when they share an `id`. The class's own `__eq__` / `__hash__` are not
+    consulted.
     """
 
     @property
@@ -395,13 +400,14 @@ class MontyClassProxy:
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class MontyClassTypeProxy:
     """Read-only proxy for a host class the session has no class object for: a
     `ClassType`, or `type(x)` of a `ClassInstance`, returned after a session
     restore. It keeps the class `id`, so passed back in it is the same sandbox
-    type object.
+    type object. Equality and hashing use `id`.
     """
 
     @property
@@ -422,6 +428,7 @@ class MontyClassTypeProxy:
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class MontyStdTypeProxy:
