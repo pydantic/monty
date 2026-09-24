@@ -1,0 +1,24 @@
+README.md
+  ai_agent 20-25
+docs/index.md
+  ai_agent 22
+docs/security.md
+  ai_agent 13,21,27,30
+  s_15f2bbb6361916::t_3293c9c13c297a 6-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c7bf911c04d737edf4d990620feb4443a7228401",
+  "prompts": {},
+  "sessions": {
+    "s_15f2bbb6361916": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29d83d0b-fbe7-4954-b79a-89c9ff1e4755",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
