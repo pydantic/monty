@@ -209,3 +209,57 @@ def for_iter_capture_runs():
 
 
 assert for_iter_capture_runs() == (5, [5])
+
+
+# The pre-scan must also visit `raise`, `assert` and `except` expressions,
+# including ones in branches that never run.
+def dead_raise_capture():
+    b = 1
+    if 0:
+        raise ValueError((lambda: b)())
+    return b
+
+
+assert dead_raise_capture() == 1
+
+
+def raise_capture_runs():
+    d = 'boom'
+    try:
+        raise ValueError((lambda: d)())
+    except ValueError as exc:
+        return str(exc)
+
+
+assert raise_capture_runs() == 'boom'
+
+
+def assert_msg_capture():
+    e = {}
+    assert 1, (lambda: e)()
+    e = 5
+    return e
+
+
+assert assert_msg_capture() == 5
+
+
+def assert_test_capture():
+    c = 2
+    assert (lambda: c)() == 2
+    c = 3
+    return c
+
+
+assert assert_test_capture() == 3
+
+
+def except_type_capture():
+    t = KeyError
+    try:
+        {}['x']
+    except (lambda: t)() as exc:
+        return type(exc).__name__
+
+
+assert except_type_capture() == 'KeyError'
