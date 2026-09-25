@@ -37,16 +37,21 @@ pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
-/// Version 5 and below are not served. Version 3 carried values as recursive
+/// Raising this cuts off every deployed peer at the older versions, so avoid
+/// it: an additive wire change bumps [`PROTOCOL_VERSION`] alone and older
+/// peers keep working for everything but the new thing. Raising it is a
+/// breaking change that requires a major version bump.
+///
+/// Version 4 and below are not served. Version 3 carried values as recursive
 /// `MontyObject` trees, where this build carries one flat `Arena` per message.
 /// Version 4 both lacked `max_feed_duration`/`max_turn_duration` and had the
 /// per-session `max_duration` this build dropped: a version 4 parent would
 /// send a budget nothing enforces, and a version 4 child would accept the new
-/// budgets and ignore them. Version 5 had no `complex` value: a peer at it
-/// skips the unknown arm and fails the whole message as a node with no kind,
-/// in either direction. None can be told apart from a working one, so all
-/// are refused.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 6;
+/// budgets and ignore them. Neither side can be told apart from a working one,
+/// so both are refused. Version 5 is served: it only lacks the `complex` value,
+/// and a message carrying one fails as a node with no kind rather than
+/// silently changing meaning.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 5;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.
