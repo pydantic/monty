@@ -1,6 +1,9 @@
 # call-external
 # skip-cpython-windows — pathlib uses POSIX paths in Monty's sandbox, Windows CPython resolves differently
+import sys
 from pathlib import Path
+
+is_monty = sys.platform == 'monty'
 
 # === exists() ===
 assert Path('/virtual/file.txt').exists() == True
@@ -28,6 +31,27 @@ assert Path('/virtual/file.txt').read_text() == 'hello world\n'
 assert Path('/virtual/empty.txt').read_text() == ''
 assert Path('/virtual/subdir/nested.txt').read_text() == 'nested content'
 assert Path('/virtual/subdir/deep/file.txt').read_text() == 'deep'
+
+# === read_text() with encoding/errors/newline ===
+assert Path('/virtual/file.txt').read_text('utf-8') == 'hello world\n'
+assert Path('/virtual/file.txt').read_text(encoding='utf-8') == 'hello world\n'
+assert Path('/virtual/file.txt').read_text(encoding='UTF-8') == 'hello world\n'
+assert Path('/virtual/file.txt').read_text(encoding=None, errors=None, newline=None) == 'hello world\n'
+# Monty only supports UTF-8 text I/O (see open.md), so it validates
+# `encoding`/`errors`/`newline` the same way `open()` does; the test
+# fixture's `/virtual/` VirtualPath shim doesn't replicate CPython's own
+# validation for these kwargs, so these checks are Monty-only.
+if is_monty:
+    try:
+        Path('/virtual/file.txt').read_text(encoding='latin-1')
+        assert False, 'expected latin-1 encoding to be rejected'
+    except TypeError as exc:
+        assert str(exc) == "'encoding' argument is not yet supported"
+    try:
+        Path('/virtual/file.txt').read_text(encoding=123)
+        assert False, 'expected non-str encoding to be rejected'
+    except TypeError as exc:
+        assert str(exc) == "open() argument 'encoding' must be str or None, not int"
 
 # === read_bytes() ===
 assert Path('/virtual/data.bin').read_bytes() == b'\x00\x01\x02\x03'
@@ -104,6 +128,18 @@ assert Path('/virtual/new_file.txt').read_text() == 'created by write_text'
 # Overwrite existing file
 Path('/virtual/file.txt').write_text('overwritten')
 assert Path('/virtual/file.txt').read_text() == 'overwritten'
+
+# === write_text() with encoding/errors/newline ===
+Path('/virtual/new_file.txt').write_text('written with encoding', encoding='utf-8')
+assert Path('/virtual/new_file.txt').read_text() == 'written with encoding'
+Path('/virtual/new_file.txt').write_text('written with all defaults', 'utf-8', None, None)
+assert Path('/virtual/new_file.txt').read_text() == 'written with all defaults'
+if is_monty:
+    try:
+        Path('/virtual/new_file.txt').write_text('data', encoding='latin-1')
+        assert False, 'expected latin-1 encoding to be rejected'
+    except TypeError as exc:
+        assert str(exc) == "'encoding' argument is not yet supported"
 
 # === write_bytes() ===
 Path('/virtual/binary.dat').write_bytes(b'\xff\xfe\xfd')

@@ -39,12 +39,21 @@ Not implemented: `anchor`, `drive`, `root`, `relative_to`, `is_reserved`,
 These yield an `OsCall` for the host to resolve:
 
 - `exists()`, `is_file()`, `is_dir()`, `is_symlink()`
-- `read_text()`, `read_bytes()`
-- `write_text(data)`, `write_bytes(data)`, `append_text(data)`, `append_bytes(data)`
+- `read_text(encoding=None, errors=None, newline=None)`, `read_bytes()`
+- `write_text(data, encoding=None, errors=None, newline=None)`, `write_bytes(data)`,
+    `append_text(data, encoding=None, errors=None, newline=None)`, `append_bytes(data)`
 - `mkdir(mode=0o777, parents=False, exist_ok=False)`, `unlink()`, `rmdir()`
 - `iterdir()`, `stat()`, `rename(target)`
 - `resolve()`, `absolute()`
 - `open(...)` — see [open.md](open.md) for the supported file API and divergences
+
+`read_text`/`write_text`/`append_text`'s `encoding`/`errors`/`newline` follow the same rules as
+`open()`'s arguments of the same name (see [open.md](open.md)): only the CPython defaults, plus
+`encoding="utf-8"` (any case), are accepted, since Monty's text I/O is always UTF-8. A non-default
+value raises `TypeError: '<name>' argument is not yet supported`; a wrong *type* raises
+`TypeError: open() argument '<name>' must be str or None, not <type>` — the same wording CPython
+itself uses, since CPython implements these methods by delegating to `self.open(...)`.
+`append_text`/`append_bytes` have no CPython equivalent; they are a Monty-only extension.
 
 `Path.mkdir()` parses `mode`, `parents`, and `exist_ok`, but `mode` is
 accepted only for signature compatibility: Monty does not model POSIX
@@ -54,7 +63,8 @@ arguments documented above.
 
 `Path.mkdir()`'s too-many-positional error counts only the visible
 parameters (`Path.mkdir() takes from 0 to 3 positional arguments but 4 were given`); CPython counts the bound `self` as
-well (`takes from 1 to 4 … but 5 were given`).
+well (`takes from 1 to 4 … but 5 were given`). The same applies to
+`read_text`/`write_text`/`append_text`.
 
 Not implemented: `glob`, `rglob`, `touch`, `chmod`, `lchmod`, `owner`,
 `group`, `symlink_to`, `hardlink_to`, `link_to`, `readlink`, `lstat`,
