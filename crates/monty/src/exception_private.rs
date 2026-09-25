@@ -987,6 +987,23 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// Creates the error raised by recursively advancing an active generator.
+    fn generator_already_executing() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "generator already executing").into()
+    }
+
+    /// Rejects waiting on async work from a synchronous VM callback context.
+    fn async_futures_not_supported(ctx: &'static str) -> SimpleException {
+        Self::not_implemented(format!(
+            "{ctx}: resolving async futures is not yet supported in this context"
+        ))
+    }
+
+    /// Creates the PEP 479 replacement for `StopIteration` escaping a generator.
+    fn generator_raised_stop_iteration() -> SimpleException {
+        SimpleException::new_msg(ExcType::RuntimeError, "generator raised StopIteration")
+    }
+
     /// Creates a generic `IndexError` with a custom message.
     fn index_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(ExcType::IndexError, msg).into()

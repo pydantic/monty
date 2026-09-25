@@ -579,7 +579,7 @@ union = int | None
 assert copy.copy(union) == union
 assert copy.deepcopy(union) == union
 
-# === a generator copies its state ===
+# === a random number generator copies its state ===
 rng = random.Random(42)
 rng.random()
 shallow_rng = copy.copy(rng)
@@ -596,3 +596,12 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "cannot pickle 'module' object"
+
+for copy_func in (copy.copy, copy.deepcopy):
+    gen = (x for x in range(3))
+    try:
+        copy_func(gen)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "cannot pickle 'generator' object"
+    assert list(gen) == [0, 1, 2]

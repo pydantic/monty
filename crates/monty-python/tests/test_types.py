@@ -234,6 +234,7 @@ PROXIED_TYPES: list[tuple[str, str]] = [
     ('type({}.keys())', 'dict_keys'),
     ('type(iter([]))', 'list_iterator'),
     ('type(iter(lambda: 0, 0))', 'callable_iterator'),
+    ('type(x for x in [])', 'generator'),
     ('type(itertools.chain([1]))', 'itertools.chain'),
     ('functools.partial', 'functools.partial'),
     ('type(sys.version_info)', 'namedtuple'),

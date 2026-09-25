@@ -349,7 +349,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::ExtFunction(_)
         | HeapReadOutput::Cell(_)
         | HeapReadOutput::DataclassField(_)
-        | HeapReadOutput::DataclassParams(_) => Copyability::Refused,
+        | HeapReadOutput::DataclassParams(_)
+        | HeapReadOutput::Generator(_) => Copyability::Refused,
     }
 }
 

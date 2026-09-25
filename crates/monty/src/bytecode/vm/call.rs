@@ -539,9 +539,7 @@ impl<'h> VM<'h> {
                 exit.drop_with(self);
                 return error;
             }
-            FrameExit::ResolveFutures(_) => ExcType::not_implemented(format!(
-                "{ctx}: resolving async futures is not yet supported in this context"
-            )),
+            FrameExit::ResolveFutures(_) => ExcType::async_futures_not_supported(ctx),
             FrameExit::NameLookup { name_id, .. } => ExcType::name_error(self.interns.get_str(*name_id)),
         };
         exit.drop_with(self);
@@ -949,7 +947,7 @@ impl<'h> VM<'h> {
     /// coroutine creation, including the exact-positional-call fast path
     /// (which always passes an empty `cells` slice, since it only applies when
     /// `cell_var_slots`/`free_var_slots` are both empty).
-    fn install_closure_cells(&mut self, func: &Function, cells: &[HeapId], namespace: &mut Vec<Value>) {
+    pub(super) fn install_closure_cells(&mut self, func: &Function, cells: &[HeapId], namespace: &mut Vec<Value>) {
         namespace.resize_with(func.namespace_size, || Value::Undefined);
 
         for (i, &slot) in func.cell_var_slots.iter().enumerate() {

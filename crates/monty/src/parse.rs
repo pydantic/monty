@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, fmt, mem};
 
 use ahash::AHashSet;
 use monty_types::{MontyException, StackFrame};
@@ -297,6 +297,8 @@ pub struct Parser<'a, 'i> {
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
+    /// Iterable expressions forbid walrus assignments, even in nested scopes.
+    in_comprehension_iterable: bool,
     /// Ascending source offsets of every `class` keyword, taken from the lexer.
     ///
     /// Ruff's AST is abstract — a `StmtClassDef` *is* a class statement, so it
@@ -319,6 +321,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             filename_id,
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
+            in_comprehension_iterable: false,
             class_keyword_offsets,
         }
     }
@@ -1294,6 +1297,12 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::Named(ast::ExprNamed {
                 target, value, range, ..
             }) => {
+                if self.in_comprehension_iterable {
+                    return Err(ParseError::syntax(
+                        "assignment expression cannot be used in a comprehension iterable expression",
+                        self.convert_range(range),
+                    ));
+                }
                 let target_ident = self.parse_identifier(*target)?;
                 let value_expr = self.parse_expression(*value)?;
                 Ok(ExprLoc::new(
@@ -1488,17 +1497,15 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::Generator(ast::ExprGenerator {
                 elt, generators, range, ..
             }) => {
-                // TODO: When proper generators are implemented, this should produce
-                // Expr::Generator instead of Expr::ListComp. Currently we treat generator
-                // expressions as list comprehensions since we don't have generator support.
+                let name_id = self.interner.intern("<genexpr>");
                 let elt = Box::new(self.parse_expression(*elt)?);
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp {
+                    Expr::GeneratorRaw {
+                        name_id,
                         elt,
                         generators,
-                        captured_slots: Vec::new(),
                     },
                 ))
             }
@@ -2032,7 +2039,10 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ));
                 }
                 let target = self.parse_unpack_target_root(comp.target)?;
-                let iter = self.parse_expression(comp.iter)?;
+                let was_in_iterable = mem::replace(&mut self.in_comprehension_iterable, true);
+                let iter = self.parse_expression(comp.iter);
+                self.in_comprehension_iterable = was_in_iterable;
+                let iter = iter?;
                 let ifs = comp
                     .ifs
                     .into_iter()
