@@ -296,8 +296,8 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
         }
         MontyNode::Float(f) => Kind::Float(*f),
         MontyNode::Complex(c) => Kind::Complex(oracle::Complex {
-            real: c.real,
-            imag: c.imag,
+            real: Some(c.real),
+            imag: Some(c.imag),
         }),
         MontyNode::String(s) => Kind::Str(s.clone()),
         MontyNode::Bytes(b) => Kind::Bytes(b.clone()),

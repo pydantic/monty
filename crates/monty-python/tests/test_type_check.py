@@ -31,6 +31,16 @@ def test_type_check_no_errors(tc_session: MontySession):
     assert tc_session.feed_run('1 + 2') == 3
 
 
+def test_type_check_complex(tc_session: MontySession):
+    """The bundled builtins stubs include `complex`, so its constructor and members type-check."""
+    assert tc_session.feed_run('z: complex = complex(1, 2) * 2j\n[z.real, z.imag, abs(z), z.conjugate() == z]') == [
+        -4.0,
+        2.0,
+        snapshot(4.47213595499958),
+        False,
+    ]
+
+
 def test_type_check_with_errors(tc_session: MontySession):
     """Code with type errors raises MontyTypingError."""
     with pytest.raises(MontyTypingError) as exc_info:

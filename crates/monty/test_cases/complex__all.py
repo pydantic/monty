@@ -227,6 +227,25 @@ assert repr(0 * complex(inf, 0)) == '(nan+0j)'
 assert repr(complex(1, -0.0) * -1) == '(-1+0j)'
 assert repr(complex(1, -0.0) / -1) == '(-1+0j)'
 
+# === A real dividend never contributes an imaginary part ===
+assert repr(3 / complex(0, -2)) == '1.5j'
+assert repr(1.0 / complex(2, 0)) == '(0.5-0j)'
+assert repr(1 / complex(-0.0, 1)) == '(-0-1j)'
+assert repr(0.0 / complex(1, 1)) == '-0j'
+assert repr(-0.0 / complex(1, 1)) == '(-0+0j)'
+assert repr(1 / complex(inf, 1)) == '-0j'
+assert repr(1 / complex(inf, inf)) == '-0j'
+assert repr(1 / complex(nan, inf)) == '-0j'
+assert repr(inf / complex(1, 1)) == '(inf-infj)'
+assert repr(inf / complex(1e308, 1e308)) == '(nan+nanj)'
+assert repr(inf / complex(inf, 1)) == '(nan+nanj)'
+assert repr(1e308 / complex(1e-308, 1e-308)) == '(inf-infj)'
+assert repr(complex(inf, 0) / complex(1e308, 1e308)) == '(inf-infj)'
+assert repr(complex(1, 1) / complex(nan, inf)) == '-0j'
+assert 5 / complex(3, 4) == 0.6 - 0.8j
+assert True / complex(1, 1) == 0.5 - 0.5j
+assert 10**30 / complex(1, 1) == 5e29 - 5e29j
+
 # === Division by zero ===
 for expr in [
     lambda: 1j / 0,

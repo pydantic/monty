@@ -426,6 +426,11 @@ test('complex input round-trips', async () => {
   const z = { __monty_type__: 'Complex', real: 1.5, imag: -2 }
   t.deepEqual(await run('x', { inputs: { x: z } }), z)
   t.deepEqual(await run('x.conjugate()', { inputs: { x: z } }), { __monty_type__: 'Complex', real: 1.5, imag: 2 })
+  // Negative zero is preserved in both directions.
+  const negativeZero = { __monty_type__: 'Complex', real: -0, imag: -0 }
+  t.deepEqual(await run('repr(x)', { inputs: { x: negativeZero } }), '(-0-0j)')
+  const back = (await run('complex(-0.0, -0.0)')) as { real: number; imag: number }
+  t.is(Object.is(back.real, -0) && Object.is(back.imag, -0), true)
 })
 
 test.each([

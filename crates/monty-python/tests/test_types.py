@@ -342,6 +342,11 @@ def test_complex_input_roundtrip(monty_run: RunMonty):
     assert (type(result).__name__, repr(result)) == snapshot(('complex', '(3-4j)'))
 
 
+def test_complex_negative_zero_roundtrip(monty_run: RunMonty):
+    result = monty_run('[x, complex(-0.0, -0.0)]', inputs={'x': complex(-0.0, -0.0)})
+    assert [repr(z) for z in result] == snapshot(['(-0-0j)', '(-0-0j)'])
+
+
 def test_date_input_roundtrip(monty_run: RunMonty):
     result = monty_run('x', inputs={'x': datetime.date(2024, 1, 15)})
     assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
