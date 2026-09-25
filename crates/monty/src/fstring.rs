@@ -623,52 +623,6 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         value
     };
 
-    // `spec.precision` on the float formats is rendered as that many decimal
-    // digits. Reject an attacker-chosen oversized result before formatting;
-    // tracker-backed builders guard the later copies at their actual size.
-    //
-    // This applies to `f`/`e`/`%` always, and to the `g`-family
-    // (`g`/`G`/`n`/type-less-with-precision) *only* under alternate form (`#`):
-    // plain `g` strips trailing zeros and caps internally, but `#g` keeps every
-    // zero so its digit count scales with precision just like `f`.
-    let precision_scales_output = matches!(
-        spec.type_char,
-        Some(TypeChar::F | TypeChar::FUpper | TypeChar::E | TypeChar::EUpper | TypeChar::Percent)
-    ) || (spec.alternate
-        && matches!(
-            spec.type_char,
-            None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)
-        ));
-    if let Some(precision) = spec.precision
-        && precision_scales_output
-    {
-        // The number of finite components the precision expands, so the whole
-        // output is charged before any of it is built.
-        let finite_parts = match value {
-            Value::Int(_) => 1,
-            Value::Float(f) => usize::from(f.is_finite()),
-            Value::Ref(id) => match vm.heap.get(*id) {
-                // A big integer formatted as a float is first converted to `f64`,
-                // so an attacker-chosen precision applies to it too — guard it.
-                HeapData::LongInt(_) => 1,
-                HeapData::Complex(c) => usize::from(c.real.is_finite()) + usize::from(c.imag.is_finite()),
-                _ => 0,
-            },
-            _ => 0,
-        };
-        if finite_parts > 0 {
-            // Fractional grouping (`f"{v:.{p}_f}"`) weaves in one separator per
-            // three emitted digits, so the native string reaches ~4/3 × precision
-            // before `allocate_string` accounts for it; budget the separators too.
-            let separators = if spec.frac_grouping.is_some() {
-                precision.saturating_sub(1) / 3
-            } else {
-                0
-            };
-            check_repeat_size(precision.saturating_add(separators), finite_parts, &vm.heap.tracker)?;
-        }
-    }
-
     // A `str` value is formatted entirely through the string mini-language:
     // `validate_string_spec` rejects (in CPython's precedence order) every flag
     // that is meaningless for text, then `format_string` applies precision,
@@ -766,6 +720,60 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     // The alternate form (`#`) is likewise illegal for `c`/`s` presentations.
     if spec.alternate {
         validate_alternate(spec.type_char, value_type)?;
+    }
+
+    // A complex has two checks of its own, still ahead of the precision preflight
+    // below so an invalid spec raises `ValueError` whatever its precision costs.
+    if let Value::Ref(id) = value
+        && let HeapData::Complex(_) = vm.heap.get(*id)
+    {
+        check_complex_spec(spec)?;
+    }
+
+    // `spec.precision` on the float formats is rendered as that many decimal
+    // digits. Reject an attacker-chosen oversized result before formatting;
+    // tracker-backed builders guard the later copies at their actual size.
+    //
+    // This applies to `f`/`e`/`%` always, and to the `g`-family
+    // (`g`/`G`/`n`/type-less-with-precision) *only* under alternate form (`#`):
+    // plain `g` strips trailing zeros and caps internally, but `#g` keeps every
+    // zero so its digit count scales with precision just like `f`.
+    let precision_scales_output = matches!(
+        spec.type_char,
+        Some(TypeChar::F | TypeChar::FUpper | TypeChar::E | TypeChar::EUpper | TypeChar::Percent)
+    ) || (spec.alternate
+        && matches!(
+            spec.type_char,
+            None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)
+        ));
+    if let Some(precision) = spec.precision
+        && precision_scales_output
+    {
+        // The number of finite components the precision expands, so the whole
+        // output is charged before any of it is built.
+        let finite_parts = match value {
+            Value::Int(_) => 1,
+            Value::Float(f) => usize::from(f.is_finite()),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                // A big integer formatted as a float is first converted to `f64`,
+                // so an attacker-chosen precision applies to it too — guard it.
+                HeapData::LongInt(_) => 1,
+                HeapData::Complex(c) => usize::from(c.real.is_finite()) + usize::from(c.imag.is_finite()),
+                _ => 0,
+            },
+            _ => 0,
+        };
+        if finite_parts > 0 {
+            // Fractional grouping (`f"{v:.{p}_f}"`) weaves in one separator per
+            // three emitted digits, so the native string reaches ~4/3 × precision
+            // before `allocate_string` accounts for it; budget the separators too.
+            let separators = if spec.frac_grouping.is_some() {
+                precision.saturating_sub(1) / 3
+            } else {
+                0
+            };
+            check_repeat_size(precision.saturating_add(separators), finite_parts, &vm.heap.tracker)?;
+        }
     }
 
     // Big integers (`LongInt`) live on the heap; route them through the
@@ -1460,19 +1468,8 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -
 /// imaginary part always carries a sign, and the assembled `re±imj` — wrapped in
 /// parentheses for a type-less spec, like `str()` — is padded as one string.
 ///
-/// Zero padding and `=` alignment have no meaning for two numbers and are
-/// rejected with CPython's wording; every other check ran in `format_with_spec`.
+/// Every spec check, including [`check_complex_spec`], ran in `format_with_spec`.
 fn format_complex(c: Complex, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
-    if spec.zero_pad || spec.fill == '0' {
-        return Err(ExcType::value_error(
-            "Zero padding is not allowed in complex format specifier",
-        ));
-    }
-    if spec.align == Some(Align::SignAware) {
-        return Err(ExcType::value_error(
-            "'=' alignment flag is not allowed in complex format specifier",
-        ));
-    }
     // A type-less spec renders like `str()`: repr digits, parentheses, and no
     // real part at all when it is exactly `+0.0`.
     let str_style = spec.type_char.is_none();
@@ -1511,6 +1508,22 @@ fn format_complex(c: Complex, spec: &ParsedFormatSpec, tracker: &ResourceTracker
         spec.fill,
         tracker,
     )
+}
+
+/// Zero padding and `=` alignment have no meaning for two numbers; CPython
+/// rejects them before formatting either part.
+fn check_complex_spec(spec: &ParsedFormatSpec) -> RunResult<()> {
+    if spec.zero_pad || spec.fill == '0' {
+        Err(ExcType::value_error(
+            "Zero padding is not allowed in complex format specifier",
+        ))
+    } else if spec.align == Some(Align::SignAware) {
+        Err(ExcType::value_error(
+            "'=' alignment flag is not allowed in complex format specifier",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Formats one part of a complex. A type-less spec without precision uses the

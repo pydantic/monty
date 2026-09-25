@@ -699,8 +699,12 @@ fn numeric_accessors_widen_big_ints() {
     let huge = MontyObject::bigint(BigInt::from(1u8) << 2000);
     assert_eq!(huge.as_ref().as_float(), None);
     assert_eq!(huge.as_ref().as_complex().map(|c| c.real), None);
+    // `f64 ==` cannot tell `-0.0` from `0.0`, so the sign is pinned by its bits.
     let z = MontyObject::complex(-0.0, 2.5);
-    assert_eq!(z.as_ref().as_complex().map(|c| (c.real, c.imag)), Some((-0.0, 2.5)));
+    assert_eq!(
+        z.as_ref().as_complex().map(|c| (c.real.to_bits(), c.imag)),
+        Some(((-0.0f64).to_bits(), 2.5))
+    );
     assert_eq!(z.as_ref().as_float(), None);
 }
 
