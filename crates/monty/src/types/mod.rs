@@ -8,6 +8,7 @@
 pub mod bytes;
 pub mod callable_iterator;
 pub mod class;
+pub mod complex;
 pub mod date;
 pub mod datetime;
 pub mod deque;
@@ -46,6 +47,7 @@ pub mod union;
 
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::{Class, DataclassOptions};
+pub(crate) use complex::Complex;
 pub(crate) use deque::Deque;
 pub(crate) use dict::{Dict, DictItemIterator, DictKeyIterator, DictValueIterator};
 pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};

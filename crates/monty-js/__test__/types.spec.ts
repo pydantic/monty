@@ -418,6 +418,16 @@ test.each([
   })
 })
 
+test('complex output from sandbox', async () => {
+  t.deepEqual(await run('(1.5 - 2j) * 2'), { __monty_type__: 'Complex', real: 3, imag: -4 })
+})
+
+test('complex input round-trips', async () => {
+  const z = { __monty_type__: 'Complex', real: 1.5, imag: -2 }
+  t.deepEqual(await run('x', { inputs: { x: z } }), z)
+  t.deepEqual(await run('x.conjugate()', { inputs: { x: z } }), { __monty_type__: 'Complex', real: 1.5, imag: 2 })
+})
+
 test.each([
   { fields: { hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }, iso: '10:20:30.000040' },
   {

@@ -175,6 +175,8 @@ export class ArenaEncoder {
             fold: Number(object.fold ?? 0),
           },
         })
+      case 'Complex':
+        return this.leaf({ tag: 'complex', val: { real: Number(object.real), imag: Number(object.imag) } })
       case 'TimeDelta':
         return this.leaf({
           tag: 'timedelta',
@@ -505,6 +507,8 @@ function decodeNode(node: ValueNode, holder: number, child: (index: number, hold
       return { [TYPE_MARKER]: 'Time', ...node.val }
     case 'timedelta':
       return { [TYPE_MARKER]: 'TimeDelta', ...node.val }
+    case 'complex':
+      return { [TYPE_MARKER]: 'Complex', ...node.val }
     case 'timezone':
       return { [TYPE_MARKER]: 'TimeZone', ...node.val }
     case 'exception':

@@ -33,8 +33,6 @@ any code runs.
 
 ## Expressions rejected at parse time
 
-- **Complex number literals** (`1j`, `2+3j`) —
-    `NotImplementedError: The monty syntax parser does not yet support complex constants`.
 - **Template strings (t-strings)** — PEP 750.
 
 ## Starred unpacking

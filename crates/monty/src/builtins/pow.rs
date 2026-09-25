@@ -8,7 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::HeapData,
-    types::long_int::modular_pow,
+    types::{Type, long_int::modular_pow},
     value::Value,
 };
 
@@ -37,24 +37,36 @@ pub fn builtin_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 _ => None,
             };
             result.ok_or_else(|| {
-                // A float operand refuses the third argument outright, as `float.__pow__` does;
-                // any other mix is reported as an unsupported operand triple.
-                if [base, exp, modulus]
-                    .iter()
-                    .any(|value| matches!(value, Value::Float(_)))
-                {
-                    SimpleException::new_msg(
-                        ExcType::TypeError,
-                        "pow() 3rd argument not allowed unless all arguments are integers",
+                // CPython offers the triple to each operand's `__pow__` in turn: a float
+                // refuses the third argument outright, a complex does so only once both
+                // base and exponent are numbers, and any other mix is an unsupported triple.
+                let is_complex = |value: &Value| matches!(value.py_type_heap(vm.heap), Type::Complex);
+                let numeric = |value: &Value| {
+                    matches!(
+                        value.py_type_heap(vm.heap),
+                        Type::Int | Type::Bool | Type::Float | Type::Complex
                     )
-                    .into()
-                } else {
+                };
+                let refusal = [base, exp, modulus].into_iter().find_map(|value| match value {
+                    Value::Float(_) => Some(
+                        SimpleException::new_msg(
+                            ExcType::TypeError,
+                            "pow() 3rd argument not allowed unless all arguments are integers",
+                        )
+                        .into(),
+                    ),
+                    _ if is_complex(value) && numeric(base) && numeric(exp) => {
+                        Some(ExcType::value_error_complex_modulo())
+                    }
+                    _ => None,
+                });
+                refusal.unwrap_or_else(|| {
                     ExcType::ternary_pow_type_error(
                         base.py_type_name(vm),
                         exp.py_type_name(vm),
                         modulus.py_type_name(vm),
                     )
-                }
+                })
             })
         }
     }

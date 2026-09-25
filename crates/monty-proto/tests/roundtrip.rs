@@ -137,6 +137,8 @@ fn datetime_values_round_trip() {
         seconds: 86399,
         microseconds: 999_999,
     }));
+    assert_value_round_trip(&MontyObject::complex(1.5, -2.0));
+    assert_value_round_trip(&MontyObject::complex(f64::NAN, f64::NEG_INFINITY));
     assert_value_round_trip(&MontyObject::timezone(MontyTimeZone {
         offset_seconds: 19800,
         name: Some("IST".to_owned()),

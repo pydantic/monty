@@ -93,6 +93,7 @@ pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<
         | MontyType::Bool
         | MontyType::Int
         | MontyType::Float
+        | MontyType::Complex
         | MontyType::Str
         | MontyType::Bytes
         | MontyType::List

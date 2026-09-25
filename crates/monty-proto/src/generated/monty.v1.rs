@@ -17,7 +17,7 @@ pub struct Unit {}
 pub struct MontyNode {
     #[prost(
         oneof = "monty_node::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub kind: ::core::option::Option<monty_node::Kind>,
 }
@@ -100,6 +100,8 @@ pub mod monty_node {
         /// the placeholder its repr shows ("\[...\]", "(...)", "{...}" or "...").
         #[prost(string, tag = "30")]
         Cycle(crate::budgeted_prost::alloc::string::String),
+        #[prost(message, tag = "31")]
+        Complex(super::Complex),
     }
 }
 /// One key/value entry as node indexes. Used for dicts, attrs and kwargs:
@@ -122,6 +124,15 @@ pub struct BigInt {
     pub negative: bool,
     #[prost(bytes = "vec", tag = "2")]
     pub magnitude: crate::budgeted_prost::alloc::vec::Vec<u8>,
+}
+/// A Python complex as its two float parts.
+#[derive(Clone, Copy, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct Complex {
+    #[prost(double, tag = "1")]
+    pub real: f64,
+    #[prost(double, tag = "2")]
+    pub imag: f64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]

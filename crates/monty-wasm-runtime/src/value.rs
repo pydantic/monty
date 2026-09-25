@@ -11,14 +11,14 @@ use std::borrow::Cow;
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 use monty_types::{
-    BuiltinsFunctions, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone,
-    MontyType, MontyUuid,
+    BuiltinsFunctions, FileMode, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, MontyUuid,
     unstable::{ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
-    Arena, ClassInstanceNode, ClassTypeNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode, FunctionNode,
-    NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
+    Arena, ClassInstanceNode, ClassTypeNode, ComplexNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode,
+    FunctionNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
 };
 
 /// Remaining expanded-value allowance for one request's arena.
@@ -111,6 +111,7 @@ fn node_decoded_size(node: &ValueNode) -> usize {
         | ValueNode::Boolean(_)
         | ValueNode::Integer(_)
         | ValueNode::Float(_)
+        | ValueNode::Complex(_)
         | ValueNode::Date(_)
         | ValueNode::Timedelta(_)
         | ValueNode::TypeName(_)
@@ -141,6 +142,10 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
                 .map_err(|_| format!("invalid arbitrary-precision integer {value:?}"))?,
         ),
         ValueNode::Float(value) => MontyNode::Float(value),
+        ValueNode::Complex(value) => MontyNode::Complex(MontyComplex {
+            real: value.real,
+            imag: value.imag,
+        }),
         ValueNode::Text(value) => MontyNode::String(value),
         ValueNode::Bytes(value) => MontyNode::Bytes(value),
         ValueNode::ListValue(items) => MontyNode::List(ids(items)),
@@ -251,6 +256,10 @@ fn node_into_component(node: MontyNode) -> ValueNode {
         MontyNode::Int(value) => ValueNode::Integer(value),
         MontyNode::BigInt(value) => ValueNode::Bigint(value.to_string()),
         MontyNode::Float(value) => ValueNode::Float(value),
+        MontyNode::Complex(value) => ValueNode::Complex(ComplexNode {
+            real: value.real,
+            imag: value.imag,
+        }),
         MontyNode::String(value) => ValueNode::Text(value),
         MontyNode::Bytes(value) => ValueNode::Bytes(value),
         MontyNode::List(items) => ValueNode::ListValue(raw_ids(items)),

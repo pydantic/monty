@@ -120,6 +120,8 @@ macro_rules! heap_payloads {
             /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
             #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
+            /// A `complex` number: two doubles, too wide for an immediate `Value`.
+            Complex(inline $crate::types::Complex),
             /// A Python module and its attributes.
             Module(boxed $crate::types::Module),
             /// A coroutine object from an async function call.
@@ -251,6 +253,7 @@ impl HeapData {
             | Self::BytesIterator(_)
             | Self::RangeIterator(_)
             | Self::LongInt(_)
+            | Self::Complex(_)
             | Self::Path(_)
             | Self::OpenFile(_)
             | Self::RePattern(_)
@@ -324,6 +327,7 @@ impl HeapData {
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassParams(_) => Type::DataclassParams,
             Self::LongInt(_) => Type::Int,
+            Self::Complex(_) => Type::Complex,
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
@@ -661,6 +665,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::DataclassField($value) => $body,
             Self::DataclassParams($value) => $body,
             Self::LongInt($value) => $body,
+            Self::Complex($value) => $body,
             Self::Path($value) => $body,
             Self::OpenFile($value) => $body,
             Self::RePattern($value) => $body,
@@ -1148,6 +1153,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::LongInt(_)
+            | Self::Complex(_)
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)

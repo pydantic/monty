@@ -15,13 +15,13 @@ use unicode_general_category::{GeneralCategory, get_general_category};
 use crate::{
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::ExprLoc,
     heap::HeapData,
     intern::StringId,
     resource_checks::check_repeat_size,
     string_builder::StringBuilder,
-    types::{LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
+    types::{Complex, LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
     value::Value,
 };
 
@@ -772,6 +772,13 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     {
         return format_long_int(li, &value_type.name(vm.heap, vm.interns), spec, &vm.heap.tracker);
     }
+    // A complex formats each part through the float formatters; the checks
+    // above have already validated the spec against `Type::Complex`.
+    if let Value::Ref(id) = value
+        && let HeapData::Complex(c) = vm.heap.get(*id)
+    {
+        return format_complex(*c, spec, &vm.heap.tracker);
+    }
 
     match (value, spec.type_char) {
         // Integer formatting. `n` (locale number) formats an integer like `d`;
@@ -887,7 +894,7 @@ pub fn validate_string_spec(spec: &ParsedFormatSpec) -> Result<(), RunError> {
 /// permit grouping, everything else is string-formatted and reported as `s`.
 fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type: Type) -> Result<(), RunError> {
     let allowed = match type_char {
-        None => matches!(value_type, Type::Int | Type::Bool | Type::Float),
+        None => matches!(value_type, Type::Int | Type::Bool | Type::Float | Type::Complex),
         Some(TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper) => grouping == Grouping::Underscore,
         // `c`/`s` have nothing to group; `n` does its own locale grouping and so
         // forbids an explicit one (`Cannot specify ',' with 'n'.`).
@@ -914,12 +921,13 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
 /// format code" case.
 ///
 /// Integer codes (`b`/`c`/`d`/`o`/`x`/`X`) need an `int`/`bool`; float codes
-/// (`e`/`E`/`f`/`F`/`g`/`G`/`%`) and `n` accept any number (an `int` is widened
-/// to a float); `s` needs a `str`; a type-less spec (`None`) is valid for every
-/// value (it falls back to `str()`).
+/// (`e`/`E`/`f`/`F`/`g`/`G`/`%`) and `n` accept any real number (an `int` is
+/// widened to a float), and all but `%` a `complex` too; `s` needs a `str`; a
+/// type-less spec (`None`) is valid for every value (it falls back to `str()`).
 fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
     let is_int = matches!(value_type, Type::Int | Type::Bool);
-    let is_num = is_int || value_type == Type::Float;
+    let is_real = is_int || value_type == Type::Float;
+    let is_num = is_real || value_type == Type::Complex;
     match type_char {
         None => true,
         Some(TypeChar::D | TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper | TypeChar::C) => is_int,
@@ -930,9 +938,9 @@ fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
             | TypeChar::FUpper
             | TypeChar::G
             | TypeChar::GUpper
-            | TypeChar::Percent
             | TypeChar::N,
         ) => is_num,
+        Some(TypeChar::Percent) => is_real,
         Some(TypeChar::S) => value_type == Type::Str,
     }
 }
@@ -964,8 +972,8 @@ fn formats_as_integer(type_char: Option<TypeChar>, value_type: Type) -> bool {
 ///
 /// The float codes (`e`/`E`/`f`/`F`/`g`/`G`/`%`) always format as a float
 /// (an `int` is widened); `n` and a type-less spec do so only for an actual
-/// float value. Used to gate the `z` (negative-zero coercion) flag, which is
-/// legal only for float presentations.
+/// float or complex value. Used to gate the `z` (negative-zero coercion) flag,
+/// which is legal only for float presentations.
 fn formats_as_float(type_char: Option<TypeChar>, value_type: Type) -> bool {
     match type_char {
         Some(
@@ -977,7 +985,7 @@ fn formats_as_float(type_char: Option<TypeChar>, value_type: Type) -> bool {
             | TypeChar::GUpper
             | TypeChar::Percent,
         ) => true,
-        Some(TypeChar::N) | None => value_type == Type::Float,
+        Some(TypeChar::N) | None => matches!(value_type, Type::Float | Type::Complex),
         _ => false,
     }
 }
@@ -1013,7 +1021,7 @@ fn validate_alternate(type_char: Option<TypeChar>, value_type: Type) -> Result<(
     let message = match type_char {
         Some(TypeChar::C) => Some("Alternate form (#) not allowed with integer format specifier 'c'"),
         Some(TypeChar::S) => Some("Alternate form (#) not allowed in string format specifier"),
-        None if !matches!(value_type, Type::Int | Type::Bool | Type::Float) => {
+        None if !matches!(value_type, Type::Int | Type::Bool | Type::Float | Type::Complex) => {
             Some("Alternate form (#) not allowed in string format specifier")
         }
         _ => None,
@@ -1439,6 +1447,99 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -
         other => other,
     };
     pad_string(&value, spec.width, align, spec.fill, tracker)
+}
+
+/// Formats a complex as CPython's `complex.__format__` does: each part goes
+/// through the float formatters with width, fill and alignment stripped, the
+/// imaginary part always carries a sign, and the assembled `re±imj` — wrapped in
+/// parentheses for a type-less spec, like `str()` — is padded as one string.
+///
+/// Zero padding and `=` alignment have no meaning for two numbers and are
+/// rejected with CPython's wording; every other check ran in `format_with_spec`.
+fn format_complex(c: Complex, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
+    if spec.zero_pad || spec.fill == '0' {
+        return Err(ExcType::value_error(
+            "Zero padding is not allowed in complex format specifier",
+        ));
+    }
+    if spec.align == Some(Align::SignAware) {
+        return Err(ExcType::value_error(
+            "'=' alignment flag is not allowed in complex format specifier",
+        ));
+    }
+    // A type-less spec renders like `str()`: repr digits, parentheses, and no
+    // real part at all when it is exactly `+0.0`.
+    let str_style = spec.type_char.is_none();
+    let skip_real = str_style && c.real == 0.0 && c.real.is_sign_positive();
+    let part_spec = |sign| ParsedFormatSpec {
+        fill: ' ',
+        align: None,
+        sign,
+        alternate: spec.alternate,
+        z: spec.z,
+        zero_pad: false,
+        width: 0,
+        grouping: spec.grouping,
+        frac_grouping: spec.frac_grouping,
+        precision: spec.precision,
+        type_char: spec.type_char,
+    };
+    let real = if skip_real {
+        String::new()
+    } else {
+        format_complex_part(c.real, &part_spec(spec.sign), tracker)?
+    };
+    // The imaginary part carries an explicit sign unless it stands alone, in
+    // which case the spec's own sign convention applies.
+    let imag_sign = if skip_real { spec.sign } else { Some(Sign::Plus) };
+    let imag = format_complex_part(c.imag, &part_spec(imag_sign), tracker)?;
+    let body = if str_style && !skip_real {
+        format!("({real}{imag}j)")
+    } else {
+        format!("{real}{imag}j")
+    };
+    pad_string(
+        &body,
+        spec.width,
+        spec.align.unwrap_or(Align::Right),
+        spec.fill,
+        tracker,
+    )
+}
+
+/// Formats one part of a complex. A type-less spec without precision uses the
+/// repr digits with an integral value's `.0` dropped (`(1+2j)`, not
+/// `(1.0+2.0j)`); with a precision it is `g`, never the `.0`-preserving
+/// float default; the explicit float codes format as for a float.
+fn format_complex_part(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
+    match spec.type_char {
+        None if spec.precision.is_none() => {
+            let is_negative = f.is_sign_negative() && !f.is_nan();
+            let abs_val = f.abs();
+            let repr = FormatFloat(abs_val).to_string();
+            let digits = repr.strip_suffix(".0").map_or_else(|| repr.clone(), str::to_owned);
+            let abs_str = maybe_alternate_point(digits, abs_val, spec);
+            let sign = numeric_sign(is_negative, &abs_str, spec);
+            pad_signed_numeric(sign, "", &abs_str, spec, tracker)
+        }
+        None => format_float_g(
+            f,
+            &ParsedFormatSpec {
+                type_char: Some(TypeChar::G),
+                ..*spec
+            },
+            tracker,
+        ),
+        Some(TypeChar::G | TypeChar::GUpper | TypeChar::N) => format_float_g(f, spec, tracker),
+        Some(TypeChar::F | TypeChar::FUpper) => format_float_f(f, spec, tracker),
+        Some(TypeChar::E) => format_float_e(f, spec, false, tracker),
+        Some(TypeChar::EUpper) => format_float_e(f, spec, true, tracker),
+        // `format_with_spec` has already rejected every other code for a complex.
+        Some(other) => Err(ExcType::value_error(format!(
+            "Unknown format code '{}' for object of type 'complex'",
+            other.as_char()
+        ))),
+    }
 }
 
 /// Formats a float in fixed-point notation (format types `f` and `F`).
