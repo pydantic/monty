@@ -1,0 +1,46 @@
+crates/monty/src/types/complex.rs
+  s_c28b48c3390bf6::t_4f0f36eb0e60ce 17,192-209,220-223,382,385,387-392,447-448,454,717-720,722
+  s_c28b48c3390bf6::t_d36cfccb72e58e 189-191,210-219
+docs/limitations/itertools.md
+  s_c28b48c3390bf6::t_4f0f36eb0e60ce 23-24
+crates/monty-typeshed/update.py
+  s_c28b48c3390bf6::t_d669c8213b5752 57
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_c28b48c3390bf6::t_9bb3b61b387b1a 131-132,134-135
+crates/monty-proto/src/generated/monty.v1.rs
+  s_c28b48c3390bf6::t_9bb3b61b387b1a 128-129,133-136
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_c28b48c3390bf6::t_9bb3b61b387b1a 157-158,161-164
+crates/monty-js/__test__/types.spec.ts
+  s_c28b48c3390bf6::t_528607e1d684ab 421-425
+crates/monty-python/tests/test_type_check.py
+  s_c28b48c3390bf6::t_47995a8389b895 34-43
+crates/monty-proto/src/wire.rs
+  s_c28b48c3390bf6::t_528607e1d684ab 829,1164-1165,1169-1175
+crates/monty-proto/tests/differential.rs
+  s_c28b48c3390bf6::t_528607e1d684ab 299-300
+crates/monty-proto/tests/roundtrip.rs
+  s_c28b48c3390bf6::t_528607e1d684ab 142-143
+crates/monty-typeshed/vendor/typeshed/stdlib/builtins.pyi
+  ai_agent 19,349-386
+crates/monty/test_cases/complex__all.py
+  s_c28b48c3390bf6::t_528607e1d684ab 230-248
+crates/monty-python/tests/test_types.py
+  s_c28b48c3390bf6::t_528607e1d684ab 345-349
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "20ca2e9423e96bc51ba29f843be3a29541ea687b",
+  "prompts": {},
+  "sessions": {
+    "s_c28b48c3390bf6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3392ac7-4c10-4214-a9c9-a744dc0a7787",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
