@@ -79,6 +79,12 @@ exactly, except for the comprehension target restriction in
 - The scan also enters string literals, because the type checker parses a forward-reference annotation such as
     `x: "list[int]"` from the text between the quotes; a string longer than 200 bytes holding more than 200 unbalanced
     brackets is rejected the same way even when it is plain data.
+- With type checking on, the whole AST is checked against the cap before the type checker runs, whatever the source's
+    length.
+    That includes function parameter and return annotations, which the compiler otherwise drops unchecked, so
+    `def f(a: A | B | ...)` with more than 200 members is rejected only when type checking.
+    Every string literal longer than the remaining budget is parsed as a forward-reference annotation and counted
+    from the depth it sits at, so a string that parses as a deeply nested expression is rejected even when it is data.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
     (`0` scans every source, `usize::MAX` never scans); Python and JavaScript sessions use the default.
 
