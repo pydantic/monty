@@ -27,10 +27,10 @@ def render(c: complex, width: int, height: int) -> str:
     for row in range(height):
         # Terminal cells are about twice as tall as they are wide, so the
         # imaginary axis uses half as many cells per unit as the real axis.
-        im = 1.5 - 3.0 * row / (height - 1)
+        im = 1.5 - 3.0 * row / max(height - 1, 1)
         line: list[str] = []
         for col in range(width):
-            re = -1.5 + 3.0 * col / (width - 1)
+            re = -1.5 + 3.0 * col / max(width - 1, 1)
             n = escape_count(complex(re, im), c)
             shade = SHADES[-1] if n == MAX_ITER else SHADES[n * (len(SHADES) - 1) // MAX_ITER]
             line.append(shade)

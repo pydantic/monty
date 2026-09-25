@@ -1019,6 +1019,30 @@ fn numeric_formatting_peak_memory_preserves_the_worker() {
     }
 }
 
+/// A complex spec that CPython rejects outright must raise its `ValueError`
+/// however large its precision, not the `MemoryError` the precision would cost.
+#[test]
+fn invalid_complex_spec_is_rejected_before_its_precision_is_charged() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(10_000_000));
+    for (code, message) in [
+        (
+            "'{:=.4000000f}'.format(1 + 1j)",
+            "'=' alignment flag is not allowed in complex format specifier",
+        ),
+        (
+            "'{:0.4000000f}'.format(1 + 1j)",
+            "Zero padding is not allowed in complex format specifier",
+        ),
+    ] {
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "ValueError", "{code}");
+        assert_eq!(error.message.as_deref(), Some(message), "{code}");
+    }
+    child.shutdown();
+}
+
 /// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no
 /// Python frames, so nothing but `max_memory` bounds how deep a nest gets built.
 /// Building one too large for the limit must end the run with a `MemoryError`,

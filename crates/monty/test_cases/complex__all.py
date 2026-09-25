@@ -261,6 +261,12 @@ for expr in [
     except ZeroDivisionError as exc:
         assert str(exc) == 'division by zero'
 
+
+def assert_near(actual, expected):
+    # The polar form's last digit follows the host libm, so allow it an ulp.
+    assert abs(actual - expected) <= 1e-15 * abs(expected)
+
+
 # === Powers ===
 assert 1j**2 == -1 + 0j
 assert 1j**100 == 1 + 0j
@@ -274,10 +280,10 @@ assert repr((1 + 1j) ** -100) == '(-8.881784197001252e-16-0j)'
 assert repr((1 + 1j) ** 1000) == '(3.273390607896366e+150-2.6303055750020937e+137j)'
 assert (2 + 0j) ** 1023 == 8.98846567431158e307 + 0j
 assert repr((2 + 0j) ** -1075) == '-0j'
-assert 1j**0.5 == 0.7071067811865476 + 0.7071067811865475j
-assert 1j**1j == 0.20787957635076193 + 0j
-assert 2**1j == 0.7692389013639721 + 0.6389612763136348j
-assert 2.5**1j == 0.6087670819712999 + 0.793349002588488j
+assert_near(1j**0.5, 0.7071067811865476 + 0.7071067811865475j)
+assert_near(1j**1j, 0.20787957635076193 + 0j)
+assert_near(2**1j, 0.7692389013639721 + 0.6389612763136348j)
+assert_near(2.5**1j, 0.6087670819712999 + 0.793349002588488j)
 assert 0j**0 == 1 + 0j
 assert 0j**0j == 1 + 0j
 assert 0j**2 == 0j
@@ -286,7 +292,7 @@ assert 0j**0.0 == 1 + 0j
 assert (1 + 2j) ** -0.0 == 1 + 0j
 assert 1j**True == 1j
 assert True**1j == 1 + 0j
-assert 1j**10**30 == 0.5052644514387595 + 0.8629645613304693j
+assert_near(1j**10**30, 0.5052644514387595 + 0.8629645613304693j)
 assert (1e-200 + 1e-200j) ** 2 == 0j
 assert pow(1j, 2) == -1 + 0j
 assert repr(complex(nan, 0) ** 2) == '(nan+nanj)'
@@ -333,13 +339,13 @@ except TypeError as exc:
     assert str(exc) == "unsupported operand type(s) for ** or pow(): 'str', 'int', 'complex'"
 
 # === A negative real base with a fractional exponent is complex ===
-assert (-8.0) ** (1 / 3) == 1.0000000000000002 + 1.7320508075688772j
-assert (-8) ** 0.5 == 1.7319121124709868e-16 + 2.8284271247461903j
-assert pow(-8.0, 0.5) == 1.7319121124709868e-16 + 2.8284271247461903j
-assert (-1) ** 2.5 == 3.061616997868383e-16 + 1j
-assert (-8.0) ** -0.5 == 2.1648901405887335e-17 - 0.3535533905932738j
-assert (-1e-308) ** 0.5 == 6.123233995736766e-171 + 1e-154j
-assert (-(10**30)) ** 0.5 == 0.06123233995736766 + 1000000000000000j
+assert_near((-8.0) ** (1 / 3), 1.0000000000000002 + 1.7320508075688772j)
+assert_near((-8) ** 0.5, 1.7319121124709868e-16 + 2.8284271247461903j)
+assert_near(pow(-8.0, 0.5), 1.7319121124709868e-16 + 2.8284271247461903j)
+assert_near((-1) ** 2.5, 3.061616997868383e-16 + 1j)
+assert_near((-8.0) ** -0.5, 2.1648901405887335e-17 - 0.3535533905932738j)
+assert_near((-1e-308) ** 0.5, 6.123233995736766e-171 + 1e-154j)
+assert_near((-(10**30)) ** 0.5, 0.06123233995736766 + 1000000000000000j)
 assert (-1.0) ** inf == 1.0
 assert (-2.0) ** inf == inf
 assert (-inf) ** 0.5 == inf
