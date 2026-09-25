@@ -433,6 +433,17 @@ test('complex input round-trips', async () => {
   t.is(Object.is(back.real, -0) && Object.is(back.imag, -0), true)
 })
 
+test('malformed complex marker is rejected by the wasm encoder', () => {
+  t.deepEqual(encodeValue({ __monty_type__: 'Complex', real: 1.5, imag: -2 }), {
+    root: 0,
+    nodes: [{ tag: 'complex', val: { real: 1.5, imag: -2 } }],
+  })
+  t.throws(() => encodeValue({ __monty_type__: 'Complex', real: '1', imag: 2 }), {
+    instanceOf: TypeError,
+    message: 'Complex marker requires numeric real and imag',
+  })
+})
+
 test.each([
   { fields: { hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }, iso: '10:20:30.000040' },
   {
