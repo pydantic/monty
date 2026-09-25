@@ -1,0 +1,39 @@
+crates/monty-proto/tests/differential.rs
+  s_c28b48c3390bf6::t_b93996623fff95 60-63
+crates/monty/src/fstring.rs
+  s_c28b48c3390bf6::t_b93996623fff95 645-657,659,668
+docs/limitations/builtins.md
+  s_c28b48c3390bf6::t_21278b9639034f 17,46-47,162
+crates/monty-js/ts/worker/value.ts
+  s_c28b48c3390bf6::t_21278b9639034f 179-182
+docs/limitations/complex.md
+  s_c28b48c3390bf6::t_21278b9639034f 30-32
+crates/monty-types/tests/value.rs
+  ai_agent 8
+  s_c28b48c3390bf6::t_21278b9639034f 680,691-704
+crates/monty-runtime/tests/subprocess.rs
+  s_c28b48c3390bf6::t_b93996623fff95 1007-1012
+crates/monty-js/__test__/wasm_value_codec.spec.ts
+  s_c28b48c3390bf6::t_21278b9639034f 54-66
+crates/monty-proto/src/lib.rs
+  s_c28b48c3390bf6::t_b93996623fff95 34-36,40,45-49
+crates/monty-types/src/object.rs
+  s_c28b48c3390bf6::t_21278b9639034f 516-517,522
+  s_c28b48c3390bf6::t_b93996623fff95 503-504,510
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1f5c45627a4cea0ef12395f35acc80b952c30987",
+  "prompts": {},
+  "sessions": {
+    "s_c28b48c3390bf6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3392ac7-4c10-4214-a9c9-a744dc0a7787",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
