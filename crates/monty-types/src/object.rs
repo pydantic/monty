@@ -500,31 +500,26 @@ impl<'a> ObjectRef<'a> {
         }
     }
 
-    /// The value as a `float`; an `int` converts as Python's `float()` does.
+    /// The value as a `float`; an `int` converts as Python's `float()` does,
+    /// with one too large for a float giving `None` where Python overflows.
     #[must_use]
     pub fn as_float(&self) -> Option<f64> {
         match self.node() {
             MontyNode::Float(value) => Some(*value),
             MontyNode::Int(value) => Some(*value as f64),
+            MontyNode::BigInt(value) => value.to_f64().filter(|f| f.is_finite()),
             _ => None,
         }
     }
 
     /// The value as a `complex`; an `int` or `float` converts as Python's
-    /// `complex()` does, with a zero imaginary part.
+    /// `complex()` does, with a zero imaginary part (see [`as_float`](Self::as_float)
+    /// for an `int` too large to convert).
     #[must_use]
     pub fn as_complex(&self) -> Option<MontyComplex> {
         match self.node() {
             MontyNode::Complex(value) => Some(*value),
-            MontyNode::Float(value) => Some(MontyComplex {
-                real: *value,
-                imag: 0.0,
-            }),
-            MontyNode::Int(value) => Some(MontyComplex {
-                real: *value as f64,
-                imag: 0.0,
-            }),
-            _ => None,
+            _ => self.as_float().map(|real| MontyComplex { real, imag: 0.0 }),
         }
     }
 

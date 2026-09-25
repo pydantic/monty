@@ -176,7 +176,10 @@ export class ArenaEncoder {
           },
         })
       case 'Complex':
-        return this.leaf({ tag: 'complex', val: { real: Number(object.real), imag: Number(object.imag) } })
+        if (typeof object.real !== 'number' || typeof object.imag !== 'number') {
+          throw new TypeError('Complex marker requires numeric real and imag')
+        }
+        return this.leaf({ tag: 'complex', val: { real: object.real, imag: object.imag } })
       case 'TimeDelta':
         return this.leaf({
           tag: 'timedelta',

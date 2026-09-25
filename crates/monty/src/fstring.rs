@@ -642,15 +642,21 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     if let Some(precision) = spec.precision
         && precision_scales_output
     {
-        let numeric_finite = match value {
-            Value::Int(_) => true,
-            Value::Float(f) => f.is_finite(),
-            // A big integer formatted as a float is first converted to `f64`,
-            // so an attacker-chosen precision applies to it too — guard it.
-            Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
-            _ => false,
+        // The number of finite components the precision expands, so the whole
+        // output is charged before any of it is built.
+        let finite_parts = match value {
+            Value::Int(_) => 1,
+            Value::Float(f) => usize::from(f.is_finite()),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                // A big integer formatted as a float is first converted to `f64`,
+                // so an attacker-chosen precision applies to it too — guard it.
+                HeapData::LongInt(_) => 1,
+                HeapData::Complex(c) => usize::from(c.real.is_finite()) + usize::from(c.imag.is_finite()),
+                _ => 0,
+            },
+            _ => 0,
         };
-        if numeric_finite {
+        if finite_parts > 0 {
             // Fractional grouping (`f"{v:.{p}_f}"`) weaves in one separator per
             // three emitted digits, so the native string reaches ~4/3 × precision
             // before `allocate_string` accounts for it; budget the separators too.
@@ -659,7 +665,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
             } else {
                 0
             };
-            check_repeat_size(precision.saturating_add(separators), 1, &vm.heap.tracker)?;
+            check_repeat_size(precision.saturating_add(separators), finite_parts, &vm.heap.tracker)?;
         }
     }
 

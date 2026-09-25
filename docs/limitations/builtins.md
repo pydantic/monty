@@ -14,7 +14,7 @@ Python.
 
 ## Implemented type constructors (also builtins)
 
-`bool`, `bytes`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
+`bool`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
 `set`, `slice`, `str`, `tuple`. Exception classes (`ValueError`,
 `TypeError`, etc.) are also names in the builtin namespace.
 
@@ -43,8 +43,8 @@ These raise `NameError`:
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
 - **`hash(x)`** — Monty hashes `str`, `bytes`, `float`, `complex` and every container with
-    its own algorithm, so the values differ from CPython's. Only `bool` and
-    small `int` agree: an `int` hashes to itself, which is what CPython does
+    its own algorithm, so the values differ from CPython's. Only `bool`,
+    small `int`, and a `float` or `complex` equal to one of them agree: an `int` hashes to itself, which is what CPython does
     while `abs(x) < 2**61 - 1`, but CPython reduces modulo `2**61 - 1` from
     there up (`hash(2**62)` is `2` in CPython, `4611686018427387904` in Monty)
     and Monty hashes an `int` too large for an `i64` differently again. Monty's
@@ -159,7 +159,7 @@ These raise `NameError`:
     rejects negative exponents with `ValueError` instead of computing a modular
     inverse. Non-modular exponents whose result cannot be materialized raise
     `OverflowError` (see [resource_limits.md](resource_limits.md)).
-- **`pow(base, exp)` and `**` with float operands** — overflow raises
+- **`pow(base, exp)` and `**` with float operands and a real result** — overflow raises
     `OverflowError` like CPython, always worded
     `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython
     on macOS and Windows says `(34, 'Result too large')`), and `exc.args` is that
