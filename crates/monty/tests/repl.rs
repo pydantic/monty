@@ -1300,6 +1300,33 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
     assert_eq!(repl.heap_entry_count(), control);
 }
 
+/// A sandbox class object is the `ClassType` node its instances point at,
+/// whether it is exported before or after one of them in the same message.
+#[test]
+fn repl_sandbox_class_shares_its_instances_node_in_either_order() {
+    let (mut repl, _) = init_repl("class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()");
+    for (code, class_index, instance_index) in [("(Foo, foo)", 0, 1), ("(foo, Foo)", 1, 0)] {
+        let value = feed_run_print(&mut repl, code).unwrap();
+        let MontyNode::Tuple(ids) = unstable::root_node(&value) else {
+            panic!("{code}: expected a tuple, got {value:?}");
+        };
+        let class = unstable::node(unstable::child(value.as_ref(), ids[class_index]));
+        assert!(
+            matches!(class, MontyNode::ClassType(class) if class.name == "Foo" && !class.host_defined),
+            "{code}: {class:?}"
+        );
+        let MontyNode::ClassInstance { class_type, .. } =
+            unstable::node(unstable::child(value.as_ref(), ids[instance_index]))
+        else {
+            panic!("{code}: expected the instance");
+        };
+        assert_eq!(
+            *class_type, ids[class_index],
+            "{code}: the instance points at the class's own node"
+        );
+    }
+}
+
 /// A sandbox class or instance the host hands back (by the uuid it crossed
 /// out with) resolves to the original object rather than a host-backed copy,
 /// including after a dump/restore rebuilds the uuid index; one the sandbox has

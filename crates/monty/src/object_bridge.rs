@@ -202,9 +202,11 @@ impl GraphExporter {
         if let Some(node_id) = self.memo.get(&id) {
             return *node_id;
         }
-        // A host class's type object *is* its shared class node.
-        if matches!(vm.heap.get(id), HeapData::HostClassType(_)) {
-            return self.host_class_node(id, vm);
+        // A class's type object *is* the class node its instances point at.
+        match vm.heap.get(id) {
+            HeapData::Class(_) => return self.sandbox_class_node(id, vm),
+            HeapData::HostClassType(_) => return self.host_class_node(id, vm),
+            _ => {}
         }
         if self.in_progress.contains(&id) {
             let placeholder = match vm.heap.get(id) {
