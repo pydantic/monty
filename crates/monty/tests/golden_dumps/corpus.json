@@ -1,0 +1,132 @@
+{
+  "doc": [
+    "The cases to dump, the commit that wrote each version, and the verdict this build",
+    "must get on each fixture. See AGENTS.md before adding a case or a version.",
+    "",
+    "Each case's source is `cases/<name>.py`. The values it must restore to are",
+    "recorded by the writing build in v<N>/manifest.json, not here.",
+    "",
+    "`verdicts` may only name `loads` or `refused`; a `*` covers every version the",
+    "row does not name."
+  ],
+  "versions": [
+    {
+      "version": 10,
+      "commit": "e723d05de1c1063b698b89c903160126d7e5f222",
+      "subject": "establish tampered snapshots as permitted: garbage in garbage out (#873)",
+      "why": "last commit before #875 bumped to 11; version 10 began at 951404cb (#810)"
+    },
+    {
+      "version": 11,
+      "commit": "64cd7486ad856b761851997857c70d7b04da7438",
+      "subject": "Change `DumpError` for future compatibility (#890)",
+      "why": "last commit before #855 bumped to 12; #880 split `ResourceLimits.max_duration` without a bump, so 11s before it are a different shape"
+    }
+  ],
+  "cases": [
+    {
+      "name": "plain",
+      "doc": "Scalar globals only, no heap containers.",
+      "globals": [
+        "x",
+        "y",
+        "flag",
+        "nothing"
+      ],
+      "feed": "x + 1",
+      "verdicts": {
+        "*": "refused"
+      }
+    },
+    {
+      "name": "list",
+      "doc": "Heap containers, including nesting and a shared element.",
+      "globals": [
+        "xs",
+        "inner",
+        "nested"
+      ],
+      "feed": "len(nested) + len(xs)",
+      "verdicts": {
+        "*": "refused"
+      }
+    },
+    {
+      "name": "dict",
+      "doc": "Dicts and sets, whose entry layout the v10 tombstone work changes.",
+      "globals": [
+        "d",
+        "mixed",
+        "s"
+      ],
+      "feed": "len(d) + len(mixed) + len(s)",
+      "verdicts": {
+        "*": "refused"
+      }
+    },
+    {
+      "name": "strings",
+      "doc": [
+        "Separates a clean refusal from silent corruption. `total` is a static",
+        "string, so its StringId indexes the static table; `xs` and `greeting_text`",
+        "are interned dynamically and index the dump's own table. An edit to the",
+        "middle of the static table renames the first and not the others."
+      ],
+      "globals": [
+        "xs",
+        "total",
+        "greeting_text",
+        "count"
+      ],
+      "feed": "total + count",
+      "verdicts": {
+        "*": "refused"
+      }
+    },
+    {
+      "name": "function",
+      "doc": "Compiled bytecode and frame locals, which the v6 renumbering changed.",
+      "globals": [
+        "result"
+      ],
+      "feed": "add(result, 10)",
+      "verdicts": {
+        "*": "refused"
+      }
+    },
+    {
+      "name": "closure",
+      "doc": "A captured cell, kept live by the returned function.",
+      "globals": [
+        "first"
+      ],
+      "feed": "bump(5)",
+      "verdicts": {
+        "*": "refused"
+      }
+    },
+    {
+      "name": "class",
+      "doc": "Instance identity, which the v8 bump changed.",
+      "globals": [
+        "total"
+      ],
+      "feed": "p.x + same.y",
+      "verdicts": {
+        "*": "refused"
+      }
+    },
+    {
+      "name": "nested",
+      "doc": "Mixed containers several levels deep, plus a tuple key.",
+      "globals": [
+        "tree",
+        "keyed"
+      ],
+      "feed": "len(tree['right'][1][1])",
+      "verdicts": {
+        "*": "refused"
+      }
+    }
+  ]
+}
