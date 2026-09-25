@@ -57,6 +57,10 @@ fn corpus() -> Vec<MontyObject> {
         MontyObject::float(-0.0),
         MontyObject::float(f64::NAN),
         MontyObject::float(f64::NEG_INFINITY),
+        MontyObject::complex(0.0, 0.0), // both parts present even at the default payload
+        MontyObject::complex(-0.0, -0.0),
+        MontyObject::complex(1.5, -2.0),
+        MontyObject::complex(f64::NAN, f64::NEG_INFINITY),
         MontyObject::string(String::new()),
         MontyObject::string("héllo \u{1F40D}".to_owned()),
         MontyObject::bytes(vec![]),

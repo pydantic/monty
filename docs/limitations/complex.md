@@ -27,7 +27,8 @@ The divergences are the ones the rest of the numeric tower already has.
 
 ## Operators
 
-- **`hash(z)`** differs from CPython's value (see [builtins.md](builtins.md)), while still agreeing with the hash of an
-    equal `int` or `float`, so mixed-type dict keys behave.
+- **`hash(z)`** differs from CPython's value unless `z` equals a `bool` or a small `int`, because the parts hash
+    with Monty's float algorithm (see [builtins.md](builtins.md)); it always agrees with the hash of an equal `int` or
+    `float`, so mixed-type dict keys behave.
 - **`[1] * 1j`** and **`1j * [1]`** raise `TypeError: unsupported operand type(s) for *: 'list' and 'complex'`;
     CPython says `can't multiply sequence by non-int of type 'complex'` (see [collections.md](collections.md)).
