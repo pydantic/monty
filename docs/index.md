@@ -15,6 +15,11 @@ description: "A secure Python sandbox written in Rust for code written by AI. St
   <a href="https://logfire.pydantic.dev/docs/join-slack/"><img src="https://img.shields.io/badge/Slack-Join%20Slack-4A154B?logo=slack" alt="Join Slack"></a>
 </p>
 
+!!! success "🎉 Monty v1.0.0 is released"
+
+    Monty has reached its first stable release.
+    See the [v1.0.0 release notes on GitHub](https://github.com/pydantic/monty/releases/tag/v1.0.0) for what's changed.
+
 A minimal, secure Python sandbox written in Rust for code written by AI.
 
 Monty avoids the latency, complexity and cost of a container based sandbox for running LLM generated code.
