@@ -17,9 +17,8 @@ description: "A secure Python sandbox written in Rust for code written by AI. St
 
 !!! success "🎉 Monty v1.0.0 is released"
 
-    Monty has reached its first stable release, and we now consider it ready for production use.
-    As open source software under the [MIT license](https://github.com/pydantic/monty/blob/main/LICENSE),
-    it is still provided as is, without warranty of any kind.
+    Monty has reached its first stable release, and we now consider it ready for production use
+    (although it is provided "as is" without any warranty, as per the [license](https://github.com/pydantic/monty/blob/main/LICENSE)).
     See the [v1.0.0 release notes on GitHub](https://github.com/pydantic/monty/releases/tag/v1.0.0) for what's changed.
 
 A minimal, secure Python sandbox written in Rust for code written by AI.
