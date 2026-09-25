@@ -1423,12 +1423,18 @@ impl<'a, 'i> Compiler<'a, 'i> {
     // ========================================================================
 
     /// Compiles a literal value.
+    ///
+    /// This is where parse-time literals cross into runtime `Value`s: a few
+    /// have a dedicated opcode, a complex literal is built by a constructor
+    /// call, and everything else is loaded from the constant pool.
     fn compile_literal(&mut self, literal: &Literal) -> Result<(), CompileError> {
-        match literal {
-            Literal::None => self.code.emit(Opcode::LoadNone),
-            Literal::Bool(true) => self.code.emit(Opcode::LoadTrue),
-            Literal::Bool(false) => self.code.emit(Opcode::LoadFalse),
-            Literal::Int(n) if let Ok(small) = i8::try_from(*n) => self.code.emit_i8(Opcode::LoadSmallInt, small),
+        let value = match literal {
+            Literal::None => return self.code.emit(Opcode::LoadNone),
+            Literal::Bool(true) => return self.code.emit(Opcode::LoadTrue),
+            Literal::Bool(false) => return self.code.emit(Opcode::LoadFalse),
+            Literal::Int(n) if let Ok(small) = i8::try_from(*n) => {
+                return self.code.emit_i8(Opcode::LoadSmallInt, small);
+            }
             // `Xj` is `complex(0.0, X)`: a complex value lives on the heap, so it
             // is built by a constructor call rather than loaded from the pool.
             Literal::Complex(imag) => {
@@ -1439,14 +1445,18 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 let type_id = Type::Complex
                     .callable_to_u8()
                     .expect("complex is a callable builtin type");
-                self.code.emit_call_builtin_type(type_id, 2)
+                return self.code.emit_call_builtin_type(type_id, 2);
             }
-            _ => {
-                let value = literal.into_const().expect("every other literal has a constant form");
-                let idx = self.code.add_const(value)?;
-                self.code.emit_u16(Opcode::LoadConst, idx)
-            }
-        }
+            Literal::Ellipsis => Value::Ellipsis,
+            Literal::Int(n) => Value::Int(*n),
+            Literal::Float(v) => Value::Float(*v),
+            Literal::Str(string_id) => Value::InternString(*string_id),
+            Literal::Bytes(bytes_id) => Value::InternBytes(*bytes_id),
+            Literal::LongInt(long_int_id) => Value::InternLongInt(*long_int_id),
+            Literal::Marker(marker) => Value::Marker(*marker),
+        };
+        let idx = self.code.add_const(value)?;
+        self.code.emit_u16(Opcode::LoadConst, idx)
     }
 
     // ========================================================================

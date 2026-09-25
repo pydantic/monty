@@ -8,7 +8,7 @@ use crate::{
     intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
-    value::{EitherStr, Marker, Value},
+    value::{EitherStr, Marker},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -517,28 +517,6 @@ pub enum Literal {
     LongInt(LongIntId),
     /// A marker value (e.g., typing constructs like Any, Optional, etc.).
     Marker(Marker),
-}
-
-impl Literal {
-    /// Converts the literal into its constant-pool `Value`, or `None` for a
-    /// [`Complex`](Self::Complex) literal, which the compiler builds at run time.
-    ///
-    /// This is the only place parse-time data crosses the boundary into runtime
-    /// semantics, ensuring every literal follows the same conversion path.
-    pub(crate) fn into_const(self) -> Option<Value> {
-        Some(match self {
-            Self::Ellipsis => Value::Ellipsis,
-            Self::None => Value::None,
-            Self::Bool(b) => Value::Bool(b),
-            Self::Int(v) => Value::Int(v),
-            Self::Float(v) => Value::Float(v),
-            Self::Complex(_) => return None,
-            Self::Str(string_id) => Value::InternString(string_id),
-            Self::Bytes(bytes_id) => Value::InternBytes(bytes_id),
-            Self::LongInt(long_int_id) => Value::InternLongInt(long_int_id),
-            Self::Marker(marker) => Value::Marker(marker),
-        })
-    }
 }
 
 /// An expression with its source location.
