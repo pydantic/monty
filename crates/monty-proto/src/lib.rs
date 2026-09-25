@@ -31,9 +31,8 @@ pub mod worker;
 ///
 /// `Configure.persistence` and `ChildEvent.session_id` did not bump it: a
 /// serving relay and its client act on them, children ignore them, and a
-/// child that drops them loses nothing. The `complex` value arm did: a peer
-/// without it drops the node and rejects the message.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// child that drops them loses nothing.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
@@ -48,9 +47,7 @@ pub const PROTOCOL_VERSION: u32 = 6;
 /// per-session `max_duration` this build dropped: a version 4 parent would
 /// send a budget nothing enforces, and a version 4 child would accept the new
 /// budgets and ignore them. Neither side can be told apart from a working one,
-/// so both are refused. Version 5 is served: it only lacks the `complex` value,
-/// and a message carrying one fails as a node with no kind rather than
-/// silently changing meaning.
+/// so both are refused.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 5;
 
 /// How long the child holds buffered `print()` output before emitting it as a
