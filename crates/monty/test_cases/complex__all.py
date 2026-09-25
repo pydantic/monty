@@ -117,6 +117,11 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == 'must be real number, not str'
+try:
+    complex.from_number(1, 2)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'complex.from_number() takes exactly one argument (2 given)'
 
 # === repr and str ===
 inf, nan = float('inf'), float('nan')
@@ -263,7 +268,9 @@ for expr in [
 
 
 def assert_near(actual, expected):
-    # The polar form's last digit follows the host libm, so allow it an ulp.
+    # The polar form's last digit depends on the host libm and on whether the C
+    # compiler fused CPython's `phase += b.imag*log(vabs)` (clang does on arm64),
+    # so allow it an ulp.
     assert abs(actual - expected) <= 1e-15 * abs(expected)
 
 

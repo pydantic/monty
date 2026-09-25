@@ -121,6 +121,7 @@ macro_rules! heap_payloads {
             #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
             /// A `complex` number: two doubles, too wide for an immediate `Value`.
+            #[serde(rename = "J")]
             Complex(inline $crate::types::Complex),
             /// A Python module and its attributes.
             Module(boxed $crate::types::Module),
