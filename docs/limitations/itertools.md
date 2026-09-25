@@ -20,8 +20,8 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
     raises `TypeError: unhashable type: 'itertools.count'`, where CPython falls
     back to identity hashing. This applies to Monty's iterators generally, not
     just these two.
-- **`count` accepts only `int`, `float` and `bool`.** CPython accepts anything
-    satisfying `PyNumber_Check` (e.g. `Decimal`, `Fraction`, complex). Monty has
+- **`count` accepts only `int`, `float`, `complex` and `bool`.** CPython accepts anything
+    satisfying `PyNumber_Check` (e.g. `Decimal`, `Fraction`). Monty has
     no other numeric types, so the same `TypeError: a number is required` covers
     them all.
 - **Nested-cycle `repr()` unwinds one level earlier.** For a container that

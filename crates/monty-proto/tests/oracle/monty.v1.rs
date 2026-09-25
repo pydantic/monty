@@ -154,13 +154,14 @@ pub struct BigInt {
     #[prost(bytes = "vec", tag = "2")]
     pub magnitude: ::prost::alloc::vec::Vec<u8>,
 }
-/// A Python complex as its two float parts.
+/// A Python complex as its two float parts. Both are always present: a plain
+/// `double` omits its default on the wire, which would turn `-0.0` into `0.0`.
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct Complex {
-    #[prost(double, tag = "1")]
-    pub real: f64,
-    #[prost(double, tag = "2")]
-    pub imag: f64,
+    #[prost(double, optional, tag = "1")]
+    pub real: ::core::option::Option<f64>,
+    #[prost(double, optional, tag = "2")]
+    pub imag: ::core::option::Option<f64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedTupleNode {

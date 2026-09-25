@@ -14,6 +14,7 @@ use monty_types::FormatComplex;
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_f64},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
@@ -185,6 +186,41 @@ impl Complex {
         Some(result)
     }
 
+    /// `r / z` for a real dividend, CPython 3.14's `_Py_rc_quot`: the scaled
+    /// division of [`div`](Self::div) with the dividend's zero imaginary part
+    /// never entering the arithmetic, which changes the sign of zero results.
+    fn div_into(real: f64, den: Self) -> Option<Self> {
+        let abs_breal = den.real.abs();
+        let abs_bimag = den.imag.abs();
+        let mut result = if abs_breal >= abs_bimag {
+            if abs_breal == 0.0 {
+                return None;
+            }
+            let ratio = den.imag / den.real;
+            let denom = den.real + den.imag * ratio;
+            Self::new(real / denom, (-real * ratio) / denom)
+        } else if abs_bimag >= abs_breal {
+            let ratio = den.real / den.imag;
+            let denom = den.real * ratio + den.imag;
+            Self::new((real * ratio) / denom, -real / denom)
+        } else {
+            // At least one part of the divisor is nan.
+            Self::new(f64::NAN, f64::NAN)
+        };
+        // Unlike the complex quotient, only an infinite divisor is recovered;
+        // an infinite real dividend stays `nan+nanj`.
+        if result.real.is_nan()
+            && result.imag.is_nan()
+            && (abs_breal.is_infinite() || abs_bimag.is_infinite())
+            && real.is_finite()
+        {
+            let x = boxed_infinity(den.real);
+            let y = boxed_infinity(den.imag);
+            result = Self::new(0.0 * (real * x), 0.0 * (-real * y));
+        }
+        Some(result)
+    }
+
     /// `z ** w`, CPython's `complex_pow`: a small integral exponent uses exact
     /// repeated squaring, anything else the polar form. A zero base with a
     /// negative or non-real exponent raises `ZeroDivisionError`; an infinite
@@ -343,19 +379,17 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     {
         return Ok(value);
     }
+    defer_drop!(value, vm);
     let parsed = match value.as_either_str(vm.heap) {
         Some(text) => Some(parse(text.as_str(vm.interns))?),
-        None => operand(&value, vm)?.map(widen),
+        None => operand(value, vm)?.map(widen),
     };
-    if let Some(c) = parsed {
-        value.drop_with(vm);
-        Ok(c.into_value(vm.heap))
-    } else {
-        let type_name = value.py_type_name(vm);
-        value.drop_with(vm);
-        Err(ExcType::type_error(format!(
-            "complex() argument must be a string or a number, not {type_name}"
-        )))
+    match parsed {
+        Some(c) => Ok(c.into_value(vm.heap)),
+        None => Err(ExcType::type_error(format!(
+            "complex() argument must be a string or a number, not {}",
+            value.py_type_name(vm)
+        ))),
     }
 }
 
@@ -410,15 +444,14 @@ pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<V
     {
         return Ok(value);
     }
-    let result = match operand(&value, vm)? {
+    defer_drop!(value, vm);
+    match operand(value, vm)? {
         Some(op) => Ok(widen(op).into_value(vm.heap)),
         None => Err(ExcType::type_error(format!(
             "must be real number, not {}",
             value.py_type_name(vm)
         ))),
-    };
-    value.drop_with(vm);
-    result
+    }
 }
 
 /// Parses the string form CPython's `complex()` accepts: `<float>`,
@@ -681,12 +714,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
 
     fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let c = *self.get(vm.heap);
-        let Some(lhs) = operand(other, vm)? else {
-            return Ok(None);
+        let quotient = match operand(other, vm)? {
+            Some(Operand::Real(r)) => Complex::div_into(r, c),
+            Some(Operand::Complex(o)) => o.div(c),
+            None => return Ok(None),
         };
-        // A real dividend goes through the full quotient, as `float / complex` does.
-        widen(lhs)
-            .div(c)
+        quotient
             .map(|r| r.into_value(vm.heap))
             .ok_or_else(|| ExcType::zero_division().into())
             .map(Some)

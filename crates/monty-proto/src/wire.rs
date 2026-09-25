@@ -826,10 +826,7 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         Kind::Boolean(value) => MontyNode::Bool(value),
         Kind::Int(value) => MontyNode::Int(value),
         Kind::Float(value) => MontyNode::Float(value),
-        Kind::Complex(value) => MontyNode::Complex(MontyComplex {
-            real: value.real,
-            imag: value.imag,
-        }),
+        Kind::Complex(value) => MontyNode::Complex(complex_from_proto(&value).map_err(to_decode_err)?),
         Kind::Str(value) => MontyNode::String(value),
         Kind::Bytes(value) => MontyNode::Bytes(value.into_inner()),
         Kind::List(value) => MontyNode::List(value.0.into_inner()),
@@ -1164,9 +1161,18 @@ fn time_from_proto(t: pb::Time) -> Result<MontyTime, ProtoConvertError> {
 
 fn complex_to_proto(c: &MontyComplex) -> pb::Complex {
     pb::Complex {
-        real: c.real,
-        imag: c.imag,
+        real: Some(c.real),
+        imag: Some(c.imag),
     }
+}
+
+/// Both parts are `optional` only so that `-0.0` survives the wire; a frame
+/// leaving one out is malformed.
+fn complex_from_proto(c: &pb::Complex) -> Result<MontyComplex, ProtoConvertError> {
+    Ok(MontyComplex {
+        real: c.real.ok_or(ProtoConvertError::MissingField("Complex.real"))?,
+        imag: c.imag.ok_or(ProtoConvertError::MissingField("Complex.imag"))?,
+    })
 }
 
 fn timedelta_to_proto(td: &MontyTimeDelta) -> pb::TimeDelta {

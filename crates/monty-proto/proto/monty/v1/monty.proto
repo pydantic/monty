@@ -128,10 +128,11 @@ message BigInt {
   bytes magnitude = 2;
 }
 
-// A Python complex as its two float parts.
+// A Python complex as its two float parts. Both are always present: a plain
+// `double` omits its default on the wire, which would turn `-0.0` into `0.0`.
 message Complex {
-  double real = 1;
-  double imag = 2;
+  optional double real = 1;
+  optional double imag = 2;
 }
 
 message NamedTupleNode {
