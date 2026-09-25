@@ -1210,8 +1210,10 @@ fn timeout_in_deepcopy_fill_loop() {
 ///
 /// Run at two budgets because the snapshot comes first: a short one stops
 /// inside it and never reaches the fill, so only a budget past the snapshot
-/// exercises the fill's own poll. Neither can flake — the passing time is a
-/// budget plus one poll interval either way.
+/// exercises the fill's own poll.
+///
+/// The passing time also includes releasing the snapshot after the limit
+/// fires, which `memory-model-checks` makes slow enough to need more slack.
 ///
 /// What this cannot see on its own is the snapshot's poll going missing: the
 /// fill's would still stop the copy, a snapshot's worth of work later, which
@@ -1229,6 +1231,13 @@ fn timeout_in_shallow_copy_fill_loop() {
     )
     .unwrap();
 
+    // Well under the seconds an unpolled copy takes, so a missing poll
+    // still fails even at the wider setting.
+    let slack = if cfg!(feature = "memory-model-checks") {
+        2000
+    } else {
+        500
+    };
     for budget in [50, 600] {
         repl.tracker_mut().set_max_feed_duration(Duration::from_millis(budget));
         let start = Instant::now();
@@ -1238,7 +1247,7 @@ fn timeout_in_shallow_copy_fill_loop() {
         let elapsed = start.elapsed();
         assert_eq!(exc.exc_type(), ExcType::TimeoutError, "budget {budget}ms");
         assert!(
-            elapsed < Duration::from_millis(budget + 500),
+            elapsed < Duration::from_millis(budget + slack),
             "budget {budget}ms: should stop promptly, took {elapsed:?}"
         );
     }
