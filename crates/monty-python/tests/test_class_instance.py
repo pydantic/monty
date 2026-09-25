@@ -737,6 +737,15 @@ def test_sandbox_class_returns_proxy(monty_run: RunMonty):
     assert repr(result) == snapshot("MontyClassProxy(name='Foo', attributes={'a': 1})")
 
 
+def test_sandbox_class_is_a_type_proxy_in_either_order(session: MontySession):
+    session.feed_run('class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()')
+    for code in ('(Foo, foo)', '(foo, Foo)'):
+        (cls,) = [item for item in session.feed_run(code) if isinstance(item, MontyClassTypeProxy)]
+        assert cls.name == 'Foo', code
+        assert session.feed_run('cls is Foo', inputs={'cls': cls}) is True, code
+    assert session.feed_run('type(foo)') == session.feed_run('Foo')
+
+
 def test_proxy_round_trips_to_the_sandbox_object(session: MontySession):
     """Passing a proxy back hands the sandbox its original object, not a host copy."""
     session.feed_run('class Foo:\n    def __init__(self):\n        self.x = 1\nfoo = Foo()')
