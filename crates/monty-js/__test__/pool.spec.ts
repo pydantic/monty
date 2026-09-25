@@ -106,32 +106,44 @@ test.each(['acquire', 'startup', 'configure'])('close cancels a checkout during 
   t.is(terminations, 1)
 })
 
-test('failed direct and queued spawns wake the next checkout', async () => {
-  let attempts = 0
-  await using pool = await WorkerPool.create(
-    async () => {
-      if (++attempts <= 2) throw new Error(`spawn ${attempts} failed`)
-      return {
-        alive: true,
-        terminate() {},
-        async dispatch() {
-          return { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
-        },
-      }
-    },
-    { minWorkers: 0, maxWorkers: 1, checkoutTimeoutMs: 1000 },
-  )
-  const first = t.throwsAsync(() => pool.checkout())
-  const second = t.throwsAsync(() => pool.checkout())
-  const [firstError, secondError] = await Promise.all([
-    first,
-    second,
-    pool.checkout().then((session) => session.close()),
-  ])
-  t.is(firstError.message, 'spawn 1 failed')
-  t.is(secondError.message, 'spawn 2 failed')
-  t.is(attempts, 3)
-})
+test.each([new Error('spawn failed'), 'spawn failed', undefined])(
+  'factory failures stay consistent and wake queued checkouts: %s',
+  async (failure) => {
+    const prewarmError = await t.throwsAsync(
+      () =>
+        WorkerPool.create(async () => {
+          throw failure
+        }),
+      { instanceOf: Error },
+    )
+    let attempts = 0
+    await using pool = await WorkerPool.create(
+      async () => {
+        if (++attempts <= 2) throw failure
+        return {
+          alive: true,
+          terminate() {},
+          async dispatch() {
+            return { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
+          },
+        }
+      },
+      { minWorkers: 0, maxWorkers: 1, checkoutTimeoutMs: 1000 },
+    )
+    const first = t.throwsAsync(() => pool.checkout(), { instanceOf: Error })
+    const second = t.throwsAsync(() => pool.checkout(), { instanceOf: Error })
+    const [firstError, secondError] = await Promise.all([
+      first,
+      second,
+      pool.checkout().then((session) => session.close()),
+    ])
+    for (const error of [prewarmError, firstError, secondError]) {
+      t.is(error.message, failure instanceof Error ? failure.message : String(failure))
+      if (failure instanceof Error) t.is(error, failure)
+    }
+    t.is(attempts, 3)
+  },
+)
 
 test.each([-1, 0.5, NaN, Infinity, 2 ** 32, 2 ** 32 + 1])(
   'rejects invalid recycle count %s',

@@ -217,7 +217,7 @@ export class WorkerPool {
           waiter.resolve(slot)
         },
         (error) => {
-          waiter.reject(error instanceof Error ? error : new Error(String(error)))
+          waiter.reject(error)
           this.pump()
         },
       )
@@ -235,7 +235,7 @@ export class WorkerPool {
           worker = await this.factory(controller.signal)
         } catch (error) {
           this.total--
-          throw this.closed ? closedError() : error
+          throw this.closed ? closedError() : error instanceof Error ? error : new Error(String(error))
         }
         const slot = { worker, id: this.nextId++, checkouts: 0 }
         if (this.closed) {
