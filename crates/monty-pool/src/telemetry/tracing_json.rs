@@ -24,7 +24,7 @@ use std::{
 };
 
 use monty_types::{
-    MontyDateTime, MontyTime, bytes_repr,
+    FormatComplex, MontyDateTime, MontyTime, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
 use num_traits::ToPrimitive;
@@ -223,6 +223,11 @@ impl Serialize for JsonEncoded<'_> {
             }
             MontyNode::ClassType(_) => JsonClassType(Self { ..*self }).serialize(s),
             MontyNode::Type(builtin) => s.collect_str(&format_args!("<class '{builtin}'>")),
+            // JSON has no complex number, so it crosses as its Python repr.
+            MontyNode::Complex(c) => s.collect_str(&FormatComplex {
+                real: c.real,
+                imag: c.imag,
+            }),
             MontyNode::Date(d) => s.collect_str(&format_args!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
             MontyNode::DateTime(dt) => s.serialize_str(&datetime_isoformat(dt)),
             MontyNode::Time(t) => s.serialize_str(&time_isoformat(t)),

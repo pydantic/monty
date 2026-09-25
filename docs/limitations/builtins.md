@@ -27,8 +27,7 @@ These raise `NameError`:
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
     `super`. (`@property` on functions is not recognized; use a method.)
-- **Construction / coercion**: `bytearray`, `complex`, `memoryview`,
-    `object`, `ascii`.
+- **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
 `super()` is the biggest practical omission: with no class inheritance either
@@ -43,7 +42,7 @@ These raise `NameError`:
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
-- **`hash(x)`** — Monty hashes `str`, `bytes`, `float` and every container with
+- **`hash(x)`** — Monty hashes `str`, `bytes`, `float`, `complex` and every container with
     its own algorithm, so the values differ from CPython's. Only `bool` and
     small `int` agree: an `int` hashes to itself, which is what CPython does
     while `abs(x) < 2**61 - 1`, but CPython reduces modulo `2**61 - 1` from
@@ -160,9 +159,8 @@ These raise `NameError`:
     rejects negative exponents with `ValueError` instead of computing a modular
     inverse. Non-modular exponents whose result cannot be materialized raise
     `OverflowError` (see [resource_limits.md](resource_limits.md)).
-- **`pow(base, exp)` and `**` with a negative float base and a fractional
-    exponent** — gives `nan` where CPython returns a `complex` (Monty has no
-    complex type). Overflow raises `OverflowError` like CPython, always worded
+- **`pow(base, exp)` and `**` with float operands** — overflow raises
+    `OverflowError` like CPython, always worded
     `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython
     on macOS and Windows says `(34, 'Result too large')`), and `exc.args` is that
     text as one string rather than CPython's `(34, '...')` tuple.

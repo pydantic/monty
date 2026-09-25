@@ -295,6 +295,10 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
             })
         }
         MontyNode::Float(f) => Kind::Float(*f),
+        MontyNode::Complex(c) => Kind::Complex(oracle::Complex {
+            real: c.real,
+            imag: c.imag,
+        }),
         MontyNode::String(s) => Kind::Str(s.clone()),
         MontyNode::Bytes(b) => Kind::Bytes(b.clone()),
         MontyNode::List(ids) => Kind::List(oracle_indexes(ids)),

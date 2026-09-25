@@ -27,7 +27,7 @@ Builtin functions and type objects outside the data-type allowlist never resolve
 Python receives a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy] with `kind` and `name`,
 JavaScript a `{ __monty_type__, value }` marker.
 The Python proxy and both JavaScript markers re-enter the sandbox as the builtin they name.
-The allowlist is `type`, `object`, `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
+The allowlist is `type`, `object`, `bool`, `int`, `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
 `frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes,
 `collections.deque`, `re.Pattern`, `re.Match`, `types.GenericAlias`, `types.UnionType`,
 `pathlib.PurePosixPath` and the exception classes.

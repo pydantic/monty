@@ -530,9 +530,9 @@ See [RELEASING.md](RELEASING.md) for the release process.
 
 It's important that exceptions raised/returned by this library match those raised by Python.
 
-Wherever you see an Exception with a repeated message, create a dedicated method to create that exception `src/exceptions.rs`.
+Wherever you see an Exception with a repeated message, create a dedicated method to create that exception `crates/monty/src/exception_private.rs`.
 
-When writing exception messages, always check `src/exceptions.rs` for existing methods to generate that message.
+When writing exception messages, always check `crates/monty/src/exception_private.rs` for existing methods to generate that message.
 
 ## Argument extraction — ALWAYS use `#[derive(FromArgs)]`
 

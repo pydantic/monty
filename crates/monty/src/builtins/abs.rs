@@ -36,6 +36,7 @@ pub fn builtin_abs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::LongInt(li) => Ok(li.abs().into_value(vm.heap)),
+            HeapData::Complex(c) => Ok(Value::Float(c.abs()?)),
             HeapData::TimeDelta(td) => {
                 let total = timedelta::total_microseconds(td);
                 let abs_total = total.checked_abs().unwrap_or(total);

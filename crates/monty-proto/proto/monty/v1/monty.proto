@@ -100,6 +100,7 @@ message MontyNode {
     // OUTPUT-ONLY: a reference back to a container enclosing this node, as
     // the placeholder its repr shows ("[...]", "(...)", "{...}" or "...").
     string cycle = 30;
+    Complex complex = 31;
   }
 }
 
@@ -125,6 +126,12 @@ message NodePairs {
 message BigInt {
   bool negative = 1;
   bytes magnitude = 2;
+}
+
+// A Python complex as its two float parts.
+message Complex {
+  double real = 1;
+  double imag = 2;
 }
 
 message NamedTupleNode {

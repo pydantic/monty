@@ -34,6 +34,7 @@ use crate::{
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
     run::CompileOptions,
     source_map::{SourceMap, StackFrameExt},
+    types::Type,
     value::{EitherStr, Value},
 };
 
@@ -1427,18 +1428,22 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Literal::None => self.code.emit(Opcode::LoadNone),
             Literal::Bool(true) => self.code.emit(Opcode::LoadTrue),
             Literal::Bool(false) => self.code.emit(Opcode::LoadFalse),
-            Literal::Int(n) => {
-                // Use LoadSmallInt for values that fit in i8
-                if let Ok(small) = i8::try_from(*n) {
-                    self.code.emit_i8(Opcode::LoadSmallInt, small)
-                } else {
-                    let idx = self.code.add_const(Value::from(*literal))?;
-                    self.code.emit_u16(Opcode::LoadConst, idx)
+            Literal::Int(n) if let Ok(small) = i8::try_from(*n) => self.code.emit_i8(Opcode::LoadSmallInt, small),
+            // `Xj` is `complex(0.0, X)`: a complex value lives on the heap, so it
+            // is built by a constructor call rather than loaded from the pool.
+            Literal::Complex(imag) => {
+                for part in [0.0, *imag] {
+                    let idx = self.code.add_const(Value::Float(part))?;
+                    self.code.emit_u16(Opcode::LoadConst, idx)?;
                 }
+                let type_id = Type::Complex
+                    .callable_to_u8()
+                    .expect("complex is a callable builtin type");
+                self.code.emit_call_builtin_type(type_id, 2)
             }
-            // For Float, Str, Bytes, Ellipsis - use LoadConst with Value::from
             _ => {
-                let idx = self.code.add_const(Value::from(*literal))?;
+                let value = literal.into_const().expect("every other literal has a constant form");
+                let idx = self.code.add_const(value)?;
                 self.code.emit_u16(Opcode::LoadConst, idx)
             }
         }

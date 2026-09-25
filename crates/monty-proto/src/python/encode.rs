@@ -4,7 +4,7 @@
 use std::{collections::HashMap, vec::IntoIter};
 
 use monty_types::{
-    MontyDate, MontyException, MontyObject, MontyUuid,
+    MontyComplex, MontyDate, MontyException, MontyObject, MontyUuid,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -13,8 +13,8 @@ use pyo3::{
     intern,
     prelude::*,
     types::{
-        PyBool, PyBytes, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDict, PyFloat, PyFrozenSet, PyInt, PyList,
-        PyModule, PySet, PyString, PyTime, PyTuple, PyType,
+        PyBool, PyBytes, PyComplex, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDict, PyFloat, PyFrozenSet, PyInt,
+        PyList, PyModule, PySet, PyString, PyTime, PyTuple, PyType,
     },
 };
 
@@ -173,6 +173,11 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             }
         } else if let Ok(float) = obj.cast::<PyFloat>() {
             Ok(self.leaf(MontyNode::Float(float.extract()?)))
+        } else if let Ok(complex) = obj.cast::<PyComplex>() {
+            Ok(self.leaf(MontyNode::Complex(MontyComplex {
+                real: complex.real(),
+                imag: complex.imag(),
+            })))
         } else if let Ok(string) = obj.cast::<PyString>() {
             Ok(self.leaf(MontyNode::String(string.extract()?)))
         } else if let Ok(bytes) = obj.cast::<PyBytes>() {

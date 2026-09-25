@@ -15,7 +15,7 @@ use crate::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
         Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
-        date, datetime,
+        complex, date, datetime,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::{INT_MAX_STR_DIGITS, bigint_to_f64_checked},
@@ -62,6 +62,7 @@ pub enum Type {
     Bool,
     Int,
     Float,
+    Complex,
     Range,
     Slice,
     /// The four `datetime` classes are qualified like `collections.deque`:
@@ -356,6 +357,7 @@ impl Type {
             Self::Bool => Some("bool"),
             Self::Int => Some("int"),
             Self::Float => Some("float"),
+            Self::Complex => Some("complex"),
             Self::Str => Some("str"),
             Self::Bytes => Some("bytes"),
             Self::List => Some("list"),
@@ -386,6 +388,7 @@ impl Type {
             "bool" => Some(Self::Bool),
             "int" => Some(Self::Int),
             "float" => Some(Self::Float),
+            "complex" => Some(Self::Complex),
             "str" => Some(Self::Str),
             "bytes" => Some(Self::Bytes),
             "list" => Some(Self::List),
@@ -522,6 +525,7 @@ impl Type {
             Self::Slice => Some(11),
             Self::Iterator => Some(12),
             Self::Path => Some(13),
+            Self::Complex => Some(14),
             _ => None,
         }
     }
@@ -546,6 +550,7 @@ impl Type {
             11 => Some(Self::Slice),
             12 => Some(Self::Iterator),
             13 => Some(Self::Path),
+            14 => Some(Self::Complex),
             _ => None,
         }
     }
@@ -581,6 +586,9 @@ impl Type {
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
+            (Self::Complex, Some(StaticStrings::FromNumber)) => {
+                complex::class_from_number(vm, args).map(CallResult::Value)
+            }
             (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
@@ -751,6 +759,8 @@ impl Type {
             | Self::ItertoolsGrouper
             | Self::ItertoolsTee
             | Self::ItertoolsTeeDataObject => itertools::construct(self, vm, args),
+
+            Self::Complex => complex::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),

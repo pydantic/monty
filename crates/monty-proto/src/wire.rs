@@ -32,8 +32,8 @@ use std::{
 };
 
 use monty_types::{
-    BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime,
-    MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, SourceRange,
+    BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyComplex, MontyDate,
+    MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, SourceRange,
     unstable::{self, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -338,6 +338,7 @@ mod tag {
     pub const FILE_HANDLE: u32 = 28;
     pub const REPR: u32 = 29;
     pub const CYCLE: u32 = 30;
+    pub const COMPLEX: u32 = 31;
 }
 
 // ============================================================================
@@ -393,6 +394,7 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
         MontyNode::Int(i) => encoding::sint64::encode(tag::INT, i, buf),
         MontyNode::BigInt(bi) => encoding::message::encode(tag::BIGINT, &bigint_to_proto(bi), buf),
         MontyNode::Float(f) => encoding::double::encode(tag::FLOAT, f, buf),
+        MontyNode::Complex(c) => encoding::message::encode(tag::COMPLEX, &complex_to_proto(c), buf),
         MontyNode::String(s) => encoding::string::encode(tag::STR, s, buf),
         MontyNode::Bytes(b) => encoding::bytes::encode(tag::BYTES, b, buf),
         MontyNode::List(ids) => encode_indexes(tag::LIST, ids, buf),
@@ -486,6 +488,7 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Int(i) => encoding::sint64::encoded_len(tag::INT, i),
         MontyNode::BigInt(bi) => encoding::message::encoded_len(tag::BIGINT, &bigint_to_proto(bi)),
         MontyNode::Float(f) => encoding::double::encoded_len(tag::FLOAT, f),
+        MontyNode::Complex(c) => encoding::message::encoded_len(tag::COMPLEX, &complex_to_proto(c)),
         MontyNode::String(s) => encoding::string::encoded_len(tag::STR, s),
         MontyNode::Bytes(b) => encoding::bytes::encoded_len(tag::BYTES, b),
         MontyNode::List(ids) => submessage_len(tag::LIST, packed_ids_len(1, ids)),
@@ -823,6 +826,10 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         Kind::Boolean(value) => MontyNode::Bool(value),
         Kind::Int(value) => MontyNode::Int(value),
         Kind::Float(value) => MontyNode::Float(value),
+        Kind::Complex(value) => MontyNode::Complex(MontyComplex {
+            real: value.real,
+            imag: value.imag,
+        }),
         Kind::Str(value) => MontyNode::String(value),
         Kind::Bytes(value) => MontyNode::Bytes(value.into_inner()),
         Kind::List(value) => MontyNode::List(value.0.into_inner()),
@@ -1153,6 +1160,13 @@ fn time_from_proto(t: pb::Time) -> Result<MontyTime, ProtoConvertError> {
         timezone_name: t.timezone_name,
         fold: ranged_u8(t.fold, 0..=1, "Time.fold")?,
     })
+}
+
+fn complex_to_proto(c: &MontyComplex) -> pb::Complex {
+    pb::Complex {
+        real: c.real,
+        imag: c.imag,
+    }
 }
 
 fn timedelta_to_proto(td: &MontyTimeDelta) -> pb::TimeDelta {

@@ -21,7 +21,9 @@ use num_bigint::BigInt;
 use crate::{
     builtins::BuiltinsFunctions,
     exceptions::ExcType,
-    object::{MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType},
+    object::{
+        MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType,
+    },
     uuid::MontyUuid,
 };
 
@@ -68,6 +70,8 @@ pub enum MontyNode {
     BigInt(BigInt),
     /// Python float.
     Float(f64),
+    /// Python complex.
+    Complex(MontyComplex),
     /// Python string.
     String(String),
     /// Python bytes.
@@ -293,6 +297,7 @@ impl PartialEq for MontyNode {
             (Self::Int(a), Self::Int(b)) => a == b,
             (Self::BigInt(a), Self::BigInt(b)) => a == b,
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
+            (Self::Complex(a), Self::Complex(b)) => a.bits_eq(b),
             (Self::String(a), Self::String(b))
             | (Self::Path(a), Self::Path(b))
             | (Self::Repr(a), Self::Repr(b))
@@ -503,6 +508,7 @@ impl MontyGraph {
             MontyNode::Bool(_) => "bool",
             MontyNode::Int(_) | MontyNode::BigInt(_) => "int",
             MontyNode::Float(_) => "float",
+            MontyNode::Complex(_) => "complex",
             MontyNode::String(_) => "str",
             MontyNode::Bytes(_) => "bytes",
             MontyNode::List(_) => "list",

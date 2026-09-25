@@ -11,13 +11,6 @@ fn get_parse_err(code: impl Into<String>) -> MontyException {
 }
 
 #[test]
-fn complex_numbers_return_not_implemented_error() {
-    let err = get_parse_err("1 + 2j");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support complex constants");
-}
-
-#[test]
 fn yield_expressions_return_not_implemented_error() {
     let err = get_parse_err("def foo():\n    yield 1");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
@@ -221,13 +214,13 @@ fn async_with_statement_returns_not_implemented_error() {
 #[test]
 fn error_display_format() {
     // Verify the Display format matches Python's exception output with traceback
-    let err = get_parse_err("1 + 2j");
+    let err = get_parse_err("type Alias = int");
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
       File "test.py", line 1, in <module>
-        1 + 2j
-            ~~
-    NotImplementedError: The monty syntax parser does not yet support complex constants
+        type Alias = int
+        ~~~~~~~~~~~~~~~~
+    NotImplementedError: The monty syntax parser does not yet support type aliases
     "#);
 }
 
