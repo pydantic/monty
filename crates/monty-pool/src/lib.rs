@@ -56,8 +56,9 @@ pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Workers spawned eagerly at pool creation and kept warm. Forced to 0 for
-    /// the [`MontyTransport::Websocket`] transport (connections are made
+    /// Floor on live workers: spawned at pool creation, and replaced in the
+    /// background whenever one is recycled, crashes or is discarded. Forced to
+    /// 0 for the [`MontyTransport::Websocket`] transport (connections are made
     /// per-checkout, not pre-warmed).
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait.
@@ -92,7 +93,9 @@ pub struct PoolConfig {
     /// that whole limit plus this, the turn clock starting at zero.
     pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
-    /// bound the impact of any slow leak in a long-lived child.
+    /// bound the impact of any slow leak in a long-lived child. `Some(1)` with
+    /// `min_processes > 0` gives every session a fresh process that was
+    /// spawned before it asked — the setting for mutually untrusted callers.
     pub max_checkouts_per_worker: Option<u32>,
     /// Resume a session transparently when a relay that stores sessions answers
     /// a request with `Shutdown`: the checkout redials, reloads the state the

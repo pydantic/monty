@@ -3,15 +3,16 @@
 use std::{
     mem,
     pin::pin,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
     time::Duration,
 };
 
 use futures_util::future::join_all;
 use monty_proto::pb;
 use tokio::{
+    runtime::Handle,
     sync::Notify,
-    time::{Instant, timeout_at},
+    time::{Instant, sleep_until, timeout_at},
 };
 
 use crate::{
@@ -22,10 +23,10 @@ use crate::{
 
 /// An elastic pool of `monty subprocess` workers.
 ///
-/// `min_processes` workers spawn eagerly so the first checkout is fast;
-/// further workers spawn on demand up to `max_processes`, and dead workers
-/// are detected and replaced transparently. See the crate docs for the full
-/// lifecycle.
+/// `min_processes` workers spawn eagerly so the first checkout is fast, and
+/// are replaced in the background whenever one is recycled, crashes or is
+/// discarded; further workers spawn on demand up to `max_processes`. See the
+/// crate docs for the full lifecycle.
 ///
 /// `Pool` is safe to share across tasks and threads. [`Pool::close`] asks idle
 /// workers to exit cleanly; merely dropping the pool kills them instead (via
@@ -44,12 +45,25 @@ pub(crate) struct PoolInner {
     /// Signalled whenever a worker returns to the idle queue or capacity is
     /// released, waking blocked `checkout` calls.
     available: Notify,
+    /// Handed to refill tasks, which must not keep a dropped pool alive.
+    this: Weak<Self>,
+    /// Where refills are spawned: departures are recorded from `Drop` impls,
+    /// which may run on a thread outside any runtime (e.g. Python's GC).
+    runtime: Handle,
 }
 
 struct PoolState {
     idle: Vec<Worker>,
     /// Live workers: idle + checked out + currently being spawned.
     total: usize,
+    /// Set by [`Pool::close`] or dropping the [`Pool`]: stops refills, and a
+    /// refill landing afterwards kills its worker.
+    closed: bool,
+    /// Consecutive failed refills, sizing the backoff before the next one.
+    refill_failures: u32,
+    /// Refills are suspended until this deadline; `Some` also means the one
+    /// retry task is armed.
+    retry_at: Option<Instant>,
 }
 
 impl Pool {
@@ -73,10 +87,18 @@ impl Pool {
         }
         let total = idle.len();
         let pool = Self {
-            inner: Arc::new(PoolInner {
+            inner: Arc::new_cyclic(|this| PoolInner {
                 config,
-                state: Mutex::new(PoolState { idle, total }),
+                state: Mutex::new(PoolState {
+                    idle,
+                    total,
+                    closed: false,
+                    refill_failures: 0,
+                    retry_at: None,
+                }),
                 available: Notify::new(),
+                this: this.clone(),
+                runtime: Handle::current(),
             }),
         };
         let workers = worker_count(total);
@@ -118,7 +140,8 @@ impl Pool {
     }
 
     /// Asks idle workers to exit cleanly and reaps them, capping the wait per
-    /// worker. Sessions still checked out keep their workers until they finish.
+    /// worker. Sessions still checked out keep their workers until they finish,
+    /// and are not replaced once they leave.
     ///
     /// Optional: dropping the pool kills idle workers instead, which is just
     /// as safe — this only trades a SIGKILL for a clean protocol goodbye.
@@ -132,6 +155,7 @@ impl Pool {
         // leaking capacity the pool can never recover.
         let mut idle: Vec<_> = {
             let mut state = lock_ignore_poison(&self.inner.state);
+            state.closed = true;
             mem::take(&mut state.idle)
         }
         .into_iter()
@@ -170,6 +194,14 @@ impl Pool {
             .iter()
             .filter_map(Worker::pid)
             .collect()
+    }
+}
+
+impl Drop for Pool {
+    /// `Pool` is the only handle that can check out, so once it is gone live
+    /// checkouts must not refill a pool nobody can use.
+    fn drop(&mut self) {
+        lock_ignore_poison(&self.inner.state).closed = true;
     }
 }
 
@@ -228,7 +260,7 @@ impl PoolInner {
                 let mut removed_idle = 0;
                 if !websocket {
                     // discard workers that died while idle — their replacement
-                    // is the spawn below or a later checkout's spawn
+                    // is the spawn below or a background refill
                     while let Some(mut worker) = state.idle.pop() {
                         removed_idle += 1;
                         if worker.is_dead() {
@@ -252,6 +284,9 @@ impl PoolInner {
                 }
                 let spawned = i64::from(below_cap);
                 self.record_worker_delta(spawned - worker_count(died_idle), -worker_count(removed_idle));
+                if died_idle > 0 {
+                    self.replenish();
+                }
                 if let Some(worker) = reused {
                     *outcome = if waited { "waited" } else { "idle" };
                     return Ok(worker);
@@ -330,13 +365,110 @@ impl PoolInner {
     }
 
     /// Records the death/retirement of a worker, freeing capacity for a
-    /// future spawn.
+    /// future spawn, and refills towards `min_processes`.
     pub(crate) fn release_capacity(&self) {
         lock_ignore_poison(&self.state).total -= 1;
         self.available.notify_one();
         self.record_worker_delta(-1, 0);
+        self.replenish();
+    }
+
+    /// Spawns background workers until `min_processes` are live, reserving
+    /// their capacity first so a racing checkout can never overshoot
+    /// `max_processes`. Does nothing once closed or while refills back off.
+    fn replenish(&self) {
+        if self.config.transport.is_websocket() {
+            return;
+        }
+        let wanted = {
+            let mut state = lock_ignore_poison(&self.state);
+            if state.closed || state.retry_at.is_some() {
+                0
+            } else {
+                let floor = self.config.min_processes.min(self.config.max_processes);
+                let wanted = floor.saturating_sub(state.total);
+                state.total += wanted;
+                wanted
+            }
+        };
+        if wanted > 0 {
+            self.record_worker_delta(worker_count(wanted), 0);
+            for _ in 0..wanted {
+                // a task the runtime drops mid-spawn (at its shutdown) loses its
+                // slot, which only matters to a pool that is going away anyway
+                self.runtime.spawn(refill_one(self.this.clone(), self.config.clone()));
+            }
+        }
+    }
+
+    /// Records a failed refill and arms the one retry task, whose delay
+    /// doubles with each consecutive failure so a broken binary cannot become
+    /// a spawn loop. Must run before the failed slot is released, since that
+    /// release would otherwise start the next refill at once.
+    fn refill_failed(&self) {
+        let retry_at = {
+            let mut state = lock_ignore_poison(&self.state);
+            state.refill_failures = state.refill_failures.saturating_add(1);
+            if state.retry_at.is_some() {
+                None
+            } else {
+                let at = Instant::now() + refill_backoff(state.refill_failures);
+                state.retry_at = Some(at);
+                Some(at)
+            }
+        };
+        if let Some(at) = retry_at {
+            let pool = self.this.clone();
+            self.runtime.spawn(async move {
+                sleep_until(at).await;
+                if let Some(pool) = pool.upgrade() {
+                    lock_ignore_poison(&pool.state).retry_at = None;
+                    pool.replenish();
+                }
+            });
+        }
+        self.count_termination("refill_failed");
+        self.release_capacity();
     }
 }
+
+/// Spawns one worker into a slot [`PoolInner::replenish`] reserved.
+///
+/// Holds only a `Weak` across the spawn, so an in-flight refill never keeps a
+/// dropped pool alive; its worker is then killed on drop.
+async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig) {
+    let worker = Worker::new(&config, &[]).await;
+    let Some(pool) = pool.upgrade() else { return };
+    match worker {
+        Ok(worker) => {
+            let mut state = lock_ignore_poison(&pool.state);
+            if state.closed {
+                drop(state);
+                drop(worker);
+                pool.count_termination("closed");
+                pool.release_capacity();
+            } else {
+                state.refill_failures = 0;
+                state.idle.push(worker);
+                drop(state);
+                pool.available.notify_one();
+                pool.record_worker_delta(0, 1);
+            }
+        }
+        Err(_) => pool.refill_failed(),
+    }
+}
+
+/// Delay before the refill following `failures` consecutive failed ones.
+fn refill_backoff(failures: u32) -> Duration {
+    let factor = 1u32.checked_shl(failures.saturating_sub(1)).unwrap_or(u32::MAX);
+    REFILL_BACKOFF_MIN.saturating_mul(factor).min(REFILL_BACKOFF_MAX)
+}
+
+/// First delay after a failed refill.
+const REFILL_BACKOFF_MIN: Duration = Duration::from_millis(100);
+/// Ceiling on the doubling refill backoff.
+const REFILL_BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 #[cfg(feature = "telemetry")]
 impl Drop for PoolInner {
