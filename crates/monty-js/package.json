@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0",
   "type": "module",
   "description": "Python sandbox running in crash-isolated subprocess workers",
   "main": "dist/index.js",
@@ -105,10 +105,10 @@
     "arrowParens": "always"
   },
   "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "1.0.0-beta.3",
-    "@pydantic/monty-darwin-arm64": "1.0.0-beta.3",
-    "@pydantic/monty-linux-x64-gnu": "1.0.0-beta.3",
-    "@pydantic/monty-linux-arm64-gnu": "1.0.0-beta.3",
-    "@pydantic/monty-win32-x64-msvc": "1.0.0-beta.3"
+    "@pydantic/monty-darwin-x64": "1.0.0",
+    "@pydantic/monty-darwin-arm64": "1.0.0",
+    "@pydantic/monty-linux-x64-gnu": "1.0.0",
+    "@pydantic/monty-linux-arm64-gnu": "1.0.0",
+    "@pydantic/monty-win32-x64-msvc": "1.0.0"
   }
 }
