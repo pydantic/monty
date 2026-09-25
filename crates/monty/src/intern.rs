@@ -734,6 +734,8 @@ pub enum StaticStrings {
     Combine,
     /// `unicodedata.combining()` function.
     Combining,
+    /// `field(compare=...)`.
+    Compare,
     /// `re.compile()` function
     Compile,
     /// `itertools.compress()` function.
@@ -846,6 +848,8 @@ pub enum StaticStrings {
     Discard,
     /// `math.dist()` function.
     Dist,
+    /// `field(doc=...)`, CPython's per-field docstring.
+    Doc,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
     /// `re.DOTALL` flag
@@ -969,6 +973,8 @@ pub enum StaticStrings {
     /// `repr()`/`str()` text of `False`, interned so rendering allocates nothing.
     #[strum(serialize = "False")]
     FalseRepr,
+    /// `dataclasses.field()` function, and the `Field` type name.
+    Field,
     /// `namedtuple(field_names=...)` keyword argument.
     #[strum(serialize = "field_names")]
     FieldNames,
@@ -1087,6 +1093,8 @@ pub enum StaticStrings {
     Grouper,
     /// `match.groups()` method
     Groups,
+    /// `field(hash=...)`.
+    Hash,
     /// `sys.flags.hash_randomization` field.
     HashRandomization,
     /// `header` parameter of the `binascii` quoted-printable pair.
@@ -1340,6 +1348,8 @@ pub enum StaticStrings {
     Maxunicode,
     /// `memo` parameter of `copy.deepcopy()`.
     Memo,
+    /// `field(metadata=...)`.
+    Metadata,
     /// `sys.version_info.micro` field.
     Micro,
     /// `datetime` / `time` `microsecond` attribute and constructor kwarg.
@@ -1361,6 +1371,10 @@ pub enum StaticStrings {
     Minute,
     /// `timedelta(minutes=...)` constructor kwarg.
     Minutes,
+    /// `dataclasses.MISSING` — the sentinel for an argument not given, since
+    /// `None` is a legitimate default.
+    #[strum(serialize = "MISSING")]
+    Missing,
     /// `Path.mkdir()` and `os.mkdir()` — yields a host call.
     Mkdir,
     /// `time.mktime()` function.
@@ -1530,6 +1544,9 @@ pub enum StaticStrings {
     Population,
     /// Value of `os.name`.
     Posix,
+    /// `__post_init__` — the hook the synthesized `__init__` calls last.
+    #[strum(serialize = "__post_init__")]
+    PostInit,
     /// `math.pow()` function.
     Pow,
     /// `sys.prefix` attribute.
