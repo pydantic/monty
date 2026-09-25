@@ -284,7 +284,7 @@ impl Complex {
             let at = self.imag.atan2(self.real);
             let mut phase = at * exp.real;
             if exp.imag != 0.0 {
-                len /= (at * exp.imag).exp();
+                len *= (-at * exp.imag).exp();
                 phase += exp.imag * vabs.ln();
             }
             Some(Self::new(len * phase.cos(), len * phase.sin()))
@@ -438,7 +438,7 @@ impl FromValue for Part {
 
 /// `complex.from_number(x)`: a number or complex, never a string.
 pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("from_number", vm.heap)?;
+    let value = args.get_one_arg("complex.from_number", vm.heap)?;
     if let Value::Ref(id) = &value
         && matches!(vm.heap.get(*id), HeapData::Complex(_))
     {
