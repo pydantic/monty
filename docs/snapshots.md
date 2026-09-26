@@ -346,6 +346,11 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
     not from the `checkout()` that restored it.
+    That includes the module stubs a type-checked session was given; the restoring `checkout()`'s
+    `type_check_module_stubs` are ignored, and its `mcp_servers` are only what the serving relay connects to.
+- **A host module is a host object.** `import tools` binds whatever the host answered with, which does not travel
+    either, so calls into a module imported before the dump fail like calls on any restored host object;
+    an `import` after the restore asks the host afresh.
 - **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
     come back as [`MontyClassProxy`][pydantic_monty.MontyClassProxy] (a host class, `type(x)` included, as [`MontyClassTypeProxy`][pydantic_monty.MontyClassTypeProxy] in Python and as a plain
     `{ __monty_type__: 'Type', ... }` marker in JavaScript), method calls on them

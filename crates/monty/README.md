@@ -120,6 +120,8 @@ Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
 
+An `import` of a module the sandbox does not have is a `FunctionCall` too, named `monty_types::IMPORT_FUNCTION` (`__import__`) with the module name as its one argument. The value the host resumes with is bound as the module, usually a host-backed class instance whose attributes are the tools; `ExtFunctionResult::NotFound` raises `ModuleNotFoundError`, and a run with no host raises it as before.
+
 ## Other pieces
 
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.

@@ -482,6 +482,8 @@ process. The Python and JavaScript APIs do not offer an in-process execution mod
 full host access, relying on deployment isolation — a container or VM per session — rather than on the interpreter.
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the
 other end.
+The same applies to the MCP servers a remote server connects to for a session: their tool results are host values the
+server answers with, and their tool descriptions reach the model through `get_types()`.
 
 ### Pin the worker binary
 

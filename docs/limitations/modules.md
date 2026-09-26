@@ -75,3 +75,21 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 the vendored stubs (e.g. `@abstractmethod` on protocol members), so they have
 to resolve during type checking. Importing them therefore type-checks clean but
 still raises `ModuleNotFoundError` at runtime.
+
+## Host modules
+
+An `import` of a module in none of the lists above asks the host for it, as the external function call `__import__`
+with the module name as its argument, instead of raising `ModuleNotFoundError` outright.
+The host binds whatever value it answers with (in the bindings, the matching `external_modules` entry), so:
+
+- the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr, and `dir(m)`,
+    `m.__name__` and `m.__dict__` follow host-object rules (dunder attributes raise `AttributeError`);
+- a missing attribute raises `AttributeError: 'm' object has no attribute 'x'`, naming the host class rather than
+    CPython's `module 'm' has no attribute 'x'`;
+- every `import` statement asks again, since there is no `sys.modules` cache, and an import inside a function asks on
+    each call;
+- a host that answers with not-found raises CPython's `ModuleNotFoundError: No module named 'm'`, and one that raises
+    raises that exception at the import;
+- `from m import x` reads `x` from the answered value, raising `ImportError: cannot import name 'x' from 'm' (unknown   location)` when it has no such attribute, whether the attribute was sent with the object or looked up lazily.
+
+A run with no host, `monty run` included, still raises `ModuleNotFoundError` for every unknown module.
