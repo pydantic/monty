@@ -1,0 +1,33 @@
+crates/monty-proto/src/wire.rs
+  s_b3020d5902d626::t_94541b1eda8e6f 36,171,183,194,222,224,270,278,280-281,294
+  s_b3020d5902d626::t_f679981ea8bca4 169-170,279
+  s_b3020d5902d626::t_945082cb67ec05 271,274-275,277
+  s_b3020d5902d626::t_7a9344d44eec97 272-273,276
+crates/monty-proto/tests/differential.rs
+  s_b3020d5902d626::t_fd2bf43e36d029 23-25
+  s_b3020d5902d626::t_d532919658989b 507-514,523,549,560,580,592,1121-1135
+  s_b3020d5902d626::t_7d6aa12d21d415 1136,1138,1140-1143,1155-1157,1161-1165,1168-1170,1172-1175,1203
+  s_b3020d5902d626::t_7a9344d44eec97 1137,1139,1146-1154,1158-1160,1166-1167,1171,19,1176-1198,1200-1202
+  s_b3020d5902d626::t_4252f6f8f5f484 1144-1145
+  s_b3020d5902d626::t_32a78c66abdb5f 18,1199
+crates/monty-proto/src/convert/exception.rs
+  s_b3020d5902d626::t_94541b1eda8e6f 7-9,242-251,271,257
+  s_b3020d5902d626::t_f679981ea8bca4 264-270,272-274,256,260
+  s_b3020d5902d626::t_7a9344d44eec97 252-255,258-259,261-263
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "70f2a70e6e84d1c078b2732084cdba4d6ffed66c",
+  "prompts": {},
+  "sessions": {
+    "s_b3020d5902d626": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a564b0fb-b4c3-44c8-aa72-1544620ee3bb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

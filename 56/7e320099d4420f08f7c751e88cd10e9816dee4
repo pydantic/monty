@@ -1,0 +1,24 @@
+crates/monty-pool/src/telemetry/tracing.rs
+  s_b3020d5902d626::t_7d6aa12d21d415 660-666,668,679-680,692,705-706
+  s_b3020d5902d626::t_08bf544f1ff70a 1055,1064-1071,1152,1210,1219,1352,690-691,703-704
+  s_b3020d5902d626::t_3f0e4f69ff9d9d 19,302,332,353,682,684,693,697,709,1187
+  s_b3020d5902d626::t_ce29547082fa4c 675-678,686-689,695-696,699-702
+crates/monty-python/tests/test_telemetry.py
+  s_b3020d5902d626::t_3f0e4f69ff9d9d 335-336,342-343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "567e320099d4420f08f7c751e88cd10e9816dee4",
+  "prompts": {},
+  "sessions": {
+    "s_b3020d5902d626": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a564b0fb-b4c3-44c8-aa72-1544620ee3bb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
