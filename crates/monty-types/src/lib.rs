@@ -61,6 +61,7 @@ pub use crate::{
     run_options::{AssertMessageAnnotations, CompileOptions, SOURCE_SCAN_THRESHOLD},
     type_checking::{
         ModuleStub, ModuleStubError, RESERVED_MODULE_NAMES, TypeCheckState, TypeCheckingConfig, TypeCheckingFormat,
+        validate_module_name,
     },
     uuid::MontyUuid,
     virtual_path::{normalize_virtual_path, validate_cwd},

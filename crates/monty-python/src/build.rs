@@ -8,7 +8,7 @@
 
 use monty_pool::McpServer;
 use monty_proto::python::{GraphEncoder, InstanceStore, exc_py_to_monty};
-use monty_types::{ExcType, ModuleStub, MontyException, NamedValues, StringRepr, unstable};
+use monty_types::{ExcType, ModuleStub, MontyException, NamedValues, StringRepr, unstable, validate_module_name};
 use pyo3::{
     exceptions::{PyKeyError, PyTypeError, PyValueError},
     prelude::*,
@@ -89,6 +89,9 @@ pub(crate) fn extract_mcp_servers(servers: Option<&Bound<'_, PyAny>>) -> PyResul
             .cast::<PyMapping>()
             .map_err(|_| PyTypeError::new_err("each mcp_servers entry must be a mapping with 'module' and 'url'"))?;
         let module: String = mcp_server_field(server, "module")?.extract()?;
+        // the rule the server applies, so a bad name fails here rather than there
+        validate_module_name(&module)
+            .map_err(|err| PyValueError::new_err(format!("invalid mcp_servers entry: {err}")))?;
         let url: String = mcp_server_field(server, "url")?.extract()?;
         let headers = match server.get_item("headers") {
             Ok(headers) if !headers.is_none() => headers
@@ -107,11 +110,16 @@ pub(crate) fn extract_mcp_servers(servers: Option<&Bound<'_, PyAny>>) -> PyResul
     Ok(extracted)
 }
 
-/// A required key of one `mcp_servers` entry.
+/// A required key of one `mcp_servers` entry; only its absence is rewritten,
+/// so a mapping whose `__getitem__` raises something else reports that.
 fn mcp_server_field<'py>(server: &Bound<'py, PyMapping>, key: &str) -> PyResult<Bound<'py, PyAny>> {
-    server
-        .get_item(key)
-        .map_err(|_| PyValueError::new_err(format!("an mcp_servers entry is missing its '{key}'")))
+    server.get_item(key).map_err(|err| {
+        if err.is_instance_of::<PyKeyError>(server.py()) {
+            PyValueError::new_err(format!("an mcp_servers entry is missing its '{key}'"))
+        } else {
+            err
+        }
+    })
 }
 
 /// Extracts the `inputs` dict into the named values of a feed: one arena for

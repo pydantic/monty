@@ -1540,13 +1540,6 @@ pub(crate) trait ExcTypeExt: Sized {
         })
     }
 
-    /// The `ModuleNotFoundError` an `import` raises when the host answers its
-    /// `__import__` call with `not_found`, as a host-level exception.
-    #[must_use]
-    fn module_not_found_exception(module_name: &str) -> MontyException {
-        MontyException::new(ExcType::ModuleNotFoundError, Some(no_module_named(module_name)))
-    }
-
     /// Creates a NotImplementedError for an unimplemented Python feature.
     ///
     /// For syntax Monty cannot parse ("The monty syntax parser does not yet support
@@ -2616,14 +2609,11 @@ impl From<SimpleException> for ExceptionRaise {
 
 impl From<MontyException> for ExceptionRaise {
     fn from(exc: MontyException) -> Self {
-        // A host raises these answering an `import`, whose statement CPython
-        // renders without carets (as the in-sandbox import errors do).
-        let hide_caret = matches!(exc.exc_type(), ExcType::ImportError | ExcType::ModuleNotFoundError);
         Self {
             exc: exc.into(),
             frame: None,
             snippet_frame: None,
-            hide_caret,
+            hide_caret: false,
         }
     }
 }

@@ -38,6 +38,13 @@ def test_import_binds_the_host_module(pool: Monty, tools: Any):
         assert session.feed_run(CODE, external_modules={'tools': tools}) == snapshot([3, 'ab', 3])
 
 
+def test_a_dotted_module_name(pool: Monty):
+    """A module's own name may hold dots; the attribute a call names never does."""
+    with pool.checkout() as session:
+        code = 'from pkg.tools import add\nadd(1, 2)'
+        assert session.feed_run(code, external_modules={'pkg.tools': TOOLS}) == snapshot(3)
+
+
 def test_the_module_object(pool: Monty):
     code = 'import tools\nimport tools as t\n[tools.add is t.add, type(tools).__name__, hasattr(tools, "nope")]'
     with pool.checkout() as session:
@@ -115,8 +122,8 @@ def test_module_stubs_type_check_and_get_types(pool: Monty):
 @pytest.mark.parametrize(
     ('module', 'message'),
     [
-        ('json', snapshot('module "json" is provided by the sandbox and cannot take a stub')),
-        ('1tools', snapshot('module stub name "1tools" is not a valid identifier')),
+        ('json', snapshot('module "json" is provided by the sandbox and cannot be replaced')),
+        ('1tools', snapshot('module name "1tools" is not a valid identifier')),
     ],
 )
 def test_invalid_module_stub_names(pool: Monty, module: str, message: str):

@@ -103,13 +103,16 @@ class BaseWrapper:
         """Calls a method on the wrapped instance for the sandbox.
 
         Raises `AttributeError` when `name` is not exposed by `allowed_methods`
-        or fails `method_allowed`. `__call__` is always rejected on instances —
-        only `ClassType` accepts it (as construction) — so even
-        `allowed_methods='all'` cannot invoke the instance itself. The return
+        or fails `method_allowed`. Calling the instance itself, which the
+        sandbox sends as `__call__`, raises `TypeError` as for any value that
+        is not callable: only `ClassType` accepts `__call__` (as construction),
+        so even `allowed_methods='all'` cannot invoke the instance. The return
         value passes through `convert_value` before crossing back; a coroutine
         result defers conversion until awaited.
         """
-        if name == '__call__' or not self.method_allowed(name):
+        if name == '__call__':
+            raise TypeError(f'{type(self.value).__name__!r} object is not callable')
+        if not self.method_allowed(name):
             raise self.attr_error(name)
         method = self.get_attr(name, self.allowed_methods)
         result = method(*args, **kwargs)

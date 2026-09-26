@@ -66,7 +66,9 @@ instance.
 an explicit set exposes exactly the names you list.
 Returning the object from sandbox code hands the host back the original object, not a copy.
 Sandbox code may set attributes, on its own copy only: the host object is never touched.
-Calling the instance, `user(...)`, is routed to the host as a `__call__` method call, gated by the same method policy.
+Calling the instance, `user(...)`, suspends a `__call__` method call on it, which the Python and JavaScript wrappers
+answer with `TypeError: 'User' object is not callable`, whatever the method policy; only a host driving the protocol
+itself, such as a serving relay's tool objects, serves it.
 
 ## Lazy attributes
 

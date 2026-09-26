@@ -9,15 +9,16 @@
 use std::mem;
 
 use monty_types::{
-    CallArgs, ExcType, IMPORT_FUNCTION, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall,
-    PrintWriter, ResourceTracker, SourceRange,
+    CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
+    ResourceTracker, SourceRange,
 };
 
 use crate::{
     asyncio::CallId,
     bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
-    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
+    intern::StringId,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
@@ -179,8 +180,7 @@ impl FunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
-        let result = import_answer(&self.function_name, &self.args, result.into());
-        self.snapshot.run(result, print)
+        self.snapshot.run(result.into(), print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` instead of a concrete value.
@@ -906,6 +906,9 @@ pub(crate) fn resume_with_result(
     result: ExtFunctionResult,
     eager_call_id: Option<u32>,
 ) -> Result<FrameExit, RunError> {
+    if let Some(module_id) = vm.suspended_import() {
+        return resume_import(vm, module_id, result, eager_call_id);
+    }
     // An eager answer and a future both register the call's future; the
     // eager one settles it in the same step.
     let future_call_id = match (&result, eager_call_id) {
@@ -953,15 +956,35 @@ pub(crate) fn resume_with_result(
     }
 }
 
-/// Maps a host's `not_found` answer to an [`IMPORT_FUNCTION`] call onto the
-/// `ModuleNotFoundError` the import raises; every other answer passes through.
-pub(crate) fn import_answer(function_name: &str, args: &CallArgs, result: ExtFunctionResult) -> ExtFunctionResult {
-    match result {
-        ExtFunctionResult::NotFound(_) if function_name == IMPORT_FUNCTION => {
-            let module = args.args().next().and_then(|arg| arg.as_str()).unwrap_or_default();
-            ExtFunctionResult::Error(ExcType::module_not_found_exception(module))
+/// Resumes a suspended `import <module>` with the host's answer to its
+/// [`IMPORT_FUNCTION`](monty_types::IMPORT_FUNCTION) call: the value becomes the module, `not_found` raises
+/// `ModuleNotFoundError`, an exception is raised at the statement without
+/// carets (as CPython renders import errors), and a future is refused, since
+/// nothing awaits a module into place. A direct call of an undefined
+/// `__import__` never reaches here: it is not suspended at a `LoadModule`.
+fn resume_import(
+    vm: &mut VM<'_>,
+    module_id: StringId,
+    result: ExtFunctionResult,
+    eager_call_id: Option<u32>,
+) -> Result<FrameExit, RunError> {
+    match (result, eager_call_id) {
+        (ExtFunctionResult::Return(obj), None) => vm.resume(obj),
+        (ExtFunctionResult::Error(exc), None) => {
+            let mut raise = ExceptionRaise::from(exc);
+            raise.hide_caret = true;
+            vm.resume_with_exception(RunError::Exc(raise))
         }
-        other => other,
+        (ExtFunctionResult::NotFound(_), None) => {
+            vm.resume_with_exception(ExcType::module_not_found_error(vm.interns.get_str(module_id)))
+        }
+        (ExtFunctionResult::Future(_), _) | (_, Some(_)) => {
+            let message = format!(
+                "import of '{}' cannot be answered with a future",
+                vm.interns.get_str(module_id)
+            );
+            vm.resume_with_exception(SimpleException::new_msg(ExcType::RuntimeError, message).into())
+        }
     }
 }
 

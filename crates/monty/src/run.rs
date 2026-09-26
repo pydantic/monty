@@ -6,14 +6,13 @@ use std::{
 };
 
 use monty_types::{
-    AssertMessageAnnotations, ExcType, ExtFunctionResult, IMPORT_FUNCTION, MontyException, MontyObject, OsFunctionCall,
-    PrintWriter, ResourceTracker,
+    AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall, PrintWriter,
+    ResourceTracker,
 };
 pub use monty_types::{CompileOptions, OsPolicy};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
-    args::ArgValues,
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
@@ -745,10 +744,9 @@ impl Program {
                     if let Some(load_ip) = name_load_ip {
                         vm.set_instruction_ip(load_ip);
                     }
-                    let name = function_name.as_str(vm.interns);
-                    let err = match import_module_name(name, &args, vm) {
-                        Some(module) => ExcType::module_not_found_error(&module, None),
-                        None => ExcType::name_error(name).into(),
+                    let err = match vm.suspended_import() {
+                        Some(module_id) => ExcType::module_not_found_error(vm.interns.get_str(module_id), None),
+                        None => ExcType::name_error(function_name.as_str(vm.interns)).into(),
                     };
                     args.drop_with(vm);
                     frame_exit_result = vm.resume_with_exception(err);
@@ -766,15 +764,6 @@ impl Program {
                 other => return frame_exit_to_object(other, vm),
             }
         }
-    }
-}
-
-/// The module an [`IMPORT_FUNCTION`] call names (its one positional argument);
-/// `None` for any other external call.
-fn import_module_name(function_name: &str, args: &ArgValues, vm: &VM<'_>) -> Option<String> {
-    match args {
-        ArgValues::One(module) if function_name == IMPORT_FUNCTION => module.to_str(vm).ok().map(str::to_owned),
-        _ => None,
     }
 }
 
@@ -811,6 +800,11 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     };
     let error: RunError = match &exit {
         FrameExit::Return(_) => unreachable!("returns are handled above"),
+        // an import nobody serves is a missing module, as in `run_to_completion`
+        FrameExit::ExternalCall { .. } if vm.suspended_import().is_some() => {
+            let module_id = vm.suspended_import().expect("checked by the guard");
+            ExcType::module_not_found_error(vm.interns.get_str(module_id))
+        }
         FrameExit::ExternalCall { function_name, .. } => {
             let function_name = function_name.as_str(vm.interns);
             ExcType::not_implemented(format!(

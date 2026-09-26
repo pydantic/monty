@@ -25,7 +25,7 @@ use minicbor_serde::{
     Deserializer, Serializer,
     error::{DecodeError, EncodeError},
 };
-use monty_types::TypeCheckState;
+use monty_types::{ModuleStub, TypeCheckState};
 use serde::{Deserialize, Serialize, de::Error as _};
 
 use crate::{
@@ -77,6 +77,7 @@ const MIN_PAYLOAD_CAPACITY: usize = 1024;
 pub fn dump(
     script_name: &str,
     type_check: Option<&TypeCheckState>,
+    module_stubs: &[ModuleStub],
     state: SessionRef<'_>,
 ) -> Result<Vec<u8>, DumpEncodeError> {
     /// Borrowed mirror of [`Dump`]; serde encodes it identically.
@@ -84,6 +85,7 @@ pub fn dump(
     struct DumpRef<'a> {
         script_name: &'a str,
         type_check: Option<&'a TypeCheckState>,
+        module_stubs: &'a [ModuleStub],
         state: SessionRef<'a>,
     }
 
@@ -94,6 +96,7 @@ pub fn dump(
     let dump = DumpRef {
         script_name,
         type_check,
+        module_stubs,
         state,
     };
     dump.serialize(&mut Serializer::new(&mut bytes))
@@ -113,6 +116,10 @@ pub struct Dump {
     pub script_name: String,
     /// `Some` when the session was created with type checking enabled.
     pub type_check: Option<TypeCheckState>,
+    /// The stubs of the session's host-provided modules, whether or not it
+    /// type-checks: what a restored session reports as its types.
+    #[serde(default)]
+    pub module_stubs: Vec<ModuleStub>,
     /// The interpreter state, and where it was paused.
     pub state: Session,
 }

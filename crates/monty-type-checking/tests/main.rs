@@ -550,6 +550,9 @@ fn the_prelude_carries_a_committed_import_into_the_next_snippet() {
     assert_snapshot!(wrong.unwrap(), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
 }
 
+/// Imports under a module-level branch, loop, `try` or `with` are carried
+/// (the runtime may have bound them); those in a function or class body are
+/// not, as they bind locally.
 #[test]
 fn top_level_imports_keeps_aliases_and_drops_the_rest() {
     let source = "\
@@ -561,12 +564,37 @@ x = 1
 def f():
     import re
     return re
+class C:
+    import re as class_re
 if x:
     import os
+else:
+    import sys
+for _ in ():
+    import time
+try:
+    import fast
+except ImportError:
+    import slow as fast
+finally:
+    import datetime
+with open('f'):
+    import random
+match x:
+    case 1:
+        import asyncio
 ";
     assert_snapshot!(top_level_imports(source), @r"
     import math, json as j
     from tools import add, sub as minus
+    import os
+    import sys
+    import time
+    import fast
+    import slow as fast
+    import datetime
+    import random
+    import asyncio
     ");
     assert_eq!(top_level_imports("x = (\n"), "");
 }
@@ -579,8 +607,8 @@ fn module_stub_names_are_validated() {
     assert_eq!(stub("a.b"), ModuleStubError::InvalidName("a.b".to_owned()));
     assert_eq!(stub("json"), ModuleStubError::ReservedName("json".to_owned()));
     assert_eq!(stub("builtins"), ModuleStubError::ReservedName("builtins".to_owned()));
-    assert_snapshot!(stub("a.b").to_string(), @r#"module stub name "a.b" is not a valid identifier"#);
-    assert_snapshot!(stub("json").to_string(), @r#"module "json" is provided by the sandbox and cannot take a stub"#);
+    assert_snapshot!(stub("a.b").to_string(), @r#"module name "a.b" is not a valid identifier"#);
+    assert_snapshot!(stub("json").to_string(), @r#"module "json" is provided by the sandbox and cannot be replaced"#);
     assert_eq!(
         ModuleStub::new("stripe_mcp", "x: int\n").unwrap().module(),
         "stripe_mcp"

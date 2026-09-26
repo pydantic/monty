@@ -577,6 +577,9 @@ os.environ = VirtualEnviron()
 
 # The `tools` module iter-mode tests import: the Rust runner answers the
 # sandbox's `__import__('tools')` with a host object carrying these functions.
+# Registered for the whole process, like the names exported below: every
+# CPython case can `import tools`, and the name is not one a case would use
+# for anything else.
 tools = types.ModuleType('tools')
 for _fixture in (add_ints, concat_strings, return_value, get_list, raise_error, async_call, async_fail):
     setattr(tools, _fixture.__name__, _fixture)

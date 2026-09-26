@@ -715,7 +715,8 @@ class MontySession:
             external_modules: Host modules the snippet may `import`, keyed by
                 the module name: a dict, a module or any object whose public
                 attributes become the module's — callables as host functions
-                (coroutines are awaited as in `external_lookup`), other values
+                (a coroutine raises `RuntimeError`, as in `external_lookup`;
+                `AsyncMonty` awaits it), other values
                 converted when imported — or a `ClassInstance` sent as itself.
                 `from <module> import name` works for those attributes. An
                 import of an absent module raises `ModuleNotFoundError`; the
@@ -887,7 +888,8 @@ class MontySession:
 
         Blocks the calling thread with the GIL released, bounded by the pool's
         `request_timeout`; valid while the session is idle or suspended. A
-        server that predates the request ends the session.
+        worker that predates the request refuses it with `MontyRuntimeError`
+        and the session carries on; a server that predates it ends the session.
         """
 
     def install_dependencies(self, requirements: list[str]) -> None:

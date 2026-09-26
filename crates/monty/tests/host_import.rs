@@ -4,8 +4,8 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
-    CompileOptions, ExtFunctionResult, IMPORT_FUNCTION, MontyObject, MontyUuid, NameLookupResult, PrintWriter,
-    ResourceTracker,
+    CompileOptions, ExcType, ExtFunctionResult, IMPORT_FUNCTION, MontyException, MontyObject, MontyUuid,
+    NameLookupResult, PrintWriter, ResourceTracker,
 };
 
 /// Starts `code` as a one-shot run.
@@ -144,4 +144,88 @@ fn a_repl_import_suspends_and_the_module_persists() {
         panic!("expected the snippet to complete");
     };
     assert_eq!(value, MontyObject::int(42));
+}
+
+#[test]
+fn a_future_answer_to_an_import_is_refused() {
+    let call = start("import tools").into_function_call().unwrap();
+    let err = call.resume_pending(PrintWriter::Stdout).unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        import tools
+        ~~~~~~~~~~~~
+    RuntimeError: import of 'tools' cannot be answered with a future
+    "#);
+}
+
+/// A host's exception answering an `import` renders as CPython's import
+/// errors do, without carets; the same exception answering an ordinary call
+/// keeps them.
+#[test]
+fn a_host_exception_hides_its_caret_only_at_an_import() {
+    let boom = || MontyException::new(ExcType::ImportError, Some("boom".to_owned()));
+    let call = start("import tools").into_function_call().unwrap();
+    let err = call
+        .resume(ExtFunctionResult::Error(boom()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        import tools
+    ImportError: boom
+    "#);
+
+    let call = start("fetch()").into_function_call().unwrap();
+    assert_eq!(call.function_name, "fetch");
+    let err = call
+        .resume(ExtFunctionResult::Error(boom()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        fetch()
+        ~~~~~~~
+    ImportError: boom
+    "#);
+}
+
+/// `__import__` is not a builtin: calling it is a call of an undefined name,
+/// which reaches a host as the same `__import__` call an `import` makes but
+/// is not an import, so `not_found` stays a `NameError`.
+#[test]
+fn a_direct_dunder_import_call_is_an_undefined_name() {
+    let err = MontyRun::new(
+        "__import__('nope')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+    .unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        __import__('nope')
+        ~~~~~~~~~~
+    NameError: name '__import__' is not defined
+    "#);
+
+    let call = start("__import__('nope')").into_function_call().unwrap();
+    assert_eq!(call.function_name, IMPORT_FUNCTION);
+    let err = call
+        .resume(
+            ExtFunctionResult::NotFound(IMPORT_FUNCTION.to_owned()),
+            PrintWriter::Stdout,
+        )
+        .unwrap_err();
+    // a host-answered call underlines the whole call, as any undefined name's does
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        __import__('nope')
+        ~~~~~~~~~~~~~~~~~~
+    NameError: name '__import__' is not defined
+    "#);
 }

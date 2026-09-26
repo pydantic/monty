@@ -91,9 +91,6 @@ pub struct TypeCheckState {
     pub pending_snippet: Option<String>,
     /// How diagnostics are rendered by whoever runs the type checker.
     pub config: TypeCheckingConfig,
-    /// Stubs for host-provided modules, one file each, kept for the session.
-    #[serde(default)]
-    pub module_stubs: Vec<ModuleStub>,
     /// The import statements of every committed snippet, re-injected ahead of
     /// the stubs' star import, which does not re-export a `.pyi`'s imports.
     #[serde(default)]
@@ -111,20 +108,14 @@ pub struct ModuleStub {
 }
 
 impl ModuleStub {
-    /// A stub for `module`, refusing a name that is not an identifier or is
-    /// one of [`RESERVED_MODULE_NAMES`].
+    /// A stub for `module`, refusing a name [`validate_module_name`] refuses.
     pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
         let module = module.into();
-        if !is_identifier(&module) {
-            Err(ModuleStubError::InvalidName(module))
-        } else if RESERVED_MODULE_NAMES.contains(&module.as_str()) {
-            Err(ModuleStubError::ReservedName(module))
-        } else {
-            Ok(Self {
-                module,
-                source: source.into(),
-            })
-        }
+        validate_module_name(&module)?;
+        Ok(Self {
+            module,
+            source: source.into(),
+        })
     }
 
     /// The module the stub describes.
@@ -140,7 +131,21 @@ impl ModuleStub {
     }
 }
 
-/// Why a [`ModuleStub`] name was refused.
+/// Refuses a name a host-provided module may not have: not an identifier, or
+/// one of [`RESERVED_MODULE_NAMES`], which the runtime would bind to the
+/// sandbox's own module whatever the host or the checker holds under it. What
+/// [`ModuleStub::new`] checks, for modules that carry no stub of their own.
+pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
+    if !is_identifier(name) {
+        Err(ModuleStubError::InvalidName(name.to_owned()))
+    } else if RESERVED_MODULE_NAMES.contains(&name) {
+        Err(ModuleStubError::ReservedName(name.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+/// Why a host-provided module's name was refused (see [`validate_module_name`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleStubError {
     /// Not a Python identifier, or a keyword.
@@ -152,8 +157,8 @@ pub enum ModuleStubError {
 impl Display for ModuleStubError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidName(name) => write!(f, "module stub name {name:?} is not a valid identifier"),
-            Self::ReservedName(name) => write!(f, "module {name:?} is provided by the sandbox and cannot take a stub"),
+            Self::InvalidName(name) => write!(f, "module name {name:?} is not a valid identifier"),
+            Self::ReservedName(name) => write!(f, "module {name:?} is provided by the sandbox and cannot be replaced"),
         }
     }
 }

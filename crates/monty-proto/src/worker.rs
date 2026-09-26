@@ -471,13 +471,13 @@ impl Child {
             {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
-            // Kept whether or not the session type-checks: `GetTypes` reports them either way.
-            self.module_stubs = match module_stubs_from_proto(&configure.type_check_module_stubs) {
+            // Validated in full before anything is kept, so a refused
+            // `Configure` leaves nothing for a later `GetTypes` to report.
+            let module_stubs = match module_stubs_from_proto(&configure.type_check_module_stubs) {
                 Ok(stubs) => stubs,
                 Err(err) => return protocol_violation(&format!("invalid type_check_module_stubs: {err}")),
             };
-            if let Some(stub) = self
-                .module_stubs
+            if let Some(stub) = module_stubs
                 .iter()
                 .find(|stub| !source_within_nesting_bound(stub.source(), SOURCE_SCAN_THRESHOLD))
             {
@@ -486,6 +486,8 @@ impl Child {
                     stub.module()
                 ));
             }
+            // Kept whether or not the session type-checks: `GetTypes` reports them either way.
+            self.module_stubs = module_stubs;
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
         } else {
@@ -540,7 +542,6 @@ impl Child {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
             config: type_check_config,
-            module_stubs: self.module_stubs.clone(),
             committed_imports: String::new(),
         });
         // Missing field means an older parent; the feature defaults to on.
@@ -780,7 +781,7 @@ impl Child {
             SessionState::Suspended(progress) => SessionRef::Suspended(progress),
             SessionState::Configured(_) => unreachable!("ensure_repl materialized the repl or errored"),
         };
-        match dump(&self.script_name, self.type_check.as_ref(), session) {
+        match dump(&self.script_name, self.type_check.as_ref(), &self.module_stubs, session) {
             Ok(state) => event(pb::child_event::Kind::DumpResult(pb::DumpResult {
                 state: state.into(),
             })),
@@ -808,6 +809,7 @@ impl Child {
         let Dump {
             script_name,
             type_check,
+            module_stubs,
             state,
         } = restored;
         // In-process Rust producers can dump suspensions exceeding the wire size limit;
@@ -846,10 +848,9 @@ impl Child {
         // name so the parent can report it without parsing the opaque dump.
         if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
             self.script_name = script_name;
-            // a type-checked dump brings the stubs its checks ran against
-            if let Some(state) = &type_check {
-                self.module_stubs.clone_from(&state.module_stubs);
-            }
+            // the dump's stubs, not the restoring `Configure`'s: they are the
+            // ones a type-checked session ran its checks against
+            self.module_stubs = module_stubs;
             self.type_check = type_check;
             event.restored_script_name = Some(self.script_name.clone());
         }
@@ -946,7 +947,7 @@ impl Child {
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         let context = TypeCheckContext {
             stubs: stubs.as_ref(),
-            module_stubs: &state.module_stubs,
+            module_stubs: &self.module_stubs,
             prelude: &state.committed_imports,
         };
         let type_checker = self

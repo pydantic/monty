@@ -296,7 +296,11 @@ async def main() -> None:
         }
     ]
     async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
-        async with pool.checkout(type_check=True, mcp_servers=servers) as session:
+        async with pool.checkout(
+            type_check=True,
+            limits={'max_feed_duration_secs': 30, 'max_memory': 32 * 1024 * 1024},
+            mcp_servers=servers,
+        ) as session:
             stubs = await session.get_types()
             print(stubs['stripe_mcp'])
             code = 'import stripe_mcp\nawait stripe_mcp.list_payments(limit=3)'
@@ -307,14 +311,15 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
-The headers never leave the server: it answers the sandbox's `import` of the module and every call into it itself, so
-neither reaches the client.
+The headers travel to the server with `checkout()` and no further: it answers the sandbox's `import` of the module and
+every call into it itself, so the worker and the sandbox never see them, and no tool call reaches the client.
 Each tool is an `async` function taking keyword arguments named after the tool's input schema; a call returns the
 tool's structured content as a dict, or its text content as a string, and a tool error raises `RuntimeError`.
 [`get_types()`][pydantic_monty.AsyncMontySession.get_types] returns the stubs the server renders from each server's
 tools, the signatures to put in the prompt of a model writing code for the session; with `type_check=True` the same
 stubs check the code before it runs.
-A server that does not support MCP ignores `mcp_servers`, which `get_types()` shows by not naming the module.
+A server that serves `get_types()` but not MCP ignores `mcp_servers`, which `get_types()` shows by not naming the
+module; a server that predates `get_types()` ends the session on the request.
 
 Each call into a module is a suspension, so it counts against `max_suspensions` and runs inside the client's
 `request_timeout`.

@@ -307,8 +307,10 @@ result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functi
 An `import` of a module the sandbox does not have is a `FunctionCall` too, named
 [`IMPORT_FUNCTION`](../api/rust/monty-types.md#import_function) (`__import__`) with the module name as its one argument.
 The value the host resumes with is bound as the module, usually a host-backed class instance whose attributes are the
-tools; [`ResumeValue::NotFound`](../api/rust/monty-pool.md#resumevalue) raises `ModuleNotFoundError`, and a run with no
-host raises it as before.
+tools; [`ResumeValue::NotFound`](../api/rust/monty-pool.md#resumevalue) raises `ModuleNotFoundError` (in-process,
+[`FunctionCall::resume`](../api/rust/monty.md#functioncall) with
+[`ExtFunctionResult::NotFound`](../api/rust/monty-types.md#extfunctionresult) does the same, and a future answer is
+refused), and a run with no host raises it as before.
 
 [`FunctionCall`](../api/rust/monty.md#functioncall), [`OsCall`](../api/rust/monty.md#oscall), [`NameLookup`](../api/rust/monty.md#namelookup) and [`ResolveFutures`](../api/rust/monty.md#resolvefutures) expose `abort`, which raises a host-supplied
 [`MontyException`](../api/rust/monty-types.md#montyexception) uncatchably at the suspension point and unwinds the run with a traceback.
@@ -332,7 +334,7 @@ let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOpti
 repl.feed_run("x = 40", vec![], PrintWriter::Stdout).unwrap();
 
 // dumping is read-only: the live session can keep feeding
-let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+let bytes = dump("repl.py", None, &[], SessionRef::Idle(&repl)).unwrap();
 
 // later, restore and keep going
 let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else { panic!() };

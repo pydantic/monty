@@ -97,9 +97,42 @@ test('module stubs type-check imports and come back from getTypes', async () => 
   }
 })
 
-test('invalid module stub names are rejected', async () => {
+test('invalid module names are rejected', async () => {
   // the native binding refuses before dialing; the wasm child on `Configure`
   await t.throwsAsync(pool().checkout({ typeCheckModuleStubs: { json: '' } }), {
-    message: /module "json" is provided by the sandbox and cannot take a stub/,
+    message: /module "json" is provided by the sandbox and cannot be replaced/,
+  })
+})
+
+test('module functions keep the module as their receiver', async () => {
+  const counter = {
+    count: 0,
+    inc() {
+      return ++this.count
+    },
+  }
+  t.is(await run('import counter\ncounter.inc()\ncounter.inc()', { externalModules: { counter } }), 2)
+})
+
+test('each module is its own class, the same on every import', async () => {
+  const code =
+    'import a\nimport b\nimport a as c\n[type(a).__name__, type(b).__name__, type(a) is type(b), type(a) is type(c)]'
+  t.deepEqual(await run(code, { externalModules: { a: { x: 1 }, b: { y: 2 } } }), ['a', 'b', false, true])
+})
+
+test('a dotted module name', async () => {
+  // the module's own name may hold dots; the attribute a call names never does
+  t.is(await run('from pkg.tools import add\nadd(1, 2)', { externalModules: { 'pkg.tools': tools } }), 3)
+})
+
+test('a module that fails to materialize raises at the import', async () => {
+  const broken = {
+    get boom(): number {
+      throw new Error('nope')
+    },
+  }
+  await t.throwsAsync(run('import broken', { externalModules: { broken } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'RuntimeError: nope',
   })
 })

@@ -552,10 +552,10 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::TypeStubs(stubs)) => Event::TypeStubs(
             stubs
                 .modules
-                .iter()
+                .into_iter()
                 .map(|stub| ModuleStub {
-                    module: stub.module.clone(),
-                    source: stub.source.clone(),
+                    module: stub.module,
+                    source: stub.source,
                 })
                 .collect(),
         ),

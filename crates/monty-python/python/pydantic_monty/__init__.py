@@ -179,9 +179,10 @@ class McpServer(TypedDict):
     importable module.
 
     The server connects on the host's behalf and answers the sandbox's `import`
-    and tool calls itself, so the headers never leave it;
-    `AsyncMontySession.get_types()` returns the stub it renders from the
-    server's tools. Only `AsyncMontyWebsocket.checkout()` accepts these.
+    and tool calls itself, so the headers go no further than the server, and
+    the stub it renders from the server's tools is in the mapping
+    `AsyncMontySession.get_types()` returns. Only
+    `AsyncMontyWebsocket.checkout()` accepts these.
     """
 
     module: str

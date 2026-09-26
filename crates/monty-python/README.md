@@ -20,7 +20,7 @@ pip install pydantic-monty-client
 
 You can use this library alone to connect to a remote monty server via websockets.
 `checkout(mcp_servers=[...])` asks a server that supports it to serve MCP servers as importable modules, and
-`session.get_types()` returns the stubs it renders from their tools.
+`await session.get_types()` returns the stubs it renders from their tools.
 
 ```python test="skip"
 from pydantic_monty import AsyncMontyWebsocket
@@ -44,8 +44,9 @@ if __name__ == '__main__':
 
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.
-`external_modules` on `feed_run` names the modules a snippet may `import`, each a dict, module or object whose public
-callables become host functions; `type_check_module_stubs` on `checkout` gives the type checker their stubs.
+`external_modules` on `feed_run` names the modules a snippet may `import`: each a dict, module or object whose public
+attributes are sent with it (callables as host functions, other values converted), or a `ClassInstance` sent as itself;
+`type_check_module_stubs` on `checkout` gives the type checker their stubs.
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.

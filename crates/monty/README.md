@@ -101,7 +101,7 @@ use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
 let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
 repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
-let bytes = dump("main.py", None, SessionRef::Idle(&repl)).unwrap();
+let bytes = dump("main.py", None, &[], SessionRef::Idle(&repl)).unwrap();
 
 // later, restore and carry on feeding
 let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {

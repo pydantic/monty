@@ -262,10 +262,11 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
     /// The host callable `function_name` names: an entry of `external_lookup`,
     /// or, for a dotted name, that attribute of the `external_modules` entry
-    /// (a host function bound by an import is named `<module>.<attr>`).
-    /// `None` when neither has it.
+    /// (a host function bound by an import is named `<module>.<attr>`; the
+    /// module's own name may hold dots, an attribute's never does). `None`
+    /// when neither has it.
     fn callable(&self, function_name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
-        if let Some((module, attr)) = function_name.split_once('.') {
+        if let Some((module, attr)) = function_name.rsplit_once('.') {
             match self.module(module)? {
                 Some(module) => module_attr(&module, attr),
                 None => Ok(None),

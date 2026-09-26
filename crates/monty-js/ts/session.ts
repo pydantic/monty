@@ -17,6 +17,7 @@ import {
   AttrNotExposed,
   attributeErrorMessage,
   ClassInstance,
+  ClassType,
   InstanceStore,
   prepare,
   restore,
@@ -622,17 +623,23 @@ class TurnAnswerer {
   /**
    * The host value `functionName` names: an own entry of `externalLookup`, or,
    * for a dotted name, that own property of the `externalModules` entry (a
-   * host function bound by an import is named `<module>.<attr>`). Own keys
-   * only: an inherited callable (e.g. `Object.prototype.toString`) must never
-   * be dispatched as a host function.
+   * host function bound by an import is named `<module>.<attr>`; the module's
+   * own name may hold dots, an attribute's never does). Own keys only: an
+   * inherited callable (e.g. `Object.prototype.toString`) must never be
+   * dispatched as a host function.
    */
   private hostEntry(functionName: string): unknown {
-    const dot = functionName.indexOf('.')
+    const dot = functionName.lastIndexOf('.')
     if (dot === -1) {
       return ownEntry(this.externalLookup, functionName)
     }
     const module = ownEntry(this.externalModules, functionName.slice(0, dot))
-    return module !== null && typeof module === 'object' ? ownEntry(module, functionName.slice(dot + 1)) : undefined
+    if (module === null || typeof module !== 'object') {
+      return undefined
+    }
+    const entry = ownEntry(module, functionName.slice(dot + 1))
+    // called with the module as its receiver, as `module.attr(...)` would be
+    return typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry
   }
 
   /**
@@ -646,7 +653,16 @@ class TurnAnswerer {
     if (typeof name !== 'string' || module === undefined) {
       return this.native.resumeNotFound(onPrint)
     }
-    return this.resumeWithValue(moduleValue(name, module), onPrint)
+    let value: unknown
+    try {
+      value = moduleValue(name, module)
+    } catch (err) {
+      // a getter that throws while the module is read raises at the import,
+      // as a host function that throws raises at its call
+      const { excType, message } = jsErrorParts(err)
+      return this.native.resumeError(excType, message, onPrint)
+    }
+    return this.resumeWithValue(value, onPrint)
   }
 
   /**
@@ -1317,8 +1333,12 @@ function ownEntry(record: unknown, key: string): unknown {
  * The sandbox value of an `externalModules` entry: a [`ClassInstance`] as
  * itself (its methods route back by id), anything else as a host object named
  * after the module whose own public properties are sent eagerly — functions
- * as host functions named `<module>.<attr>`, so the sandbox's calls into the
- * module come back through [`TurnAnswerer.hostEntry`].
+ * as host functions named `<module>.<attr>` (only the name crosses), so the
+ * sandbox's calls into the module come back through
+ * [`TurnAnswerer.hostEntry`]. Its class id derives from the module name, so
+ * each module is its own class (not the default wrapper class of plain
+ * objects), the same on every import; the instance is new each import, as
+ * CPython's would not be, since it is host state that does not travel.
  */
 function moduleValue(name: string, module: unknown): unknown {
   if (module instanceof ClassInstance || module === null || typeof module !== 'object') {
@@ -1329,7 +1349,8 @@ function moduleValue(name: string, module: unknown): unknown {
     if (key.startsWith('_')) continue
     attrs[key] = typeof value === 'function' ? namedHostFunction(`${name}.${key}`, value as ExternalFunction) : value
   }
-  return new ClassInstance(attrs, { name, eagerAttrs: 'all' })
+  const classType = new ClassType(Object, { name, id: moduleUuid('class', name) })
+  return new ClassInstance(attrs, { classType, eagerAttrs: 'all' })
 }
 
 /** A function carrying `name` to the sandbox, calling `fn` on the host. */
@@ -1337,6 +1358,22 @@ function namedHostFunction(name: string, fn: ExternalFunction): ExternalFunction
   const proxy: ExternalFunction = (...args: unknown[]) => fn(...(args as never[]))
   Object.defineProperty(proxy, 'name', { value: name })
   return proxy
+}
+
+/** A uuid derived from `kind` and `name` (two FNV-1a hashes, as the Python
+ *  binding derives its module class ids), the same in every process. */
+function moduleUuid(kind: string, name: string): string {
+  const bytes = new TextEncoder().encode(`${kind}:${name}`)
+  const fnv = (seed: bigint): string => {
+    let hash = seed
+    for (const byte of bytes) {
+      hash ^= BigInt(byte)
+      hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn
+    }
+    return hash.toString(16).padStart(16, '0')
+  }
+  const hex = fnv(0xcbf29ce484222325n) + fnv(0x84222325cbf29ce4n)
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 function buildCallArgs(args: unknown[], kwargs: [unknown, unknown][]): unknown[] {

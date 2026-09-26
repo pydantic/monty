@@ -345,7 +345,8 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
 
 A dict (an object in JavaScript), a module or a namespace becomes a host object named after the module whose public
 attributes are sent with it: a callable becomes a host function named `<module>.<attr>`, dispatched like an
-`external_lookup` entry (a coroutine is awaited the same way), and any other value is converted when the module is
+`external_lookup` entry (a Python coroutine is awaited by `AsyncMonty` and raises `RuntimeError` under `Monty`, and a
+JavaScript promise is awaited, as for `external_lookup`), and any other value is converted when the module is
 imported.
 A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
 `from tools import add` reads the attribute of that object, so it works for the attributes above and raises

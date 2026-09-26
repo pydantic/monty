@@ -446,6 +446,40 @@ async def test_checkout_rejects_unknown_limits():
     )
 
 
+@pytest.mark.parametrize(
+    ('module', 'message'),
+    [
+        (
+            'json',
+            snapshot('invalid mcp_servers entry: module "json" is provided by the sandbox and cannot be replaced'),
+        ),
+        ('1tools', snapshot('invalid mcp_servers entry: module name "1tools" is not a valid identifier')),
+    ],
+)
+async def test_checkout_rejects_invalid_mcp_module_names(module: str, message: str):
+    """An MCP module name follows the rule module stubs do, checked before any dial."""
+    async with AsyncMontyWebsocket('ws://127.0.0.1:9') as pool:
+        with pytest.raises(ValueError) as exc_info:
+            pool.checkout(mcp_servers=[{'module': module, 'url': 'https://mcp.example/'}])
+    assert exc_info.value.args[0] == message
+
+
+async def test_mcp_server_entry_errors_pass_through():
+    """Only a missing key reads as missing; a mapping that raises anything else raises that."""
+
+    class Exploding(dict[str, Any]):
+        def __getitem__(self, key: str) -> Any:
+            raise RuntimeError(f'no {key} today')
+
+    async with AsyncMontyWebsocket('ws://127.0.0.1:9') as pool:
+        with pytest.raises(RuntimeError) as exploded:
+            pool.checkout(mcp_servers=[Exploding()])  # pyright: ignore[reportArgumentType]
+        with pytest.raises(ValueError) as missing:
+            pool.checkout(mcp_servers=[{'url': 'https://mcp.example/'}])  # pyright: ignore[reportArgumentType]
+    assert exploded.value.args[0] == snapshot('no module today')
+    assert missing.value.args[0] == snapshot("an mcp_servers entry is missing its 'module'")
+
+
 async def test_plain_relay_names_no_session(ws_url: str):
     """The dev relay stores nothing, so sessions get no ID and `ephemeral` changes nothing."""
     async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
@@ -509,7 +543,8 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_w
 
 
 async def test_module_stubs_and_mcp_servers_over_websocket(ws_url: str):
-    """`mcp_servers` reaches the server (a plain worker ignores it) and
+    """A checkout naming `mcp_servers` opens against a relay whose worker ignores
+    them (`monty-pool`'s own suite reads them off the `Configure` frame), and
     `get_types` reports the configured module stubs from the far side."""
     stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
     servers: list[McpServer] = [

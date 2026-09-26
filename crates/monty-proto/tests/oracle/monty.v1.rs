@@ -971,9 +971,10 @@ pub struct InstallDependencies {
 /// forwarding the request. Valid whenever no turn is in flight (a session that
 /// is idle or suspended, or one configured but not yet fed).
 ///
-/// A peer that predates this request answers a `FatalError` ("request has no
-/// kind"): there is no in-band negotiation, so only send it to a peer known to
-/// serve it.
+/// A peer that predates this request answers an `Error` (a `RuntimeError`,
+/// "protocol violation: request has no kind") and the session carries on:
+/// there is no in-band negotiation, so only send it to a peer known to serve
+/// it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetTypes {}
 /// A oneof shares its field-number space with the enclosing message, so tags

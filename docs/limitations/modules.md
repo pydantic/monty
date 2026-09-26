@@ -88,14 +88,16 @@ An `import` of a module in none of the lists above asks the host for it, as the 
 with the module name as its argument, instead of raising `ModuleNotFoundError` outright.
 The host binds whatever value it answers with (in the bindings, the matching `external_modules` entry), so:
 
-- the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr, and `dir(m)`,
-    `m.__name__` and `m.__dict__` follow host-object rules (dunder attributes raise `AttributeError`);
+- the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr, `m.__class__` that
+    class, and `m.__name__` and `m.__dict__` raise `AttributeError`, as every other dunder attribute of a host object
+    does;
 - a missing attribute raises `AttributeError: 'm' object has no attribute 'x'`, naming the host class rather than
     CPython's `module 'm' has no attribute 'x'`;
-- every `import` statement asks again, since there is no `sys.modules` cache, and an import inside a function asks on
+- every `import` statement asks again, since there is no `sys.modules` cache, so two imports of one module bind two
+    objects (`import m as a` then `import m as b` leaves `a is b` false), and an import inside a function asks on
     each call;
 - a host that answers with not-found raises CPython's `ModuleNotFoundError: No module named 'm'`, and one that raises
     raises that exception at the import;
-- `from m import x` reads `x` from the answered value, raising `ImportError: cannot import name 'x' from 'm' (unknown   location)` when it has no such attribute, whether the attribute was sent with the object or looked up lazily.
+- `from m import x` reads `x` from the answered value, raising `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute, whether the attribute was sent with the object or looked up lazily.
 
 A run with no host, `monty run` included, still raises `ModuleNotFoundError` for every unknown module.

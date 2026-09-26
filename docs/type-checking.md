@@ -113,7 +113,7 @@ Stubs are scoped to the checkout.
 A later session does not see them.
 
 A stub declares names at the top level of the snippet.
-A module the code imports needs a stub of its own, one `.pyi` per module in `type_check_module_stubs`
+A host-provided module the code imports needs a stub of its own, one `.pyi` per module in `type_check_module_stubs`
 (`typeCheckModuleStubs`), keyed by the module name; the checker writes each one as `<module>.pyi` beside the snippet,
 so `import tools` resolves and `from tools import add` sees its declarations, without star-importing them:
 
@@ -201,8 +201,10 @@ checks as one growing program:
     ```
 
 A snippet that fails the check never runs, so it never enters the accumulated context.
-The `import` statements of a committed snippet are carried too, so `import math` in one feed still binds `math` for
-the next feed's check.
+The `import` statements of a committed snippet are carried too (those outside any function or class body, a
+module-level `if` or `try` included), so `import math` in one feed still binds `math` for the next feed's check.
+They are re-emitted ahead of the snippet's other definitions, so a later rebinding of the name in a snippet wins for
+the checker as at runtime, while a name the snippet deleted after importing stays bound for the checker.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.

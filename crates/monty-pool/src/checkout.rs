@@ -81,8 +81,9 @@ pub struct ReplConfig {
     /// relay's default. Subprocess workers ignore it.
     pub profile: Option<String>,
     /// Type stubs for the host-provided modules, one `.pyi` each, so that
-    /// `import <module>` type-checks; [`Checkout::get_types`] reports them
-    /// back. Ignored when `type_check` is off.
+    /// `import <module>` type-checks. Validated on `Configure` and reported
+    /// by [`Checkout::get_types`] whether or not `type_check` is on; only a
+    /// type-checked session reads them.
     pub type_check_module_stubs: Vec<ModuleStub>,
     /// MCP servers a serving relay connects to on the host's behalf and serves
     /// as importable modules; subprocess workers ignore it, and a relay that
@@ -125,16 +126,28 @@ impl McpServer {
     }
 }
 
-/// Names each header, never its value: the headers are the server's
-/// credentials, and configs get logged.
+/// Names each header, never its value, and drops the URL's userinfo: both
+/// are the server's credentials, and configs get logged.
 impl fmt::Debug for McpServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let header_names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
         f.debug_struct("McpServer")
             .field("module", &self.module)
-            .field("url", &self.url)
+            .field("url", &redact_userinfo(&self.url))
             .field("headers", &header_names)
             .finish()
+    }
+}
+
+/// `url` with any `user:password@` in its authority replaced by `***@`.
+fn redact_userinfo(url: &str) -> Cow<'_, str> {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Cow::Borrowed(url);
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => Cow::Owned(format!("{scheme}://***@{}", &rest[at + 1..])),
+        None => Cow::Borrowed(url),
     }
 }
 
@@ -813,7 +826,7 @@ impl Checkout {
         repl: &ReplConfig,
         redial: Option<Redial>,
     ) -> Result<Self, PoolError> {
-        let request = configure_request(repl);
+        let request = configure_request(repl, pool.config.transport.is_websocket());
         let mut this = Self {
             worker: Some(worker),
             pool,
@@ -1228,7 +1241,9 @@ impl Checkout {
     /// The type stubs of the session's host-provided modules, as `GetTypes`
     /// reports them: what the session was configured with, plus whatever a
     /// serving relay renders for its own modules. Valid while idle or
-    /// suspended; a peer that predates the request ends the session.
+    /// suspended. A peer that predates the request refuses it with a
+    /// [`PoolError::Runtime`] (`RuntimeError: protocol violation: request has
+    /// no kind`), and the session carries on.
     pub async fn get_types(&mut self) -> Result<Vec<ModuleStub>, PoolError> {
         let request = request(pb::parent_request::Kind::GetTypes(pb::GetTypes {}));
         let mut no_print = on_print_sync(|_, _| {});
@@ -1547,7 +1562,7 @@ impl Checkout {
     /// is kept, not re-adopted as `restore` does: it is the same session, so the
     /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
-        let configure = configure_request(&redial.repl);
+        let configure = configure_request(&redial.repl, self.pool.config.transport.is_websocket());
         let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
@@ -2206,7 +2221,10 @@ impl Drop for Checkout {
 }
 
 /// Builds the `Configure` that creates `repl`'s session on a fresh worker.
-fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
+/// The `Configure` for `repl`. `mcp_servers` rides only a WebSocket
+/// transport: it carries the servers' credentials, and only a serving relay
+/// uses them, so a subprocess worker is never sent them.
+fn configure_request(repl: &ReplConfig, websocket: bool) -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: repl.script_name.clone(),
         limits: repl.limits.as_ref().map(Into::into),
@@ -2229,6 +2247,7 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
         mcp_servers: repl
             .mcp_servers
             .iter()
+            .filter(|_| websocket)
             .map(|server| pb::McpServer {
                 module: server.module.clone(),
                 url: server.url.clone(),

@@ -184,6 +184,7 @@ impl Recorder {
                     "get types",
                     // filled in by the `TypeStubs` reply
                     modules = Empty,
+                    length_limit_exceeded = Empty,
                 )));
             }
             Some(pb::parent_request::Kind::InstallDependencies(d)) => {
@@ -440,11 +441,18 @@ impl Recorder {
             // a bare acknowledgement ending a housekeeping turn; the turn
             // span itself is the record
             Some(pb::child_event::Kind::Ok(_)) => self.turn = None,
-            // the get-types span names the modules it was answered with, and closes on it
+            // the get-types span names the modules it was answered with, and
+            // closes on it; capped like every other rendered attribute
             Some(pb::child_event::Kind::TypeStubs(t)) => {
                 if let Some(turn) = &self.turn {
-                    let names: Vec<&str> = t.modules.iter().map(|stub| stub.module.as_str()).collect();
-                    turn.record("modules", names.join(", ").as_str());
+                    let names: Vec<String> = t.modules.iter().map(|stub| stub.module.clone()).collect();
+                    let (modules, cut) = render_str_list(&names);
+                    if let Some(modules) = modules {
+                        turn.record("modules", modules.as_str());
+                    }
+                    if cut {
+                        turn.record("length_limit_exceeded", true);
+                    }
                 }
                 self.turn = None;
             }

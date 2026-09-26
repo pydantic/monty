@@ -2975,6 +2975,23 @@ async fn configure_carries_mcp_servers_and_module_stubs() {
     join_server(server).await;
 }
 
+/// A config gets logged, so its `Debug` names the headers without their
+/// values and drops the userinfo a URL may carry.
+#[test]
+fn mcp_server_debug_hides_its_credentials() {
+    let server = McpServer::new("stripe_mcp", "https://user:sk_test@mcp.example/stripe?v=1#top")
+        .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]);
+    insta::assert_snapshot!(
+        format!("{server:?}"),
+        @r#"McpServer { module: "stripe_mcp", url: "https://***@mcp.example/stripe?v=1#top", headers: ["Authorization"] }"#
+    );
+    let plain = McpServer::new("m", "https://mcp.example/@handle/path");
+    assert_eq!(
+        format!("{plain:?}"),
+        r#"McpServer { module: "m", url: "https://mcp.example/@handle/path", headers: [] }"#
+    );
+}
+
 #[tokio::test]
 async fn get_types_reads_the_type_stubs_reply() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -3026,7 +3043,7 @@ async fn get_types_reads_the_type_stubs_reply() {
     assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
     assert_eq!(
         err.to_string(),
-        "monty worker protocol error: invalid TypeStubs: invalid value for ModuleStub.module: module \"json\" is provided by the sandbox and cannot take a stub"
+        "monty worker protocol error: invalid TypeStubs: invalid value for ModuleStub.module: module \"json\" is provided by the sandbox and cannot be replaced"
     );
     join_server(server).await;
 }

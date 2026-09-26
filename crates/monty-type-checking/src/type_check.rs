@@ -106,7 +106,7 @@ impl TypeChecker {
             // `ModuleStub` validates its name, but a path component here would
             // write outside the root that `reset` scrubs, so refuse it again.
             if !is_identifier(stub.module()) {
-                return Err(format!("invalid module stub name {:?}", stub.module()));
+                return Err(format!("invalid module name {:?}", stub.module()));
             }
             self.write_root_file(&src_root.join(format!("{}.pyi", stub.module())), stub.source())?;
         }
