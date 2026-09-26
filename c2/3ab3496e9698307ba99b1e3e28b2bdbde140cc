@@ -1,0 +1,23 @@
+crates/monty-server/src/session/park.rs
+  s_56a7f67a12962e::t_4d5857570c5b7c 154-158,310-316
+crates/monty-server-tests/src/mcp.rs
+  s_56a7f67a12962e::t_4d5857570c5b7c 60,98-103,133-134,137-138
+crates/monty-server-tests/tests/client/mcp.rs
+  s_56a7f67a12962e::t_4d5857570c5b7c 704-806
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c23ab3496e9698307ba99b1e3e28b2bdbde140cc",
+  "prompts": {},
+  "sessions": {
+    "s_56a7f67a12962e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0eb9062-5312-4cc3-bea9-4d92c9f2adb2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
