@@ -1,0 +1,40 @@
+crates/monty-js/ts/worker/component/interfaces/pydantic-monty-worker.d.ts
+  s_c36bcf79f328a9::t_d62fe5ff6747d7 360-363,369,451,486-488,561,609-611
+crates/monty-js/__test__/external_modules.spec.ts
+  s_c36bcf79f328a9::t_c99e08d89c4a36 101,103
+  s_c36bcf79f328a9::t_d0b273f7700491 1-100,102,104-105
+crates/monty-js/ts/worker/transport.ts
+  ai_agent 278-284,538-541
+crates/monty-js/ts/pool.ts
+  ai_agent 81-86,210
+crates/monty-js/__test__/helpers.ts
+  s_c36bcf79f328a9::t_d62fe5ff6747d7 38,51
+crates/monty-js/src/pool.rs
+  s_c36bcf79f328a9::t_1140b56c2b236c 24,40-41,130-132,302-307,334-335,728-741
+crates/monty-wasm-runtime/src/lib.rs
+  s_c36bcf79f328a9::t_d62fe5ff6747d7 33,358,397-405,550-559
+  s_c36bcf79f328a9::t_9edbfb1dad943a 34-35
+crates/monty-wasm-runtime/wit/runtime.wit
+  ai_agent 277-284,291-292,379-380,496-497
+crates/monty-js/ts/session.ts
+  s_c36bcf79f328a9::t_926e1a14cf5f6d 19,90-99,135-137,166-168,231-237,410-416,430-440,533,589-590,595-599,622-651,1306-1336,1338-1341
+  s_c36bcf79f328a9::t_9c26b8e82536de 1337
+crates/monty-js/native-addon.d.ts
+  s_c36bcf79f328a9::t_71c7d48f0b249e 41-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "06ce1ee1c9c25655ba803eb0f37ed71cdd0ce63a",
+  "prompts": {},
+  "sessions": {
+    "s_c36bcf79f328a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a77e456-98c8-4b0d-826d-ace20081a933",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
