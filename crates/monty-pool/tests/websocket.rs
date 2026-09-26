@@ -17,11 +17,11 @@ use std::{
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError, PrintFuture,
-    ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, McpServer, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError,
+    PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
+use monty_types::{CallArgs, ExtFunctionResult, ModuleStub, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -2828,4 +2828,138 @@ fn position() -> SourceRange {
         start: 0,
         end: 7,
     }
+}
+
+// ---- module stubs, MCP servers and GetTypes -------------------------------
+//
+// A serving relay reads `mcp_servers` and `type_check_module_stubs` off the
+// `Configure`, and answers `GetTypes` itself with the stubs in effect.
+
+fn module_stub(module: &str, source: &str) -> ModuleStub {
+    ModuleStub::new(module, source).expect("a valid stub name")
+}
+
+/// One `McpServer` as read off the wire: `(module, url, headers)`.
+type WireMcpServer = (String, String, Vec<(String, String)>);
+
+#[tokio::test]
+async fn configure_carries_mcp_servers_and_module_stubs() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        let request = try_read_request(&mut socket).expect("configure");
+        let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
+            panic!("expected Configure, got {request:?}");
+        };
+        let servers: Vec<WireMcpServer> = configure
+            .mcp_servers
+            .iter()
+            .map(|server| {
+                let headers = server
+                    .headers
+                    .iter()
+                    .map(|header| (header.name.clone(), header.value.clone()))
+                    .collect();
+                (server.module.clone(), server.url.clone(), headers)
+            })
+            .collect();
+        assert_eq!(
+            servers,
+            vec![(
+                "stripe_mcp".to_owned(),
+                "https://mcp.example/stripe".to_owned(),
+                vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())],
+            )]
+        );
+        let stubs: Vec<(String, String)> = configure
+            .type_check_module_stubs
+            .iter()
+            .map(|stub| (stub.module.clone(), stub.source.clone()))
+            .collect();
+        assert_eq!(stubs, vec![("tools".to_owned(), "x: int\n".to_owned())]);
+        send_kind(&mut socket, ok_event());
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = websocket_pool(port).await;
+    let repl = ReplConfig {
+        mcp_servers: vec![
+            McpServer::new("stripe_mcp", "https://mcp.example/stripe")
+                .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]),
+        ],
+        type_check_module_stubs: vec![module_stub("tools", "x: int\n")],
+        ..ReplConfig::default()
+    };
+    let checkout = pool.checkout(&repl).await.expect("checkout");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn get_types_reads_the_type_stubs_reply() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_kind(&mut socket, ok_event());
+        let request = try_read_request(&mut socket).expect("get types");
+        assert!(
+            matches!(request.kind, Some(pb::parent_request::Kind::GetTypes(_))),
+            "expected GetTypes, got {request:?}"
+        );
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::TypeStubs(pb::TypeStubs {
+                modules: vec![pb::ModuleStub {
+                    module: "stripe_mcp".to_owned(),
+                    source: "async def list_payments(*, limit: int = ...) -> str: ...\n".to_owned(),
+                }]
+                .into(),
+            }),
+        );
+        // a relay answering with a name no stub may have is a protocol violation
+        try_read_request(&mut socket).expect("get types again");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::TypeStubs(pb::TypeStubs {
+                modules: vec![pb::ModuleStub {
+                    module: "json".to_owned(),
+                    source: String::new(),
+                }]
+                .into(),
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let stubs = checkout.get_types().await.expect("get_types");
+    assert_eq!(
+        stubs,
+        vec![module_stub(
+            "stripe_mcp",
+            "async def list_payments(*, limit: int = ...) -> str: ...\n"
+        )]
+    );
+    let err = checkout.get_types().await.unwrap_err();
+    assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "monty worker protocol error: invalid TypeStubs: invalid value for ModuleStub.module: module \"json\" is provided by the sandbox and cannot take a stub"
+    );
+    join_server(server).await;
+}
+
+#[test]
+fn mcp_server_debug_hides_header_values() {
+    let server = McpServer::new("stripe_mcp", "https://mcp.example/stripe")
+        .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]);
+    let rendered = format!("{server:?}");
+    assert!(!rendered.contains("sk_test"), "{rendered}");
+    assert_eq!(
+        rendered,
+        r#"McpServer { module: "stripe_mcp", url: "https://mcp.example/stripe", headers: ["Authorization"] }"#
+    );
 }

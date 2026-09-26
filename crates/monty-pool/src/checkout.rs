@@ -16,8 +16,8 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    BudgetVec, FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, module_stubs_from_proto,
-    named_values_to_proto, os_call_from_proto, pb, validate_requirement,
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, module_stubs_from_proto,
+    module_stubs_to_proto, named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION, ModuleStub,
@@ -77,6 +77,62 @@ pub struct ReplConfig {
     pub os_policy: OsPolicy,
     /// Whether a serving relay may store the session; subprocess workers ignore it.
     pub persistence: Persistence,
+    /// Type stubs for the host-provided modules, one `.pyi` each, so that
+    /// `import <module>` type-checks; [`Checkout::get_types`] reports them
+    /// back. Ignored when `type_check` is off.
+    pub type_check_module_stubs: Vec<ModuleStub>,
+    /// MCP servers a serving relay connects to on the host's behalf and serves
+    /// as importable modules; subprocess workers ignore it, and a relay that
+    /// does not support MCP silently drops it — [`Checkout::get_types`]
+    /// tells them apart.
+    pub mcp_servers: Vec<McpServer>,
+}
+
+/// An MCP server a serving relay (`monty-server`) exposes to the sandbox as
+/// the module `module`: the relay connects to `url` with `headers`, serves the
+/// sandbox's `import` and tool calls itself, and renders the server's tools
+/// as the module's type stub. Only the relay ever sees the headers.
+#[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct McpServer {
+    /// The name sandbox code imports the server as.
+    pub module: String,
+    /// The server's streamable-HTTP endpoint.
+    pub url: String,
+    /// Request headers sent to the server, typically its authorization.
+    pub headers: Vec<(String, String)>,
+}
+
+impl McpServer {
+    /// A server imported as `module`, reached at `url`, with no headers.
+    #[must_use]
+    pub fn new(module: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            module: module.into(),
+            url: url.into(),
+            headers: Vec::new(),
+        }
+    }
+
+    /// Sets the request headers sent to the server.
+    #[must_use]
+    pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.headers = headers;
+        self
+    }
+}
+
+/// Names each header, never its value: the headers are the server's
+/// credentials, and configs get logged.
+impl fmt::Debug for McpServer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let header_names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("McpServer")
+            .field("module", &self.module)
+            .field("url", &self.url)
+            .field("headers", &header_names)
+            .finish()
+    }
 }
 
 /// How a serving relay (`monty-server`) treats a session's state.
@@ -118,6 +174,8 @@ impl Default for ReplConfig {
             print_flush_interval: None,
             os_policy: OsPolicy::default(),
             persistence: Persistence::default(),
+            type_check_module_stubs: Vec::new(),
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -261,6 +319,12 @@ pub enum TurnEvent {
     /// a host-backed object, routed by uuid — a class instance, or a class
     /// type (a classmethod call, or construction of a host class, which is
     /// spelled `__call__`); the receiver is NOT included in `args`.
+    ///
+    /// An `import` of a module the sandbox does not have arrives here too:
+    /// `function_name` is [`IMPORT_FUNCTION`](monty_types::IMPORT_FUNCTION)
+    /// with the module name as its one argument, and the returned value is
+    /// bound as the module (usually a host-backed instance whose attributes
+    /// are the tools); [`ResumeValue::NotFound`] raises `ModuleNotFoundError`.
     FunctionCall {
         function_name: String,
         /// One arena holding every positional and keyword argument.
@@ -330,7 +394,7 @@ pub enum ResumeValue {
     /// other tasks; resolve later via [`Checkout::resume_futures`].
     Future,
     /// No handler exists for the called name — the sandbox raises
-    /// `NameError`.
+    /// `NameError` (`ModuleNotFoundError` for an `import`).
     NotFound,
     /// No handler accepted this OS call — the sandbox raises the call's own
     /// no-handler default (`PermissionError` naming the path for filesystem
@@ -2157,8 +2221,25 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
         print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
-        mcp_servers: BudgetVec::default(),
-        type_check_module_stubs: BudgetVec::default(),
+        mcp_servers: repl
+            .mcp_servers
+            .iter()
+            .map(|server| pb::McpServer {
+                module: server.module.clone(),
+                url: server.url.clone(),
+                headers: server
+                    .headers
+                    .iter()
+                    .map(|(name, value)| pb::Header {
+                        name: name.clone(),
+                        value: value.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        type_check_module_stubs: module_stubs_to_proto(&repl.type_check_module_stubs).into(),
     }))
 }
 

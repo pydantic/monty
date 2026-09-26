@@ -1310,6 +1310,8 @@ pub(crate) fn parse_repl_config(
             .transpose()?,
         os_policy,
         persistence,
+        type_check_module_stubs: Vec::new(),
+        mcp_servers: Vec::new(),
     })
 }
 
