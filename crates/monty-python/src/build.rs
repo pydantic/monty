@@ -8,7 +8,7 @@
 
 use monty_pool::McpServer;
 use monty_proto::python::{GraphEncoder, InstanceStore, exc_py_to_monty};
-use monty_types::{ExcType, ModuleStub, MontyException, NamedValues, StringRepr, unstable, validate_module_name};
+use monty_types::{ExcType, ModuleStub, MontyException, NamedValues, StringRepr, unstable};
 use pyo3::{
     exceptions::{PyKeyError, PyTypeError, PyValueError},
     prelude::*,
@@ -89,10 +89,10 @@ pub(crate) fn extract_mcp_servers(servers: Option<&Bound<'_, PyAny>>) -> PyResul
             .cast::<PyMapping>()
             .map_err(|_| PyTypeError::new_err("each mcp_servers entry must be a mapping with 'module' and 'url'"))?;
         let module: String = mcp_server_field(server, "module")?.extract()?;
-        // the rule the server applies, so a bad name fails here rather than there
-        validate_module_name(&module)
-            .map_err(|err| PyValueError::new_err(format!("invalid mcp_servers entry: {err}")))?;
         let url: String = mcp_server_field(server, "url")?.extract()?;
+        // the rule the server applies, so a bad name fails here rather than there
+        let mcp_server = McpServer::new(module, url)
+            .map_err(|err| PyValueError::new_err(format!("invalid mcp_servers entry: {err}")))?;
         let headers = match server.get_item("headers") {
             Ok(headers) if !headers.is_none() => headers
                 .cast::<PyMapping>()
@@ -105,7 +105,7 @@ pub(crate) fn extract_mcp_servers(servers: Option<&Bound<'_, PyAny>>) -> PyResul
             Err(err) if err.is_instance_of::<PyKeyError>(server.py()) => Vec::new(),
             Err(err) => return Err(err),
         };
-        extracted.push(McpServer::new(module, url).with_headers(headers));
+        extracted.push(mcp_server.with_headers(headers));
     }
     Ok(extracted)
 }

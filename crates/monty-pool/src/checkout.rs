@@ -21,8 +21,8 @@ use monty_proto::{
 };
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION, ModuleStub,
-    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
-    ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
+    ModuleStubError, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy,
+    PrintStream, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd, validate_module_name,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -95,27 +95,29 @@ pub struct ReplConfig {
 /// An MCP server a serving relay (`monty-server`) exposes to the sandbox as
 /// the module `module`: the relay connects to `url` with `headers`, serves the
 /// sandbox's `import` and tool calls itself, and renders the server's tools
-/// as the module's type stub. Only the relay ever sees the headers.
+/// as the module's type stub. The headers cross the WebSocket to the relay,
+/// which sends them only to the MCP server; the worker and the sandbox never
+/// see them.
 #[derive(Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct McpServer {
-    /// The name sandbox code imports the server as.
-    pub module: String,
-    /// The server's streamable-HTTP endpoint.
-    pub url: String,
-    /// Request headers sent to the server, typically its authorization.
-    pub headers: Vec<(String, String)>,
+    module: String,
+    url: String,
+    headers: Vec<(String, String)>,
 }
 
 impl McpServer {
     /// A server imported as `module`, reached at `url`, with no headers.
-    #[must_use]
-    pub fn new(module: impl Into<String>, url: impl Into<String>) -> Self {
-        Self {
-            module: module.into(),
+    /// `module` follows [`validate_module_name`]: an `import` of one of the
+    /// sandbox's own modules never asks the relay, so such a name is refused
+    /// here rather than on the relay.
+    pub fn new(module: impl Into<String>, url: impl Into<String>) -> Result<Self, ModuleStubError> {
+        let module = module.into();
+        validate_module_name(&module)?;
+        Ok(Self {
+            module,
             url: url.into(),
             headers: Vec::new(),
-        }
+        })
     }
 
     /// Sets the request headers sent to the server.
@@ -123,6 +125,24 @@ impl McpServer {
     pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
         self.headers = headers;
         self
+    }
+
+    /// The name sandbox code imports the server as.
+    #[must_use]
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    /// The server's streamable-HTTP endpoint.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Request headers sent to the server, typically its authorization.
+    #[must_use]
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
     }
 }
 
@@ -1243,7 +1263,8 @@ impl Checkout {
     /// serving relay renders for its own modules. Valid while idle or
     /// suspended. A peer that predates the request refuses it with a
     /// [`PoolError::Runtime`] (`RuntimeError: protocol violation: request has
-    /// no kind`), and the session carries on.
+    /// no kind`), and the session carries on, a suspended feed still
+    /// resumable.
     pub async fn get_types(&mut self) -> Result<Vec<ModuleStub>, PoolError> {
         let request = request(pb::parent_request::Kind::GetTypes(pb::GetTypes {}));
         let mut no_print = on_print_sync(|_, _| {});
@@ -1932,10 +1953,14 @@ impl Checkout {
                     return self.convert_turn(|| Ok(TurnEvent::Complete(MontyObject::try_from(complete)?)));
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
-                    // an error reply to `Dump` (e.g. an oversize dump) does not
-                    // end the in-flight feed — the child stays suspended and
+                    // an error reply to `Dump` (e.g. an oversize dump) or to
+                    // `GetTypes` (a peer that predates it) does not end the
+                    // in-flight feed — the child stays suspended and
                     // resumable, so keep the pending call and mounts
-                    if !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_))) {
+                    if !matches!(
+                        request.kind,
+                        Some(pb::parent_request::Kind::Dump(_) | pb::parent_request::Kind::GetTypes(_))
+                    ) {
                         self.pending = None;
                         self.feed_mounts = None;
                     }
@@ -2221,9 +2246,9 @@ impl Drop for Checkout {
 }
 
 /// Builds the `Configure` that creates `repl`'s session on a fresh worker.
-/// The `Configure` for `repl`. `mcp_servers` rides only a WebSocket
-/// transport: it carries the servers' credentials, and only a serving relay
-/// uses them, so a subprocess worker is never sent them.
+/// `mcp_servers` rides only a WebSocket transport: it carries the servers'
+/// credentials, and only a serving relay uses them, so a subprocess worker is
+/// never sent them.
 fn configure_request(repl: &ReplConfig, websocket: bool) -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: repl.script_name.clone(),

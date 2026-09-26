@@ -122,7 +122,7 @@ def test_module_stubs_type_check_and_get_types(pool: Monty):
 @pytest.mark.parametrize(
     ('module', 'message'),
     [
-        ('json', snapshot('module "json" is provided by the sandbox and cannot be replaced')),
+        ('json', snapshot('module "json" is provided by the sandbox or its type checker and cannot be replaced')),
         ('1tools', snapshot('module name "1tools" is not a valid identifier')),
     ],
 )

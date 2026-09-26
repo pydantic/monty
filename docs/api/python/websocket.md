@@ -67,10 +67,10 @@ resume fail.
 ## MCP servers
 
 `checkout(mcp_servers=[...])` asks the server to connect to those MCP servers and serve them as importable modules.
-The server answers the session's `import` of a module and every call into it, so the headers in an
-[`McpServer`][pydantic_monty.McpServer] go no further than the server (the sandbox never sees them, and no tool call
-reaches the client), and a tool call counts as a suspension against `max_suspensions` and runs inside the pool's
-`request_timeout`.
+The headers in an [`McpServer`][pydantic_monty.McpServer] cross the WebSocket with the checkout, and the server sends
+them only to the MCP server: it answers the session's `import` of a module and every call into it itself, so the worker
+and the sandbox never see them, and no tool call reaches the client.
+A tool call counts as a suspension against `max_suspensions` and runs inside the pool's `request_timeout`.
 [`get_types()`][pydantic_monty.AsyncMontySession.get_types] returns the type stubs in effect: those from
 `type_check_module_stubs`, plus the ones the server renders from each MCP server's tools.
 A server that does not support MCP ignores `mcp_servers`, so a module missing from `get_types()` was not served.

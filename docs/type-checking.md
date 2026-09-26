@@ -153,8 +153,11 @@ so `import tools` resolves and `from tools import add` sees its declarations, wi
     }
     ```
 
-A module name that is not an identifier, or that names one of the sandbox's own modules, raises `ValueError`
-(throws in JavaScript).
+A module name that is not an identifier, or that names a module the sandbox or its type checker already provides,
+raises `ValueError` (throws in JavaScript).
+The reserved names are the modules of the vendored typeshed, which include ones the checker resolves but the runtime
+does not, such as `abc` and `enum`: a host can serve those through `external_modules`, but the checker keeps its own
+stub for them; see [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
 [`get_types()`][pydantic_monty.MontySession.get_types] returns the stubs in effect, which against Full Monty include
 the ones it renders for the session's [MCP servers](server.md#mcp-servers).
 The runtime side of an imported host module is `external_modules`; see

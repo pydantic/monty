@@ -705,7 +705,7 @@ fn a_refused_configure_keeps_no_stubs() {
 fn configure_refuses_a_reserved_module_stub() {
     let mut child = Child::default();
     let event = configure_with_module_stubs(&mut child, false, vec![module_stub("json", "")]);
-    insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: invalid type_check_module_stubs: invalid value for ModuleStub.module: module "json" is provided by the sandbox and cannot be replaced"#);
+    insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: invalid type_check_module_stubs: invalid value for ModuleStub.module: module "json" is provided by the sandbox or its type checker and cannot be replaced"#);
     assert_eq!(
         expect_error_message(get_types(&mut child)),
         "protocol violation: GetTypes before Configure"

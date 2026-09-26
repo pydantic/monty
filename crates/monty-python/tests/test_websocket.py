@@ -451,7 +451,9 @@ async def test_checkout_rejects_unknown_limits():
     [
         (
             'json',
-            snapshot('invalid mcp_servers entry: module "json" is provided by the sandbox and cannot be replaced'),
+            snapshot(
+                'invalid mcp_servers entry: module "json" is provided by the sandbox or its type checker and cannot be replaced'
+            ),
         ),
         ('1tools', snapshot('invalid mcp_servers entry: module name "1tools" is not a valid identifier')),
     ],

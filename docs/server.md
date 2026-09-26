@@ -311,8 +311,9 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
-The headers travel to the server with `checkout()` and no further: it answers the sandbox's `import` of the module and
-every call into it itself, so the worker and the sandbox never see them, and no tool call reaches the client.
+The headers cross the WebSocket with `checkout()`, and the server sends them only to the MCP server: it answers the
+sandbox's `import` of the module and every call into it itself, so the worker and the sandbox never see them, and no
+tool call reaches the client.
 Each tool is an `async` function taking keyword arguments named after the tool's input schema; a call returns the
 tool's structured content as a dict, or its text content as a string, and a tool error raises `RuntimeError`.
 [`get_types()`][pydantic_monty.AsyncMontySession.get_types] returns the stubs the server renders from each server's

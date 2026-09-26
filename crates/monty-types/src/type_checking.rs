@@ -132,9 +132,10 @@ impl ModuleStub {
 }
 
 /// Refuses a name a host-provided module may not have: not an identifier, or
-/// one of [`RESERVED_MODULE_NAMES`], which the runtime would bind to the
-/// sandbox's own module whatever the host or the checker holds under it. What
-/// [`ModuleStub::new`] checks, for modules that carry no stub of their own.
+/// one of [`RESERVED_MODULE_NAMES`], a module the runtime binds itself or one
+/// the vendored typeshed already declares, which a stub would shadow for the
+/// checker alone. What [`ModuleStub::new`] checks, for modules that carry no
+/// stub of their own.
 pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
     if !is_identifier(name) {
         Err(ModuleStubError::InvalidName(name.to_owned()))
@@ -158,7 +159,10 @@ impl Display for ModuleStubError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidName(name) => write!(f, "module name {name:?} is not a valid identifier"),
-            Self::ReservedName(name) => write!(f, "module {name:?} is provided by the sandbox and cannot be replaced"),
+            Self::ReservedName(name) => write!(
+                f,
+                "module {name:?} is provided by the sandbox or its type checker and cannot be replaced"
+            ),
         }
     }
 }

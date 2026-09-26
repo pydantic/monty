@@ -21,7 +21,9 @@ use monty_pool::{
     PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{CallArgs, ExtFunctionResult, ModuleStub, MontyObject, PrintStream, ResourceLimits, SourceRange};
+use monty_types::{
+    CallArgs, ExtFunctionResult, ModuleStub, ModuleStubError, MontyObject, PrintStream, ResourceLimits, SourceRange,
+};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -2965,6 +2967,7 @@ async fn configure_carries_mcp_servers_and_module_stubs() {
     let repl = ReplConfig {
         mcp_servers: vec![
             McpServer::new("stripe_mcp", "https://mcp.example/stripe")
+                .expect("a valid module name")
                 .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]),
         ],
         type_check_module_stubs: vec![module_stub("tools", "x: int\n")],
@@ -2980,12 +2983,13 @@ async fn configure_carries_mcp_servers_and_module_stubs() {
 #[test]
 fn mcp_server_debug_hides_its_credentials() {
     let server = McpServer::new("stripe_mcp", "https://user:sk_test@mcp.example/stripe?v=1#top")
+        .expect("a valid module name")
         .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]);
     insta::assert_snapshot!(
         format!("{server:?}"),
         @r#"McpServer { module: "stripe_mcp", url: "https://***@mcp.example/stripe?v=1#top", headers: ["Authorization"] }"#
     );
-    let plain = McpServer::new("m", "https://mcp.example/@handle/path");
+    let plain = McpServer::new("m", "https://mcp.example/@handle/path").expect("a valid module name");
     assert_eq!(
         format!("{plain:?}"),
         r#"McpServer { module: "m", url: "https://mcp.example/@handle/path", headers: [] }"#
@@ -3043,14 +3047,102 @@ async fn get_types_reads_the_type_stubs_reply() {
     assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
     assert_eq!(
         err.to_string(),
-        "monty worker protocol error: invalid TypeStubs: invalid value for ModuleStub.module: module \"json\" is provided by the sandbox and cannot be replaced"
+        "monty worker protocol error: invalid TypeStubs: invalid value for ModuleStub.module: module \"json\" is provided by the sandbox or its type checker and cannot be replaced"
     );
     join_server(server).await;
+}
+
+/// A peer that predates `GetTypes` answers it with an `Error` and stays as
+/// it was, so a feed suspended at the time is still resumable, as after a
+/// refused `Dump`.
+#[tokio::test]
+async fn get_types_refused_mid_feed_keeps_the_suspension() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_kind(&mut socket, ok_event());
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+                "fetch".to_owned(),
+                CallArgs::new(),
+                1,
+                None,
+                false,
+                position(),
+            )),
+        );
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::GetTypes(_)
+        ));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("protocol violation: request has no kind".to_owned()),
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            }),
+        );
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::ResumeCall(_)
+        ));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(1))),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+    let err = checkout.get_types().await.unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("protocol violation: request has no kind"));
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .expect("resume");
+    let TurnEvent::Complete(value) = event else {
+        panic!("expected Complete, got {event:?}");
+    };
+    assert_eq!(value, MontyObject::int(1));
+    // the relay thread reads until the socket closes
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// A name the sandbox binds itself is refused when the config is built, so
+/// no `Configure` ever carries it.
+#[test]
+fn mcp_server_refuses_an_unusable_module_name() {
+    let err = McpServer::new("json", "https://mcp.example/json").unwrap_err();
+    assert_eq!(err, ModuleStubError::ReservedName("json".to_owned()));
+    assert_eq!(
+        err.to_string(),
+        "module \"json\" is provided by the sandbox or its type checker and cannot be replaced"
+    );
+    let err = McpServer::new("stripe-mcp", "https://mcp.example/stripe").unwrap_err();
+    assert_eq!(err.to_string(), "module name \"stripe-mcp\" is not a valid identifier");
 }
 
 #[test]
 fn mcp_server_debug_hides_header_values() {
     let server = McpServer::new("stripe_mcp", "https://mcp.example/stripe")
+        .expect("a valid module name")
         .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]);
     let rendered = format!("{server:?}");
     assert!(!rendered.contains("sk_test"), "{rendered}");

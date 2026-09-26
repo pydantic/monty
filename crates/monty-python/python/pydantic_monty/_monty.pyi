@@ -866,8 +866,10 @@ class MontySession:
         the dump are not preserved (the restored overlay starts empty). Raises
         if the dump is actually an idle session.
 
-        `external_lookup` / `os` are captured for `resume_auto()`, exactly as on
-        `feed_start`. One caveat applies to a *restored* snapshot: a restored
+        `external_lookup` / `external_modules` / `os` are captured for
+        `resume_auto()`, exactly as on `feed_start`; they are host state, never
+        part of a dump, so a restored snapshot needs them again. One caveat
+        applies to a *restored* snapshot: a restored
         `FutureSnapshot`'s pending coroutines are gone (they lived in the
         previous process), so `resume_auto()` on it raises — resolve it manually
         with `resume({call_id: ...})`.
@@ -1166,6 +1168,14 @@ class AsyncMontySession:
                 is read, and an absent name raises `NameError`. The lazy
                 counterpart to `inputs`; a name present in both is served by the
                 eager `inputs` binding.
+            external_modules: Host modules the snippet may `import`, keyed by
+                the module name: a dict, a module or any object whose public
+                attributes become the module's — callables as host functions
+                (coroutine functions awaited, as in `external_lookup`), other
+                values converted when imported — or a `ClassInstance` sent as
+                itself. `from <module> import name` works for those attributes.
+                An import of an absent module raises `ModuleNotFoundError`; the
+                sandbox's own modules are never looked up here.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -1225,6 +1235,8 @@ class AsyncMontySession:
                 against (as in `feed_run`). Callables may be coroutine
                 functions. Captured for `resume_auto()`; not used by a plain
                 `resume(...)`.
+            external_modules: Host modules `resume_auto()` answers imports
+                from (as in `feed_run`); captured like `external_lookup`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -1275,9 +1287,10 @@ class AsyncMontySession:
         Restore a snapshot generated while a block of code is running (e.g.
         after `feed_start`) and return the re-announced snapshot to resume.
 
-        `external_lookup` / `os` are captured for `resume_auto()`, with the same
-        restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
-        cannot be driven with `resume_auto()` — its pending coroutines are gone).
+        `external_lookup` / `external_modules` / `os` are captured for
+        `resume_auto()`, with the same restored-snapshot caveats as the sync
+        method (they are passed again, and a restored `FutureSnapshot` cannot be
+        driven with `resume_auto()` — its pending coroutines are gone).
         `state` may be an ID, as in `load_session`.
         """
 

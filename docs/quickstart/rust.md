@@ -111,7 +111,14 @@ name, or the `await` the main task is blocked on.
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 
-[`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options.
+[`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options,
+including `type_check_module_stubs`, one [`ModuleStub`](../api/rust/monty-types.md#modulestub) per host-provided
+module so that `import <module>` type-checks, and `mcp_servers`, the [`McpServer`](../api/rust/monty-pool.md#mcpserver)
+entries a serving relay connects to (a subprocess worker is never sent them).
+[`Checkout::get_types`](../api/rust/monty-pool.md#checkout) reports the module stubs in effect, which a relay extends
+with the ones it renders for its MCP servers.
+`ModuleStub::new` and `McpServer::new` refuse a name that is not an identifier or that the sandbox or its type checker
+already provides.
 `Checkout::worker_id()` identifies the worker within its pool, independent of PID reuse and transport;
 it returns `None` after the worker is released or discarded.
 `Checkout::pid()` is the subprocess-only OS diagnostic.

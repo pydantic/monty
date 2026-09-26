@@ -100,7 +100,7 @@ test('module stubs type-check imports and come back from getTypes', async () => 
 test('invalid module names are rejected', async () => {
   // the native binding refuses before dialing; the wasm child on `Configure`
   await t.throwsAsync(pool().checkout({ typeCheckModuleStubs: { json: '' } }), {
-    message: /module "json" is provided by the sandbox and cannot be replaced/,
+    message: /module "json" is provided by the sandbox or its type checker and cannot be replaced/,
   })
 })
 

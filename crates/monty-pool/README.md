@@ -227,10 +227,15 @@ A remote without persistence refuses `Checkout::dump` and `Checkout::restore` wi
 session carries on.
 
 `ReplConfig::mcp_servers` names MCP servers a serving relay connects to on the session's behalf and serves as
-importable modules, answering the sandbox's `import` and tool calls itself; subprocess workers ignore it.
+importable modules, answering the sandbox's `import` and tool calls itself; a subprocess worker is never sent it.
+An `McpServer`'s headers cross the WebSocket to the relay, which sends them only to the MCP server; its `Debug` names
+the headers without their values.
+`McpServer::new` refuses a module name that is not an identifier or that the sandbox or its type checker already
+provides, as `ModuleStub::new` does.
 `ReplConfig::type_check_module_stubs` gives the type checker one `.pyi` per host-provided module, and
 `Checkout::get_types` reports the stubs in effect, which a relay extends with the ones it renders for its MCP servers.
-A peer that predates `GetTypes` answers it with a `FatalError`, ending the session.
+A worker that predates `GetTypes` answers it with an `Error` (`PoolError::Runtime`) and the session carries on, a
+suspended feed still resumable.
 With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
 checkout redials, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
 session's ID.
