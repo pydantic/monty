@@ -222,3 +222,30 @@ try:
     assert False, 'expected str to fail'
 except TypeError as exc:
     assert str(exc) == '__str__ returned non-string (type int)'
+
+
+# === type names survive argument cleanup, even for temporary classes ===
+def local_instance():
+    class Local:
+        pass
+
+    return Local()
+
+
+try:
+    len(local_instance())
+    assert False, 'expected len to fail'
+except TypeError as exc:
+    assert str(exc) == "object of type 'Local' has no len()"
+
+try:
+    'abc'.encode(errors=local_instance())
+    assert False, 'expected encode errors to fail'
+except TypeError as exc:
+    assert str(exc) == "encode() argument 'errors' must be str, not Local"
+
+try:
+    'abc'.encode(type('Ephemeral', (), {})())
+    assert False, 'expected encode encoding to fail'
+except TypeError as exc:
+    assert str(exc) == "encode() argument 'encoding' must be str, not Ephemeral"

@@ -16,17 +16,23 @@ use crate::{
 /// Pass `max_bytes: None` to opt out on trusted hosts.
 pub const DEFAULT_MAX_PRINT_COLLECT_BYTES: usize = 10 * 1024 * 1024;
 
+/// Host bytes charged for each retained `(stream, text)` entry beyond its text.
+///
+/// A retained entry costs about 32 bytes in the vector plus its `String`'s own
+/// allocation, none of which is text. Charging only the text would let a run
+/// that starts a fresh entry per byte — one that alternates between the two
+/// streams — occupy roughly 64x the host memory the cap accounts for.
+pub const COLLECT_STREAMS_ENTRY_OVERHEAD: usize = 64;
+
 /// Identifies the output stream for a single print fragment.
 ///
-/// Today the `print()` builtin only writes to `Stdout`. The `Stderr` variant is
-/// included for forward compatibility with a future `print(..., file=sys.stderr)`
-/// implementation so the collected-output API shape does not have to change when
-/// that lands.
+/// `print()` writes to `Stdout` unless it is given `file=sys.stderr`, which is
+/// the only way sandboxed code can reach `Stderr`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrintStream {
-    /// Standard output — the default for every `print()` call today.
+    /// Standard output, the default for a `print()` call with no `file=`.
     Stdout,
-    /// Standard error — reserved for future `print(..., file=sys.stderr)` support.
+    /// Standard error, reached by `print(..., file=sys.stderr)`.
     Stderr,
 }
 
@@ -59,19 +65,20 @@ pub enum PrintWriter<'a> {
     /// Second field: max collected bytes (`None` = unlimited). Exceeding raises
     /// `MemoryError` with the same message as [`ResourceError::Memory`].
     CollectString(&'a mut String, Option<usize>),
-    /// Collect all output as `(stream, text)` tuples.
+    /// Collect all output as `(stream, text)` entries.
     ///
-    /// The builtin `print()` implementation calls `stdout_write` for each argument
-    /// and `stdout_push` for each separator/terminator. To avoid one tuple per
-    /// fragment, this variant appends to the trailing tuple when it already matches
-    /// the current stream; a new tuple is only pushed when the stream changes.
-    /// So long as every write targets the same stream (the status quo today, since
-    /// `print()` only writes to stdout), a single `print(a, b)` call produces one
-    /// `(Stdout, "a b\n")` entry — and consecutive prints with `end=''` likewise
-    /// merge into a single trailing entry.
+    /// The builtin `print()` implementation calls `write` for each argument and
+    /// `push` for each separator/terminator. To avoid one entry per fragment,
+    /// [`CollectedStreams`] appends to the trailing entry when it already
+    /// matches the current stream; a new entry is only pushed when the stream
+    /// changes. So a run that stays on one stream collects a single entry
+    /// however many fragments it wrote, and one that alternates collects one
+    /// per run.
     ///
-    /// Second field: max collected bytes across all tuples (`None` = unlimited).
-    CollectStreams(&'a mut Vec<(PrintStream, String)>, Option<usize>),
+    /// Second field: the cap the collector's charge is checked against (`None`
+    /// = unlimited), which counts [`COLLECT_STREAMS_ENTRY_OVERHEAD`] per entry
+    /// as well as the text.
+    CollectStreams(&'a mut CollectedStreams, Option<usize>),
     /// Delegate to a custom callback.
     Callback(&'a mut dyn PrintWriterCallback),
 }
@@ -83,7 +90,7 @@ impl PrintWriter<'_> {
     }
 
     /// Collect into `buf` with the default [`DEFAULT_MAX_PRINT_COLLECT_BYTES`] cap.
-    pub fn collect_streams(buf: &mut Vec<(PrintStream, String)>) -> PrintWriter<'_> {
+    pub fn collect_streams(buf: &mut CollectedStreams) -> PrintWriter<'_> {
         PrintWriter::CollectStreams(buf, Some(DEFAULT_MAX_PRINT_COLLECT_BYTES))
     }
 
@@ -107,12 +114,19 @@ impl PrintWriter<'_> {
     ///
     /// This method writes only the given argument's text, without adding
     /// separators or a trailing newline. Separators (spaces) and the final
-    /// terminator (newline) are emitted via [`stdout_push`](Self::stdout_push).
-    pub fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+    /// terminator (newline) are emitted via [`push`](Self::push).
+    ///
+    /// `CollectString` keeps no stream labels, so a run that prints to both
+    /// streams interleaves them in one buffer. Use `CollectStreams` to tell
+    /// them apart.
+    pub fn write(&mut self, stream: PrintStream, output: Cow<'_, str>) -> Result<(), MontyException> {
         match self {
             Self::Disabled => Ok(()),
             Self::Stdout => {
-                print!("{output}");
+                match stream {
+                    PrintStream::Stdout => print!("{output}"),
+                    PrintStream::Stderr => eprint!("{output}"),
+                }
                 Ok(())
             }
             Self::CollectString(buf, max_bytes) => {
@@ -120,20 +134,26 @@ impl PrintWriter<'_> {
                 buf.push_str(&output);
                 Ok(())
             }
-            Self::CollectStreams(buf, max_bytes) => append_streams_str(buf, PrintStream::Stdout, &output, *max_bytes),
-            Self::Callback(cb) => cb.stdout_write(output),
+            Self::CollectStreams(buf, max_bytes) => buf.push_str(stream, &output, *max_bytes),
+            Self::Callback(cb) => match stream {
+                PrintStream::Stdout => cb.stdout_write(output),
+                PrintStream::Stderr => cb.stderr_write(output),
+            },
         }
     }
 
-    /// Appends a single character to the output.
+    /// Appends a single character to the given stream.
     ///
     /// Generally called to add spaces (separators) and newlines (terminators)
     /// within print output.
-    pub fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
+    pub fn push(&mut self, stream: PrintStream, end: char) -> Result<(), MontyException> {
         match self {
             Self::Disabled => Ok(()),
             Self::Stdout => {
-                print!("{end}");
+                match stream {
+                    PrintStream::Stdout => print!("{end}"),
+                    PrintStream::Stderr => eprint!("{end}"),
+                }
                 Ok(())
             }
             Self::CollectString(buf, max_bytes) => {
@@ -141,9 +161,22 @@ impl PrintWriter<'_> {
                 buf.push(end);
                 Ok(())
             }
-            Self::CollectStreams(buf, max_bytes) => append_streams_char(buf, PrintStream::Stdout, end, *max_bytes),
-            Self::Callback(cb) => cb.stdout_push(end),
+            Self::CollectStreams(buf, max_bytes) => buf.push_char(stream, end, *max_bytes),
+            Self::Callback(cb) => match stream {
+                PrintStream::Stdout => cb.stdout_push(end),
+                PrintStream::Stderr => cb.stderr_push(end),
+            },
         }
+    }
+
+    /// [`write`](Self::write) to [`PrintStream::Stdout`].
+    pub fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        self.write(PrintStream::Stdout, output)
+    }
+
+    /// [`push`](Self::push) to [`PrintStream::Stdout`].
+    pub fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
+        self.push(PrintStream::Stdout, end)
     }
 
     /// Whether this writer wants [`poll_flush`](Self::poll_flush) called at all.
@@ -162,6 +195,80 @@ impl PrintWriter<'_> {
             Self::Callback(cb) => cb.poll_flush(),
             _ => Ok(()),
         }
+    }
+}
+
+/// The buffer behind [`PrintWriter::CollectStreams`]: `(stream, text)` entries
+/// plus the running charge their cap is checked against.
+///
+/// The charge is carried rather than re-derived because the cap is checked on
+/// every fragment: summing the entries each time is O(entries), which a run
+/// alternating between the streams turns into quadratic work, since each switch
+/// starts a new entry. `pydantic_monty`'s collector keeps the same running
+/// charge for the same reason.
+#[derive(Debug, Default)]
+pub struct CollectedStreams {
+    entries: Vec<(PrintStream, String)>,
+    /// Text bytes plus [`COLLECT_STREAMS_ENTRY_OVERHEAD`] per entry, kept in
+    /// step with every append.
+    charged_bytes: usize,
+}
+
+impl CollectedStreams {
+    /// The collected fragments, in the order the sandbox produced them.
+    #[must_use]
+    pub fn entries(&self) -> &[(PrintStream, String)] {
+        &self.entries
+    }
+
+    /// Takes the collected fragments, leaving the buffer empty.
+    #[must_use]
+    pub fn into_entries(self) -> Vec<(PrintStream, String)> {
+        self.entries
+    }
+
+    /// Appends a string fragment, merging into the trailing entry when the
+    /// stream matches.
+    fn push_str(&mut self, stream: PrintStream, text: &str, max_bytes: Option<usize>) -> Result<(), MontyException> {
+        let starts_entry = self.starts_entry(stream);
+        self.charge(text.len(), starts_entry, max_bytes)?;
+        match self.entries.last_mut() {
+            Some((s, existing)) if *s == stream => existing.push_str(text),
+            _ => self.entries.push((stream, text.to_owned())),
+        }
+        Ok(())
+    }
+
+    /// Appends a single character, merging into the trailing entry when the
+    /// stream matches.
+    fn push_char(&mut self, stream: PrintStream, ch: char, max_bytes: Option<usize>) -> Result<(), MontyException> {
+        let starts_entry = self.starts_entry(stream);
+        self.charge(ch.len_utf8(), starts_entry, max_bytes)?;
+        match self.entries.last_mut() {
+            Some((s, existing)) if *s == stream => existing.push(ch),
+            _ => self.entries.push((stream, String::from(ch))),
+        }
+        Ok(())
+    }
+
+    /// Whether a fragment on `stream` would start an entry rather than extend
+    /// the trailing one.
+    fn starts_entry(&self, stream: PrintStream) -> bool {
+        !matches!(self.entries.last(), Some((s, _)) if *s == stream)
+    }
+
+    /// Checks a fragment's `add` text bytes against the cap and books them,
+    /// with [`COLLECT_STREAMS_ENTRY_OVERHEAD`] on top when it starts an entry.
+    /// The charge is left untouched when the cap refuses the fragment.
+    fn charge(&mut self, add: usize, starts_entry: bool, max_bytes: Option<usize>) -> Result<(), MontyException> {
+        let add = if starts_entry {
+            add.saturating_add(COLLECT_STREAMS_ENTRY_OVERHEAD)
+        } else {
+            add
+        };
+        check_print_collect_limit(self.charged_bytes, add, max_bytes)?;
+        self.charged_bytes = self.charged_bytes.saturating_add(add);
+        Ok(())
     }
 }
 
@@ -188,43 +295,6 @@ pub fn check_print_collect_limit(
     }
 }
 
-/// Total UTF-8 bytes across all collect-streams tuples.
-fn streams_byte_len(buf: &[(PrintStream, String)]) -> usize {
-    buf.iter().map(|(_, s)| s.len()).sum()
-}
-
-/// Appends a string fragment to the collect-streams buffer, merging into the
-/// trailing tuple when the stream matches.
-fn append_streams_str(
-    buf: &mut Vec<(PrintStream, String)>,
-    stream: PrintStream,
-    text: &str,
-    max_bytes: Option<usize>,
-) -> Result<(), MontyException> {
-    check_print_collect_limit(streams_byte_len(buf), text.len(), max_bytes)?;
-    match buf.last_mut() {
-        Some((s, existing)) if *s == stream => existing.push_str(text),
-        _ => buf.push((stream, text.to_owned())),
-    }
-    Ok(())
-}
-
-/// Appends a single character to the collect-streams buffer, merging into the
-/// trailing tuple when the stream matches.
-fn append_streams_char(
-    buf: &mut Vec<(PrintStream, String)>,
-    stream: PrintStream,
-    ch: char,
-    max_bytes: Option<usize>,
-) -> Result<(), MontyException> {
-    check_print_collect_limit(streams_byte_len(buf), ch.len_utf8(), max_bytes)?;
-    match buf.last_mut() {
-        Some((s, existing)) if *s == stream => existing.push(ch),
-        _ => buf.push((stream, String::from(ch))),
-    }
-    Ok(())
-}
-
 /// Trait for custom output handling from the `print()` builtin function.
 ///
 /// Implement this trait and pass it via [`PrintWriter::Callback`] to capture
@@ -248,6 +318,20 @@ pub trait PrintWriterCallback {
     /// # Arguments
     /// * `end` - The character to print after the formatted output.
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException>;
+
+    /// Called for each formatted argument of a `print(..., file=sys.stderr)`.
+    ///
+    /// Defaults to [`stdout_write`](Self::stdout_write), so a host written
+    /// before stderr existed still receives the text instead of losing it.
+    fn stderr_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        self.stdout_write(output)
+    }
+
+    /// Adds a single character to stderr. Defaults to
+    /// [`stdout_push`](Self::stdout_push), as [`stderr_write`](Self::stderr_write) does.
+    fn stderr_push(&mut self, end: char) -> Result<(), MontyException> {
+        self.stdout_push(end)
+    }
 
     /// Gives a buffering implementation a chance to release what it holds.
     ///

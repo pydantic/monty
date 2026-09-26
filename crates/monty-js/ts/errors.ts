@@ -19,6 +19,21 @@ export interface Frame {
   sourceLine?: string
 }
 
+/**
+ * Where the expression that suspended execution is in the source, as
+ * `snapshot.position`. `start` and `end` are UTF-8 byte offsets into the
+ * source, `end` exclusive: slice `new TextEncoder().encode(source)`, not the
+ * string. `filename` names the source as a traceback frame does:
+ * `<python-input-N>` for the session's N-th feed, or `<string>` inside an
+ * `eval()` / `exec()` string. A worker that predates the field reports none:
+ * `filename` is then empty and both offsets 0.
+ */
+export interface SourceRange {
+  filename: string
+  start: number
+  end: number
+}
+
 /** Inner Python exception summary. */
 export interface ExceptionInfo {
   typeName: string
@@ -179,11 +194,9 @@ export class MontyTypingError extends MontyError {
 }
 
 /**
- * Raised when a worker process died: a hard crash (segfault, allocator abort
- * — the failure mode subprocess isolation exists to contain) or a watchdog
- * kill for exceeding `requestTimeout` / the `maxDurationSecs` backstop. The
- * session is lost; the pool replaces the worker, so other sessions and future
- * checkouts are unaffected.
+ * Raised when a worker fails to initialize or dies: a process crash, WASM
+ * trap, or watchdog kill for exceeding a request/duration deadline.
+ * If a session exists, it is lost; its pool can replace the worker on future checkouts.
  */
 export class MontyCrashedError extends MontyError {
   /** True when the worker was killed by a watchdog timeout. */
@@ -254,6 +267,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'TypeError',
   're.PatternError',
   'binascii.Error',
+  'binascii.Incomplete',
 ])
 
 /**
@@ -278,8 +292,7 @@ export function notCallableMessage(value: unknown): string {
 }
 
 /**
- * `__monty_type__` marker → the Python type its conversion produces. `Type`
- * and `BuiltinFunction` cannot round-trip and convert to reprs; a
+ * `__monty_type__` marker → the Python type its conversion produces. A
  * `ClassInstance` marker is named by its class (see [`pyTypeName`]); an
  * unknown marker converts as a plain dict.
  */
@@ -291,8 +304,8 @@ const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
   Time: 'time',
   TimeDelta: 'timedelta',
   TimeZone: 'timezone',
-  Type: 'repr',
-  BuiltinFunction: 'repr',
+  Type: 'type',
+  BuiltinFunction: 'builtin_function_or_method',
 }
 
 /** Python type name the JS value converts to (mirrors the Rust `js_to_monty`). */

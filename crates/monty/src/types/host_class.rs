@@ -5,7 +5,7 @@ use std::{
     mem,
 };
 
-use monty_types::{DictPairs, MontyClassType, MontyUuid};
+use monty_types::{MontyUuid, unstable::ClassTypeNode};
 
 use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
         HeapObjectRead, HeapRead, HeapReadOutput, HeapReader, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    types::Type,
+    types::{Type, Union},
     value::{EitherStr, Value},
 };
 
@@ -65,15 +65,6 @@ impl HostClass {
             class_id,
             attrs,
         }
-    }
-
-    /// Rebuilds the wire [`MontyClassType`] this instance's class crosses out
-    /// as. The worker sends the `type` branch of an instance with empty
-    /// `attrs` (the host resolves the class by id); on the way in a host may
-    /// fill them, and the class's type object refreshes from them.
-    #[must_use]
-    pub fn class_type(&self, heap: &Heap, interns: &Interns) -> MontyClassType {
-        host_class_type(heap, self.class_id).class_type(interns)
     }
 
     /// Returns the class name, read from the shared class entry.
@@ -307,7 +298,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 ///
 /// Each caller supplies its own field list via `field`, mapping an index to that
 /// field's name and a cloned value (dropped here). A cycle renders `...`, a
-/// `None` value `<?>`, and exhausting `max_duration` truncates `...[timeout]`.
+/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`.
 ///
 /// `field` is resolved immediately before that field is written, never all up
 /// front, so a `__repr__` that mutates a later field is observed — matching the
@@ -329,7 +320,7 @@ pub(crate) fn write_dataclass_repr<'h>(
     for i in 0..field_count {
         if i > 0 {
             // Same between-item checkpoint as sequence repr, so a wide instance
-            // cannot outrun `max_duration`.
+            // cannot outrun its time limit.
             if vm.heap.tracker.check_memory_time_every(i).is_err() {
                 f.write_str(", ...[timeout]")?;
                 break;
@@ -422,17 +413,17 @@ impl HostClassType {
         self.is_dataclass
     }
 
-    /// Rebuilds the wire [`MontyClassType`] this type object crosses out as —
+    /// Rebuilds the [`ClassTypeNode`] this type object crosses out as —
     /// minus `attrs`, which hold heap `Value`s: the object bridge converts
     /// and appends them when the type crosses out as a value.
     #[must_use]
-    pub fn class_type(&self, interns: &Interns) -> MontyClassType {
-        MontyClassType {
+    pub fn class_type(&self, interns: &Interns) -> ClassTypeNode {
+        ClassTypeNode {
             name: self.name.as_str(interns).to_owned(),
             id: self.type_id,
             host_defined: true,
             is_dataclass: self.is_dataclass,
-            attrs: DictPairs::default(),
+            attrs: Vec::new(),
         }
     }
 }
@@ -465,12 +456,38 @@ impl<'h> HeapRead<'h, HostClassType> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
+    /// Suspends as a `__call__` on the class's uuid: constructing a host class
+    /// is the host's own policy decision, not the sandbox's.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::MethodCall {
+            name: EitherStr::Heap("__call__".to_owned()),
+            args,
+            object_id: self.get(vm.heap).type_id(),
+        })
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Type
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_or(self, other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_ror(self, other, vm)
+    }
+
+    /// `Point[int]`: the host's class may define `__class_getitem__`, but the
+    /// sandbox never asks it, so this is the wording for a type without one.
+    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        Err(ExcType::type_error_type_not_subscriptable(
+            self.get(vm.heap).name(vm.interns),
+        ))
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {

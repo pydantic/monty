@@ -5,7 +5,7 @@
 For running untrusted code, use [`monty-pool`](https://crates.io/crates/monty-pool):
 
 ```bash
-cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-thread
+cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-thread,monty-types/tzdb
 ```
 
 Workers are `monty` CLI binaries: build one with `cargo build -p monty-runtime` from the
@@ -15,7 +15,7 @@ Workers are `monty` CLI binaries: build one with `cargo build -p monty-runtime` 
 The in-process interpreter is the [`monty`](https://crates.io/crates/monty) crate:
 
 ```bash
-cargo add monty monty-types
+cargo add monty monty-types --features monty-types/tzdb
 ```
 
 | Crate                                                                 | What it is                                                  |
@@ -33,6 +33,16 @@ Host-side crates depend on `monty-types`, not on `monty`, so the interpreter is 
 at all; `monty-proto` links it only with its `worker` feature, which the workers enable.
 The [Rust API](../api/rust/monty.md) pages document `monty`, `monty-pool`, `monty-types`, `monty-fs`, `monty-proto` and
 `monty-type-checking`.
+
+Custom OS handlers can use `monty_types::normalize_virtual_path` after validating the received path.
+It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](../filesystem.md#working-directory)
+for validation order and access checks.
+
+Build inputs with [`MontyObject`](../api/rust/monty-types.md#montyobject) constructors and inspect them with `as_ref()`.
+The builders on [`CallArgs`](../api/rust/monty-types.md#callargs) and [`NamedValues`](../api/rust/monty-types.md#namedvalues)
+accept owned values; their iterators return [`ObjectRef`](../api/rust/monty-types.md#objectref) views.
+Representation APIs under [`monty_types::unstable`](../api/rust/monty-types.md#unstable)
+carry no API compatibility guarantee.
 
 ## Two ways to run Monty
 
@@ -82,7 +92,9 @@ async fn main() -> Result<(), PoolError> {
 ```
 
 [`Checkout::feed`](../api/rust/monty-pool.md#checkout) takes the code, inputs (host values bound as sandbox globals), per-feed filesystem mounts
-([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink.
+([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink;
+[`Checkout::feed_with_cwd`](../api/rust/monty-pool.md#checkout) also sets the sandbox's
+[working directory](../filesystem.md#working-directory), which otherwise defaults to the first mount.
 It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 
 | `TurnEvent`                                                             | Meaning                                                                                                                                                                | Answer with                                                                      |
@@ -93,11 +105,20 @@ It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 | [`NameLookup { name, object_id }`](../api/rust/monty-pool.md#turnevent) | The sandbox read an undefined name, or a lazy attribute of a host object when `object_id` is `Some`                                                                    | [`Checkout::resume_name_lookup`](../api/rust/monty-pool.md#checkout)             |
 | [`ResolveFutures { .. }`](../api/rust/monty-pool.md#turnevent)          | Every sandbox task is blocked on host futures                                                                                                                          | [`Checkout::resume_futures`](../api/rust/monty-pool.md#checkout)                 |
 
+Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
+name, or the `await` the main task is blocked on.
+
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 
 [`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options.
+`Checkout::worker_id()` identifies the worker within its pool, independent of PID reuse and transport;
+it returns `None` after the worker is released or discarded.
+`Checkout::pid()` is the subprocess-only OS diagnostic.
+
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
+Restore only unmodified snapshots whose provenance and integrity the caller has established;
+see [snapshot security](../security.md#deserializing-snapshots).
 
 ### What the pool adds over in-process execution
 
@@ -105,7 +126,8 @@ trusted back into the pool.
     the pool discards the worker and spawns a replacement.
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds `request_timeout`
     ([`PoolError::Timeout`](../api/rust/monty-pool.md#poolerror)), catching hangs the in-sandbox limits cannot see.
-    With a `max_duration` budget the deadline also enforces that from outside the child, plus `duration_limit_grace`.
+    With a `max_feed_duration` or `max_turn_duration` budget the deadline also enforces that from
+    outside the child, each plus its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`).
     [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) sets neither `request_timeout` nor `checkout_timeout` by default; set `request_timeout`
     yourself for untrusted code.
 - **Suspension limits** — the pool counts external calls, OS calls, name lookups and future-resolution turns against
@@ -119,13 +141,24 @@ Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool
 usable.
 Memory and time limits return `PoolError::Runtime` with a `MemoryError` or `TimeoutError`, but
 [no guarantees hold about heap state afterwards](../resource-limits.md#after-a-limit-fires).
-A spent `max_duration` rejects every later `feed`.
+`max_feed_duration` and `max_turn_duration` both restart, so a later feed runs against a heap you can no longer
+trust.
 Finish the checkout and take a fresh one.
 
 `max_suspensions` also returns `PoolError::Runtime`, but leaves the session consistent.
 Later feeds run until they suspend; the count remains spent.
 
 ### Transports
+
+Custom protobuf transports should decode protocol messages through
+[`decode_frame`](../api/rust/monty-proto.md#decode_frame) or [`FrameReader`](../api/rust/monty-proto.md#framereader).
+Both manage the per-frame allocation budget automatically, including cleanup on errors or unwinding.
+Raw `prost::Message::decode` calls fail if they attempt an allocation without a frame budget.
+Protocol repeated fields and byte buffers use [`BudgetVec`](../api/rust/monty-proto.md#budgetvec); convert standard vectors with `.into()` and recover them with `.into_inner()` without copying.
+Reference containers use [`WireIndexes`](../api/rust/monty-proto.md#wireindexes), [`WireNodePairs`](../api/rust/monty-proto.md#wirenodepairs) and [`WireNamedTuple`](../api/rust/monty-proto.md#wirenamedtuple), with domain `NodeId`s rather than raw protobuf integers.
+Host construction and cloning do not use the decode budget.
+See the [monty-proto README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+for the budget's scope.
 
 [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` children over framed stdio.
 These are the poolable workers: prewarmed, reused across checkouts, replaced on crash.
@@ -153,13 +186,17 @@ def fib(n):
 fib(x)
 "#;
 
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyObject::Int(55));
+let mut runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
+let result = runner.run(vec![MontyObject::int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+assert_eq!(result, MontyObject::int(55));
 ```
 
+[`CompileOptions`](../api/rust/monty-types.md#compileoptions) also carries `source_scan_threshold`, the source length in bytes
+above which a pre-parse nesting scan runs (4 KiB by default); see [source nesting depth](../limitations/language.md#source-nesting-depth).
+
 Errors come back as [`MontyException`](../api/rust/monty-types.md#montyexception), with a traceback matching what CPython would produce.
-[`PrintWriter`](../api/rust/monty-types.md#printwriter) controls where `print()` output goes: `Stdout`, `Disabled`, or collected into a `String` or `(stream, text)` tuples.
+[`PrintWriter`](../api/rust/monty-types.md#printwriter) controls where `print()` output goes: `Stdout`, `Disabled`, or collected — into a `String`, or into a
+`CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
 ### Resource limits
 
@@ -171,14 +208,69 @@ use monty_types::{CompileOptions, PrintWriter, ResourceLimits, ResourceTracker};
 
 let limits = ResourceLimits {
     max_memory: Some(10 * 1024 * 1024),
-    max_duration: Some(Duration::from_millis(20)),
+    max_feed_duration: Some(Duration::from_millis(20)),
     ..ResourceLimits::default()
 };
 
-let runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![], CompileOptions::default()).unwrap();
+let mut runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![], CompileOptions::default()).unwrap();
 let err = runner.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout).unwrap_err();
-assert!(err.to_string().contains("time limit exceeded"));
+assert!(err.to_string().contains("feed time limit exceeded"));
 ```
+
+### The clock, sleeping and entropy
+
+Both `run` and `start` answer clock calls from the system clock and seed unseeded generators from OS entropy.
+Sleeps are capped at ten seconds per call.
+`run` waits inline; `start` returns `RunProgress::OsCall` with `SystemSleep` or `AsyncSystemSleep`.
+Wait for the requested delay and answer with `None`, or a future for `asyncio.sleep()`:
+
+```rust
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
+
+let code = "from datetime import date\ndate.today().year";
+let mut runner = MontyRun::new(code.to_owned(), "today.py", vec![], CompileOptions::default()).unwrap();
+let year = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
+```
+
+`with_os_policy` configures each operation.
+`DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, `SandboxTimeZone::named` takes an IANA zone name, and
+`RandomStart::Seed` seeds `random` for reproducible runs.
+`named` needs a tz database, which is a `monty-types` feature: `tzdb` reads the OS copy (`TZDIR`, `/usr/share/zoneinfo`)
+and falls back to a bundled one, `tzdb-bundled` uses only the bundle.
+Without either, every name is unknown.
+`SleepMode::Zero` skips waits; `SleepMode::System(max)` sets their cap.
+`ProcessTime::Zero` (the default) keeps `time.process_time()` at zero; `ProcessTime::Elapsed` reports the session's
+execution time.
+`CallHost` delegates through `RunProgress::OsCall` under `start`, or raises `NotImplementedError` under `run`:
+
+```rust
+use monty::MontyRun;
+use monty_types::{
+    OsPolicy, CompileOptions, DateTimeSource, MontyObject, PrintWriter, ProcessTime, RandomSeed, RandomStart,
+    ResourceTracker, SandboxTimeZone, SleepMode,
+};
+
+let calls = OsPolicy {
+    datetime: DateTimeSource::Fixed { unix_seconds: 1_700_000_000, microsecond: 0 },
+    timezone: SandboxTimeZone::Fixed { offset_seconds: 0, name: Some("UTC".to_owned()) },
+    sleep: SleepMode::Zero,
+    process_time: ProcessTime::Zero,
+    random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+};
+let code = "import random, time\nfrom datetime import date\ntime.sleep(3600)\n(date.today().year, random.random())";
+let mut runner = MontyRun::new(code.to_owned(), "fixed.py", vec![], CompileOptions::default())
+    .unwrap()
+    .with_os_policy(calls);
+let result = runner.run(vec![], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+// CPython: random.seed(42); random.random()
+assert_eq!(result, MontyObject::tuple([MontyObject::int(2023), MontyObject::float(0.6394267984578837)]));
+```
+
+Every pool session takes the same struct as `ReplConfig::os_policy` (see [the clock](../security.md#the-clock)).
+`os.urandom()` is the one call with no in-process answer: under `run` it raises `NotImplementedError`, under `start`
+it pauses for the host (see [random](../limitations/random.md)).
 
 ### Host functions and pausing
 
@@ -193,22 +285,24 @@ let code = "data = get_data(3)\ndata * 2";
 let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned()], CompileOptions::default()).unwrap();
 
 // pass the external function in as an input
-let get_data = MontyObject::Function { name: "get_data".to_owned(), docstring: None };
+let get_data = MontyObject::function("get_data".to_owned(), None);
 let progress = runner.start(vec![get_data], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 
 // execution pauses at the `get_data(3)` call
 let RunProgress::FunctionCall(call) = progress else { panic!("expected a function call") };
 assert_eq!(call.function_name, "get_data");
-assert_eq!(call.args, vec![MontyObject::Int(3)]);
+assert_eq!(call.args.arg(0).unwrap(), MontyObject::int(3));
 
 // the host computes the result and resumes
-let progress = call.resume(MontyObject::Int(21), PrintWriter::Stdout).unwrap();
+let progress = call.resume(MontyObject::int(21), PrintWriter::Stdout).unwrap();
 let RunProgress::Complete(result) = progress else { panic!("expected completion") };
-assert_eq!(result, MontyObject::Int(42));
+assert_eq!(result, MontyObject::int(42));
 ```
 
 Async host functions work the same way: [`FunctionCall::resume_pending`](../api/rust/monty.md#functioncall) continues with a pending future the sandboxed
 code can `await`, and when every task is blocked the run yields [`RunProgress::ResolveFutures`](../api/rust/monty.md#runprogress) for the host to settle.
+When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
+result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
 [`FunctionCall`](../api/rust/monty.md#functioncall), [`OsCall`](../api/rust/monty.md#oscall), [`NameLookup`](../api/rust/monty.md#namelookup) and [`ResolveFutures`](../api/rust/monty.md#resolvefutures) expose `abort`, which raises a host-supplied
 [`MontyException`](../api/rust/monty-types.md#montyexception) uncatchably at the suspension point and unwinds the run with a traceback.
@@ -219,7 +313,10 @@ A host driving the interpreter directly must count suspensions and call `abort` 
 
 The free function `monty::dump` serializes a session — idle between feeds ([`SessionRef::Idle`](../api/rust/monty.md#sessionref)) or suspended mid-run
 ([`SessionRef::Suspended`](../api/rust/monty.md#sessionref)) — together with its script name and type-check state.
-[`Dump::load`](../api/rust/monty.md#dump) restores it, in the same process or a different one:
+[`Dump::load`](../api/rust/monty.md#dump) restores it, in the same process or a different one.
+Both this method and direct serde deserialization require unmodified bytes from a trusted, compatible Monty producer.
+The caller must establish provenance and integrity; invalid snapshots have no correctness or availability guarantees.
+See [snapshot security](../security.md#deserializing-snapshots).
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
@@ -234,16 +331,17 @@ let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
 // later, restore and keep going
 let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else { panic!() };
 let result = restored.feed_run("x + 2", vec![], PrintWriter::Stdout).unwrap();
-assert_eq!(result, MontyObject::Int(42));
+assert_eq!(result, MontyObject::int(42));
 ```
 
 ### Other pieces
 
 - [`MontyRepl`](../api/rust/monty.md#montyrepl) — feed code snippet by snippet with state persisting between snippets.
-- The `fs` module — mount host directories into the sandbox at virtual paths, with path resolution hardened against
+- [`monty-fs`](../api/rust/monty-fs.md) — mount host directories into the sandbox at virtual paths, with path resolution hardened against
     escapes.
     See [filesystem access](../filesystem.md).
 - [`RunProgress::OsCall`](../api/rust/monty.md#runprogress) and [`RunProgress::NameLookup`](../api/rust/monty.md#runprogress) — the filesystem/`os` operations and undefined-name reads the host
     intercepts.
-- [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup) — set for method calls and lazy attribute lookups routed to a
-    host object sent as [`MontyObject::ClassInstance`](../api/rust/monty-types.md#montyobject) or [`MontyObject::Type`](../api/rust/monty-types.md#montyobject); the receiver is not in `args`.
+- [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup)
+    identify the host receiver for routed calls and lookups, including class construction via `__call__`.
+    Plain calls and lookups carry `None`.

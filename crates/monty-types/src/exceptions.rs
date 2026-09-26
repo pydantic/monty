@@ -23,10 +23,6 @@ pub struct MontyException {
     /// Stack trace of the exception, first is the outermost frame shown first in the traceback
     traceback: Vec<StackFrame>,
     /// Structured payload for exception types that carry more than a message.
-    /// No `skip_serializing_if`: exceptions round-trip through
-    /// non-self-describing snapshot formats where skipped fields break
-    /// deserialization.
-    #[serde(default)]
     data: ExcData,
 }
 
@@ -379,9 +375,16 @@ pub enum ExcType {
     /// `binascii.Error` - raised by the `base64` codecs for malformed input.
     ///
     /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
-    /// Monty's `binascii` module exposes this class and nothing else.
     #[strum(serialize = "binascii.Error")]
     BinasciiError,
+
+    /// `binascii.Incomplete` - a direct `Exception` subclass, not a `ValueError`.
+    ///
+    /// Nothing raises it: the `a2b_hqx` family it belonged to left CPython in
+    /// 3.11, so the class survives only for `except binascii.Incomplete:` in
+    /// older code. Monty exposes it for the same reason.
+    #[strum(serialize = "binascii.Incomplete")]
+    BinasciiIncomplete,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -515,7 +518,7 @@ pub struct UnicodeErrorData {
 #[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum UnicodeErrorObject {
     /// A decode error's input `bytes`.
-    Bytes(Vec<u8>),
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     /// An encode error's input `str`.
     Str(String),
 }
@@ -722,8 +725,10 @@ impl fmt::Display for StackFrame {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeLoc {
     /// Line number (1-based).
+    #[serde(rename = "L")]
     pub line: u32,
     /// Column number (1-based), counted in characters (not bytes).
+    #[serde(rename = "C")]
     pub column: u32,
 }
 
@@ -746,6 +751,55 @@ impl CodeLoc {
         Self {
             line: line.saturating_add(1),
             column: column.saturating_add(1),
+        }
+    }
+}
+
+/// The source range of the expression that suspended execution, carried by
+/// every suspension.
+///
+/// `start` and `end` are UTF-8 byte offsets into the named source, `end`
+/// exclusive: slice the source's bytes (in Python, `source.encode()[start:end]`)
+/// rather than indexing the string. A peer that sends no position reads as
+/// [`Self::unknown`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct SourceRange {
+    /// The source the range indexes, named as a traceback frame names it: an
+    /// in-process one-shot run's script name, `<python-input-N>` for a feed,
+    /// `<string>` in `eval()` / `exec()`.
+    pub filename: String,
+    /// Byte offset where the expression starts.
+    pub start: u32,
+    /// Byte offset where the expression ends (exclusive).
+    pub end: u32,
+}
+
+impl SourceRange {
+    /// Longest `filename` a range carries, in bytes, so a peer cannot make hosts copy a huge name.
+    pub const MAX_FILENAME_LEN: usize = 256;
+
+    /// Builds a range, cutting `filename` on a char boundary.
+    #[must_use]
+    pub fn new(filename: &str, start: u32, end: u32) -> Self {
+        let mut len = filename.len().min(Self::MAX_FILENAME_LEN);
+        while !filename.is_char_boundary(len) {
+            len -= 1;
+        }
+        Self {
+            filename: filename[..len].to_owned(),
+            start,
+            end,
+        }
+    }
+
+    /// The range a host reports when its peer sent no position: an empty
+    /// filename and an empty range at offset zero.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            filename: String::new(),
+            start: 0,
+            end: 0,
         }
     }
 }

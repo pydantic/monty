@@ -88,9 +88,9 @@ if (!existsSync(component)) throw new Error(`missing wasm component bindings: ${
 packAndValidate(root, 'monty-main.tgz', [
   'dist/index.js',
   'dist/node.js',
+  'dist/shared.js',
   'dist/worker/index.js',
   'dist/worker/index.node.js',
-  'dist/worker/index.browser.js',
   'dist/worker/component/monty.component.js',
   'dist/worker/component/monty.component.core.wasm',
   'dist/worker/component/monty.component.core2.wasm',

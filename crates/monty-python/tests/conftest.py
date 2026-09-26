@@ -8,13 +8,12 @@ from typing import Any, Callable, Literal, Protocol
 import pytest
 
 from pydantic_monty import (
-    AbstractOS,
     CollectStreams,
     CollectString,
     Monty,
     MontySession,
     MountDir,
-    OsFunction,
+    OsHandler,
     ResourceLimits,
 )
 
@@ -31,10 +30,16 @@ class RunMonty(Protocol):
         | CollectString
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        cwd: str | None = None,
+        os: OsHandler | None = None,
         skip_type_check: bool = False,
         limits: ResourceLimits | None = None,
+        checkout: dict[str, Any] | None = None,
     ) -> Any: ...
+
+
+CALL_HOST: dict[str, Any] = {'os_policy': {'datetime': 'call_host', 'sleep': 'call_host'}}
+"""`checkout=` kwargs routing the clock and the sleeps to the `os=` handler."""
 
 
 @pytest.fixture(scope='session')
@@ -66,17 +71,20 @@ def monty_run(pool: Monty) -> RunMonty:
         | CollectString
         | None = None,
         mount: MountDir | list[MountDir] | None = None,
-        os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
+        cwd: str | None = None,
+        os: OsHandler | None = None,
         skip_type_check: bool = False,
         limits: ResourceLimits | None = None,
+        checkout: dict[str, Any] | None = None,
     ) -> Any:
-        with pool.checkout(limits=limits) as s:
+        with pool.checkout(limits=limits, **(checkout or {})) as s:
             return s.feed_run(
                 code,
                 inputs=inputs,
                 external_lookup=external_lookup,
                 print_callback=print_callback,
                 mount=mount,
+                cwd=cwd,
                 os=os,
                 skip_type_check=skip_type_check,
             )

@@ -24,6 +24,7 @@ mod namespace;
 mod object_bridge;
 mod os_dispatch;
 mod parse;
+mod percent_format;
 mod predicate;
 mod prepare;
 mod repl;
@@ -32,23 +33,26 @@ mod run;
 mod run_progress;
 mod sorting;
 mod source_map;
+mod source_nesting;
 mod str_format;
 mod string_builder;
 mod stringize;
 mod types;
 mod value;
+mod virtual_path;
 
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use crate::function::FunctionMetadataFault;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{
-    dump_format::{DUMP_VERSION, Dump, DumpError, Session, SessionRef, dump},
+    dump_format::{
+        DUMP_VERSION, Dump, DumpDecodeError, DumpEncodeError, DumpError, MIN_SUPPORTED_DUMP_VERSION, Session,
+        SessionRef, dump,
+    },
     repl::{
-        MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
+        CheckedSource, MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
         ReplResolveFutures, ReplStartError, detect_repl_continuation_mode,
     },
     run::MontyRun,
     run_progress::{FunctionCall, NameLookup, OsCall, ResolveFutures, RunProgress},
+    source_nesting::source_within_nesting_bound,
 };

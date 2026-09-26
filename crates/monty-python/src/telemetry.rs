@@ -21,10 +21,12 @@ use opentelemetry::{
 };
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyImportError, PyRuntimeError, PyValueError},
     prelude::*,
     types::{PyBytes, PyDict, PyList},
 };
+
+use crate::callback_context::CALLBACK_SPAN_KEY;
 
 /// Installed bridge and process-global Rust tracing pipeline.
 struct InstalledBridge {
@@ -126,6 +128,69 @@ pub(crate) fn _install_telemetry(
     BRIDGE
         .set(InstalledBridge { bridge, handle })
         .map_err(|_| PyRuntimeError::new_err("Monty telemetry is already configured"))
+}
+
+/// Resolves a native callback parent to the span created by the host tracer.
+pub(crate) fn callback_context(py: Python<'_>, context: &Context) -> Option<Py<PyAny>> {
+    let bridge = &BRIDGE.get()?.bridge;
+    let span = callback_span(py, context)?;
+    let parent = bridge.helpers.set_span_in_context.bind(py).call1((&span,)).ok()?;
+    py.import("opentelemetry.context")
+        .ok()?
+        .call_method1("set_value", (CALLBACK_SPAN_KEY, span, parent))
+        .ok()
+        .map(Bound::unbind)
+}
+
+/// Captures feed/load context without requiring OpenTelemetry for ordinary execution.
+pub(crate) fn capture_otel_context(py: Python<'_>) -> Option<Py<PyAny>> {
+    py.import("opentelemetry.context")
+        .ok()?
+        .call_method0("get_current")
+        .ok()
+        .map(Bound::unbind)
+}
+
+/// Returns a suspension's span in its captured host context without activating it.
+pub(crate) fn snapshot_trace_context(
+    py: Python<'_>,
+    native: &Context,
+    captured: Option<&Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let module = py.import("opentelemetry.context").map_err(|err| {
+        if err.is_instance_of::<PyImportError>(py) {
+            PyImportError::new_err(
+                "trace_context() requires opentelemetry-api; install it with pip install opentelemetry-api",
+            )
+        } else {
+            err
+        }
+    })?;
+    let base = match captured {
+        Some(context) => context.clone_ref(py),
+        // If capture was unavailable, do not substitute an unrelated accessor caller's context.
+        None => module.getattr("Context")?.call0()?.unbind(),
+    };
+    let context = callback_span(py, native).and_then(|span| {
+        py.import("opentelemetry.trace")
+            .ok()?
+            .call_method1("set_span_in_context", (span, &base))
+            .ok()
+            .map(Bound::unbind)
+    });
+    Ok(context.unwrap_or(base))
+}
+
+/// Resolves the Rust span key to the host SDK's span, whose IDs may differ.
+fn callback_span(py: Python<'_>, context: &Context) -> Option<Py<PyAny>> {
+    let bridge = &BRIDGE.get()?.bridge;
+    let span = context.span();
+    let span = span.span_context();
+    let key = SpanKey {
+        trace_id: span.trace_id(),
+        span_id: span.span_id(),
+    };
+    lock(&bridge.spans).get(&key).map(|state| state.span.clone_ref(py))
 }
 
 /// The pool metrics handle when a meter was installed.

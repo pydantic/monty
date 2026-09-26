@@ -86,6 +86,16 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # packaging resolves every crate's dependencies against crates.io, which
+      # catches manifests that only break at release time (e.g. a versioned
+      # path dependency on a crate that is not published yet)
+      - name: Check the workspace packages for crates.io
+        run: make check-publish
+
+      # the str character-property tables are generated from the pinned CPython
+      - name: Check generated str Unicode tables are in sync
+        run: make check-unicode-type
+
       # rustdoc JSON is nightly-only and format-unstable, so the API reference
       # is generated with the exact nightly matching monty-apidoc's pinned
       # `rustdoc-types` (see crates/monty-apidoc/src/main.rs)
@@ -265,6 +275,7 @@ jobs:
           eval "$(cargo llvm-cov show-env --export-prefix)"
           cargo llvm-cov clean --workspace
           uv run maturin develop --uv -m crates/monty-python/Cargo.toml
+          cargo test -p pydantic-monty-client --lib
           uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests
           cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
           cargo llvm-cov report --codecov --output-path=python-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
@@ -326,7 +337,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.14t']
 
     env:
       UV_PYTHON: ${{ matrix.python-version }}
@@ -343,6 +354,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          # `pyo3-ffi` bakes in the ABI of the interpreter it was built against, and
+          # free-threaded builds lay `PyObject` out differently. Without the version in
+          # the key every entry in this matrix shares one cache, breaking 3.14t
+          key: ${{ matrix.python-version }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
@@ -351,6 +366,9 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
 
       - run: uv sync --all-packages --only-dev
+      # workaround for https://github.com/PyO3/maturin/pull/3299
+      # (dev-py doesn't invalidate all cache properly)
+      - run: cargo clean -p pyo3-ffi
       - run: make dev-py
       - run: make pytest
         # also test with a release build
@@ -514,6 +532,8 @@ jobs:
       - test-rust-os
       - test-python
       - test-js
+      - test-js-packages
+      - test-js-browser-package
       - test-browser
       - bench-test
       - fuzz
@@ -523,6 +543,9 @@ jobs:
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           jobs: ${{ toJSON(needs) }}
+          # Match the full-build condition below; unexpected skips must still fail the check.
+          allowed-skips: >-
+            ${{ (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)) && '[]' || '["test-js-packages", "test-js-browser-package"]' }}
 
   # Publish the docs source read by pydantic/unified-docs: docs/, mkdocs.yml,
   # the Python package (for the `::: pydantic_monty` autodoc block) and the
@@ -728,14 +751,14 @@ jobs:
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.14'
+          python-version: '3.14t'
 
       - name: build Python wheels
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
+          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14 3.14t
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-python
@@ -762,10 +785,13 @@ jobs:
           args: --release ${{ matrix.pgo-args }} --out dist
           rust-toolchain: stable
           rustup-components: ${{ matrix.pgo-runtime && 'llvm-tools-preview' || '' }}
-          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME
+          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME -e CFLAGS_s390x_unknown_linux_gnu
           working-directory: crates/monty-runtime
         env:
           PGO_RUNTIME: ${{ matrix.pgo-runtime }}
+          # The s390x cross assembler defaults to z900, which lacks the `lay`
+          # instruction `psm` (via ruff's `stacker`) uses; z10 is Rust's baseline.
+          CFLAGS_s390x_unknown_linux_gnu: -march=z10
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -891,7 +917,7 @@ jobs:
         run: |
           ls -lhR dist/
           ls -1 dist/ | wc -l
-          echo "Expected 76 files (5 Python versions × 12 platform variants + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          echo "Expected 88 files (6 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
@@ -1311,8 +1337,38 @@ jobs:
         run: npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.platform.triple }}.tgz --force --no-save --no-package-lock
         working-directory: crates/monty-js/smoke-test
 
-      - name: Import package and run a worker
-        run: node package-smoke.mjs
+      - name: Exercise the packed Node package
+        run: npm run test:node
+        working-directory: crates/monty-js/smoke-test
+
+  test-js-browser-package:
+    name: test packed JS package in browser
+    needs:
+      - assemble-js-packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Download package tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: js-package-tarballs
+          path: crates/monty-js/package-tarballs
+
+      - name: Install packed package
+        run: npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-linux-x64-gnu.tgz --force --no-save --no-package-lock
+        working-directory: crates/monty-js/smoke-test
+
+      - name: Exercise the packed browser package
+        run: npx playwright install --with-deps chromium && npm run test:browser
         working-directory: crates/monty-js/smoke-test
 
   test-js-musl-packages:
@@ -1356,6 +1412,7 @@ jobs:
       - test-js
       - test-js-packages
       - test-js-musl-packages
+      - test-js-browser-package
       - test-browser
       - release-python
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))

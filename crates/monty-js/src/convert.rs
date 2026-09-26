@@ -1,38 +1,41 @@
-//! Bidirectional conversion between Monty's `MontyObject` and JavaScript
-//! values via napi-rs (`monty_to_js` / `js_to_monty`).
+//! Conversion between value arenas and JavaScript values via napi-rs:
+//! [`DecodedArena`] / [`monty_to_js`] decode sandbox values, [`GraphEncoder`] /
+//! [`js_to_monty`] encode host values. One JS object referenced twice in a
+//! message crosses as one node, and one node decodes to one JS object.
 //!
 //! ## Type Mappings
 //!
 //! ### Native JS types (bidirectional):
-//! - `MontyObject::None` ↔ `null`
-//! - `MontyObject::Bool` ↔ `boolean`
-//! - `MontyObject::Int` ↔ `number` (if within safe integer range) or `BigInt`
-//! - `MontyObject::BigInt` ↔ `BigInt`
-//! - `MontyObject::Float` ↔ `number` (including `NaN`, `Infinity`, `-Infinity`)
-//! - `MontyObject::String` ↔ `string`
-//! - `MontyObject::Bytes` ↔ `Buffer` (Node.js)
-//! - `MontyObject::List` ↔ `Array`
-//! - `MontyObject::Dict` ↔ `Map` (preserves key types and insertion order)
-//! - `MontyObject::Set` ↔ `Set`
-//! - `MontyObject::FrozenSet` ↔ `Set` (JS has no frozen set)
+//! - `None` ↔ `null`
+//! - `Bool` ↔ `boolean`
+//! - `Int` ↔ `number` (if within safe integer range) or `BigInt`
+//! - `BigInt` ↔ `BigInt`
+//! - `Float` ↔ `number` (including `NaN`, `Infinity`, `-Infinity`)
+//! - `String` ↔ `string`
+//! - `Bytes` ↔ `Buffer` (Node.js)
+//! - `List` ↔ `Array`
+//! - `Dict` ↔ `Map` (preserves key types and insertion order)
+//! - `Set` ↔ `Set`
+//! - `FrozenSet` ↔ `Set` (JS has no frozen set)
 //!
 //! ### Marked JS types (with `__monty_type__` property):
-//! - `MontyObject::Ellipsis` → `{ __monty_type__: 'Ellipsis' }`
-//! - `MontyObject::Tuple` → `Array` with `__tuple__: true`
-//! - `MontyObject::Exception` → `{ __monty_type__: 'Exception', excType, message }`
-//! - `MontyObject::Type` → `{ __monty_type__: 'Type', value }`
-//! - `MontyObject::BuiltinFunction` → `{ __monty_type__: 'BuiltinFunction', value }`
-//! - `MontyObject::ClassInstance` → `{ __monty_type__: 'ClassInstance', type, instanceId, attrs }`
-//! - `MontyObject::FileHandle` ↔ `{ __monty_type__: 'FileHandle', path, mode, position }`
-//! - `MontyObject::Repr` → plain `string`
-//! - `MontyObject::Cycle` → placeholder `string`
+//! - `Ellipsis` → `{ __monty_type__: 'Ellipsis' }`
+//! - `Tuple` → `Array` with `__tuple__: true`
+//! - `Exception` → `{ __monty_type__: 'Exception', excType, message }`
+//! - `Type` ↔ `{ __monty_type__: 'Type', value }`
+//! - `BuiltinFunction` ↔ `{ __monty_type__: 'BuiltinFunction', value }`
+//! - `ClassInstance` → `{ __monty_type__: 'ClassInstance', type, instanceId, attrs }`
+//! - `FileHandle` ↔ `{ __monty_type__: 'FileHandle', path, mode, position }`
+//! - `Repr` → plain `string`
+//! - `Cycle` → placeholder `string`
 #![expect(unsafe_code, reason = "napi API is unsafe")]
 
-use std::{borrow::Cow, ptr};
+use std::{borrow::Cow, collections::HashMap, ptr, vec::IntoIter};
 
 use monty_types::{
-    DictPairs, ExcType, FileMode, MontyClassInstance, MontyClassType, MontyDate, MontyDateTime, MontyFileHandle,
-    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    BuiltinsFunctions, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
@@ -53,45 +56,99 @@ impl ToNapiValue for JsMontyObject<'_> {
     }
 }
 
-/// Converts a `MontyObject` to a JS value, using native JS types where
-/// possible (`number`/`BigInt`, `Map`, `Set`, `Buffer`, `__tuple__`-marked
-/// arrays). Types without a JS equivalent get `__monty_type__` marker
-/// properties so they round-trip.
-pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<'e>> {
-    let unknown = match obj {
-        MontyObject::None => create_js_null(env)?,
-        MontyObject::Ellipsis => create_js_ellipsis(env)?,
-        MontyObject::NotImplemented => create_js_not_implemented(env)?,
-        MontyObject::Bool(b) => create_js_bool(*b, env)?,
-        MontyObject::Int(i) => create_js_int(*i, env)?,
-        MontyObject::BigInt(bi) => create_js_bigint(bi, env)?,
-        MontyObject::Float(f) => env.create_double(*f)?.into_unknown(env)?,
-        MontyObject::String(s) => env.create_string(s)?.into_unknown(env)?,
-        MontyObject::Bytes(bytes) => create_js_buffer(bytes, env)?,
-        MontyObject::List(items) => create_js_array(items, env)?.into_unknown(env)?,
-        MontyObject::Tuple(items) => create_js_tuple(items, env)?,
+/// Converts one value to a JS value, using native JS types where possible
+/// (`number`/`BigInt`, `Map`, `Set`, `Buffer`, `__tuple__`-marked arrays).
+/// Types without a JS equivalent get `__monty_type__` marker properties so
+/// they round-trip.
+pub fn monty_to_js<'e>(value: &MontyObject, env: &'e Env) -> Result<JsMontyObject<'e>> {
+    let (graph, root) = unstable::graph_parts(value);
+    Ok(JsMontyObject(DecodedArena::new(graph, env)?.get(root)))
+}
+
+/// One message's arena decoded to JS values, one node at a time in arena
+/// order: every child exists before its holder, a node referenced twice is
+/// one JS object, and instances of one class share its `classType` object.
+/// A loop, not a recursion, so nesting depth never touches the native stack.
+pub struct DecodedArena<'e> {
+    built: Vec<Unknown<'e>>,
+}
+
+impl<'e> DecodedArena<'e> {
+    /// Decodes every node of `graph`.
+    pub fn new(graph: &MontyGraph, env: &'e Env) -> Result<Self> {
+        let mut built = Vec::with_capacity(graph.len());
+        for node in graph.nodes() {
+            let value = decode_node(node, graph, &built, env)?;
+            built.push(value);
+        }
+        Ok(Self { built })
+    }
+
+    /// The value for `id`, which the arena's validation put in range.
+    #[must_use]
+    pub fn get(&self, id: NodeId) -> Unknown<'e> {
+        self.built[id.index()]
+    }
+}
+
+/// Converts one node; every child id is lower, so already in `built`.
+fn decode_node<'e>(node: &MontyNode, graph: &MontyGraph, built: &[Unknown<'e>], env: &'e Env) -> Result<Unknown<'e>> {
+    let child = |id: &NodeId| built[id.index()];
+    let children = |ids: &[NodeId]| ids.iter().map(child).collect::<Vec<_>>();
+    match node {
+        MontyNode::None => create_js_null(env),
+        MontyNode::Ellipsis => create_js_ellipsis(env),
+        MontyNode::NotImplemented => create_js_not_implemented(env),
+        MontyNode::Bool(b) => create_js_bool(*b, env),
+        MontyNode::Int(i) => create_js_int(*i, env),
+        MontyNode::BigInt(bi) => create_js_bigint(bi, env),
+        MontyNode::Float(f) => env.create_double(*f)?.into_unknown(env),
+        MontyNode::String(s) => env.create_string(s)?.into_unknown(env),
+        MontyNode::Bytes(bytes) => create_js_buffer(bytes, env),
+        MontyNode::List(items) => create_js_array(&children(items), env)?.into_unknown(env),
+        MontyNode::Tuple(items) => create_js_tuple(&children(items), env),
         // NamedTuple is converted to a tuple (loses named access in JS)
-        MontyObject::NamedTuple { values, .. } => create_js_tuple(values, env)?,
-        MontyObject::Dict(pairs) => create_js_map(pairs, env)?,
-        MontyObject::Set(items) | MontyObject::FrozenSet(items) => create_js_set(items, env)?,
-        MontyObject::Exception { exc_type, arg } => create_js_exception(*exc_type, arg.as_deref(), env)?,
-        MontyObject::Date(date) => create_js_date(date, env)?,
-        MontyObject::DateTime(datetime) => create_js_datetime(datetime, env)?,
-        MontyObject::Time(time) => create_js_time(time, env)?,
-        MontyObject::TimeDelta(delta) => create_js_timedelta(delta, env)?,
-        MontyObject::TimeZone(timezone) => create_js_timezone(timezone, env)?,
-        MontyObject::Type(MontyType::Instance(class_type)) => create_js_class_type_marker(class_type, env)?,
-        MontyObject::Type(t) => create_js_type_marker(&t.to_string(), env)?,
-        MontyObject::BuiltinFunction(f) => create_js_builtin_function_marker(&f.to_string(), env)?,
-        MontyObject::ClassInstance(instance) => create_js_class_instance(instance, env)?,
-        MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
-        MontyObject::FileHandle(handle) => create_js_file_handle(handle, env)?,
-        MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
+        MontyNode::NamedTuple { values, .. } => create_js_tuple(&children(values), env),
+        MontyNode::Dict(pairs) => create_js_map(pairs.iter().map(|(k, v)| (child(k), child(v))), env),
+        MontyNode::Set(items) | MontyNode::FrozenSet(items) => create_js_set(&children(items), env),
+        MontyNode::Exception { exc_type, arg } => create_js_exception(*exc_type, arg.as_deref(), env),
+        MontyNode::Date(date) => create_js_date(date, env),
+        MontyNode::DateTime(datetime) => create_js_datetime(datetime, env),
+        MontyNode::Time(time) => create_js_time(time, env),
+        MontyNode::TimeDelta(delta) => create_js_timedelta(delta, env),
+        MontyNode::TimeZone(timezone) => create_js_timezone(timezone, env),
+        MontyNode::Type(t) => create_js_type_marker(&t.to_string(), env),
+        MontyNode::ClassType(class) => {
+            let mut obj = Object::new(env)?;
+            obj.set_named_property("__monty_type__", "Type")?;
+            obj.set_named_property("classType", create_js_class_type(class, graph, built, env)?)?;
+            obj.into_unknown(env)
+        }
+        MontyNode::BuiltinFunction(f) => create_js_builtin_function_marker(&f.to_string(), env),
+        MontyNode::ClassInstance {
+            class_type,
+            instance_id,
+            attrs,
+        } => {
+            // the `classType` decoded for the class node, shared by every instance;
+            // the TS layer maps the marker to the wrapped instance or a `MontyClassProxy`
+            let class_marker: Object = child(class_type).coerce_to_object()?;
+            let class_object: Object = class_marker.get_named_property("classType")?;
+            let mut obj = Object::new(env)?;
+            obj.set_named_property("__monty_type__", "ClassInstance")?;
+            obj.set_named_property("type", class_object)?;
+            // uuids as canonical lowercase strings — JS has no 128-bit integer type
+            obj.set_named_property("instanceId", instance_id.to_string())?;
+            obj.set_named_property("attrs", create_js_attr_pairs(attrs, graph, built, env)?)?;
+            obj.into_unknown(env)
+        }
+        MontyNode::Path(p) => env.create_string(p)?.into_unknown(env),
+        MontyNode::FileHandle(handle) => create_js_file_handle(handle, env),
+        MontyNode::Repr(s) | MontyNode::Cycle(s) => env.create_string(s)?.into_unknown(env),
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.
-        MontyObject::Function { name, .. } => env.create_string(name)?.into_unknown(env)?,
-    };
-    Ok(JsMontyObject(unknown))
+        MontyNode::Function { name, .. } => env.create_string(name)?.into_unknown(env),
+    }
 }
 
 /// Creates a JS null value.
@@ -149,12 +206,11 @@ fn create_js_buffer<'e>(bytes: &[u8], env: &'e Env) -> Result<Unknown<'e>> {
     buffer.into_unknown(env)
 }
 
-/// Creates a native JS Array from Monty list items, recursively converting each element.
-fn create_js_array<'e>(items: &[MontyObject], env: &'e Env) -> Result<Array<'e>> {
+/// Creates a native JS Array from already-decoded items.
+fn create_js_array<'e>(items: &[Unknown<'e>], env: &'e Env) -> Result<Array<'e>> {
     let mut arr = env.create_array(items.len().try_into().expect("array size overflows u32"))?;
     for (i, item) in items.iter().enumerate() {
-        let js_item = monty_to_js(item, env)?;
-        arr.set(i.try_into().expect("overflow on array index"), js_item)?;
+        arr.set(i.try_into().expect("overflow on array index"), *item)?;
     }
     Ok(arr)
 }
@@ -165,7 +221,7 @@ fn create_js_array<'e>(items: &[MontyObject], env: &'e Env) -> Result<Array<'e>>
 /// array-like access to tuple elements. The marker is non-enumerable so the
 /// array still compares deep-equal to a plain array of the same elements
 /// (and `Object.keys`/spreads see only the indices).
-fn create_js_tuple<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>> {
+fn create_js_tuple<'e>(items: &[Unknown<'e>], env: &'e Env) -> Result<Unknown<'e>> {
     let mut arr = create_js_array(items, env)?;
     let marker = create_js_bool(true, env)?;
     arr.define_properties(&[Property::new()
@@ -175,24 +231,26 @@ fn create_js_tuple<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e
     arr.into_unknown(env)
 }
 
-/// Creates a native JS `Map` from Monty dict pairs, recursively converting keys and values.
+/// Creates a native JS `Map` from already-decoded key/value pairs.
 ///
 /// Using `Map` instead of plain objects preserves:
 /// - Non-string key types (numbers, booleans, etc.)
 /// - Insertion order
 /// - Proper equality semantics for keys
-fn create_js_map<'e>(pairs: &DictPairs, env: &'e Env) -> Result<Unknown<'e>> {
-    let global = env.get_global()?;
-    let map_constructor: Function<()> = global.get_named_property("Map")?;
-    let map: Object<'e> = map_constructor.new_instance(())?.coerce_to_object()?;
-
+fn create_js_map<'e>(pairs: impl Iterator<Item = (Unknown<'e>, Unknown<'e>)>, env: &'e Env) -> Result<Unknown<'e>> {
+    let map = new_js_map(env)?;
     let set_method: Unknown = map.get_named_property("set")?;
-    for (k, v) in pairs {
-        let js_key = monty_to_js(k, env)?;
-        let js_value = monty_to_js(v, env)?;
-        call_method_2_args(env.raw(), map.raw(), set_method.raw(), js_key.0.raw(), js_value.0.raw())?;
+    for (js_key, js_value) in pairs {
+        call_method_2_args(env.raw(), map.raw(), set_method.raw(), js_key.raw(), js_value.raw())?;
     }
     map.into_unknown(env)
+}
+
+/// A fresh JS `Map`.
+fn new_js_map(env: &Env) -> Result<Object<'_>> {
+    let global = env.get_global()?;
+    let map_constructor: Function<()> = global.get_named_property("Map")?;
+    map_constructor.new_instance(())?.coerce_to_object()
 }
 
 /// Calls a JS method with 2 arguments using raw napi.
@@ -218,16 +276,15 @@ fn call_method_2_args(
     Ok(())
 }
 
-/// Creates a native JS Set from Monty set items.
-fn create_js_set<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>> {
+/// Creates a native JS Set from already-decoded items.
+fn create_js_set<'e>(items: &[Unknown<'e>], env: &'e Env) -> Result<Unknown<'e>> {
     let global = env.get_global()?;
     let set_constructor: Function<()> = global.get_named_property("Set")?;
     let set: Object<'e> = set_constructor.new_instance(())?.coerce_to_object()?;
 
     let add_method: Function = set.get_named_property("add")?;
     for item in items {
-        let js_item = monty_to_js(item, env)?;
-        add_method.apply(set, js_item.0)?;
+        add_method.apply(set, *item)?;
     }
     set.into_unknown(env)
 }
@@ -333,25 +390,21 @@ fn create_js_type_marker<'e>(type_str: &str, env: &'e Env) -> Result<Unknown<'e>
     obj.into_unknown(env)
 }
 
-/// Creates a JS object representing a class type object:
-/// `{ __monty_type__: 'Type', classType: { name, id, hostDefined, ... } }`.
-fn create_js_class_type_marker<'e>(class_type: &MontyClassType, env: &'e Env) -> Result<Unknown<'e>> {
+/// Builds the plain `classType` object a `Type` marker carries and every
+/// instance of the class shares: name, uuid, flags and the eager class attrs.
+fn create_js_class_type<'e>(
+    class: &ClassTypeNode,
+    graph: &MontyGraph,
+    built: &[Unknown<'e>],
+    env: &'e Env,
+) -> Result<Object<'e>> {
     let mut obj = Object::new(env)?;
-    obj.set_named_property("__monty_type__", "Type")?;
-    obj.set_named_property("classType", create_js_class_type(class_type, env)?)?;
-    obj.into_unknown(env)
-}
-
-/// Builds the plain `classType` object shared by Type and ClassInstance
-/// markers.
-fn create_js_class_type<'e>(class_type: &MontyClassType, env: &'e Env) -> Result<Object<'e>> {
-    let mut obj = Object::new(env)?;
-    obj.set_named_property("name", class_type.name.as_str())?;
+    obj.set_named_property("name", class.name.as_str())?;
     // uuids as canonical lowercase strings — JS has no 128-bit integer type
-    obj.set_named_property("id", class_type.id.to_string())?;
-    obj.set_named_property("hostDefined", class_type.host_defined)?;
-    obj.set_named_property("isDataclass", class_type.is_dataclass)?;
-    obj.set_named_property("attrs", create_js_attr_pairs(&class_type.attrs, env)?)?;
+    obj.set_named_property("id", class.id.to_string())?;
+    obj.set_named_property("hostDefined", class.host_defined)?;
+    obj.set_named_property("isDataclass", class.is_dataclass)?;
+    obj.set_named_property("attrs", create_js_attr_pairs(&class.attrs, graph, built, env)?)?;
     Ok(obj)
 }
 
@@ -407,32 +460,20 @@ fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<U
     obj.into_unknown(env)
 }
 
-/// Creates the `ClassInstance` marker object for a class instance crossing
-/// out of the sandbox.
-///
-/// `attrs` crosses as an array of `[name, value]` pairs (order preserved,
-/// non-string keys skipped) rather than a plain object: attr names are
-/// sandbox-controlled, and pair entries cannot clobber a prototype the way
-/// `obj[k] = v` on a plain object could. The TS layer converts the marker to
-/// the original wrapped instance or a `MontyClassProxy` proxy.
-fn create_js_class_instance<'e>(instance: &MontyClassInstance, env: &'e Env) -> Result<Unknown<'e>> {
-    let mut obj = Object::new(env)?;
-    obj.set_named_property("__monty_type__", "ClassInstance")?;
-    obj.set_named_property("type", create_js_class_type(&instance.class_type, env)?)?;
-    // uuids as canonical lowercase strings — JS has no 128-bit integer type
-    obj.set_named_property("instanceId", instance.instance_id.to_string())?;
-    obj.set_named_property("attrs", create_js_attr_pairs(&instance.attrs, env)?)?;
-    obj.into_unknown(env)
-}
-
 /// Builds the `[name, value]` pair array attrs cross as (order preserved,
-/// non-string keys skipped): pair entries cannot clobber a prototype the way
-/// `obj[k] = v` on a plain object could.
-fn create_js_attr_pairs<'e>(attrs: &DictPairs, env: &'e Env) -> Result<Array<'e>> {
-    let string_pairs: Vec<(&String, &MontyObject)> = attrs
-        .into_iter()
-        .filter_map(|(k, v)| match k {
-            MontyObject::String(key) => Some((key, v)),
+/// non-string keys skipped): attr names are sandbox-controlled, and pair
+/// entries cannot clobber a prototype the way `obj[k] = v` on a plain object
+/// could.
+fn create_js_attr_pairs<'e>(
+    attrs: &[(NodeId, NodeId)],
+    graph: &MontyGraph,
+    built: &[Unknown<'e>],
+    env: &'e Env,
+) -> Result<Array<'e>> {
+    let string_pairs: Vec<(&str, Unknown<'e>)> = attrs
+        .iter()
+        .filter_map(|(key, value)| match graph.node(*key) {
+            MontyNode::String(name) => Some((name.as_str(), built[value.index()])),
             _ => None,
         })
         .collect();
@@ -440,7 +481,7 @@ fn create_js_attr_pairs<'e>(attrs: &DictPairs, env: &'e Env) -> Result<Array<'e>
     for (i, (key, value)) in string_pairs.into_iter().enumerate() {
         let mut pair = env.create_array(2)?;
         pair.set(0, env.create_string(key)?)?;
-        pair.set(1, monty_to_js(value, env)?)?;
+        pair.set(1, value)?;
         attrs_arr.set(i.try_into().expect("overflow on attrs index"), pair)?;
     }
     Ok(attrs_arr)
@@ -450,8 +491,18 @@ fn create_js_attr_pairs<'e>(attrs: &DictPairs, env: &'e Env) -> Result<Array<'e>
 // JS to Monty conversion
 // =============================================================================
 
-/// Converts a JavaScript value to Monty's `MontyObject`, handling native JS
-/// types and `__monty_type__`-marked objects:
+/// Encodes one JS value as its own arena: the single-value form of
+/// [`GraphEncoder`]. Values sharing one message (a feed's inputs) go through
+/// one encoder, so an object they share is one node.
+pub fn js_to_monty<'e>(value: Unknown<'e>, env: &'e Env) -> Result<MontyObject> {
+    let mut encoder = GraphEncoder::new(env)?;
+    let root = encoder.push(value)?;
+    Ok(encoder.finish_object(root))
+}
+
+/// Builds one message's arena from JS values, preserving sharing.
+///
+/// Handles native JS types and `__monty_type__`-marked objects:
 /// - `null` → `None`
 /// - `boolean` → `Bool`
 /// - `number` → `Int` (if integer) or `Float`
@@ -464,278 +515,594 @@ fn create_js_attr_pairs<'e>(attrs: &DictPairs, env: &'e Env) -> Result<Array<'e>
 /// - `Set` → `Set`
 /// - `Object` with `__monty_type__` → corresponding Monty type
 /// - `Object` → `Dict` (string keys only)
-pub fn js_to_monty(value: Unknown<'_>, env: Env) -> Result<MontyObject> {
-    let value_type = value.get_type()?;
+///
+/// Containers, class instances and class types are memoized by JS identity in
+/// a JS `Map` (which also keeps them alive), so an object pushed twice is one
+/// node and one sandbox object; leaves, dates and other leaf markers included,
+/// are re-encoded per reference. Children are walked on an explicit stack, so
+/// depth is bounded by memory, not the native stack. A cycle is an error: the
+/// arena is post-order, so a value cannot reach itself.
+pub struct GraphEncoder<'e> {
+    env: &'e Env,
+    graph: MontyGraph,
+    /// JS `Map` from container → node index, or `-1` while its children are
+    /// still being pushed (a hit on that marker is a cycle).
+    memo: Object<'e>,
+    /// Class nodes with no eager attrs, one per class id: every instance of a
+    /// class shares its node, as the sandbox's export does.
+    class_types: HashMap<MontyUuid, NodeId>,
+}
 
-    match value_type {
-        ValueType::Null | ValueType::Undefined => Ok(MontyObject::None),
-        ValueType::Boolean => {
-            let b: bool = value.coerce_to_bool()?;
-            Ok(MontyObject::Bool(b))
+impl<'e> GraphEncoder<'e> {
+    /// An empty arena for one message.
+    pub fn new(env: &'e Env) -> Result<Self> {
+        Ok(Self {
+            env,
+            graph: MontyGraph::new(),
+            memo: new_js_map(env)?,
+            class_types: HashMap::new(),
+        })
+    }
+
+    /// Encodes `value` into the arena and returns its node; an object pushed
+    /// before returns the node it already has.
+    pub fn push(&mut self, value: Unknown<'e>) -> Result<NodeId> {
+        let mut stack: Vec<Frame<'e>> = Vec::new();
+        let mut next = Child::Value(value);
+        loop {
+            // descend until a leaf, a memo hit, or an empty container
+            let mut done = match self.step(next)? {
+                Step::Done(id) => id,
+                Step::Enter(mut frame) => match frame.children.next() {
+                    Some(child) => {
+                        stack.push(frame);
+                        next = child;
+                        continue;
+                    }
+                    None => self.complete(frame)?,
+                },
+            };
+            // record the finished node in its holder, completing each holder it fills
+            loop {
+                let Some(mut frame) = stack.pop() else {
+                    return Ok(done);
+                };
+                frame.ids.push(done);
+                if let Some(child) = frame.children.next() {
+                    stack.push(frame);
+                    next = child;
+                    break;
+                }
+                done = self.complete(frame)?;
+            }
         }
-        ValueType::Number => {
-            let n: f64 = value.coerce_to_number()?.get_double()?;
-            // Integral numbers within i64 become Python ints. The i64 range
-            // check must be half-open: `i64::MIN as f64` is exactly -2^63,
-            // but `i64::MAX as f64` rounds *up* to 2^63 — a value of exactly
-            // 2^63 does not fit in i64 (`as` would saturate, silently
-            // changing the value), so it crosses as a float instead.
-            if n.fract() == 0.0 && n >= i64::MIN as f64 && n < -(i64::MIN as f64) {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "Checked above that n is integer and within i64 range"
-                )]
-                return Ok(MontyObject::Int(n as i64));
-            }
-            Ok(MontyObject::Float(n))
+    }
+
+    /// The arena, once every root has been pushed.
+    #[must_use]
+    pub fn finish(self) -> MontyGraph {
+        self.graph
+    }
+
+    /// Finishes one value rooted at an id [`push`](Self::push) returned.
+    ///
+    /// # Panics
+    /// If `root` is not an index in this arena.
+    #[must_use]
+    pub fn finish_object(self, root: NodeId) -> MontyObject {
+        unstable::object_from_graph(self.graph, root).expect("encoded root is valid")
+    }
+
+    /// Resolves one pending child: a leaf is pushed at once, a container
+    /// opens a frame for its children.
+    fn step(&mut self, child: Child<'e>) -> Result<Step<'e>> {
+        match child {
+            Child::Value(value) => self.encode(value),
+            Child::ClassType(object) => self.enter_class_type(object),
         }
-        ValueType::BigInt => {
-            let bigint: BigInt = BigInt::from_unknown(value)?;
+    }
 
-            // `words` are 64-bit limbs in little-endian order; reassemble into
-            // a num-bigint and apply `sign_bit`.
-            if bigint.words.is_empty() {
-                return Ok(MontyObject::Int(0));
+    /// Dispatches on the JS type.
+    fn encode(&mut self, value: Unknown<'e>) -> Result<Step<'e>> {
+        let env = self.env;
+        let value_type = value.get_type()?;
+        match value_type {
+            ValueType::Null | ValueType::Undefined => Ok(self.leaf(MontyNode::None)),
+            ValueType::Boolean => Ok(self.leaf(MontyNode::Bool(value.coerce_to_bool()?))),
+            ValueType::Number => {
+                let n: f64 = value.coerce_to_number()?.get_double()?;
+                // Integral numbers within i64 become Python ints. The i64 range
+                // check must be half-open: `i64::MIN as f64` is exactly -2^63,
+                // but `i64::MAX as f64` rounds *up* to 2^63 — a value of exactly
+                // 2^63 does not fit in i64 (`as` would saturate, silently
+                // changing the value), so it crosses as a float instead.
+                if n.fract() == 0.0 && n >= i64::MIN as f64 && n < -(i64::MIN as f64) {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "Checked above that n is integer and within i64 range"
+                    )]
+                    return Ok(self.leaf(MontyNode::Int(n as i64)));
+                }
+                Ok(self.leaf(MontyNode::Float(n)))
             }
-
-            let mut bi = NumBigInt::from(0u64);
-            for (i, &word) in bigint.words.iter().enumerate() {
-                let limb = NumBigInt::from(word);
-                bi += limb << (64 * i);
+            ValueType::BigInt => {
+                let bigint: BigInt = BigInt::from_unknown(value)?;
+                // `words` are 64-bit limbs in little-endian order; reassemble into
+                // a num-bigint and apply `sign_bit`.
+                if bigint.words.is_empty() {
+                    return Ok(self.leaf(MontyNode::Int(0)));
+                }
+                let mut bi = NumBigInt::from(0u64);
+                for (i, &word) in bigint.words.iter().enumerate() {
+                    let limb = NumBigInt::from(word);
+                    bi += limb << (64 * i);
+                }
+                if bigint.sign_bit {
+                    bi = -bi;
+                }
+                Ok(match i64::try_from(&bi) {
+                    Ok(i) => self.leaf(MontyNode::Int(i)),
+                    Err(_) => self.leaf(MontyNode::BigInt(bi)),
+                })
             }
-
-            if bigint.sign_bit {
-                bi = -bi;
+            ValueType::String => {
+                let s: String = value.coerce_to_string()?.into_utf8()?.into_owned()?;
+                Ok(self.leaf(MontyNode::String(s)))
             }
+            ValueType::Object => {
+                let obj: Object = value.coerce_to_object()?;
+                if obj.is_buffer()? {
+                    let buffer: BufferSlice = BufferSlice::from_unknown(value)?;
+                    Ok(self.leaf(MontyNode::Bytes(buffer.to_vec())))
+                } else if is_js_map(&obj, env)? {
+                    self.enter(obj, |_| Ok((Pending::Dict, js_map_entries(&obj)?)))
+                } else if is_js_set(&obj, env)? {
+                    self.enter(obj, |_| Ok((Pending::Set, js_set_values(&obj)?)))
+                } else if obj.is_array()? {
+                    let is_tuple: bool = obj.get_named_property::<Option<bool>>("__tuple__")?.unwrap_or(false);
+                    let pending = if is_tuple { Pending::Tuple } else { Pending::List };
+                    self.enter(obj, |_| Ok((pending, js_array_items(&obj)?)))
+                } else if let Some(monty_type) = get_string_property(&obj, "__monty_type__")? {
+                    self.encode_marked(obj, &monty_type)
+                } else {
+                    // plain object → Dict (with string keys)
+                    self.enter(obj, |_| Ok((Pending::Dict, js_object_entries(&obj, env)?)))
+                }
+            }
+            ValueType::Function => {
+                // JS functions become `Function` nodes (keyed by `name`) for
+                // external function resolution.
+                let func_obj: Object = value.coerce_to_object()?;
+                let name: String = func_obj
+                    .get_named_property::<String>("name")
+                    .unwrap_or_else(|_| "<anonymous>".to_string());
+                Ok(self.leaf(MontyNode::Function { name, docstring: None }))
+            }
+            ValueType::Symbol | ValueType::External => {
+                // These JS types don't have Monty equivalents
+                Err(Error::from_reason(format!(
+                    "Cannot convert JS {value_type:?} to Monty value"
+                )))
+            }
+            // Unknown is not a real JS type, it's a napi-rs placeholder
+            ValueType::Unknown => Err(Error::from_reason("Unknown JS value type")),
+        }
+    }
 
-            if let Ok(i) = i64::try_from(&bi) {
-                Ok(MontyObject::Int(i))
+    /// Converts a JS object with a `__monty_type__` marker.
+    fn encode_marked(&mut self, obj: Object<'e>, monty_type: &str) -> Result<Step<'e>> {
+        let node = match monty_type {
+            "Ellipsis" => MontyNode::Ellipsis,
+            "NotImplemented" => MontyNode::NotImplemented,
+            "Exception" => {
+                let exc_type_str: String = obj.get_named_property("excType")?;
+                let message: String = obj.get_named_property("message")?;
+                let exc_type: ExcType = exc_type_str
+                    .parse()
+                    .map_err(|_| Error::from_reason(format!("Unknown exception type: {exc_type_str}")))?;
+                let arg = if message.is_empty() { None } else { Some(message) };
+                MontyNode::Exception { exc_type, arg }
+            }
+            "Date" => MontyNode::Date(MontyDate {
+                year: obj.get_named_property::<i32>("year")?,
+                month: obj.get_named_property::<u8>("month")?,
+                day: obj.get_named_property::<u8>("day")?,
+            }),
+            "DateTime" => MontyNode::DateTime(MontyDateTime {
+                year: obj.get_named_property::<i32>("year")?,
+                month: obj.get_named_property::<u8>("month")?,
+                day: obj.get_named_property::<u8>("day")?,
+                hour: obj.get_named_property::<u8>("hour")?,
+                minute: obj.get_named_property::<u8>("minute")?,
+                second: obj.get_named_property::<u8>("second")?,
+                microsecond: obj.get_named_property::<u32>("microsecond")?,
+                offset_seconds: obj.get_named_property::<Option<i32>>("offsetSeconds")?,
+                timezone_name: obj.get_named_property::<Option<String>>("timezoneName")?,
+            }),
+            "Time" => MontyNode::Time(MontyTime {
+                hour: obj.get_named_property::<u8>("hour")?,
+                minute: obj.get_named_property::<u8>("minute")?,
+                second: obj.get_named_property::<u8>("second")?,
+                microsecond: obj.get_named_property::<u32>("microsecond")?,
+                offset_seconds: obj.get_named_property::<Option<i32>>("offsetSeconds")?,
+                timezone_name: obj.get_named_property::<Option<String>>("timezoneName")?,
+                fold: obj.get_named_property::<Option<u8>>("fold")?.unwrap_or(0),
+            }),
+            "TimeDelta" => MontyNode::TimeDelta(MontyTimeDelta {
+                days: obj.get_named_property::<i32>("days")?,
+                seconds: obj.get_named_property::<i32>("seconds")?,
+                microseconds: obj.get_named_property::<i32>("microseconds")?,
+            }),
+            "TimeZone" => MontyNode::TimeZone(MontyTimeZone {
+                offset_seconds: obj.get_named_property::<i32>("offsetSeconds")?,
+                name: obj.get_named_property::<Option<String>>("name")?,
+            }),
+            "Type" => {
+                // A class type (ClassType wrapper, or a round-tripped host class)
+                // crosses structurally; a builtin type marker carries only its
+                // name, resolved the same way the wasm worker path does.
+                return if obj.has_named_property("classType")? {
+                    let class_type: Object = obj.get_named_property("classType")?;
+                    self.enter_class_type(class_type)
+                } else {
+                    let value: String = obj.get_named_property("value")?;
+                    let t = MontyType::from_type_name(&value)
+                        .ok_or_else(|| Error::from_reason(format!("unknown type name {value:?}")))?;
+                    Ok(self.leaf(MontyNode::Type(t)))
+                };
+            }
+            // like a builtin type marker, carries only the name, resolved the
+            // same way the wasm worker path does
+            "BuiltinFunction" => {
+                let value: String = obj.get_named_property("value")?;
+                let function = value
+                    .parse::<BuiltinsFunctions>()
+                    .map_err(|_| Error::from_reason(format!("unknown builtin function {value:?}")))?;
+                MontyNode::BuiltinFunction(function)
+            }
+            "FileHandle" => {
+                let path = get_required_string_property(&obj, "path", "MontyFileHandle")?;
+                let mode = get_required_string_property(&obj, "mode", "MontyFileHandle")?;
+                let mode: FileMode = mode
+                    .parse()
+                    .map_err(|error: Cow<'static, str>| Error::from_reason(error.into_owned()))?;
+                let position = get_file_handle_position(&obj)?;
+                MontyNode::FileHandle(MontyFileHandle { path, mode, position })
+            }
+            "ClassInstance" => {
+                return self.enter(obj, |_| {
+                    let class_type: Object = obj.get_named_property("type")?;
+                    let instance_id = get_uuid_string_property(&obj, "instanceId", "ClassInstance")?;
+                    let mut children = vec![Child::ClassType(class_type)];
+                    children.extend(js_attr_pairs(obj.get_named_property("attrs")?, "ClassInstance")?);
+                    Ok((Pending::ClassInstance { instance_id }, children))
+                });
+            }
+            _ => return Err(Error::from_reason(format!("Unknown Monty marker type: {monty_type}"))),
+        };
+        Ok(self.leaf(node))
+    }
+
+    /// Pushes a leaf node.
+    fn leaf(&mut self, node: MontyNode) -> Step<'e> {
+        Step::Done(self.graph.push(node))
+    }
+
+    /// Opens a frame for a container, unless it is memoized: a finished one
+    /// returns its node, one still being pushed is a cycle.
+    fn enter(
+        &mut self,
+        obj: Object<'e>,
+        begin: impl FnOnce(&mut Self) -> Result<(Pending, Vec<Child<'e>>)>,
+    ) -> Result<Step<'e>> {
+        match self.memo_get(obj)? {
+            Some(MemoEntry::Done(id)) => Ok(Step::Done(id)),
+            Some(MemoEntry::InProgress) => Err(Error::from_reason("Circular reference detected")),
+            None => {
+                self.memo_set(obj, MemoEntry::InProgress)?;
+                let (pending, children) = begin(self)?;
+                Ok(Step::Enter(Frame::new(pending, Some(obj), children)))
+            }
+        }
+    }
+
+    /// Opens a frame for a class node, or reuses one: the same `classType`
+    /// object gives the same node, and an attr-less class has one node per id
+    /// whichever object carries it. A class met again while its own attrs are
+    /// being pushed (a class constant that is an instance of the class) gets an
+    /// attr-less duplicate rather than a cycle error, as the sandbox's export does.
+    fn enter_class_type(&mut self, object: Object<'e>) -> Result<Step<'e>> {
+        // the memo comes first: a class crosses with every instance of it, and
+        // a repeat needs none of the header
+        let seen = self.memo_get(object)?;
+        if let Some(MemoEntry::Done(id)) = seen {
+            return Ok(Step::Done(id));
+        }
+        let header = ClassHeader::read(&object)?;
+        if seen.is_some() {
+            return Ok(self.leaf(header.node(vec![])));
+        }
+        self.memo_set(object, MemoEntry::InProgress)?;
+        let children = js_attr_pairs(object.get_named_property("attrs")?, "ClassType")?;
+        if children.is_empty() {
+            if let Some(id) = self.class_types.get(&header.id).copied() {
+                self.memo_set(object, MemoEntry::Done(id))?;
+                return Ok(Step::Done(id));
+            }
+        }
+        Ok(Step::Enter(Frame::new(
+            Pending::ClassType(header),
+            Some(object),
+            children,
+        )))
+    }
+
+    /// Builds a container's node once every child id is known.
+    fn complete(&mut self, frame: Frame<'e>) -> Result<NodeId> {
+        let ids = frame.ids;
+        let node = match frame.pending {
+            Pending::List => MontyNode::List(ids),
+            Pending::Tuple => MontyNode::Tuple(ids),
+            Pending::Set => MontyNode::Set(ids),
+            Pending::Dict => MontyNode::Dict(id_pairs(&ids)),
+            Pending::ClassType(header) => header.node(id_pairs(&ids)),
+            Pending::ClassInstance { instance_id } => {
+                // The memo is shared with plain containers, so a `type` object
+                // already pushed as a dict resolves to that node; `push` would
+                // panic on it, and a panic here aborts the Node process.
+                let class_type = ids[0];
+                if !matches!(self.graph.node(class_type), MontyNode::ClassType(_)) {
+                    return Err(Error::from_reason("ClassInstance `type` is not a class type object"));
+                }
+                MontyNode::ClassInstance {
+                    class_type,
+                    instance_id,
+                    attrs: id_pairs(&ids[1..]),
+                }
+            }
+        };
+        let attr_less_class = match &node {
+            MontyNode::ClassType(class) if class.attrs.is_empty() => Some(class.id),
+            _ => None,
+        };
+        let id = self.graph.push(node);
+        if let Some(class_id) = attr_less_class {
+            self.class_types.entry(class_id).or_insert(id);
+        }
+        if let Some(obj) = frame.key {
+            self.memo_set(obj, MemoEntry::Done(id))?;
+        }
+        Ok(id)
+    }
+
+    /// The memo entry for `obj`, if any.
+    fn memo_get(&self, obj: Object<'e>) -> Result<Option<MemoEntry>> {
+        let get: Function<Unknown, Unknown> = self.memo.get_named_property("get")?;
+        let entry = get.apply(self.memo, obj.into_unknown(self.env)?)?;
+        if entry.get_type()? == ValueType::Undefined {
+            Ok(None)
+        } else {
+            let index: i64 = entry.coerce_to_number()?.get_int64()?;
+            Ok(Some(if index < 0 {
+                MemoEntry::InProgress
             } else {
-                Ok(MontyObject::BigInt(bi))
-            }
+                MemoEntry::Done(NodeId(u32::try_from(index).map_err(|_| invalid_memo())?))
+            }))
         }
-        ValueType::String => {
-            let s: String = value.coerce_to_string()?.into_utf8()?.into_owned()?;
-            Ok(MontyObject::String(s))
-        }
-        ValueType::Object => {
-            let obj: Object = value.coerce_to_object()?;
+    }
 
-            if obj.is_buffer()? {
-                let buffer: BufferSlice = BufferSlice::from_unknown(value)?;
-                return Ok(MontyObject::Bytes(buffer.to_vec()));
-            }
-            if is_js_map(&obj, env)? {
-                return js_map_to_monty(obj, env);
-            }
-            if is_js_set(&obj, env)? {
-                return js_set_to_monty(obj, env);
-            }
-            if obj.is_array()? {
-                return js_array_to_monty(obj, env);
-            }
-            if let Some(monty_type) = get_string_property(&obj, "__monty_type__")? {
-                return js_marked_object_to_monty(&obj, &monty_type, env);
-            }
-
-            // Plain object → Dict (with string keys)
-            js_object_to_monty_dict(obj, env)
-        }
-        ValueType::Function => {
-            // JS functions become MontyObject::Function (keyed by `name`) for
-            // external function resolution.
-            let func_obj: Object = value.coerce_to_object()?;
-            let name: String = func_obj
-                .get_named_property::<String>("name")
-                .unwrap_or_else(|_| "<anonymous>".to_string());
-            Ok(MontyObject::Function { name, docstring: None })
-        }
-        ValueType::Symbol | ValueType::External => {
-            // These JS types don't have Monty equivalents
-            Err(Error::from_reason(format!(
-                "Cannot convert JS {value_type:?} to Monty value"
-            )))
-        }
-        // Unknown is not a real JS type, it's a napi-rs placeholder
-        ValueType::Unknown => Err(Error::from_reason("Unknown JS value type")),
+    /// Records the memo entry for `obj`.
+    fn memo_set(&self, obj: Object<'e>, slot: MemoEntry) -> Result<()> {
+        let env = self.env;
+        let index = match slot {
+            MemoEntry::InProgress => -1,
+            MemoEntry::Done(id) => i64::from(id.0),
+        };
+        let set: Unknown = self.memo.get_named_property("set")?;
+        let index = env.create_int64(index)?;
+        call_method_2_args(env.raw(), self.memo.raw(), set.raw(), obj.raw(), index.raw())
     }
 }
 
+/// A memoized container's state.
+enum MemoEntry {
+    /// Its children are still being pushed.
+    InProgress,
+    /// Its node.
+    Done(NodeId),
+}
+
+/// The outcome of resolving one pending child.
+enum Step<'e> {
+    /// A leaf, or a container already in the arena.
+    Done(NodeId),
+    /// A container whose children come next.
+    Enter(Frame<'e>),
+}
+
+/// A value still to be pushed.
+enum Child<'e> {
+    Value(Unknown<'e>),
+    /// The plain `classType` object of an instance or `Type` marker.
+    ClassType(Object<'e>),
+}
+
+/// A container mid-encoding: its children are pushed one at a time on the
+/// explicit stack, then the node is built from their ids.
+struct Frame<'e> {
+    pending: Pending,
+    /// The memoized JS object, if the container has one.
+    key: Option<Object<'e>>,
+    /// Children still to push, in order.
+    children: IntoIter<Child<'e>>,
+    /// Ids of the children pushed so far.
+    ids: Vec<NodeId>,
+}
+
+impl<'e> Frame<'e> {
+    fn new(pending: Pending, key: Option<Object<'e>>, children: Vec<Child<'e>>) -> Self {
+        let ids = Vec::with_capacity(children.len());
+        Self {
+            pending,
+            key,
+            children: children.into_iter(),
+            ids,
+        }
+    }
+}
+
+/// What a frame builds once its children are pushed.
+enum Pending {
+    List,
+    Tuple,
+    Set,
+    /// Children alternate key, value.
+    Dict,
+    /// Children alternate attr name, value.
+    ClassType(ClassHeader),
+    /// The first child is the class node, then attr name, value pairs.
+    ClassInstance {
+        instance_id: MontyUuid,
+    },
+}
+
+/// The fields of a plain `classType` object other than its attrs.
+struct ClassHeader {
+    name: String,
+    id: MontyUuid,
+    host_defined: bool,
+    is_dataclass: bool,
+}
+
+impl ClassHeader {
+    /// Reads the plain `classType` object of a Type / ClassInstance marker.
+    fn read(obj: &Object<'_>) -> Result<Self> {
+        Ok(Self {
+            name: obj.get_named_property("name")?,
+            id: get_uuid_string_property(obj, "id", "ClassType")?,
+            host_defined: obj.get_named_property("hostDefined")?,
+            is_dataclass: obj.get_named_property("isDataclass")?,
+        })
+    }
+
+    /// The class node with the given attr pairs.
+    fn node(&self, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+        MontyNode::ClassType(Box::new(ClassTypeNode {
+            name: self.name.clone(),
+            id: self.id,
+            host_defined: self.host_defined,
+            is_dataclass: self.is_dataclass,
+            attrs,
+        }))
+    }
+}
+
+/// Regroups the ids of children pushed key, value, key, value, … into pairs.
+fn id_pairs(ids: &[NodeId]) -> Vec<(NodeId, NodeId)> {
+    ids.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[key, value]| (key, value))
+        .collect()
+}
+
+/// A memo entry that is not a node index: the map is private, so this is a bug.
+fn invalid_memo() -> Error {
+    Error::from_reason("encoder memo holds an invalid node index")
+}
+
 /// Checks if a JS object is an instance of Set.
-fn is_js_set(obj: &Object, env: Env) -> Result<bool> {
+fn is_js_set(obj: &Object, env: &Env) -> Result<bool> {
     let global = env.get_global()?;
     let set_constructor: Function<()> = global.get_named_property("Set")?;
     obj.instanceof(set_constructor)
 }
 
 /// Checks if a JS object is an instance of Map.
-fn is_js_map(obj: &Object, env: Env) -> Result<bool> {
+fn is_js_map(obj: &Object, env: &Env) -> Result<bool> {
     let global = env.get_global()?;
     let map_constructor: Function<()> = global.get_named_property("Map")?;
     obj.instanceof(map_constructor)
 }
 
-/// Converts a JS Map to `MontyObject::Dict`.
-fn js_map_to_monty(map: Object, env: Env) -> Result<MontyObject> {
+/// A JS Map's entries as pending children, key then value.
+fn js_map_entries<'e>(map: &Object<'e>) -> Result<Vec<Child<'e>>> {
     let entries_method: Function<()> = map.get_named_property("entries")?;
-    let iterator: Object = entries_method.apply(map, ())?.coerce_to_object()?;
-
-    let mut pairs = Vec::new();
+    let iterator: Object = entries_method.apply(*map, ())?.coerce_to_object()?;
+    let mut children = Vec::new();
     loop {
         let next_method: Function<()> = iterator.get_named_property("next")?;
         let result: Object = next_method.apply(iterator, ())?.coerce_to_object()?;
-
-        let done: bool = result.get_named_property::<bool>("done")?;
-        if done {
+        if result.get_named_property::<bool>("done")? {
             break;
         }
-
         // value is [key, value] array
         let entry: Object = result.get_named_property::<Unknown>("value")?.coerce_to_object()?;
-        let key: Unknown = entry.get_element(0)?;
-        let value: Unknown = entry.get_element(1)?;
-
-        let monty_key = js_to_monty(key, env)?;
-        let monty_value = js_to_monty(value, env)?;
-        pairs.push((monty_key, monty_value));
+        children.push(Child::Value(entry.get_element(0)?));
+        children.push(Child::Value(entry.get_element(1)?));
     }
-
-    Ok(MontyObject::dict(pairs))
+    Ok(children)
 }
 
-/// Converts a JS Set to `MontyObject::Set`.
-fn js_set_to_monty(set: Object, env: Env) -> Result<MontyObject> {
+/// A JS Set's values as pending children.
+fn js_set_values<'e>(set: &Object<'e>) -> Result<Vec<Child<'e>>> {
     let values_method: Function<()> = set.get_named_property("values")?;
-    let iterator: Object = values_method.apply(set, ())?.coerce_to_object()?;
-
-    let mut items = Vec::new();
+    let iterator: Object = values_method.apply(*set, ())?.coerce_to_object()?;
+    let mut children = Vec::new();
     loop {
         let next_method: Function<()> = iterator.get_named_property("next")?;
         let result: Object = next_method.apply(iterator, ())?.coerce_to_object()?;
-
-        let done: bool = result.get_named_property::<bool>("done")?;
-        if done {
+        if result.get_named_property::<bool>("done")? {
             break;
         }
-
-        let value: Unknown = result.get_named_property("value")?;
-        items.push(js_to_monty(value, env)?);
+        children.push(Child::Value(result.get_named_property("value")?));
     }
-
-    Ok(MontyObject::Set(items))
+    Ok(children)
 }
 
-/// Converts a JS Array to `MontyObject::List` or `MontyObject::Tuple`.
-fn js_array_to_monty(arr: Object, env: Env) -> Result<MontyObject> {
-    let is_tuple: bool = arr.get_named_property::<Option<bool>>("__tuple__")?.unwrap_or(false);
-
+/// A JS Array's items as pending children.
+fn js_array_items<'e>(arr: &Object<'e>) -> Result<Vec<Child<'e>>> {
     let length: u32 = arr.get_named_property("length")?;
-    let mut items = Vec::with_capacity(length as usize);
-
-    for i in 0..length {
-        let element: Unknown = arr.get_element(i)?;
-        items.push(js_to_monty(element, env)?);
-    }
-
-    if is_tuple {
-        Ok(MontyObject::Tuple(items))
-    } else {
-        Ok(MontyObject::List(items))
-    }
+    (0..length).map(|i| Ok(Child::Value(arr.get_element(i)?))).collect()
 }
 
-/// Converts a JS object with `__monty_type__` marker to the appropriate `MontyObject`.
-fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result<MontyObject> {
-    match monty_type {
-        "Ellipsis" => Ok(MontyObject::Ellipsis),
-        "NotImplemented" => Ok(MontyObject::NotImplemented),
-        "Exception" => {
-            let exc_type_str: String = obj.get_named_property("excType")?;
-            let message: String = obj.get_named_property("message")?;
-            let exc_type: ExcType = exc_type_str
-                .parse()
-                .map_err(|_| Error::from_reason(format!("Unknown exception type: {exc_type_str}")))?;
-            let arg = if message.is_empty() { None } else { Some(message) };
-            Ok(MontyObject::Exception { exc_type, arg })
-        }
-        "Date" => Ok(MontyObject::Date(MontyDate {
-            year: obj.get_named_property::<i32>("year")?,
-            month: obj.get_named_property::<u8>("month")?,
-            day: obj.get_named_property::<u8>("day")?,
-        })),
-        "DateTime" => Ok(MontyObject::DateTime(MontyDateTime {
-            year: obj.get_named_property::<i32>("year")?,
-            month: obj.get_named_property::<u8>("month")?,
-            day: obj.get_named_property::<u8>("day")?,
-            hour: obj.get_named_property::<u8>("hour")?,
-            minute: obj.get_named_property::<u8>("minute")?,
-            second: obj.get_named_property::<u8>("second")?,
-            microsecond: obj.get_named_property::<u32>("microsecond")?,
-            offset_seconds: obj.get_named_property::<Option<i32>>("offsetSeconds")?,
-            timezone_name: obj.get_named_property::<Option<String>>("timezoneName")?,
-        })),
-        "Time" => Ok(MontyObject::Time(MontyTime {
-            hour: obj.get_named_property::<u8>("hour")?,
-            minute: obj.get_named_property::<u8>("minute")?,
-            second: obj.get_named_property::<u8>("second")?,
-            microsecond: obj.get_named_property::<u32>("microsecond")?,
-            offset_seconds: obj.get_named_property::<Option<i32>>("offsetSeconds")?,
-            timezone_name: obj.get_named_property::<Option<String>>("timezoneName")?,
-            fold: obj.get_named_property::<Option<u8>>("fold")?.unwrap_or(0),
-        })),
-        "TimeDelta" => Ok(MontyObject::TimeDelta(MontyTimeDelta {
-            days: obj.get_named_property::<i32>("days")?,
-            seconds: obj.get_named_property::<i32>("seconds")?,
-            microseconds: obj.get_named_property::<i32>("microseconds")?,
-        })),
-        "TimeZone" => Ok(MontyObject::TimeZone(MontyTimeZone {
-            offset_seconds: obj.get_named_property::<i32>("offsetSeconds")?,
-            name: obj.get_named_property::<Option<String>>("name")?,
-        })),
-        "Type" => {
-            // A class type (ClassType wrapper, or a round-tripped host class)
-            // crosses structurally; a builtin type marker carries only its
-            // name, resolved the same way the wasm worker path does.
-            if obj.has_named_property("classType")? {
-                let class_type: Object = obj.get_named_property("classType")?;
-                Ok(MontyObject::Type(MontyType::Instance(Box::new(parse_js_class_type(
-                    &class_type,
-                    &env,
-                )?))))
-            } else {
-                let value: String = obj.get_named_property("value")?;
-                MontyType::from_type_name(&value)
-                    .map(MontyObject::Type)
-                    .ok_or_else(|| Error::from_reason(format!("unknown type name {value:?}")))
-            }
-        }
-        "BuiltinFunction" => {
-            // BuiltinFunction objects can't be fully round-tripped; return as Repr
-            let value: String = obj.get_named_property("value")?;
-            Ok(MontyObject::Repr(format!("<built-in function {value}>")))
-        }
-        "FileHandle" => {
-            let path = get_required_string_property(obj, "path", "MontyFileHandle")?;
-            let mode = get_required_string_property(obj, "mode", "MontyFileHandle")?;
-            let mode: FileMode = mode
-                .parse()
-                .map_err(|error: Cow<'static, str>| Error::from_reason(error.into_owned()))?;
-            let position = get_file_handle_position(obj)?;
-            Ok(MontyObject::FileHandle(MontyFileHandle { path, mode, position }))
-        }
-        "ClassInstance" => {
-            let class_type: Object = obj.get_named_property("type")?;
-            let class_type = parse_js_class_type(&class_type, &env)?;
-            let instance_id = get_uuid_string_property(obj, "instanceId", "ClassInstance")?;
-            let attrs = parse_js_attr_pairs(obj.get_named_property("attrs")?, "ClassInstance", &env)?;
-            Ok(MontyObject::ClassInstance(Box::new(MontyClassInstance {
-                class_type,
-                instance_id,
-                attrs,
-            })))
-        }
-        _ => Err(Error::from_reason(format!("Unknown Monty marker type: {monty_type}"))),
+/// A plain JS object's own property names and values as pending children,
+/// key then value. Keys are strings; a JS `Map` keeps other key types.
+fn js_object_entries<'e>(obj: &Object<'e>, env: &'e Env) -> Result<Vec<Child<'e>>> {
+    let keys = obj.get_property_names()?;
+    let length: u32 = keys.get_named_property("length")?;
+    let mut children = Vec::with_capacity(2 * length as usize);
+    for i in 0..length {
+        let key: Unknown = keys.get_element(i)?;
+        let key_str: String = key.coerce_to_string()?.into_utf8()?.into_owned()?;
+        let value: Unknown = obj.get_named_property(&key_str)?;
+        children.push(Child::Value(env.create_string(&key_str)?.into_unknown(env)?));
+        children.push(Child::Value(value));
     }
+    Ok(children)
+}
+
+/// The `[name, value]` pair array attrs cross as, as pending children (name
+/// then value); a non-string name is rejected.
+fn js_attr_pairs<'e>(attrs_arr: Array<'e>, type_name: &str) -> Result<Vec<Child<'e>>> {
+    let mut children = Vec::with_capacity(2 * attrs_arr.len() as usize);
+    for i in 0..attrs_arr.len() {
+        let Some(pair) = attrs_arr.get::<Array>(i)? else {
+            return Err(Error::from_reason(format!(
+                "{type_name} attrs entries must be [name, value] pairs"
+            )));
+        };
+        let key = pair
+            .get::<Unknown>(0)?
+            .filter(|key| key.get_type().is_ok_and(|t| t == ValueType::String))
+            .ok_or_else(|| Error::from_reason(format!("{type_name} attr name must be a string")))?;
+        let value = pair
+            .get::<Unknown>(1)?
+            .ok_or_else(|| Error::from_reason(format!("{type_name} attr value missing")))?;
+        children.push(Child::Value(key));
+        children.push(Child::Value(value));
+    }
+    Ok(children)
 }
 
 /// Reads a canonical uuid string property (instance/type ids).
@@ -746,43 +1113,6 @@ fn get_uuid_string_property(obj: &Object, key: &str, type_name: &str) -> Result<
             "{type_name} {key} must be a canonical uuid string, got {value:?}"
         ))
     })
-}
-
-/// Parses the plain `classType` object of a Type / ClassInstance marker.
-fn parse_js_class_type(obj: &Object, env: &Env) -> Result<MontyClassType> {
-    let name: String = obj.get_named_property("name")?;
-    let id = get_uuid_string_property(obj, "id", "ClassType")?;
-    let host_defined: bool = obj.get_named_property("hostDefined")?;
-    // Absent on markers built before attrs existed is not a case we keep —
-    // the TS layer always emits the field, empty when there are no attrs.
-    let attrs = parse_js_attr_pairs(obj.get_named_property("attrs")?, "ClassType", env)?;
-    Ok(MontyClassType {
-        name,
-        id,
-        host_defined,
-        is_dataclass: obj.get_named_property("isDataclass")?,
-        attrs,
-    })
-}
-
-/// Parses the `[name, value]` pair array attrs cross as.
-fn parse_js_attr_pairs(attrs_arr: Array, type_name: &str, env: &Env) -> Result<DictPairs> {
-    let mut attrs_vec = Vec::with_capacity(attrs_arr.len() as usize);
-    for i in 0..attrs_arr.len() {
-        let Some(pair) = attrs_arr.get::<Array>(i)? else {
-            return Err(Error::from_reason(format!(
-                "{type_name} attrs entries must be [name, value] pairs"
-            )));
-        };
-        let key: String = pair
-            .get::<String>(0)?
-            .ok_or_else(|| Error::from_reason(format!("{type_name} attr name must be a string")))?;
-        let value = pair
-            .get::<Unknown>(1)?
-            .ok_or_else(|| Error::from_reason(format!("{type_name} attr value missing")))?;
-        attrs_vec.push((MontyObject::String(key), js_to_monty(value, *env)?));
-    }
-    Ok(DictPairs::from(attrs_vec))
 }
 
 /// Reads and validates the optional JavaScript-safe file position.
@@ -827,27 +1157,6 @@ fn get_required_string_property(obj: &Object, name: &str, marker: &str) -> Resul
     } else {
         Err(Error::from_reason(format!("{marker} {name} must be a string")))
     }
-}
-
-/// Converts a plain JS object to `MontyObject::Dict`.
-///
-/// This is a fallback for plain objects (not Map instances). Since JS object keys
-/// are always strings, all keys in the resulting Dict will be strings.
-/// For full key type preservation, use JS `Map` instead.
-fn js_object_to_monty_dict(obj: Object, env: Env) -> Result<MontyObject> {
-    let keys = obj.get_property_names()?;
-    let length: u32 = keys.get_named_property("length")?;
-    let mut pairs = Vec::with_capacity(length as usize);
-
-    for i in 0..length {
-        let key: Unknown = keys.get_element(i)?;
-        let key_str: String = key.coerce_to_string()?.into_utf8()?.into_owned()?;
-        let value: Unknown = obj.get_named_property(&key_str)?;
-        let monty_value = js_to_monty(value, env)?;
-        pairs.push((MontyObject::String(key_str), monty_value));
-    }
-
-    Ok(MontyObject::dict(pairs))
 }
 
 /// Helper to get an optional string property from a JS object.

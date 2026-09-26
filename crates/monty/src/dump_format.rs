@@ -1,35 +1,70 @@
 //! Versioned framing for serialized interpreter state.
 //!
-//! A dump is one postcard value — [`Dump`] — carrying both the interpreter
+//! A dump is one CBOR value — [`Dump`] — carrying both the interpreter
 //! state and the session metadata a host must restore alongside it (script
 //! name, type-check stubs), behind a `[MAGIC][DUMP_VERSION]` header. There is
 //! exactly one dump shape, so hosts need no format knowledge beyond [`dump`]
 //! and [`Dump::load`]; whether the session was idle or suspended is the
 //! [`Session`] discriminant, not a separate tag.
+//!
+//! # Naming contract
+//!
+//! The payload is self-describing: structs are maps keyed by field name and
+//! enums are keyed by variant name, so serde's derive evolves the schema on
+//! its own. A dumped type may gain a field with `#[serde(default)]`, lose a
+//! field, or have variants inserted anywhere, and older dumps still load.
+//! Tuple structs and tuple variants are positional, so their fields may only
+//! be appended.
+//! The names themselves are the contract: renaming a serialized field or
+//! variant needs `#[serde(alias = "old")]` (or a [`DUMP_VERSION`] bump), and
+//! `#[serde(deny_unknown_fields)]` must never be added to a dumped type.
 
-use std::{error::Error, fmt, mem::size_of};
+use std::{convert::Infallible, error::Error, fmt, mem::size_of};
 
+use minicbor_serde::{
+    Deserializer, Serializer,
+    error::{DecodeError, EncodeError},
+};
 use monty_types::TypeCheckState;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error as _};
 
 use crate::{
     repl::{MontyRepl, ReplProgress},
     run_progress::RunProgress,
 };
 
-/// Prefix distinguishing Monty dumps from unframed postcard data.
+/// Prefix distinguishing Monty dumps from unframed CBOR data.
 const MAGIC: &[u8; 6] = b"MONTY\0";
 
-/// Version of the dump's postcard schema.
+/// Version of the dump schema.
 ///
-/// Bump this whenever a serialized discriminant can shift, so older dumps are
-/// rejected instead of decoding as their neighbour. That covers the
-/// interpreter's own types *and* everything reachable from [`Dump`] — notably
-/// [`TypeCheckingConfig`](monty_types::TypeCheckingConfig) in `monty-types`.
-pub const DUMP_VERSION: u16 = 8;
+/// The payload names its fields and variants, so adding a field with a default,
+/// removing one or reordering them does not need a bump (see the module docs).
+/// Bump for every release where
+/// the *meaning* of serialized data changes: opcodes or their operand shapes,
+/// `BuiltinsFunctions` order (its discriminants are bytecode operands),
+/// `CmpOperator` values, the compiler's constant layout, how a dict or set key
+/// hashes (entries persist their hash), or a semantic change to a stored value.
+/// Older dumps are then rejected instead of misexecuting.
+///
+/// Before bumping, check there's already been a bump since the last release - multiple bumps
+/// between releases is unnecessary and can lead to confusion.
+pub const DUMP_VERSION: u16 = 13;
 
-/// Number of bytes before the postcard payload.
+/// Set to [`DUMP_VERSION`], the current dump version, until this crate can load older dumps.
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
+
+// The supported range must be non-empty, and must exclude zero
+const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);
+const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION <= DUMP_VERSION);
+
+/// Number of bytes before the CBOR payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>();
+
+/// Initial payload capacity for [`dump`]. A fresh idle session dumps to ~800
+/// bytes and one suspended on a host call to ~2,400, so this never over-allocates
+/// meaningfully and skips the first few `Vec` doublings.
+const MIN_PAYLOAD_CAPACITY: usize = 1024;
 
 /// Serializes a live session and its metadata into a versioned dump, readable
 /// by [`Dump::load`].
@@ -43,8 +78,8 @@ pub fn dump(
     script_name: &str,
     type_check: Option<&TypeCheckState>,
     state: SessionRef<'_>,
-) -> Result<Vec<u8>, postcard::Error> {
-    /// Borrowed mirror of [`Dump`]; postcard encodes it identically.
+) -> Result<Vec<u8>, DumpEncodeError> {
+    /// Borrowed mirror of [`Dump`]; serde encodes it identically.
     #[derive(Serialize)]
     struct DumpRef<'a> {
         script_name: &'a str,
@@ -52,15 +87,17 @@ pub fn dump(
         state: SessionRef<'a>,
     }
 
-    let payload = postcard::to_allocvec(&DumpRef {
+    let mut bytes = Vec::with_capacity(HEADER_LEN + MIN_PAYLOAD_CAPACITY);
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
+    // the payload is written after the header in place: no second buffer to copy it into
+    let dump = DumpRef {
         script_name,
         type_check,
         state,
-    })?;
-    let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&DUMP_VERSION.to_le_bytes());
-    bytes.extend_from_slice(&payload);
+    };
+    dump.serialize(&mut Serializer::new(&mut bytes))
+        .map_err(DumpEncodeError)?;
     Ok(bytes)
 }
 
@@ -83,10 +120,21 @@ pub struct Dump {
 impl Dump {
     /// Restores a session dumped by [`dump`].
     ///
+    /// # Snapshot trust
+    /// The caller must establish that the bytes are unmodified output from a trusted,
+    /// compatible Monty producer. Invalid snapshots have no correctness or availability
+    /// guarantees: loading or using them may panic, abort, hang, or produce wrong results,
+    /// but must not cause undefined behaviour in the host process.
+    /// Successful decoding does not authenticate or fully validate a snapshot.
+    /// The same contract applies to direct serde deserialization.
+    ///
+    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], which is one
+    /// version wide until a compatibility mechanism lowers the floor.
+    ///
     /// # Errors
-    /// Returns [`DumpError`] for a dump this build cannot read — most usefully
-    /// [`DumpError::VersionMismatch`], which names both versions so a host can
-    /// tell a stale snapshot from a corrupt one.
+    /// Returns [`DumpError`] for a dump this build cannot read. The version
+    /// variants name the bound the dump missed, so a host can tell a stale
+    /// snapshot from one written by a build it should be reading with.
     pub fn load(bytes: &[u8]) -> Result<Self, DumpError> {
         let Some(header) = bytes.get(..HEADER_LEN) else {
             return Err(DumpError::NotADump);
@@ -94,24 +142,35 @@ impl Dump {
         let version = u16::from_le_bytes([header[MAGIC.len()], header[MAGIC.len() + 1]]);
         if &header[..MAGIC.len()] != MAGIC {
             Err(DumpError::NotADump)
-        } else if version != DUMP_VERSION {
-            Err(DumpError::VersionMismatch {
+        } else if version < MIN_SUPPORTED_DUMP_VERSION {
+            Err(DumpError::VersionTooOld {
                 found: version,
-                expected: DUMP_VERSION,
+                min_supported: MIN_SUPPORTED_DUMP_VERSION,
+            })
+        } else if version > DUMP_VERSION {
+            Err(DumpError::VersionTooNew {
+                found: version,
+                max_supported: DUMP_VERSION,
             })
         } else {
-            let (value, remainder) = postcard::take_from_bytes(&bytes[HEADER_LEN..]).map_err(DumpError::Payload)?;
-            if remainder.is_empty() {
+            let payload = &bytes[HEADER_LEN..];
+            let mut deserializer = Deserializer::new(payload);
+            let value = Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
+            // trailing bytes are rejected rather than ignored, so a padded dump
+            // cannot decode as the shorter valid one it starts with
+            if deserializer.into_decoder().position() == payload.len() {
                 Ok(value)
             } else {
-                Err(DumpError::Payload(postcard::Error::DeserializeBadEncoding))
+                Err(DumpError::Payload(DumpDecodeError::custom(
+                    "trailing bytes after the payload",
+                )))
             }
         }
     }
 }
 
-/// Where a dumped session was paused. The variant order is mirrored by
-/// [`SessionRef`] and encoded as a postcard discriminant — keep them in step.
+/// Where a dumped session was paused. Variants are encoded by name and mirrored
+/// by [`SessionRef`] — keep the two sets of names in step.
 ///
 /// Both arms are boxed because they differ by hundreds of bytes inline; a
 /// `Box<T>` serializes exactly as `T`, so this does not change the wire form.
@@ -140,30 +199,59 @@ pub enum SessionRef<'a> {
 
 /// Why a dump could not be restored.
 ///
-/// Distinguishes the three failures a host cares about, because they need
-/// different responses: an old snapshot should be discarded and rebuilt, while
-/// a payload error on a current-version dump means corruption.
+/// The two version failures are separate variants because they need opposite
+/// responses: a too-old dump is dead and its session must be rebuilt by
+/// replaying feeds, while a too-new one is intact and wants a newer reader.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DumpError {
     /// Too short to hold a header, or missing the magic prefix.
     NotADump,
-    /// Written by a build using a different dump format version.
-    VersionMismatch {
+    /// Written by a build older than the oldest this one reads.
+    VersionTooOld {
         /// Version the dump was written with.
         found: u16,
-        /// Version this build reads.
-        expected: u16,
+        /// Oldest version this build reads.
+        min_supported: u16,
     },
-    /// Header was valid but the postcard payload did not decode.
-    Payload(postcard::Error),
+    /// Written by a newer build, so the bytes are worth keeping — a build at or
+    /// above `found` reads them.
+    VersionTooNew {
+        /// Version the dump was written with.
+        found: u16,
+        /// Newest version this build reads.
+        max_supported: u16,
+    },
+    /// A version this build reads, holding something it cannot load — reserved
+    /// for a compatibility mechanism and not produced today. `reason` names what
+    /// blocked it; the remedy matches [`Self::VersionTooOld`].
+    Unsupported {
+        /// Version the dump was written with.
+        found: u16,
+        /// What this build could not load, for a host to log.
+        reason: String,
+    },
+    /// Header was valid but the payload did not decode.
+    Payload(DumpDecodeError),
 }
 
 impl fmt::Display for DumpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotADump => write!(f, "not a monty dump"),
-            Self::VersionMismatch { found, expected } => {
-                write!(f, "dump format version {found}, this build reads {expected}")
+            Self::VersionTooOld { found, min_supported } => {
+                write!(
+                    f,
+                    "dump format version {found} is older than {min_supported}, the oldest this build reads"
+                )
+            }
+            Self::VersionTooNew { found, max_supported } => {
+                write!(
+                    f,
+                    "dump format version {found} is newer than {max_supported}, the newest this build reads"
+                )
+            }
+            Self::Unsupported { found, reason } => {
+                write!(f, "dump format version {found} is unsupported: {reason}")
             }
             Self::Payload(err) => write!(f, "malformed dump payload: {err}"),
         }
@@ -172,15 +260,70 @@ impl fmt::Display for DumpError {
 
 impl Error for DumpError {}
 
+/// Why a dump payload did not decode: a truncated or corrupt encoding, or a
+/// value the interpreter refused to reconstruct.
+///
+/// Wraps the codec's error so the public API does not name the codec. Two
+/// errors are equal when they render the same — the codec offers no structured
+/// comparison, and hosts only ever see the message.
+#[derive(Debug)]
+pub struct DumpDecodeError(DecodeError);
+
+impl DumpDecodeError {
+    /// Wraps a message about the payload, for checks that run after decoding.
+    fn custom(message: &'static str) -> Self {
+        Self(DecodeError::custom(message))
+    }
+}
+
+impl PartialEq for DumpDecodeError {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_string() == other.to_string()
+    }
+}
+
+impl Eq for DumpDecodeError {}
+
+impl fmt::Display for DumpDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Error for DumpDecodeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// Why [`dump`] could not serialize a session. Writing into memory cannot run
+/// out of space, so this only surfaces a `Serialize` impl refusing a value.
+#[derive(Debug)]
+pub struct DumpEncodeError(EncodeError<Infallible>);
+
+impl fmt::Display for DumpEncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Error for DumpEncodeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use monty_types::{MontyType, TypeCheckingFormat};
+    use std::str::FromStr;
+
+    use monty_types::{BuiltinsFunctions, ExcType, MontyType, TypeCheckingFormat};
+    use serde::Serialize;
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
     use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint,
-        intern::static_strings_fingerprint, types::Type,
+        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, heap::HeapId, types::Type,
     };
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
@@ -192,56 +335,92 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0x0d57_34dd_be07_19ac,
-            "opcodes changed for dump version {DUMP_VERSION}"
-        );
-        assert_eq!(
-            static_strings_fingerprint(),
-            0x782b_66f9_b630_180a,
-            "static strings changed for dump version {DUMP_VERSION}"
+            0xa05b_38e4_12c3_61f8,
+            "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(opcode_fingerprint())
         );
         assert_eq!(
             comparison_operators_fingerprint(),
             0x8ecc_d26b_160d_9c0b,
-            "comparison operators changed for dump version {DUMP_VERSION}"
+            "comparison operators changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(comparison_operators_fingerprint())
         );
         // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
-        // and `EnumIter` drop, which is what lets the two fingerprints below cover
-        // every postcard discriminant. Asserted rather than assumed, so a strum
-        // upgrade that changed it says so instead of quietly narrowing the guard.
+        // drops, so the counts below cover every serialized variant once the
+        // disabled ones are supplied by hand. Asserted rather than assumed, so a
+        // strum upgrade that changed it says so instead of quietly narrowing the guard.
         assert!(Type::VARIANTS.contains(&"instance"));
-        assert!(MontyType::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
-        assert_eq!(
-            variant_order_fingerprint(Type::VARIANTS),
-            0xc66d_9014_0335_92be,
-            "Type variants changed for dump version {DUMP_VERSION}"
+        let type_names = serde_variant_names(
+            Type::VARIANTS,
+            &[
+                Type::Instance(HeapId::from_index(0)),
+                Type::Exception(ExcType::ValueError),
+            ],
         );
         assert_eq!(
-            variant_order_fingerprint(MontyType::VARIANTS),
-            0x091c_2e22_e9b8_f5ee,
-            "MontyType variants changed for dump version {DUMP_VERSION}"
+            variant_name_fingerprint(&type_names),
+            0x9901_dcf3_9e42_3098,
+            "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_name_fingerprint(&type_names))
         );
+        let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
+        assert_eq!(
+            variant_name_fingerprint(&monty_type_names),
+            0x8af8_54dc_0bfe_1e6d,
+            "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_name_fingerprint(&monty_type_names))
+        );
+        // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
+        // is append-only: a new builtin goes after the last variant.
+        assert_eq!(
+            variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
+            0xcdd8_09b1_2adc_3852,
+            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
+        );
+    }
+
+    /// Formats an integer as hex with underscores between four-digit groups.
+    fn grouped_hex(n: u64) -> String {
+        let mut s = format!("{n:x}");
+        for i in (1..s.len()).rev().skip(3).step_by(4) {
+            s.insert(i, '_');
+        }
+        format!("0x{s}")
     }
 
     /// FNV-1a over variant names in declaration order.
     ///
-    /// `Type` and `MontyType` are postcard-encoded by variant index inside a
-    /// `Dump`, so inserting a variant rewrites what older dumps decode to rather
-    /// than failing the version check. Appending leaves this unchanged for every
-    /// existing variant; inserting or reordering does not.
-    ///
-    /// The list covers the `#[strum(disabled)]` variants too — `Type::Instance`,
-    /// `MontyType::{Instance, Exception}` — which carry discriminants like any
-    /// other despite having no name to round-trip through `EnumString`.
+    /// `BuiltinsFunctions` discriminants are bytecode operands, so inserting a
+    /// variant rewrites what older dumps execute rather than failing the version
+    /// check. Appending leaves this unchanged for every existing variant;
+    /// inserting or reordering does not.
     fn variant_order_fingerprint(variants: &[&str]) -> u64 {
+        fnv1a(variants)
+    }
+
+    /// FNV-1a over variant names in sorted order.
+    ///
+    /// `Type` and `MontyType` are encoded by variant name inside a `Dump`, so
+    /// order is free but a rename or removal breaks older dumps: fix it with
+    /// `#[serde(alias)]` or bump `DUMP_VERSION`. Adding a variant only needs
+    /// the expected hash updated.
+    fn variant_name_fingerprint(names: &[String]) -> u64 {
+        let mut sorted = names.to_vec();
+        sorted.sort_unstable();
+        fnv1a(&sorted)
+    }
+
+    /// FNV-1a over a sequence of names, each terminated by a separator.
+    fn fnv1a(names: &[impl AsRef<str>]) -> u64 {
         const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0100_0000_01b3;
 
         let mut hash = OFFSET_BASIS;
-        for name in variants {
-            for byte in name.as_bytes() {
+        for name in names {
+            for byte in name.as_ref().as_bytes() {
                 hash ^= u64::from(*byte);
                 hash = hash.wrapping_mul(PRIME);
             }
@@ -251,24 +430,56 @@ mod tests {
         hash
     }
 
+    /// The names serde writes for every variant of an enum, read back from the
+    /// encoded form rather than taken from strum, whose `#[strum(serialize)]`
+    /// spelling can stay put while the Rust name serde uses changes. `disabled`
+    /// supplies the `#[strum(disabled)]` variants `EnumString` refuses to parse.
+    fn serde_variant_names<T: FromStr + Serialize>(strum_names: &[&str], disabled: &[T]) -> Vec<String> {
+        let parsed: Vec<T> = strum_names.iter().filter_map(|name| T::from_str(name).ok()).collect();
+        assert_eq!(
+            parsed.len() + disabled.len(),
+            strum_names.len(),
+            "every variant must be covered"
+        );
+        parsed
+            .iter()
+            .chain(disabled)
+            .map(|variant| encoded_variant_name(&minicbor_serde::to_vec(variant).unwrap()))
+            .collect()
+    }
+
+    /// The variant name at the front of an encoded enum value: a bare text string
+    /// for a unit variant, or the single key of the map wrapping a payload.
+    fn encoded_variant_name(bytes: &[u8]) -> String {
+        let text = if bytes[0] == 0xa1 { &bytes[1..] } else { bytes };
+        let (len, start) = match text[0] {
+            header @ 0x60..=0x77 => (usize::from(header - 0x60), 1),
+            0x78 => (usize::from(text[1]), 2),
+            header => panic!("expected a text string, got CBOR header {header:#x}"),
+        };
+        String::from_utf8(text[start..start + len].to_vec()).unwrap()
+    }
+
     /// `TypeCheckingFormat` reaches the dump schema through
-    /// `monty_types::TypeCheckState` and serializes by discriminant, so inserting
-    /// a variant rewrites older dumps' format rather than failing to decode.
-    /// Append new variants at the end, or bump `DUMP_VERSION`.
+    /// `monty_types::TypeCheckState` and serializes by variant name, so the
+    /// names are compared in sorted order: renaming one needs `#[serde(alias)]`
+    /// or a `DUMP_VERSION` bump, adding one only needs this list updated.
     #[test]
     fn type_checking_format_variants_match_dump_version() {
+        let mut variants = serde_variant_names::<TypeCheckingFormat>(TypeCheckingFormat::VARIANTS, &[]);
+        variants.sort_unstable();
         assert_eq!(
-            TypeCheckingFormat::VARIANTS,
+            variants,
             [
-                "full",
-                "concise",
-                "azure",
-                "json",
-                "jsonlines",
-                "rdjson",
-                "pylint",
-                "gitlab",
-                "github"
+                "Azure",
+                "Concise",
+                "Full",
+                "Github",
+                "Gitlab",
+                "Json",
+                "JsonLines",
+                "Pylint",
+                "Rdjson"
             ],
             "TypeCheckingFormat variants changed for dump version {DUMP_VERSION}"
         );

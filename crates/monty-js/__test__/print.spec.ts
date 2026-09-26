@@ -1,4 +1,4 @@
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 import { t } from './assertions.js'
 
 import { CollectString, CollectStreams, MontyRuntimeError } from '@pydantic/monty'
@@ -24,6 +24,25 @@ function makePrintCollector() {
   return { callback, output }
 }
 
+test('omitted printCallback uses the host output sink', async () => {
+  const stdout =
+    typeof process !== 'undefined' && process.stdout
+      ? vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+      : vi.spyOn(console, 'log').mockImplementation(() => {})
+  const stderr =
+    typeof process !== 'undefined' && process.stderr
+      ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      : vi.spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    t.is(await run("import sys\nprint('hello')\nprint('error', file=sys.stderr)\n42"), 42)
+    t.is(stdout.mock.calls.map(([text]) => text).join(''), 'hello\n')
+    t.is(stderr.mock.calls.map(([text]) => text).join(''), 'error\n')
+  } finally {
+    stdout.mockRestore()
+    stderr.mockRestore()
+  }
+})
+
 test('basic', async () => {
   const { output, callback } = makePrintCollector()
   await run('print("hello")', { printCallback: callback })
@@ -41,6 +60,18 @@ test('batched into fewer callbacks than prints', async () => {
   await run('for i in range(500):\n    print(i)', { printCallback: callback })
   t.is(output.join(''), Array.from({ length: 500 }, (_, i) => `${i}\n`).join(''))
   t.true(output.length < 100, `expected far fewer callbacks than prints, got ${output.length}`)
+})
+
+test('stderr is labelled, and keeps its place in the output', async () => {
+  const received: [string, string][] = []
+  await run("import sys\nprint('a')\nprint('b', file=sys.stderr)\nprint('c')", {
+    printCallback: (stream, text) => received.push([stream, text]),
+  })
+  t.deepEqual(received, [
+    ['stdout', 'a\n'],
+    ['stderr', 'b\n'],
+    ['stdout', 'c\n'],
+  ])
 })
 
 test('a zero flush interval delivers one callback per line', async () => {
@@ -112,7 +143,7 @@ test('empty', async () => {
 
 test('with limits', async () => {
   const { output, callback } = makePrintCollector()
-  await run('print("with limits")', { printCallback: callback, limits: { maxDurationSecs: 5.0 } })
+  await run('print("with limits")', { printCallback: callback, limits: { maxFeedDurationSecs: 5.0 } })
   t.deepEqual(output, ['with limits\n'])
 })
 
@@ -135,7 +166,7 @@ for i in range(3):
 test('print mixed types', async () => {
   const { output, callback } = makePrintCollector()
   await run('print("Value:", 3.14, True, None, [1, 2, 3])', { printCallback: callback })
-  t.deepEqual(output, ['Value: 3.14 True None [1, 2, 3]\n'])
+  t.is(output.join(''), 'Value: 3.14 True None [1, 2, 3]\n')
 })
 
 // =============================================================================

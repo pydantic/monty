@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use monty_types::{CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
+use monty_types::{
+    CodeLoc, ExcData, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData, UnicodeErrorObject,
+};
 
 use crate::{convert::ProtoConvertError, pb};
 
@@ -116,7 +118,7 @@ fn sanitize_json_data(data: pb::JsonErrorData) -> Option<Box<JsonErrorData>> {
 impl From<&UnicodeErrorData> for pb::UnicodeErrorData {
     fn from(data: &UnicodeErrorData) -> Self {
         let object = match &data.object {
-            UnicodeErrorObject::Bytes(bytes) => pb::unicode_error_data::Object::ObjectBytes(bytes.clone()),
+            UnicodeErrorObject::Bytes(bytes) => pb::unicode_error_data::Object::ObjectBytes(bytes.clone().into()),
             UnicodeErrorObject::Str(s) => pb::unicode_error_data::Object::ObjectStr(s.clone()),
         };
         Self {
@@ -151,7 +153,7 @@ fn sanitize_unicode_data(data: pb::UnicodeErrorData) -> Option<Box<UnicodeErrorD
                 return None;
             }
             let len = bytes.len();
-            (UnicodeErrorObject::Bytes(bytes), len)
+            (UnicodeErrorObject::Bytes(bytes.into_inner()), len)
         }
         pb::unicode_error_data::Object::ObjectStr(s) => {
             if s.len() > UnicodeErrorData::MAX_OBJECT_LEN {
@@ -234,6 +236,43 @@ impl TryFrom<pb::StackFrame> for StackFrame {
             hide_caret: frame.hide_caret,
             hide_frame_name: frame.hide_frame_name,
         })
+    }
+}
+
+impl From<&SourceRange> for pb::SourceRange {
+    fn from(range: &SourceRange) -> Self {
+        Self {
+            filename: range.filename.clone(),
+            start: range.start,
+            end: range.end,
+        }
+    }
+}
+
+/// Owned form: moves the filename, for decoders that merge repeated fields
+/// without copying what they already hold.
+impl From<SourceRange> for pb::SourceRange {
+    fn from(range: SourceRange) -> Self {
+        Self {
+            filename: range.filename,
+            start: range.start,
+            end: range.end,
+        }
+    }
+}
+
+/// Total: nothing renders carets from a suspension's range, so no bounds check
+/// is needed (cf. `StackFrame`).
+impl From<pb::SourceRange> for SourceRange {
+    fn from(range: pb::SourceRange) -> Self {
+        Self::from(&range)
+    }
+}
+
+/// Borrowed form for a position read off an event that stays whole.
+impl From<&pb::SourceRange> for SourceRange {
+    fn from(range: &pb::SourceRange) -> Self {
+        Self::new(&range.filename, range.start, range.end)
     }
 }
 

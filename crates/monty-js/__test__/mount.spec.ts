@@ -1,12 +1,13 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
-import { skipIfBrowser, skipIfNode } from './env.js'
+import { skipIfWasm, skipIfNative } from './env.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { MontyFileHandle, MontyRuntimeError, MountDir, type MountDirOptions } from '@pydantic/monty/node'
 import { setupPool } from './helpers.js'
+import { checkOsPathValidation, checkRelativePathResults } from './os_paths.js'
 
 const { run, pool } = setupPool()
 
@@ -47,8 +48,8 @@ function createTestDir(): {
 // MountDir validation
 // =============================================================================
 
-test('browser wasm reports mounts as unsupported', async (ctx) => {
-  skipIfNode(ctx)
+test('wasm reports mounts as unsupported', async (ctx) => {
+  skipIfNative(ctx)
   await using session = await pool().checkout()
 
   const error = await t.throwsAsync(() =>
@@ -58,7 +59,7 @@ test('browser wasm reports mounts as unsupported', async (ctx) => {
 })
 
 test('a mount follows its directory across feeds, not its path', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-pin-'))
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-out-'))
   // Closed before the directories are removed; Windows would refuse otherwise.
@@ -113,8 +114,103 @@ f"{Path('/child/inside.txt').read_text()}:{Path('/child/secret.txt').exists()}"`
   }
 })
 
+// =============================================================================
+// Working directory
+// =============================================================================
+
+test('cwd defaults to the root without mounts', async () => {
+  t.deepEqual(await run('import os\n(os.getcwd(), __file__)'), ['/', '/main.py'])
+  t.deepEqual(await run('import os\nos.getcwd()', { cwd: '/work/' }), '/work')
+})
+
+test('NUL paths never reach callbacks and no-handler errors use clean paths', async () => {
+  await checkOsPathValidation(run)
+})
+
+test('filesystem results preserve relative paths', async () => {
+  await checkRelativePathResults(run, MontyFileHandle)
+})
+
+test.each(['/', '/data'])('os callbacks receive normalized paths with cwd %s', async (cwd) => {
+  const calls: unknown[] = []
+  const result = await run(
+    `import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')
+open('./sub//../file.txt').read()`,
+    {
+      cwd,
+      os: (name, args) => {
+        calls.push([name, args])
+        if (name === 'Path.iterdir') return []
+        if (name === 'open') return new MontyFileHandle(args[0] as string, 'r')
+        if (name === 'Path.read_text') return 'hello'
+        return true
+      },
+    },
+  )
+  t.is(result, 'hello')
+  const prefix = cwd === '/' ? '' : cwd
+  t.deepEqual(calls, [
+    ['Path.exists', [`${prefix}/file.txt`]],
+    ['Path.exists', ['/other/file.txt']],
+    ['Path.iterdir', [cwd]],
+    ['Path.rename', [`${prefix}/src`, '/dst']],
+    ['open', [`${prefix}/file.txt`, 'r']],
+    ['Path.read_text', [`${prefix}/file.txt`]],
+  ])
+})
+
+test('cwd defaults to the first mount and persists across feeds', async (ctx) => {
+  skipIfWasm(ctx)
+  const { mount, cleanup } = createTestDir()
+  try {
+    const md = mount({ virtualPath: '/data', mode: 'read-only' })
+    await using session = await pool().checkout()
+    t.deepEqual(await session.feedRun("import os\n(os.getcwd(), __file__, open('hello.txt').read())", { mount: md }), [
+      '/data',
+      '/data/main.py',
+      'hello world',
+    ])
+    // chdir carries over, with or without the mount; an explicit cwd switches it
+    t.is(await session.feedRun("os.chdir('subdir')\nos.getcwd()", { mount: md }), '/data/subdir')
+    t.is(await session.feedRun('os.getcwd()', { mount: md }), '/data/subdir')
+    t.is(await session.feedRun('os.getcwd()'), '/data/subdir')
+    t.is(await session.feedRun("open('nested.txt').read()", { mount: md, cwd: '/data/subdir' }), 'nested content')
+    t.is(await session.feedRun('os.getcwd()', { mount: md, cwd: '/data' }), '/data')
+  } finally {
+    cleanup()
+  }
+})
+
+test('an explicit cwd persists across feeds', async () => {
+  // no mounts, so this covers the wasm path too
+  await using session = await pool().checkout()
+  t.is(await session.feedRun('import os\nos.getcwd()', { cwd: '/work' }), '/work')
+  t.is(await session.feedRun('os.getcwd()'), '/work')
+  t.is(await session.feedRun('os.getcwd()', { cwd: '/' }), '/')
+})
+
+test('an invalid cwd is refused', async () => {
+  // the wasm transport validates in TypeScript, so this pins it to monty-pool's `validate_cwd`
+  for (const [cwd, message] of [
+    ['data', 'cwd must be an absolute POSIX path: "data"'],
+    ['', 'cwd must be an absolute POSIX path: ""'],
+    ['/data\0', 'cwd must not contain NUL bytes: "/data\\0"'],
+  ] as const) {
+    const error = await t.throwsAsync(() => run('1', { cwd }), { instanceOf: MontyRuntimeError })
+    t.is(error.message, `ValueError: ${message}`)
+  }
+  await using session = await pool().checkout()
+  t.is(await session.feedRun('import os\nos.getcwd()', { cwd: '/work//' }), '/work')
+  t.is(await session.feedRun('os.getcwd()', { cwd: '///' }), '/')
+})
+
 test('MountDir repr', (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -125,7 +221,7 @@ test('MountDir repr', (ctx) => {
 })
 
 test('MountDir invalid mode', (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const error = t.throws(() => mount({ virtualPath: '/data', mode: 'invalid' as never }))
@@ -136,7 +232,7 @@ test('MountDir invalid mode', (ctx) => {
 })
 
 test('MountDir attributes', (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -159,7 +255,7 @@ test('MountDir attributes', (ctx) => {
 })
 
 test('MountDir nonexistent host path', (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   // The constructor opens the host directory, so a bad path fails there rather
   // than at the first feed. The OS-error suffix is platform specific.
   const error = t.throws(
@@ -169,7 +265,7 @@ test('MountDir nonexistent host path', (ctx) => {
 })
 
 test('MountDir non-absolute virtual path', (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const error = t.throws(() => mount({ virtualPath: 'relative' }))
@@ -180,7 +276,7 @@ test('MountDir non-absolute virtual path', (ctx) => {
 })
 
 test('closing a mount releases it and later feeds are refused', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -206,7 +302,7 @@ test('closing a mount releases it and later feeds are refused', async (ctx) => {
 })
 
 test('MountDir default mode is overlay', (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data' })
@@ -217,7 +313,7 @@ test('MountDir default mode is overlay', (ctx) => {
 })
 
 test('MountDir write_bytes_limit', (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', writeBytesLimit: 1024 })
@@ -319,7 +415,7 @@ test('MontyFileHandle rejects invalid arguments', () => {
 // =============================================================================
 
 test('read_text via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -331,7 +427,7 @@ test('read_text via mount', async (ctx) => {
 })
 
 test('read_bytes via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -343,7 +439,7 @@ test('read_bytes via mount', async (ctx) => {
 })
 
 test('path exists via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -361,7 +457,7 @@ exists_missing = Path('/data/nope.txt').exists()
 })
 
 test('is_file and is_dir via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -377,7 +473,7 @@ from pathlib import Path
 })
 
 test('iterdir via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -392,7 +488,7 @@ sorted([p.name for p in Path('/data').iterdir()])
 })
 
 test('stat via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -408,7 +504,7 @@ s.st_size
 })
 
 test('read nested file via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -424,7 +520,7 @@ test('read nested file via mount', async (ctx) => {
 // =============================================================================
 
 test('write blocked on read-only mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -439,7 +535,7 @@ test('write blocked on read-only mount', async (ctx) => {
 })
 
 test('write succeeds on read-write mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-write' })
@@ -457,7 +553,7 @@ Path('/data/new.txt').read_text()
 })
 
 test('overlay write does not modify host', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'overlay' })
@@ -475,7 +571,7 @@ Path('/data/overlay_file.txt').read_text()
 })
 
 test('overlay read falls through to host', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'overlay' })
@@ -487,7 +583,7 @@ test('overlay read falls through to host', async (ctx) => {
 })
 
 test('overlay writes do not persist across runs', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   // Overlay state lives in the pool's per-feed mount table, so unlike the old
   // in-process API it does NOT persist across runs sharing the same MountDir.
   const { mount, cleanup } = createTestDir()
@@ -505,7 +601,7 @@ test('overlay writes do not persist across runs', async (ctx) => {
 })
 
 test('overlay memory usage limit is aggregate', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'overlay', memoryUsageLimit: 1000 })
@@ -527,7 +623,7 @@ p.read_bytes()
 // =============================================================================
 
 test('mkdir and rmdir via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'overlay' })
@@ -546,7 +642,7 @@ after = Path('/data/newdir').exists()
 })
 
 test('unlink via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'overlay' })
@@ -564,7 +660,7 @@ Path('/data/hello.txt').exists()
 })
 
 test('rename via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'overlay' })
@@ -580,7 +676,7 @@ Path('/data/hello.txt').rename('/data/renamed.txt')
 })
 
 test('resolve via mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -598,7 +694,7 @@ test('resolve via mount', async (ctx) => {
 // =============================================================================
 
 test('path traversal blocked', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -606,14 +702,14 @@ test('path traversal blocked', async (ctx) => {
       () => run("from pathlib import Path; Path('/data/../../etc/passwd').read_text()", { mount: md }),
       { instanceOf: MontyRuntimeError },
     )
-    t.is(error.message, "PermissionError: Permission denied: '/data/../../etc/passwd'")
+    t.is(error.message, "PermissionError: Permission denied: '/etc/passwd'")
   } finally {
     cleanup()
   }
 })
 
 test('unmounted path denied', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -632,7 +728,7 @@ test('unmounted path denied', async (ctx) => {
 // =============================================================================
 
 test('non-filesystem os call without fallback', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -650,7 +746,7 @@ test('non-filesystem os call without fallback', async (ctx) => {
 // =============================================================================
 
 test('multiple mounts with different modes', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup: cleanup1 } = createTestDir()
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-test2-'))
   fs.writeFileSync(path.join(dir2, 'file2.txt'), 'from mount2')
@@ -678,7 +774,7 @@ b = Path('/rw/file2.txt').read_text()
 // =============================================================================
 
 test('mount works with external functions', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'read-only' })
@@ -700,7 +796,7 @@ result + content
 // =============================================================================
 
 test('session feed with mount read', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -713,13 +809,10 @@ test('session feed with mount read', async (ctx) => {
   }
 })
 
-// The mount table is rebuilt per feed on the host side of the pool (see
-// limitations/pool-architecture.md): overlay writes live for the duration of
-// one feed and are discarded when it ends, unlike the old in-process API
-// where overlay state persisted on the MountDir object.
+// Overlay state belongs to one feed, not the MountDir object; see docs/limitations/filesystem.md#mount-modes.
 
 test('session overlay write is discarded between feeds', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -739,7 +832,7 @@ test('session overlay write is discarded between feeds', async (ctx) => {
 })
 
 test('session overlay overwrite reverts between feeds', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -757,7 +850,7 @@ test('session overlay overwrite reverts between feeds', async (ctx) => {
 })
 
 test('session overlay delete reverts between feeds', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -774,7 +867,7 @@ test('session overlay delete reverts between feeds', async (ctx) => {
 })
 
 test('overlay mkdir and nested write within one feed', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'overlay' })
@@ -792,7 +885,7 @@ Path('/data/mydir/file.txt').read_text()
 })
 
 test('overlay iterdir sees overlay files', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   try {
     const md = mount({ virtualPath: '/data', mode: 'overlay' })
@@ -808,7 +901,7 @@ sorted([p.name for p in Path('/data').iterdir()])
 })
 
 test('session read-write mount writes to host', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -825,7 +918,7 @@ test('session read-write mount writes to host', async (ctx) => {
 })
 
 test('session read-only mount blocks write', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { mount, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -857,7 +950,7 @@ function makeSymlink(target: string, link: string): boolean {
 }
 
 test('relative symlink inside a mount is followed', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   try {
     if (!makeSymlink('hello.txt', path.join(dir, 'rel_link.txt'))) return
@@ -870,7 +963,7 @@ test('relative symlink inside a mount is followed', async (ctx) => {
 })
 
 test('absolute symlink target is refused inside a mount', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
   const { dir, mount, cleanup } = createTestDir()
   try {
     // Absolute even though it points back into the same mount: a descriptor has
@@ -894,4 +987,24 @@ test('absolute symlink target is refused inside a mount', async (ctx) => {
   } finally {
     cleanup()
   }
+})
+
+// =============================================================================
+// Entropy: os.urandom and unseeded random draws
+// =============================================================================
+
+test('os.urandom is answered by the os handler; an unseeded random draw never calls it', async () => {
+  const calls: [string, unknown[]][] = []
+  const os = (name: string, args: unknown[]) => {
+    calls.push([name, args])
+    return Uint8Array.from({ length: args[0] as number }, (_, i) => i % 256)
+  }
+  const bytes = (await run('import os\nos.urandom(3)', { os })) as Uint8Array
+  t.deepEqual([...bytes], [0, 1, 2])
+  const [unseeded, seeded] = (await run('import random\n[random.random(), random.Random(1).random()]', {
+    os,
+  })) as [number, number]
+  t.true(unseeded >= 0 && unseeded < 1)
+  t.is(seeded, 0.13436424411240122)
+  t.deepEqual(calls, [['os.urandom', [3]]])
 })

@@ -12,12 +12,13 @@
 mod convert;
 mod exceptions;
 mod limits;
+mod os_policy;
 mod pool;
 mod telemetry;
 
 pub use exceptions::{ExceptionInfo, Frame, JsMontyException};
 pub use limits::JsResourceLimits;
-pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession, MAX_VALUE_DEPTH};
+pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession};
 pub use telemetry::{flush_telemetry, install_telemetry, set_telemetry_metrics_enabled};
 
 /// Returns the package version used for the OpenTelemetry instrumentation scope.

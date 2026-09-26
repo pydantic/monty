@@ -4,25 +4,28 @@ use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
-    builtins::object_setattr::builtin_object_setattr,
-    bytecode::VM,
+    builtins::{Builtins, BuiltinsFunctions, object_setattr::builtin_object_setattr},
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    modules::collections,
+    modules::{ModuleFunctions, collections, itertools, itertools::ItertoolsFunctions},
     types::{
-        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Partial, Path, PyTrait, Range, Set, Slice, Str,
-        TimeZone, Tuple,
+        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
+        Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
-        long_int::INT_MAX_STR_DIGITS,
-        str::StringRepr,
-        time, timedelta,
+        long_int::{INT_MAX_STR_DIGITS, bigint_to_f64_checked},
+        path,
+        str::{StringRepr, allocate_string},
+        time,
+        timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
+        timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Represents the Python type of a value.
@@ -113,8 +116,8 @@ pub enum Type {
     /// `VM::instantiate_class`). It must NEVER be stored long-lived,
     /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
     /// `type()` builtin returns the class object itself for instances), or
-    /// converted to `MontyObject` without resolving the name first (the public
-    /// boundary enum `MontyType` carries the resolved name as a `String`).
+    /// converted to `MontyType`, which has no class variant (a sandbox class
+    /// crosses the boundary as its own `ClassType` arena node).
     #[strum(disabled)]
     Instance(HeapId),
     /// Exception types render/parse via `ExcType`'s own strum name
@@ -163,7 +166,7 @@ pub enum Type {
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     #[strum(serialize = "re.Match")]
     ReMatch,
-    // Serialized enum variants are append-only to preserve postcard discriminants.
+    // Variants serialize by name into dumps: renaming one needs `#[serde(alias)]`.
     #[strum(serialize = "tuple_iterator")]
     TupleIterator,
     #[strum(serialize = "str_ascii_iterator")]
@@ -236,6 +239,42 @@ pub enum Type {
     ItertoolsBatched,
     #[strum(serialize = "itertools.zip_longest")]
     ItertoolsZipLongest,
+    /// `types.GenericAlias`, the type of `list[int]`; qualified like
+    /// `functools.partial`, so `type(list[int])` reads `<class 'types.GenericAlias'>`.
+    #[strum(serialize = "types.GenericAlias")]
+    GenericAlias,
+    /// `typing.Union`, the type of `int | None` — one object with
+    /// `types.UnionType` since CPython 3.14, and the value bound to
+    /// `typing.Union` itself.
+    #[strum(serialize = "typing.Union")]
+    Union,
+    #[strum(serialize = "itertools.combinations")]
+    ItertoolsCombinations,
+    #[strum(serialize = "itertools.combinations_with_replacement")]
+    ItertoolsCombinationsWithReplacement,
+    #[strum(serialize = "itertools.permutations")]
+    ItertoolsPermutations,
+    #[strum(serialize = "itertools.product")]
+    ItertoolsProduct,
+    #[strum(serialize = "itertools.groupby")]
+    ItertoolsGroupBy,
+    /// The sub-iterator `groupby` yields for each group — CPython's private
+    /// `itertools._grouper`, named as such so `type()` matches.
+    #[strum(serialize = "itertools._grouper")]
+    ItertoolsGrouper,
+    /// The iterator `tee()` hands out — CPython's private `itertools._tee`,
+    /// which it nonetheless exposes on the module.
+    #[strum(serialize = "itertools._tee")]
+    ItertoolsTee,
+    /// The read-ahead buffer those iterators share, CPython's
+    /// `itertools._tee_dataobject`. Never reachable from Python except as
+    /// that name.
+    #[strum(serialize = "itertools._tee_dataobject")]
+    ItertoolsTeeDataObject,
+    /// `random.Random`, qualified like `collections.deque` so `type(rng)`
+    /// reads `<class 'random.Random'>`.
+    #[strum(serialize = "random.Random")]
+    Random,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -364,6 +403,33 @@ impl Type {
         }
     }
 
+    /// Whether subscripting this type builds a `types.GenericAlias`
+    /// (`list[int]`), i.e. whether CPython's type defines `__class_getitem__`.
+    ///
+    /// `type` is included even though Monty binds the name to a builtin
+    /// function: `type[int]` is routed here by `Value::py_getitem`.
+    #[must_use]
+    pub(crate) const fn has_class_getitem(self) -> bool {
+        matches!(
+            self,
+            Self::List
+                | Self::Tuple
+                | Self::Dict
+                | Self::DefaultDict
+                | Self::Counter
+                | Self::Set
+                | Self::FrozenSet
+                | Self::Type
+                | Self::Deque
+                | Self::Partial
+                | Self::RePattern
+                | Self::ReMatch
+                // The one `itertools` type CPython gives a
+                // `__class_getitem__`; the rest reject a subscript.
+                | Self::ItertoolsChain
+        )
+    }
+
     /// Returns whether this is one of Python's concrete iterator types.
     #[must_use]
     pub(crate) const fn is_iterator(self) -> bool {
@@ -395,6 +461,13 @@ impl Type {
                 | Self::ItertoolsAccumulate
                 | Self::ItertoolsBatched
                 | Self::ItertoolsZipLongest
+                | Self::ItertoolsCombinations
+                | Self::ItertoolsCombinationsWithReplacement
+                | Self::ItertoolsPermutations
+                | Self::ItertoolsProduct
+                | Self::ItertoolsGroupBy
+                | Self::ItertoolsGrouper
+                | Self::ItertoolsTee
         )
     }
 
@@ -479,58 +552,150 @@ impl Type {
 
     /// Dispatches classmethod calls on builtin type objects (e.g. `dict.fromkeys`).
     ///
-    /// Keeps classmethod behavior centralized with type semantics instead of VM call plumbing.
+    /// Keeps classmethod behavior centralized with type semantics instead of VM
+    /// call plumbing. Any other name is looked up as a plain attribute and the
+    /// result called, so `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(
         self,
         method_id: StringId,
         args: ArgValues,
         vm: &mut VM<'_>,
-    ) -> RunResult<AttrCallResult> {
-        match (self, method_id) {
+    ) -> RunResult<CallResult> {
+        match (self, vm.interns.static_string(method_id)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
-            (Self::Dict, m) if m == StaticStrings::Fromkeys => {
-                dict_fromkeys(args, DictKind::plain(), vm).map(AttrCallResult::Value)
+            (Self::Dict, Some(StaticStrings::Fromkeys)) => {
+                dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
             }
             // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
             // factory — matching CPython's inherited `dict.fromkeys` classmethod.
-            (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
-                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(AttrCallResult::Value)
+            (Self::DefaultDict, Some(StaticStrings::Fromkeys)) => {
+                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
+            }
+            // `chain.from_iterable(iterable)`, CPython's one classmethod here.
+            (Self::ItertoolsChain, Some(StaticStrings::FromIterable)) => {
+                itertools::call(vm, ItertoolsFunctions::ChainFromIterable, args).map(CallResult::Value)
             }
             // Counter deliberately disables the inherited classmethod.
-            (Self::Counter, m) if m == StaticStrings::Fromkeys => {
+            (Self::Counter, Some(StaticStrings::Fromkeys)) => {
                 args.drop_with(vm);
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
-            (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
-            (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
-            (Self::Date, m) if m == StaticStrings::Fromisoformat => {
-                date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
+            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
+            (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
+            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
+                date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm, args),
-            (Self::DateTime, m) if m == StaticStrings::Strptime => {
-                datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
+            (Self::DateTime, Some(StaticStrings::Strptime)) => {
+                datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
-                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+            (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
+                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
-            // is handled by `Value::py_getattr`.
-            (Self::Object, m) if vm.interns.get_str(m) == "__setattr__" => {
-                builtin_object_setattr(vm, args).map(AttrCallResult::Value)
+            // is handled by `class_getattr`.
+            (Self::Object, _) if vm.interns.get_str(method_id) == "__setattr__" => {
+                builtin_object_setattr(vm, args).map(CallResult::Value)
             }
-            (Self::Time, m) if m == StaticStrings::Fromisoformat => {
-                time::class_fromisoformat(vm, args).map(AttrCallResult::Value)
+            (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
+            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
+                time::class_fromisoformat(vm, args).map(CallResult::Value)
             }
+            // `list.__class_getitem__(int)` is `list[int]`; the error names the
+            // bare type as CPython does (`deque.__class_getitem__()`).
+            (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
+                let name = format!("{}.__class_getitem__", ty.dunder_name(vm.heap, vm.interns));
+                let key = args.get_one_arg(&name, vm.heap)?;
+                Ok(CallResult::Value(GenericAlias::subscript(ty, key, vm)))
+            }
+            // The type's plain attributes (`list.__name__`); a missing name
+            // raises the lookup's `type object 'list' has no attribute` error.
             _ => {
-                let method_name = vm.interns.get_str(method_id);
-                args.drop_with(vm.heap);
-                Err(ExcType::attribute_error_type(
-                    &self.name(vm.heap, vm.interns),
-                    method_name,
-                ))
+                let attr = EitherStr::Interned(method_id);
+                if let Some(value) = self.class_getattr(&attr, vm) {
+                    defer_drop!(value, vm);
+                    vm.call_function(value, args)
+                } else {
+                    args.drop_with(vm.heap);
+                    Err(self.attribute_error(&attr, vm))
+                }
             }
         }
+    }
+
+    /// Resolves an attribute read on a builtin type object itself — `list.__name__`,
+    /// `date.max`, `chain.from_iterable` — returning `None` when there is no such
+    /// member so the caller raises [`Self::attribute_error`].
+    pub(crate) fn class_getattr(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        let is_dunder_name = attr.static_string(vm.interns).map_or_else(
+            || attr.as_str(vm.interns) == "__name__",
+            |ss| ss == StaticStrings::DunderName,
+        );
+        if is_dunder_name {
+            Some(allocate_string(self.dunder_name(vm.heap, vm.interns), vm.heap))
+        } else if let Some(constant) = self.class_constant(attr, vm) {
+            Some(constant)
+        } else if self == Self::ItertoolsChain && attr.static_string(vm.interns) == Some(StaticStrings::FromIterable) {
+            // `chain.from_iterable`, the one attribute an `itertools` type
+            // carries. Handed out as a value so it can be bound and called
+            // later, not only called in place.
+            Some(Value::ModuleFunction(ModuleFunctions::Itertools(
+                ItertoolsFunctions::ChainFromIterable,
+            )))
+        } else if self == Self::Object && attr.as_str(vm.interns) == "__setattr__" {
+            // `object.__setattr__` is the only member `object` carries: it
+            // exists so a class that hooks attribute writes has a way to
+            // perform one (see `limitations/classes.md`).
+            Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectSetattr)))
+        } else {
+            None
+        }
+    }
+
+    /// The `AttributeError` for a name missing from this type object.
+    ///
+    /// CPython names the class rather than the metaclass here:
+    /// `type object 'list' has no attribute 'nonexistent'`.
+    pub(crate) fn attribute_error(self, attr: &EitherStr, vm: &VM<'_>) -> RunError {
+        ExcType::attribute_error_type(&self.name(vm.heap, vm.interns), attr.as_str(vm.interns))
+    }
+
+    /// Resolves a class-level constant on a builtin type object (`time.max`,
+    /// `timezone.utc`, ...), returning `None` so the caller can fall through to
+    /// its own `AttributeError`.
+    ///
+    /// Every lookup allocates a fresh object, so `date.min is date.min` is
+    /// `False` where CPython caches (see limitations/datetime.md).
+    pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which
+        // normalizes to CPython's `timedelta(days=999999999, seconds=86399,
+        // microseconds=999999)`.
+        const MAX_TIMEDELTA_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
+        const MIN_TIMEDELTA_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
+
+        Some(match (self, attr.static_string(vm.interns)?) {
+            (Self::Date, StaticStrings::Min) => date::allocate_ymd(1, 1, 1, vm.heap),
+            (Self::Date, StaticStrings::Max) => date::allocate_ymd(9999, 12, 31, vm.heap),
+            (Self::Date, StaticStrings::Resolution) => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
+            (Self::DateTime, StaticStrings::Min) => datetime::allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
+            (Self::DateTime, StaticStrings::Max) => {
+                datetime::allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap)
+            }
+            (Self::Time, StaticStrings::Min) => time::allocate_naive(0, 0, 0, 0, vm.heap),
+            (Self::Time, StaticStrings::Max) => time::allocate_naive(23, 59, 59, 999_999, vm.heap),
+            (Self::TimeDelta, StaticStrings::Min) => timedelta::allocate_micros(MIN_TIMEDELTA_MICROS, vm.heap),
+            (Self::TimeDelta, StaticStrings::Max) => timedelta::allocate_micros(MAX_TIMEDELTA_MICROS, vm.heap),
+            // The three microsecond-resolution classes share one constant.
+            (Self::DateTime | Self::Time | Self::TimeDelta, StaticStrings::Resolution) => {
+                timedelta::allocate_micros(1, vm.heap)
+            }
+            (Self::TimeZone, StaticStrings::Utc) => vm.heap.get_timezone_utc(),
+            (Self::TimeZone, StaticStrings::Min) => timezone::allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            (Self::TimeZone, StaticStrings::Max) => timezone::allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            _ => return None,
+        })
     }
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).
@@ -560,6 +725,32 @@ impl Type {
             Self::Iterator => super::iter::init(vm, args),
             Self::Path => Path::init(vm, args),
             Self::Partial => Partial::init(vm, args),
+            Self::Random => Random::init(vm, args),
+
+            // Every `itertools` name but `tee` is a type, as in CPython, so
+            // `isinstance(x, itertools.count)` and `type(x) is count` hold.
+            Self::ItertoolsCount
+            | Self::ItertoolsRepeat
+            | Self::ItertoolsPairwise
+            | Self::ItertoolsCompress
+            | Self::ItertoolsIslice
+            | Self::ItertoolsChain
+            | Self::ItertoolsCycle
+            | Self::ItertoolsTakeWhile
+            | Self::ItertoolsDropWhile
+            | Self::ItertoolsFilterFalse
+            | Self::ItertoolsStarMap
+            | Self::ItertoolsAccumulate
+            | Self::ItertoolsBatched
+            | Self::ItertoolsZipLongest
+            | Self::ItertoolsCombinations
+            | Self::ItertoolsCombinationsWithReplacement
+            | Self::ItertoolsPermutations
+            | Self::ItertoolsProduct
+            | Self::ItertoolsGroupBy
+            | Self::ItertoolsGrouper
+            | Self::ItertoolsTee
+            | Self::ItertoolsTeeDataObject => itertools::construct(self, vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),
@@ -576,8 +767,10 @@ impl Type {
                     Value::InternString(string_id) => {
                         Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
                     }
+                    Value::InternLongInt(id) => Ok(Value::Float(bigint_to_f64_checked(interns.get_long_int(*id))?)),
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
+                        HeapData::LongInt(value) => Ok(Value::Float(value.to_f64_checked()?)),
                         _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                     },
                     _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
@@ -589,6 +782,12 @@ impl Type {
                 };
                 defer_drop!(v, vm);
                 Ok(Value::Bool(v.py_bool(vm)?))
+            }
+
+            // CPython words this one differently from the other uncallable types.
+            Self::Union => {
+                args.drop_with(vm);
+                Err(ExcType::type_error("cannot create 'typing.Union' instances"))
             }
 
             // Non-callable types - raise TypeError

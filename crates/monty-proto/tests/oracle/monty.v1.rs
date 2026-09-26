@@ -13,21 +13,37 @@
 /// this single file.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Unit {}
-/// A Python value crossing the sandbox boundary. Mirrors monty's `MontyObject`
-/// enum variant-for-variant.
+/// Python values cross the boundary as one node arena per message: containers
+/// hold the indexes of their children, so a sub-object referenced twice is one
+/// node, and the carrying message names its roots by index. Nodes are in
+/// post-order (every child index is lower than its holder's), so receivers
+/// build values in one forward pass; a reference back to an enclosing
+/// container is a `cycle` leaf. Mirrors monty's `MontyGraph`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Arena {
+    /// The sender's node count, so a receiver can reserve the arena once. A
+    /// hint only: receivers cap it by the message size and charge it against
+    /// their decode budget before allocating.
+    #[prost(uint32, tag = "1")]
+    pub node_count: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub nodes: ::prost::alloc::vec::Vec<MontyNode>,
+}
+/// One node of an `Arena`. Leaf arms carry the value; container arms carry
+/// the indexes of their children.
 ///
 /// `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
-/// `Complete` value) but rejects them as inputs, exactly like `MontyObject`.
+/// `Complete` value) but rejects them as inputs.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MontyObject {
+pub struct MontyNode {
     #[prost(
-        oneof = "monty_object::Kind",
+        oneof = "monty_node::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
-    pub kind: ::core::option::Option<monty_object::Kind>,
+    pub kind: ::core::option::Option<monty_node::Kind>,
 }
-/// Nested message and enum types in `MontyObject`.
-pub mod monty_object {
+/// Nested message and enum types in `MontyNode`.
+pub mod monty_node {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         #[prost(message, tag = "1")]
@@ -52,21 +68,21 @@ pub mod monty_object {
         Bytes(::prost::alloc::vec::Vec<u8>),
         /// A uuid.UUID value. Declared so the tag is settled, but NOT YET
         /// IMPLEMENTED: monty has no uuid module, so neither end produces or
-        /// accepts this arm (it decodes like any unknown kind — rejected).
+        /// accepts this arm (conversion to a domain node rejects it).
         #[prost(message, tag = "10")]
         Uuid(super::Uuid),
         #[prost(message, tag = "11")]
-        List(super::ObjectList),
+        List(super::Indexes),
         #[prost(message, tag = "12")]
-        Tuple(super::ObjectList),
+        Tuple(super::Indexes),
         #[prost(message, tag = "13")]
-        NamedTuple(super::NamedTuple),
+        NamedTuple(super::NamedTupleNode),
         #[prost(message, tag = "14")]
-        Dict(super::Dict),
+        Dict(super::NodePairs),
         #[prost(message, tag = "15")]
-        Set(super::ObjectList),
+        Set(super::Indexes),
         #[prost(message, tag = "16")]
-        FrozenSet(super::ObjectList),
+        FrozenSet(super::Indexes),
         #[prost(message, tag = "17")]
         Date(super::Date),
         #[prost(message, tag = "18")]
@@ -81,11 +97,12 @@ pub mod monty_object {
         /// variable. Errors that terminate execution use `RaisedException` instead.
         #[prost(message, tag = "22")]
         Exception(super::Exception),
-        /// A Python type object — builtin, sandbox class, or host class.
+        /// A Python type object — builtin, sandbox class, or host class. A class
+        /// is a node of its own, shared by every instance of it in the arena.
         #[prost(message, tag = "23")]
         Type(super::Type),
         #[prost(message, tag = "24")]
-        ClassInstance(super::ClassInstance),
+        ClassInstance(super::ClassInstanceNode),
         #[prost(message, tag = "25")]
         Function(super::Function),
         /// A builtin function, named by its Python name, e.g. "len", "print".
@@ -99,30 +116,32 @@ pub mod monty_object {
         /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
         #[prost(string, tag = "29")]
         Repr(::prost::alloc::string::String),
-        /// OUTPUT-ONLY marker breaking reference cycles in container output.
-        #[prost(message, tag = "30")]
-        Cycle(super::Cycle),
+        /// OUTPUT-ONLY: a reference back to a container enclosing this node, as
+        /// the placeholder its repr shows ("\[...\]", "(...)", "{...}" or "...").
+        #[prost(string, tag = "30")]
+        Cycle(::prost::alloc::string::String),
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ObjectList {
-    #[prost(message, repeated, tag = "1")]
-    pub items: ::prost::alloc::vec::Vec<MontyObject>,
+/// Indexes of a container's children (list, tuple, set, frozenset items).
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Indexes {
+    #[prost(uint32, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<u32>,
 }
-/// One key/value entry. Used for dicts and kwargs: proto maps cannot have
-/// message keys and do not preserve order, while Python dicts allow arbitrary
-/// hashable keys and are insertion-ordered.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Pair {
-    #[prost(message, optional, tag = "1")]
-    pub key: ::core::option::Option<MontyObject>,
-    #[prost(message, optional, tag = "2")]
-    pub value: ::core::option::Option<MontyObject>,
+/// One key/value entry as node indexes. Used for dicts, attrs and kwargs:
+/// proto maps cannot have message keys and do not preserve order, while
+/// Python dicts allow arbitrary hashable keys and are insertion-ordered.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NodePair {
+    #[prost(uint32, tag = "1")]
+    pub key: u32,
+    #[prost(uint32, tag = "2")]
+    pub value: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Dict {
+pub struct NodePairs {
     #[prost(message, repeated, tag = "1")]
-    pub pairs: ::prost::alloc::vec::Vec<Pair>,
+    pub pairs: ::prost::alloc::vec::Vec<NodePair>,
 }
 /// Arbitrary-precision integer as sign + big-endian magnitude. Exact and O(n);
 /// JS decode is `(negative ? -1n : 1n) * BigInt('0x' + hex(magnitude))`.
@@ -133,16 +152,17 @@ pub struct BigInt {
     #[prost(bytes = "vec", tag = "2")]
     pub magnitude: ::prost::alloc::vec::Vec<u8>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NamedTuple {
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedTupleNode {
     /// Type name used in repr, e.g. "os.stat_result".
     #[prost(string, tag = "1")]
     pub type_name: ::prost::alloc::string::String,
     /// Attribute names, one per value.
     #[prost(string, repeated, tag = "2")]
     pub field_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    #[prost(message, repeated, tag = "3")]
-    pub values: ::prost::alloc::vec::Vec<MontyObject>,
+    /// Indexes of the values, one per field name.
+    #[prost(uint32, repeated, tag = "3")]
+    pub values: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Date {
@@ -269,28 +289,29 @@ pub struct Type {
     #[prost(bool, tag = "4")]
     pub is_dataclass: bool,
     /// Class attributes sent eagerly with the type object (class constants, per
-    /// the sending wrapper's policy), as a class value or as the `type` field of
-    /// a ClassInstance. The sandbox keeps one type object per class id: a
-    /// non-empty set replaces its attrs, an empty set leaves them unchanged. The
-    /// worker sends an empty set for the `type` field of an instance.
+    /// the sending wrapper's policy), as `(name, value)` node indexes. The
+    /// sandbox keeps one type object per class id: a non-empty set replaces its
+    /// attrs, an empty set leaves them unchanged. The worker never sends attrs
+    /// for a sandbox class.
     #[prost(message, optional, tag = "5")]
-    pub attrs: ::core::option::Option<Dict>,
+    pub attrs: ::core::option::Option<NodePairs>,
 }
 /// A class instance crossing the sandbox boundary. Host-backed instances route
 /// method calls and lazy attribute lookups back to the real object by uuid
 /// (`FunctionCall.object_id` / `NameLookup.object_id`); sandbox-defined
 /// instances carry a worker-generated uuid instead.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ClassInstance {
-    /// The instance's class; origin SANDBOX or HOST (never BUILTIN).
-    #[prost(message, optional, tag = "1")]
-    pub r#type: ::core::option::Option<Type>,
+pub struct ClassInstanceNode {
+    /// Index of the instance's class: a `type` node with origin SANDBOX or HOST
+    /// (never BUILTIN), shared by every instance of the class in the arena.
+    #[prost(uint32, tag = "1")]
+    pub class_type: u32,
     /// Identity of the instance, generated by whichever side defined it.
     #[prost(message, optional, tag = "2")]
     pub instance_id: ::core::option::Option<Uuid>,
-    /// Eagerly-sent attributes, in order.
+    /// Eagerly-sent attributes as `(name, value)` node indexes, in order.
     #[prost(message, optional, tag = "3")]
-    pub attrs: ::core::option::Option<Dict>,
+    pub attrs: ::core::option::Option<NodePairs>,
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
@@ -300,17 +321,6 @@ pub struct Function {
     pub name: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<::prost::alloc::string::String>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Cycle {
-    /// Opaque identity token for the object the cycle refers back to: two
-    /// cycle markers in the same result are the same object iff their tokens
-    /// match. Meaningless outside the result that produced it.
-    #[prost(uint64, tag = "1")]
-    pub identity: u64,
-    /// Type-specific placeholder shown in reprs, e.g. "\[...\]".
-    #[prost(string, tag = "2")]
-    pub placeholder: ::prost::alloc::string::String,
 }
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.
@@ -410,6 +420,19 @@ pub struct CodeLoc {
     #[prost(uint32, tag = "2")]
     pub column: u32,
 }
+/// Where the expression that suspended execution is in the source. `filename`
+/// names the source as a traceback frame does: `<python-input-N>` for the
+/// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+/// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SourceRange {
+    #[prost(string, tag = "1")]
+    pub filename: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub start: u32,
+    #[prost(uint32, tag = "3")]
+    pub end: u32,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StackFrame {
     #[prost(string, tag = "1")]
@@ -437,8 +460,6 @@ pub struct StackFrame {
 /// `ChildEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
-    #[prost(uint64, optional, tag = "1")]
-    pub max_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "2")]
     pub max_memory_bytes: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "3")]
@@ -447,6 +468,160 @@ pub struct ResourceLimits {
     pub max_recursion_depth: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "5")]
     pub max_suspensions: ::core::option::Option<u64>,
+    /// Per-feed and per-turn execution budgets on one clock: the feed budget
+    /// resets at each feed, the turn budget at each feed and each resume.
+    #[prost(uint64, optional, tag = "6")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Cumulative budget for system sleeps, enforced by the parent.
+    #[prost(uint64, optional, tag = "8")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
+}
+/// Mirrors monty's `OsPolicy`: the clock, zone, sleep, process clock and
+/// initial randomness a session gets, and which of those it asks the host for.
+/// Each unset arm means that field's default.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OsPolicy {
+    /// The zone naive `datetime.now()` and `date.today()` read in, and that
+    /// `astimezone()`, `%Z` and the `time` constants report. Absent = UTC.
+    #[prost(message, optional, tag = "4")]
+    pub timezone: ::core::option::Option<SandboxTimeZone>,
+    /// What `time.sleep()` and `asyncio.sleep()` do.
+    /// Absent (or with no arm set) = system sleep with the default maximum.
+    #[prost(message, optional, tag = "5")]
+    pub sleep: ::core::option::Option<SleepMode>,
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
+    #[prost(oneof = "os_policy::Datetime", tags = "1, 2, 3")]
+    pub datetime: ::core::option::Option<os_policy::Datetime>,
+    /// Where an unseeded `random` generator gets its first state.
+    #[prost(oneof = "os_policy::RandomStart", tags = "6, 7, 8")]
+    pub random_start: ::core::option::Option<os_policy::RandomStart>,
+    /// What `time.process_time()` and `time.thread_time()` report.
+    /// Absent (or with no arm set) = zero.
+    #[prost(oneof = "os_policy::ProcessTime", tags = "9, 10")]
+    pub process_time: ::core::option::Option<os_policy::ProcessTime>,
+}
+/// Nested message and enum types in `OsPolicy`.
+pub mod os_policy {
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Datetime {
+        /// The child's clock.
+        #[prost(message, tag = "1")]
+        System(super::Unit),
+        /// Suspend to the parent's OS handler.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// One frozen instant, for reproducible runs.
+        #[prost(message, tag = "3")]
+        Fixed(super::FixedDateTime),
+    }
+    /// Where an unseeded `random` generator gets its first state.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum RandomStart {
+        /// From the child's own OS entropy.
+        #[prost(message, tag = "6")]
+        RandomSystem(super::Unit),
+        /// Suspend the first draw with an `os.urandom` call for 2496 bytes.
+        #[prost(message, tag = "7")]
+        RandomCallHost(super::Unit),
+        /// As `random.seed(seed)` would, for reproducible runs.
+        #[prost(message, tag = "8")]
+        Seed(super::RandomSeed),
+    }
+    /// What `time.process_time()` and `time.thread_time()` report.
+    /// Absent (or with no arm set) = zero.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum ProcessTime {
+        /// Always 0.0, so elapsed execution time is not observable in the sandbox.
+        #[prost(message, tag = "9")]
+        Zero(super::Unit),
+        /// The session's accumulated execution time.
+        #[prost(message, tag = "10")]
+        Elapsed(super::Unit),
+    }
+}
+/// Mirrors monty's `SandboxTimeZone`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SandboxTimeZone {
+    #[prost(oneof = "sandbox_time_zone::Zone", tags = "1, 2, 3")]
+    pub zone: ::core::option::Option<sandbox_time_zone::Zone>,
+}
+/// Nested message and enum types in `SandboxTimeZone`.
+pub mod sandbox_time_zone {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Zone {
+        /// UTC, the default.
+        #[prost(message, tag = "1")]
+        Utc(super::Unit),
+        /// An IANA zone name (`Europe/London`), resolved from the child's tz database.
+        #[prost(string, tag = "2")]
+        Named(::prost::alloc::string::String),
+        /// A fixed offset from UTC, with a name if it has one.
+        #[prost(message, tag = "3")]
+        Fixed(super::TimeZone),
+    }
+}
+/// Mirrors monty's `SleepMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SleepMode {
+    #[prost(oneof = "sleep_mode::Mode", tags = "1, 2, 3")]
+    pub mode: ::core::option::Option<sleep_mode::Mode>,
+}
+/// Nested message and enum types in `SleepMode`.
+pub mod sleep_mode {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Mode {
+        /// The parent waits without invoking its OS handler.
+        #[prost(message, tag = "1")]
+        System(super::SystemSleep),
+        /// Suspend to the parent, which performs the wait.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// Return at once without waiting.
+        #[prost(message, tag = "3")]
+        Zero(super::Unit),
+    }
+}
+/// A sleep capped by the child and performed by the parent.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SystemSleep {
+    /// Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
+    #[prost(uint64, optional, tag = "1")]
+    pub max_micros: ::core::option::Option<u64>,
+}
+/// A frozen clock reading.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FixedDateTime {
+    /// Seconds since the Unix epoch, UTC.
+    #[prost(int64, tag = "1")]
+    pub unix_seconds: i64,
+    /// 0..=999999; anything larger is rejected.
+    #[prost(uint32, tag = "2")]
+    pub microsecond: u32,
+}
+/// A `random.seed()` argument: the types CPython accepts.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RandomSeed {
+    #[prost(oneof = "random_seed::Value", tags = "1, 2, 3, 4")]
+    pub value: ::core::option::Option<random_seed::Value>,
+}
+/// Nested message and enum types in `RandomSeed`.
+pub mod random_seed {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Value {
+        /// Arbitrary-size two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`).
+        #[prost(bytes, tag = "1")]
+        Int(::prost::alloc::vec::Vec<u8>),
+        /// Must be finite.
+        #[prost(double, tag = "2")]
+        Float(f64),
+        #[prost(string, tag = "3")]
+        Str(::prost::alloc::string::String),
+        #[prost(bytes, tag = "4")]
+        Bytes(::prost::alloc::vec::Vec<u8>),
+    }
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -460,9 +635,10 @@ pub struct ExtFunctionResult {
 pub mod ext_function_result {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
-        /// The call returned this value.
-        #[prost(message, tag = "1")]
-        ReturnValue(super::MontyObject),
+        /// The call returned this value: an index into the carrying message's
+        /// `values` arena.
+        #[prost(uint32, tag = "1")]
+        ReturnValue(u32),
         /// The call raised this exception.
         #[prost(message, tag = "2")]
         Error(super::RaisedException),
@@ -488,12 +664,13 @@ pub struct FutureResult {
     #[prost(message, optional, tag = "2")]
     pub result: ::core::option::Option<ExtFunctionResult>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NamedValue {
+/// A named input: `value` indexes the carrying message's `values` arena.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedRef {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "2")]
-    pub value: ::core::option::Option<MontyObject>,
+    #[prost(uint32, tag = "2")]
+    pub value: u32,
 }
 /// Tags 1-19 are reserved for `kind` arms and the message-level fields start
 /// at 20, mirroring `ChildEvent` — a oneof shares its field-number space with
@@ -545,7 +722,7 @@ pub mod parent_request {
 /// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
 /// worker can still be initialized by `Load` instead. Valid only when the
 /// worker has no session yet.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Configure {
     #[prost(string, tag = "1")]
     pub script_name: ::prost::alloc::string::String,
@@ -599,6 +776,14 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
+    /// Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
+    /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+    #[prost(message, optional, tag = "11")]
+    pub os_policy: ::core::option::Option<OsPolicy>,
+    /// Relay-only: whether a serving relay may store the session. Children ignore
+    /// it.
+    #[prost(enumeration = "Persistence", tag = "12")]
+    pub persistence: i32,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -606,11 +791,20 @@ pub struct Configure {
 pub struct Feed {
     #[prost(string, tag = "1")]
     pub code: ::prost::alloc::string::String,
+    /// Inputs, each an index into `values`; one arena, so an object passed
+    /// under two names is one sandbox object.
     #[prost(message, repeated, tag = "2")]
-    pub inputs: ::prost::alloc::vec::Vec<NamedValue>,
+    pub inputs: ::prost::alloc::vec::Vec<NamedRef>,
+    #[prost(message, optional, tag = "3")]
+    pub values: ::core::option::Option<Arena>,
     /// Skip type checking for this feed even when the session enables it.
-    #[prost(bool, tag = "3")]
+    #[prost(bool, tag = "4")]
     pub skip_type_check: bool,
+    /// Absolute virtual working directory to switch the session to before the
+    /// feed, resolved by the parent (an explicit choice, or the first mount on
+    /// the session's first feed). Empty keeps the session's current directory.
+    #[prost(string, tag = "5")]
+    pub cwd: ::prost::alloc::string::String,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,
@@ -628,28 +822,34 @@ pub struct ResumeCall {
     pub call_id: u32,
     #[prost(message, optional, tag = "2")]
     pub result: ::core::option::Option<ExtFunctionResult>,
+    /// The arena `result.return_value` indexes.
+    #[prost(message, optional, tag = "3")]
+    pub values: ::core::option::Option<Arena>,
 }
 /// Answers a `NameLookup` suspension.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeNameLookup {
-    #[prost(oneof = "resume_name_lookup::Kind", tags = "1, 2, 3")]
+    /// The arena `value` indexes.
+    #[prost(message, optional, tag = "1")]
+    pub values: ::core::option::Option<Arena>,
+    #[prost(oneof = "resume_name_lookup::Kind", tags = "2, 3, 4")]
     pub kind: ::core::option::Option<resume_name_lookup::Kind>,
 }
 /// Nested message and enum types in `ResumeNameLookup`.
 pub mod resume_name_lookup {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
-        /// The name resolves to this value.
-        #[prost(message, tag = "1")]
-        Value(super::MontyObject),
+        /// The name resolves to this value: an index into `values`.
+        #[prost(uint32, tag = "2")]
+        Value(u32),
         /// The name is undefined — the child raises NameError (AttributeError for
         /// a lazy attribute lookup).
-        #[prost(message, tag = "2")]
+        #[prost(message, tag = "3")]
         Undefined(super::Unit),
         /// Resolving the name raised on the parent — the child raises this
         /// exception where the lookup suspended, bypassing hasattr()/getattr()
         /// defaults.
-        #[prost(message, tag = "3")]
+        #[prost(message, tag = "4")]
         Error(super::RaisedException),
     }
 }
@@ -657,20 +857,30 @@ pub mod resume_name_lookup {
 /// call ids.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeFutures {
+    /// Also answers an eager FunctionCall with exactly one result matching its
+    /// call_id. The worker creates a settled awaitable before continuing.
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<FutureResult>,
+    /// The arena every `return_value` indexes.
+    #[prost(message, optional, tag = "2")]
+    pub values: ::core::option::Option<Arena>,
 }
 /// Requests an opaque serialized snapshot of the current session state
-/// (idle or suspended). The child stays usable afterwards. The bytes carry
-/// monty's own dump format, versioned independently of this schema, and can
-/// only be restored via `Load` by a child built with the same dump version.
+/// (idle or suspended). The session stays usable afterwards. The byte payload
+/// format is at the discretion of the remote (e.g. it may be an ID or a full dump
+/// of state). A relay without session storage answers `Error` and the session
+/// carries on.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
 /// the restored state was suspended, the child re-emits the suspension event so
-/// the parent learns the resume point; otherwise it replies `Ok`.
+/// the parent learns the resume point; otherwise it replies `Ok`. A relay
+/// without session storage answers `Error` and the session carries on.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
+    /// Either:
+    /// - Dump bytes, or
+    /// - A previously named session ID from `ChildEvent::session_id`
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
 }
@@ -710,26 +920,44 @@ pub struct ChildEvent {
     /// executing bytecode — never while suspended waiting on the parent or idle
     /// between feeds — and survives Dump/Load. Set on every turn-ending event
     /// while a session exists (zero on Print events and outside a session) so
-    /// the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
-    /// backstop, without keeping a second clock.
+    /// the parent can report how much sandbox time a session has used without
+    /// keeping a second clock. Bounds nothing: the budgets are per-feed and
+    /// per-turn.
     #[prost(uint64, tag = "20")]
     pub total_execution_micros: u64,
-    /// The session's `max_duration` limit in microseconds, when one is
-    /// configured. Reported alongside `total_execution_micros` so a parent that
-    /// restored a session via `Load` (where the limits travel inside the opaque
-    /// state bytes) still learns the budget.
-    #[prost(uint64, optional, tag = "21")]
-    pub max_duration_micros: ::core::option::Option<u64>,
     /// Echoes the parent-enforced budget so a host restoring an opaque dump can
     /// recover it.
-    #[prost(uint64, optional, tag = "23")]
+    #[prost(uint64, optional, tag = "22")]
     pub max_suspensions: ::core::option::Option<u64>,
+    /// Execution time consumed by the feed in progress, in microseconds — the
+    /// `total_execution_micros` clock restarted at the feed that is running.
+    /// Lets the parent backstop `max_feed_duration_micros` without tracking feed
+    /// boundaries against a clock it cannot see. Zero outside a session.
+    #[prost(uint64, tag = "24")]
+    pub feed_execution_micros: u64,
+    /// The session's `max_feed_duration` and `max_turn_duration` limits in
+    /// microseconds, when configured. Reported so a parent that restored a
+    /// session via `Load` (where the limits travel inside the opaque state
+    /// bytes) still learns its budgets.
+    #[prost(uint64, optional, tag = "25")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "26")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Parent-enforced sleep budget, also reported on `Load`.
+    #[prost(uint64, optional, tag = "27")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
     /// on a successful `Load` reply; unset on all other events.
-    #[prost(string, optional, tag = "22")]
+    #[prost(string, optional, tag = "23")]
     pub restored_script_name: ::core::option::Option<::prost::alloc::string::String>,
+    /// The session this connection now holds, set only by a remote that stores
+    /// sessions, on its first reply to `Configure` or `Load` whatever that
+    /// reply's kind. Unset for ephemeral sessions or for remotes that don't
+    /// support persistence.
+    #[prost(bytes = "vec", optional, tag = "28")]
+    pub session_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
@@ -763,14 +991,23 @@ pub mod child_event {
         Shutdown(super::ShutdownDump),
     }
 }
-/// Streamed sandbox print() output. Zero or more of these precede each
-/// turn-ending event; text is flushed at line granularity.
+/// One run of print() output on a single stream, as one `Print` event may
+/// carry several.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Print {
+pub struct PrintSegment {
     #[prost(enumeration = "PrintStream", tag = "1")]
     pub stream: i32,
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
+}
+/// Streamed sandbox print() output. Zero or more of these precede each
+/// turn-ending event, and each carries the runs the worker had buffered, in
+/// the order the sandbox produced them — so output alternating between the
+/// streams batches into one event without losing that order.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Print {
+    #[prost(message, repeated, tag = "1")]
+    pub segments: ::prost::alloc::vec::Vec<PrintSegment>,
 }
 /// Suspension: the sandbox called an external function, or — when `object_id`
 /// is set — a method on a host-backed object (the receiver is NOT included in
@@ -782,15 +1019,30 @@ pub struct Print {
 pub struct FunctionCall {
     #[prost(string, tag = "1")]
     pub function_name: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub args: ::prost::alloc::vec::Vec<MontyObject>,
+    /// Positional arguments, as indexes into `values`.
+    #[prost(uint32, repeated, tag = "2")]
+    pub args: ::prost::alloc::vec::Vec<u32>,
+    /// Keyword arguments as `(key, value)` indexes into `values`, in order.
     #[prost(message, repeated, tag = "3")]
-    pub kwargs: ::prost::alloc::vec::Vec<Pair>,
+    pub kwargs: ::prost::alloc::vec::Vec<NodePair>,
     #[prost(uint32, tag = "4")]
     pub call_id: u32,
     /// The uuid of the receiver; absent for plain external function calls.
     #[prost(message, optional, tag = "5")]
     pub object_id: ::core::option::Option<Uuid>,
+    /// The host may await a coroutine and answer with ResumeFutures for this
+    /// call_id. Synchronous results use ResumeCall; returning a pending
+    /// future remains valid. Absent/false requires the ordinary call reply.
+    #[prost(bool, tag = "6")]
+    pub allow_eager_await: bool,
+    /// The arena `args` and `kwargs` index: one per call, so an object passed
+    /// twice crosses once.
+    #[prost(message, optional, tag = "7")]
+    pub values: ::core::option::Option<Arena>,
+    /// Where the call expression is in the source. Absent from a child that
+    /// predates the field; the parent then reports an empty range at offset 0.
+    #[prost(message, optional, tag = "8")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
@@ -803,13 +1055,27 @@ pub struct FunctionCall {
 /// `ExtFunctionResult.not_handled`: the child raises the call's own default
 /// (PermissionError naming the path for filesystem calls, RuntimeError for
 /// the rest — monty's `OsFunctionCall::on_no_handler`).
+///
+/// Tags 2-49 are reserved for `call` arms and the other message-level fields
+/// start at 50, as in `ChildEvent`, so a new call never has to jump the numbering.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OsCall {
     #[prost(uint32, tag = "1")]
     pub call_id: u32,
+    /// The arena any value-typed argument (`Getenv.default`) indexes.
+    #[prost(message, optional, tag = "50")]
+    pub values: ::core::option::Option<Arena>,
+    /// As on `FunctionCall`: the parent may await a coroutine and answer with
+    /// `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
+    /// call a future may answer at all.
+    #[prost(bool, tag = "51")]
+    pub allow_eager_await: bool,
+    /// Where the call expression is in the source; absent as on `FunctionCall`.
+    #[prost(message, optional, tag = "52")]
+    pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -853,13 +1119,22 @@ pub mod os_call {
         #[prost(string, tag = "2")]
         pub dst: ::prost::alloc::string::String,
     }
-    /// os.getenv(key, default) — `default` may be any Python value.
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    /// os.getenv(key, default) — `default` may be any Python value: an index
+    /// into the enclosing `OsCall.values`.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Getenv {
         #[prost(string, tag = "1")]
         pub key: ::prost::alloc::string::String,
-        #[prost(message, optional, tag = "2")]
-        pub default: ::core::option::Option<super::MontyObject>,
+        #[prost(uint32, tag = "2")]
+        pub default: u32,
+    }
+    /// A `time`-module clock read. `caller` names the Python function that asked
+    /// (`time.time`, `time.monotonic`, ...), so a parent may answer them
+    /// differently; they all share the `time.time` call name.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct TimeCall {
+        #[prost(string, tag = "1")]
+        pub caller: ::prost::alloc::string::String,
     }
     /// datetime.now(tz) — the VM validates the argument to None-or-timezone
     /// before suspending, so the wire carries a typed TimeZone rather than an
@@ -869,6 +1144,35 @@ pub mod os_call {
         /// Fixed-offset timezone for an aware result; absent for a naive one.
         #[prost(message, optional, tag = "1")]
         pub tz: ::core::option::Option<super::TimeZone>,
+    }
+    /// os.urandom(size) — the byte count the sandbox validated; unsigned so
+    /// a negative count cannot be expressed on the wire.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Urandom {
+        #[prost(uint64, tag = "1")]
+        pub size: u64,
+    }
+    /// time.sleep(seconds) — the parent waits, then answers (the sandbox
+    /// evaluates the call to None whatever the answer carried). Answering with a
+    /// future is refused: the call is a block by definition.
+    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    pub struct Sleep {
+        /// How long to wait. Always finite, non-negative, and small enough to be a
+        /// duration of nanoseconds in an int64; a frame breaking that is rejected.
+        #[prost(double, tag = "1")]
+        pub seconds: f64,
+    }
+    /// asyncio.sleep(delay) — the awaitable form. A parent running an event
+    /// loop should answer `ExtFunctionResult.future` and resolve it once the
+    /// delay elapses, so the sandbox's other tasks keep running; answering
+    /// directly is equivalent to a wait that blocks them. The answer's value is
+    /// ignored: the sandbox keeps the `result` argument itself and produces it
+    /// from the `await`.
+    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    pub struct AsyncSleep {
+        /// How long to wait, under the same constraints as `Sleep.seconds`.
+        #[prost(double, tag = "1")]
+        pub delay: f64,
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -944,6 +1248,24 @@ pub mod os_call {
         /// datetime.now(tz) — the timezone argument (absent for a naive result).
         #[prost(message, tag = "24")]
         DateTimeNow(DateTimeNow),
+        /// os.urandom(size), also how `random` seeds an unseeded generator.
+        #[prost(message, tag = "25")]
+        Urandom(Urandom),
+        /// time.time() and the other time-module clock reads
+        #[prost(message, tag = "26")]
+        Time(TimeCall),
+        /// time.sleep(seconds) under `call_host`: the handler waits
+        #[prost(message, tag = "27")]
+        Sleep(Sleep),
+        /// asyncio.sleep(delay) under `call_host`
+        #[prost(message, tag = "28")]
+        AsyncSleep(AsyncSleep),
+        /// System sleeps: capped by the child, charged to `max_total_sleep` and
+        /// waited out by the parent without invoking its OS handler.
+        #[prost(message, tag = "29")]
+        SystemSleep(Sleep),
+        #[prost(message, tag = "30")]
+        AsyncSystemSleep(AsyncSleep),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
@@ -959,6 +1281,10 @@ pub struct NameLookup {
     /// a class type (a lazy class attribute): the uuid of the receiver.
     #[prost(message, optional, tag = "2")]
     pub object_id: ::core::option::Option<Uuid>,
+    /// Where the name (or attribute access) is in the source; absent as on
+    /// `FunctionCall`.
+    #[prost(message, optional, tag = "3")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
@@ -966,13 +1292,20 @@ pub struct NameLookup {
 pub struct ResolveFutures {
     #[prost(uint32, repeated, tag = "1")]
     pub pending_call_ids: ::prost::alloc::vec::Vec<u32>,
+    /// Where the main task's blocked `await` is in the source; absent as on
+    /// `FunctionCall`.
+    #[prost(message, optional, tag = "2")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Turn end: the snippet completed with this value. The session is ready for
 /// the next `Feed`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Complete {
-    #[prost(message, optional, tag = "1")]
-    pub value: ::core::option::Option<MontyObject>,
+    /// Index of the result in `values`.
+    #[prost(uint32, tag = "1")]
+    pub value: u32,
+    #[prost(message, optional, tag = "2")]
+    pub values: ::core::option::Option<Arena>,
 }
 /// Turn end: the snippet (or request) failed with a Python exception. The
 /// session survives — prior globals remain available to later feeds.
@@ -1018,9 +1351,10 @@ pub struct FatalError {
 /// hand back.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShutdownDump {
-    /// Session state captured immediately before shutdown (same bytes as
-    /// `DumpResult.state`), restorable into a fresh worker via `Load`. Absent
-    /// when there was no session yet or the dump itself failed.
+    /// What `Load` restores the session from on a fresh connection: the ID a
+    /// relay with session storage parked it under. Absent when there is nothing
+    /// to load: no session yet, an ephemeral session, a relay without storage, or
+    /// a park that failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
@@ -1062,6 +1396,39 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
+}
+/// How a serving relay treats the session's state; children ignore it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Persistence {
+    /// The relay's default.
+    Unspecified = 0,
+    /// Never stored by the relay on its own: no session ID and never parked.
+    Ephemeral = 1,
+    /// Parked on idle, drain or disconnect, and loadable by its session ID.
+    Stored = 2,
+}
+impl Persistence {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PERSISTENCE_UNSPECIFIED",
+            Self::Ephemeral => "PERSISTENCE_EPHEMERAL",
+            Self::Stored => "PERSISTENCE_STORED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PERSISTENCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "PERSISTENCE_EPHEMERAL" => Some(Self::Ephemeral),
+            "PERSISTENCE_STORED" => Some(Self::Stored),
             _ => None,
         }
     }

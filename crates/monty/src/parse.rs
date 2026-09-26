@@ -1,5 +1,6 @@
 use std::{borrow::Cow, fmt};
 
+use ahash::AHashSet;
 use monty_types::{MontyException, StackFrame};
 use num_bigint::BigInt;
 use num_traits::Num;
@@ -10,19 +11,20 @@ use ruff_python_ast::{
     token::TokenKind,
     visitor::{Visitor, walk_expr},
 };
-use ruff_python_parser::parse_module;
+use ruff_python_parser::{Mode, parse_expression, parse_module};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
-    exception_private::ExcType,
+    exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
-    intern::{InternerBuilder, StringId},
+    intern::{CompileInterns, StringId},
     source_map::{SourceMap, StackFrameExt},
+    source_nesting::nesting_bound_exceeded,
     stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -31,6 +33,10 @@ use crate::{
 /// Maximum nesting depth for AST structures during parsing.
 /// Matches CPython's limit of ~200 for nested parentheses.
 /// This prevents stack overflow from deeply nested structures like `((((x,),),),)`.
+///
+/// ruff itself no longer limits recursion, so this is Monty's single limit:
+/// enforced approximately by the pre-parse scan (`source_nesting`) on sources
+/// over `CompileOptions::source_scan_threshold`, and exactly by this converter.
 #[cfg(not(debug_assertions))]
 pub const MAX_NESTING_DEPTH: u16 = 200;
 /// In debug builds, we use a lower limit because stack frames are much larger
@@ -169,17 +175,11 @@ pub struct ExceptHandler<N> {
     pub body: Vec<N>,
 }
 
-/// Result of parsing: the AST nodes and the string interner with all interned names.
-#[derive(Debug)]
-pub struct ParseResult {
-    pub nodes: Vec<ParseNode>,
-    pub interner: InternerBuilder,
-}
-
-pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseError> {
-    let mut interner = InternerBuilder::new(code);
-    let nodes = parse_with_interner(code, filename, &mut interner)?;
-    Ok(ParseResult { nodes, interner })
+/// The `SyntaxError` an `eval()` / `exec()` snippet raises at runtime:
+/// `msg (<string>, line N)`, as CPython's `SyntaxError.__str__` renders it.
+pub(crate) fn syntax_error_in_snippet(msg: &str, position: CodeRange, source: &str) -> RunError {
+    let (start, _, _) = SourceMap::new(source).resolve_range(position);
+    SimpleException::new_msg(ExcType::SyntaxError, format!("{msg} (<string>, line {})", start.line)).into()
 }
 
 /// Builds a [`CodeRange`] from an interned filename and a ruff range.
@@ -194,19 +194,30 @@ fn code_range(filename: StringId, range: TextRange) -> CodeRange {
     }
 }
 
-/// Parses code, interning names into the caller's `interner`.
-///
-/// The interner is borrowed rather than consumed so incremental flows (the
-/// REPL) keep their table — ids appended by a snippet that then fails to parse
-/// are stable and harmless, so nothing needs rolling back.
+/// Parses code into a private interner overlay, discarded if any compilation stage fails.
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
-    interner: &mut InternerBuilder,
+    interner: &mut CompileInterns<'_>,
 ) -> Result<Vec<ParseNode>, ParseError> {
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
+    // Module sources are scanned for nesting by their entry points
+    // (`MontyRun::new`, the REPL feeds), not here.
+    parse_module_with_filename_id(code, filename_id, interner, usize::MAX)
+}
+
+/// [`parse_with_interner`] for a filename already interned — an `exec()`
+/// snippet, whose `<string>` id is fresh per call so tracebacks can tell the
+/// snippets apart.
+pub(crate) fn parse_module_with_filename_id(
+    code: &str,
+    filename_id: StringId,
+    interner: &mut CompileInterns<'_>,
+    source_scan_threshold: usize,
+) -> Result<Vec<ParseNode>, ParseError> {
+    check_source_nesting(code, Mode::Module, filename_id, source_scan_threshold)?;
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // Harvested before `into_syntax` drops the token stream.
@@ -220,16 +231,68 @@ pub(crate) fn parse_with_interner(
     parser.parse_statements(parsed.into_syntax().body)
 }
 
+/// Parses `code` as a single expression, as `eval()` does.
+///
+/// `filename_id` is the snippet's fresh `<string>` id (see
+/// [`parse_module_with_filename_id`]).
+pub(crate) fn parse_expression_with_interner(
+    code: &str,
+    filename_id: StringId,
+    interner: &mut CompileInterns<'_>,
+    source_scan_threshold: usize,
+) -> Result<ExprLoc, ParseError> {
+    check_source_nesting(code, Mode::Expression, filename_id, source_scan_threshold)?;
+    let parsed = parse_expression(code)
+        .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+    // No `class` keywords can occur in a bare expression.
+    let mut parser = Parser::new(code, filename_id, interner, Vec::new());
+    parser.parse_expression(*parsed.into_syntax().body)
+}
+
+/// [`check_source_nesting`] for a host vetting a snippet before compiling it,
+/// producing the `SyntaxError` the compile would raise.
+pub(crate) fn source_nesting_exception(
+    code: &str,
+    script_name: &str,
+    source_scan_threshold: usize,
+) -> Result<(), MontyException> {
+    // The filename id is a compiler concern; the exception names the file itself.
+    check_source_nesting(code, Mode::Module, StringId::default(), source_scan_threshold)
+        .map_err(|e| e.into_python_exc(script_name, code))
+}
+
+/// Rejects a source over `source_scan_threshold` bytes whose estimated parser
+/// nesting exceeds [`MAX_NESTING_DEPTH`] before ruff can grow its stack on it.
+///
+/// Same message as the converter's exact check, so either path reads alike.
+fn check_source_nesting(
+    code: &str,
+    mode: Mode,
+    filename_id: StringId,
+    source_scan_threshold: usize,
+) -> Result<(), ParseError> {
+    if code.len() > source_scan_threshold
+        && let Some(range) = nesting_bound_exceeded(code, mode, MAX_NESTING_DEPTH)
+    {
+        Err(ParseError::syntax(
+            "Source is too deeply nested",
+            code_range(filename_id, range),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
 ///
 /// Holds references to the source code and the caller's string interner for names.
 /// The filename is interned once at construction and reused for all CodeRanges.
-pub struct Parser<'a> {
+pub struct Parser<'a, 'i> {
     code: &'a str,
     /// Interned filename ID, used for all CodeRanges created by this parser.
     filename_id: StringId,
-    /// String interner for names (variables, functions, etc).
-    interner: &'a mut InternerBuilder,
+    /// Intern table for names (variables, functions, etc).
+    interner: &'a mut CompileInterns<'i>,
     /// Remaining nesting depth budget for recursive structures.
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
@@ -244,11 +307,11 @@ pub struct Parser<'a> {
     class_keyword_offsets: Vec<TextSize>,
 }
 
-impl<'a> Parser<'a> {
+impl<'a, 'i> Parser<'a, 'i> {
     fn new(
         code: &'a str,
         filename_id: StringId,
-        interner: &'a mut InternerBuilder,
+        interner: &'a mut CompileInterns<'i>,
         class_keyword_offsets: Vec<TextSize>,
     ) -> Self {
         Self {
@@ -435,7 +498,7 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 Ok(Node::For {
-                    target: self.parse_unpack_target(*target)?,
+                    target: self.parse_unpack_target_root(*target)?,
                     iter: self.parse_expression(*iter)?,
                     body: self.parse_statements(body)?,
                     or_else: self.parse_statements(orelse)?,
@@ -490,7 +553,7 @@ impl<'a> Parser<'a> {
                     .map(|item| -> Result<_, ParseError> {
                         let context = self.parse_expression(item.context_expr)?;
                         let target = match item.optional_vars {
-                            Some(expr) => Some(self.parse_unpack_target(*expr)?),
+                            Some(expr) => Some(self.parse_unpack_target_root(*expr)?),
                             None => None,
                         };
                         Ok((context, target))
@@ -801,14 +864,15 @@ impl<'a> Parser<'a> {
         let position = self.class_keyword_range(&class);
         let decorators = self.parse_decorators(class.decorator_list)?;
         // `class.arguments` carries base classes and metaclass keywords.
-        if class
-            .arguments
-            .is_some_and(|a| !a.args.is_empty() || !a.keywords.is_empty())
-        {
-            return Err(ParseError::not_implemented(
-                "class inheritance and metaclasses",
-                position,
-            ));
+        if let Some(arguments) = &class.arguments {
+            // CPython rejects the repeat before it would consider the metaclass.
+            self.check_repeated_keywords(&arguments.keywords)?;
+            if !arguments.args.is_empty() || !arguments.keywords.is_empty() {
+                return Err(ParseError::not_implemented(
+                    "class inheritance and metaclasses",
+                    position,
+                ));
+            }
         }
 
         let name = self.identifier(&class.name.id, class.name.range);
@@ -1161,28 +1225,19 @@ impl<'a> Parser<'a> {
                 attr: EitherStr::Interned(self.interner.intern(attr.id())),
                 target_position: self.convert_range(range),
             }),
-            AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
+            AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) | AstExpr::List(ast::ExprList { elts, range, .. }) => {
                 let targets_position = self.convert_range(range);
                 let targets = elts
                     .into_iter()
                     .map(|e| self.parse_unpack_target(e))
                     .collect::<Result<Vec<_>, _>>()?;
+                check_single_starred(&targets, targets_position)?;
                 Ok(AssignTarget::Unpack {
                     targets,
                     targets_position,
                 })
             }
-            AstExpr::List(ast::ExprList { elts, range, .. }) => {
-                let targets_position = self.convert_range(range);
-                let targets = elts
-                    .into_iter()
-                    .map(|e| self.parse_unpack_target(e))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(AssignTarget::Unpack {
-                    targets,
-                    targets_position,
-                })
-            }
+            AstExpr::Starred(ast::ExprStarred { range, .. }) => Err(starred_root_target(self.convert_range(range))),
             other => Ok(AssignTarget::Name(self.parse_identifier(other)?)),
         }
     }
@@ -1460,22 +1515,21 @@ impl<'a> Parser<'a> {
                 self.convert_range(y.range),
             )),
             AstExpr::Compare(ast::ExprCompare {
-                left,
-                ops,
-                comparators,
-                range,
-                ..
+                ops, operands, range, ..
             }) => {
                 let position = self.convert_range(range);
                 let ops_vec = ops.into_vec();
-                let comparators_vec = comparators.into_vec();
+                // `operands` holds every operand in source order, leftmost first.
+                let mut operands = operands.into_vec().into_iter();
+                let left = operands.next().expect("a comparison has a left operand");
+                let comparators_vec: Vec<AstExpr> = operands.collect();
 
                 // Simple case: single comparison (most common)
                 if ops_vec.len() == 1 {
                     return Ok(ExprLoc::new(
                         position,
                         Expr::CmpOp {
-                            left: Box::new(self.parse_expression(*left)?),
+                            left: Box::new(self.parse_expression(left)?),
                             op: convert_compare_op(ops_vec.into_iter().next().unwrap()),
                             right: Box::new(self.parse_expression(comparators_vec.into_iter().next().unwrap())?),
                         },
@@ -1483,25 +1537,25 @@ impl<'a> Parser<'a> {
                 }
 
                 // Chain comparison: transform to nested And expressions
-                self.parse_chain_comparison(*left, ops_vec, comparators_vec, position)
+                self.parse_chain_comparison(left, ops_vec, comparators_vec, position)
             }
             AstExpr::Call(call) => {
                 let position = self.convert_range(call.range());
                 let ast::ExprCall { func, arguments, .. } = call;
                 let ast::Arguments { args, keywords, .. } = arguments;
-                let args_vec = args.into_vec();
                 let keywords_vec: Vec<_> = keywords.into_iter().collect();
+                self.check_repeated_keywords(&keywords_vec)?;
 
                 // Detect whether we need the generalized path (PEP 448):
                 // - multiple *args unpacks, OR
                 // - positional argument after *args, OR
                 // - multiple **kwargs unpacks
-                let needs_generalized = Self::needs_generalized_call(&args_vec, &keywords_vec);
+                let needs_generalized = Self::needs_generalized_call(&args, &keywords_vec);
 
                 let args = if needs_generalized {
-                    self.parse_generalized_call_args(args_vec, keywords_vec)?
+                    self.parse_generalized_call_args(args, keywords_vec)?
                 } else {
-                    self.parse_simple_call_args(args_vec, keywords_vec)?
+                    self.parse_simple_call_args(args, keywords_vec)?
                 };
                 match *func {
                     AstExpr::Name(ast::ExprName { id, range, .. }) => {
@@ -1713,13 +1767,13 @@ impl<'a> Parser<'a> {
     /// fast path for the vast majority of function calls.
     fn parse_simple_call_args(
         &mut self,
-        args_vec: Vec<AstExpr>,
+        args: impl IntoIterator<Item = AstExpr>,
         keywords_vec: Vec<Keyword>,
     ) -> Result<ArgExprs, ParseError> {
         let mut positional_args = Vec::new();
         let mut var_args_expr: Option<ExprLoc> = None;
 
-        for arg_expr in args_vec {
+        for arg_expr in args {
             match arg_expr {
                 AstExpr::Starred(ast::ExprStarred { value, .. }) => {
                     var_args_expr = Some(self.parse_expression(*value)?);
@@ -1745,11 +1799,11 @@ impl<'a> Parser<'a> {
     /// `ListAppend`/`ListExtend`/`DictMerge` sequences.
     fn parse_generalized_call_args(
         &mut self,
-        args_vec: Vec<AstExpr>,
+        args: impl IntoIterator<Item = AstExpr>,
         keywords_vec: Vec<Keyword>,
     ) -> Result<ArgExprs, ParseError> {
         let mut call_args = Vec::new();
-        for arg_expr in args_vec {
+        for arg_expr in args {
             match arg_expr {
                 AstExpr::Starred(ast::ExprStarred { value, .. }) => {
                     call_args.push(CallArg::Unpack(self.parse_expression(*value)?));
@@ -1773,6 +1827,24 @@ impl<'a> Parser<'a> {
         }
 
         Ok(ArgExprs::new_generalized(call_args, call_kwargs))
+    }
+
+    /// Rejects `f(x=1, x=2)` as CPython's compiler does, pointing at the repeat.
+    ///
+    /// ruff reports this from its semantic checker, which Monty does not run, so
+    /// the parser alone would accept the call.
+    fn check_repeated_keywords(&self, keywords: &[Keyword]) -> Result<(), ParseError> {
+        let mut seen = AHashSet::with_capacity(keywords.len());
+        keywords
+            .iter()
+            .filter_map(|keyword| keyword.arg.as_ref().map(|arg| (arg.id.as_str(), keyword.range())))
+            .find(|(name, _)| !seen.insert(*name))
+            .map_or(Ok(()), |(name, range)| {
+                Err(ParseError::syntax(
+                    format!("keyword argument repeated: {name}"),
+                    self.convert_range(range),
+                ))
+            })
     }
 
     /// Parses keyword arguments, separating regular kwargs from var_kwargs (`**expr`).
@@ -1843,6 +1915,17 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// Parses the outermost target of a `for`, `with ... as` or comprehension.
+    ///
+    /// A bare `*a` is only valid inside a tuple/list target, so it is rejected
+    /// here before [`Self::parse_unpack_target`] recurses into the elements.
+    fn parse_unpack_target_root(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
+        match ast {
+            AstExpr::Starred(ast::ExprStarred { range, .. }) => Err(starred_root_target(self.convert_range(range))),
+            other => self.parse_unpack_target(other),
+        }
+    }
+
     /// Parses an unpack target - either a single identifier or a nested tuple.
     ///
     /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
@@ -1866,27 +1949,13 @@ impl<'a> Parser<'a> {
                 if targets.is_empty() {
                     return Err(ParseError::syntax("empty tuple in unpack target", position));
                 }
-                // Validate at most one starred target
-                let starred_count = targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count();
-                if starred_count > 1 {
-                    return Err(ParseError::syntax(
-                        "multiple starred expressions in assignment",
-                        position,
-                    ));
-                }
+                check_single_starred(&targets, position)?;
                 Ok(UnpackTarget::Tuple { targets, position })
             }
-            AstExpr::Starred(ast::ExprStarred { value, range, .. }) => {
-                // Starred target must be a simple name
-                match *value {
-                    AstExpr::Name(ast::ExprName { id, range, .. }) => {
-                        Ok(UnpackTarget::Starred(self.identifier(&id, range)))
-                    }
-                    _ => Err(ParseError::syntax(
-                        "starred assignment target must be a name",
-                        self.convert_range(range),
-                    )),
-                }
+            AstExpr::Starred(ast::ExprStarred { value, .. }) => {
+                // `*rest` captures into a list, which is then stored like any
+                // other target: `*a`, `*obj.x`, `*d[k]` and `*(a, b)` all work.
+                Ok(UnpackTarget::Starred(Box::new(self.parse_unpack_target(*value)?)))
             }
             AstExpr::List(ast::ExprList { elts, range, .. }) => {
                 // List unpacking target [a, b, *rest] - same as tuple
@@ -1898,16 +1967,21 @@ impl<'a> Parser<'a> {
                 if targets.is_empty() {
                     return Err(ParseError::syntax("empty list in unpack target", position));
                 }
-                // Validate at most one starred target
-                let starred_count = targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count();
-                if starred_count > 1 {
-                    return Err(ParseError::syntax(
-                        "multiple starred expressions in assignment",
-                        position,
-                    ));
-                }
+                check_single_starred(&targets, position)?;
                 Ok(UnpackTarget::Tuple { targets, position })
             }
+            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(UnpackTarget::Attr {
+                object: Box::new(self.parse_expression(*value)?),
+                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                position: self.convert_range(range),
+            }),
+            AstExpr::Subscript(ast::ExprSubscript {
+                value, slice, range, ..
+            }) => Ok(UnpackTarget::Subscript {
+                container: Box::new(self.parse_expression(*value)?),
+                index: Box::new(self.parse_expression(*slice)?),
+                position: self.convert_range(range),
+            }),
             other => Err(ParseError::syntax(
                 format!("invalid unpacking target: {}", describe_expr_kind(&other)),
                 self.convert_range(other.range()),
@@ -1946,7 +2020,7 @@ impl<'a> Parser<'a> {
     /// (`for x in ...`) and tuple unpacking (`for x, y in ...`).
     fn parse_comprehension_generators(
         &mut self,
-        generators: Vec<ast::Comprehension>,
+        generators: impl IntoIterator<Item = ast::Comprehension>,
     ) -> Result<Vec<Comprehension>, ParseError> {
         generators
             .into_iter()
@@ -1957,7 +2031,7 @@ impl<'a> Parser<'a> {
                         self.convert_range(comp.range),
                     ));
                 }
-                let target = self.parse_unpack_target(comp.target)?;
+                let target = self.parse_unpack_target_root(comp.target)?;
                 let iter = self.parse_expression(comp.iter)?;
                 let ifs = comp
                     .ifs
@@ -1971,15 +2045,15 @@ impl<'a> Parser<'a> {
 
     /// Parses an f-string value into expression parts.
     ///
-    /// F-strings in ruff AST are represented as `FStringValue` containing
-    /// `FStringPart`s, which can be either literal strings or `FString`
-    /// interpolated sections. Each `FString` contains `InterpolatedStringElements`.
+    /// F-strings in ruff AST are represented as `FStringValue`, whose parts are
+    /// either literal strings or `FString` interpolated sections. Each `FString`
+    /// contains `InterpolatedStringElements`.
     fn parse_fstring(&mut self, value: &ast::FStringValue, range: TextRange) -> Result<ExprLoc, ParseError> {
         let mut parts = Vec::new();
 
         for fstring_part in value {
             match fstring_part {
-                ast::FStringPart::Literal(lit) => {
+                ast::FStringPartRef::Literal(lit) => {
                     // Literal string segment - intern for use at runtime
                     let processed = lit.value.to_string();
                     if !processed.is_empty() {
@@ -1987,7 +2061,7 @@ impl<'a> Parser<'a> {
                         parts.push(FStringPart::Literal(string_id));
                     }
                 }
-                ast::FStringPart::FString(fstring) => {
+                ast::FStringPartRef::FString(fstring) => {
                     // Interpolated f-string section
                     for element in &fstring.elements {
                         let part = self.parse_fstring_element(element)?;
@@ -2301,6 +2375,27 @@ fn contains_class_scope_walrus(expr: &AstExpr) -> bool {
     finder.found
 }
 
+/// The CPython error for a `*target` that is not an element of a tuple or list.
+fn starred_root_target(position: CodeRange) -> ParseError {
+    ParseError::syntax("starred assignment target must be in a list or tuple", position)
+}
+
+/// Rejects a second `*target` at one unpacking level, as CPython does.
+///
+/// `UnpackEx` encodes one starred slot as "n before, m after", so a second star
+/// has nowhere to go: without this check `a, *b, *c = xs` would bind silently
+/// wrong values instead of raising.
+fn check_single_starred(targets: &[UnpackTarget], position: CodeRange) -> Result<(), ParseError> {
+    if targets.iter().filter(|t| matches!(t, UnpackTarget::Starred(_))).count() > 1 {
+        Err(ParseError::syntax(
+            "multiple starred expressions in assignment",
+            position,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Short human-readable name for an `AstExpr` variant, for use in
 /// user-facing parse errors. Avoids the Rust `Debug` formatting of the
 /// node, which would leak internal field names, ranges, and struct
@@ -2359,11 +2454,14 @@ fn describe_expr_kind(expr: &AstExpr) -> &'static str {
 /// on the relevant line only) at diagnostic time.
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeRange {
-    /// Interned filename ID - look up in Interns to get the actual string.
+    /// Filename identity, resolved by `Interns::get_filename`.
+    #[serde(rename = "F")]
     pub filename: StringId,
     /// Byte offset of the range start within the source text.
+    #[serde(rename = "S")]
     pub start_byte: u32,
     /// Byte offset of the range end (exclusive) within the source text.
+    #[serde(rename = "E")]
     pub end_byte: u32,
 }
 
@@ -2405,6 +2503,19 @@ pub enum ParseError {
 }
 
 impl ParseError {
+    /// Moves the error `bytes` later in the source, for a parse of a suffix
+    /// of the caller's text (`eval()` trims leading whitespace) so the line
+    /// number is counted from the start of what the caller passed.
+    pub(crate) fn shifted(mut self, bytes: u32) -> Self {
+        let (Self::Syntax { position, .. }
+        | Self::NotImplemented { position, .. }
+        | Self::NotSupported { position, .. }
+        | Self::Import { position, .. }) = &mut self;
+        position.start_byte = position.start_byte.saturating_add(bytes);
+        position.end_byte = position.end_byte.saturating_add(bytes);
+        self
+    }
+
     pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
             msg: msg.into(),
@@ -2435,6 +2546,28 @@ impl ParseError {
 }
 
 impl ParseError {
+    /// Converts to the exception an `eval()` / `exec()` call raises for its
+    /// snippet: the same type and message as [`into_python_exc`](Self::into_python_exc),
+    /// with a `SyntaxError` carrying CPython's `(<string>, line N)` suffix.
+    /// Non-syntax errors keep a resolved snippet location, independent of the
+    /// rejected compilation's intern IDs; propagation adds the caller's frames.
+    pub(crate) fn into_run_error(self, source: &str) -> RunError {
+        match self {
+            Self::Syntax { msg, position } => syntax_error_in_snippet(&msg, position, source),
+            Self::NotImplemented { msg, position } => {
+                ExcType::not_implemented(format!("The monty syntax parser does not yet support {msg}"))
+                    .with_snippet_position(position, source)
+                    .into()
+            }
+            Self::NotSupported { msg, position } => ExcType::not_implemented(msg)
+                .with_snippet_position(position, source)
+                .into(),
+            Self::Import { msg, position } => SimpleException::new_msg(ExcType::ImportError, msg)
+                .with_snippet_position(position, source)
+                .into(),
+        }
+    }
+
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
         let mut source_map = SourceMap::new(source);
         match self {

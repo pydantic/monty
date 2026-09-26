@@ -17,11 +17,11 @@ use std::{
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
-    ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError, PrintFuture,
+    ReplConfig, ResumeValue, TurnEvent,
 };
-use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, WireObject, decode_frame, encode_to_capped_vec, pb};
-use monty_types::{MontyObject, PrintStream, ResourceLimits};
+use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -49,9 +49,9 @@ fn answer_requests(socket: &mut WebSocket<TcpStream>) {
     while let Ok(Message::Binary(data)) = socket.read() {
         let request = decode_frame::<pb::ParentRequest>(data.as_ref()).expect("decode request");
         let kind = match request.kind.expect("request kind") {
-            pb::parent_request::Kind::Feed(_) => pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(42).into()),
-            }),
+            pb::parent_request::Kind::Feed(_) => {
+                pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42)))
+            }
             // Configure / Reset / Shutdown / anything else: acknowledge.
             _ => pb::child_event::Kind::Ok(pb::Ok {}),
         };
@@ -157,7 +157,7 @@ async fn drives_a_session_over_websocket() {
         .await
         .expect("feed");
     assert!(
-        matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
         "got {event:?}"
     );
 
@@ -197,7 +197,7 @@ async fn connect_headers_are_per_checkout() {
             .await
             .expect("feed");
         assert!(
-            matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+            matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
             "got {event:?}"
         );
         checkout.finish().await.expect("finish");
@@ -432,6 +432,9 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             &mut socket,
             &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 7,
+                values: None,
+                allow_eager_await: false,
+                position: Some((&position()).into()),
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
@@ -440,16 +443,15 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             panic!("expected ResumeCall");
         };
         assert_eq!(resume.call_id, 7);
-        let Some(pb::ext_function_result::Kind::ReturnValue(value)) = resume.result.and_then(|r| r.kind) else {
+        let ExtFunctionResult::Return(value) = resume_call_from_proto(resume).expect("valid result") else {
             panic!("expected a ReturnValue result");
         };
-        let value = value.into_object().expect("valid value");
-        assert_eq!(value, MontyObject::String("parent-side bytes".to_owned()));
+        assert_eq!(value, MontyObject::string("parent-side bytes".to_owned()));
         send_event(
             &mut socket,
-            &event_kind(pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::String("done".to_owned()).into()),
-            })),
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete::from(
+                MontyObject::string("done".to_owned()),
+            ))),
         );
     });
 
@@ -472,7 +474,78 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
         .expect("mount servicing")
         .expect("the mount covers /mnt/data.txt");
     assert!(
-        matches!(&event, TurnEvent::Complete(MontyObject::String(s)) if s == "done"),
+        matches!(&event, TurnEvent::Complete(v) if *v == MontyObject::string("done".to_owned())),
+        "got {event:?}"
+    );
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// A child claiming `allow_eager_await` on a call no future may answer is
+/// not believed: the event does not expose it, and an eager `ResumeFutures`
+/// is refused, so only an ordinary answer resumes the call.
+#[tokio::test]
+async fn eager_bit_on_a_non_future_os_call_is_dropped() {
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
+                call_id: 7,
+                values: None,
+                allow_eager_await: true,
+                position: Some((&position()).into()),
+                call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
+            })),
+        );
+        let pb::parent_request::Kind::ResumeCall(resume) = read_request(&mut socket) else {
+            panic!("expected ResumeCall");
+        };
+        assert_eq!(resume.call_id, 7);
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete::from(
+                MontyObject::string("done"),
+            ))),
+        );
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let event = checkout
+        .feed("unused", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(
+        matches!(
+            event,
+            TurnEvent::OsCall {
+                allow_eager_await: false,
+                ..
+            }
+        ),
+        "got {event:?}"
+    );
+    let refused = checkout
+        .resume_futures(vec![(7, ResumeValue::Return(MontyObject::none()))], &mut no_print)
+        .await;
+    assert!(
+        matches!(&refused, Err(PoolError::Protocol(message)) if message == "no suspended futures to resume"),
+        "got {refused:?}"
+    );
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::string("body")), &mut no_print)
+        .await
+        .expect("resume");
+    assert!(
+        matches!(&event, TurnEvent::Complete(v) if *v == MontyObject::string("done")),
         "got {event:?}"
     );
     checkout.finish().await.expect("finish");
@@ -503,6 +576,9 @@ async fn malformed_os_call_is_a_protocol_error() {
             &mut socket,
             &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 3,
+                values: None,
+                allow_eager_await: false,
+                position: Some((&position()).into()),
                 call: Some(pb::os_call::Call::Open(pb::os_call::Open {
                     path: "/mnt/data.txt".to_owned(),
                     mode: "q".to_owned(),
@@ -532,14 +608,14 @@ async fn malformed_os_call_is_a_protocol_error() {
     join_server(server).await;
 }
 
-/// The parent-side `max_duration` backstop (remaining budget + grace) kills a
-/// worker that never answers a feed — the case where the child's own time
-/// enforcement has failed. No `request_timeout` is configured, so the
+/// The parent-side `max_feed_duration` backstop (remaining budget + grace)
+/// kills a worker that never answers a feed — the case where the child's own
+/// time enforcement has failed. No `request_timeout` is configured, so the
 /// backstop is the only armed deadline.
 #[tokio::test]
 async fn duration_backstop_kills_an_unresponsive_worker() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -555,7 +631,7 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -574,11 +650,11 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
 
 /// The same backstop arms on the raw path, which a relay drives instead of
 /// `feed`. `turn_raw` used to arm `request_timeout` alone, so a session whose
-/// only bound was `max_duration` had no parent-side deadline at all.
+/// only bound was `max_feed_duration` had no parent-side deadline at all.
 #[tokio::test]
 async fn duration_backstop_arms_on_the_raw_path() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -594,7 +670,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -602,8 +678,10 @@ async fn duration_backstop_arms_on_the_raw_path() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -622,7 +700,7 @@ async fn duration_backstop_arms_on_the_raw_path() {
 #[tokio::test]
 async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -636,9 +714,13 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
             &mut socket,
             &pb::ChildEvent {
                 total_execution_micros: 0,
-                max_duration_micros: Some(100_000),
                 max_suspensions: None,
                 restored_script_name: None,
+                session_id: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: Some(100_000),
+                max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             },
         );
@@ -650,22 +732,26 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_secs(5))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_secs(5))),
             ..ReplConfig::default()
         })
         .await
         .expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     checkout.turn_raw(&load, &mut on_event).await.expect("load");
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -696,9 +782,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(
             &mut socket,
-            &event_kind(pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(2).into()),
-            })),
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(2)))),
         );
     });
 
@@ -723,8 +807,10 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -743,7 +829,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
 #[tokio::test]
 async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -760,7 +846,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .await
@@ -768,7 +854,7 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Load(pb::Load {
-            state: vec![0; MAX_FRAME_LEN as usize + 1],
+            state: vec![0; MAX_FRAME_LEN as usize + 1].into(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -777,8 +863,10 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "while True:\n    pass".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -809,7 +897,7 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
         send_event(
             &mut socket,
             &event_kind(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
-                dump: Some(b"relay-signed state".to_vec()),
+                dump: Some(b"relay-signed state".to_vec().into()),
             })),
         );
     });
@@ -819,8 +907,10 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -844,10 +934,9 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
 /// serviced inside the turn, so a worker that simply runs too long before
 /// announcing it is killed by the deadline exactly as without mounts.
 ///
-/// Servicing a covered call is now a separate turn with its own deadline (see
-/// "Mount I/O is not covered by `request_timeout`" in
-/// limitations/pool-architecture.md), so a *loop* of covered calls is bounded
-/// by `max_duration`, not by `request_timeout`.
+/// Each resume starts a new deadline; `max_feed_duration` bounds worker time
+/// across a loop of calls within one feed. Neither limit covers the host I/O
+/// itself; see docs/filesystem.md#io-timeouts-and-cancellation.
 #[tokio::test]
 async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();
@@ -886,13 +975,13 @@ async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     join_server(server).await;
 }
 
-/// A restored session re-adopts its `max_duration` budget from the timing
+/// A restored session re-adopts its `max_feed_duration` budget from the timing
 /// fields the worker stamps on the `Load` reply, re-arming the parent-side
 /// backstop without the parent ever seeing the original `ReplConfig`.
 #[tokio::test]
 async fn restored_session_rearms_the_duration_backstop() {
     let (listener, mut config) = ws_pool_config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -907,9 +996,13 @@ async fn restored_session_rearms_the_duration_backstop() {
             &pb::ChildEvent {
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
                 restored_script_name: Some("restored.py".to_owned()),
+                session_id: None,
                 total_execution_micros: 0,
-                max_duration_micros: Some(100_000),
                 max_suspensions: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: Some(100_000),
+                max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
             },
         );
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
@@ -939,13 +1032,14 @@ async fn restored_session_rearms_the_duration_backstop() {
 /// Serves suspensions until the parent responds with the expected `AbortFeed`.
 fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: u32) {
     let function_call = |call_id: u32| {
-        event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-            function_name: "fetch".to_owned(),
-            args: vec![],
-            kwargs: vec![],
+        event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            "fetch".to_owned(),
+            CallArgs::new(),
             call_id,
-            object_id: None,
-        }))
+            None,
+            false,
+            position(),
+        )))
     };
     assert!(matches!(read_request(socket), pb::parent_request::Kind::Feed(_)));
     send_event(socket, &function_call(1));
@@ -999,12 +1093,12 @@ async fn suspension_limit_is_enforced_by_the_parent() {
         .expect("feed");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
     event = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .expect("second suspension");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1054,7 +1148,7 @@ async fn a_suspension_answering_an_abort_is_a_protocol_violation() {
         .expect("feed");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Protocol(msg) = err else {
@@ -1083,7 +1177,13 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
         send_event(
             &mut socket,
             &pb::ChildEvent {
-                kind: Some(pb::child_event::Kind::OsCall(pb::OsCall { call_id: 1, call: None })),
+                kind: Some(pb::child_event::Kind::OsCall(pb::OsCall {
+                    call_id: 1,
+                    values: None,
+                    call: None,
+                    allow_eager_await: false,
+                    position: Some((&position()).into()),
+                })),
                 max_suspensions: Some(0),
                 ..Default::default()
             },
@@ -1101,7 +1201,7 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
     let PoolError::Protocol(msg) = err else {
         panic!("expected Protocol, got {err:?}");
     };
-    assert_eq!(msg, "OsCall event with no call");
+    assert_eq!(msg, "invalid OS call payload: missing required field OsCall.call");
     join_server(server).await;
 }
 
@@ -1132,8 +1232,10 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1142,11 +1244,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     let resume = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
-            result: Some(pb::ExtFunctionResult {
-                kind: Some(pb::ext_function_result::Kind::ReturnValue(WireObject::new(
-                    MontyObject::None,
-                ))),
-            }),
+            ..pb::ResumeCall::from(MontyObject::none())
         })),
         ..pb::ParentRequest::default()
     };
@@ -1176,13 +1274,14 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         let function_call = |call_id: u32| {
-            event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-                function_name: "fetch".to_owned(),
-                args: vec![],
-                kwargs: vec![],
+            event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+                "fetch".to_owned(),
+                CallArgs::new(),
                 call_id,
-                object_id: None,
-            }))
+                None,
+                false,
+                position(),
+            )))
         };
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(&mut socket, &function_call(1));
@@ -1195,7 +1294,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
                     exception: Some(pb::RaisedException {
                         exc_type: "RuntimeError".to_owned(),
                         message: Some("protocol violation: Load requires a session that has not started".to_owned()),
-                        traceback: vec![],
+                        traceback: vec![].into(),
                         data: None,
                     }),
                 })),
@@ -1234,15 +1333,19 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
     let event = checkout.turn_raw(&feed, &mut on_event).await.expect("feed");
     assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     let event = checkout.turn_raw(&load, &mut on_event).await.expect("refused load");
@@ -1250,11 +1353,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let resume = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
-            result: Some(pb::ExtFunctionResult {
-                kind: Some(pb::ext_function_result::Kind::ReturnValue(WireObject::new(
-                    MontyObject::None,
-                ))),
-            }),
+            ..pb::ResumeCall::from(MontyObject::none())
         })),
         ..pb::ParentRequest::default()
     };
@@ -1317,7 +1416,7 @@ async fn configured_suspension_limit_caps_a_restored_one() {
             .expect("feed");
         assert!(matches!(event, TurnEvent::FunctionCall { .. }));
         let err = checkout
-            .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
             .await
             .unwrap_err();
         let PoolError::Runtime(exc) = err else {
@@ -1357,12 +1456,12 @@ async fn suspension_limit_defaults_to_one_thousand() {
     for _ in 1..1000 {
         assert!(matches!(event, TurnEvent::FunctionCall { .. }));
         event = checkout
-            .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
             .await
             .expect("resume");
     }
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1386,13 +1485,8 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
             pb::parent_request::Kind::Configure(_)
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
-        let function_call = |call_id: u32| WireFunctionCall {
-            function_name: "fetch".to_owned(),
-            args: vec![],
-            kwargs: vec![],
-            call_id,
-            object_id: None,
-        };
+        let function_call =
+            |call_id: u32| WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), call_id, None, false, position());
         let abort_reply = |socket: &mut WebSocket<TcpStream>| {
             let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
                 panic!("expected AbortFeed");
@@ -1436,7 +1530,9 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
         .expect("checkout");
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
     let load = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: vec![1, 2, 3] })),
+        kind: Some(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![1, 2, 3].into(),
+        })),
         ..pb::ParentRequest::default()
     };
     let event = checkout.turn_raw(&load, &mut on_event).await.expect("aborted restore");
@@ -1447,8 +1543,10 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "fetch()".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1501,7 +1599,7 @@ async fn restored_session_readopts_the_suspension_limit() {
         .expect("feed");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1544,19 +1642,20 @@ fn ok_event() -> pb::child_event::Kind {
 /// Builds a `ShutdownDump` turn-ender.
 fn shutdown(dump: Option<&[u8]>) -> pb::child_event::Kind {
     pb::child_event::Kind::Shutdown(pb::ShutdownDump {
-        dump: dump.map(<[u8]>::to_vec),
+        dump: dump.map(|bytes| bytes.to_vec().into()),
     })
 }
 
 /// Builds a `FunctionCall` suspension with the given call id.
 fn function_call(call_id: u32) -> pb::child_event::Kind {
-    pb::child_event::Kind::FunctionCall(WireFunctionCall {
-        function_name: "ext".to_owned(),
-        args: vec![],
-        kwargs: vec![],
+    pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+        "ext".to_owned(),
+        CallArgs::new(),
         call_id,
-        object_id: None,
-    })
+        None,
+        false,
+        position(),
+    ))
 }
 
 /// Asserts the next request is `Configure` and acknowledges it.
@@ -1620,9 +1719,7 @@ async fn shutdown_hands_back_a_restorable_dump() {
         expect_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
-            pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(42).into()),
-            }),
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         while try_read_request(&mut socket).is_some() {}
     });
@@ -1637,6 +1734,8 @@ async fn shutdown_hands_back_a_restorable_dump() {
         panic!("expected Shutdown with a dump, got {err:?}");
     };
     assert_eq!(dump, b"fake-dump");
+    // a relay that stores nothing names no session
+    assert_eq!(checkout.session_id(), None);
 
     // the checkout's worker is gone; a fresh one restores the dump and the
     // never-executed feed can simply be re-run
@@ -1648,7 +1747,7 @@ async fn shutdown_hands_back_a_restorable_dump() {
         .await
         .expect("feed on the restored session");
     assert!(
-        matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
         "got {event:?}"
     );
     checkout.finish().await.expect("finish");
@@ -1689,7 +1788,7 @@ async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
         "got {event:?}"
     );
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::Int(5)), &mut no_print)
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
         .await
         .expect_err("a draining server must not run the resume");
     let PoolError::Shutdown { dump: Some(dump) } = err else {
@@ -1726,6 +1825,787 @@ async fn shutdown_without_a_session_carries_no_dump() {
         panic!("checkout against a draining server must fail");
     };
     assert!(matches!(err, PoolError::Shutdown { dump: None }), "got {err:?}");
+    join_server(server).await;
+}
+
+// ---- session IDs -----------------------------------------------------------
+//
+// A storing relay names the session in `ChildEvent.session_id`; the client
+// treats it as opaque bytes and sends `persistence` through.
+
+/// Sends one `ChildEvent` with the given kind, naming the session `session_id`.
+fn send_with_session_id(socket: &mut WebSocket<TcpStream>, kind: pb::child_event::Kind, session_id: &[u8]) {
+    send_event(
+        socket,
+        &pb::ChildEvent {
+            kind: Some(kind),
+            session_id: Some(session_id.to_vec().into()),
+            ..Default::default()
+        },
+    );
+}
+
+#[tokio::test]
+async fn configure_carries_persistence() {
+    let cases = [
+        (Persistence::ServerDefault, pb::Persistence::Unspecified),
+        (Persistence::Ephemeral, pb::Persistence::Ephemeral),
+        (Persistence::Stored, pb::Persistence::Stored),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        for (_, expected) in cases {
+            let mut socket = accept_ws(&listener);
+            let request = try_read_request(&mut socket).expect("configure");
+            let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
+                panic!("expected Configure, got {request:?}");
+            };
+            assert_eq!(configure.persistence(), expected);
+            send_kind(&mut socket, ok_event());
+            while try_read_request(&mut socket).is_some() {}
+        }
+    });
+
+    let pool = websocket_pool(port).await;
+    for (persistence, _) in cases {
+        let repl = ReplConfig {
+            persistence,
+            ..ReplConfig::default()
+        };
+        let checkout = pool.checkout(&repl).await.expect("checkout");
+        checkout.finish().await.expect("finish");
+    }
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn session_id_is_read_from_the_configure_reply() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_with_session_id(&mut socket, ok_event(), b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
+    // later replies carry no ID, and the session keeps the one it has
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn restore_adopts_the_new_session_id() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_with_session_id(&mut socket, ok_event(), b"sess-new");
+        expect_load(&mut socket, b"sess-1");
+        // loading an ID starts a new session; a suspended one re-announces its
+        // call, which carries the new ID
+        send_with_session_id(&mut socket, function_call(7), b"sess-2");
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (event, _name) = checkout
+        .restore(b"sess-1".to_vec(), vec![], &mut no_print)
+        .await
+        .expect("restore");
+    assert!(
+        matches!(event, Some(TurnEvent::FunctionCall { call_id: 7, .. })),
+        "got {event:?}"
+    );
+    assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn restore_clears_a_stale_session_id() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_with_session_id(&mut socket, ok_event(), b"sess-1");
+        // restoring dump bytes: the reply names no session
+        expect_load(&mut socket, b"dump-bytes");
+        send_kind(&mut socket, ok_event());
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
+    checkout
+        .restore(b"dump-bytes".to_vec(), vec![], &mut no_print)
+        .await
+        .expect("restore");
+    assert_eq!(checkout.session_id(), None);
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// A load the worker refuses leaves the session it already had, which a
+/// storing relay still names by the ID from `Configure`: the checkout must not
+/// forget it, or it would decline to resume a session the relay can hand back.
+#[tokio::test]
+async fn refused_restore_keeps_the_session_id() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_load(&mut socket, b"bad-dump");
+        // the refusal: an ordinary Error, which names no session
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("unknown session".to_owned()),
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let refused = checkout.restore(b"bad-dump".to_vec(), vec![], &mut no_print).await;
+    assert!(matches!(refused, Err(PoolError::Runtime(_))), "{refused:?}");
+    assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+// ---- auto-resume -------------------------------------------------------------
+//
+// A storing relay that drains names the session in `ShutdownDump`; the checkout
+// redials, loads its ID into a new session and re-sends the request the relay
+// did not run.
+
+/// Acknowledges the next request, which must be `Configure`, naming the session `id`.
+fn configure_with_session_id(socket: &mut WebSocket<TcpStream>, id: &[u8]) {
+    let request = try_read_request(socket).expect("configure");
+    assert!(
+        matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))),
+        "expected Configure, got {request:?}"
+    );
+    send_with_session_id(socket, ok_event(), id);
+}
+
+/// Asserts the next request answers call `call_id`.
+fn expect_resume_call(socket: &mut WebSocket<TcpStream>, call_id: u32) {
+    let request = try_read_request(socket).expect("resume");
+    assert!(
+        matches!(&request.kind, Some(pb::parent_request::Kind::ResumeCall(rc)) if rc.call_id == call_id),
+        "expected ResumeCall({call_id}), got {request:?}"
+    );
+}
+
+/// Sends a `Complete(42)` turn-ender.
+fn send_complete(socket: &mut WebSocket<TcpStream>) {
+    send_kind(
+        socket,
+        pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+    );
+}
+
+#[tokio::test]
+async fn shutdown_resumes_transparently() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        // the drain names what to load, which need not be the session's own ID
+        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        // the checkout redials, reloads the session and re-sends the feed
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"parked-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_feed(&mut socket, "1 + 1");
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let event = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("the drain is invisible to the caller");
+    assert!(
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
+        "got {event:?}"
+    );
+    // the reload started a new session under the ID its reply carried
+    assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn shutdown_while_suspended_resumes_after_the_same_call_is_reannounced() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        expect_resume_call(&mut socket, 7);
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, function_call(7), b"sess-2");
+        expect_resume_call(&mut socket, 7);
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let event = checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(
+        matches!(event, TurnEvent::FunctionCall { call_id: 7, .. }),
+        "got {event:?}"
+    );
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect("the drain is invisible to the caller");
+    assert!(
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
+        "got {event:?}"
+    );
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resume_rejects_a_different_reannounced_call() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        expect_resume_call(&mut socket, 7);
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        // not the call the drained session was waiting on
+        send_with_session_id(&mut socket, function_call(8), b"sess-2");
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect_err("a mismatched session must not be resumed");
+    let PoolError::Shutdown { dump } = err else {
+        panic!("expected the original Shutdown, got {err:?}");
+    };
+    assert_eq!(dump.as_deref(), Some(&b"sess-1"[..]));
+    assert!(matches!(
+        checkout.feed("1", vec![], vec![], false, &mut no_print).await,
+        Err(PoolError::Finished)
+    ));
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resume_rejects_a_reannounced_call_with_another_name() {
+    // the same call id naming a different function is another session
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        expect_resume_call(&mut socket, 7);
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(
+            &mut socket,
+            pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+                "other".to_owned(),
+                CallArgs::new(),
+                7,
+                None,
+                false,
+                position(),
+            )),
+            b"sess-2",
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect_err("a mismatched session must not be resumed");
+    assert!(matches!(err, PoolError::Shutdown { .. }), "got {err:?}");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn an_aborted_load_reply_still_names_the_session() {
+    // a re-announced suspension over budget is aborted before the caller
+    // sees it, but the ID its event carried names the session that lives on
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, function_call(7), b"sess-2");
+        let request = try_read_request(&mut socket).expect("abort");
+        let Some(pb::parent_request::Kind::AbortFeed(abort)) = request.kind else {
+            panic!("expected AbortFeed, got {request:?}");
+        };
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: abort.exception,
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = websocket_pool(port).await;
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_suspensions(0)),
+        ..ReplConfig::default()
+    };
+    let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    let err = checkout
+        .restore(b"sess-1".to_vec(), vec![], &mut no_print)
+        .await
+        .expect_err("the re-announced call is over the limit");
+    assert!(matches!(err, PoolError::Runtime(_)), "got {err:?}");
+    assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resume_rejects_a_reannounced_lookup_on_another_object() {
+    // the same name on a different receiver is another lookup
+    let lookup = |object: u8| {
+        pb::child_event::Kind::NameLookup(pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: Some(pb::Uuid {
+                data: vec![object; 16].into(),
+            }),
+            position: Some((&position()).into()),
+        })
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "obj.x");
+        send_kind(&mut socket, lookup(1));
+        let request = try_read_request(&mut socket).expect("resume");
+        assert!(
+            matches!(request.kind, Some(pb::parent_request::Kind::ResumeNameLookup(_))),
+            "expected ResumeNameLookup, got {request:?}"
+        );
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, lookup(2), b"sess-2");
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let event = checkout
+        .feed("obj.x", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(matches!(event, TurnEvent::NameLookup { .. }), "got {event:?}");
+    let err = checkout
+        .resume_name_lookup(MontyObject::int(1), &mut no_print)
+        .await
+        .expect_err("a mismatched session must not be resumed");
+    assert!(matches!(err, PoolError::Shutdown { .. }), "got {err:?}");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resumed_session_keeps_its_duration_backstop() {
+    // the reload's `Load` reply reports no limits, as a worker hiding them
+    // would; the configured feed budget still bounds the resumed feed
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        expect_resume_call(&mut socket, 7);
+        // never answered: the backstop (100ms budget plus 100ms grace) must end
+        // the turn, and the client closes the connection when it does
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(100));
+    let pool = Pool::new(config).await.expect("pool");
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
+        ..ReplConfig::default()
+    };
+    let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect_err("the configured feed budget survives the reload");
+    // the backstop's deadline, not the 10s request timeout
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert_eq!(timeout, Duration::from_millis(200));
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resumed_turn_takes_the_reloaded_backstop() {
+    // the session was configured without limits; the `Load` reply reports the
+    // dump's, which must bound the re-sent turn rather than the deadline
+    // computed before the shutdown
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        expect_resume_call(&mut socket, 7);
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(function_call(7)),
+                session_id: Some(b"sess-2".to_vec().into()),
+                max_feed_duration_micros: Some(100_000),
+                ..Default::default()
+            },
+        );
+        // never answered: the reloaded 100ms budget plus 100ms grace ends the turn
+        expect_resume_call(&mut socket, 7);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(100));
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect_err("the reloaded feed budget bounds the re-sent turn");
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert_eq!(timeout, Duration::from_millis(200));
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resume_refused_returns_the_original_shutdown() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        // e.g. the store no longer holds the session
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::FatalError(pb::FatalError {
+                message: "unknown session".to_owned(),
+            }),
+        );
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("a refused resume surfaces the drain");
+    let PoolError::Shutdown { dump } = err else {
+        panic!("expected the original Shutdown, got {err:?}");
+    };
+    assert_eq!(dump.as_deref(), Some(&b"sess-1"[..]));
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn auto_resume_disabled_returns_the_shutdown() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    config.auto_resume = false;
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("without auto-resume the drain surfaces");
+    let PoolError::Shutdown { dump } = err else {
+        panic!("expected Shutdown, got {err:?}");
+    };
+    assert_eq!(dump.as_deref(), Some(&b"sess-1"[..]));
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn shutdown_without_state_is_not_resumed() {
+    // a drain naming nothing to load has nothing to resume from, whatever ID
+    // the session holds: the relay could not park it
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, shutdown(None));
+        // no redial: a second accept would hang the server thread
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("nothing to load");
+    let PoolError::Shutdown { dump } = err else {
+        panic!("expected Shutdown, got {err:?}");
+    };
+    assert_eq!(dump, None);
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resumed_feed_restarts_the_feed_clock() {
+    // the `Load` reply reports the dump's last feed; the re-sent `Feed` starts
+    // a new one, so that time must not shorten its backstop
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        // the previous feed used the whole budget
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(ok_event()),
+                session_id: Some(b"sess-2".to_vec().into()),
+                feed_execution_micros: 10_000_000,
+                max_feed_duration_micros: Some(10_000_000),
+                ..Default::default()
+            },
+        );
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        // well inside the restarted feed's backstop (10s budget plus 100ms
+        // grace), but past the 100ms grace that is all the dump's feed time
+        // would leave, however slow the machine
+        expect_resume_call(&mut socket, 7);
+        thread::sleep(Duration::from_millis(500));
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    config.feed_duration_limit_grace = Some(Duration::from_millis(100));
+    let pool = Pool::new(config).await.expect("pool");
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_secs(10))),
+        ..ReplConfig::default()
+    };
+    let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    let event = checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(
+        matches!(event, TurnEvent::FunctionCall { call_id: 7, .. }),
+        "got {event:?}"
+    );
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::int(5)), &mut no_print)
+        .await
+        .expect("the resumed feed has its whole budget");
+    assert!(
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
+        "got {event:?}"
+    );
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn resumed_session_keeps_its_suspension_count() {
+    // the host counts suspensions; a drain must not restart the count
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(1));
+        expect_resume_call(&mut socket, 1);
+        send_kind(&mut socket, function_call(2));
+        expect_resume_call(&mut socket, 2);
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, function_call(2), b"sess-2");
+        expect_resume_call(&mut socket, 2);
+        // the third suspension of the session, one past the limit
+        send_kind(&mut socket, function_call(3));
+        let request = try_read_request(&mut socket).expect("abort");
+        let Some(pb::parent_request::Kind::AbortFeed(abort)) = request.kind else {
+            panic!("expected AbortFeed, got {request:?}");
+        };
+        // the child echoes the abort's exception as the feed's error
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: abort.exception,
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = websocket_pool(port).await;
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_suspensions(2)),
+        ..ReplConfig::default()
+    };
+    let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    checkout
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    checkout
+        .resume(ResumeValue::Return(MontyObject::int(0)), &mut no_print)
+        .await
+        .expect("second suspension");
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::int(0)), &mut no_print)
+        .await
+        .expect_err("the third suspension is over the limit");
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 2 exceeded"));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn bare_disconnect_is_never_resumed() {
+    // only `ShutdownDump` says the request did not run; a closed socket does not
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        let _ = socket.close(None);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("a closed connection must fail the turn");
+    assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
     join_server(server).await;
 }
 
@@ -1789,9 +2669,7 @@ async fn finishing_a_checkout_sends_a_close_frame() {
         expect_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
-            pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(42).into()),
-            }),
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         expect_close(&mut socket);
     });
@@ -1918,9 +2796,7 @@ async fn a_dropped_connection_is_a_disconnect() {
         expect_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
-            pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::Int(42).into()),
-            }),
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         // the server drops the session while the client sits idle, then exits
         let _ = socket.close(None);
@@ -1932,7 +2808,7 @@ async fn a_dropped_connection_is_a_disconnect() {
         .await
         .expect("feed");
     assert!(
-        matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
         "got {event:?}"
     );
     // joining first guarantees the server side is fully torn down before the
@@ -1943,4 +2819,13 @@ async fn a_dropped_connection_is_a_disconnect() {
         .await
         .expect_err("a closed connection must fail the turn");
     assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
+}
+
+/// The suspension position every hand-built event carries.
+fn position() -> SourceRange {
+    SourceRange {
+        filename: "main.py".to_owned(),
+        start: 0,
+        end: 7,
+    }
 }

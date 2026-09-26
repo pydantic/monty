@@ -7,7 +7,7 @@ use std::time::Duration;
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::{MontyRepl, MontyRun};
+use monty::{Dump, MontyRepl, MontyRun, SessionRef};
 use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
@@ -26,7 +26,7 @@ static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 /// Runs a benchmark using the Monty interpreter.
 /// Parses once, then benchmarks repeated execution.
 fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);
@@ -41,14 +41,14 @@ fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
 /// Runs a benchmark using the Monty interpreter with a single string input bound to `DATA`.
 /// Parses once, then benchmarks repeated execution with the same input.
 fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i64) {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["DATA".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let make_input = || vec![MontyObject::String(data.to_owned())];
+    let make_input = || vec![MontyObject::string(data.to_owned())];
     let r = ex.run_no_limits(make_input()).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);
@@ -64,11 +64,11 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
 /// budgets that never trip), measuring the amortized limit-checking path
 /// sandboxes actually run rather than the no-limits fast path.
 fn run_monty_limits(bench: &mut Bencher, code: &str, expected: i64) {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let limits = ResourceLimits::default()
-        .max_duration(Duration::from_mins(10))
+        .max_feed_duration(Duration::from_mins(10))
         .max_memory(1 << 40);
-    let run = |limits: &ResourceLimits| {
+    let mut run = |limits: &ResourceLimits| {
         let r = ex
             .run(vec![], ResourceTracker::new(limits.clone()), PrintWriter::Stdout)
             .unwrap();
@@ -197,6 +197,40 @@ for i in range(10_000):
     t = 'x'.encode('utf-8', 'strict')
     u = sorted([3, 1, 2], reverse=False)
     r += len(s) + len(t) + len(u)
+r
+";
+
+/// Mixed list, dict and str method workload, including scanning and allocation.
+/// Kept for continuity with existing measurements; it does not isolate dispatch.
+/// Compare with [`ATTR_DISPATCH_MINIMAL`] to distinguish method costs from dispatch.
+const ATTR_DISPATCH: &str = "
+xs = []
+d = {}
+s = 'Monty Benchmark String'
+r = 0
+for i in range(10_000):
+    xs.append(i)
+    xs.pop()
+    d['k'] = i
+    r += d.get('k', 0)
+    r += len(s.upper()) + len(s.lower()) + s.count('n') + len(s.split(' ')) + len(s.strip())
+r
+";
+
+/// Exercises several attribute names with cheap, non-allocating method bodies:
+/// operations on an empty list, a one-entry dict and a single-character string.
+/// Loop, argument binding, branching and arithmetic remain part of the measurement.
+const ATTR_DISPATCH_MINIMAL: &str = "
+xs = []
+d = {'k': 1}
+s = 'x'
+r = 0
+for _ in range(10_000):
+    xs.clear()
+    xs.reverse()
+    r += d.get('k', 0)
+    r += 1 if s.startswith('x') else 0
+    r += 1 if s.endswith('x') else 0
 r
 ";
 
@@ -442,7 +476,7 @@ r
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
     bench.iter(|| {
-        let ex = MontyRun::new(
+        let mut ex = MontyRun::new(
             black_box("1 + 2").to_owned(),
             "test.py",
             vec![],
@@ -467,6 +501,13 @@ fn parse_1k_assigns(bench: &mut Bencher) {
     });
 }
 
+/// Clones a large module without function definitions, isolating module-code sharing
+/// from the independently cloned intern and name tables.
+fn clone_module(bench: &mut Bencher) {
+    let runner = MontyRun::new("x = 1\n".repeat(10_000), "test.py", vec![], CompileOptions::default()).unwrap();
+    bench.iter(|| black_box(runner.clone()));
+}
+
 /// Feeds a trivial snippet into a REPL session that has already run 2,000
 /// snippets (a mix of function definitions and assignments, so the intern,
 /// function and name tables are all large). Guards against per-feed cost
@@ -485,6 +526,46 @@ fn repl_feed_after_2k_snippets(bench: &mut Bencher) {
     bench.iter(|| {
         let r = repl.feed_run(black_box("1 + 1"), vec![], PrintWriter::Stdout).unwrap();
         black_box(r);
+    });
+}
+
+/// Builds a REPL session carrying the state the dump benchmarks serialize:
+/// 500 snippets of function definitions and string literals, so the interner,
+/// function and name tables are all large enough for per-entry costs to
+/// dominate the fixed framing cost.
+fn session_with_state() -> MontyRepl {
+    let mut repl = MontyRepl::new("bench.py", ResourceTracker::default(), CompileOptions::default());
+    for i in 0..500 {
+        let code = if i % 2 == 0 {
+            format!("def func_{i}(a, b):\n    return a + b * {i}")
+        } else {
+            format!("value_{i} = 'literal {i}'")
+        };
+        repl.feed_run(&code, vec![], PrintWriter::Stdout).unwrap();
+    }
+    repl
+}
+
+/// Serializes an idle session snapshot. Every interner entry is written out
+/// individually, so this prices the write side of the dump wire format —
+/// the cost hosts pay each time they park a session.
+fn session_dump(bench: &mut Bencher) {
+    let repl = session_with_state();
+    bench.iter(|| {
+        let bytes = monty::dump("bench.py", None, SessionRef::Idle(black_box(&repl))).unwrap();
+        black_box(bytes);
+    });
+}
+
+/// Restores a session snapshot. Loading deserializes the string table and
+/// rebuilds the interner's reverse lookups from it, so this prices the read
+/// side of the dump wire format — the cost hosts pay to resume a session.
+fn session_load(bench: &mut Bencher) {
+    let repl = session_with_state();
+    let bytes = monty::dump("bench.py", None, SessionRef::Idle(&repl)).unwrap();
+    bench.iter(|| {
+        let dump = Dump::load(black_box(&bytes)).unwrap();
+        black_box(dump);
     });
 }
 
@@ -520,7 +601,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
     c.bench_function("parse_1k_assigns__monty", parse_1k_assigns);
+    c.bench_function("clone_module__monty", clone_module);
     c.bench_function("repl_feed_after_2k_snippets__monty", repl_feed_after_2k_snippets);
+    c.bench_function("session_dump__monty", session_dump);
+    c.bench_function("session_load__monty", session_load);
     #[cfg(not(codspeed))]
     c.bench_function("end_to_end__cpython", end_to_end_cpython);
 
@@ -536,6 +620,18 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("builtin_args__monty", |b| run_monty(b, BUILTIN_ARGS, 60_000));
     #[cfg(not(codspeed))]
     c.bench_function("builtin_args__cpython", |b| run_cpython(b, BUILTIN_ARGS, 60_000));
+
+    c.bench_function("attr_dispatch__monty", |b| run_monty(b, ATTR_DISPATCH, 50_715_000));
+    #[cfg(not(codspeed))]
+    c.bench_function("attr_dispatch__cpython", |b| run_cpython(b, ATTR_DISPATCH, 50_715_000));
+
+    c.bench_function("attr_dispatch_minimal__monty", |b| {
+        run_monty(b, ATTR_DISPATCH_MINIMAL, 30_000);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("attr_dispatch_minimal__cpython", |b| {
+        run_cpython(b, ATTR_DISPATCH_MINIMAL, 30_000);
+    });
 
     c.bench_function("list_append_str__monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));
     #[cfg(not(codspeed))]

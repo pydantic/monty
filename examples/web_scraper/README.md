@@ -11,5 +11,5 @@ Look at `example_code.py` for an example of the kind of code sonnet 4.5 will gen
 Run the example with
 
 ```bash
-uv run python -m examples.web_scraper.main
+uv run --group examples python -m examples.web_scraper.main
 ```

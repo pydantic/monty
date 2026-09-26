@@ -64,6 +64,15 @@ assert ''.join(['a', 'b', 'c']) == 'abc'
 assert '-'.join([]) == ''
 assert ','.join(['only']) == 'only'
 
+# Empty results reuse Python's canonical empty string.
+empty = ''
+assert ''.join([]) is empty, 'empty join result should be canonical'
+assert ''.strip() is empty, 'empty strip result should be canonical'
+assert ''[:] is empty, 'empty slice result should be canonical'
+assert ''.lower() is empty, 'empty transformation result should be canonical'
+assert 'x' * 0 is empty, 'empty repetition result should be canonical'
+assert '' + '' is empty, 'empty concatenation result should be canonical'
+
 # Join with different iterables
 assert ' '.join(('hello', 'world')) == 'hello world'
 

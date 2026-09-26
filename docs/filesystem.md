@@ -59,8 +59,83 @@ Mounts are per-feed, and all arguments are keyword-only:
     ```
 
 Pass a list to `mount=` for several at once.
+The mounts of one feed must have distinct virtual paths and cover disjoint host directories; a feed that mounts a
+directory and one inside it, the same directory twice, or two directories at one virtual path fails before it starts
+with a `MontyRuntimeError` wrapping a `ValueError`, since the stricter mount's mode could otherwise be bypassed through
+the other mount's paths.
+See [`limitations/filesystem.md`](limitations/filesystem.md#overlapping-mounts-cannot-both-be-registered).
 In JavaScript `MountDir` comes from the `@pydantic/monty/node` subpath and `using` closes it at the end of scope; the
 WebAssembly build rejects mounts outright, because a browser has no host filesystem.
+
+### Working directory
+
+The sandbox has a virtual working directory.
+A session's first feed sets it to the first mount's virtual path, or `/` when nothing is mounted, and it then persists
+across the session's feeds like the globals do.
+`os.getcwd()` and `Path.cwd()` report it.
+Relative paths in `open()`, `os` and `pathlib` calls are joined onto it.
+Mounts receive these paths without collapsing `.` or `..`, so they can validate every component.
+`__file__` is the script name's final component placed under it.
+`os.chdir()` moves it, and the change carries over to later feeds.
+Pass `cwd=` to switch to another absolute virtual path before a feed.
+
+Custom `os` callbacks in Python and JavaScript receive normalized absolute paths, with `.` and `..` collapsed.
+For example, `os.listdir()` passes `/data` when the cwd is `/data`, and `../secret` becomes `/secret`.
+Both rename arguments are normalized.
+Check access rules against complete path components: a string prefix check can confuse `/data` with `/database`.
+Use `MountTable` for host filesystem access: normalization and prefix checks alone do not confine symlinks or prevent races.
+
+=== "Python"
+
+    ```python
+    import tempfile
+    from pathlib import Path
+
+    from pydantic_monty import Monty, MountDir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, 'notes.txt').write_text('hello')
+
+        code = "import os\n(os.getcwd(), __file__, open('notes.txt').read())"
+
+        with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+            with Monty() as pool:
+                with pool.checkout() as session:
+                    print(session.feed_run(code, mount=mount))
+                    #> ('/data', '/data/main.py', 'hello')
+                    cwd_code = 'import os\nos.getcwd()'
+                    print(session.feed_run(cwd_code, mount=mount, cwd='/data/sub'))
+                    #> /data/sub
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+    import { tmpdir } from 'node:os'
+    import { join } from 'node:path'
+
+    import { Monty } from '@pydantic/monty'
+    import { MountDir } from '@pydantic/monty/node'
+
+    const tmp = mkdtempSync(join(tmpdir(), 'monty-'))
+    writeFileSync(join(tmp, 'notes.txt'), 'hello')
+
+    const code = "import os\n(os.getcwd(), __file__, open('notes.txt').read())"
+
+    {
+      using mount = new MountDir({ hostPath: tmp, virtualPath: '/data', mode: 'read-only' })
+      await using pool = await Monty.create()
+      await using session = await pool.checkout()
+      console.log(await session.feedRun(code, { mount })) // [ '/data', '/data/main.py', 'hello' ]
+      console.log(await session.feedRun('import os\nos.getcwd()', { mount, cwd: '/data/sub' })) // /data/sub
+    }
+    rmSync(tmp, { recursive: true })
+    ```
+
+The directory is not checked against the mounts, and `os.chdir()` needs a mount (or `os` callback) to confirm its
+target exists.
+The divergences are in [`limitations/os.md`](limitations/os.md).
 
 ### Modes
 
@@ -94,6 +169,8 @@ Each feed starts with a fresh overlay.
 | `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
 
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
+Mounts are serviced by the host, including for remote workers; the worker never receives host paths.
+Closing a mount prevents new feeds from using it, but an in-flight feed keeps its own reference.
 
 The names are keyword-only on purpose: mount tools disagree on whether host or virtual comes first (`docker -v` versus
 nginx's `alias`), so requiring names removes the ambiguity.
@@ -127,10 +204,23 @@ Relative symlinks that stay inside the mount are followed in the non-overlay mod
 The full list is in [`limitations/filesystem.md`](limitations/filesystem.md)
 and [`limitations/open.md`](limitations/open.md).
 
+## I/O timeouts and cancellation
+
+Mount I/O has no timeout: it runs on the host between protocol turns, outside `request_timeout` and the sandbox
+duration limits, whose clock is paused while the host works.
+A stalled NFS or FUSE volume can block a feed indefinitely.
+The pool uses blocking threads for filesystem operations, so a stalled call does not block other sessions' timers.
+
+Cancelling the feed does not cancel an in-flight filesystem operation.
+It keeps its blocking thread until it returns, and a read-write mount's write, rename or delete can finish after
+cancellation was observed.
+Use host storage whose availability and side effects are acceptable for the workload.
+
 ## The `os` callback
 
-Operations no mount covers fall through to the `os=` handler.
-It is called as `(function_name, args, kwargs)` and its return value is handed back to the sandbox:
+Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
+It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
+Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 
 === "Python"
 
@@ -138,8 +228,8 @@ It is called as `(function_name, args, kwargs)` and its return value is handed b
     from pydantic_monty import NOT_HANDLED, Monty
 
 
-    def handle_os(function_name, args, kwargs):
-        if function_name == 'os.getenv' and args[0] == 'STAGE':
+    def handle_os(*, name, args, **_future_kwargs):
+        if name == 'os.getenv' and args[0] == 'STAGE':
             return 'production'
         return NOT_HANDLED
 
@@ -171,10 +261,17 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today` and `datetime.now`.
+`os.getenv`, `os.environ` and `os.urandom`.
+With `os_policy` configured to call the host, the handler also receives clock and sleep calls
+(see [the clock](security.md#the-clock)).
+Unseeded random generators and `random.seed()` call `os.urandom` only under `random_start='call_host'`
+(see [random](limitations/random.md)).
 
 `os` callbacks run in your process with your process's authority.
 Everything in [designing a safe tool surface](host-functions.md#designing-a-safe-tool-surface) applies.
+Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds `max_urandom_bytes`,
+1 MiB by default.
+`OSAccess(max_urandom_bytes=...)` sets the cap; see [os limitations](limitations/os.md).
 
 ### Resolution order
 
@@ -184,6 +281,7 @@ sandbox's own no-handler error.
 `feed_start` is different: it surfaces every OS call as a snapshot instead of answering it.
 `snapshot.resume_auto()` applies the same mounts-then-`os` order, and `snapshot.resume_not_handled()` applies the
 no-handler default explicitly.
+Plain `resume(...)` bypasses both mounts and the handler, using only the supplied answer.
 
 ## A virtual filesystem
 
@@ -232,6 +330,11 @@ JavaScript has no equivalent class, so the TypeScript tab answers the same opera
     console.log(await session.feedRun(code, { os: fs })) // 2
     ```
 
+For JavaScript `open` callbacks, return `new MontyFileHandle(path, mode, { position: 0 })` from `@pydantic/monty`.
+The marker canonicalizes `mode` and exposes `path`, `mode`, `position`, `binary`, `readable` and `writable`.
+Paths are virtual POSIX paths; `position` defaults to zero.
+Returning a handle answers only `open`; reads and writes are separate callbacks, never operations on a live host descriptor.
+
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
 
@@ -241,7 +344,10 @@ you wrote.
 
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
-`datetime_now`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make them raise `NotImplementedError`.
+`datetime_now`, `time`, `sleep`, `async_sleep`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make
+them raise `NotImplementedError`.
+`time` receives the name of the `time` function that asked (`'time.time'`, `'time.monotonic'`, `'time.localtime'`,
+...) so one hook can serve every clock or give each its own answer.
 
 ## Rust
 

@@ -1,34 +1,20 @@
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { test } from 'vitest'
 
+import * as root from '@pydantic/monty'
+import * as node from '@pydantic/monty/node'
+import * as wasm from '@pydantic/monty/wasm'
+import * as shared from '../ts/shared.js'
 import { t } from './assertions.js'
 
-// `@pydantic/monty`, `@pydantic/monty/node` and `@pydantic/monty/wasm` are
-// the same API over two transports, so a type reaching only one of them is a
-// packaging bug — the entrypoints re-export by hand and have drifted before.
-const ENTRYPOINTS = ['../ts/index.ts', '../ts/node.ts', '../ts/worker/index.ts']
-
-/** The sorted names in `path`'s `export { ... } from '<module>'` block. */
-function exportsOf(path: string, module: string): string[] {
-  const source = readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
-  const block = new RegExp(`export \\{([^}]*)\\} from '\\.{1,2}\\/${module}'`).exec(source)
-  if (block === null) throw new Error(`no ${module} re-export block found in ${path}`)
-  return block[1]
-    .split(',')
-    .map((name) => name.replace('type ', '').trim())
-    .filter((name) => name !== '')
-    .sort()
-}
-
-test('both entrypoints export the same value marker types', () => {
-  t.deepEqual(exportsOf('../ts/worker/index.ts', 'types\\.js'), exportsOf('../ts/index.ts', 'types\\.js'))
+// Compare public modules rather than parsing the spelling of their re-exports.
+test('every entrypoint exports the same shared values', () => {
+  for (const entry of [root, node, wasm]) {
+    for (const name of Object.keys(shared) as Array<keyof typeof shared>) {
+      t.is(entry[name], root[name], name)
+    }
+  }
 })
 
-test('every entrypoint exports the same class wrapper surface', () => {
-  const expected = exportsOf('../ts/index.ts', 'classInstance\\.js')
-  t.true(expected.includes('BaseWrapperOptions'))
-  for (const path of ENTRYPOINTS) {
-    t.deepEqual(exportsOf(path, 'classInstance\\.js'), expected, path)
-  }
+test('the WASM entry exports no implementation machinery', () => {
+  t.deepEqual(Object.keys(wasm).sort(), [...Object.keys(shared), 'Monty', 'createWorkerPool', 'loadModule'].sort())
 })

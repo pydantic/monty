@@ -51,7 +51,8 @@ and correspondingly `__main__.C.m()`, `__main__.<lambda>()` or
 `__main__.outer.<locals>.inner()`. Monty has neither function `__qualname__`
 nor module-qualified names (see the class-name note in [collections.md](collections.md)), so
 it reports the generic form. Every other unpacking form matches CPython
-exactly.
+exactly, except for the comprehension target restriction in
+[comprehensions.md](comprehensions.md).
 
 ## Source nesting depth
 
@@ -65,6 +66,21 @@ exactly.
 - Class-body annotations count against the budget even though they are stringized rather than evaluated (see
     [typing.md](typing.md)), as do class-variable values and method parameter defaults; all three are walked before
     being parsed. CPython imposes no comparable limit on a stringized annotation.
+- A source longer than `CompileOptions::source_scan_threshold` bytes (4 KiB by default) is first scanned token by
+    token and rejected with the same `SyntaxError` when its estimated parser nesting exceeds the cap.
+    The scan bounds how much native stack the parser grows on a long source, memory the sandbox allocator does not
+    see; a shorter source cannot nest deeper than its length, so it skips the scan.
+- The scan counts open brackets, indented blocks, prefix operators, `**` right operands, lambda bodies, `else`
+    branches, f-string format specs and the `+` and `-` of `case` complex-literal patterns, so one expression holding
+    more than 200 of those open at once, with no comma, newline or lower-precedence operator between them, is rejected
+    even where CPython would accept it.
+    A long literal such as `[-1, -2, ...]` releases the count at every comma.
+    A logical line starting with a variable named `case` counts its binary `+` and `-` the same way.
+- The scan also enters string literals, because the type checker parses a forward-reference annotation such as
+    `x: "list[int]"` from the text between the quotes; a string longer than 200 bytes holding more than 200 unbalanced
+    brackets is rejected the same way even when it is plain data.
+- Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
+    (`0` scans every source, `usize::MAX` never scans); Python and JavaScript sessions use the default.
 
 ## Imports
 
@@ -102,7 +118,9 @@ became mandatory in Python 3.7 or earlier and so are inert there too, and
 
 Monty has no module object and no `globals()` dict, but it exposes a fixed set
 of module-level dunders so common idioms (e.g. `if __name__ == '__main__':`)
-work. They are resolved on read; there is no real namespace entry behind them.
+work. They are resolved on read; there is no real namespace entry behind them,
+so the values built per read (`__file__`, `__annotations__`) are fresh objects
+each time and `__file__ is __file__` is `False` where CPython gives `True`.
 
 | Name              | Monty value  | CPython (script run)         |
 | ----------------- | ------------ | ---------------------------- |
@@ -130,13 +148,24 @@ ordinary local in a separate namespace), matching CPython, except `__debug__`,
 which CPython rejects everywhere with `SyntaxError` but Monty permits as a
 local.
 
-Other module dunders CPython defines (`__loader__`, `__file__`, `__builtins__`,
+`__file__` is the final path component of the session's script name placed
+under the virtual working directory the feed started in: `/main.py` by
+default, `/data/main.py` when the feed's first mount is `/data`. CPython makes
+the script path absolute as given, so `python src/app.py` reports
+`/host/cwd/src/app.py`; Monty keeps only `app.py`, because the script name is a
+host-side label that may be a host path and no host directory may leak into the
+sandbox. The `monty` CLI passes its file argument as the script name, so
+`monty /abs/script.py` reports `/script.py` (or `/data/script.py` under a
+`/data` mount) and `monty -c` reports `/<string>` where CPython raises
+`NameError`. Like the other dunders it is read-only, where CPython allows
+rebinding it.
+
+Other module dunders CPython defines (`__loader__`, `__builtins__`,
 `__cached__`, `__dict__`) are not exposed; reading them falls through to the host
 name lookup and ultimately raises `NameError` if unresolved. `__loader__` is
 omitted because CPython always binds it to a loader *object* (never `None`), so
 exposing `None` would diverge on type, and a real loader is neither available
-nor safe to surface in the sandbox. `__file__` is omitted so no host path can
-leak into the sandbox.
+nor safe to surface in the sandbox.
 
 ## Function objects
 

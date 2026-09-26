@@ -2,7 +2,11 @@
 
 use std::{ops::RangeInclusive, time::Duration};
 
+mod budget_vec;
+#[doc(hidden)]
+pub mod budgeted_prost;
 mod convert;
+mod decode_budget;
 mod frame;
 mod generated;
 // Python ↔ MontyObject value conversion; opt-in because it links pyo3, which
@@ -10,6 +14,9 @@ mod generated;
 #[cfg(feature = "python")]
 pub mod python;
 mod requirement;
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub mod test_util;
 mod wire;
 #[cfg(feature = "worker")]
 pub mod worker;
@@ -21,10 +28,22 @@ pub mod worker;
 /// or repurposing a field, changing a field's meaning, or adding one the child
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// `Configure.persistence` and `ChildEvent.session_id` did not bump it: a
+/// serving relay and its client act on them, children ignore them, and a
+/// child that drops them loses nothing.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 2;
+///
+/// Version 4 and below are not served. Version 3 carried values as recursive
+/// `MontyObject` trees, where this build carries one flat `Arena` per message.
+/// Version 4 both lacked `max_feed_duration`/`max_turn_duration` and had the
+/// per-session `max_duration` this build dropped: a version 4 parent would
+/// send a budget nothing enforces, and a version 4 child would accept the new
+/// budgets and ignore them. Neither side can be told apart from a working one,
+/// so both are refused.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 5;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.
@@ -68,11 +87,18 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
     }
 }
 
-pub use convert::{MAX_VALUE_DEPTH, ProtoConvertError, exceeds_max_value_depth, future_results_from_proto};
+pub use budget_vec::BudgetVec;
+pub use convert::{
+    ProtoConvertError, ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
+    named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto, resume_call_from_proto,
+};
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub use decode_budget::{decode_budget_remaining, with_decode_budget};
 pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,
     encode_to_capped_vec, exceeds_max_frame_len, write_frame,
 };
 pub use generated::pb;
 pub use requirement::validate_requirement;
-pub use wire::{WireFunctionCall, WireObject, reset_decode_budget};
+pub use wire::{WireArena, WireFunctionCall, WireIndexes, WireNamedTuple, WireNodePairs};

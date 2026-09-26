@@ -2,12 +2,12 @@
 //! exceptions, in both directions.
 //!
 //! `exc_monty_to_py` rebuilds the closest native exception for a sandbox error
-//! surfacing to the host; `exc_py_to_monty`/`exc_to_monty_object` classify a
+//! surfacing to the host; `exc_py_to_monty`/`exc_to_monty_node` classify a
 //! host exception flowing into the sandbox (external-function errors, resumed
 //! snapshots). The Python-facing `MontyError` class hierarchy stays in
 //! `pydantic-monty` — this module only maps values.
 
-use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, MontyObject, UnicodeErrorObject};
+use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, UnicodeErrorObject, unstable::MontyNode};
 use pyo3::{
     PyTypeCheck,
     exceptions::{self},
@@ -97,6 +97,31 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyValueError::new_err(msg)
             }
         }
+        ExcType::BinasciiIncomplete => {
+            if let Ok(incomplete) = get_binascii_incomplete(py)
+                && let Ok(exc_instance) = incomplete.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Falls back to its own parent, `Exception`, not `ValueError`.
+                exceptions::PyException::new_err(msg)
+            }
+        }
+    }
+}
+
+/// The host class for an exception type: the class its instances decode to,
+/// except the three whose instances need a payload, which resolve directly
+/// so the class never degrades to the payload-less `ValueError` fallback.
+pub(super) fn exc_class_to_py(py: Python<'_>, exc_type: ExcType) -> PyResult<Py<PyAny>> {
+    match exc_type {
+        ExcType::JsonDecodeError => get_json_decode_error(py).map(|b| b.clone().unbind()),
+        ExcType::UnicodeDecodeError => Ok(py.get_type::<exceptions::PyUnicodeDecodeError>().into_any().unbind()),
+        ExcType::UnicodeEncodeError => Ok(py.get_type::<exceptions::PyUnicodeEncodeError>().into_any().unbind()),
+        _ => Ok(exc_monty_to_py(py, MontyException::new(exc_type, None))
+            .get_type(py)
+            .into_any()
+            .unbind()),
     }
 }
 
@@ -207,13 +232,13 @@ fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
     extract().map_or(ExcData::None, |data| ExcData::Json(Box::new(data)))
 }
 
-/// Converts a Python exception to Monty's `MontyObject::Exception`.
+/// Converts a Python exception to an exception value node.
 #[must_use]
-pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyObject {
+pub fn exc_to_monty_node(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyNode {
     let exc_type = py_err_to_exc_type(exc);
     let arg = exception_arg(exc);
 
-    MontyObject::Exception { exc_type, arg }
+    MontyNode::Exception { exc_type, arg }
 }
 
 /// Maps a Python exception type to Monty's `ExcType` enum.
@@ -246,6 +271,10 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
             ExcType::AssertionError
         } else if exceptions::PySyntaxError::type_check(exc) {
             ExcType::SyntaxError
+        // `binascii.Incomplete` derives straight from `Exception`, so unlike
+        // `binascii.Error` it has no hierarchy branch to sit under
+        } else if is_binascii_incomplete(exc) {
+            ExcType::BinasciiIncomplete
         // LookupError hierarchy
         } else if exceptions::PyLookupError::type_check(exc) {
             if exceptions::PyKeyError::type_check(exc) {
@@ -370,6 +399,22 @@ fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
 fn get_binascii_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static BINASCII_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     BINASCII_ERROR.import(py, "binascii", "Error")
+}
+
+/// Checks if an exception is a `binascii.Incomplete`, which hangs off
+/// `Exception` rather than `ValueError` and so is tested on its own.
+fn is_binascii_incomplete(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(incomplete_cls) = get_binascii_incomplete(exc.py()) {
+        exc.is_instance(incomplete_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `binascii.Incomplete` class.
+fn get_binascii_incomplete(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static BINASCII_INCOMPLETE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    BINASCII_INCOMPLETE.import(py, "binascii", "Incomplete")
 }
 
 /// Checks if an exception is a `re.PatternError` (a stdlib class, not a

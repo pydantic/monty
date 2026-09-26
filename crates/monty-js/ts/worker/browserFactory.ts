@@ -18,7 +18,7 @@ export function browserWorkerFactory(
   options: WorkerChannelOptions = {},
   workerUrl?: string | URL,
 ): WorkerFactory {
-  return () => {
+  return (signal) => {
     // The default branch must keep `new Worker(new URL('…', import.meta.url),
     // { type: 'module' })` inline and literal: that exact shape is what
     // Vite/webpack statically detect to emit the worker as its own bundled
@@ -33,6 +33,6 @@ export function browserWorkerFactory(
       onError: (handler) => worker.addEventListener('error', (event) => handler(event)),
       terminate: () => worker.terminate(),
     }
-    return Promise.resolve(new WorkerChannel(like, options))
+    return WorkerChannel.create(like, options, signal)
   }
 }

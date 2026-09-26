@@ -2,7 +2,7 @@
 # AttributeError path has to release them. Regression test: sandboxed code could
 # otherwise leak a reference per call in a loop.
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 lst = [1, 2, 3]
 
@@ -17,6 +17,7 @@ def call_bogus():
         datetime(2020, 1, 1),
         date(2020, 1, 1),
         timedelta(hours=1),
+        timezone(timedelta(hours=1)),
         pattern,
         pattern.match('a'),
         mapping.keys(),

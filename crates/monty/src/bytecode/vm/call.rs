@@ -8,25 +8,23 @@ use std::mem;
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
-use super::{CallFrame, VM, attr::PendingLookupEffect, recursion::RunReentryGuard};
+use super::{CallFrame, VM, attr::PendingLookupEffect, function_namespace, recursion::RunReentryGuard};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
     builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt},
     bytecode::FrameExit,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
-    os_dispatch::{PendingOsEffect, release_pending_effect},
-    types::{
-        Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
-        partial::partial_call_args, str::call_str_method,
-    },
-    value::{EitherStr, Value},
+    os_dispatch::{PendingEffect, release_pending_effect},
+    resource_checks::check_estimated_size,
+    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Result of executing a call or attribute method.
@@ -92,7 +90,7 @@ pub(crate) enum CallResult {
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
     /// OS call whose result must be post-processed on resume via a
-    /// [`PendingOsEffect`] instead of being pushed onto the operand stack raw.
+    /// [`PendingEffect`] instead of being pushed onto the operand stack raw.
     ///
     /// Used by buffered file reads (`BufferStore`), buffered writes
     /// (`WritePosition`), and `os.listdir` (`ListdirNames`). The effect stays
@@ -100,7 +98,7 @@ pub(crate) enum CallResult {
     /// the way out cannot corrupt the next OS call's resume.
     OsCallWithEffect {
         call: OsFunctionCall,
-        effect: PendingOsEffect,
+        effect: PendingEffect,
     },
 }
 
@@ -123,7 +121,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     }
 }
 
-impl VM<'_> {
+impl<'h> VM<'h> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================
@@ -384,7 +382,7 @@ impl VM<'_> {
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                t.call_class_method(name_id, args, this).map(Into::into)
+                t.call_class_method(name_id, args, this)
             }
             _ => {
                 // Non-heap values without method support
@@ -562,8 +560,8 @@ impl VM<'_> {
             Value::Builtin(builtin) => builtin.call(self, args),
             Value::ModuleFunction(mf) => mf.call(self, args),
             Value::DefFunction(func_id) => {
-                // Defined function without defaults or captured variables
-                self.call_def_function(*func_id, &[], &[], args)
+                // Defined function without defaults, captured variables or a globals dict
+                self.call_def_function(*func_id, &[], &[], None, args)
             }
             Value::Ref(heap_id) => {
                 // Could be a closure or function with defaults - check heap
@@ -583,99 +581,15 @@ impl VM<'_> {
         }
     }
 
-    /// Handles calling a heap-allocated callable (closure, function with defaults,
-    /// external function, class constructor, or bound method).
+    /// Calls a heap value, delegating to the type's own [`PyTrait::py_call`].
+    ///
+    /// Each callable type owns its dispatch, so this only reads the value and
+    /// hands the arguments over — a new callable type is added by implementing
+    /// `py_call`, not by extending anything here. The default `py_call` raises
+    /// the same `TypeError` the rejected arm used to, so a value that is not
+    /// callable is refused without a branch of its own.
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        // Calling a class constructs an instance; calling a bound method prepends
-        // its captured `self`. Both are dispatched before the closure/defaults
-        // path because they don't fit the `(func_id, cells, defaults)` shape.
-
-        let (func_id, cells, defaults) = match self.heap.get(heap_id) {
-            HeapData::Class(_) => return self.instantiate_class(heap_id, args),
-            // Calling a host class type suspends to the host as a `__call__`
-            // method call on the class's uuid; the host's own policy decides
-            // whether construction is allowed.
-            HeapData::HostClassType(ty) => {
-                return Ok(CallResult::MethodCall {
-                    name: EitherStr::Heap("__call__".to_owned()),
-                    args,
-                    object_id: ty.type_id(),
-                });
-            }
-            // Calling a namedtuple class constructs a `NamedTuple` instance.
-            HeapData::NamedTupleClass(_) => {
-                return construct_namedtuple(heap_id, self, args).map(CallResult::Value);
-            }
-            HeapData::BoundMethod(bm) => {
-                let instance = bm.instance.clone_with_heap(self);
-                let func = bm.func.clone_with_heap(self);
-                let this = self;
-                defer_drop!(func, this);
-                return this.call_function(func, args.prepend(instance));
-            }
-            HeapData::Closure(closure) => {
-                let cloned_cells = closure.cells.clone();
-                let cloned_defaults: Vec<Value> = closure.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
-                (closure.func_id, cloned_cells, cloned_defaults)
-            }
-            HeapData::FunctionDefaults(fd) => {
-                let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
-                (fd.func_id, Vec::new(), cloned_defaults)
-            }
-            HeapData::ExtFunction(function) => {
-                let name = function.clone_name();
-                return Ok(CallResult::External(name, args));
-            }
-            // The bound arguments are lifted out and the heap borrow released
-            // before dispatching, so the wrapped callable may reach this same
-            // partial again.
-            HeapData::Partial(partial) => {
-                let parts = partial.clone_parts(self);
-                let (func, bound_args, bound_keywords) = match parts {
-                    Ok(parts) => parts,
-                    Err(err) => {
-                        // The preflight rejected the per-call clone before
-                        // anything was lifted out, so only the call's own
-                        // arguments still need releasing.
-                        args.drop_with(self);
-                        return Err(err);
-                    }
-                };
-                // A partial stored as a class attribute binds as a `BoundMethod`
-                // whose `__func__` is a partial, so this dispatch nests on the
-                // native stack without ever pushing a VM frame. Charge it against
-                // the native re-entry budget, which is what keeps such a chain
-                // bounded by `RecursionError` rather than a stack overflow.
-                if let Err(err) = self.enter_run_reentry() {
-                    // Bailing before `partial_call_args` takes ownership, so
-                    // reclaim what was lifted out of the partial as well as the
-                    // call's own arguments.
-                    (func, (bound_args, bound_keywords)).drop_with(self);
-                    args.drop_with(self);
-                    return Err(err.into());
-                }
-                let mut guard = RunReentryGuard::new(self);
-                let this = &mut *guard;
-                defer_drop!(func, this);
-                let args = partial_call_args(bound_args, bound_keywords, args, this);
-                return this.call_function(func, args);
-            }
-            _ => {
-                // Coupling check: dispatch rejected this Ref, so the heap-side
-                // callability predicate must agree (see `HeapData::is_callable`).
-                debug_assert!(
-                    !self.heap.get(heap_id).is_callable(),
-                    "HeapData::is_callable accepts a heap value call_heap_callable rejects — the two drifted"
-                );
-                args.drop_with(self);
-                let type_name = self.heap.read(heap_id).py_type_name(self);
-                return Err(ExcType::type_error_not_callable_object(&type_name));
-            }
-        };
-
-        let this = self;
-        defer_drop!(defaults, this);
-        this.call_def_function(func_id, &cells, defaults, args)
+        self.heap.read(heap_id).py_call(args, self)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -690,12 +604,17 @@ impl VM<'_> {
         let this = self;
         defer_drop!(args_tuple, this);
         defer_drop!(callable, this);
+        // Building the argument pack is fallible (a refused `*args` clone) and the
+        // kwargs are handed on only once it succeeds, so the guard releases them on
+        // the error paths in between.
+        let mut pending_kwargs = DropGuard::new(kwargs, this);
+        let (pending, this) = pending_kwargs.as_parts_mut();
 
         // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple(args_tuple);
+        let copied_args = this.extract_args_tuple(args_tuple)?;
 
         // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = kwargs {
+        let args = if let Some(kwargs_ref) = pending.take() {
             this.build_args_with_kwargs(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
@@ -717,18 +636,24 @@ impl VM<'_> {
     ) -> Result<CallResult, RunError> {
         let this = self;
         defer_drop!(args_tuple, this);
+        // Building the argument pack is fallible (a refused `*args` clone, a kwargs
+        // dict that cannot grow) and the receiver and kwargs are handed on only once
+        // it succeeds, so the guard releases them on the error paths in between.
+        let mut pending = DropGuard::new((obj, kwargs), this);
+        let (pending_values, this) = pending.as_parts_mut();
 
         // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple_for_attr(args_tuple);
+        let copied_args = this.extract_args_tuple_for_attr(args_tuple)?;
 
         // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = kwargs {
+        let args = if let Some(kwargs_ref) = pending_values.1.take() {
             this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
         } else {
             Self::build_args_positional_only(copied_args)
         };
 
         // Call the method (args_tuple guard drops at scope exit)
+        let ((obj, _), this) = pending.into_parts();
         this.call_attr(obj, name_id, args)
     }
 
@@ -737,14 +662,14 @@ impl VM<'_> {
     /// # Panics
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
-    fn extract_args_tuple(&mut self, args_tuple: &Value) -> Vec<Value> {
+    fn extract_args_tuple(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
         let Value::Ref(id) = args_tuple else {
             unreachable!("CallFunctionExtended: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
+        clone_args_from_tuple(tuple.as_slice(), self)
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -768,6 +693,11 @@ impl VM<'_> {
             .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
             .collect();
 
+        // `copied_args` travels unguarded through this `?`, which is sound only
+        // because `from_pairs` cannot fail here: it sizes both dict buffers to the
+        // pair count up front so the growth preflight is a no-op, and keys taken out
+        // of a dict are already known hashable. Size that dict lazily and this leaks
+        // the args.
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
@@ -810,14 +740,14 @@ impl VM<'_> {
     /// # Panics
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
-    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> Vec<Value> {
+    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
         let Value::Ref(id) = args_tuple else {
             unreachable!("CallAttrExtended: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
+        clone_args_from_tuple(tuple.as_slice(), self)
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
@@ -845,6 +775,11 @@ impl VM<'_> {
             .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
             .collect();
 
+        // `copied_args` travels unguarded through this `?`, which is sound only
+        // because `from_pairs` cannot fail here: it sizes both dict buffers to the
+        // pair count up front so the growth preflight is a no-op, and keys taken out
+        // of a dict are already known hashable. Size that dict lazily and this leaks
+        // the args.
         let kwargs_values = if copied_kwargs.is_empty() {
             KwargsValues::Empty
         } else {
@@ -880,10 +815,10 @@ impl VM<'_> {
         let func = self.interns.get_function(func_id);
         match func.exact_positional_call() {
             Some(ExactPositionalCall::Sync(count)) if count == arg_count => {
-                Some(self.call_exact_sync_function(func_id, callable_index))
+                Some(self.call_exact_sync_function(func_id, func, callable_index))
             }
             Some(ExactPositionalCall::Async(count)) if count == arg_count => {
-                Some(Ok(self.create_exact_coroutine(func_id, callable_index)))
+                Some(Ok(self.create_exact_coroutine(func_id, func, callable_index)))
             }
             _ => None,
         }
@@ -893,9 +828,13 @@ impl VM<'_> {
     ///
     /// Removing the immediate callable shifts its arguments into the parameter
     /// slots, avoiding argument wrappers, binding, scratch storage, and a copy.
-    fn call_exact_sync_function(&mut self, func_id: FunctionId, callable_index: usize) -> Result<CallResult, RunError> {
+    fn call_exact_sync_function(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        callable_index: usize,
+    ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
-        let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
         let code = &func.code;
@@ -913,14 +852,14 @@ impl VM<'_> {
             exc_stack_base,
             func_id,
             call_offset,
+            None,
         ))?;
 
         Ok(CallResult::FramePushed)
     }
 
     /// Creates a coroutine by moving exact positional arguments into its namespace.
-    fn create_exact_coroutine(&mut self, func_id: FunctionId, callable_index: usize) -> CallResult {
-        let func = self.interns.get_function(func_id);
+    fn create_exact_coroutine(&mut self, func_id: FunctionId, func: &Function, callable_index: usize) -> CallResult {
         let mut namespace = self.stack.split_off(callable_index + 1);
         namespace.reserve(func.namespace_size - namespace.len());
         self.install_closure_cells(func, &[], &mut namespace);
@@ -928,7 +867,7 @@ impl VM<'_> {
         let callable = self.pop();
         debug_assert_exact_callable(&callable, func_id);
 
-        let coroutine = Coroutine::new(func_id, namespace);
+        let coroutine = Coroutine::new(func_id, namespace, None);
         let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
         CallResult::Value(Value::Ref(coroutine_id))
     }
@@ -941,19 +880,20 @@ impl VM<'_> {
     /// For async functions: binds arguments immediately but returns a Coroutine
     /// instead of pushing a frame. The coroutine stores the pre-bound namespace
     /// and will be executed when awaited.
-    fn call_def_function(
+    pub(crate) fn call_def_function(
         &mut self,
         func_id: FunctionId,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let func = self.interns.get_function(func_id);
 
         if func.is_async {
-            self.create_coroutine(func_id, cells, defaults, args)
+            self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
-            self.call_sync_function(func_id, cells, defaults, args)
+            self.call_sync_function(func_id, func, cells, defaults, globals, args)
         }
     }
 
@@ -963,12 +903,12 @@ impl VM<'_> {
     fn create_coroutine(
         &mut self,
         func_id: FunctionId,
+        func: &Function,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let func = self.interns.get_function(func_id);
-
         // 1. Create namespace for the coroutine with bound arguments and captured cells.
         let namespace = Vec::with_capacity(func.namespace_size);
         let mut namespace_guard = DropGuard::new(namespace, self);
@@ -980,9 +920,12 @@ impl VM<'_> {
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(func, cells, namespace);
 
-        // 4. Create Coroutine on heap
+        // 4. Create Coroutine on heap; it carries its own reference to the globals dict.
         let (namespace, this) = namespace_guard.into_parts();
-        let coroutine = Coroutine::new(func_id, namespace);
+        if let Some(globals) = globals {
+            this.heap.inc_ref(globals);
+        }
+        let coroutine = Coroutine::new(func_id, namespace, globals);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
 
         Ok(CallResult::Value(Value::Ref(coroutine_id)))
@@ -1035,14 +978,15 @@ impl VM<'_> {
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
+        func: &'h Function,
         cells: &[HeapId],
         defaults: &[Value],
+        globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
         let stack_base = self.stack.len();
 
-        let func = self.interns.get_function(func_id);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
@@ -1064,8 +1008,6 @@ impl VM<'_> {
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(func, cells, namespace);
 
-        let code = &func.code;
-
         // 6. Commit the guard (no rollback) and push the frame. The operand
         // stack starts immediately above the locals region — comprehensions
         // emit their own push/pop bytecode, so no frame-level region is
@@ -1076,13 +1018,15 @@ impl VM<'_> {
         this.namespace_scratch = namespace;
 
         let exc_stack_base = this.exception_stack.len();
+        let namespace = function_namespace(globals, &*this.heap);
         this.push_frame(CallFrame::new_function(
-            code,
+            &func.code,
             stack_base,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
+            namespace,
         ))?;
 
         Ok(CallResult::FramePushed)
@@ -1111,7 +1055,7 @@ impl VM<'_> {
     /// Because a plain-function `__init__` runs as a normal frame, it may suspend
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
-    fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+    pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
         let instance_id = self
             .heap
             .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
@@ -1233,6 +1177,21 @@ impl VM<'_> {
     }
 }
 
+/// Clones a `*args` tuple's contents into the owned buffer a call needs.
+///
+/// The clone is one allocation the size of the whole tuple, so it is preflighted:
+/// past the allocator's hard-limit headroom that single allocation kills the worker
+/// rather than raising `MemoryError`.
+fn clone_args_from_tuple(items: &[Value], vm: &impl ContainsHeap) -> RunResult<Vec<Value>> {
+    // One spare slot so `ArgValues::prepend` can put `self` in front of a bound
+    // method's arguments without reallocating; that insert has no preflight of its own.
+    let slots = items.len().saturating_add(1);
+    check_estimated_size(slots.saturating_mul(VALUE_SIZE), &vm.heap().tracker)?;
+    let mut args = Vec::with_capacity(slots);
+    args.extend(items.iter().map(|v| v.clone_with_heap(vm)));
+    Ok(args)
+}
+
 /// Asserts a callable popped off the stack by an exact-positional-call fast
 /// path is the function that fast path was chosen for.
 ///
@@ -1265,7 +1224,7 @@ fn dispatch_dunder(
     vm: &mut VM<'_>,
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
-    let static_str = StaticStrings::from_string_id(name_id)?;
+    let static_str = vm.interns.static_string(name_id)?;
     // User-defined instances are never intercepted: an explicit
     // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
     // ordinary method call in CPython — the instance `__dict__` can shadow

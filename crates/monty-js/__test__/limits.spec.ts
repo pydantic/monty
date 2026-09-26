@@ -1,6 +1,6 @@
 import { test } from 'vitest'
 import { assertMemoryError, t } from './assertions.js'
-import { kind } from './env.js'
+import { isWasm } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { WorkerTransport } from '../ts/worker/transport.js'
@@ -16,7 +16,7 @@ const isRuntimeError = { instanceOf: MontyRuntimeError }
 
 test('resource limits custom', async () => {
   const limits: ResourceLimits = {
-    maxDurationSecs: 5.0,
+    maxFeedDurationSecs: 5.0,
     maxMemory: 64 * 1024,
     gcInterval: 10,
     maxRecursionDepth: 500,
@@ -27,7 +27,7 @@ test('resource limits custom', async () => {
 })
 
 test('run with limits', async () => {
-  t.is(await run('1 + 1', { limits: { maxDurationSecs: 5.0 } }), 2)
+  t.is(await run('1 + 1', { limits: { maxFeedDurationSecs: 5.0 } }), 2)
 })
 
 // =============================================================================
@@ -72,7 +72,15 @@ len(result)
 `
   const maxMemory = 64 * 1024
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 75_047 : 89_113, maxMemory)
+  assertMemoryError(error, isWasm ? 83_812 : 67_550, maxMemory)
+})
+
+test('an allocation refused at an interpreter checkpoint leaves the session usable', async () => {
+  const maxMemory = 1024 * 1024
+  await using session = await pool().checkout({ limits: { maxMemory } })
+  const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), isRuntimeError)
+  assertMemoryError(error, isWasm ? 1_068_412 : 1_162_198, maxMemory)
+  t.is(await session.feedRun('1 + 1'), 2)
 })
 
 test('memory limit accepts values above u32 max', async () => {
@@ -84,7 +92,7 @@ test('memory limit accepts values above u32 max', async () => {
 // =============================================================================
 
 test('limits with inputs', async () => {
-  t.is(await run('x * 2', { inputs: { x: 21 }, limits: { maxDurationSecs: 5.0 } }), 42)
+  t.is(await run('x * 2', { inputs: { x: 21 }, limits: { maxFeedDurationSecs: 5.0 } }), 42)
 })
 
 // =============================================================================
@@ -93,12 +101,12 @@ test('limits with inputs', async () => {
 
 test('pow memory limit', async () => {
   const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 10_023_470 : 10_031_312, 1_000_000)
+  assertMemoryError(error, isWasm ? 10_032_301 : 10_042_127, 1_000_000)
 })
 
 test('lshift memory limit', async () => {
   const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 1_273_471 : 1_281_313, 1_000_000)
+  assertMemoryError(error, isWasm ? 1_282_302 : 1_292_128, 1_000_000)
 })
 
 test('mult memory limit', async () => {
@@ -107,7 +115,7 @@ big = 2 ** 4000000
 result = big * big
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 4_024_130 : 4_031_972, 1_000_000)
+  assertMemoryError(error, isWasm ? 4_032_933 : 4_042_767, 1_000_000)
 })
 
 test('small operations within limit', async () => {
@@ -122,12 +130,31 @@ test('small operations within limit', async () => {
 
 test('time limit', async () => {
   const error = await t.throwsAsync(
-    () => run('while True:\n    pass\n', { limits: { maxDurationSecs: 0.1 } }),
+    () => run('while True:\n    pass\n', { limits: { maxFeedDurationSecs: 0.1 } }),
     isRuntimeError,
   )
   t.is(error.exception.typeName, 'TimeoutError')
   // The reported elapsed time varies from run to run; the limit is fixed.
-  t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.regex(error.display('msg'), /^feed time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+})
+
+test('feed duration limit restarts each feed', async () => {
+  // The budget restarts at each feed, so the session survives one over-long
+  // feed.
+  await using session = await pool().checkout({ limits: { maxFeedDurationSecs: 0.1 } })
+  t.is(await session.feedRun('1 + 1'), 2)
+  const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass\n'), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.regex(error.display('msg'), /^feed time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.is(await session.feedRun('2 + 2'), 4)
+})
+
+test('turn duration limit', async () => {
+  await using session = await pool().checkout({ limits: { maxTurnDurationSecs: 0.1 } })
+  const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass\n'), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.regex(error.display('msg'), /^turn time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+  t.is(await session.feedRun('2 + 2'), 4)
 })
 
 // =============================================================================
@@ -155,6 +182,14 @@ while True:
   t.is(error.display('msg'), 'suspension limit 3 exceeded')
 })
 
+test('max total sleep refuses the sleep that would take the total over', async () => {
+  // exact binary fractions, so the reported total is exact too
+  const code = 'import time\ntime.sleep(0.125)\ntry:\n    time.sleep(0.5)\nexcept TimeoutError:\n    pass\n'
+  const error = await t.throwsAsync(() => run(code, { limits: { maxTotalSleepSecs: 0.25 } }), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.is(error.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
+})
+
 test('suspension limit defaults to 1000', async () => {
   await using session = await pool().checkout()
   const error = await t.throwsAsync(
@@ -179,26 +214,107 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   // servicing it would let it call host functions past the budget.
   const call = (callId: number) => ({
     tag: 'function-call' as const,
-    val: { callId, functionName: 'fetch', args: [], kwargs: [] },
+    val: {
+      callId,
+      functionName: 'fetch',
+      values: { nodes: [] },
+      args: new Uint32Array(),
+      kwargs: [],
+      allowEagerAwait: false,
+      position: { filename: '<python-input-0>', start: 0, end: 7 },
+    },
   })
   const requests: string[] = []
   const transport = await WorkerTransport.create(async (request) => {
     requests.push(request.tag)
     return request.tag === 'configure'
-      ? { status: 'continue', events: [{ tag: 'ok' }], maxSuspensions: 1n }
-      : { status: 'continue', events: [call(requests.length)] }
+      ? { status: 'continue', events: [{ tag: 'ok' }], maxSuspensions: 1n, feedExecutionMicros: 0n }
+      : { status: 'continue', events: [call(requests.length)], feedExecutionMicros: 0n }
   })
   let reusable: boolean | undefined
   transport.onFinish = (value) => {
     reusable = value
   }
-  const first = await transport.feed('fetch()', null, [], true, () => {})
+  const first = await transport.feed('fetch()', null, [], { skipTypeCheck: true }, () => {})
   t.is(first.kind, 'functionCall')
   const turn = await transport.resumeReturn(null, () => {})
   t.deepEqual(turn, { kind: 'protocol', message: 'worker answered abort-feed with functionCall' })
   t.deepEqual(requests, ['configure', 'feed', 'resume-call', 'abort-feed'])
   await transport.finish()
   t.is(reusable, false)
+})
+
+test.each([
+  { feedGrace: 100, turnGrace: 200, initial: 1000, resumed: 700, loaded: 2100 },
+  { feedGrace: null, turnGrace: 200, initial: 1000, resumed: 1000, loaded: 3200 },
+  { feedGrace: 100, turnGrace: null, initial: 1100, resumed: 700, loaded: 2100 },
+  { feedGrace: null, turnGrace: null, initial: undefined, resumed: undefined, loaded: undefined },
+])(
+  'WASM backstops retain reported time and adopt restored limits: $feedGrace/$turnGrace',
+  async ({ feedGrace, turnGrace, initial, resumed, loaded }) => {
+    const deadlines: Array<number | undefined> = []
+    const transport = await WorkerTransport.create(
+      async (request, timeoutMs) => {
+        deadlines.push(timeoutMs)
+        return {
+          status: 'continue',
+          events:
+            request.tag === 'configure' || request.tag === 'load'
+              ? [{ tag: 'ok' }]
+              : [
+                  {
+                    tag: 'name-lookup',
+                    val: { name: 'fetch', position: { filename: '<python-input-0>', start: 0, end: 5 } },
+                  },
+                ],
+          // A malicious reply cannot rewind the clock during the same feed.
+          feedExecutionMicros: request.tag === 'feed' ? 400_000n : 100_000n,
+          maxFeedDurationMicros: 2_000_000n,
+          maxTurnDurationMicros: 3_000_000n,
+        }
+      },
+      { limits: { maxFeedDurationSecs: 1, maxTurnDurationSecs: 0.8 } },
+      {
+        feedDurationLimitGraceMs: feedGrace,
+        turnDurationLimitGraceMs: turnGrace,
+      },
+    )
+    await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
+    await transport.resumeNameLookup(null, null, () => {})
+    await transport.resumeNameLookup(null, null, () => {})
+    await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
+    await transport.restore(new Uint8Array(), [], () => {})
+    await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
+    t.deepEqual(deadlines, [initial, initial, resumed, resumed, initial, undefined, loaded])
+  },
+)
+
+test('the sleep limit is a ceiling a restored dump can only tighten', async () => {
+  const sleep = (secs: number) => `import time\ntime.sleep(${secs})`
+  let unlimited: Buffer
+  let capped: Buffer
+  {
+    await using session = await pool().checkout()
+    unlimited = await session.dump()
+  }
+  {
+    await using session = await pool().checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+    t.is(await session.feedRun(sleep(0.125)), null)
+    capped = await session.dump()
+  }
+
+  // a dump with no limit does not loosen the checkout's, and the total restarts
+  await using kept = await pool().checkout({ limits: { maxTotalSleepSecs: 0.25 } })
+  await kept.loadSession(unlimited)
+  t.is(await kept.feedRun(sleep(0.125)), null)
+  const over = await t.throwsAsync(() => kept.feedRun(sleep(0.5)), isRuntimeError)
+  t.is(over.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
+
+  // a dump's limit tightens a checkout that set none
+  await using adopted = await pool().checkout()
+  await adopted.loadSession(capped)
+  const refused = await t.throwsAsync(() => adopted.feedRun(sleep(0.5)), isRuntimeError)
+  t.is(refused.display('msg'), 'sleep limit exceeded: 500ms > 250ms')
 })
 
 test('restored session keeps its suspension limit with a fresh count', async () => {

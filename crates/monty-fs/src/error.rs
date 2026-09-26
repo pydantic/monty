@@ -4,6 +4,7 @@ use std::{
     error::Error,
     fmt,
     io::{self, ErrorKind},
+    path::PathBuf,
 };
 
 use monty_types::{ExcData, ExcType, MontyException, StringRepr, unicode_decode_error_msg};
@@ -65,6 +66,23 @@ pub enum MountError {
 
     /// Invalid mount configuration (e.g., host path doesn't exist or isn't a directory).
     InvalidMount(String),
+
+    /// Two mounts overlap: their host directories are equal or nested, or they
+    /// share a virtual path. Refused at registration: access is checked against
+    /// whichever mount the *virtual* path selects, so a file reachable through
+    /// two mounts would get the weaker mount's mode — a read-write mount over a
+    /// read-only one silently defeats the protection the caller thought they
+    /// had configured — and a second mount on one virtual path is unreachable.
+    OverlappingMounts {
+        /// Virtual path of the mount being added.
+        virtual_path: String,
+        /// Canonical host path of the mount being added.
+        host_path: PathBuf,
+        /// Virtual path of the already-registered mount it overlaps.
+        existing_virtual_path: String,
+        /// Canonical host path of that existing mount.
+        existing_host_path: PathBuf,
+    },
 
     /// Cumulative write bytes exceeded the configured per-mount limit.
     /// The configured byte limit that was exceeded.
@@ -151,6 +169,25 @@ impl MountError {
             )
             .with_data(data),
             Self::InvalidMount(msg) => MontyException::new(ExcType::TypeError, Some(msg)),
+            // The caller's intent (e.g. "keep this subdirectory read-only") is
+            // reasonable, so the message must state the rule the configuration
+            // breaks. This error reaches the host configuring the mounts, never
+            // sandboxed code, so naming host paths is fine.
+            Self::OverlappingMounts {
+                virtual_path,
+                host_path,
+                existing_virtual_path,
+                existing_host_path,
+            } => MontyException::new(
+                ExcType::ValueError,
+                Some(format!(
+                    "cannot mount '{}' at '{virtual_path}': it overlaps the mount of '{}' at \
+                     '{existing_virtual_path}'; mounts must have distinct virtual paths and disjoint host \
+                     directories",
+                    host_path.display(),
+                    existing_host_path.display(),
+                )),
+            ),
             Self::WriteLimitExceeded(limit) => MontyException::new(
                 ExcType::OSError,
                 Some(format!("disk write limit of {} exceeded", format_bytes_pretty(limit))),
@@ -189,6 +226,17 @@ impl fmt::Display for MountError {
                 write!(f, "invalid UTF-8 byte 0x{first_byte:02x} at position {start}")
             }
             Self::InvalidMount(msg) => write!(f, "invalid mount: {msg}"),
+            Self::OverlappingMounts {
+                virtual_path,
+                host_path,
+                existing_virtual_path,
+                existing_host_path,
+            } => write!(
+                f,
+                "overlapping mounts: '{virtual_path}' ('{}') and '{existing_virtual_path}' ('{}')",
+                host_path.display(),
+                existing_host_path.display()
+            ),
             Self::WriteLimitExceeded(limit) => {
                 write!(f, "disk write limit of {} exceeded", format_bytes_pretty(*limit))
             }

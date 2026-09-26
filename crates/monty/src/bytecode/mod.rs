@@ -21,10 +21,12 @@ mod vm;
 pub(crate) use builder::CodeBuilder;
 pub use code::Code;
 pub use compiler::Compiler;
-pub(crate) use op::Opcode;
 #[cfg(test)]
 pub(crate) use op::opcode_fingerprint;
-pub(crate) use vm::{CallResult, ContainsVM, PendingLookupEffect, RecursionToken};
+pub(crate) use op::{NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode};
+pub(crate) use vm::{
+    CallResult, ContainsVM, FrameNamespace, PendingLookupEffect, RecursionToken, RunReentryGuard, unpack_exact,
+};
 pub use vm::{FrameExit, VM, VMSnapshot};
 
 /// Module-level dunder names Monty exposes with fixed values for CPython
@@ -37,11 +39,12 @@ pub use vm::{FrameExit, VM, VMSnapshot};
 /// rejected at compile time with a `NotImplementedError` (see
 /// `Compiler::compile_store`) rather than being silently ignored.
 /// Function-local variables that happen to share these names are unaffected.
-pub(crate) const RESERVED_MODULE_DUNDERS: [&str; 6] = [
+pub(crate) const RESERVED_MODULE_DUNDERS: [&str; 7] = [
     "__name__",
     "__debug__",
     "__doc__",
     "__annotations__",
     "__spec__",
     "__package__",
+    "__file__",
 ];

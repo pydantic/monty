@@ -126,9 +126,8 @@ order and error wording, but with these divergences:
     interpreter on the native Rust call stack once per nesting level, unlike
     ordinary Python-level recursion, which lives on a heap-allocated frame stack
     and is bounded at 1000 by the normal recursion limit. A native stack overflow
-    would abort the process, which is fatal for the in-process/wasm API sharing
-    the host process, so this native re-entry is capped independently at a much
-    lower, fixed depth, raising a catchable `RecursionError` once exceeded. So
+    would abort the native process (the caller for direct Rust use, otherwise the worker) or trap a WASM worker.
+    This native re-entry is capped independently at a much lower, fixed depth, raising a catchable `RecursionError` once exceeded. So
     infinite `__repr__` recursion raises `RecursionError` (matching CPython's
     outcome, though not its exact depth), but a deep-but-finite chain that
     CPython's default 1000-frame limit would still render may raise
@@ -266,9 +265,11 @@ value). Divergences from real CPython objects:
 - **`dataclasses.fields()` / `asdict()` do not work on host instances**;
     `dataclasses.is_dataclass(x)` returns the flag the host sent.
 - Returning a host-sent instance gives the host the **original object**
-    (identity preserved), discarding any sandbox-side attr mutations. Sending
-    the same object twice yields equal (same class uuid + attrs) sandbox
-    values, but each send allocates its own proxy, so `a is b` is `False`.
+    (identity preserved), discarding any sandbox-side attr mutations.
+    The same wrapper sent twice *in one message* (two inputs of a feed, two arguments of a call, or nested twice in
+    one value) is one sandbox object, so `a is b` holds.
+    Each separate feed or call allocates its own proxy, so `a is b` across feeds is `False` even though the two are
+    equal (same class uuid + attrs).
 - **Instance ids are per wrapper; class ids are per process** (host
     classes) — Python keys class ids by `module.qualname` in
     `pydantic_monty.class_instance.type_id_cache`, JS by class object — so
@@ -290,8 +291,9 @@ value). Divergences from real CPython objects:
     wrapper sent (nested ones included), each `init=True` construction and each
     `convert_value` wrap adds an entry to the host-side instance store that
     `max_memory` does not count; re-sending a wrapper with the same id
-    overwrites its entry rather than adding one. See the class-instance store
-    note in [pool-architecture.md](pool-architecture.md).
+    overwrites its entry rather than adding one, with the last wrapper's policy winning.
+    Wrappers registered before a conversion failure remain retained too.
+    There is no entry cap; bound the objects exposed or recycle long-lived sessions.
 
 ## Host classes (`ClassType` wrapper)
 

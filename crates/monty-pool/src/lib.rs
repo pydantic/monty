@@ -11,15 +11,15 @@ mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
-pub use monty_proto::{DEFAULT_PRINT_FLUSH_INTERVAL, MAX_VALUE_DEPTH, exceeds_max_value_depth};
+pub use monty_proto::DEFAULT_PRINT_FLUSH_INTERVAL;
 use monty_types::MontyException;
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
-        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue,
-        TurnEvent, on_print_sync,
+        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, Persistence, PrintFuture, ReplConfig,
+        ResumeValue, TurnEvent, on_print_sync,
     },
     pool::Pool,
 };
@@ -48,6 +48,11 @@ impl MontyTransport {
     }
 }
 
+/// Default grace on each of the two duration backstops: how long the parent
+/// waits past a sandbox time limit for the worker to raise `TimeoutError`
+/// itself before killing it.
+pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
+
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
@@ -68,18 +73,32 @@ pub struct PoolConfig {
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     pub request_timeout: Option<Duration>,
-    /// Grace period for the automatic `max_duration` backstop.
+    /// Grace period for the automatic `ResourceLimits::max_feed_duration`
+    /// backstop.
     ///
-    /// When a session has a `ResourceLimits::max_duration` budget, the worker
-    /// reports its cumulative execution time on every turn-ending event (the
-    /// sandbox clock is the single source of truth: it runs only while the
-    /// interpreter executes, never during suspensions waiting on the host or
-    /// between feeds), and the parent bounds each execution turn by the
-    /// remaining budget plus this grace.
-    pub duration_limit_grace: Option<Duration>,
+    /// When a session has a feed budget, the worker reports the running feed's
+    /// execution time on every turn-ending event (the sandbox clock is the
+    /// single source of truth: it runs only while the interpreter executes,
+    /// never during suspensions waiting on the host or between feeds), and the
+    /// parent bounds each turn by what that budget has left plus this grace.
+    ///
+    /// The grace is the window in which the sandbox may raise `TimeoutError`
+    /// itself and keep the session alive; a worker that misses it is killed and
+    /// the call fails with [`PoolError::Timeout`], so too short a grace costs
+    /// workers that would have recovered.
+    pub feed_duration_limit_grace: Option<Duration>,
+    /// [`feed_duration_limit_grace`](Self::feed_duration_limit_grace) for the
+    /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
+    /// that whole limit plus this, the turn clock starting at zero.
+    pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
+    /// Resume a session transparently when a relay that stores sessions answers
+    /// a request with `Shutdown`: the checkout redials, reloads the state the
+    /// shutdown named and re-sends the request the relay reported it did not run. The session's suspension
+    /// and sleep totals carry over. WebSocket transport only; on by default.
+    pub auto_resume: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -91,8 +110,8 @@ pub struct PoolConfig {
 
 impl PoolConfig {
     /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
-    /// `max_processes =` available parallelism, no timeouts, a 1s
-    /// `duration_limit_grace`, no recycling.
+    /// `max_processes =` available parallelism, no timeouts, a 1s grace on
+    /// each of the two duration backstops, no recycling.
     pub fn subprocess(binary_path: impl Into<PathBuf>) -> Self {
         Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
     }
@@ -113,8 +132,10 @@ impl PoolConfig {
             transport,
             checkout_timeout: None,
             request_timeout: None,
-            duration_limit_grace: Some(Duration::from_secs(1)),
+            feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
+            turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
+            auto_resume: true,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
@@ -135,7 +156,7 @@ pub enum PoolError {
         cause: CrashCause,
     },
     /// The worker was killed after its turn outlived `request_timeout` (or
-    /// the `max_duration` backstop deadline).
+    /// one of the feed/turn duration backstop deadlines).
     Timeout {
         /// The configured timeout that expired.
         timeout: Duration,
@@ -172,12 +193,14 @@ pub enum PoolError {
         context: String,
     },
     /// The remote server is shutting down and did **not** run the request —
-    /// re-running it on a fresh session is safe. `dump` carries the session
-    /// state captured just before shutdown, restorable via
-    /// [`Checkout::restore`] on a fresh checkout.
+    /// re-running it on a fresh session is safe. `dump` restores the session
+    /// via [`Checkout::restore`] on a fresh checkout: the session's ID from a
+    /// relay that stores sessions, returned only when
+    /// [`PoolConfig::auto_resume`] could not resume it.
     Shutdown {
-        /// Restorable session dump, absent when there was no session yet or
-        /// the server's dump failed.
+        /// What restores the session; absent when there is nothing to load —
+        /// no session yet, an ephemeral one, a relay without storage, or a
+        /// park that failed.
         dump: Option<Vec<u8>>,
     },
 }
@@ -234,7 +257,7 @@ impl fmt::Display for PoolError {
             Self::Disconnected { context } => write!(f, "monty worker connection closed while {context}"),
             Self::Shutdown { dump } => match dump {
                 Some(_) => {
-                    f.write_str("monty server is shutting down; the request did not run (session dump attached)")
+                    f.write_str("monty server is shutting down; the request did not run (restorable state attached)")
                 }
                 None => f.write_str("monty server is shutting down; the request did not run"),
             },

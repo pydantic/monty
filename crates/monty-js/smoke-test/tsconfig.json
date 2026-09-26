@@ -5,7 +5,8 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "outDir": "dist",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM"]
   },
-  "include": ["test.ts"]
+  "include": ["test.ts", "node.ts"]
 }

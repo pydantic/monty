@@ -135,7 +135,8 @@ generate-api-docs: ## Generate the Rust API reference into docs/api/rust/ (gitig
 lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff format --check
 	uv run ruff check
-	uv run basedpyright
+	# basedpyright type-checks examples/, so it needs that group's packages installed
+	uv run --group examples basedpyright
 	# mypy-stubtest requires a build of the python package, hence dev-py
 	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
@@ -184,6 +185,7 @@ pytest: ## Run Python tests with pytest
 
 .PHONY: test-py
 test-py: dev-py pytest ## Build the python package (debug profile) and run tests
+	cargo test -p pydantic-monty-client --lib
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only (docs/, README.md, crates/monty-python/README.md)
@@ -230,6 +232,14 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 complete-tests: ## Fill in incomplete test expectations using CPython
 	uv run scripts/complete_tests.py
 
+.PHONY: generate-unicode-type
+generate-unicode-type: ## Regenerate the str character-property tables from the current CPython
+	uv run scripts/gen_unicode_type.py
+
+.PHONY: check-unicode-type
+check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
+	git diff --exit-code crates/monty/src/types/unicode_type_data.rs
+
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
@@ -239,6 +249,10 @@ update-typeshed: ## Update vendored typeshed from upstream
 .PHONY: check-typeshed
 check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
 	uv run crates/monty-typeshed/check.py
+
+.PHONY: check-publish
+check-publish: ## Package and verify-build every publishable crate as `cargo publish` would, without uploading
+	cargo publish --workspace --dry-run
 
 .PHONY: bench
 bench: ## Run benchmarks

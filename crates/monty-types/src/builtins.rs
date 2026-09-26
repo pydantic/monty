@@ -1,7 +1,7 @@
 //! [`BuiltinsFunctions`] — the name-level identity of every interpreter-native
-//! Python builtin, carried by [`MontyObject::BuiltinFunction`](crate::object::MontyObject).
+//! Python builtin, carried by [`MontyObject::builtin_function`](crate::MontyObject::builtin_function).
 
-use strum::{Display, EnumString, FromRepr, IntoStaticStr};
+use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Enumerates every interpreter-native Python builtin function.
 ///
 /// Listed alphabetically per <https://docs.python.org/3/library/functions.html>
@@ -19,6 +19,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr};
     EnumString,
     FromRepr,
     IntoStaticStr,
+    VariantNames,
     PartialEq,
     Eq,
     Hash,
@@ -50,11 +51,9 @@ pub enum BuiltinsFunctions {
     // Dir,
     Divmod,
     Enumerate,
-    // Eval,
-    // Exec,
     Filter,
     // float - handled by Type enum
-    // Format,
+    // Format - appended below
     // frozenset - handled by Type enum
     Getattr,
     // Globals,
@@ -70,7 +69,6 @@ pub enum BuiltinsFunctions {
     // Iter - handled by Type enum
     Len,
     // list - handled by Type enum
-    // Locals,
     Map,
     Max,
     // memoryview - handled by Type enum
@@ -112,4 +110,12 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "object.__setattr__")]
     #[serde(rename = "object.__setattr__")]
     ObjectSetattr,
+    /// `format(value, format_spec='')`, appended after [`Self::ObjectSetattr`].
+    Format,
+    /// `eval(source, /, globals=None, locals=None)`, appended after [`Self::Format`].
+    Eval,
+    /// `exec(source, /, globals=None, locals=None, *, closure=None)`, appended after [`Self::Eval`].
+    Exec,
+    /// `locals()`, appended after [`Self::Exec`].
+    Locals,
 }

@@ -63,6 +63,8 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// worker so `recv` is cancel-safe (see the module docs).
 pub(crate) struct Worker {
     kind: WorkerKind,
+    /// Pool-assigned generation, independent of PID reuse.
+    pub(crate) id: u64,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
     /// Records an adapter checkout's protocol turns, created only while needed.
@@ -205,6 +207,7 @@ impl Worker {
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         Ok(Self {
+            id: 0,
             kind: WorkerKind::Subprocess(Box::new(SubprocessWorker {
                 child,
                 stdin,
@@ -264,6 +267,7 @@ impl Worker {
         let (tx, events) = mpsc::channel(WS_EVENT_CHANNEL_DEPTH);
         let reader = tokio::spawn(read_ws_events(read_half, tx));
         Ok(Self {
+            id: 0,
             kind: WorkerKind::WebSocket(Box::new(WebSocketWorker {
                 sink: Some(sink),
                 events,
@@ -275,6 +279,13 @@ impl Worker {
             #[cfg(feature = "telemetry")]
             metrics: None,
         })
+    }
+
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn callback_context(&self) -> opentelemetry::Context {
+        self.recorder
+            .as_ref()
+            .map_or_else(opentelemetry::Context::new, |recorder| recorder.callback_context())
     }
 
     /// Sends one request, flushed to the wire — the protocol is strict
@@ -343,6 +354,14 @@ impl Worker {
                 .set_adapter_context(context);
         }
         self
+    }
+
+    /// Marks this worker's session span as a session resumed after its relay shut down.
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn mark_resumed(&mut self) {
+        if let Some(recorder) = &mut self.recorder {
+            recorder.mark_resumed();
+        }
     }
 
     /// Receives one event. EOF/close is an error here because within a

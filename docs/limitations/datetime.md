@@ -4,15 +4,59 @@ Provides five classes: `date`, `datetime`, `time`, `timedelta`,
 `timezone`. The module-level `tzinfo`, `MINYEAR` / `MAXYEAR` symbols are
 not exposed.
 
+Error messages name `date`, `timedelta` and `timezone` without their
+module, where CPython qualifies them.
+`time(0, tzinfo=timedelta(hours=1))` reports `not type 'timedelta'`,
+`time(1) < date(2020, 1, 1)` ends `and 'date'`, and
+`datetime.combine(date(2020, 1, 1), date(2020, 1, 1))` reports
+`not date` — CPython prefixes `datetime.` to each.
+`datetime` and `time` are qualified.
+Passing `None` where an integer component is expected reports `'None'`
+rather than CPython's `'NoneType'` (`time(None)`, `datetime(None, 1, 1)`).
+
+## Class constants
+
+`min`, `max` and `resolution` are defined on `date`, `datetime`, `time`
+and `timedelta`, and `min` / `max` / `utc` on `timezone`. CPython caches
+each constant, so `date.min is date.min` is `True` there and `False`
+here: every access allocates a new object. Equality and ordering are
+unaffected. `timezone.utc` is the exception — it is a singleton on both,
+so `timezone.utc is timezone.utc` holds.
+
+## `fromisoformat`
+
+`date.fromisoformat`, `datetime.fromisoformat` and `time.fromisoformat`
+all parse with [speedate](https://docs.rs/speedate), which accepts a
+narrower grammar than CPython 3.11+:
+
+- The compact forms are rejected (`time.fromisoformat('123005')`,
+    `datetime.fromisoformat('20200101T123005')`).
+- A leading `T` is rejected (`time.fromisoformat('T12:30')`).
+- Sub-minute UTC offsets are rejected
+    (`'12:30:05+01:00:30'`), even though the same offset is accepted from
+    the `timezone` constructor.
+- More than 6 fractional-second digits are rejected rather than
+    truncated (`'12:30:05.1234567'`).
+
+Every rejection raises `ValueError: Invalid isoformat string: '...'`.
+CPython instead reports the offending component for a syntactically
+valid string with an out-of-range value: `time.fromisoformat('25:00')`
+raises `hour must be in 0..23, not 25` there, and
+`'12:30:05+99:00'` raises the `offset must be a timedelta strictly between ...` message.
+
 ## `date`
 
 Constructor: `date(year, month, day)`.
 Attributes: `year`, `month`, `day`.
 Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`.
 
-Class methods `today()`, `fromisoformat()`, `fromisocalendar()`,
-`fromtimestamp()`, `fromordinal()` are not implemented. `today()` is
-missing because the sandbox has no access to the host clock.
+Class methods supported: `today()`, `fromisoformat()`.
+`fromisocalendar()`, `fromtimestamp()`, `fromordinal()` are not
+implemented. `strptime()`, added in CPython 3.14, is not implemented
+either.
+
+`today()` reads the clock, so it depends on the embedder granting one —
+see "Reading the clock" below.
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
 through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
@@ -31,24 +75,48 @@ accepted and validated
 the stored value: Monty does not track DST-fold disambiguation.
 Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
-Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`,
-`date`, `time`, `timetz`, `timestamp`.
+Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
+`weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`, `astimezone(tz=None)`,
+`utcoffset`, `tzname`, `dst`.
+
+`astimezone()` and a naive `timestamp()` read the [session zone](#reading-the-clock) where CPython uses the host's;
+as in CPython the `tzinfo` `astimezone()` attaches is a `timezone` carrying the offset and abbreviation at that
+instant (`BST`).
+The default zone is `timezone(timedelta(0), 'UTC')`, what CPython reports under `TZ=UTC`, so
+`datetime.now().astimezone().tzinfo == timezone.utc` holds but it is not the `timezone.utc` singleton.
+A naive value is read in the session zone, as CPython reads it in the host's, at its first occurrence in a DST fold
+and with the offset from before a DST gap: CPython's `fold=0` reading, since `fold` is not stored (below).
+`dt.astimezone(dt.tzinfo)` returns an equal copy, not `dt` itself.
+
+`fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
+`AttributeError`, where CPython returns `1`.
 
 Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
-`fromisoformat(date_string)`.
+`fromisoformat(date_string)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
-- `now()` reaches the host for the current time (the only "live" datetime
-    call); it yields an external call.
-- `now(tz)` returns a `datetime` whose `tzinfo` is `==` the input timezone
-    but not `is` it: the original `tzinfo` object isn't threaded through the
-    OS-call resume, so a fresh `timezone` is reconstructed from the
-    offset/name on the return path.
+- `now()` reads the clock — see "Reading the clock" below.
+- Host-answered `now(tz)` reconstructs `tzinfo` from its offset and name, so it equals `tz` but is a different object.
+    The default sandbox answer preserves identity, as CPython does.
+- `strptime()` requires the string to carry a date: a time-only format
+    (`strptime('12:30', '%H:%M')`) raises
+    `ValueError: time data '12:30' does not match format '%H:%M'`, where
+    CPython defaults the missing date to 1900-01-01.
+- `strptime()`'s `%z` takes a sign, hours and minutes with an optional colon, optional seconds, or a bare `Z`,
+    but not CPython's fractional form: `'+010203.123456'` does not match, where CPython attaches an offset carrying
+    those microseconds, which no Monty offset can hold (see [`timezone`](#timezone)).
+- A `%z` offset whose minute and second separators disagree is rejected by both, but `'+0102:03'` (a colon before
+    the seconds only) raises `ValueError: Inconsistent use of : in +0102:03` in Monty, where CPython leaks
+    `ValueError: invalid literal for int() with base 10: ':0'`. The mirrored `'+01:0203'` matches CPython exactly.
+- Input the format does not consume raises `ValueError: time data '...' does not match format '...'`,
+    where CPython distinguishes trailing input with `ValueError: unconverted data remains: ...`.
 - `utcnow()` (the deprecated class method) and `today()` are not
     implemented.
-- `combine()`, `fromtimestamp()`, `fromordinal()`, `utcfromtimestamp()`
-    are not implemented.
+- `fromtimestamp()`, `fromordinal()` and `utcfromtimestamp()` are not
+    implemented.
 - `time()` and `timetz()` return a `time` whose `fold` is always 0, since
-    `datetime` does not store the flag (above).
+    `datetime` does not store the flag (above). `combine()` likewise
+    discards the `fold` of the `time` it is given, where CPython carries it
+    over.
 
 Subclassing `datetime` is not possible, since there is no class inheritance
 (see [classes.md](classes.md)).
@@ -58,6 +126,40 @@ keyword arguments** in Monty. CPython accepts positional args too
 (`d.replace(2025)` is valid in CPython 3.14). Calling with positionals
 in Monty raises `TypeError: replace expected at most 0 arguments, got N`.
 
+## Reading the clock
+
+The [session clock](../security.md#the-clock) has separate `datetime` and `timezone` settings.
+The `time` module's wall clocks share the `datetime` source, and its conversion functions the `timezone`
+(see [time.md](time.md)).
+
+`datetime`:
+
+- A fixed instant never advances: repeated `datetime.now()` calls are equal and elapsed-time calculations stay zero.
+    Bindings also set `timezone` unless supplied explicitly: naive Python datetimes and JavaScript dates select UTC;
+    aware Python datetimes supply their offset and name.
+    A Rust fixed instant outside years 1–9999 raises `OverflowError: date value out of range` from all three clock calls.
+- `'call_host'` delegates to the pool's `os=` handler (`OSAccess.date_today()` or `datetime_now()` in Python).
+    Unanswered calls raise `RuntimeError: 'date.today' is not supported in this environment` (`datetime.now` likewise).
+    Non-suspending Rust execution instead raises `NotImplementedError`.
+    `run` and `feed_run` report `OS function 'datetime.now' not implemented with standard execution`;
+    `call_function` reports
+    `MontyRepl::call_function: OS function 'datetime.now' is not yet supported in this context`.
+
+`timezone`:
+
+- The default is UTC, not the host's zone, so a naive `datetime.now()` is the UTC wall clock and `astimezone()`
+    attaches `timezone(timedelta(0), 'UTC')`.
+- A fixed zone is a UTC offset with an optional name and no DST rules.
+    `astimezone()`, `%Z` and `time.tzname` report the name (`UTC±HH:MM` when there is none).
+- An IANA name (`'Europe/London'`) is resolved in the worker against its tz database: the OS copy under `TZDIR` or
+    `/usr/share/zoneinfo`, or the copy bundled into the binary when the worker can read none (Windows, and the wasm
+    worker).
+    The offset and abbreviation then follow the instant, so the results depend on that database's version, as
+    CPython's do on the host's.
+    An unknown name is refused when the session is checked out.
+    `time.timezone`, `time.altzone`, `time.daylight` and `time.tzname` are computed at import and need the clock's year, so a named zone under `datetime='call_host'` leaves them absent;
+    see [time.md](time.md#zone-constants).
+
 ## `time`
 
 Constructor: `time(hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
@@ -66,22 +168,9 @@ Methods: `isoformat(timespec='auto')`, `strftime`, `replace`,
 `utcoffset`, `tzname`, `dst`.
 Class methods: `fromisoformat(time_string)`. `strptime(string, format)`
 — which CPython added in 3.14 — is not implemented and raises
-`AttributeError`.
-
-The `min`, `max` and `resolution` class constants are not defined, and
-raise `AttributeError`. Type checking will not warn you: it resolves
-`time` against typeshed, which declares them, so `monty -t` passes on
-`time.min` and the lookup fails at runtime.
-
-`fromisoformat()` parses with [speedate](https://docs.rs/speedate), the
-same parser `date` and `datetime` use, so it accepts a narrower grammar
-than CPython 3.11+. The compact form (`'123005'`), a leading `T`
-(`'T12:30'`), a sub-minute UTC offset (`'12:30:05+01:00:30'`) and more
-than 6 fractional-second digits (`'12:30:05.1234567'`) are all rejected
-with `ValueError: Invalid isoformat string: '...'`. CPython instead names
-the offending component of a syntactically valid but out-of-range string:
-`time.fromisoformat('25:00')` raises `hour must be in 0..23, not 25`
-there.
+`AttributeError`. `datetime.strptime` is not a workaround for a time-only
+format: it requires the string to carry a date, where CPython defaults the
+missing one to 1900-01-01.
 
 `tzinfo` accepts only `None` or a built-in `timezone` instance. The
 `tzinfo` ABC is not implemented, so custom subclasses are rejected, the
@@ -118,18 +207,26 @@ A non-int component raises `TypeError: '{type}' object cannot be interpreted as 
 component instead
 (`unsupported type for timedelta days component: str`).
 
-Arithmetic (`+`, `-`, `*`, comparisons) works between `timedelta`s and
-between `datetime`/`date` and `timedelta`. Division and floor-division of
-two `timedelta`s is not implemented.
+Arithmetic (`+`, `-`, `*`, `/`, `//`, `%`, `divmod`, comparisons) works
+between `timedelta`s and between `datetime`/`date` and `timedelta`.
 
 ## `timezone`
 
 Constructor: `timezone(offset, name=None)` where `offset` is a
 `timedelta`.
-Attributes: `offset`, `name`.
+Attributes: none.
+Methods: `utcoffset(dt)`, `tzname(dt)`, `dst(dt)`. The `dt` argument is
+validated and then ignored, since the offset is the same at every
+instant.
 
-`timezone.utc` and `timezone.min` / `timezone.max` class constants are not
-defined. The abstract `tzinfo` base class is not exposed.
+`fromutc(dt)` is not implemented, and neither is the abstract `tzinfo`
+base class. Only fixed offsets can be constructed, so on `timezone`,
+`datetime` and `time` alike, `utcoffset()` is constant over time and
+`dst()` is always `None`.
+
+An offset is a whole number of seconds: `timezone(timedelta(seconds=1, microseconds=1))` raises
+`ValueError: offset must be a timedelta representing a whole number of seconds`, CPython's own message before 3.7,
+where CPython now accepts it.
 
 One error-ordering corner: `timezone('x', offset=td)` (a non-`timedelta`
 positional *and* an `offset` kwarg) raises the name-and-position conflict in
@@ -155,19 +252,18 @@ pass-through applies to f-string and `str.format()` formatting (below).
 
 ### Directives that need data the value lacks
 
-A directive that is *recognised* but can't be rendered for the given value
-raises `ValueError: Invalid format string` rather than substituting a default
-the way CPython does. The known cases:
+A directive that chrono *recognises* but can't render for the given value
+raises `ValueError: Invalid format string` where CPython hands it to the C
+library: `%+` (chrono's RFC 3339 form) and `%#z` (chrono's hour-only offset)
+both need an offset the naive components lack, so they raise even on an aware
+value's naive components. The other flagged forms of `%z` (`%-z`, `%_z`,
+`%Ez`, `%Oz`) are unrecognised and pass through verbatim, where macOS CPython
+renders them as an empty string.
 
-- Time directives (`%H`, `%M`, `%S`, `%p`, …) on a bare `date`: Monty stores a
-    `date` with no time component, so these raise; CPython fills zeros (`'00'`,
-    `'AM'`).
-- `%z` / `%Z` on a naive `date`, `datetime` or `time`: Monty raises; CPython
-    yields `''`.
-- `%z` / `%Z` on an **aware** `datetime` or `time`: Monty formats the wall-clock
-    (naive) components and so raises rather than emitting the offset/name; CPython
-    yields `'+0200'` / `'CEST'`. Threading the timezone through formatting is not
-    yet implemented.
+`%z`, `%:z` and `%Z` are filled from `utcoffset()` and `tzname()` as in
+CPython: empty for a naive `date`, `datetime` or `time`, and `'+0200'`,
+`'+02:00'` and the zone name for an aware value. The name of an unnamed zone
+is `UTC±HH:MM`, and a sub-minute offset renders its seconds (`'+023015'`).
 
 f-strings and `str.format()` format `date`, `datetime` and `time` values through
 `strftime`, matching CPython's `__format__`: `f'{dt:%Y-%m-%d}'` and

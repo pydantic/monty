@@ -7,9 +7,10 @@ interact with through the `os=` callback surface.
 
 import datetime
 from pathlib import PurePosixPath
+from unittest.mock import Mock
 
 import pytest
-from conftest import RunMonty
+from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
 import pydantic_monty
@@ -228,19 +229,32 @@ def test_abstract_filesystem_exists_missing(monty_run: RunMonty):
 
 
 def test_abstract_os_date_today(monty_run: RunMonty):
-    """AbstractOS.date_today() is dispatched through the os callback."""
     fs = TestOS()
 
-    result = monty_run('from datetime import date; date.today()', os=fs)
+    result = monty_run('from datetime import date; date.today()', os=fs, checkout=CALL_HOST)
 
     assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
+
+
+def test_abstract_os_urandom_default(monty_run: RunMonty, monkeypatch: pytest.MonkeyPatch):
+    fs = TestOS()
+
+    result = monty_run('import os\nlen(os.urandom(8))', os=fs)
+
+    assert result == snapshot(8)
+
+    entropy = Mock(side_effect=AssertionError('oversized host allocation'))
+    monkeypatch.setattr('pydantic_monty.os_access.os.urandom', entropy)
+    with pytest.raises(MemoryError, match='^os.urandom\\(\\) size exceeds max_urandom_bytes \\(1048576\\)$'):
+        fs.urandom(2**40)
+    entropy.assert_not_called()
 
 
 def test_abstract_os_datetime_now_with_timezone(monty_run: RunMonty):
     """AbstractOS.datetime_now() receives the requested timezone."""
     fs = TestOS()
 
-    result = monty_run('from datetime import datetime, timezone; datetime.now(timezone.utc)', os=fs)
+    result = monty_run('from datetime import datetime, timezone; datetime.now(timezone.utc)', os=fs, checkout=CALL_HOST)
 
     assert (type(result).__name__, repr(result)) == snapshot(
         (
@@ -267,16 +281,20 @@ def test_abstract_os_dispatch_not_handled():
             raise NotImplementedError
 
     fs = PartialOS()
-    result = fs('Path.exists', (PurePosixPath('/tmp'),), {})
+    result = fs(name='Path.exists', args=(PurePosixPath('/tmp'),), kwargs={}, is_async=False)
 
     assert result is NOT_HANDLED
 
 
 def test_abstract_os_dispatch_not_handled_falls_back_in_run(monty_run: RunMonty):
-    """Returning NOT_HANDLED from dispatch() uses Monty's default fallback error."""
+    """Returning NOT_HANDLED from dispatch() uses Monty's default fallback error.
+
+    The override keeps the three-argument signature `dispatch` had before
+    `is_async`, which must go on working.
+    """
 
     class PartialOS(TestOS):
-        def dispatch(
+        def dispatch(  # pyright: ignore[reportIncompatibleMethodOverride]
             self,
             function_name: pydantic_monty.OsFunction,
             args: tuple[object, ...],

@@ -1,6 +1,10 @@
 //! Resource limits: the [`ResourceTracker`] used by the interpreter heap/VM
 //! and its [`ResourceLimits`] configuration.
 
+#[cfg(target_arch = "wasm32")]
+use std::hint;
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 use std::{
@@ -12,7 +16,7 @@ use std::{
 };
 
 // `std::time::Instant::now()` panics ("time not implemented on this platform")
-// on `wasm32-unknown-unknown`, so any `max_duration` limit aborts there. Swap in
+// on `wasm32-unknown-unknown`, so any duration limit aborts there. Swap in
 // `web_time::Instant` (a `performance.now()`-backed drop-in) only for that
 // target; every other target (native, WASI) keeps std, so the `web-time`
 // dependency is pulled in only where it's needed (see Cargo.toml).
@@ -27,9 +31,47 @@ use web_time::Instant;
 pub const OOM_EXIT_CODE: i32 = 65;
 /// Allocator-backed live bytes requested through the global allocator
 pub static LIVE_MEMORY: AtomicUsize = AtomicUsize::new(0);
-/// The leanest the process has ever been at an arming point: what the worker
-/// costs to exist, before any session ran.
+/// What the worker costs to exist: the leanest the process has ever been at an
+/// arming point, plus structures it keeps for life (see [`allocate_into_baseline`]).
 pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Runs `build` and adds what it leaves allocated to [`BASELINE_MEMORY`], so a
+/// structure the worker keeps for life (the type checker) is not charged to the
+/// session that happened to build it first.
+///
+/// Only accurate while no other thread changes [`LIVE_MEMORY`]. An unset baseline is
+/// left alone: the first arming counts the structure anyway.
+pub fn allocate_into_baseline<T>(build: impl FnOnce() -> T) -> T {
+    let before = LIVE_MEMORY.load(Ordering::Relaxed);
+    let value = build();
+    let cost = LIVE_MEMORY.load(Ordering::Relaxed).saturating_sub(before);
+    // `Err` just means the baseline is still unset
+    let _ = BASELINE_MEMORY.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |baseline| {
+        (baseline != usize::MAX).then(|| baseline.saturating_add(cost))
+    });
+    value
+}
+
+/// Headroom for exception machinery and work between interpreter checkpoints.
+const MEMORY_LIMIT_HEADROOM: usize = 4 * 1024 * 1024;
+/// Extra headroom for type-checker stubs and caches outside Python execution.
+const TYPE_CHECK_MEMORY_LIMIT_HEADROOM: usize = 32 * 1024 * 1024;
+
+/// Converts an interpreter soft memory limit into a worker allocator budget.
+///
+/// The returned budget includes operational headroom but remains relative to
+/// the worker baseline, which `monty-alloc` adds when arming its hard ceiling.
+#[must_use]
+pub fn memory_limit_with_headroom(max_memory: Option<usize>, type_check: bool) -> Option<usize> {
+    max_memory.map(|bytes| {
+        let headroom = if type_check {
+            TYPE_CHECK_MEMORY_LIMIT_HEADROOM
+        } else {
+            MEMORY_LIMIT_HEADROOM
+        };
+        bytes.saturating_add(headroom)
+    })
+}
 
 /// Threshold in bytes above which `check_large_result` is called.
 ///
@@ -48,19 +90,47 @@ pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
 /// surfaces as a catchable `RecursionError`, matching CPython.
 #[derive(Debug, Clone)]
 pub enum ResourceError {
-    /// Maximum execution time exceeded.
-    Time { limit: Duration, elapsed: Duration },
+    /// One of the two execution-time budgets was exceeded; `scope` says which.
+    Time {
+        scope: TimeLimitScope,
+        limit: Duration,
+        elapsed: Duration,
+    },
     /// Maximum memory usage exceeded.
     Memory { limit: usize, used: usize },
     /// Maximum recursion depth exceeded.
     Recursion { limit: usize, depth: usize },
 }
 
+/// Which of the two nested execution-time budgets a [`ResourceError::Time`]
+/// refers to.
+///
+/// Both read the same clock and differ only in when they are reset, so a
+/// turn's time is charged to its feed as well: `Feed >= Turn` always holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeLimitScope {
+    /// [`ResourceLimits::max_feed_duration`] — reset at each feed.
+    Feed,
+    /// [`ResourceLimits::max_turn_duration`] — reset at each feed and each
+    /// resume.
+    Turn,
+}
+
+impl TimeLimitScope {
+    /// The word naming this scope in an error message.
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Feed => "feed ",
+            Self::Turn => "turn ",
+        }
+    }
+}
+
 impl fmt::Display for ResourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Time { limit, elapsed } => {
-                write!(f, "time limit exceeded: {elapsed:?} > {limit:?}")
+            Self::Time { scope, limit, elapsed } => {
+                write!(f, "{}time limit exceeded: {elapsed:?} > {limit:?}", scope.prefix())
             }
             Self::Memory { limit, used } => {
                 write!(f, "memory limit exceeded: {used} bytes > {limit} bytes")
@@ -85,8 +155,14 @@ impl Error for ResourceError {}
 /// custom limits with the builder pattern.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResourceLimits {
-    /// Maximum execution time.
-    pub max_duration: Option<Duration>,
+    /// Maximum execution time for a single feed (`feed_start`, `feed_run` or
+    /// `call_function`), summed over the turns it takes and excluding time
+    /// suspended on the host. Bounds one snippet, not the session.
+    pub max_feed_duration: Option<Duration>,
+    /// Maximum execution time for a single host turn, reset at each feed and
+    /// each resume. Bounds the stretch of sandbox code between two host round
+    /// trips, so a host can bound its own response time per call.
+    pub max_turn_duration: Option<Duration>,
     /// Maximum allocator-backed memory in bytes.
     ///
     /// Requires the executable to install and arm `monty-alloc`.
@@ -99,14 +175,18 @@ pub struct ResourceLimits {
     /// [`DEFAULT_MAX_SUSPENSIONS`]; always bounded, like recursion depth).
     /// The interpreter only stores this limit; hosts must enforce it.
     pub max_suspensions: usize,
+    /// Maximum cumulative sleep under `SleepMode::System`, enforced by the host.
+    /// Sleeps do not count toward execution duration; without this limit, sleeping
+    /// loops need `max_suspensions` or a host deadline.
+    pub max_total_sleep: Option<Duration>,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
 /// Maximum suspensions a host services per session if not otherwise
-/// specified: a backstop against a sandbox looping on host calls while
-/// `max_duration` is paused.
+/// specified: a backstop against a sandbox looping on host calls while the
+/// execution clock is paused.
 pub const DEFAULT_MAX_SUSPENSIONS: usize = 1000;
 
 /// Creates a new ResourceLimits with all limits disabled, except max recursion
@@ -114,20 +194,29 @@ pub const DEFAULT_MAX_SUSPENSIONS: usize = 1000;
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            max_duration: None,
+            max_feed_duration: None,
+            max_turn_duration: None,
             max_memory: None,
             gc_interval: None,
             max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
             max_suspensions: DEFAULT_MAX_SUSPENSIONS,
+            max_total_sleep: None,
         }
     }
 }
 
 impl ResourceLimits {
-    /// Sets the maximum execution duration.
+    /// Sets the maximum execution duration for any single feed.
     #[must_use]
-    pub fn max_duration(mut self, limit: Duration) -> Self {
-        self.max_duration = Some(limit);
+    pub fn max_feed_duration(mut self, limit: Duration) -> Self {
+        self.max_feed_duration = Some(limit);
+        self
+    }
+
+    /// Sets the maximum execution duration for any single host turn.
+    #[must_use]
+    pub fn max_turn_duration(mut self, limit: Duration) -> Self {
+        self.max_turn_duration = Some(limit);
         self
     }
 
@@ -161,6 +250,13 @@ impl ResourceLimits {
         self.max_suspensions = limit;
         self
     }
+
+    /// Sets the maximum cumulative time hosts wait on system sleeps; each capped delay is charged before the wait.
+    #[must_use]
+    pub fn max_total_sleep(mut self, limit: Duration) -> Self {
+        self.max_total_sleep = Some(limit);
+        self
+    }
 }
 
 /// A resource tracker that enforces configurable limits.
@@ -170,22 +266,30 @@ impl ResourceLimits {
 ///
 /// Uses `Cell` for mutable timing and recursion state behind shared references.
 ///
-/// `max_duration` limits *cumulative execution time*: the clock runs only
-/// while the VM is executing bytecode (between the outermost
-/// `on_execution_start`/`on_execution_stop` pair) and is paused while
-/// execution is suspended waiting on the host — external function calls,
-/// OS callbacks — and between REPL feeds. The accumulated time is
-/// serialized, so a deserialized session resumes its budget where it left
-/// off rather than restarting from zero.
+/// The two duration limits share one *execution time* clock: it runs only
+/// between the outermost `on_execution_start`/`on_execution_stop` pair, so it
+/// is paused while suspended on the host and between REPL feeds. They differ
+/// only in when their accumulator resets — at
+/// [`on_feed_start`](Self::on_feed_start), at [`on_turn_start`](Self::on_turn_start)
+/// — and the feed total is serialized, so a session loaded mid-feed resumes
+/// that budget rather than restarting from zero.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResourceTracker {
     limits: ResourceLimits,
     /// Execution time accumulated by completed `on_execution_start`/`stop`
-    /// windows. Serialized so time budgets survive dump/load. The serde
-    /// default helps self-describing formats; postcard snapshots are
-    /// positional, so older snapshot layouts still fail closed at decode.
-    #[serde(default)]
+    /// windows. Bounds nothing — it is what [`elapsed`](Self::elapsed) reports
+    /// to hosts for telemetry — but is serialized so a loaded session keeps
+    /// counting from where it left off.
     total_execution_time: Cell<Duration>,
+    /// Execution time accumulated since the last [`on_feed_start`](Self::on_feed_start).
+    /// Serialized like `total_execution_time`: a dump taken mid-feed resumes
+    /// that feed, so its budget must survive the round trip.
+    feed_execution_time: Cell<Duration>,
+    /// Execution time accumulated since the last [`on_turn_start`](Self::on_turn_start).
+    /// Not serialized — a dump is taken between turns, and the resume that
+    /// loads it starts a fresh turn.
+    #[serde(skip)]
+    turn_execution_time: Cell<Duration>,
     /// When the current execution window started; `None` while suspended or
     /// idle. Never serialized — a snapshot is by definition taken while not
     /// executing.
@@ -200,12 +304,7 @@ pub struct ResourceTracker {
     /// [`lower_recursion_limit`](Self::lower_recursion_limit)
     /// under the `test-hooks` feature — `sys.setrecursionlimit` uses it to
     /// tighten the bound from Python code without escaping the
-    /// host-configured ceiling.
-    ///
-    /// Modeled as an override rather than the live limit so adding this
-    /// field doesn't break deserialization of snapshots produced before it
-    /// existed (`#[serde(default)]` gives back the `None` fallback case).
-    #[serde(default)]
+    /// host-configured ceiling. `None` means the configured limit applies.
     recursion_limit_override: Cell<Option<usize>>,
 }
 
@@ -220,14 +319,17 @@ impl ResourceTracker {
     ///
     /// The execution-time clock starts at zero and only runs while the VM
     /// executes, so the tracker can be created any amount of time before
-    /// the first run without consuming the duration budget. A configured
+    /// the first run without consuming a duration budget. A configured
     /// `max_memory` requires `monty-alloc` installed as the global allocator
-    /// and armed via its `set_limit`; otherwise it is silently not enforced.
+    /// and armed via `set_hard_limit(memory_limit_with_headroom(...))`;
+    /// otherwise it is silently not enforced.
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {
             limits,
             total_execution_time: Cell::new(Duration::ZERO),
+            feed_execution_time: Cell::new(Duration::ZERO),
+            turn_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
             recursion_limit_override: Cell::new(None),
         }
@@ -246,16 +348,49 @@ impl ResourceTracker {
     /// accumulated across runs/feeds, excluding time suspended on the host
     /// or idle between feeds. Includes the in-progress window if the VM is
     /// currently executing.
+    ///
+    /// Nothing is bounded by this — it is reported to the host for telemetry.
+    /// The budgets are [`feed_elapsed`](Self::feed_elapsed) and
+    /// [`turn_elapsed`](Self::turn_elapsed).
     #[must_use]
     pub fn elapsed(&self) -> Duration {
-        let running = self.running_since.get().map_or(Duration::ZERO, |t| t.elapsed());
-        self.total_execution_time.get() + running
+        self.total_execution_time.get() + self.running_window()
     }
 
-    /// Returns the configured maximum cumulative execution time, if any.
+    /// Returns the execution time consumed by the current feed; see
+    /// [`elapsed`](Self::elapsed), which reports the same clock over the
+    /// whole session.
     #[must_use]
-    pub fn max_duration(&self) -> Option<Duration> {
-        self.limits.max_duration
+    pub fn feed_elapsed(&self) -> Duration {
+        self.feed_execution_time.get() + self.running_window()
+    }
+
+    /// Returns the execution time consumed by the current host turn; see
+    /// [`elapsed`](Self::elapsed), which reports the same clock over the
+    /// whole session.
+    #[must_use]
+    pub fn turn_elapsed(&self) -> Duration {
+        self.turn_execution_time.get() + self.running_window()
+    }
+
+    /// The in-progress execution window, or zero when not executing. Read
+    /// once per check so both budgets are compared against one clock reading
+    /// rather than two.
+    #[inline]
+    fn running_window(&self) -> Duration {
+        self.running_since.get().map_or(Duration::ZERO, |t| t.elapsed())
+    }
+
+    /// Returns the configured per-feed execution time limit, if any.
+    #[must_use]
+    pub fn max_feed_duration(&self) -> Option<Duration> {
+        self.limits.max_feed_duration
+    }
+
+    /// Returns the configured per-turn execution time limit, if any.
+    #[must_use]
+    pub fn max_turn_duration(&self) -> Option<Duration> {
+        self.limits.max_turn_duration
     }
 
     /// Returns the configured memory budget, if any. Hosts that bound a worker
@@ -272,22 +407,45 @@ impl ResourceTracker {
         self.limits.max_suspensions
     }
 
+    /// Cumulative sleep limit for the host to enforce, including after restore.
+    #[must_use]
+    pub fn max_total_sleep(&self) -> Option<Duration> {
+        self.limits.max_total_sleep
+    }
+
     /// Returns whether the VM has a memory or time limit configured.
     #[must_use]
     pub fn has_memory_time_limit(&self) -> bool {
-        self.limits.max_memory.is_some() || self.limits.max_duration.is_some()
+        self.limits.max_memory.is_some() || self.has_time_limit()
     }
 
-    /// Sets the maximum execution duration as a fresh budget from now,
-    /// resetting the accumulated execution time to zero.
+    /// Returns whether either execution-time budget is configured.
+    ///
+    /// Public so callers that pay for finer-grained clock polling only when a
+    /// budget exists (`fstring`'s incremental large-result path) can ask.
+    #[must_use]
+    #[inline]
+    pub fn has_time_limit(&self) -> bool {
+        self.limits.max_feed_duration.is_some() || self.limits.max_turn_duration.is_some()
+    }
+
+    /// Sets the per-feed execution limit as a fresh budget from now, resetting
+    /// the feed (and so the turn) clock.
     ///
     /// This lets a host enforce a different (typically shorter) time limit
     /// for a resumed phase — e.g. allowing a long build phase, then giving
     /// `repr()` of the result only a few milliseconds. Time spent suspended
     /// in the host never counts toward the budget either way.
-    pub fn set_max_duration(&mut self, duration: Duration) {
-        self.limits.max_duration = Some(duration);
-        self.total_execution_time.set(Duration::ZERO);
+    pub fn set_max_feed_duration(&mut self, duration: Duration) {
+        self.limits.max_feed_duration = Some(duration);
+        self.on_feed_start();
+    }
+
+    /// Sets the per-turn execution limit as a fresh budget from now, resetting
+    /// the turn clock.
+    pub fn set_max_turn_duration(&mut self, duration: Duration) {
+        self.limits.max_turn_duration = Some(duration);
+        self.on_turn_start();
     }
 
     /// Checks whether one up-front allocation fits the memory budget.
@@ -325,17 +483,30 @@ impl ResourceTracker {
         self.check_time()
     }
 
-    /// Called periodically to check the time limit. Elapsed execution time is
-    /// monotonic, so once the budget is exceeded every later call fails too.
+    /// Called periodically to check both execution-time budgets.
+    ///
+    /// Each clock is monotonic within its scope, so once a budget is exceeded
+    /// every later call in that scope fails too. The feed budget is tested
+    /// first, since it is the one a new turn cannot recover from.
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
-        if let Some(max) = self.limits.max_duration {
-            let elapsed = self.elapsed();
-            if elapsed > max {
-                return Err(ResourceError::Time { limit: max, elapsed });
-            }
+        if !self.has_time_limit() {
+            return Ok(());
         }
-        Ok(())
+        // One clock reading shared by both comparisons.
+        let running = self.running_window();
+        check_budget(
+            TimeLimitScope::Feed,
+            self.limits.max_feed_duration,
+            self.feed_execution_time.get() + running,
+        )
+        .and_then(|()| {
+            check_budget(
+                TimeLimitScope::Turn,
+                self.limits.max_turn_duration,
+                self.turn_execution_time.get() + running,
+            )
+        })
     }
 
     /// Items processed between full checks in amortized per-item Rust loops
@@ -370,6 +541,63 @@ impl ResourceTracker {
             self.check_memory_time()
         } else {
             Ok(())
+        }
+    }
+
+    /// Preflights the reallocation that pushing one more element onto a dense
+    /// buffer causes; a push that fits the existing capacity costs nothing.
+    ///
+    /// A `Vec` charges its whole doubling in one allocation, so a push
+    /// straddling the soft limit can land past the allocator's fixed
+    /// hard-limit headroom, killing the worker with no checkpoint in between
+    /// at which to raise `MemoryError`. Only for the one-push shape: a bulk
+    /// reservation needs [`ResourceTracker::check_allocation`] sized for the
+    /// whole result, since preflighting less than the final buffer — one
+    /// operand of a merge, say — leaves the same window open.
+    #[inline]
+    pub fn check_growth(&self, len: usize, capacity: usize, elem_size: usize) -> Result<(), ResourceError> {
+        self.check_pending_allocation(Self::growth_bytes(len, capacity, elem_size))
+    }
+
+    /// The bytes [`check_growth`](Self::check_growth) would preflight, or zero
+    /// if the push allocates nothing.
+    ///
+    /// Split out for containers that grow two buffers on one insertion, such
+    /// as a dict's entry vector and index table: checking each increment alone
+    /// passes both while their sum clears the headroom, so the caller sums
+    /// them and passes the total to
+    /// [`check_pending_allocation`](Self::check_pending_allocation).
+    #[inline]
+    #[must_use]
+    pub fn growth_bytes(len: usize, capacity: usize, elem_size: usize) -> usize {
+        if len < capacity {
+            0
+        } else {
+            // A buffer growing from nothing jumps straight to
+            // `RawVec::MIN_NON_ZERO_CAP`, which is also what stops the
+            // increment coming out as zero.
+            let min_non_zero_capacity = match elem_size {
+                1 => 8,
+                2..=1024 => 4,
+                _ => 1,
+            };
+            let new_capacity = capacity
+                .saturating_mul(2)
+                .max(len.saturating_add(1))
+                .max(min_non_zero_capacity);
+            new_capacity.saturating_sub(capacity).saturating_mul(elem_size)
+        }
+    }
+
+    /// [`check_allocation`](Self::check_allocation) for preflights whose
+    /// increment may be zero: a push that allocates nothing must not pay for
+    /// the usage probe.
+    #[inline]
+    pub fn check_pending_allocation(&self, additional: usize) -> Result<(), ResourceError> {
+        if additional == 0 {
+            Ok(())
+        } else {
+            self.check_allocation(additional)
         }
     }
 
@@ -437,8 +665,45 @@ impl ResourceTracker {
     /// or suspension at an external call. See [`on_execution_start`](Self::on_execution_start).
     pub fn on_execution_stop(&self) {
         if let Some(started) = self.running_since.take() {
-            self.total_execution_time
-                .set(self.total_execution_time.get() + started.elapsed());
+            let window = started.elapsed();
+            for clock in [
+                &self.total_execution_time,
+                &self.feed_execution_time,
+                &self.turn_execution_time,
+            ] {
+                clock.set(clock.get() + window);
+            }
+        }
+    }
+
+    /// Called when the host begins a new feed, resetting the `max_feed_duration`
+    /// budget (and, since a feed opens a turn, the `max_turn_duration` one).
+    ///
+    /// A feed spans every turn its snippet takes, so this must fire only at
+    /// the snippet's first turn — not at the resumes that continue it.
+    pub fn on_feed_start(&self) {
+        self.feed_execution_time.set(Duration::ZERO);
+        self.on_turn_start();
+    }
+
+    /// Called when the host hands control back to the interpreter — at a feed
+    /// or a resume — resetting the `max_turn_duration` budget.
+    ///
+    /// Continuations the VM resolves without the host (an already-settled
+    /// future, a task switch) stay inside the turn that started them.
+    pub fn on_turn_start(&self) {
+        self.turn_execution_time.set(Duration::ZERO);
+    }
+
+    /// Performs a standard-execution sleep without charging `max_feed_duration`.
+    /// Restarts the execution clock only if it was running before the wait.
+    /// All interpreter waits use `block_for` for platform-specific blocking.
+    pub fn sandbox_sleep(&self, duration: Duration) {
+        let was_running = self.running_since.get().is_some();
+        self.on_execution_stop();
+        block_for(duration);
+        if was_running {
+            self.on_execution_start();
         }
     }
 
@@ -462,9 +727,35 @@ impl ResourceTracker {
     }
 }
 
+/// Reports `elapsed` against one optional budget, naming `scope` in the error.
+#[inline]
+fn check_budget(scope: TimeLimitScope, limit: Option<Duration>, elapsed: Duration) -> Result<(), ResourceError> {
+    match limit {
+        Some(limit) if elapsed > limit => Err(ResourceError::Time { scope, limit, elapsed }),
+        _ => Ok(()),
+    }
+}
+
 /// Returns memory used in bytes
 fn probe_memory() -> usize {
     LIVE_MEMORY
         .load(Ordering::Relaxed)
         .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn block_for(duration: Duration) {
+    thread::sleep(duration);
+}
+
+/// Blocks for `duration` on wasm by spinning on the monotonic clock:
+/// `std::thread::sleep` needs `wasi:io/poll`, which a browser host serves
+/// only asynchronously. Only standard execution waits here; the wasm worker
+/// suspends its sleeps to the JavaScript host instead.
+#[cfg(target_arch = "wasm32")]
+fn block_for(duration: Duration) {
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        hint::spin_loop();
+    }
 }

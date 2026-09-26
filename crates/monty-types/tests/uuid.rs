@@ -156,12 +156,13 @@ fn ordering_matches_integer_ordering() {
 // === serde ===
 
 #[test]
-fn postcard_encoding_is_exactly_16_bytes() {
-    // The dump format relies on the fixed-array encoding: no length prefix.
+fn cbor_encoding_is_a_16_byte_string() {
+    // The dump format writes the id as one byte string, not sixteen integers.
     let id = MontyUuid::from_bytes(BYTES);
-    let encoded = postcard::to_allocvec(&id).unwrap();
-    assert_eq!(encoded, BYTES);
-    assert_eq!(postcard::from_bytes::<MontyUuid>(&encoded).unwrap(), id);
+    let encoded = minicbor_serde::to_vec(id).unwrap();
+    assert_eq!(encoded[0], 0x50); // major type 2 (bytes), length 16
+    assert_eq!(encoded[1..], BYTES);
+    assert_eq!(minicbor_serde::from_slice::<MontyUuid>(&encoded).unwrap(), id);
 }
 
 #[test]

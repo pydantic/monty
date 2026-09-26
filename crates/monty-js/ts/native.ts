@@ -17,6 +17,14 @@ export interface NativeFrame {
   hideFrameName: boolean
 }
 
+/** Where the expression that suspended execution is in the source; the
+ *  `SourceRange` of `errors.ts`, as the native binding ships it. */
+export interface NativeSourceRange {
+  filename: string
+  start: number
+  end: number
+}
+
 /** A sandbox exception: type name, message, the worker-rendered Python
  *  traceback string, and the structured frames behind it. */
 export interface NativeException {
@@ -34,8 +42,15 @@ export interface CompleteTurn {
   value: unknown
 }
 
+interface CallbackTurn {
+  /** Host-generated native span identity, resolved by the telemetry bridge. */
+  callbackSpanKey?: string
+  /** Where the suspending expression is in the source. */
+  position: NativeSourceRange
+}
+
 /** The sandbox called an external function — answer with a `resume*` call. */
-export interface FunctionCallTurn {
+export interface FunctionCallTurn extends CallbackTurn {
   kind: 'functionCall'
   functionName: string
   /** Positional arguments, already converted to JS values. */
@@ -51,19 +66,36 @@ export interface FunctionCallTurn {
    *  `__call__` construction). The receiver is NOT in `args`; null/absent
    *  for plain external calls. */
   objectId?: string | null
+  /** A coroutine may settle before replying with `resolveFutures`. */
+  allowEagerAwait?: boolean
 }
 
 /** The sandbox performed an OS operation no mount handled. */
-export interface OsCallTurn {
+export interface OsCallTurn extends CallbackTurn {
   kind: 'osCall'
   functionName: string
   args: unknown[]
   kwargs: [unknown, unknown][]
   callId: number
+  /** As on `FunctionCallTurn`: the wait may settle before replying with `resolveFutures`. Only set on async sleeps. */
+  allowEagerAwait?: boolean
+  /**
+   * Seconds for a pool-managed sleep, already capped and charged to `maxTotalSleepSecs`.
+   * Absent for calls delegated to `os`.
+   */
+  systemSleepSecs?: number
+}
+
+/**
+ * Async sleeps accept `resumeFuture` in both system and host modes.
+ * Mirrors `OsFunctionCall::accepts_future` in `monty-types`.
+ */
+export function osCallAcceptsFuture(functionName: string): boolean {
+  return functionName === 'asyncio.sleep' || functionName === 'system.async_sleep'
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */
-export interface NameLookupTurn {
+export interface NameLookupTurn extends CallbackTurn {
   kind: 'nameLookup'
   name: string
   /** Set for lazy attribute lookups on a host-backed object (a class
@@ -74,7 +106,7 @@ export interface NameLookupTurn {
 }
 
 /** Every sandbox task is blocked on external futures. */
-export interface ResolveFuturesTurn {
+export interface ResolveFuturesTurn extends CallbackTurn {
   kind: 'resolveFutures'
   pendingCallIds: number[]
 }

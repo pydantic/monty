@@ -8,14 +8,17 @@ return values from the host are properly converted and used by Monty code.
 from __future__ import annotations
 
 import datetime
+import random
+import time
 from pathlib import PurePosixPath
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
-from conftest import RunMonty
+from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import NOT_HANDLED, MontyRuntimeError, StatResult
+from pydantic_monty import NOT_HANDLED, Monty, MontyFileHandle, MontyRuntimeError, OSAccess, StatResult, TimeCaller
 
 # =============================================================================
 # Basic os= callback dispatch
@@ -26,8 +29,8 @@ def test_os_basic(monty_run: RunMonty):
     """os receives function name and args, return value is used."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool:
+        calls.append((name, args))
         return True
 
     result = monty_run('from pathlib import Path; Path("/tmp/test.txt").exists()', os=os_handler)
@@ -36,11 +39,132 @@ def test_os_basic(monty_run: RunMonty):
     assert calls == snapshot([('Path.exists', (PurePosixPath('/tmp/test.txt'),))])
 
 
+@pytest.mark.parametrize('cwd', ['/', '/data'])
+def test_os_callback_paths_are_normalized(monty_run: RunMonty, cwd: str):
+    """Callbacks receive canonical paths for relative inputs and both rename endpoints."""
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        if name == 'Path.iterdir':
+            return []
+        if name == 'open':
+            return MontyFileHandle(str(args[0]), 'r')
+        if name == 'Path.read_text':
+            return 'hello'
+        return True
+
+    result = monty_run(
+        """
+import os
+from pathlib import Path
+Path('sub/../file.txt').exists()
+Path('/other//sub/../file.txt').exists()
+os.listdir()
+os.rename('./sub/../src', '../dst')
+open('./sub//../file.txt').read()
+""",
+        cwd=cwd,
+        os=os_handler,
+    )
+    assert result == 'hello'
+    assert calls == [
+        ('Path.exists', (PurePosixPath(cwd) / 'file.txt',)),
+        ('Path.exists', (PurePosixPath('/other/file.txt'),)),
+        ('Path.iterdir', (PurePosixPath(cwd),)),
+        ('Path.rename', (PurePosixPath(cwd) / 'src', PurePosixPath('/dst'))),
+        ('open', (PurePosixPath(cwd) / 'file.txt', 'r')),
+        ('Path.read_text', (PurePosixPath(cwd) / 'file.txt',)),
+    ]
+
+
+def test_relative_paths_survive_os_callbacks(monty_run: RunMonty):
+    """Python results retain relative spelling while callbacks see absolute requests."""
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        if name == 'Path.iterdir':
+            return [PurePosixPath('/data/file.txt')]
+        assert name == 'open'
+        return MontyFileHandle(str(args[0]), 'r')
+
+    result = monty_run(
+        """
+from pathlib import Path
+([str(p) for p in Path('.').iterdir()],
+ [str(p) for p in Path('sub/..').iterdir()],
+ open('./file.txt').name,
+ Path('./file.txt').open().name,
+ open(b'./file.txt').name)
+""",
+        cwd='/data',
+        os=os_handler,
+    )
+    assert result == (['file.txt'], ['sub/../file.txt'], './file.txt', 'file.txt', b'./file.txt')
+    assert calls == [
+        ('Path.iterdir', (PurePosixPath('/data'),)),
+        ('Path.iterdir', (PurePosixPath('/data'),)),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+        ('open', (PurePosixPath('/data/file.txt'), 'r')),
+    ]
+
+
+@pytest.mark.parametrize('with_callback', [False, True])
+@pytest.mark.parametrize(
+    'operation, message',
+    [
+        ('open(path)', 'embedded null byte'),
+        ('Path(path).read_text()', 'embedded null byte'),
+        ('os.stat(path)', 'stat: embedded null character in path'),
+        ('os.chdir(path)', 'chdir: embedded null character in path'),
+        ("os.rename(path, 'dst')", 'rename: embedded null character in src'),
+        ("os.rename('src', path)", 'rename: embedded null character in dst'),
+    ],
+)
+def test_nul_paths_rejected_before_callback(monty_run: RunMonty, with_callback: bool, operation: str, message: str):
+    """Cancelled NUL components raise without dispatching, even with no mounts."""
+    calls: list[Any] = []
+
+    def os_handler(*, args: tuple[Any, ...], **_: Any) -> bool:
+        calls.append(args)
+        return True
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(
+            'import os\nfrom pathlib import Path\n' + operation,
+            inputs={'path': 'bad\0/../x'},
+            os=os_handler if with_callback else None,
+        )
+    assert str(exc_info.value) == f'ValueError: {message}'
+    result = monty_run(
+        'from pathlib import Path\np = Path(path)\n(p.exists(), p.is_file(), p.is_dir(), p.is_symlink())',
+        inputs={'path': 'bad\0/../x'},
+        os=os_handler if with_callback else None,
+    )
+    assert result == (False, False, False, False)
+    assert calls == []
+
+
+@pytest.mark.parametrize('with_callback', [False, True])
+@pytest.mark.parametrize('code, path', [('import os\nos.listdir()', '/'), ("open('./x')", '/x'), ("open('')", '')])
+def test_no_handler_uses_normalized_path(monty_run: RunMonty, with_callback: bool, code: str, path: str):
+    """Missing and declining callbacks report the same normalized permission error."""
+
+    def os_handler(**_: object) -> object:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code, os=os_handler if with_callback else None)
+    assert str(exc_info.value) == f'PermissionError: Permission denied: {path!r}'
+
+
 def test_path_concatenation(monty_run: RunMonty):
     """Path concatenation with / operator produces the correct path argument."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool:
         calls.append(args)
         return False
 
@@ -58,8 +182,8 @@ def test_multiple_path_calls(monty_run: RunMonty):
     """Multiple Path method calls reach the callback in sequence."""
     calls: list[str] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-        calls.append(function_name)
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool:
+        calls.append(name)
         return True
 
     code = """
@@ -78,9 +202,9 @@ def test_os_multiple_calls(monty_run: RunMonty):
     """os is called for each OS operation, including inside conditionals."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool | str | None:
-        calls.append(function_name)
-        match function_name:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bool | str | None:
+        calls.append(name)
+        match name:
             case 'Path.exists':
                 return True
             case 'Path.read_text':
@@ -111,8 +235,8 @@ result
 def test_os_stat(monty_run: RunMonty):
     """os can return stat_result for Path.stat(), accessible by field and index."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'Path.stat':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'Path.stat':
             return StatResult.file_stat(1024, 0o644, 1234567890.0)
         return None
 
@@ -129,7 +253,7 @@ info = Path('/tmp/file.txt').stat()
 def test_stat_result_returned_from_monty(monty_run: RunMonty):
     """stat_result returned from Monty is accessible in Python."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         return StatResult.file_stat(2048, 0o100_755, 1700000000.0)
 
     stat_result = monty_run('from pathlib import Path\nPath("/tmp/file.txt").stat()', os=os_handler)
@@ -147,7 +271,7 @@ def test_stat_result_returned_from_monty(monty_run: RunMonty):
 def test_stat_result_repr(monty_run: RunMonty):
     """stat_result repr shows field names and values."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         return StatResult.file_stat(512, 0o644, 0.0)
 
     result = monty_run('from pathlib import Path\nPath("/tmp/file.txt").stat()', os=os_handler)
@@ -182,8 +306,8 @@ def test_not_callable(monty_run: RunMonty):
 def test_not_handled_sentinel_filesystem_callback(monty_run: RunMonty):
     """Returning NOT_HANDLED from an os callback uses the filesystem fallback error."""
 
-    def os_callback(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
-        del function_name, args, kwargs
+    def os_callback(*, name: str, args: tuple[Any, ...], kwargs: dict[str, Any], **_: Any) -> object:
+        del name, args, kwargs
         return NOT_HANDLED
 
     code = """
@@ -203,8 +327,8 @@ message
 def test_not_handled_sentinel_non_filesystem_callback(monty_run: RunMonty):
     """Returning NOT_HANDLED from an os callback uses the non-filesystem fallback error."""
 
-    def os_callback(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
-        del function_name, args, kwargs
+    def os_callback(*, name: str, args: tuple[Any, ...], kwargs: dict[str, Any], **_: Any) -> object:
+        del name, args, kwargs
         return NOT_HANDLED
 
     code = """
@@ -230,9 +354,9 @@ def test_os_getenv_callback(monty_run: RunMonty):
     """os.getenv() forwards key (and None default) to the callback."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
-        calls.append((function_name, args))
-        if function_name == 'os.getenv':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> str | None:
+        calls.append((name, args))
+        if name == 'os.getenv':
             key, default = args
             env = {'HOME': '/home/user', 'USER': 'testuser'}
             return env.get(key, default)
@@ -246,8 +370,8 @@ def test_os_getenv_callback(monty_run: RunMonty):
 def test_os_getenv_callback_missing(monty_run: RunMonty):
     """os.getenv() returns None for missing env var when no default."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
-        if function_name == 'os.getenv':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> str | None:
+        if name == 'os.getenv':
             key, default = args
             env: dict[str, str] = {}
             return env.get(key, default)
@@ -261,9 +385,9 @@ def test_os_getenv_callback_with_default(monty_run: RunMonty):
     """os.getenv() forwards the default and uses it when the env var is missing."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> str | None:
         calls.append(args)
-        if function_name == 'os.getenv':
+        if name == 'os.getenv':
             key, default = args
             env: dict[str, str] = {}
             return env.get(key, default)
@@ -275,34 +399,34 @@ def test_os_getenv_callback_with_default(monty_run: RunMonty):
 
 
 # =============================================================================
-# Clock functions (date.today / datetime.now)
+# Clock functions (date.today / datetime.now), under `datetime='call_host'`
 # =============================================================================
 
 
 def test_date_today_callback(monty_run: RunMonty):
     """date.today() works through the direct os callback with no arguments."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> datetime.date | None:
-        if function_name == 'date.today':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> datetime.date | None:
+        if name == 'date.today':
             assert args == ()
             return datetime.date(2024, 1, 15)
         return None
 
-    result = monty_run('from datetime import date; date.today()', os=os_handler)
+    result = monty_run('from datetime import date; date.today()', os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(('date', 'datetime.date(2024, 1, 15)'))
 
 
 def test_datetime_now_callback_naive(monty_run: RunMonty):
     """datetime.now() passes None as the timezone argument."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> datetime.datetime | None:
-        if function_name == 'datetime.now':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> datetime.datetime | None:
+        if name == 'datetime.now':
             (tzinfo,) = args
             assert tzinfo is None
             return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
         return None
 
-    result = monty_run('from datetime import datetime; datetime.now()', os=os_handler)
+    result = monty_run('from datetime import datetime; datetime.now()', os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(
         ('datetime', 'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)')
     )
@@ -311,20 +435,197 @@ def test_datetime_now_callback_naive(monty_run: RunMonty):
 def test_datetime_now_callback_with_timezone(monty_run: RunMonty):
     """datetime.now() works through the direct os callback and receives tzinfo."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> datetime.datetime | None:
-        if function_name == 'datetime.now':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> datetime.datetime | None:
+        if name == 'datetime.now':
             (tzinfo,) = args
             assert tzinfo == datetime.timezone.utc
             return datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=tzinfo)
         return None
 
-    result = monty_run('from datetime import datetime, timezone; datetime.now(timezone.utc)', os=os_handler)
+    code = 'from datetime import datetime, timezone; datetime.now(timezone.utc)'
+    result = monty_run(code, os=os_handler, checkout=CALL_HOST)
     assert (type(result).__name__, repr(result)) == snapshot(
         (
             'datetime',
             'datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc)',
         )
     )
+
+
+def test_time_time_callback(monty_run: RunMonty):
+    """time.time() reaches the callback naming itself as the caller, and returns a float."""
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> float | None:
+        if name == 'time.time':
+            assert args == ('time.time',)
+            return 1700000000.5
+        return None
+
+    assert monty_run('import time; time.time()', os=os_handler, checkout=CALL_HOST) == snapshot(1700000000.5)
+
+
+def test_time_clocks_share_one_call_naming_their_caller(monty_run: RunMonty):
+    """Every clock reaches `time.time`; the caller argument lets a handler answer each one differently."""
+    answers = {'time.time': 1000.0, 'time.monotonic': 5.0, 'time.perf_counter': 0.25, 'time.gmtime': 0.0}
+    calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        if name == 'time.time':
+            return answers[args[0]]
+        return NOT_HANDLED
+
+    code = 'import time; (time.time(), time.monotonic(), time.perf_counter(), time.gmtime().tm_year)'
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot((1000.0, 5.0, 0.25, 1970))
+    assert calls == snapshot(
+        [
+            ('time.time', ('time.time',)),
+            ('time.time', ('time.monotonic',)),
+            ('time.time', ('time.perf_counter',)),
+            ('time.time', ('time.gmtime',)),
+        ]
+    )
+
+
+def test_abstract_os_time_receives_the_caller(monty_run: RunMonty):
+    """`AbstractOS.time()` gets the caller, so a subclass can give each clock its own reading."""
+
+    class Clocks(OSAccess):
+        def time(self, caller: TimeCaller = 'time.time') -> float:
+            return {'time.time': 1000.0, 'time.monotonic': 5.0}.get(caller, -1.0)
+
+    code = 'import time; (time.time(), time.monotonic(), time.perf_counter())'
+    assert monty_run(code, os=Clocks(), checkout=CALL_HOST) == snapshot((1000.0, 5.0, -1.0))
+
+
+# =============================================================================
+# Sleeping (time.sleep / asyncio.sleep), under `sleep='call_host'`
+# =============================================================================
+
+
+def test_time_sleep_callback(monty_run: RunMonty):
+    """time.sleep() passes the delay as float seconds and evaluates to None."""
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        # the host decides how long to wait; waiting not at all is a valid choice
+        return None
+
+    assert monty_run('import time; time.sleep(1.5) is None', os=os_handler, checkout=CALL_HOST) == snapshot(True)
+    assert calls == snapshot([('time.sleep', (1.5,))])
+
+
+def test_time_sleep_can_be_refused(monty_run: RunMonty):
+    """A host that declines the wait leaves the sandbox with monty's own error."""
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import time; time.sleep(30)', os=os_handler, checkout=CALL_HOST)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'time.sleep' is not supported in this environment")
+
+
+def test_asyncio_sleep_callback(monty_run: RunMonty):
+    """asyncio.sleep() passes only the delay; the await produces `result` whatever the host returns."""
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], is_async: bool, **_: Any) -> Any:
+        calls.append((name, args))
+        assert is_async is False
+        return 'ignored'
+
+    code = "import asyncio; asyncio.run(asyncio.sleep(0.25, 'woken'))"
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot('woken')
+    assert calls == snapshot([('asyncio.sleep', (0.25,))])
+
+
+def test_asyncio_sleep_result_stays_in_the_sandbox(monty_run: RunMonty):
+    """`result` never crosses the host boundary, so values with no wire form survive."""
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        return None
+
+    code = 'import asyncio\ndef f():\n    return 42\nasyncio.run(asyncio.sleep(0, f))()'
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot(42)
+
+
+def test_async_os_callback_requires_async_monty(pool: Monty):
+    """The sync pool has no event loop to run a coroutine answer on; the refusal poisons the checkout."""
+
+    async def os_handler(**_: Any) -> Any:
+        return None
+
+    with pool.checkout(os_policy={'sleep': 'call_host'}) as session:
+        with pytest.raises(RuntimeError) as exc_info:
+            session.feed_run('import time; time.sleep(0)', os=os_handler)
+        assert str(exc_info.value) == snapshot('async os callbacks require AsyncMonty')
+        # the discarded checkout is not reusable
+        with pytest.raises(RuntimeError):
+            session.feed_run('1 + 1')
+
+
+# =============================================================================
+# Entropy (os.urandom / random)
+# =============================================================================
+
+
+def test_os_urandom_callback(monty_run: RunMonty):
+    """os.urandom(n) reaches the host as `os.urandom` with the byte count."""
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        calls.append((name, args))
+        return bytes(range(args[0]))
+
+    result = monty_run('import os\nos.urandom(4)', os=os_handler)
+    assert result == snapshot(b'\x00\x01\x02\x03')
+    assert calls == snapshot([('os.urandom', (4,))])
+
+
+SEED_BYTES = bytes(i % 256 for i in range(2496))
+CALL_HOST_RANDOM: dict[str, Any] = {'os_policy': {'random_start': 'call_host'}}
+
+
+def test_random_unseeded_draws_never_call_the_host(monty_run: RunMonty):
+
+    def os_handler(*, name: str, **_: Any) -> bytes:
+        raise AssertionError(f'unexpected OS call {name}')
+
+    code = 'import random\n[random.random(), random.Random().random()]'
+    first = monty_run(code, os=os_handler)
+    second = monty_run(code, os=os_handler)
+    assert all(0.0 <= x < 1.0 for x in first + second)
+    assert first != second
+
+
+def test_random_seeded_never_calls_host(monty_run: RunMonty):
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        raise AssertionError(f'unexpected OS call {name}')
+
+    assert monty_run('import random\nrandom.seed(42)\nrandom.random()', os=os_handler) == snapshot(0.6394267984578837)
+
+
+def test_random_seed_persists_across_feeds(pool: Monty):
+    """The module-level generator is session state, like the globals."""
+    with pool.checkout() as session:
+        session.feed_run('import random\nrandom.seed(5)')
+        assert session.feed_run('import random\nrandom.random()') == snapshot(0.6229016948897019)
+
+
+@pytest.mark.parametrize('expression', ['random.Random', 'type(random.Random(1))'])
+def test_random_type_returns_repr(monty_run: RunMonty, expression: str):
+    """The sandbox's Random class crosses as a string, not a host constructor."""
+    assert monty_run(f'import random\n{expression}') == "<class 'random.Random'>"
+
+
+def test_random_instance_returns_repr(monty_run: RunMonty):
+    """Returning a generator exposes only its repr."""
+    result = monty_run('import random\nrandom.Random(1)')
+    assert isinstance(result, str)
+    assert result.startswith('<random.Random object at 0x')
+    assert result.endswith('>')
 
 
 # =============================================================================
@@ -336,9 +637,9 @@ def test_os_environ_key_access(monty_run: RunMonty):
     """os.environ['KEY'] works correctly after getting environ dict."""
     calls: list[str] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        calls.append(function_name)
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append(name)
+        if name == 'os.environ':
             return {'HOME': '/home/user', 'USER': 'testuser'}
         return None
 
@@ -350,8 +651,8 @@ def test_os_environ_key_access(monty_run: RunMonty):
 def test_os_environ_key_missing_raises(monty_run: RunMonty):
     """os.environ['MISSING'] raises KeyError."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {}
         return None
 
@@ -363,8 +664,8 @@ def test_os_environ_key_missing_raises(monty_run: RunMonty):
 def test_os_environ_get_method(monty_run: RunMonty):
     """os.environ.get() works correctly."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'HOME': '/home/user'}
         return None
 
@@ -375,8 +676,8 @@ def test_os_environ_get_method(monty_run: RunMonty):
 def test_os_environ_get_with_default(monty_run: RunMonty):
     """os.environ.get() with default for missing key."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {}
         return None
 
@@ -387,8 +688,8 @@ def test_os_environ_get_with_default(monty_run: RunMonty):
 def test_os_environ_len(monty_run: RunMonty):
     """len(os.environ) returns correct count."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'A': '1', 'B': '2', 'C': '3'}
         return None
 
@@ -399,8 +700,8 @@ def test_os_environ_len(monty_run: RunMonty):
 def test_os_environ_contains(monty_run: RunMonty):
     """'KEY' in os.environ works correctly."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'HOME': '/home/user'}
         return None
 
@@ -411,8 +712,8 @@ def test_os_environ_contains(monty_run: RunMonty):
 def test_os_environ_keys(monty_run: RunMonty):
     """os.environ.keys() returns keys."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'HOME': '/home', 'USER': 'test'}
         return None
 
@@ -423,8 +724,8 @@ def test_os_environ_keys(monty_run: RunMonty):
 def test_os_environ_values(monty_run: RunMonty):
     """os.environ.values() returns values."""
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        if function_name == 'os.environ':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        if name == 'os.environ':
             return {'A': '1', 'B': '2'}
         return None
 
@@ -441,8 +742,8 @@ def test_path_write_text_callback(monty_run: RunMonty):
     """Path.write_text() with os callback works correctly."""
     written_files: dict[str, str] = {}
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
-        if function_name == 'Path.write_text':
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> int | None:
+        if name == 'Path.write_text':
             path, content = args
             written_files[str(path)] = content
             return len(content.encode('utf-8'))
@@ -458,8 +759,8 @@ def test_path_write_bytes_callback(monty_run: RunMonty):
     """Path.write_bytes() reaches the callback with the path and raw bytes."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> int | None:
+        calls.append((name, args))
         return 3
 
     result = monty_run('from pathlib import Path; Path("/tmp/data.bin").write_bytes(b"\\x00\\x01\\x02")', os=os_handler)
@@ -483,8 +784,8 @@ def test_path_mkdir_kwargs_callback(monty_run: RunMonty, call: str, expected_kwa
     defaults to interpret the call."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        calls.append((function_name, args, kwargs))
+    def os_handler(*, name: str, args: tuple[Any, ...], kwargs: dict[str, Any], **_: Any) -> None:
+        calls.append((name, args, kwargs))
         return None
 
     monty_run(f'from pathlib import Path; Path("/tmp/newdir").{call}', os=os_handler)
@@ -496,8 +797,8 @@ def test_path_remove_and_rename_callbacks(monty_run: RunMonty):
     """unlink(), rmdir(), and rename() reach the callback with the right paths."""
     calls: list[Any] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        calls.append((function_name, args))
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> None:
+        calls.append((name, args))
         return None
 
     code = """
@@ -521,9 +822,9 @@ def test_write_operations_callback(monty_run: RunMonty):
     """Multiple write operations work with os callback."""
     operations: list[tuple[str, tuple[Any, ...]]] = []
 
-    def os_handler(function_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        operations.append((function_name, args))
-        match function_name:
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        operations.append((name, args))
+        match name:
             case 'Path.mkdir':
                 return None
             case 'Path.write_text':
@@ -551,3 +852,446 @@ Path('/tmp/mydir/file.txt').read_text()
             ('Path.read_text', (PurePosixPath('/tmp/mydir/file.txt'),)),
         ]
     )
+
+
+# OS policy
+
+
+def test_datetime_default_reads_worker_clock(monty_run: RunMonty):
+    """The default clock is the worker's, read in UTC rather than the host's zone."""
+    before = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    result = monty_run('from datetime import datetime\ndatetime.now()')
+    after = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    assert before - datetime.timedelta(seconds=60) <= result <= after + datetime.timedelta(seconds=60)
+
+
+def test_datetime_fixed_naive_is_utc(monty_run: RunMonty):
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, 123456)
+    code = (
+        'import time\nfrom datetime import date, datetime, timezone\n'
+        '(datetime.now(), date.today(), time.time(), datetime.now(timezone.utc), datetime.now() == datetime.now())'
+    )
+    result = monty_run(code, checkout={'os_policy': {'datetime': frozen}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 15, 10, 30, 5, 123456),
+            datetime.date(2024, 1, 15),
+            1705314605.123456,
+            datetime.datetime(2024, 1, 15, 10, 30, 5, 123456, tzinfo=datetime.timezone.utc),
+            True,
+        )
+    )
+
+
+def test_datetime_fixed_aware_uses_its_offset(monty_run: RunMonty):
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+    code = 'import time\nfrom datetime import datetime, timezone\n(datetime.now(), datetime.now(timezone.utc), time.time())'
+    result = monty_run(code, checkout={'os_policy': {'datetime': frozen}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 15, 10, 30, 5),
+            datetime.datetime(2024, 1, 15, 8, 30, 5, tzinfo=datetime.timezone.utc),
+            1705307405.0,
+        )
+    )
+
+
+def test_datetime_fixed_zoneinfo(monty_run: RunMonty):
+    """Resolve date-dependent UTC offsets at the frozen instant."""
+    frozen = datetime.datetime(2024, 7, 1, 12, 0, tzinfo=ZoneInfo('Europe/Paris'))
+    code = 'from datetime import datetime, timezone\n(datetime.now(), datetime.now(timezone.utc))'
+    result = monty_run(code, checkout={'os_policy': {'datetime': frozen}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 7, 1, 12, 0),
+            datetime.datetime(2024, 7, 1, 10, 0, tzinfo=datetime.timezone.utc),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('later', ValueError, "datetime must be 'system', 'call_host' or a datetime.datetime, got 'later'"),
+        (123, TypeError, "datetime must be 'system', 'call_host' or a datetime.datetime, not int"),
+        (
+            datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(microseconds=500))),
+            ValueError,
+            'datetime utcoffset must be a whole number of seconds',
+        ),
+    ],
+)
+def test_datetime_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(os_policy={'datetime': value})
+    assert str(exc_info.value) == message
+
+
+def test_sleep_zero_returns_at_once(monty_run: RunMonty):
+    start = time.monotonic()
+    code = "import asyncio, time\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))"
+    assert monty_run(code, checkout={'os_policy': {'sleep': 'zero'}}) == snapshot('woken')
+    assert time.monotonic() - start < 5
+
+
+def test_sleep_system_max(monty_run: RunMonty):
+    start = time.monotonic()
+    code = "import asyncio, time\nt = time.time()\ntime.sleep(3600)\nasyncio.run(asyncio.sleep(3600, 'woken'))\ntime.time() >= t"
+    assert monty_run(code, checkout={'os_policy': {'sleep_system_max': 0.001}}) == snapshot(True)
+    assert time.monotonic() - start < 5
+    assert (
+        monty_run('import time\ntime.sleep(0.001)', checkout={'os_policy': {'sleep_system_max': float('inf')}}) is None
+    )
+
+
+def test_sandbox_sleeps_overlap(monty_run: RunMonty):
+    # Verify overlap by ordering, without requiring a precise wall-clock duration.
+    code = (
+        'import asyncio, time\n'
+        'starts, ends = [], []\n'
+        'async def w(n):\n'
+        '    starts.append(time.time())\n'
+        '    await asyncio.sleep(0.05, n)\n'
+        '    ends.append(time.time())\n'
+        '    return n * 2\n'
+        'async def main():\n'
+        '    return await asyncio.gather(w(1), w(2), w(3))\n'
+        'r = asyncio.run(main())\n'
+        '(r, max(starts) < min(ends))'
+    )
+    assert monty_run(code) == snapshot(([2, 4, 6], True))
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        (-1, ValueError, 'invalid sleep_system_max: cannot convert float seconds to Duration: value is negative'),
+        (
+            float('nan'),
+            ValueError,
+            'invalid sleep_system_max: cannot convert float seconds to Duration: value is either too big or NaN',
+        ),
+        ('1', TypeError, 'sleep_system_max must be a number of seconds, not str'),
+        (True, TypeError, 'sleep_system_max must be a number of seconds, not bool'),
+    ],
+)
+def test_sleep_system_max_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(os_policy={'sleep_system_max': value})
+    assert str(exc_info.value) == message
+
+
+@pytest.mark.parametrize('sleep', ['call_host', 'zero'])
+def test_sleep_system_max_contradicts_other_modes(pool: Monty, sleep: Any):
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(os_policy={'sleep': sleep, 'sleep_system_max': 1})
+    assert str(exc_info.value) == f"sleep_system_max only applies to sleep='system', not '{sleep}'"
+
+
+def test_sleep_system_never_reaches_os(monty_run: RunMonty):
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        return None
+
+    code = "import asyncio, time\ntime.sleep(0.001)\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
+    assert monty_run(code, os=os_handler) == snapshot('woken')
+    assert calls == snapshot([])
+
+
+def test_sleep_call_host_reaches_os(monty_run: RunMonty):
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        calls.append((name, args))
+        return None
+
+    assert (
+        monty_run('import time\ntime.sleep(1.5)', os=os_handler, checkout={'os_policy': {'sleep': 'call_host'}}) is None
+    )
+    assert calls == snapshot([('time.sleep', (1.5,))])
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('forever', ValueError, "sleep must be 'system', 'call_host' or 'zero', got 'forever'"),
+        (0, TypeError, 'sleep must be a str'),
+    ],
+)
+def test_sleep_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(os_policy={'sleep': value})
+    assert str(exc_info.value) == message
+
+
+def test_process_time_defaults_to_zero(monty_run: RunMonty):
+    code = 'import time; (time.process_time(), time.thread_time(), time.process_time_ns(), time.thread_time_ns())'
+    assert monty_run(code) == snapshot((0.0, 0.0, 0, 0))
+    assert monty_run(code, checkout={'os_policy': {'process_time': 'zero'}}) == snapshot((0.0, 0.0, 0, 0))
+
+
+def test_process_time_elapsed_reports_execution_time(monty_run: RunMonty):
+    """`'elapsed'` is the session's execution clock: it advances while the sandbox runs and never reaches `os=`."""
+    code = """
+import time
+start = time.process_time()
+for _ in range(200_000):
+    pass
+(time.process_time() > start, time.process_time_ns() > 0, time.thread_time() > 0.0)
+"""
+    calls: list[str] = []
+
+    def os_handler(*, name: str, **_: Any) -> Any:
+        calls.append(name)
+        return NOT_HANDLED
+
+    checkout = {'os_policy': {'process_time': 'elapsed', 'datetime': 'call_host'}}
+    assert monty_run(code, os=os_handler, checkout=checkout) == snapshot((True, True, True))
+    assert calls == snapshot([])
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('cpu', ValueError, "process_time must be 'zero' or 'elapsed', got 'cpu'"),
+        (0, TypeError, 'process_time must be a str'),
+    ],
+)
+def test_process_time_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(os_policy={'process_time': value})
+    assert str(exc_info.value) == message
+
+
+@pytest.mark.parametrize('seed', [42, -42, 2**70, 1.5, 'abc', b'abc'])
+def test_random_start_seed_matches_random_seed(monty_run: RunMonty, seed: Any):
+    expected = random.Random(seed)
+    code = 'import random\n[random.random(), random.randint(1, 100)]'
+    assert monty_run(code, checkout={'os_policy': {'random_start': {'seed': seed}}}) == [
+        expected.random(),
+        expected.randint(1, 100),
+    ]
+
+
+def test_random_start_seed_persists_and_is_overridable(pool: Monty):
+    with pool.checkout(os_policy={'random_start': {'seed': 42}}) as session:
+        session.feed_run('import random')
+        assert session.feed_run('random.random()') == snapshot(0.6394267984578837)
+        session.feed_run('random.seed(5)')
+        assert session.feed_run('random.random()') == snapshot(0.6229016948897019)
+
+
+def test_random_start_seed_instances_are_deterministic(monty_run: RunMonty):
+    code = 'import random\n[random.Random().random(), random.Random().random(), random.random()]'
+    first = monty_run(code, checkout={'os_policy': {'random_start': {'seed': 42}}})
+    second = monty_run(code, checkout={'os_policy': {'random_start': {'seed': 42}}})
+    assert first == second
+    assert len(set(first)) == 3
+    assert first[2] == snapshot(0.6394267984578837)
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        (
+            'seeded',
+            ValueError,
+            "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, got 'seeded'",
+        ),
+        (
+            {'sead': 1},
+            ValueError,
+            "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, got {'sead': 1}",
+        ),
+        ({'seed': True}, TypeError, 'random_start seed must be an int, float, str or bytes, not bool'),
+        ({'seed': float('nan')}, ValueError, 'random_start seed must be finite, not NaN'),
+        ({'seed': float('-inf')}, ValueError, 'random_start seed must be finite, not -inf'),
+        ({'seed': None}, TypeError, 'random_start seed must be an int, float, str or bytes, not NoneType'),
+        (1, TypeError, "random_start must be 'system', 'call_host' or {'seed': int | float | str | bytes}, not int"),
+    ],
+)
+def test_random_start_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(os_policy={'random_start': value})
+    assert str(exc_info.value) == message
+
+
+def test_random_start_call_host_asks_the_host_for_entropy_once(monty_run: RunMonty):
+    calls: list[Any] = []
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        calls.append((name, args))
+        return SEED_BYTES
+
+    code = 'import random\n[random.random(), random.randint(1, 100), random.Random(1).random()]'
+    result = monty_run(code, os=os_handler, checkout=CALL_HOST_RANDOM)
+    assert result == snapshot([0.2469864874493971, 77, 0.13436424411240122])
+    assert calls == snapshot([('os.urandom', (2496,))])
+
+
+@pytest.mark.parametrize('with_callback', [True, False])
+def test_random_start_call_host_without_entropy_raises(monty_run: RunMonty, with_callback: bool):
+    def os_handler(**_: Any) -> object:
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import random\nrandom.random()', os=os_handler if with_callback else None, checkout=CALL_HOST_RANDOM)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' is not supported in this environment")
+
+
+def test_random_start_call_host_rejects_short_entropy(monty_run: RunMonty):
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> bytes:
+        return b'abc'
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import random\nrandom.random()', os=os_handler, checkout=CALL_HOST_RANDOM)
+    assert str(exc_info.value) == snapshot("RuntimeError: 'os.urandom' returned 3 bytes, expected 2496")
+
+
+# OS policy: timezone
+
+
+def test_timezone_fixed_offset_and_name(monty_run: RunMonty):
+    """A fixed zone shifts naive `now()` and `today()`; `time.time()` and aware `now(tz)` are unaffected."""
+    frozen = datetime.datetime(2024, 1, 15, 23, 30, 5)
+    code = (
+        'import time\nfrom datetime import date, datetime, timezone\n'
+        '(datetime.now(), date.today(), time.time(), datetime.now(timezone.utc))'
+    )
+    zone = {'offset_seconds': 3600, 'name': 'CET'}
+    result = monty_run(code, checkout={'os_policy': {'datetime': frozen, 'timezone': zone}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 16, 0, 30, 5),
+            datetime.date(2024, 1, 16),
+            1705361405.0,
+            datetime.datetime(2024, 1, 15, 23, 30, 5, tzinfo=datetime.timezone.utc),
+        )
+    )
+
+
+def test_timezone_defaults_to_utc(monty_run: RunMonty):
+    """The default zone is UTC, not the host's, so `astimezone()` and the `time` constants are host-independent."""
+    frozen = datetime.datetime(2024, 7, 1, 12, 0, tzinfo=datetime.timezone.utc)
+    code = (
+        'import time\nfrom datetime import datetime\n'
+        '(datetime.now(), datetime.now().astimezone(), datetime(2024, 1, 1, 12, 30).astimezone().strftime("%H:%M %Z"), '
+        'time.timezone, time.altzone, time.daylight, time.tzname)'
+    )
+    for zone in ['utc', None]:
+        os_policy: dict[str, Any] = {'datetime': frozen}
+        if zone is not None:
+            os_policy['timezone'] = zone
+        result = monty_run(code, checkout={'os_policy': os_policy})
+        assert result == snapshot(
+            (
+                datetime.datetime(2024, 7, 1, 12, 0),
+                datetime.datetime(2024, 7, 1, 12, 0, tzinfo=datetime.timezone(datetime.timedelta(0), 'UTC')),
+                '12:30 UTC',
+                0,
+                0,
+                0,
+                ('UTC', 'UTC'),
+            )
+        )
+
+
+def test_timezone_fixed_zone_is_reported(monty_run: RunMonty):
+    """A fixed zone's offset and name reach `astimezone()`, `%Z` and the `time` constants."""
+    code = (
+        'import time\nfrom datetime import datetime, timezone\n'
+        '(datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone(), '
+        'datetime(2024, 6, 15, 12, 30).astimezone(timezone.utc), '
+        'datetime(2024, 6, 15, 12, 30).astimezone().strftime("%z %Z"), '
+        'time.timezone, time.tzname)'
+    )
+    zone = {'offset_seconds': 7200, 'name': 'EET'}
+    result = monty_run(code, checkout={'os_policy': {'timezone': zone}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 6, 15, 14, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200), 'EET')),
+            datetime.datetime(2024, 6, 15, 10, 30, tzinfo=datetime.timezone.utc),
+            '+0200 EET',
+            -7200,
+            ('EET', 'EET'),
+        )
+    )
+
+
+def test_timezone_named_zone_applies_dst_rules(monty_run: RunMonty):
+    """An IANA name resolves in the worker: the offset and abbreviation follow the instant, the constants the year."""
+    frozen = datetime.datetime(2024, 1, 15, 10, 30, 5, tzinfo=datetime.timezone.utc)
+    code = (
+        'import time\nfrom datetime import datetime, timezone\n'
+        '(datetime.now(), datetime(2024, 6, 15, 12, 30, tzinfo=timezone.utc).astimezone(), '
+        'datetime(2024, 10, 27, 1, 30).astimezone(timezone.utc), '
+        'datetime(2024, 6, 15, 12, 30).astimezone().strftime("%H:%M %Z %z"), '
+        'time.timezone, time.altzone, time.daylight, time.tzname)'
+    )
+    result = monty_run(code, checkout={'os_policy': {'datetime': frozen, 'timezone': 'Europe/London'}})
+    assert result == snapshot(
+        (
+            datetime.datetime(2024, 1, 15, 10, 30, 5),
+            datetime.datetime(2024, 6, 15, 13, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600), 'BST')),
+            datetime.datetime(2024, 10, 27, 0, 30, tzinfo=datetime.timezone.utc),
+            '12:30 BST +0100',
+            0,
+            -3600,
+            1,
+            ('GMT', 'BST'),
+        )
+    )
+
+
+def test_timezone_named_zone_constants_need_the_clock(monty_run: RunMonty):
+    """The `time` constants come from the clock's year, which a `call_host` clock cannot give at import."""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(
+            'import time\ntime.tzname',
+            checkout={'os_policy': {'datetime': 'call_host', 'timezone': 'Europe/London'}},
+        )
+    assert str(exc_info.value) == snapshot("AttributeError: 'module' object has no attribute 'tzname'")
+
+
+def test_timezone_unknown_name_is_refused_at_checkout(monty_run: RunMonty):
+    with pytest.raises(ValueError) as exc_info:
+        monty_run('1', checkout={'os_policy': {'timezone': 'Mars/Olympus'}})
+    assert str(exc_info.value) == snapshot("unknown timezone 'Mars/Olympus'")
+
+
+@pytest.mark.parametrize(
+    ('value', 'error', 'message'),
+    [
+        ('mars', ValueError, "unknown timezone 'mars'"),
+        (
+            {'name': 'CET'},
+            ValueError,
+            "timezone must be 'utc', an IANA zone name or {'offset_seconds': int, 'name': str}, got {'name': 'CET'}",
+        ),
+        ({'offset_seconds': True}, TypeError, 'timezone offset_seconds must be an int'),
+        ({'offset_seconds': 86_400}, ValueError, 'timezone offset_seconds must be within -86399..=86399, got 86400'),
+        ({'offset_seconds': 0, 'name': 1}, TypeError, 'timezone name must be a str'),
+        (
+            3600,
+            TypeError,
+            "timezone must be 'utc', an IANA zone name or {'offset_seconds': int, 'name': str}, not int",
+        ),
+    ],
+)
+def test_timezone_invalid(pool: Monty, value: Any, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(os_policy={'timezone': value})
+    assert str(exc_info.value) == message
+
+
+def test_os_policy_rejects_unknown_keys(pool: Monty):
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(os_policy={'sleeps': 'zero'})  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot(
+        "unknown os_policy key 'sleeps', expected one of: datetime, timezone, sleep, sleep_system_max, process_time, random_start"
+    )
+    with pytest.raises(TypeError) as exc_info:
+        pool.checkout(os_policy='zero')  # pyright: ignore[reportArgumentType]
+    assert str(exc_info.value) == snapshot('os_policy must be a dict, not str')

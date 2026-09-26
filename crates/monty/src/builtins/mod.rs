@@ -10,7 +10,9 @@ mod bin;
 mod chr;
 mod divmod;
 mod enumerate;
+mod eval_exec;
 mod filter;
+mod format;
 mod getattr;
 mod hasattr;
 mod hash;
@@ -18,6 +20,7 @@ mod hex;
 mod id;
 mod isinstance;
 mod len;
+mod locals;
 mod map;
 mod min_max; // min and max share implementation
 mod next;
@@ -140,6 +143,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Divmod => divmod::builtin_divmod(vm, args),
             Self::Enumerate => enumerate::builtin_enumerate(vm, args),
             Self::Filter => filter::builtin_filter(vm, args),
+            Self::Format => format::builtin_format(vm, args),
             // `getattr()` / `hasattr()` may suspend a lazy host attribute lookup.
             Self::Getattr => return getattr::builtin_getattr(vm, args),
             Self::Hasattr => return hasattr::builtin_hasattr(vm, args),
@@ -167,6 +171,10 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
             Self::Zip => zip::builtin_zip(vm, args),
+            // `eval()` / `exec()` push the compiled snippet's frame.
+            Self::Eval => return eval_exec::builtin_eval(vm, args),
+            Self::Exec => return eval_exec::builtin_exec(vm, args),
+            Self::Locals => locals::builtin_locals(vm, args),
         };
         r.map(CallResult::Value)
     }

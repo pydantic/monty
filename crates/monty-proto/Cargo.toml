@@ -28,23 +28,29 @@ prost = { workspace = true }
 monty-type-checking = { workspace = true, optional = true }
 # Optional: powers the `python` feature's Python ↔ MontyObject conversion layer
 pyo3 = { workspace = true, optional = true, features = ["num-bigint"] }
+# Optional: the `python` feature iterates `MontyType` to build its round-trip table
+strum = { workspace = true, optional = true }
 # generation-only dependencies (see src/bin/generate.rs); exact pins so the
 # checked-in generated code is reproducible across contributors and CI
 prost-build = { version = "=0.14.4", optional = true }
 protox = { version = "=0.9.1", optional = true }
+heck = { version = "0.5", optional = true }
 
 [features]
+# Internal integration-test hooks; not part of the supported decoding API.
+test-util = []
 # Enables the `generate-proto` binary that regenerates src/generated from the
 # .proto schema. Not used by normal builds — the generated code is checked in.
-generate = ["dep:prost-build", "dep:protox"]
+generate = ["dep:prost-build", "dep:protox", "dep:heck"]
 # Enables the `python` module: PyO3-based conversions between Python objects
 # and `MontyObject`/`MontyException`. Off by default so pure-Rust consumers
 # (monty-pool, monty-runtime) never build or link against libpython.
-python = ["dep:pyo3"]
+python = ["dep:pyo3", "dep:strum"]
 # Enables the `worker` module: the child-side Child state machine that drives
 # the interpreter. Off by default so host-side consumers (monty-pool, the
 # bindings) never link the interpreter itself.
-worker = ["dep:monty", "dep:monty-type-checking"]
+# `tzdb-bundled` so every worker resolves zone names; native binaries add `tzdb` for the OS copy.
+worker = ["dep:monty", "dep:monty-type-checking", "monty-types/tzdb-bundled"]
 
 [[bin]]
 name = "generate-proto"
@@ -58,8 +64,14 @@ name = "dispatch"
 required-features = ["worker"]
 
 [dev-dependencies]
+allocation-counter = "0.8"
 insta = { workspace = true }
 monty = { workspace = true }
+monty-types = { workspace = true, features = ["tzdb"] }
+# Self dev-dependency enables budget instrumentation for tests, not normal builds.
+# Path-only (no version) so `cargo publish` strips it: a versioned self-reference
+# cannot resolve while this version is not yet on crates.io.
+monty-proto = { path = ".", features = ["test-util"] }
 serde_json = { workspace = true }
 strum = { workspace = true }
 

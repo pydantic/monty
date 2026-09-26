@@ -54,6 +54,7 @@ pub struct TelemetryAdapterHandle {
 }
 
 /// Distributed parent context and recorder for one checkout root.
+#[derive(Clone)]
 pub struct TelemetryContext {
     parent: Option<SpanContext>,
     logfire: Logfire,

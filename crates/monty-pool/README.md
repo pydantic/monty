@@ -52,7 +52,7 @@ async fn main() -> Result<(), PoolError> {
     session.feed("x = 21", vec![], vec![], false, &mut on_print).await?;
     let event = session.feed("x * 2", vec![], vec![], false, &mut on_print).await?;
     match event {
-        TurnEvent::Complete(value) => println!("result: {value:?}"), // Int(42)
+        TurnEvent::Complete(value) => println!("result: {value}"), // 42
         // other events are suspensions (external function calls, OS calls,
         // name lookups, futures) answered with `resume` / `resume_name_lookup`
         // / `resume_futures` to continue the turn
@@ -65,12 +65,24 @@ async fn main() -> Result<(), PoolError> {
 }
 ```
 
-`ReplConfig` also enables per-session sandbox `ResourceLimits`, type checking of every fed
-snippet, and `print_flush_interval` — how long the worker may batch `print()` output before
-sending it, so a burst of prints costs one event rather than one each (`Duration::ZERO`
-restores line buffering, one event per completed line); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
-per-feed filesystem mounts (`MountSpec`). Sessions can be snapshotted with `Checkout::dump`
-and restored later — including on a different worker or machine — with `Checkout::restore`.
+`ReplConfig` sets per-session `ResourceLimits`, type checking of every snippet, and `print_flush_interval`.
+The flush interval batches `print()` output; `Duration::ZERO` sends one event per completed line.
+Its `os_policy` sets the clock, timezone, initial random state and sleep policy for the session.
+`CallHost` delegates calls to the caller's OS handler through `TurnEvent::OsCall`.
+Every suspension variant of `TurnEvent` carries `position`, a `SourceRange` locating the suspending expression.
+The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
+`SleepMode::Zero` returns immediately.
+
+`Checkout::feed` accepts inputs exposed as sandbox globals and per-feed filesystem mounts (`MountSpec`); mounts that
+overlap on the host or repeat a virtual path fail the feed with a session-preserving `PoolError::Runtime`.
+`Checkout::feed_with_cwd` also changes the working directory, which defaults to the first feed's first mount and persists.
+`Checkout::worker_id` identifies a worker within its pool independently of PID reuse, for either transport.
+It returns `None` after the worker is released or discarded; `Checkout::pid` remains the subprocess-only OS diagnostic.
+
+`Checkout::dump` snapshots a session; `Checkout::restore` can restore it on another worker or machine.
+The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
+Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
+Invalid snapshots have no correctness or availability guarantees.
 
 ## Protections over in-process execution
 
@@ -80,8 +92,10 @@ and restored later — including on a different worker or machine — with `Chec
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
-  enforcement while they run because the timer cannot be polled. When a session has a `max_duration` budget,
-  the deadline also enforces it (plus `duration_limit_grace`) from outside the child.
+  enforcement while they run because the timer cannot be polled. When a session has a
+  `max_feed_duration` or `max_turn_duration` budget, the deadline also enforces it from outside the child,
+  each with its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`, 1s by default;
+  `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
   and ends the feed past the budget with an uncatchable `RuntimeError` in the sandbox.
   `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by
@@ -96,12 +110,23 @@ and restored later — including on a different worker or machine — with `Chec
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
   type checking), rather than letting a worker grow the host until the OOM killer
   intervenes. Exceeding it, or a refused allocation, exits the worker with a dedicated code
-  so it is reported as `PoolError::Runtime`/`MemoryError` instead of an unclassifiable
-  abort — the one `Runtime` error whose worker does not survive.
+  so it is reported as `PoolError::Runtime`/`MemoryError` instead of an unclassifiable abort.
+  The worker is already dead when the host receives this error.
 
-Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its
-session remain alive and usable — the one exception being the `MemoryError` above, raised for
-a worker that has already exited.
+Ordinary sandbox exceptions leave the session usable.
+After a soft memory or time limit, the worker survives but the heap has no correctness guarantees.
+Later feeds may still succeed: the duration budgets restart at the next feed, and a soft memory limit does not end
+the session either.
+Discard it yourself.
+A failed restore also discards the worker.
+
+Timeouts kill the single worker PID, not a process group; the Monty sandbox must never spawn subprocesses.
+A remote CPython worker needs deployment-level process teardown instead.
+The duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
+full budget plus grace, but `request_timeout` applies independently.
+Both deadlines are polled, so decoding a large reply can delay enforcement.
+Host mount I/O runs between turns and is not covered by either deadline; see
+[filesystem timeouts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md#io-timeouts-and-cancellation).
 
 ## Observability
 
@@ -135,12 +160,14 @@ linked SDK or streams raw measurements to the foreign host. Either turns on the 
 pool health
 (`monty.pool.workers.live`, `monty.pool.workers.idle`,
 `monty.pool.workers.suspended`, `monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
-`monty.pool.session.duration`) and per-turn cost (`monty.run.duration`,
+`monty.pool.session.duration`, `monty.pool.session.resumed`) and per-turn cost (`monty.run.duration`,
 `monty.run.execution_time`, `monty.turn.duration`, `monty.run.suspensions`,
 `monty.ext.call.duration`, `monty.snapshot.bytes`, `monty.print.bytes`,
 `monty.wire.frame.bytes`).
 `monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
 live checkout is dropped.
+`monty.pool.session.resumed` counts auto-resume attempts: `ok`, or why the reload failed (`exhausted`,
+`disconnected`, `refused`, `shutdown`, `mismatch`, `timeout`).
 
 Two differences from the spans above. Metrics cover **every** checkout, not only the ones a
 host gave a parent context — an aggregate over traced sessions alone would be misleading —
@@ -179,6 +206,31 @@ input so adapters that do not support metrics continue to work.
   `User-Agent: monty-pool/<version>`, and with the `telemetry` feature the `traceparent`
   (and `tracestate`) of `CheckoutOptions::telemetry`, so server-side spans join the
   caller's trace; a `connect_headers` entry of the same name replaces either.
+
+A WebSocket connection lost mid-session reports `PoolError::Disconnected`; it cannot distinguish a worker crash
+from a server policy drop.
+A draining server can instead return `PoolError::Shutdown`, naming what to load the session from when it could store
+it.
+The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have
+had side effects; callbacks used this way should be idempotent.
+A local subprocess claiming shutdown is a protocol violation.
+
+A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`;
+`ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
+`Checkout::restore` can accept this ID instead of dump bytes to restore a session's state after a disconnect, whether
+intentional or due to parking from e.g. an idle timeout or a remote restart.
+The remote is free to determine what `Checkout::restore` will do, for example it may lock the existing session to
+other consumers or it may issue a new session.
+A remote without persistence refuses `Checkout::dump` and `Checkout::restore` with `PoolError::Runtime`, and the
+session carries on.
+With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
+checkout redials, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
+session's ID.
+The session's host-counted suspension and sleep totals carry over, so a shutdown grants no extra allowance.
+It returns the original `PoolError::Shutdown` if the shutdown named nothing to load, if the new connection fails, or
+if the new session is not in the state the old one was in at the shutdown.
+The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
+A bare disconnect is never resumed, since the request may have run.
 
 ## Monty crates
 
