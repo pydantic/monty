@@ -30,9 +30,9 @@ mod value;
 
 use bindings::exports::pydantic::monty::worker::{
     CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent, Guest,
-    NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError, RaisedException,
-    RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status, TimeZone,
-    TypeCheckFormat,
+    ModuleStub, NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError,
+    RaisedException, RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status,
+    TimeZone, TypeCheckFormat,
 };
 
 thread_local! {
@@ -355,6 +355,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             exception: Some(raised_exception_from_component(error)),
         }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
+        Request::GetTypes => pb::parent_request::Kind::GetTypes(pb::GetTypes {}),
         Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state: state.into() }),
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
     };
@@ -393,7 +394,15 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         // sessions, or connects anywhere
         persistence: pb::Persistence::Unspecified.into(),
         mcp_servers: BudgetVec::default(),
-        type_check_module_stubs: BudgetVec::default(),
+        type_check_module_stubs: request
+            .type_check_module_stubs
+            .into_iter()
+            .map(|stub| pb::ModuleStub {
+                module: stub.module,
+                source: stub.source,
+            })
+            .collect::<Vec<_>>()
+            .into(),
     }
 }
 
@@ -538,10 +547,16 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
         Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
-        // the component sends no `GetTypes`, so its child never answers one
-        Some(pb::child_event::Kind::TypeStubs(_)) => {
-            invalid_event("TypeStubs answers a request the component never sends")
-        }
+        Some(pb::child_event::Kind::TypeStubs(stubs)) => Event::TypeStubs(
+            stubs
+                .modules
+                .iter()
+                .map(|stub| ModuleStub {
+                    module: stub.module.clone(),
+                    source: stub.source.clone(),
+                })
+                .collect(),
+        ),
         None => invalid_event("ChildEvent carried no kind"),
     }
 }
