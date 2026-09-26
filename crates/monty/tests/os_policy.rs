@@ -426,7 +426,7 @@ fn a_named_zone_applies_its_dst_rules() {
     };
     assert_eq!(
         run("import time\ntime.tzname", no_clock).unwrap_err(),
-        "AttributeError: 'module' object has no attribute 'tzname'"
+        "AttributeError: module 'time' has no attribute 'tzname'"
     );
     assert_eq!(
         run_repr_under("(time.timezone, time.tzname)", call_host()),
