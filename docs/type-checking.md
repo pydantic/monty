@@ -208,6 +208,8 @@ The `import` statements of a committed snippet are carried too (those outside an
 module-level `if` or `try` included), so `import math` in one feed still binds `math` for the next feed's check.
 They are re-emitted ahead of the snippet's other definitions, so a later rebinding of the name in a snippet wins for
 the checker as at runtime, while a name the snippet deleted after importing stays bound for the checker.
+An import inside an `if` or `try` is carried whether or not its branch ran, as ty sees both branches of one program:
+a later use of a name bound only in the branch that did not run checks clean and then raises `NameError` at runtime.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.

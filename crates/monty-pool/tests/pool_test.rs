@@ -22,7 +22,6 @@ use std::{
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
 // only the unix-gated exit-code test snapshots a message
-#[cfg(unix)]
 use insta::assert_snapshot;
 use monty_pool::{
     MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,

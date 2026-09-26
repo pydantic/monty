@@ -360,6 +360,8 @@ The bound value is a host object, so `type(tools)` is its host class rather than
 
 On the wire this is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the module name as its
 argument, answered with the module value, so a host driving suspensions itself answers it like any other call.
+The name is reserved for that: an `external_lookup` entry called `__import__` is never called, and the sandbox's own
+`__import__(...)` call raises `NameError`.
 To type-check code that imports a host module, give the checker its stub with `type_check_module_stubs`; see
 [type checking](type-checking.md#declaring-what-the-host-provides).
 

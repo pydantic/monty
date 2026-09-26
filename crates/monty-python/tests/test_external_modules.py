@@ -45,6 +45,13 @@ def test_a_dotted_module_name(pool: Monty):
         assert session.feed_run(code, external_modules={'pkg.tools': TOOLS}) == snapshot(3)
 
 
+def test_a_dotted_dict_key(pool: Monty):
+    """A dict key holding a dot is reachable through `getattr`, and callable."""
+    with pool.checkout() as session:
+        code = "import tools\ngetattr(tools, 'a.b')(1, 2)"
+        assert session.feed_run(code, external_modules={'tools': {'a.b': add}}) == snapshot(3)
+
+
 def test_the_module_object(pool: Monty):
     code = 'import tools\nimport tools as t\n[tools.add is t.add, type(tools).__name__, hasattr(tools, "nope")]'
     with pool.checkout() as session:

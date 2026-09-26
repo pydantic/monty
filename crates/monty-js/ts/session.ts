@@ -526,6 +526,9 @@ export class MontySession {
 class TurnAnswerer {
   /** Pending async external calls, by call id. */
   readonly futures = new Map<number, PendingFuture>()
+  /** The module wrappers this feed's imports built, one per module: each
+   *  wrapper sent is kept by the session's instance store. */
+  private readonly moduleValues = new Map<string, unknown>()
 
   constructor(
     private readonly native: NativeSession,
@@ -596,7 +599,14 @@ class TurnAnswerer {
     if (call.functionName === IMPORT_FUNCTION) {
       return this.answerImport(call, onPrint)
     }
-    const entry = this.hostEntry(call.functionName)
+    let entry: unknown
+    try {
+      entry = this.hostEntry(call.functionName)
+    } catch (err) {
+      // a getter that throws while the entry is read raises at the call
+      const { excType, message } = jsErrorParts(err)
+      return this.native.resumeError(excType, message, onPrint)
+    }
     if (entry === undefined) {
       return this.native.resumeNotFound(onPrint)
     }
@@ -623,23 +633,25 @@ class TurnAnswerer {
   /**
    * The host value `functionName` names: an own entry of `externalLookup`, or,
    * for a dotted name, that own property of the `externalModules` entry (a
-   * host function bound by an import is named `<module>.<attr>`; the module's
-   * own name may hold dots, an attribute's never does). Own keys only: an
-   * inherited callable (e.g. `Object.prototype.toString`) must never be
-   * dispatched as a host function.
+   * host function bound by an import is named `<module>.<attr>`). Both the
+   * module's name and a plain object's key may hold dots, so the module is
+   * the longest prefix `externalModules` has. Own keys only: an inherited
+   * callable (e.g. `Object.prototype.toString`) must never be dispatched as
+   * a host function.
    */
   private hostEntry(functionName: string): unknown {
-    const dot = functionName.lastIndexOf('.')
-    if (dot === -1) {
+    if (!functionName.includes('.')) {
       return ownEntry(this.externalLookup, functionName)
     }
-    const module = ownEntry(this.externalModules, functionName.slice(0, dot))
-    if (module === null || typeof module !== 'object') {
-      return undefined
+    for (let dot = functionName.lastIndexOf('.'); dot > 0; dot = functionName.lastIndexOf('.', dot - 1)) {
+      const module = ownEntry(this.externalModules, functionName.slice(0, dot))
+      if (module !== undefined) {
+        const entry = ownEntry(module, functionName.slice(dot + 1))
+        // called with the module as its receiver, as `module.attr(...)` would be
+        return typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry
+      }
     }
-    const entry = ownEntry(module, functionName.slice(dot + 1))
-    // called with the module as its receiver, as `module.attr(...)` would be
-    return typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry
+    return undefined
   }
 
   /**
@@ -655,7 +667,8 @@ class TurnAnswerer {
     }
     let value: unknown
     try {
-      value = moduleValue(name, module)
+      value = this.moduleValues.get(name) ?? moduleValue(name, module)
+      this.moduleValues.set(name, value)
     } catch (err) {
       // a getter that throws while the module is read raises at the import,
       // as a host function that throws raises at its call
@@ -1337,8 +1350,9 @@ function ownEntry(record: unknown, key: string): unknown {
  * sandbox's calls into the module come back through
  * [`TurnAnswerer.hostEntry`]. Its class id derives from the module name, so
  * each module is its own class (not the default wrapper class of plain
- * objects), the same on every import; the instance is new each import, as
- * CPython's would not be, since it is host state that does not travel.
+ * objects), the same on every import; the instance is new each feed (the
+ * feed's imports of one module share it), since it is host state that does
+ * not travel.
  */
 function moduleValue(name: string, module: unknown): unknown {
   if (module instanceof ClassInstance || module === null || typeof module !== 'object') {

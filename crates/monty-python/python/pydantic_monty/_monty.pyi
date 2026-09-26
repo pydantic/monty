@@ -711,7 +711,9 @@ class MontySession:
                 function the sandbox can call, any other value is converted and
                 returned directly when the name is read, and an absent name
                 raises `NameError`. The lazy counterpart to `inputs`; a name
-                present in both is served by the eager `inputs` binding.
+                present in both is served by the eager `inputs` binding. An
+                entry named `__import__` is never called: that name is the
+                import hook, answered from `external_modules`.
             external_modules: Host modules the snippet may `import`, keyed by
                 the module name: a dict, a module or any object whose public
                 attributes become the module's — callables as host functions
@@ -1167,7 +1169,9 @@ class AsyncMontySession:
                 any other value is converted and returned directly when the name
                 is read, and an absent name raises `NameError`. The lazy
                 counterpart to `inputs`; a name present in both is served by the
-                eager `inputs` binding.
+                eager `inputs` binding. An entry named `__import__` is never
+                called: that name is the import hook, answered from
+                `external_modules`.
             external_modules: Host modules the snippet may `import`, keyed by
                 the module name: a dict, a module or any object whose public
                 attributes become the module's — callables as host functions

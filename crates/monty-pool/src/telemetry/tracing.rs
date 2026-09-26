@@ -20,6 +20,7 @@ use monty_types::{
     unstable::{MontyNode, NodeId},
 };
 use opentelemetry::Value as OtelValue;
+use serde::Serialize;
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -445,7 +446,7 @@ impl Recorder {
             // closes on it; capped like every other rendered attribute
             Some(pb::child_event::Kind::TypeStubs(t)) => {
                 if let Some(turn) = &self.turn {
-                    let names: Vec<String> = t.modules.iter().map(|stub| stub.module.clone()).collect();
+                    let names: Vec<&str> = t.modules.iter().map(|stub| stub.module.as_str()).collect();
                     let (modules, cut) = render_str_list(&names);
                     if let Some(modules) = modules {
                         turn.record("modules", modules.as_str());
@@ -1006,7 +1007,7 @@ fn bytes_attr(b: &[u8]) -> (String, bool) {
 }
 
 /// Renders strings as a capped JSON list, absent when empty.
-fn render_str_list(items: &[String]) -> (Option<String>, bool) {
+fn render_str_list(items: &[impl Serialize]) -> (Option<String>, bool) {
     if items.is_empty() {
         (None, false)
     } else {

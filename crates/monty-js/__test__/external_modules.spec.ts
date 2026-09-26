@@ -125,6 +125,29 @@ test('a dotted module name', async () => {
   t.is(await run('from pkg.tools import add\nadd(1, 2)', { externalModules: { 'pkg.tools': tools } }), 3)
 })
 
+test('a getter that throws at the call raises in the sandbox', async () => {
+  let reads = 0
+  const flaky = {
+    // read once by the import, again by the call
+    get add(): (a: number, b: number) => number {
+      if (reads++ > 0) throw new Error('gone')
+      return (a, b) => a + b
+    },
+  }
+  await using session = await pool().checkout()
+  await t.throwsAsync(session.feedRun('import flaky\nflaky.add(1, 2)', { externalModules: { flaky } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'RuntimeError: gone',
+  })
+  // the session is still usable
+  t.is(await session.feedRun('1 + 1'), 2)
+})
+
+test('a dotted key of a plain-object module', async () => {
+  const code = "import tools\ngetattr(tools, 'a.b')(1, 2)"
+  t.is(await run(code, { externalModules: { tools: { 'a.b': (a: number, b: number) => a + b } } }), 3)
+})
+
 test('a module that fails to materialize raises at the import', async () => {
   const broken = {
     get boom(): number {
