@@ -1,0 +1,33 @@
+crates/monty-pool/src/checkout.rs
+  s_c36bcf79f328a9::t_299a3e0f3a4814 19-20,80-135,177-178,322-327,397,2224-2242
+crates/monty-js/src/pool.rs
+  s_c36bcf79f328a9::t_299a3e0f3a4814 324-325
+crates/monty-python/src/pool.rs
+  s_c36bcf79f328a9::t_299a3e0f3a4814 1313-1314
+crates/monty-pool/src/lib.rs
+  s_c36bcf79f328a9::t_299a3e0f3a4814 21-22
+crates/monty-pool/tests/websocket.rs
+  s_c36bcf79f328a9::t_8a83d4a801ba40 2832-2854,2856-2949,2951-2965
+  s_c36bcf79f328a9::t_05460a1d879e29 2950
+  s_c36bcf79f328a9::t_06444a0103050c 20-21,24
+crates/monty-pool/tests/pool_test.rs
+  s_c36bcf79f328a9::t_06444a0103050c 37-39,2848-2884,2890-2906,2908-2939,2947-2951,2953-2964
+  s_c36bcf79f328a9::t_53f2a0a076423e 2885-2889,2907,2940-2946
+  s_c36bcf79f328a9::t_182a7174771172 2952
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b89939eafaf8ae746640b1592aa846bf9693c6f4",
+  "prompts": {},
+  "sessions": {
+    "s_c36bcf79f328a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a77e456-98c8-4b0d-826d-ace20081a933",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
