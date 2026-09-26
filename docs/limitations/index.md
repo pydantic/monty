@@ -50,7 +50,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions
 - Wildcard imports (`from m import *`)
-- Complex literals (`1j`) and t-strings
+- t-strings
 
 **Missing in other ways:**
 

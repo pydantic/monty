@@ -36,6 +36,11 @@ pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
+/// Raising this cuts off every deployed peer at the older versions, so avoid
+/// it: an additive wire change bumps [`PROTOCOL_VERSION`] alone and older
+/// peers keep working for everything but the new thing. Raising it is a
+/// breaking change that requires a major version bump.
+///
 /// Version 4 and below are not served. Version 3 carried values as recursive
 /// `MontyObject` trees, where this build carries one flat `Arena` per message.
 /// Version 4 both lacked `max_feed_duration`/`max_turn_duration` and had the

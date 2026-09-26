@@ -9,7 +9,7 @@ use monty_types::{
 };
 use pyo3::{
     prelude::*,
-    types::{PyBool, PyBytes, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
+    types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
 };
 
 use super::{
@@ -88,6 +88,7 @@ impl Decoder<'_, '_> {
             MontyNode::Int(i) => Ok(i.into_pyobject(py)?.clone().into_any().unbind()),
             MontyNode::BigInt(bi) => Ok(bi.into_pyobject(py)?.clone().into_any().unbind()),
             MontyNode::Float(f) => Ok(f.into_pyobject(py)?.clone().into_any().unbind()),
+            MontyNode::Complex(c) => Ok(PyComplex::from_doubles(py, c.real, c.imag).into_any().unbind()),
             MontyNode::String(s) => Ok(PyString::new(py, s).into_any().unbind()),
             MontyNode::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
             MontyNode::List(items) => Ok(PyList::new(py, self.children(items))?.into_any().unbind()),

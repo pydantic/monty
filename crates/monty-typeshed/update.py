@@ -54,6 +54,7 @@ ALLOWED_CLASSES = {
     'bool',
     'int',
     'float',
+    'complex',
     # String/bytes types
     'str',
     'bytes',

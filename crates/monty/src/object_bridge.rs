@@ -11,8 +11,8 @@ use std::mem;
 
 use ahash::{AHashMap, AHashSet};
 use monty_types::{
-    CallArgs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
-    MontyTimeZone, MontyType, MontyUuid,
+    CallArgs, InvalidInputError, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
@@ -24,7 +24,8 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
-        HostClass, HostClassType, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        Complex, HostClass, HostClassType, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
+        allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -452,6 +453,13 @@ impl GraphExporter {
                 MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
             }
             HeapReadOutput::LongInt(li) => MontyNode::BigInt(li.get(vm.heap).inner().clone()),
+            HeapReadOutput::Complex(c) => {
+                let c = c.get(vm.heap);
+                MontyNode::Complex(MontyComplex {
+                    real: c.real,
+                    imag: c.imag,
+                })
+            }
             HeapReadOutput::Module(m) => {
                 MontyNode::Repr(format!("<module '{}'>", vm.interns.get_str(m.get(vm.heap).name())))
             }
@@ -612,6 +620,7 @@ impl MontyTypeExt for MontyType {
             Self::Bool => Type::Bool,
             Self::Int => Type::Int,
             Self::Float => Type::Float,
+            Self::Complex => Type::Complex,
             Self::Range => Type::Range,
             Self::Slice => Type::Slice,
             Self::Date => Type::Date,
@@ -704,6 +713,7 @@ impl MontyTypeExt for MontyType {
             Type::Bool => Self::Bool,
             Type::Int => Self::Int,
             Type::Float => Self::Float,
+            Type::Complex => Self::Complex,
             Type::Range => Self::Range,
             Type::Slice => Self::Slice,
             Type::Date => Self::Date,
@@ -813,6 +823,7 @@ fn import_node(
         MontyNode::Int(i) => Ok(Value::Int(i)),
         MontyNode::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)),
         MontyNode::Float(f) => Ok(Value::Float(f)),
+        MontyNode::Complex(c) => Ok(Complex::new(c.real, c.imag).into_value(vm.heap)),
         MontyNode::String(s) => Ok(allocate_string(s, vm.heap)),
         MontyNode::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b))))),
         MontyNode::List(ids) => {

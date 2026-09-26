@@ -738,6 +738,8 @@ pub enum StaticStrings {
     Compile,
     /// `itertools.compress()` function.
     Compress,
+    /// `complex.conjugate()` method.
+    Conjugate,
     /// `copy()` method, shared by `list`, `dict` and `set`; also the `copy` module and `copy.copy()`.
     Copy,
     /// `sys.copyright` attribute.
@@ -1017,6 +1019,8 @@ pub enum StaticStrings {
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
     #[strum(serialize = "from_iterable")]
     FromIterable,
+    /// `complex.from_number()` classmethod.
+    FromNumber,
     /// `bytes.fromhex()` classmethod.
     Fromhex,
     /// `date.fromisoformat()` / `datetime.fromisoformat()` classmethod.
@@ -1118,6 +1122,8 @@ pub enum StaticStrings {
     /// `ignorechars` parameter of `base64.a85decode()`.
     #[strum(serialize = "ignorechars")]
     Ignorechars,
+    /// `complex.imag` attribute.
+    Imag,
     /// `binascii.Incomplete` exception class.
     #[strum(serialize = "Incomplete")]
     IncompleteClass,
@@ -1584,6 +1590,8 @@ pub enum StaticStrings {
     Readline,
     /// `file.readlines()` method.
     Readlines,
+    /// `complex.real` attribute.
+    Real,
     /// `functools.reduce()` function.
     Reduce,
     /// Kwarg name `rel_tol` — `math.isclose(rel_tol=...)`.
