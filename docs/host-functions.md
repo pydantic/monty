@@ -297,6 +297,71 @@ In JavaScript every host function may be async, and there is no separate pool cl
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
+## Importing host modules
+
+`import` of a module the sandbox does not have asks the host for it.
+`external_modules` names the modules a feed may import, keyed by module name (`externalModules` in JavaScript):
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import Monty
+
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+
+    code = """
+    import tools
+    from tools import add
+
+    tools.add(1, 2) + add(3, 4)
+    """
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run(code, external_modules={'tools': {'add': add}}))
+            #> 10
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty } from '@pydantic/monty'
+
+    const code = `
+    import tools
+    from tools import add
+
+    tools.add(1, 2) + add(3, 4)
+    `
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const tools = { add: (a: number, b: number) => a + b }
+    console.log(await session.feedRun(code, { externalModules: { tools } })) // 10
+    ```
+
+A dict (an object in JavaScript), a module or a namespace becomes a host object named after the module whose public
+attributes are sent with it: a callable becomes a host function named `<module>.<attr>`, dispatched like an
+`external_lookup` entry (a coroutine is awaited the same way), and any other value is converted when the module is
+imported.
+A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
+`from tools import add` reads the attribute of that object, so it works for the attributes above and raises
+`ImportError` for any other name.
+An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
+or `math`, are never looked up here.
+Every `import` statement asks again: the sandbox keeps no module cache, and the module bound by an earlier feed stays a
+plain global.
+The bound value is a host object, so `type(tools)` is its host class rather than `module`; see
+[modules](limitations/modules.md#host-modules).
+
+On the wire this is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the module name as its
+argument, answered with the module value, so a host driving suspensions itself answers it like any other call.
+To type-check code that imports a host module, give the checker its stub with `type_check_module_stubs`; see
+[type checking](type-checking.md#declaring-what-the-host-provides).
+
 ## Driving suspensions yourself
 
 `feed_run` answers every suspension for you and returns only the final value.

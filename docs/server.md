@@ -275,6 +275,52 @@ A server without a store refuses `dump()` and `load_session()` / `load_snapshot(
 drain hands nothing back.
 Stored sessions only load into a worker of the same Monty version, so roll clients and servers together.
 
+## MCP servers
+
+`checkout(mcp_servers=[...])` names MCP servers the server connects to on the session's behalf and serves as importable
+modules; each entry is an [`McpServer`][pydantic_monty.McpServer] with the module name sandbox code imports it as, the
+server's streamable-HTTP URL and the request headers that authorize it:
+
+```python test="skip"
+import asyncio
+
+from pydantic_monty import AsyncMontyWebsocket
+
+
+async def main() -> None:
+    servers = [
+        {
+            'module': 'stripe_mcp',
+            'url': 'https://mcp.example/stripe',
+            'headers': {'Authorization': 'Bearer sk_test'},
+        }
+    ]
+    async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
+        async with pool.checkout(type_check=True, mcp_servers=servers) as session:
+            stubs = await session.get_types()
+            print(stubs['stripe_mcp'])
+            code = 'import stripe_mcp\nawait stripe_mcp.list_payments(limit=3)'
+            print(await session.feed_run(code))
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
+```
+
+The headers never leave the server: it answers the sandbox's `import` of the module and every call into it itself, so
+neither reaches the client.
+Each tool is an `async` function taking keyword arguments named after the tool's input schema; a call returns the
+tool's structured content as a dict, or its text content as a string, and a tool error raises `RuntimeError`.
+[`get_types()`][pydantic_monty.AsyncMontySession.get_types] returns the stubs the server renders from each server's
+tools, the signatures to put in the prompt of a model writing code for the session; with `type_check=True` the same
+stubs check the code before it runs.
+A server that does not support MCP ignores `mcp_servers`, which `get_types()` shows by not naming the module.
+
+Each call into a module is a suspension, so it counts against `max_suspensions` and runs inside the client's
+`request_timeout`.
+Tool descriptions and schemas come from the MCP server and reach the model through the stubs; treat them as that
+server's content.
+
 ## Tracing
 
 Pass `--logfire-token` (or set `LOGFIRE_TOKEN`) to export traces to [Pydantic Logfire](https://pydantic.dev/logfire).
