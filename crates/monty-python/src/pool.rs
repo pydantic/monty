@@ -1317,6 +1317,8 @@ pub(crate) fn parse_repl_config(
         os_policy,
         persistence,
         profile,
+        type_check_module_stubs: Vec::new(),
+        mcp_servers: Vec::new(),
     })
 }
 

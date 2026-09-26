@@ -323,6 +323,8 @@ impl NativePool {
                 persistence: Persistence::ServerDefault,
                 // only a serving relay has profiles; its default applies
                 profile: None,
+                type_check_module_stubs: Vec::new(),
+                mcp_servers: Vec::new(),
             },
             checkout: Arc::new(AsyncMutex::new(None)),
         })
