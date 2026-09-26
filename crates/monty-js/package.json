@@ -112,6 +112,6 @@
     "@pydantic/monty-linux-x64-musl": "1.0.0",
     "@pydantic/monty-linux-arm64-gnu": "1.0.0",
     "@pydantic/monty-linux-arm64-musl": "1.0.0",
-    "@pydantic/monty-win32-x64-msvc": "1.0.03"
+    "@pydantic/monty-win32-x64-msvc": "1.0.0"
   }
 }
