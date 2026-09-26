@@ -1,0 +1,52 @@
+crates/monty-proto/src/python/mod.rs
+  s_c36bcf79f328a9::t_7f92d7523d23c8 23-25
+crates/monty-python/src/snapshot/tests.rs
+  s_c36bcf79f328a9::t_8cafb81aab46e7 8,17
+crates/monty-python/python/pydantic_monty/__init__.py
+  ai_agent 57,177-194
+crates/monty-python/src/snapshot.rs
+  s_c36bcf79f328a9::t_6eb6d962f9a489 84-87,105,115,128,146,166,188,208,502,762,924
+  s_c36bcf79f328a9::t_6fc9b0e4fe1004 56
+crates/monty-python/src/build.rs
+  s_c36bcf79f328a9::t_f2c8efd77d596b 89,95
+  s_c36bcf79f328a9::t_6fc9b0e4fe1004 9,11,13,58-88,90-94,96-114
+crates/monty-python/src/pool.rs
+  s_c36bcf79f328a9::t_7f92d7523d23c8 1712,1768,1876-1882,1884
+  s_c36bcf79f328a9::t_0439a546be1c14 411,1007
+  s_c36bcf79f328a9::t_c64c866e00689a 50-51,71-74,78-79
+  s_c36bcf79f328a9::t_e807a54d3aeab0 324,1521,1534
+  s_c36bcf79f328a9::t_aa8b14be0e2d2a 200,215,233-234,296,304,340,348,368-369,410,419,428,444,460-470,613,628,646-647,770-771,787-788,811-812,903,911,931,933,941,949,969-970,1006,1015,1023,1046,1064-1075,1349-1350,1364-1365,1439-1455,1726,1912,1929,1955
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  ai_agent 13,611,635-639,683,715-722,756,797-798,846,881-892,960,1077,1083,1089-1091,1094-1101,1126,1190,1262,1290-1294
+crates/monty-python/tests/test_websocket.py
+  s_c36bcf79f328a9::t_124d58aff24bd5 108-109,167,501-506,514-516,518
+  s_c36bcf79f328a9::t_0439a546be1c14 507-513,517
+  s_c36bcf79f328a9::t_fbed26381b0df4 32
+crates/monty-python/tests/test_external_modules.py
+  s_c36bcf79f328a9::t_68748c315658c6 1-106,110-125
+  s_c36bcf79f328a9::t_0b54a018d6d986 107-109
+crates/monty-python/src/async_dispatch.rs
+  s_c36bcf79f328a9::t_6eb6d962f9a489 20-21,26-28,33,38
+  s_c36bcf79f328a9::t_6fc9b0e4fe1004 12
+crates/monty-python/src/external.rs
+  s_c36bcf79f328a9::t_f2c8efd77d596b 336,351
+  s_c36bcf79f328a9::t_e807a54d3aeab0 378
+  s_c36bcf79f328a9::t_c069fafc2c4610 2-3,8-12,14-16,18,22,121-151,157-161,165,170-179,213-214,216-218,229,240-242,256,262-335,337-350,352-377,379-383
+  s_c36bcf79f328a9::t_0b54a018d6d986 384
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "44d35a778b25f66a6cda9406025c1ba9e15930b6",
+  "prompts": {},
+  "sessions": {
+    "s_c36bcf79f328a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a77e456-98c8-4b0d-826d-ace20081a933",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
