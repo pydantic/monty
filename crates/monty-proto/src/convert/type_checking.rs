@@ -1,12 +1,41 @@
-//! `TypeCheckingConfig` ↔ `pb::Configure`'s type-check rendering fields.
+//! `TypeCheckingConfig` ↔ `pb::Configure`'s type-check rendering fields, and
+//! the module stubs `Configure` carries and `TypeStubs` reports.
 //!
 //! Type checking runs in the child, which renders the diagnostics before they
 //! cross the wire (ty's structured diagnostics borrow the checker's database).
 //! The parent therefore chooses the rendering up front, on `Configure`.
 
-use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
+use monty_types::{ModuleStub, TypeCheckingConfig, TypeCheckingFormat};
 
+use super::ProtoConvertError;
 use crate::pb;
+
+/// The module stubs a `Configure` or `TypeStubs` carries, validated as
+/// [`ModuleStub`]s: a name that is not an identifier, or is a module the
+/// sandbox provides, is refused.
+pub fn module_stubs_from_proto(stubs: &[pb::ModuleStub]) -> Result<Vec<ModuleStub>, ProtoConvertError> {
+    stubs
+        .iter()
+        .map(|stub| {
+            ModuleStub::new(stub.module.clone(), stub.source.clone()).map_err(|err| ProtoConvertError::InvalidValue {
+                field: "ModuleStub.module",
+                reason: err.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The wire form of `stubs`.
+#[must_use]
+pub fn module_stubs_to_proto(stubs: &[ModuleStub]) -> Vec<pb::ModuleStub> {
+    stubs
+        .iter()
+        .map(|stub| pb::ModuleStub {
+            module: stub.module().to_owned(),
+            source: stub.source().to_owned(),
+        })
+        .collect()
+}
 
 impl From<TypeCheckingFormat> for pb::TypeCheckFormat {
     fn from(format: TypeCheckingFormat) -> Self {

@@ -178,6 +178,14 @@ impl Recorder {
                 self.feed = None;
                 self.session = None;
             }
+            Some(pb::parent_request::Kind::GetTypes(_)) => {
+                self.turn = Some(start_span(logfire::span!(
+                    parent: self.context_span(),
+                    "get types",
+                    // filled in by the `TypeStubs` reply
+                    modules = Empty,
+                )));
+            }
             Some(pb::parent_request::Kind::InstallDependencies(d)) => {
                 let (requirements, cut) = render_str_list(&d.requirements);
                 self.turn = Some(start_span(logfire::span!(
@@ -432,6 +440,14 @@ impl Recorder {
             // a bare acknowledgement ending a housekeeping turn; the turn
             // span itself is the record
             Some(pb::child_event::Kind::Ok(_)) => self.turn = None,
+            // the get-types span names the modules it was answered with, and closes on it
+            Some(pb::child_event::Kind::TypeStubs(t)) => {
+                if let Some(turn) = &self.turn {
+                    let names: Vec<&str> = t.modules.iter().map(|stub| stub.module.as_str()).collect();
+                    turn.record("modules", names.join(", ").as_str());
+                }
+                self.turn = None;
+            }
             Some(pb::child_event::Kind::FatalError(f)) => {
                 let (message, cut) = truncate_str(&f.message);
                 logfire::error!(

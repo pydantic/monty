@@ -577,3 +577,138 @@ fn turn_events_carry_the_suspension_budget() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].max_suspensions, Some(3));
 }
+
+// ---------------------------------------------------------------------------
+// Module stubs and GetTypes
+// ---------------------------------------------------------------------------
+
+fn module_stub(module: &str, source: &str) -> pb::ModuleStub {
+    pb::ModuleStub {
+        module: module.to_owned(),
+        source: source.to_owned(),
+    }
+}
+
+/// Configures a session with `stubs` for its host-provided modules, returning
+/// the reply.
+fn configure_with_module_stubs(
+    child: &mut Child,
+    type_check: bool,
+    stubs: Vec<pb::ModuleStub>,
+) -> pb::child_event::Kind {
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: "main.py".to_owned(),
+        type_check,
+        monty_version: MONTY_VERSION.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        type_check_module_stubs: stubs.into(),
+        ..Default::default()
+    }));
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    split_turn(&bytes).1
+}
+
+fn get_types(child: &mut Child) -> pb::child_event::Kind {
+    let request = frame_request(pb::parent_request::Kind::GetTypes(pb::GetTypes {}));
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    split_turn(&bytes).1
+}
+
+/// The `(module, source)` pairs a `TypeStubs` reply carries.
+fn expect_type_stubs(event: pb::child_event::Kind) -> Vec<(String, String)> {
+    let pb::child_event::Kind::TypeStubs(stubs) = event else {
+        panic!("expected TypeStubs, got {event:?}");
+    };
+    stubs
+        .modules
+        .iter()
+        .map(|stub| (stub.module.clone(), stub.source.clone()))
+        .collect()
+}
+
+/// The message of the `Error` a request was refused with.
+fn expect_error_message(event: pb::child_event::Kind) -> String {
+    let pb::child_event::Kind::Error(error) = event else {
+        panic!("expected an Error event, got {event:?}");
+    };
+    error.exception.unwrap().message.unwrap()
+}
+
+/// `GetTypes` answers with the stubs `Configure` carried, whether or not the
+/// session type-checks or has run, until `Reset` clears them.
+#[test]
+fn get_types_reports_the_configured_module_stubs() {
+    let mut child = Child::default();
+    assert_eq!(
+        expect_error_message(get_types(&mut child)),
+        "protocol violation: GetTypes before Configure"
+    );
+
+    let tools = ("tools".to_owned(), "def add(a: int, b: int) -> int: ...\n".to_owned());
+    let stubs = vec![module_stub(&tools.0, &tools.1)];
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, false, stubs),
+        pb::child_event::Kind::Ok(_)
+    ));
+    assert_eq!(expect_type_stubs(get_types(&mut child)), vec![tools.clone()]);
+    let (_, event) = feed(&mut child, "1 + 1");
+    assert_eq!(expect_complete(event), MontyObject::int(2));
+    assert_eq!(expect_type_stubs(get_types(&mut child)), vec![tools]);
+
+    let request = frame_request(pb::parent_request::Kind::Reset(pb::Reset {}));
+    let (bytes, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+    create_repl(&mut child);
+    assert_eq!(expect_type_stubs(get_types(&mut child)), vec![]);
+}
+
+/// A stub for a module the sandbox provides itself is refused on the
+/// `Configure` turn, and no session is created.
+#[test]
+fn configure_refuses_a_reserved_module_stub() {
+    let mut child = Child::default();
+    let event = configure_with_module_stubs(&mut child, false, vec![module_stub("json", "")]);
+    insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: invalid type_check_module_stubs: invalid value for ModuleStub.module: module "json" is provided by the sandbox and cannot take a stub"#);
+    assert_eq!(
+        expect_error_message(get_types(&mut child)),
+        "protocol violation: GetTypes before Configure"
+    );
+}
+
+/// A type-checked dump carries the stubs its checks ran against, and a `Load`
+/// restores those over the ones the new worker was configured with.
+#[test]
+fn load_restores_the_dumped_module_stubs() {
+    let mut child = Child::default();
+    let dumped = vec![module_stub("tools", "x: int\n")];
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, dumped),
+        pb::child_event::Kind::Ok(_)
+    ));
+    let (_, event) = feed(&mut child, "y = 1");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+
+    let mut child = Child::default();
+    let configured = vec![module_stub("other", "z: str\n")];
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, configured),
+        pb::child_event::Kind::Ok(_)
+    ));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load {
+        state: result.state.into_inner().into(),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+    assert_eq!(
+        expect_type_stubs(get_types(&mut child)),
+        vec![("tools".to_owned(), "x: int\n".to_owned())]
+    );
+}
