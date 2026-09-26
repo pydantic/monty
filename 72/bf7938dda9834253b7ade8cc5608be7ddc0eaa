@@ -1,0 +1,34 @@
+crates/monty-js/__test__/external_modules.spec.ts
+  s_c36bcf79f328a9::t_0abe318e8f2440 128-150
+crates/monty-python/src/external.rs
+  s_c36bcf79f328a9::t_0abe318e8f2440 265-267,269-273,275
+crates/monty-pool/src/telemetry/tracing.rs
+  s_c36bcf79f328a9::t_13f4bb9ae09e32 23
+  s_c36bcf79f328a9::t_0abe318e8f2440 449,1010
+crates/monty-python/tests/test_external_modules.py
+  s_c36bcf79f328a9::t_0abe318e8f2440 48-54
+docs/host-functions.md
+  s_c36bcf79f328a9::t_0abe318e8f2440 363-364
+docs/type-checking.md
+  s_c36bcf79f328a9::t_a944266e9341ca 208-209
+crates/monty-js/ts/session.ts
+  s_c36bcf79f328a9::t_0abe318e8f2440 529-531,602-609,636-640,643,646-652,654,670-671,1353-1355
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_c36bcf79f328a9::t_0abe318e8f2440 714-716,1168-1170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "72bf7938dda9834253b7ade8cc5608be7ddc0eaa",
+  "prompts": {},
+  "sessions": {
+    "s_c36bcf79f328a9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a77e456-98c8-4b0d-826d-ace20081a933",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
