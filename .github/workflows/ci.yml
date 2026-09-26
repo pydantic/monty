@@ -533,6 +533,7 @@ jobs:
       - test-python
       - test-js
       - test-js-packages
+      - test-js-musl-packages
       - test-js-browser-package
       - test-browser
       - bench-test
@@ -545,7 +546,7 @@ jobs:
           jobs: ${{ toJSON(needs) }}
           # Match the full-build condition below; unexpected skips must still fail the check.
           allowed-skips: >-
-            ${{ (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)) && '[]' || '["test-js-packages", "test-js-browser-package"]' }}
+            ${{ (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)) && '[]' || '["test-js-packages", "test-js-musl-packages", "test-js-browser-package"]' }}
 
   # Publish the docs source read by pydantic/unified-docs: docs/, mkdocs.yml,
   # the Python package (for the `::: pydantic_monty` autodoc block) and the
@@ -1402,7 +1403,7 @@ jobs:
             --volume "${{ github.workspace }}:/workspace" \
             --workdir /workspace/crates/monty-js/smoke-test \
             node:${{ matrix.node }}-alpine \
-            sh -c 'npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.platform.triple }}.tgz --force --no-save --no-package-lock && node package-smoke.mjs'
+            sh -c 'npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.platform.triple }}.tgz --force --no-save --no-package-lock && npm run test:node'
 
   release-js:
     name: Release to NPM
