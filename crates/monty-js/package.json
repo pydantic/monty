@@ -39,8 +39,10 @@
       "x86_64-pc-windows-msvc",
       "x86_64-apple-darwin",
       "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
       "aarch64-apple-darwin",
-      "aarch64-unknown-linux-gnu"
+      "aarch64-unknown-linux-gnu",
+      "aarch64-unknown-linux-musl"
     ],
     "dtsHeaderFile": "./index-header.d.ts"
   },
@@ -107,7 +109,9 @@
     "@pydantic/monty-darwin-x64": "1.0.0",
     "@pydantic/monty-darwin-arm64": "1.0.0",
     "@pydantic/monty-linux-x64-gnu": "1.0.0",
+    "@pydantic/monty-linux-x64-musl": "1.0.0",
     "@pydantic/monty-linux-arm64-gnu": "1.0.0",
+    "@pydantic/monty-linux-arm64-musl": "1.0.0",
     "@pydantic/monty-win32-x64-msvc": "1.0.0"
   }
 }
