@@ -389,8 +389,11 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         // and a print collector charges its cap per frame.
         print_flush_interval_ms: request.print_flush_interval_ms,
         os_policy: request.os_policy.map(os_policy_from_component),
-        // a relay's concern; the component is a child and never stores sessions
+        // a relay's concern; the component is a child and never stores
+        // sessions, or connects anywhere
         persistence: pb::Persistence::Unspecified.into(),
+        mcp_servers: BudgetVec::default(),
+        type_check_module_stubs: BudgetVec::default(),
     }
 }
 
@@ -535,6 +538,10 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
         Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
+        // the component sends no `GetTypes`, so its child never answers one
+        Some(pb::child_event::Kind::TypeStubs(_)) => {
+            invalid_event("TypeStubs answers a request the component never sends")
+        }
         None => invalid_event("ChildEvent carried no kind"),
     }
 }

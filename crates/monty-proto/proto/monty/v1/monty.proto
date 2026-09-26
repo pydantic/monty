@@ -538,6 +538,7 @@ message ParentRequest {
     Reset reset = 9;
     Shutdown shutdown = 10;
     AbortFeed abort_feed = 11;
+    GetTypes get_types = 12;
   }
 
   // W3C `traceparent` identifying the caller's span, so a child that exports
@@ -601,6 +602,40 @@ message Configure {
   // Relay-only: whether a serving relay may store the session. Children ignore
   // it.
   Persistence persistence = 12;
+  // Relay-only: MCP servers a serving relay connects to on the host's behalf
+  // and serves as importable modules — their `__import__` calls and tool calls
+  // never reach the host. Children ignore it; a relay strips it before
+  // forwarding.
+  repeated McpServer mcp_servers = 13;
+  // Type stubs for host-provided modules, one `.pyi` per module, so that
+  // `import <module>` resolves during type checking; `GetTypes` reports the
+  // stubs in effect. Ignored when `type_check` is false.
+  repeated ModuleStub type_check_module_stubs = 14;
+}
+
+// An MCP server a serving relay exposes to the sandbox as the module `module`.
+message McpServer {
+  // The name sandbox code imports the server as: an identifier that no
+  // sandbox module uses (see `ModuleStub`).
+  string module = 1;
+  // The server's streamable-HTTP endpoint.
+  string url = 2;
+  // Request headers sent to the server, typically its authorization.
+  repeated Header headers = 3;
+}
+
+// One HTTP request header.
+message Header {
+  string name = 1;
+  string value = 2;
+}
+
+// The `.pyi` source describing one host-provided module for type checking.
+// `module` must be an identifier that is not one of the sandbox's own
+// modules, or the runtime and the checker would disagree about the import.
+message ModuleStub {
+  string module = 1;
+  string source = 2;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -726,6 +761,17 @@ message InstallDependencies {
   repeated string requirements = 1;
 }
 
+// Asks for the per-module type stubs in effect, answered with `TypeStubs`. A
+// child answers with its configured `type_check_module_stubs`; a serving relay
+// answers with those plus the stubs it renders for `mcp_servers`, never
+// forwarding the request. Valid whenever no turn is in flight (a session that
+// is idle or suspended, or one configured but not yet fed).
+//
+// A peer that predates this request answers a `FatalError` ("request has no
+// kind"): there is no in-band negotiation, so only send it to a peer known to
+// serve it.
+message GetTypes {}
+
 // ============================================================================
 // Events (child -> parent)
 // ============================================================================
@@ -752,6 +798,7 @@ message ChildEvent {
     Ok ok = 10;
     FatalError fatal_error = 11;
     ShutdownDump shutdown = 12;
+    TypeStubs type_stubs = 13;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -823,9 +870,16 @@ message Print {
 // Suspension: the sandbox called an external function, or — when `object_id`
 // is set — a method on a host-backed object (the receiver is NOT included in
 // `args`; the host routes by uuid). The receiver may be a class instance or a
-// class type: calling a host class arrives as a `__call__` method call on the
-// class's uuid, and the host's own policy decides whether construction is
-// allowed. Answer with `ResumeCall`.
+// class type: calling either arrives as a `__call__` method call on its uuid,
+// and the host's own policy decides whether the call (for a class, its
+// construction) is allowed. Answer with `ResumeCall`.
+//
+// An `import` of a module the sandbox does not have is this suspension too:
+// `function_name` is `__import__` with the module name as its one positional
+// argument, and the answer's `return_value` is bound as the module — usually a
+// host-backed class instance whose attributes are the tools. `not_found`
+// raises `ModuleNotFoundError`; `from m import a` follows with attribute loads
+// on that value (its eager attrs, else a `NameLookup` with `object_id`).
 message FunctionCall {
   string function_name = 1;
   // Positional arguments, as indexes into `values`.
@@ -1056,4 +1110,10 @@ message ShutdownDump {
   // to load: no session yet, an ephemeral session, a relay without storage, or
   // a park that failed.
   optional bytes dump = 1;
+}
+
+// Answers `GetTypes`: the stub of every host-provided module, as the type
+// checker sees them.
+message TypeStubs {
+  repeated ModuleStub modules = 1;
 }

@@ -16,11 +16,11 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
-    os_call_from_proto, pb, validate_requirement,
+    BudgetVec, FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, module_stubs_from_proto,
+    named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION, ModuleStub,
     MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
     ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
@@ -837,7 +837,7 @@ impl Checkout {
         let event = match outcome? {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
-            other @ ControlEvent::Dump(_) => {
+            other @ (ControlEvent::Dump(_) | ControlEvent::TypeStubs(_)) => {
                 return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
             }
         };
@@ -1154,6 +1154,23 @@ impl Checkout {
         match self.request_turn(&request, deadline, &mut no_print).await? {
             ControlEvent::Ok => Ok(()),
             other => Err(self.protocol_violation(format!("unexpected reply to InstallDependencies: {other:?}"))),
+        }
+    }
+
+    /// The type stubs of the session's host-provided modules, as `GetTypes`
+    /// reports them: what the session was configured with, plus whatever a
+    /// serving relay renders for its own modules. Valid while idle or
+    /// suspended; a peer that predates the request ends the session.
+    pub async fn get_types(&mut self) -> Result<Vec<ModuleStub>, PoolError> {
+        let request = request(pb::parent_request::Kind::GetTypes(pb::GetTypes {}));
+        let mut no_print = on_print_sync(|_, _| {});
+        let deadline = self.pool.config.request_timeout;
+        match self.request_turn(&request, deadline, &mut no_print).await? {
+            ControlEvent::TypeStubs(stubs) => match module_stubs_from_proto(&stubs) {
+                Ok(stubs) => Ok(stubs),
+                Err(err) => Err(self.protocol_violation(format!("invalid TypeStubs: {err}"))),
+            },
+            other => Err(self.protocol_violation(format!("unexpected reply to GetTypes: {other:?}"))),
         }
     }
 
@@ -1489,7 +1506,7 @@ impl Checkout {
         let matches = match reply? {
             ControlEvent::Ok => expected.is_none(),
             ControlEvent::Turn(_) => expected.is_some() && expected == self.pending.as_ref().map(PendingKey::of),
-            ControlEvent::Dump(_) => false,
+            ControlEvent::Dump(_) | ControlEvent::TypeStubs(_) => false,
         };
         self.budget.suspensions_seen = suspensions_seen;
         self.budget.sleep_used = sleep_used;
@@ -1856,6 +1873,9 @@ impl Checkout {
                 Some(pb::child_event::Kind::DumpResult(dump)) => {
                     return Ok(ControlEvent::Dump(dump.state.into_inner()));
                 }
+                Some(pb::child_event::Kind::TypeStubs(stubs)) => {
+                    return Ok(ControlEvent::TypeStubs(stubs.modules.into_inner()));
+                }
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
                     return Err(self.fatal_error(&fatal.message).await);
                 }
@@ -2137,6 +2157,8 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
         print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
+        mcp_servers: BudgetVec::default(),
+        type_check_module_stubs: BudgetVec::default(),
     }))
 }
 
@@ -2179,6 +2201,8 @@ enum ControlEvent {
     Turn(TurnEvent),
     Ok,
     Dump(Vec<u8>),
+    /// The module stubs `GetTypes` asked for.
+    TypeStubs(Vec<pb::ModuleStub>),
 }
 
 /// How long a child that announced a `FatalError` is given to exit on its own

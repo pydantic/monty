@@ -25,15 +25,16 @@ use std::{
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump, source_within_nesting_bound};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
-    TypeCheckState, TypeCheckingConfig, allocate_into_baseline,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, ModuleStub, MontyException, MontyObject,
+    OsFunctionCall, OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker,
+    SOURCE_SCAN_THRESHOLD, TypeCheckState, TypeCheckingConfig, allocate_into_baseline,
 };
 
 use super::{
     BudgetVec, DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError,
     WireFunctionCall, check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
-    named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
+    module_stubs_from_proto, module_stubs_to_proto, named_values_from_proto, os_call_from_proto, os_call_to_proto, pb,
+    write_frame,
 };
 use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 
@@ -216,6 +217,10 @@ pub struct Child {
     print_flush_interval: Duration,
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
     os_policy: OsPolicy,
+    /// The stubs of the session's host-provided modules, from `Configure` (or
+    /// the dump a `Load` restored): what `GetTypes` reports, and what the type
+    /// checker resolves their imports against.
+    module_stubs: Vec<ModuleStub>,
 }
 
 impl Default for Child {
@@ -227,6 +232,7 @@ impl Default for Child {
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
+            module_stubs: Vec::new(),
         }
     }
 }
@@ -271,6 +277,7 @@ impl Child {
             pb::parent_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
             pb::parent_request::Kind::Dump(_) => self.handle_dump(),
             pb::parent_request::Kind::Load(load) => self.handle_load(&load),
+            pb::parent_request::Kind::GetTypes(_) => self.handle_get_types(),
             pb::parent_request::Kind::Reset(_) => match self.reset() {
                 Ok(()) => ok_event(),
                 // A failed scrub leaves the finished session's files in the
@@ -464,6 +471,21 @@ impl Child {
             {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
+            // Kept whether or not the session type-checks: `GetTypes` reports them either way.
+            self.module_stubs = match module_stubs_from_proto(&configure.type_check_module_stubs) {
+                Ok(stubs) => stubs,
+                Err(err) => return protocol_violation(&format!("invalid type_check_module_stubs: {err}")),
+            };
+            if let Some(stub) = self
+                .module_stubs
+                .iter()
+                .find(|stub| !source_within_nesting_bound(stub.source(), SOURCE_SCAN_THRESHOLD))
+            {
+                return protocol_violation(&format!(
+                    "invalid type_check_module_stubs: {} stub source is too deeply nested",
+                    stub.module()
+                ));
+            }
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
         } else {
@@ -505,8 +527,10 @@ impl Child {
             print_flush_interval_ms: _,
             // validated and stored when the `Configure` arrived
             os_policy: _,
-            // a relay's concern; the child never stores sessions
+            type_check_module_stubs: _,
+            // a relay's concern; the child never stores sessions, or connects anywhere
             persistence: _,
+            mcp_servers: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -514,7 +538,7 @@ impl Child {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
             config: type_check_config,
-            module_stubs: Vec::new(),
+            module_stubs: self.module_stubs.clone(),
             committed_imports: String::new(),
         });
         // Missing field means an older parent; the feature defaults to on.
@@ -820,10 +844,26 @@ impl Child {
         // name so the parent can report it without parsing the opaque dump.
         if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
             self.script_name = script_name;
+            // a type-checked dump brings the stubs its checks ran against
+            if let Some(state) = &type_check {
+                self.module_stubs.clone_from(&state.module_stubs);
+            }
             self.type_check = type_check;
             event.restored_script_name = Some(self.script_name.clone());
         }
         event
+    }
+
+    /// Answers `GetTypes` with the module stubs the session holds; a worker
+    /// with no session has nothing to report.
+    fn handle_get_types(&self) -> pb::ChildEvent {
+        if matches!(self.state, SessionState::Configured(None)) {
+            protocol_violation("GetTypes before Configure")
+        } else {
+            event(pb::child_event::Kind::TypeStubs(pb::TypeStubs {
+                modules: module_stubs_to_proto(&self.module_stubs).into(),
+            }))
+        }
     }
 
     /// Runs until a turn-ending event. OS calls not answered by `OsPolicy`
@@ -921,6 +961,7 @@ impl Child {
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.os_policy = OsPolicy::default();
+        self.module_stubs = Vec::new();
         self.type_checker.as_mut().map_or(Ok(()), TypeChecker::reset)
     }
 }
