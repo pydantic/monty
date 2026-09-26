@@ -514,6 +514,8 @@ impl Child {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
             config: type_check_config,
+            module_stubs: Vec::new(),
+            committed_imports: String::new(),
         });
         // Missing field means an older parent; the feature defaults to on.
         let options = CompileOptions {
