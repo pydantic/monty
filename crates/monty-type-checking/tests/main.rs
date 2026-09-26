@@ -1,8 +1,8 @@
 use std::thread;
 
 use insta::assert_snapshot;
-use monty_type_checking::{SourceFile, TypeChecker};
-use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
+use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, top_level_imports};
+use monty_types::{ModuleStub, ModuleStubError, RESERVED_MODULE_NAMES, TypeCheckingConfig, TypeCheckingFormat};
 
 /// Type-checks one snippet with a throwaway checker, rendered in `Full`.
 fn check(code: &str, path: &str) -> Option<String> {
@@ -456,4 +456,151 @@ fn collections_unimplemented_names_are_unresolved() {
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                                    ^^^^^^^^^^
     ");
+}
+
+// ---------------------------------------------------------------------------
+// Host module stubs and the import prelude
+// ---------------------------------------------------------------------------
+
+/// The `Concise` rendering of one snippet checked with `context`.
+fn render_with(checker: &mut TypeChecker, code: &str, context: &TypeCheckContext<'_>) -> Option<String> {
+    checker
+        .run_with(&SourceFile::new(code, "main.py"), context, concise())
+        .expect("type check should not fail internally")
+        .map(|diagnostics| diagnostics.to_string())
+}
+
+fn tools_stub() -> ModuleStub {
+    ModuleStub::new("tools", "async def add(*, a: int, b: int) -> int: ...\n").unwrap()
+}
+
+#[test]
+fn a_module_stub_resolves_the_module_import() {
+    let stubs = [tools_stub()];
+    let context = TypeCheckContext {
+        module_stubs: &stubs,
+        ..TypeCheckContext::default()
+    };
+    let mut checker = TypeChecker::default();
+    let ok = render_with(&mut checker, "import tools\nawait tools.add(a=1, b=2)\n", &context);
+    assert!(ok.is_none(), "the stubbed module should resolve: {ok:#?}");
+    let wrong = render_with(&mut checker, "from tools import add\nawait add(a='x', b=2)\n", &context);
+    assert_snapshot!(wrong.unwrap(), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+}
+
+#[test]
+fn a_module_stub_is_not_star_imported() {
+    let stubs = [tools_stub()];
+    let context = TypeCheckContext {
+        module_stubs: &stubs,
+        ..TypeCheckContext::default()
+    };
+    let mut checker = TypeChecker::default();
+    let unresolved = render_with(&mut checker, "add(a=1, b=2)\n", &context);
+    assert_snapshot!(unresolved.unwrap(), @"main.py:1:1: error[unresolved-reference] Name `add` used when not defined");
+}
+
+/// A `.pyi` re-exports an import only as `import x as x`, so the committed
+/// snippets' star import loses `import math`; the prelude restores it.
+#[test]
+fn the_prelude_carries_a_committed_import_into_the_next_snippet() {
+    let committed = SourceFile::new("import math\nfrom tools import add as plus\n", "repl_type_stubs.pyi");
+    let stubs = [tools_stub()];
+    let mut checker = TypeChecker::default();
+
+    let without = TypeCheckContext {
+        stubs: Some(&committed),
+        module_stubs: &stubs,
+        prelude: "",
+    };
+    let lost = render_with(&mut checker, "math.sqrt(4)\n", &without);
+    assert_snapshot!(lost.unwrap(), @"main.py:1:1: error[unresolved-reference] Name `math` used when not defined");
+
+    let prelude = top_level_imports(committed.source_code);
+    let with = TypeCheckContext {
+        prelude: &prelude,
+        ..without
+    };
+    let ok = render_with(&mut checker, "math.sqrt(4)\nawait plus(a=1, b=2)\n", &with);
+    assert!(ok.is_none(), "the prelude should bind `math` and `plus`: {ok:#?}");
+    // diagnostics still land on the snippet's own lines
+    let wrong = render_with(&mut checker, "x = 1\nmath.sqrt('4')\n", &with);
+    assert_snapshot!(wrong.unwrap(), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
+}
+
+#[test]
+fn top_level_imports_keeps_aliases_and_drops_the_rest() {
+    let source = "\
+from __future__ import annotations
+import math, json as j
+from tools import add, sub as minus
+from . import sibling
+x = 1
+def f():
+    import re
+    return re
+if x:
+    import os
+";
+    assert_snapshot!(top_level_imports(source), @r"
+    import math, json as j
+    from tools import add, sub as minus
+    ");
+    assert_eq!(top_level_imports("x = (\n"), "");
+}
+
+#[test]
+fn module_stub_names_are_validated() {
+    let stub = |name: &str| ModuleStub::new(name, "").map(|_| ()).unwrap_err();
+    assert_eq!(stub("1tools"), ModuleStubError::InvalidName("1tools".to_owned()));
+    assert_eq!(stub("class"), ModuleStubError::InvalidName("class".to_owned()));
+    assert_eq!(stub("a.b"), ModuleStubError::InvalidName("a.b".to_owned()));
+    assert_eq!(stub("json"), ModuleStubError::ReservedName("json".to_owned()));
+    assert_eq!(stub("builtins"), ModuleStubError::ReservedName("builtins".to_owned()));
+    assert_snapshot!(stub("a.b").to_string(), @r#"module stub name "a.b" is not a valid identifier"#);
+    assert_snapshot!(stub("json").to_string(), @r#"module "json" is provided by the sandbox and cannot take a stub"#);
+    assert_eq!(
+        ModuleStub::new("stripe_mcp", "x: int\n").unwrap().module(),
+        "stripe_mcp"
+    );
+}
+
+/// Every module of the vendored typeshed must be reserved, or a stub could
+/// shadow it for the checker while the runtime keeps its own module.
+#[test]
+fn reserved_names_cover_the_vendored_typeshed() {
+    let versions = monty_typeshed::file_system()
+        .read_to_string("stdlib/VERSIONS")
+        .expect("the vendored typeshed lists its modules");
+    for line in versions.lines() {
+        let entry = line.split('#').next().unwrap_or_default().trim();
+        let Some((module, _)) = entry.split_once(':') else {
+            continue;
+        };
+        let top_level = module.split('.').next().unwrap_or_default();
+        assert!(
+            RESERVED_MODULE_NAMES.contains(&top_level),
+            "typeshed module {top_level} is missing from RESERVED_MODULE_NAMES"
+        );
+    }
+}
+
+/// Security-critical: module stubs are files too, and must not survive `reset`.
+#[test]
+fn reset_removes_module_stubs() {
+    let stubs = [tools_stub()];
+    let context = TypeCheckContext {
+        module_stubs: &stubs,
+        ..TypeCheckContext::default()
+    };
+    let mut checker = TypeChecker::default();
+    let first = render_with(&mut checker, "import tools\n", &context);
+    assert!(
+        first.is_none(),
+        "first run with a module stub should succeed: {first:#?}"
+    );
+    checker.reset().expect("reset");
+
+    let second = render_with(&mut checker, "import tools\n", &TypeCheckContext::default());
+    assert_snapshot!(second.unwrap(), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
 }

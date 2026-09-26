@@ -109,6 +109,54 @@ back to the original snippet — so an error points at the line the model wrote,
 Stubs are scoped to the checkout.
 A later session does not see them.
 
+A stub declares names at the top level of the snippet.
+A module the code imports needs a stub of its own, one `.pyi` per module in `type_check_module_stubs`
+(`typeCheckModuleStubs`), keyed by the module name; the checker writes each one as `<module>.pyi` beside the snippet,
+so `import tools` resolves and `from tools import add` sees its declarations, without star-importing them:
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import Monty, MontyTypingError
+
+    stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
+
+    with Monty() as pool:
+        with pool.checkout(type_check=True, type_check_module_stubs=stubs) as session:
+            print(session.get_types() == stubs)
+            #> True
+            try:
+                session.feed_run("from tools import add\nadd('x', 2)")
+            except MontyTypingError as exc:
+                print('invalid-argument-type' in exc.display())
+                #> True
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, MontyTypingError } from '@pydantic/monty'
+
+    const typeCheckModuleStubs = { tools: 'def add(a: int, b: int) -> int: ...\n' }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout({ typeCheck: true, typeCheckModuleStubs })
+    console.log(await session.getTypes()) // { tools: 'def add(a: int, b: int) -> int: ...\n' }
+    try {
+      await session.feedRun("from tools import add\nadd('x', 2)")
+    } catch (err) {
+      if (!(err instanceof MontyTypingError)) throw err
+      console.log(err.display().includes('invalid-argument-type')) // true
+    }
+    ```
+
+A module name that is not an identifier, or that names one of the sandbox's own modules, raises `ValueError`
+(throws in JavaScript).
+[`get_types()`][pydantic_monty.MontySession.get_types] returns the stubs in effect, which against Full Monty include
+the ones it renders for the session's [MCP servers](server.md#mcp-servers).
+The runtime side of an imported host module is `external_modules`; see
+[importing host modules](host-functions.md#importing-host-modules).
+
 Passing the same declarations to the model in its prompt, and to `type_check_stubs` here, is the pattern the
 [`examples/`](https://github.com/pydantic/monty/tree/main/examples) directory uses: the model sees the tool signatures,
 the checker enforces them.
@@ -150,6 +198,8 @@ checks as one growing program:
     ```
 
 A snippet that fails the check never runs, so it never enters the accumulated context.
+The `import` statements of a committed snippet are carried too, so `import math` in one feed still binds `math` for
+the next feed's check.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.

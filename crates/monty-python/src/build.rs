@@ -6,10 +6,11 @@
 //! unconvertible values) into the matching `MontyError` subclasses rather
 //! than leaking raw PyO3 errors.
 
+use monty_pool::McpServer;
 use monty_proto::python::{GraphEncoder, InstanceStore, exc_py_to_monty};
-use monty_types::{ExcType, MontyException, NamedValues, StringRepr, unstable};
+use monty_types::{ExcType, ModuleStub, MontyException, NamedValues, StringRepr, unstable};
 use pyo3::{
-    exceptions::PyTypeError,
+    exceptions::{PyKeyError, PyTypeError, PyValueError},
     prelude::*,
     types::{PyDict, PyMapping, PyString},
 };
@@ -52,6 +53,65 @@ pub(crate) fn extract_type_check_stubs(
         },
         None => Ok(None),
     }
+}
+
+/// Extracts `type_check_module_stubs` (`{module: source}`) into validated
+/// stubs; a name that is not an identifier, or is a module the sandbox
+/// provides, is a `ValueError`.
+pub(crate) fn extract_module_stubs(stubs: Option<&Bound<'_, PyDict>>) -> PyResult<Vec<ModuleStub>> {
+    let Some(stubs) = stubs else {
+        return Ok(Vec::new());
+    };
+    stubs
+        .iter()
+        .map(|(module, source)| {
+            let module: String = module
+                .extract()
+                .map_err(|_| PyTypeError::new_err("type_check_module_stubs keys must be str"))?;
+            let source: String = source
+                .extract()
+                .map_err(|_| PyTypeError::new_err("type_check_module_stubs values must be str"))?;
+            ModuleStub::new(module, source).map_err(|err| PyValueError::new_err(err.to_string()))
+        })
+        .collect()
+}
+
+/// Extracts `mcp_servers`: a sequence of `McpServer` mappings with `module`,
+/// `url` and optional `headers` keys.
+pub(crate) fn extract_mcp_servers(servers: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<McpServer>> {
+    let Some(servers) = servers else {
+        return Ok(Vec::new());
+    };
+    let mut extracted = Vec::new();
+    for server in servers.try_iter()? {
+        let server = server?;
+        let server = server
+            .cast::<PyMapping>()
+            .map_err(|_| PyTypeError::new_err("each mcp_servers entry must be a mapping with 'module' and 'url'"))?;
+        let module: String = mcp_server_field(server, "module")?.extract()?;
+        let url: String = mcp_server_field(server, "url")?.extract()?;
+        let headers = match server.get_item("headers") {
+            Ok(headers) if !headers.is_none() => headers
+                .cast::<PyMapping>()
+                .map_err(|_| PyTypeError::new_err("mcp_servers headers must be a mapping"))?
+                .items()?
+                .iter()
+                .map(|item| item.extract::<(String, String)>())
+                .collect::<PyResult<Vec<_>>>()?,
+            Ok(_) => Vec::new(),
+            Err(err) if err.is_instance_of::<PyKeyError>(server.py()) => Vec::new(),
+            Err(err) => return Err(err),
+        };
+        extracted.push(McpServer::new(module, url).with_headers(headers));
+    }
+    Ok(extracted)
+}
+
+/// A required key of one `mcp_servers` entry.
+fn mcp_server_field<'py>(server: &Bound<'py, PyMapping>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+    server
+        .get_item(key)
+        .map_err(|_| PyValueError::new_err(format!("an mcp_servers entry is missing its '{key}'")))
 }
 
 /// Extracts the `inputs` dict into the named values of a feed: one arena for

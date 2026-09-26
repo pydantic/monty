@@ -10,6 +10,7 @@ from . import (
     AsyncSnapshot,
     ExternalResult,
     ExternalSettledResult,
+    McpServer,
     OsHandler,
     OSPolicy,
     PrintCallback,
@@ -607,6 +608,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        type_check_module_stubs: dict[str, str] | None = None,
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
@@ -630,6 +632,11 @@ class Monty:
                 successfully executed snippet is appended to the accumulated
                 context used for type-checking subsequent snippets.
             type_check_stubs: Stub declarations made available to type checking.
+            type_check_module_stubs: A `.pyi` source per host-provided module,
+                keyed by the module name, so that `import <module>` resolves
+                during type checking (the stub is never star-imported). A
+                name that is not an identifier, or is a module the sandbox
+                provides, raises `ValueError`. `get_types()` reports them.
             type_check_format: How `MontyTypingError` diagnostics are rendered;
                 `None` (the default) means `'full'`. Chosen here rather than on
                 the error because the checker's structured diagnostics never
@@ -673,6 +680,7 @@ class MontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
+        external_modules: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -704,6 +712,14 @@ class MontySession:
                 returned directly when the name is read, and an absent name
                 raises `NameError`. The lazy counterpart to `inputs`; a name
                 present in both is served by the eager `inputs` binding.
+            external_modules: Host modules the snippet may `import`, keyed by
+                the module name: a dict, a module or any object whose public
+                attributes become the module's — callables as host functions
+                (coroutines are awaited as in `external_lookup`), other values
+                converted when imported — or a `ClassInstance` sent as itself.
+                `from <module> import name` works for those attributes. An
+                import of an absent module raises `ModuleNotFoundError`; the
+                sandbox's own modules are never looked up here.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -737,6 +753,7 @@ class MontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
+        external_modules: dict[str, Any] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
@@ -777,6 +794,8 @@ class MontySession:
                 `resume_auto()` resolves external calls and undefined names
                 against (as in `feed_run`). Captured for `resume_auto()`; not
                 used by a plain `resume(...)`.
+            external_modules: Host modules `resume_auto()` answers imports
+                from (as in `feed_run`); captured like `external_lookup`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -824,6 +843,7 @@ class MontySession:
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
+        external_modules: dict[str, Any] | None = None,
         os: OsHandler | None = None,
     ) -> SyncSnapshot:
         """
@@ -856,6 +876,18 @@ class MontySession:
         """
         Serialize the worker's session state (idle or suspended) to opaque
         bytes using monty's existing dump format. The session stays usable.
+        """
+
+    def get_types(self) -> dict[str, str]:
+        """
+        The type stubs of the session's host-provided modules, keyed by module
+        name: what `type_check_module_stubs` declared, plus whatever a serving
+        `monty-server` renders for its `mcp_servers`. Give them to a model
+        writing code for the session, alongside `type_check_stubs`.
+
+        Blocks the calling thread with the GIL released, bounded by the pool's
+        `request_timeout`; valid while the session is idle or suspended. A
+        server that predates the request ends the session.
         """
 
     def install_dependencies(self, requirements: list[str]) -> None:
@@ -925,6 +957,7 @@ class AsyncMonty:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        type_check_module_stubs: dict[str, str] | None = None,
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
@@ -1041,20 +1074,31 @@ class AsyncMontyWebsocket:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        type_check_module_stubs: dict[str, str] | None = None,
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
+        mcp_servers: list[McpServer] | None = None,
         ephemeral: bool | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.
 
-        Identical to `AsyncMonty.checkout`, except for `ephemeral`; the
-        connection is opened by `async with` on the returned session.
+        Identical to `AsyncMonty.checkout`, except for `mcp_servers` and
+        `ephemeral`; the connection is opened by `async with` on the returned
+        session.
 
         Arguments:
+            mcp_servers: MCP servers the server connects to on this session's
+                behalf and serves as importable modules, so `import <module>`
+                and the module's tool calls never reach this process; see
+                `McpServer`. The tools are async: `await <module>.<tool>(...)`.
+                `get_types()` returns the stubs the server renders from them
+                (put them in the prompt of a model writing the code), and
+                they type-check the session's snippets. A server that does
+                not support MCP ignores this, which `get_types()` shows.
             ephemeral: Whether a server that stores sessions may store this one.
                 `True` means the server never stores it on its own and it gets
                 no `session_id`; `False` asks for it to be stored; `None` takes
@@ -1079,6 +1123,7 @@ class AsyncMontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
+        external_modules: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -1142,6 +1187,7 @@ class AsyncMontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
+        external_modules: dict[str, Any] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
@@ -1213,6 +1259,7 @@ class AsyncMontySession:
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
+        external_modules: dict[str, Any] | None = None,
         os: OsHandler | None = None,
     ) -> AsyncSnapshot:
         """
@@ -1238,6 +1285,13 @@ class AsyncMontySession:
         `load_snapshot` start new sessions from. The session continues under
         its existing `session_id`. A server that stores nothing raises
         `MontyRuntimeError`; the session stays usable.
+        """
+
+    async def get_types(self) -> dict[str, str]:
+        """
+        Async counterpart of `MontySession.get_types`: the stubs of the
+        session's host-provided modules, which against `monty-server` include
+        the ones it renders for the session's `mcp_servers`.
         """
 
     async def install_dependencies(self, requirements: list[str]) -> None:

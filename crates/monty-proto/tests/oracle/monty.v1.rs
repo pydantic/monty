@@ -686,7 +686,7 @@ pub struct ParentRequest {
     /// not depend on it, and it is absent whenever the parent is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -715,6 +715,8 @@ pub mod parent_request {
         Shutdown(super::Shutdown),
         #[prost(message, tag = "11")]
         AbortFeed(super::AbortFeed),
+        #[prost(message, tag = "12")]
+        GetTypes(super::GetTypes),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -784,6 +786,49 @@ pub struct Configure {
     /// it.
     #[prost(enumeration = "Persistence", tag = "12")]
     pub persistence: i32,
+    /// Relay-only: MCP servers a serving relay connects to on the host's behalf
+    /// and serves as importable modules — their `__import__` calls and tool calls
+    /// never reach the host. Children ignore it; a relay strips it before
+    /// forwarding.
+    #[prost(message, repeated, tag = "13")]
+    pub mcp_servers: ::prost::alloc::vec::Vec<McpServer>,
+    /// Type stubs for host-provided modules, one `.pyi` per module, so that
+    /// `import <module>` resolves during type checking; `GetTypes` reports the
+    /// stubs in effect. Ignored when `type_check` is false.
+    #[prost(message, repeated, tag = "14")]
+    pub type_check_module_stubs: ::prost::alloc::vec::Vec<ModuleStub>,
+}
+/// An MCP server a serving relay exposes to the sandbox as the module `module`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct McpServer {
+    /// The name sandbox code imports the server as: an identifier that no
+    /// sandbox module uses (see `ModuleStub`).
+    #[prost(string, tag = "1")]
+    pub module: ::prost::alloc::string::String,
+    /// The server's streamable-HTTP endpoint.
+    #[prost(string, tag = "2")]
+    pub url: ::prost::alloc::string::String,
+    /// Request headers sent to the server, typically its authorization.
+    #[prost(message, repeated, tag = "3")]
+    pub headers: ::prost::alloc::vec::Vec<Header>,
+}
+/// One HTTP request header.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Header {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub value: ::prost::alloc::string::String,
+}
+/// The `.pyi` source describing one host-provided module for type checking.
+/// `module` must be an identifier that is not one of the sandbox's own
+/// modules, or the runtime and the checker would disagree about the import.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ModuleStub {
+    #[prost(string, tag = "1")]
+    pub module: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source: ::prost::alloc::string::String,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -905,6 +950,17 @@ pub struct InstallDependencies {
     #[prost(string, repeated, tag = "1")]
     pub requirements: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
+/// Asks for the per-module type stubs in effect, answered with `TypeStubs`. A
+/// child answers with its configured `type_check_module_stubs`; a serving relay
+/// answers with those plus the stubs it renders for `mcp_servers`, never
+/// forwarding the request. Valid whenever no turn is in flight (a session that
+/// is idle or suspended, or one configured but not yet fed).
+///
+/// A peer that predates this request answers a `FatalError` ("request has no
+/// kind"): there is no in-band negotiation, so only send it to a peer known to
+/// serve it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetTypes {}
 /// A oneof shares its field-number space with the enclosing message, so tags
 /// 1-19 are reserved by convention for `kind` arms and the message-level
 /// fields start at 20 — a new arm then never has to jump the numbering. Note
@@ -958,7 +1014,7 @@ pub struct ChildEvent {
     /// support persistence.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -989,6 +1045,8 @@ pub mod child_event {
         FatalError(super::FatalError),
         #[prost(message, tag = "12")]
         Shutdown(super::ShutdownDump),
+        #[prost(message, tag = "13")]
+        TypeStubs(super::TypeStubs),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1012,9 +1070,16 @@ pub struct Print {
 /// Suspension: the sandbox called an external function, or — when `object_id`
 /// is set — a method on a host-backed object (the receiver is NOT included in
 /// `args`; the host routes by uuid). The receiver may be a class instance or a
-/// class type: calling a host class arrives as a `__call__` method call on the
-/// class's uuid, and the host's own policy decides whether construction is
-/// allowed. Answer with `ResumeCall`.
+/// class type: calling either arrives as a `__call__` method call on its uuid,
+/// and the host's own policy decides whether the call (for a class, its
+/// construction) is allowed. Answer with `ResumeCall`.
+///
+/// An `import` of a module the sandbox does not have is this suspension too:
+/// `function_name` is `__import__` with the module name as its one positional
+/// argument, and the answer's `return_value` is bound as the module — usually a
+/// host-backed class instance whose attributes are the tools. `not_found`
+/// raises `ModuleNotFoundError`; `from m import a` follows with attribute loads
+/// on that value (its eager attrs, else a `NameLookup` with `object_id`).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FunctionCall {
     #[prost(string, tag = "1")]
@@ -1357,6 +1422,13 @@ pub struct ShutdownDump {
     /// a park that failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+/// Answers `GetTypes`: the stub of every host-provided module, as the type
+/// checker sees them.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TypeStubs {
+    #[prost(message, repeated, tag = "1")]
+    pub modules: ::prost::alloc::vec::Vec<ModuleStub>,
 }
 /// Where a `Type` comes from — drives id presence and input validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

@@ -29,7 +29,7 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request
 
-from pydantic_monty import AsyncMontyWebsocket, MontyRuntimeError, MontyShutdown
+from pydantic_monty import AsyncMontyWebsocket, McpServer, MontyRuntimeError, MontyShutdown
 from pydantic_monty._binary import find_monty_binary
 
 _RELAY_SCRIPT = Path(__file__).resolve().parents[3] / 'scripts' / 'websocket_relay.py'
@@ -105,6 +105,8 @@ _LENGTH_PREFIX = struct.Struct('<I')
 # `ParentRequest.kind` and `ChildEvent.kind` field numbers, from `monty.proto`
 _REQUEST_DUMP, _REQUEST_LOAD = 7, 8
 _EVENT_PRINT, _EVENT_DUMP_RESULT, _EVENT_SHUTDOWN = 1, 9, 12
+# `ChildEvent.kind` arms own the tags below this; the message-level fields start here
+_FIRST_EVENT_FIELD = 20
 _EVENT_SESSION_ID = 28
 
 
@@ -162,7 +164,7 @@ class _StoringServer:
                 await to_child(message)
                 while True:
                     reply = await from_child()
-                    kind = min(field for field in _proto_fields(reply) if field <= _EVENT_SHUTDOWN)
+                    kind = min(field for field in _proto_fields(reply) if field < _FIRST_EVENT_FIELD)
                     if kind != _EVENT_PRINT and names:
                         session_id = self._mint()
                         reply += _bytes_field(_EVENT_SESSION_ID, session_id)
@@ -496,3 +498,21 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_w
             await session.load_session(b'sess-1')
             assert session.session_id == snapshot(b'sess-3')
             assert await session.feed_run('x + 1') == snapshot(21)
+
+
+async def test_module_stubs_and_mcp_servers_over_websocket(ws_url: str):
+    """`mcp_servers` reaches the server (a plain worker ignores it) and
+    `get_types` reports the configured module stubs from the far side."""
+    stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
+    servers: list[McpServer] = [
+        {'module': 'stripe_mcp', 'url': 'https://mcp.example/stripe', 'headers': {'Authorization': 'Bearer t'}}
+    ]
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    async with AsyncMontyWebsocket(ws_url) as pool:
+        async with pool.checkout(type_check=True, type_check_module_stubs=stubs, mcp_servers=servers) as session:
+            assert await session.get_types() == snapshot({'tools': 'def add(a: int, b: int) -> int: ...\n'})
+            result = await session.feed_run('import tools\ntools.add(1, 2)', external_modules={'tools': {'add': add}})
+            assert result == snapshot(3)

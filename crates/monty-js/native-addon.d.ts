@@ -38,6 +38,8 @@ export declare class NativeSession {
   feedStart(...args: unknown[]): Promise<object>
   restore(...args: unknown[]): Promise<object>
   dump(): Promise<Uint8Array>
+  /** The stubs of the session's host-provided modules, keyed by module name. */
+  getTypes(): Promise<Record<string, string>>
   finish(): Promise<void>
   installDependencies(...args: unknown[]): Promise<object>
   resumeReturn(...args: unknown[]): Promise<object>

@@ -1252,7 +1252,7 @@ def test_timezone_named_zone_constants_need_the_clock(monty_run: RunMonty):
             'import time\ntime.tzname',
             checkout={'os_policy': {'datetime': 'call_host', 'timezone': 'Europe/London'}},
         )
-    assert str(exc_info.value) == snapshot("AttributeError: 'module' object has no attribute 'tzname'")
+    assert str(exc_info.value) == snapshot("AttributeError: module 'time' has no attribute 'tzname'")
 
 
 def test_timezone_unknown_name_is_refused_at_checkout(monty_run: RunMonty):

@@ -531,6 +531,7 @@ impl TurnMetrics {
                 self.turn = Some(("load", now));
             }
             Some(pb::parent_request::Kind::Dump(_)) => self.turn = Some(("dump", now)),
+            Some(pb::parent_request::Kind::GetTypes(_)) => self.turn = Some(("get_types", now)),
             Some(pb::parent_request::Kind::InstallDependencies(_)) => {
                 self.turn = Some(("install_dependencies", now));
             }
@@ -628,7 +629,7 @@ impl TurnMetrics {
                 );
                 self.end_turn("ok");
             }
-            Some(pb::child_event::Kind::Ok(_)) => self.end_turn("ok"),
+            Some(pb::child_event::Kind::Ok(_) | pb::child_event::Kind::TypeStubs(_)) => self.end_turn("ok"),
             // the worker is about to exit; the pool counts the termination
             Some(pb::child_event::Kind::FatalError(_)) => self.end_terminal("fatal_error", event),
             Some(pb::child_event::Kind::Shutdown(_)) => self.end_terminal("shutdown", event),

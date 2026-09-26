@@ -1,22 +1,25 @@
 //! Resolving names a sandbox snippet leaves undefined against the session's
-//! `external_lookup` dict, plus method calls and lazy attribute lookups on
-//! host class instances.
+//! `external_lookup` dict, its imports against `external_modules`, plus
+//! method calls and lazy attribute lookups on host class instances.
 //!
 //! [`ExternalLookup`] owns both halves of the lazy-resolution protocol — the
 //! `NameLookup` that resolves a bare name and the `FunctionCall` that invokes a
 //! resolved host function — so the callable-vs-value rule linking them lives in
-//! one place. Host-routed calls (`dispatch_object_call*`) and lazy attribute
-//! lookups (`resolve_object_attr`) are a separate concern: they route through
-//! the session's [`InstanceStore`] to the original wrapped object or class,
-//! not `external_lookup`.
+//! one place, and the `__import__` call that binds a module next to the dotted
+//! calls into it. Host-routed calls (`dispatch_object_call*`) and lazy
+//! attribute lookups (`resolve_object_attr`) are a separate concern: they
+//! route through the session's [`InstanceStore`] to the original wrapped
+//! object or class, not `external_lookup`.
 
-use monty_proto::python::{DecodedArena, InstanceStore, exc_py_to_monty, py_to_monty, py_to_monty_value};
+use monty_proto::python::{
+    DecodedArena, InstanceStore, exc_py_to_monty, is_class_instance_wrapper, py_to_monty, py_to_monty_value,
+};
 use monty_types::{
-    CallArgs, ExtFunctionResult, MontyObject, MontyUuid, NameLookupResult,
+    CallArgs, ExtFunctionResult, IMPORT_FUNCTION, MontyObject, MontyUuid, NameLookupResult,
     unstable::{self, MontyNode},
 };
 use pyo3::{
-    exceptions::PyAttributeError,
+    exceptions::{PyAttributeError, PyTypeError},
     prelude::*,
     types::{PyDict, PyTuple},
 };
@@ -115,27 +118,65 @@ pub fn resolve_object_attr(
     }
 }
 
-/// The session's `external_lookup` dict (`name -> value`, absent when the
-/// caller passed none) plus the `Python` token and instance store every
+/// The `external_lookup=` and `external_modules=` dicts one feed captured:
+/// the host side of the names and imports a snippet leaves to it. Held as
+/// owned references so a snapshot can keep them for `resume_auto`.
+#[derive(Default)]
+pub(crate) struct HostNames {
+    /// `external_lookup=`: host values by the bare name the snippet reads.
+    pub(crate) lookup: Option<Py<PyDict>>,
+    /// `external_modules=`: module-like host values by the name the snippet
+    /// imports.
+    pub(crate) modules: Option<Py<PyDict>>,
+}
+
+impl HostNames {
+    /// Captures the dicts a feed was called with.
+    pub(crate) fn capture(lookup: Option<&Bound<'_, PyDict>>, modules: Option<&Bound<'_, PyDict>>) -> Self {
+        Self {
+            lookup: lookup.map(|d| d.clone().unbind()),
+            modules: modules.map(|d| d.clone().unbind()),
+        }
+    }
+
+    pub(crate) fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self {
+            lookup: self.lookup.as_ref().map(|d| d.clone_ref(py)),
+            modules: self.modules.as_ref().map(|d| d.clone_ref(py)),
+        }
+    }
+}
+
+/// The session's `external_lookup` and `external_modules` dicts (absent when
+/// the caller passed none) plus the `Python` token and instance store every
 /// resolution needs. Owns both halves of the lazy-resolution protocol:
 /// [`resolve_name`](Self::resolve_name) answers a `NameLookup`, and
 /// [`call`](Self::call) / [`call_or_coroutine`](Self::call_or_coroutine)
 /// answer the follow-up `FunctionCall` by invoking the current dict entry —
 /// which may have been replaced since it resolved, so calling a now
-/// non-callable entry raises `TypeError` exactly as CPython would.
-/// `ClassInstance` wrappers in return values register in `instances`
-/// transparently.
+/// non-callable entry raises `TypeError` exactly as CPython would. The same
+/// two methods answer an `import` (the `__import__` call) from
+/// `external_modules`, and a dotted name (`tools.add`) as that module's
+/// attribute. `ClassInstance` wrappers in return values register in
+/// `instances` transparently.
 pub struct ExternalLookup<'a, 'py> {
     py: Python<'py>,
     lookup: Option<&'py Bound<'py, PyDict>>,
+    modules: Option<&'py Bound<'py, PyDict>>,
     instances: &'a InstanceStore,
 }
 
 impl<'a, 'py> ExternalLookup<'a, 'py> {
-    /// Wraps the `external_lookup` dict (`None` when the caller passed none, in
-    /// which case every name resolves to `NameError` / `NotFound`).
-    pub fn new(py: Python<'py>, lookup: Option<&'py Bound<'py, PyDict>>, instances: &'a InstanceStore) -> Self {
-        Self { py, lookup, instances }
+    /// Binds the captured dicts (each `None` when the caller passed none, in
+    /// which case every name resolves to `NameError` / `NotFound`, and every
+    /// import to `ModuleNotFoundError`).
+    pub(crate) fn new(py: Python<'py>, names: &'py HostNames, instances: &'a InstanceStore) -> Self {
+        Self {
+            py,
+            lookup: names.lookup.as_ref().map(|d| d.bind(py)),
+            modules: names.modules.as_ref().map(|d| d.bind(py)),
+            instances,
+        }
     }
 
     /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
@@ -169,8 +210,12 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
     /// Calls an external function by name, converting args/kwargs from Monty
     /// format and the result back. A raised exception becomes a Monty exception
-    /// that will be re-raised inside Monty execution.
+    /// that will be re-raised inside Monty execution. An `import` (the
+    /// `__import__` call) is answered from `external_modules` instead.
     pub fn call(&self, function_name: &str, args: &CallArgs) -> ExtFunctionResult {
+        if function_name == IMPORT_FUNCTION {
+            return self.import_module(args);
+        }
         match self.call_inner(function_name, args) {
             Ok(Some(result)) => ExtFunctionResult::Return(result),
             Ok(None) => ExtFunctionResult::NotFound(function_name.to_owned()),
@@ -181,10 +226,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// `PyResult`-returning core of [`call`](Self::call); `Ok(None)` means the
     /// name was not found (an absent dict or an absent key).
     fn call_inner(&self, function_name: &str, args: &CallArgs) -> PyResult<Option<MontyObject>> {
-        let Some(lookup) = self.lookup else {
-            return Ok(None);
-        };
-        let Some(callable) = lookup.get_item(function_name)? else {
+        let Some(callable) = self.callable(function_name)? else {
             return Ok(None);
         };
         let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, self.instances)?;
@@ -195,6 +237,9 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// Like [`call`](Self::call) but returns `CallResult::Coroutine` (for the
     /// async loop to spawn) when the callable returns a coroutine.
     pub fn call_or_coroutine(&self, function_name: &str, args: &CallArgs) -> CallResult {
+        if function_name == IMPORT_FUNCTION {
+            return CallResult::Sync(self.import_module(args));
+        }
         match self.call_inner_raw(function_name, args) {
             Ok(Some(result)) => result_to_call_result(self.py, &result, self.instances),
             Ok(None) => CallResult::Sync(ExtFunctionResult::NotFound(function_name.to_owned())),
@@ -208,15 +253,135 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     where
         'py: 'b,
     {
-        let Some(lookup) = self.lookup else {
-            return Ok(None);
-        };
-        let Some(callable) = lookup.get_item(function_name)? else {
+        let Some(callable) = self.callable(function_name)? else {
             return Ok(None);
         };
         let (py_args_tuple, py_kwargs) = wire_call_arguments(self.py, args, self.instances)?;
         callback_context::call(self.py, || callable.call(&py_args_tuple, Some(&py_kwargs))).map(Some)
     }
+
+    /// The host callable `function_name` names: an entry of `external_lookup`,
+    /// or, for a dotted name, that attribute of the `external_modules` entry
+    /// (a host function bound by an import is named `<module>.<attr>`).
+    /// `None` when neither has it.
+    fn callable(&self, function_name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+        if let Some((module, attr)) = function_name.split_once('.') {
+            match self.module(module)? {
+                Some(module) => module_attr(&module, attr),
+                None => Ok(None),
+            }
+        } else {
+            match self.lookup {
+                Some(lookup) => lookup.get_item(function_name),
+                None => Ok(None),
+            }
+        }
+    }
+
+    /// The `external_modules` entry for `name`, if any.
+    fn module(&self, name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+        match self.modules {
+            Some(modules) => modules.get_item(name),
+            None => Ok(None),
+        }
+    }
+
+    /// Answers the `__import__` call of `import <module>`: the
+    /// `external_modules` entry of that name as a host object, or not found,
+    /// which the sandbox raises as `ModuleNotFoundError`.
+    fn import_module(&self, args: &CallArgs) -> ExtFunctionResult {
+        let Some(name) = args.args().next().and_then(|arg| arg.as_str()) else {
+            return ExtFunctionResult::NotFound(IMPORT_FUNCTION.to_owned());
+        };
+        let module = self
+            .module(name)
+            .and_then(|module| module.map(|module| self.module_value(name, &module)).transpose());
+        match module {
+            Ok(Some(value)) => ExtFunctionResult::Return(value),
+            Ok(None) => ExtFunctionResult::NotFound(IMPORT_FUNCTION.to_owned()),
+            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+        }
+    }
+
+    /// The sandbox value of an `external_modules` entry. A `ClassInstance`
+    /// wrapper crosses as itself, its methods routing back by uuid; anything
+    /// else — a dict, a module, a namespace — becomes a host object named
+    /// after the module whose public attributes are sent eagerly: callables as
+    /// host functions named `<module>.<attr>`, other values converted.
+    fn module_value(&self, name: &str, module: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
+        if is_class_instance_wrapper(module)? {
+            return py_to_monty_value(module, self.instances)
+                .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc));
+        }
+        let mut attrs = Vec::new();
+        for (attr, value) in module_attrs(module)? {
+            let value = if value.is_callable() {
+                MontyObject::function(format!("{name}.{attr}"), None)
+            } else {
+                py_to_monty_value(&value, self.instances)
+                    .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?
+            };
+            attrs.push((MontyObject::string(attr), value));
+        }
+        let class = MontyObject::class_type(name, module_uuid("class", name), true, false, []);
+        Ok(MontyObject::class_instance(class, module_uuid("instance", name), attrs))
+    }
+}
+
+/// The public attribute `attr` of an `external_modules` entry: a dict's item,
+/// or any other object's attribute; `None` when absent.
+fn module_attr<'py>(module: &Bound<'py, PyAny>, attr: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+    if attr.starts_with('_') {
+        Ok(None)
+    } else if let Ok(dict) = module.cast::<PyDict>() {
+        dict.get_item(attr)
+    } else {
+        match module.getattr(attr) {
+            Ok(value) => Ok(Some(value)),
+            Err(err) if err.is_instance_of::<PyAttributeError>(module.py()) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+/// The public attributes of an `external_modules` entry, in order: a dict's
+/// items (which must have `str` keys), or `dir()` of any other object.
+fn module_attrs<'py>(module: &Bound<'py, PyAny>) -> PyResult<Vec<(String, Bound<'py, PyAny>)>> {
+    let mut attrs = Vec::new();
+    if let Ok(dict) = module.cast::<PyDict>() {
+        for (key, value) in dict.iter() {
+            let Ok(key) = key.extract::<String>() else {
+                return Err(PyTypeError::new_err("external_modules entries must have str keys"));
+            };
+            if !key.starts_with('_') {
+                attrs.push((key, value));
+            }
+        }
+    } else {
+        for name in module.dir()?.iter() {
+            let name: String = name.extract()?;
+            if !name.starts_with('_') {
+                let value = module.getattr(name.as_str())?;
+                attrs.push((name, value));
+            }
+        }
+    }
+    Ok(attrs)
+}
+
+/// A stable identity for the host object standing in for module `name`, so a
+/// second `import` of it — or one after a dump is restored — is the same
+/// object: FNV-1a over `kind:name`, folded into the two uuid halves.
+fn module_uuid(kind: &str, name: &str) -> MontyUuid {
+    let fnv = |seed: u64| {
+        let mut hash = seed;
+        for byte in kind.bytes().chain(*b":").chain(name.bytes()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        hash
+    };
+    MontyUuid::from_u128((u128::from(fnv(0xcbf2_9ce4_8422_2325)) << 64) | u128::from(fnv(0x8422_2325_cbf2_9ce4)))
 }
 
 /// Result of calling a Python function with coroutine detection, letting the

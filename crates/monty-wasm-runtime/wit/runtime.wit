@@ -274,12 +274,22 @@ interface worker {
         github,
     }
 
+    /// The `.pyi` source describing one host-provided module for type
+    /// checking; `module` must be an identifier that is not one of the
+    /// sandbox's own modules.
+    record module-stub {
+        module: string,
+        source: string,
+    }
+
     /// Options for creating one REPL session.
     record configure-request {
         script-name: string,
         limits: option<resource-limits>,
         type-check: bool,
         type-check-stubs: option<string>,
+        /// One stub per host-provided module, so `import <module>` resolves.
+        type-check-module-stubs: list<module-stub>,
         assert-message-annotations: option<u32>,
         type-check-format: type-check-format,
         type-check-color: bool,
@@ -366,6 +376,8 @@ interface worker {
         dump,
         load(list<u8>),
         reset,
+        /// Asks for the module stubs in effect, answered with `type-stubs`.
+        get-types,
     }
 
     /// One Python traceback frame.
@@ -481,6 +493,8 @@ interface worker {
         ok,
         fatal-error(string),
         shutdown(option<list<u8>>),
+        /// Answers `get-types`: the stub of every host-provided module.
+        type-stubs(list<module-stub>),
     }
 
     /// All output produced by one request.

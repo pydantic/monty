@@ -691,7 +691,10 @@ pub struct ParentRequest {
     pub trace_parent: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
     >,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(
+        oneof = "parent_request::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+    )]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -721,6 +724,8 @@ pub mod parent_request {
         Shutdown(super::Shutdown),
         #[prost(message, tag = "11")]
         AbortFeed(super::AbortFeed),
+        #[prost(message, tag = "12")]
+        GetTypes(super::GetTypes),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -793,6 +798,52 @@ pub struct Configure {
     /// it.
     #[prost(enumeration = "Persistence", tag = "12")]
     pub persistence: i32,
+    /// Relay-only: MCP servers a serving relay connects to on the host's behalf
+    /// and serves as importable modules — their `__import__` calls and tool calls
+    /// never reach the host. Children ignore it; a relay strips it before
+    /// forwarding.
+    #[prost(message, repeated, tag = "13")]
+    pub mcp_servers: crate::budgeted_prost::alloc::vec::Vec<McpServer>,
+    /// Type stubs for host-provided modules, one `.pyi` per module, so that
+    /// `import <module>` resolves during type checking; `GetTypes` reports the
+    /// stubs in effect. Ignored when `type_check` is false.
+    #[prost(message, repeated, tag = "14")]
+    pub type_check_module_stubs: crate::budgeted_prost::alloc::vec::Vec<ModuleStub>,
+}
+/// An MCP server a serving relay exposes to the sandbox as the module `module`.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct McpServer {
+    /// The name sandbox code imports the server as: an identifier that no
+    /// sandbox module uses (see `ModuleStub`).
+    #[prost(string, tag = "1")]
+    pub module: crate::budgeted_prost::alloc::string::String,
+    /// The server's streamable-HTTP endpoint.
+    #[prost(string, tag = "2")]
+    pub url: crate::budgeted_prost::alloc::string::String,
+    /// Request headers sent to the server, typically its authorization.
+    #[prost(message, repeated, tag = "3")]
+    pub headers: crate::budgeted_prost::alloc::vec::Vec<Header>,
+}
+/// One HTTP request header.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct Header {
+    #[prost(string, tag = "1")]
+    pub name: crate::budgeted_prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub value: crate::budgeted_prost::alloc::string::String,
+}
+/// The `.pyi` source describing one host-provided module for type checking.
+/// `module` must be an identifier that is not one of the sandbox's own
+/// modules, or the runtime and the checker would disagree about the import.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct ModuleStub {
+    #[prost(string, tag = "1")]
+    pub module: crate::budgeted_prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source: crate::budgeted_prost::alloc::string::String,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -927,6 +978,18 @@ pub struct InstallDependencies {
         crate::budgeted_prost::alloc::string::String,
     >,
 }
+/// Asks for the per-module type stubs in effect, answered with `TypeStubs`. A
+/// child answers with its configured `type_check_module_stubs`; a serving relay
+/// answers with those plus the stubs it renders for `mcp_servers`, never
+/// forwarding the request. Valid whenever no turn is in flight (a session that
+/// is idle or suspended, or one configured but not yet fed).
+///
+/// A peer that predates this request answers a `FatalError` ("request has no
+/// kind"): there is no in-band negotiation, so only send it to a peer known to
+/// serve it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct GetTypes {}
 /// A oneof shares its field-number space with the enclosing message, so tags
 /// 1-19 are reserved by convention for `kind` arms and the message-level
 /// fields start at 20 — a new arm then never has to jump the numbering. Note
@@ -983,7 +1046,10 @@ pub struct ChildEvent {
     /// support persistence.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(
+        oneof = "child_event::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+    )]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -1015,6 +1081,8 @@ pub mod child_event {
         FatalError(super::FatalError),
         #[prost(message, tag = "12")]
         Shutdown(super::ShutdownDump),
+        #[prost(message, tag = "13")]
+        TypeStubs(super::TypeStubs),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1372,6 +1440,14 @@ pub struct ShutdownDump {
     /// a park that failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
+}
+/// Answers `GetTypes`: the stub of every host-provided module, as the type
+/// checker sees them.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct TypeStubs {
+    #[prost(message, repeated, tag = "1")]
+    pub modules: crate::budgeted_prost::alloc::vec::Vec<ModuleStub>,
 }
 /// Where a `Type` comes from — drives id presence and input validation.
 #[derive(

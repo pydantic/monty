@@ -1546,19 +1546,6 @@ impl Value {
         }
     }
 
-    /// Returns the module name if this value is a module, otherwise returns "<unknown>".
-    ///
-    /// Used for error messages in `from module import name` when the name doesn't exist.
-    pub fn module_name(&self, vm: &mut VM<'_>) -> String {
-        match self {
-            Self::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Module(module) => vm.interns.get_str(module.name()).to_string(),
-                _ => "<unknown>".to_string(),
-            },
-            _ => "<unknown>".to_string(),
-        }
-    }
-
     /// Python-visible `is` operator using complete structural identity.
     ///
     /// Values compare using their full immediate or arena identity.
@@ -1801,6 +1788,13 @@ impl Value {
             Self::Ref(heap_id) => {
                 if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
                     return Ok(call_result);
+                }
+                // CPython names the module, not its type, for a missing module attribute.
+                if let HeapData::Module(module) = vm.heap.get(*heap_id) {
+                    return Err(ExcType::attribute_error_module(
+                        vm.interns.get_str(module.name()),
+                        attr.as_str(vm.interns),
+                    ));
                 }
             }
             // Type objects (`list`, `date`, `chain`) answer for themselves:

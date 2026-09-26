@@ -21,7 +21,9 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
+use monty_types::{
+    IMPORT_FUNCTION, InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange,
+};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
@@ -1608,9 +1610,10 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.load_attr(name_id));
                 }
                 Opcode::LoadAttrImport => {
-                    let name_idx = self.current_frame.fetch_u16();
+                    let (name_idx, module_idx) = self.current_frame.fetch_u16_u16();
                     let name_id = StringId::from_index(name_idx);
-                    handle_call_result!(self, self.load_attr_import(name_id));
+                    let module_id = StringId::from_index(module_idx);
+                    handle_call_result!(self, self.load_attr_import(name_id, module_id));
                 }
                 Opcode::StoreAttr => {
                     let name_idx = self.current_frame.fetch_u16();
@@ -2038,7 +2041,7 @@ impl<'h> VM<'h> {
                 // Module Operations
                 Opcode::LoadModule => {
                     let module_id = self.current_frame.fetch_u16();
-                    try_catch!(self, self.load_module(module_id));
+                    handle_call_result!(self, Ok(self.load_module(module_id)));
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
@@ -2054,15 +2057,18 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a built-in module, raising `ModuleNotFoundError` for unknown names.
-    fn load_module(&mut self, module_id: u16) -> RunResult<()> {
+    /// Loads a built-in module, or asks the host for any other: the import
+    /// suspends as an external call of [`IMPORT_FUNCTION`] with the module
+    /// name as its argument, and the host's answer becomes the module value
+    /// (a `not_found` answer raises `ModuleNotFoundError`).
+    fn load_module(&mut self, module_id: u16) -> CallResult {
         let name_id = StringId::from_index(module_id);
-        if let Some(module) = self.interns.static_string(name_id).and_then(StandardLib::from_static) {
-            let heap_id = module.create(self);
-            self.push(Value::Ref(heap_id));
-            Ok(())
-        } else {
-            Err(ExcType::module_not_found_error(self.interns.get_str(name_id)))
+        match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
+            Some(module) => CallResult::Value(Value::Ref(module.create(self))),
+            None => CallResult::External(
+                EitherStr::Heap(IMPORT_FUNCTION.to_owned()),
+                ArgValues::One(Value::InternString(name_id)),
+            ),
         }
     }
 
