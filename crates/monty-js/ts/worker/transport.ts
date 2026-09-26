@@ -275,6 +275,13 @@ export class WorkerTransport {
     throw new Error('Dump returned an unexpected event')
   }
 
+  /** The stubs of the session's host-provided modules, keyed by module name. */
+  async getTypes(): Promise<Record<string, string>> {
+    const event = await this.control({ tag: 'get-types' }, 'type-stubs', 'GetTypes')
+    if (event.tag === 'type-stubs') return Object.fromEntries(event.val.map((stub) => [stub.module, stub.source]))
+    throw new Error('GetTypes returned an unexpected event')
+  }
+
   /** Restores a previously dumped session into this fresh worker. */
   async restore(
     state: Uint8Array,
@@ -528,6 +535,10 @@ export function prepareSession(config: WorkerSessionConfig): ConfigureRequest {
     ...(config.limits === undefined ? {} : { limits: encodeLimits(config.limits) }),
     typeCheck: config.typeCheck ?? false,
     typeCheckStubs: config.typeCheckStubs,
+    typeCheckModuleStubs: Object.entries(config.typeCheckModuleStubs ?? {}).map(([module, source]) => ({
+      module,
+      source,
+    })),
     assertMessageAnnotations: encodeAssertMessageAnnotations(config.assertMessageAnnotations),
     typeCheckFormat: componentTypeCheckFormat(config.typeCheckFormat ?? 'full'),
     typeCheckColor: config.typeCheckColor ?? false,

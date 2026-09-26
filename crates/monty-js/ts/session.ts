@@ -16,6 +16,7 @@ import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from '.
 import {
   AttrNotExposed,
   attributeErrorMessage,
+  ClassInstance,
   InstanceStore,
   prepare,
   restore,
@@ -86,6 +87,16 @@ export interface FeedOptions {
    * served by the eager `inputs` binding.
    */
   externalLookup?: Record<string, unknown>
+  /**
+   * Host modules the snippet may `import`, keyed by module name. A plain
+   * object's own public properties become the module's: functions as host
+   * functions named `<module>.<attr>` (a returned promise is awaited as in
+   * `externalLookup`), other values converted when imported; a
+   * [`ClassInstance`] is sent as itself. `from <module> import name` works
+   * for those attributes. An import of an absent module raises
+   * `ModuleNotFoundError`; the sandbox's own modules are never looked up here.
+   */
+  externalModules?: Record<string, unknown>
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -121,6 +132,9 @@ export interface FeedStartOptions {
    * by a plain `snapshot.resume(...)`.
    */
   externalLookup?: Record<string, unknown>
+  /** Host modules `resumeAuto()` answers imports from, as in
+   *  [`FeedOptions.externalModules`]; captured like `externalLookup`. */
+  externalModules?: Record<string, unknown>
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -149,6 +163,9 @@ export interface LoadSnapshotOptions {
    * the previous process; resolve it manually with `resume([...])`.
    */
   externalLookup?: Record<string, unknown>
+  /** Host modules `resumeAuto()` answers imports from, as in
+   *  [`FeedOptions.externalModules`]. */
+  externalModules?: Record<string, unknown>
   /** Handler for OS calls, consulted by `resumeAuto()` as in `feedStart`. */
   os?: OsCallback
 }
@@ -211,7 +228,13 @@ export class MontySession {
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // A fresh answerer (and its pending-future map) per feed, so promises the
     // worker never asks about again cannot accumulate across feeds.
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(
+      this.native,
+      this.instances,
+      options.externalLookup,
+      options.externalModules,
+      options.os,
+    )
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -384,7 +407,13 @@ export class MontySession {
    *  captured `externalLookup` / `os` back `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(
+      this.native,
+      this.instances,
+      options.externalLookup,
+      options.externalModules,
+      options.os,
+    )
     return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
@@ -396,6 +425,17 @@ export class MontySession {
   async dump(): Promise<Buffer> {
     this.ensureUsable()
     return bufferFrom(await this.native.dump())
+  }
+
+  /**
+   * The type stubs of the session's host-provided modules, keyed by module
+   * name: what `typeCheckModuleStubs` declared, plus whatever a serving relay
+   * renders for its own modules. Give them to a model writing code for the
+   * session, alongside `typeCheckStubs`.
+   */
+  async getTypes(): Promise<Record<string, string>> {
+    this.ensureUsable()
+    return await this.native.getTypes()
   }
 
   /**
@@ -490,6 +530,7 @@ class TurnAnswerer {
     private readonly native: NativeSession,
     private readonly instances: InstanceStore,
     readonly externalLookup: Record<string, unknown> | undefined,
+    readonly externalModules: Record<string, unknown> | undefined,
     readonly os: OsCallback | undefined,
   ) {}
 
@@ -545,18 +586,19 @@ class TurnAnswerer {
     return (await next) as NativeTurn
   }
 
-  /** Calls the matching external function and resumes with its result. */
+  /** Calls the matching external function and resumes with its result; an
+   *  `import` (the `__import__` call) is answered from `externalModules`. */
   private answerFunctionCall(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
     if (call.objectId !== undefined && call.objectId !== null) {
       return this.answerMethodCall(call, call.objectId, onPrint)
     }
-    // Own keys only, as in the nameLookup branch: an inherited callable (e.g.
-    // `Object.prototype.toString`) must never be dispatched as a host function.
-    const externalLookup = this.externalLookup
-    if (externalLookup === undefined || !Object.prototype.hasOwnProperty.call(externalLookup, call.functionName)) {
+    if (call.functionName === IMPORT_FUNCTION) {
+      return this.answerImport(call, onPrint)
+    }
+    const entry = this.hostEntry(call.functionName)
+    if (entry === undefined) {
       return this.native.resumeNotFound(onPrint)
     }
-    const entry = externalLookup[call.functionName]
     if (typeof entry !== 'function') {
       // A cached function proxy whose entry was later replaced by a plain
       // value: raise what CPython would for calling that value, matching the
@@ -575,6 +617,36 @@ class TurnAnswerer {
     return isThenable(returned)
       ? this.answerAwaitedCall(call, returned, onPrint)
       : this.resumeWithValue(returned, onPrint)
+  }
+
+  /**
+   * The host value `functionName` names: an own entry of `externalLookup`, or,
+   * for a dotted name, that own property of the `externalModules` entry (a
+   * host function bound by an import is named `<module>.<attr>`). Own keys
+   * only: an inherited callable (e.g. `Object.prototype.toString`) must never
+   * be dispatched as a host function.
+   */
+  private hostEntry(functionName: string): unknown {
+    const dot = functionName.indexOf('.')
+    if (dot === -1) {
+      return ownEntry(this.externalLookup, functionName)
+    }
+    const module = ownEntry(this.externalModules, functionName.slice(0, dot))
+    return module !== null && typeof module === 'object' ? ownEntry(module, functionName.slice(dot + 1)) : undefined
+  }
+
+  /**
+   * Answers `import <module>`: the `externalModules` entry of that name as a
+   * host object, or not found, which the sandbox raises as `ModuleNotFoundError`.
+   */
+  private answerImport(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
+    const [args] = restoreCallArgs(call, this.instances)
+    const name = args[0]
+    const module = typeof name === 'string' ? ownEntry(this.externalModules, name) : undefined
+    if (typeof name !== 'string' || module === undefined) {
+      return this.native.resumeNotFound(onPrint)
+    }
+    return this.resumeWithValue(moduleValue(name, module), onPrint)
   }
 
   /**
@@ -1231,6 +1303,42 @@ export class MontyComplete {
 }
 
 /** Positional args, with kwargs appended as an object when present. */
+/** The external function name an `import` of a module the sandbox lacks calls. */
+const IMPORT_FUNCTION = '__import__'
+
+/** `record[key]` when it is an own key, else `undefined`. */
+function ownEntry(record: unknown, key: string): unknown {
+  return record !== null && typeof record === 'object' && Object.prototype.hasOwnProperty.call(record, key)
+    ? (record as Record<string, unknown>)[key]
+    : undefined
+}
+
+/**
+ * The sandbox value of an `externalModules` entry: a [`ClassInstance`] as
+ * itself (its methods route back by id), anything else as a host object named
+ * after the module whose own public properties are sent eagerly — functions
+ * as host functions named `<module>.<attr>`, so the sandbox's calls into the
+ * module come back through [`TurnAnswerer.hostEntry`].
+ */
+function moduleValue(name: string, module: unknown): unknown {
+  if (module instanceof ClassInstance || module === null || typeof module !== 'object') {
+    return module
+  }
+  const attrs: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(module)) {
+    if (key.startsWith('_')) continue
+    attrs[key] = typeof value === 'function' ? namedHostFunction(`${name}.${key}`, value as ExternalFunction) : value
+  }
+  return new ClassInstance(attrs, { name, eagerAttrs: 'all' })
+}
+
+/** A function carrying `name` to the sandbox, calling `fn` on the host. */
+function namedHostFunction(name: string, fn: ExternalFunction): ExternalFunction {
+  const proxy: ExternalFunction = (...args: unknown[]) => fn(...(args as never[]))
+  Object.defineProperty(proxy, 'name', { value: name })
+  return proxy
+}
+
 function buildCallArgs(args: unknown[], kwargs: [unknown, unknown][]): unknown[] {
   if (kwargs.length === 0) {
     return args
