@@ -599,6 +599,7 @@ fn configure_with_module_stubs(
     let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "main.py".to_owned(),
         type_check,
+        type_check_format: pb::TypeCheckFormat::Concise.into(),
         monty_version: MONTY_VERSION.to_owned(),
         protocol_version: PROTOCOL_VERSION,
         type_check_module_stubs: stubs.into(),
@@ -711,4 +712,46 @@ fn load_restores_the_dumped_module_stubs() {
         expect_type_stubs(get_types(&mut child)),
         vec![("tools".to_owned(), "x: int\n".to_owned())]
     );
+}
+
+/// The rendered diagnostics of a `TypingError` reply.
+fn expect_typing_error(event: pb::child_event::Kind) -> String {
+    let pb::child_event::Kind::TypingError(typing) = event else {
+        panic!("expected a TypingError event, got {event:?}");
+    };
+    typing.diagnostics
+}
+
+/// A type-checked session resolves `import tools` against its stub: a bad
+/// call is rejected before the import ever asks the host, and a good one runs
+/// on to the `__import__` call.
+#[test]
+fn a_type_checked_feed_resolves_the_module_stubs() {
+    let mut child = Child::default();
+    let stubs = vec![module_stub("tools", "def add(a: int, b: int) -> int: ...\n")];
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, stubs),
+        pb::child_event::Kind::Ok(_)
+    ));
+    let (_, event) = feed(&mut child, "from tools import add\nadd('x', 2)");
+    insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+    let (_, event) = feed(&mut child, "import tools\ntools.add(1, 2)");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected the import to suspend, got {event:?}");
+    };
+    assert_eq!(call.function_name, "__import__");
+}
+
+/// An import committed by one feed is still bound for the next feed's check.
+#[test]
+fn a_committed_import_carries_into_the_next_feed() {
+    let mut child = Child::default();
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, vec![]),
+        pb::child_event::Kind::Ok(_)
+    ));
+    let (_, event) = feed(&mut child, "import math as m");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    let (_, event) = feed(&mut child, "m.sqrt('4')");
+    insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:1:8: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
 }

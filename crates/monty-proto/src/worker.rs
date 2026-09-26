@@ -23,7 +23,7 @@ use std::{
 };
 
 use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump, source_within_nesting_bound};
-use monty_type_checking::{SourceFile, TypeChecker};
+use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, top_level_imports};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, ModuleStub, MontyException, MontyObject,
     OsFunctionCall, OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker,
@@ -875,6 +875,9 @@ impl Child {
                 if let Some(state) = &mut self.type_check
                     && let Some(snippet) = state.pending_snippet.take()
                 {
+                    // the star import of the stubs drops the snippet's own
+                    // imports, so they are re-injected ahead of it
+                    state.committed_imports.push_str(&top_level_imports(&snippet));
                     state.committed_stubs.push('\n');
                     state.committed_stubs.push_str(&snippet);
                 }
@@ -931,17 +934,23 @@ impl Child {
         error_event(ExcType::RuntimeError, message)
     }
 
-    /// Type-checks a snippet against the accumulated session stubs. Returns
-    /// the turn-ending event if the check fails (or errors), `None` to
-    /// proceed with execution.
+    /// Type-checks a snippet against the accumulated session stubs, the
+    /// host-provided modules' stubs and the imports of the committed
+    /// snippets. Returns the turn-ending event if the check fails (or
+    /// errors), `None` to proceed with execution.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
+        let context = TypeCheckContext {
+            stubs: stubs.as_ref(),
+            module_stubs: &state.module_stubs,
+            prelude: &state.committed_imports,
+        };
         let type_checker = self
             .type_checker
             .get_or_insert_with(|| allocate_into_baseline(TypeChecker::default));
-        match type_checker.run(&SourceFile::new(code, &self.script_name), stubs.as_ref(), state.config) {
+        match type_checker.run_with(&SourceFile::new(code, &self.script_name), &context, state.config) {
             Ok(None) => None,
             Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
                 diagnostics: diagnostics.to_string(),
