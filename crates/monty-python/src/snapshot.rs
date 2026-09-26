@@ -53,7 +53,7 @@ use crate::{
     async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
-    external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
+    external::{CallResult, ExternalLookup, HostNames, resolve_object_attr, wire_call_arguments},
     pool::{
         FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
@@ -81,9 +81,10 @@ pub(crate) struct DriveContext {
     script_name: String,
     /// Host OTel context captured at feed/load entry; never serialized with the worker.
     trace_context: Option<Py<PyAny>>,
-    /// `external_lookup=` captured at `feed_start` / `load_snapshot`; consulted
-    /// only by `resume_auto` (plain `resume` never looks names up here).
-    external_lookup: Option<Py<PyDict>>,
+    /// `external_lookup=` / `external_modules=` captured at `feed_start` /
+    /// `load_snapshot`; consulted only by `resume_auto` (plain `resume` never
+    /// looks names up here).
+    names: HostNames,
     /// `os=` captured at `feed_start` / `load_snapshot`; consulted only by
     /// `resume_auto`, and only for OS calls this feed's mounts don't cover.
     os: Option<Py<PyAny>>,
@@ -101,7 +102,7 @@ impl DriveContext {
         instances: InstanceStore,
         print_target: PrintTarget,
         script_name: String,
-        external_lookup: Option<Py<PyDict>>,
+        names: HostNames,
         os: Option<Py<PyAny>>,
         trace_context: Option<Py<PyAny>>,
     ) -> Self {
@@ -111,7 +112,7 @@ impl DriveContext {
             print_target,
             script_name,
             trace_context,
-            external_lookup,
+            names,
             os,
             pending_futures: Arc::new(Mutex::new(JoinSet::new())),
         }
@@ -124,7 +125,7 @@ impl DriveContext {
             print_target: self.print_target.clone_handle(py),
             script_name: self.script_name.clone(),
             trace_context: self.trace_context.as_ref().map(|ctx| ctx.clone_ref(py)),
-            external_lookup: self.external_lookup.as_ref().map(|d| d.clone_ref(py)),
+            names: self.names.clone_ref(py),
             os: self.os.as_ref().map(|o| o.clone_ref(py)),
             pending_futures: Arc::clone(&self.pending_futures),
         }
@@ -142,7 +143,7 @@ impl DriveContext {
 pub(crate) fn feed_start_sync(
     py: Python<'_>,
     args: FeedArgs,
-    external_lookup: Option<Py<PyDict>>,
+    names: HostNames,
     script_name: String,
 ) -> PyResult<Py<PyAny>> {
     let FeedArgs {
@@ -162,7 +163,7 @@ pub(crate) fn feed_start_sync(
         instances,
         print_target,
         script_name,
-        external_lookup,
+        names,
         os,
         capture_otel_context(py),
     );
@@ -184,7 +185,7 @@ pub(crate) fn feed_start_sync(
 pub(crate) fn feed_start_async(
     py: Python<'_>,
     args: FeedArgs,
-    external_lookup: Option<Py<PyDict>>,
+    names: HostNames,
     script_name: String,
 ) -> PyResult<Bound<'_, PyAny>> {
     let FeedArgs {
@@ -204,7 +205,7 @@ pub(crate) fn feed_start_async(
         instances,
         print_target,
         script_name,
-        external_lookup,
+        names,
         os,
         capture_otel_context(py),
     );
@@ -498,7 +499,7 @@ fn resolve_captured_name(
     if let Some(object_id) = object_id {
         Ok(resolve_object_attr(py, name, &object_id, &ctx.instances))
     } else {
-        ExternalLookup::new(py, ctx.external_lookup.as_ref().map(|d| d.bind(py)), &ctx.instances)
+        ExternalLookup::new(py, &ctx.names, &ctx.instances)
             .resolve_name(name)
             .map(NameLookupResult::from)
     }
@@ -758,7 +759,7 @@ impl PyFunctionSnapshot {
                 &call.function_name,
                 call.object_id,
                 &call.args,
-                ctx.external_lookup.as_ref(),
+                &ctx.names,
                 &ctx.instances,
             ) {
                 CallResult::Sync(result) => ext_result_to_resume(result),
@@ -920,7 +921,7 @@ impl PyAsyncFunctionSnapshot {
                         &call.function_name,
                         call.object_id,
                         &call.args,
-                        ctx.external_lookup.as_ref(),
+                        &ctx.names,
                         &ctx.instances,
                     ) {
                         CallResult::Sync(result) => Ok(Dispatched::Done(ext_result_to_resume(result))),
