@@ -33,7 +33,7 @@ use crate::{
     run::{CompileOptions, DEFAULT_CWD, Executor, Program, ReplSession, SessionTables},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
-        resume_lookup, resume_with_result,
+        import_answer, resume_lookup, resume_with_result,
     },
     source_nesting::source_within_nesting_bound,
     types::{SessionRandom, tuple::allocate_tuple},
@@ -766,6 +766,7 @@ impl ReplFunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
+        let result = import_answer(&self.function_name, &self.args, result.into());
         self.snapshot.run(result, print)
     }
 

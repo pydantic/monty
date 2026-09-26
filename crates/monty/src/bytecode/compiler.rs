@@ -1090,15 +1090,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         self.code.set_location(position, None);
-        self.code
-            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        let module_idx = check_name_index_u16(module_name, position)?;
+        self.code.emit_u16(Opcode::LoadModule, module_idx)?;
         for (i, (import_name, binding)) in names.iter().enumerate() {
             // Preserve the module for subsequent attributes; the last load consumes it.
             if i < names.len() - 1 {
                 self.code.emit(Opcode::Dup)?;
             }
             let name_idx = check_name_index_u16(*import_name, position)?;
-            self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
+            self.code.emit_u16_u16(Opcode::LoadAttrImport, name_idx, module_idx)?;
             self.compile_store(binding)?;
         }
         Ok(())

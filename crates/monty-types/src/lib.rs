@@ -3,6 +3,12 @@
 /// The monty version this build was compiled as.
 pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The external function name an `import` of a module the sandbox does not
+/// have calls, with the module name as its one positional argument: hosts
+/// answer with the module value, `not_found` (a `ModuleNotFoundError`) or an
+/// exception. `from m import a` is the same call followed by attribute loads.
+pub const IMPORT_FUNCTION: &str = "__import__";
+
 pub mod args;
 mod builtins;
 mod exceptions;

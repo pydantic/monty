@@ -208,6 +208,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         })
     }
 
+    /// Suspends as a `__call__` on the instance's uuid: whether a host object
+    /// is callable, and what calling it does, is the host's decision.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::MethodCall {
+            name: EitherStr::Heap("__call__".to_owned()),
+            args,
+            object_id: self.get(vm.heap).instance_id(),
+        })
+    }
+
     /// Performs lazy method detection for host class instances.
     ///
     /// If the attribute is a public name (no leading underscore) not found in

@@ -9,8 +9,8 @@
 use std::mem;
 
 use monty_types::{
-    CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
-    ResourceTracker, SourceRange,
+    CallArgs, ExcType, IMPORT_FUNCTION, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall,
+    PrintWriter, ResourceTracker, SourceRange,
 };
 
 use crate::{
@@ -179,6 +179,7 @@ impl FunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
+        let result = import_answer(&self.function_name, &self.args, result.into());
         self.snapshot.run(result, print)
     }
 
@@ -529,7 +530,7 @@ pub(crate) fn resume_lookup(
     let value = match (answer, effect) {
         (LookupAnswer::Error(err), effect) => {
             effect.drop_with(vm);
-            return vm.resume_with_exception(err);
+            return vm.resume_with_exception(import_from_error(err, name, vm));
         }
         (LookupAnswer::Value(value), Some(effect)) => effect.apply(Some(value), vm),
         (LookupAnswer::Undefined, Some(effect)) => effect.apply(None, vm),
@@ -553,10 +554,24 @@ pub(crate) fn resume_lookup(
             }
             value
         }
-        (LookupAnswer::Undefined, None) => return vm.resume_with_exception(undefined_lookup_error(scope, name)),
+        (LookupAnswer::Undefined, None) => {
+            return vm.resume_with_exception(import_from_error(undefined_lookup_error(scope, name), name, vm));
+        }
     };
     vm.push(value);
     vm.run_external()
+}
+
+/// The `ImportError` a `from <module> import <name>` raises when the host
+/// answers its attribute lookup with `AttributeError` or nothing, as the
+/// synchronous load does; any other error, or one outside an import, is `err`.
+fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
+    match (&err, vm.suspended_import_from()) {
+        (RunError::Exc(exc), Some(module)) if exc.exc.exc_type() == ExcType::AttributeError => {
+            ExcType::cannot_import_name(name, vm.interns.get_str(module))
+        }
+        _ => err,
+    }
 }
 
 /// Answers every lookup exit no host will serve — the non-iterative paths —
@@ -935,6 +950,18 @@ pub(crate) fn resume_with_result(
             vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
         }
         (ExtFunctionResult::Future(_), None) => unreachable!("a future answer always carries its call id"),
+    }
+}
+
+/// Maps a host's `not_found` answer to an [`IMPORT_FUNCTION`] call onto the
+/// `ModuleNotFoundError` the import raises; every other answer passes through.
+pub(crate) fn import_answer(function_name: &str, args: &CallArgs, result: ExtFunctionResult) -> ExtFunctionResult {
+    match result {
+        ExtFunctionResult::NotFound(_) if function_name == IMPORT_FUNCTION => {
+            let module = args.args().next().and_then(|arg| arg.as_str()).unwrap_or_default();
+            ExtFunctionResult::Error(ExcType::module_not_found_exception(module))
+        }
+        other => other,
     }
 }
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import os
 import stat as stat_module
+import sys
+import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -572,6 +574,13 @@ class VirtualEnviron:
 # Monkey-patch os.environ to use virtual environment for test keys
 os.environ = VirtualEnviron()
 
+
+# The `tools` module iter-mode tests import: the Rust runner answers the
+# sandbox's `__import__('tools')` with a host object carrying these functions.
+tools = types.ModuleType('tools')
+for _fixture in (add_ints, concat_strings, return_value, get_list, raise_error, async_call, async_fail):
+    setattr(tools, _fixture.__name__, _fixture)
+sys.modules['tools'] = tools
 
 # =============================================================================
 # Names exported into every CPython test's globals.
