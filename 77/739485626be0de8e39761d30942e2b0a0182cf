@@ -1,0 +1,35 @@
+CLAUDE.md
+  s_bde4e23955e0d2::t_11d80918aebade 1023
+crates/monty-proto/src/generated/monty.v1.rs
+  s_bde4e23955e0d2::t_11d80918aebade 1524
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_bde4e23955e0d2::t_11d80918aebade 214,218-219,249,264
+crates/monty-python/src/mount.rs
+  s_bde4e23955e0d2::t_11d80918aebade 224,243
+docs/filesystem.md
+  s_bde4e23955e0d2::t_11d80918aebade 243,245-249
+crates/monty-python/tests/test_websocket.py
+  s_bde4e23955e0d2::t_11d80918aebade 509,513,564,619,641
+crates/monty-python/README.md
+  s_bde4e23955e0d2::t_11d80918aebade 41
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_bde4e23955e0d2::t_11d80918aebade 1473
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_bde4e23955e0d2::t_11d80918aebade 642
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "77739485626be0de8e39761d30942e2b0a0182cf",
+  "prompts": {},
+  "sessions": {
+    "s_bde4e23955e0d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00de70e4-f841-4113-ac04-814b2c9e74d2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
