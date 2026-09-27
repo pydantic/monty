@@ -1,0 +1,33 @@
+crates/monty-pool/src/remote_volume.rs
+  s_bde4e23955e0d2::t_e77d3c55519188 3,67-69,86,88-90
+crates/monty-proto/src/lib.rs
+  s_bde4e23955e0d2::t_e77d3c55519188 20,105
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_bde4e23955e0d2::t_e77d3c55519188 801,807,1462,1472,1479-1482,1488-1491
+crates/monty-proto/src/generated/monty.v1.rs
+  s_bde4e23955e0d2::t_e77d3c55519188 811,819,1513,1523,1530-1533,1539-1542
+crates/monty-pool/tests/websocket.rs
+  s_bde4e23955e0d2::t_e77d3c55519188 208,215
+crates/monty-proto/tests/roundtrip.rs
+  s_bde4e23955e0d2::t_e77d3c55519188 6-7,649-667,676,683
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_bde4e23955e0d2::t_e77d3c55519188 625,629,634,636,638,640,642
+crates/monty-proto/src/volume.rs
+  s_bde4e23955e0d2::t_e77d3c55519188 1-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "33e05b4a3a105aca4e231c5d82a8bf266f0b3676",
+  "prompts": {},
+  "sessions": {
+    "s_bde4e23955e0d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00de70e4-f841-4113-ac04-814b2c9e74d2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
