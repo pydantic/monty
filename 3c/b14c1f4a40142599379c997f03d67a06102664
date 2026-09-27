@@ -1,0 +1,23 @@
+.github/workflows/branch-diff.yml
+  s_aa3642cf29e61c::t_7f36cf94cf7368 1-40
+scripts/branch_diff.py
+  s_aa3642cf29e61c::t_7f36cf94cf7368 9-14,165-289
+  s_aa3642cf29e61c::t_92b05b24ecb11d 57-58
+  s_aa3642cf29e61c::t_354e57a53cffe9 103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3cb14c1f4a40142599379c997f03d67a06102664",
+  "prompts": {},
+  "sessions": {
+    "s_aa3642cf29e61c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7588b93b-f276-44f4-be72-e0b651a3c34e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
