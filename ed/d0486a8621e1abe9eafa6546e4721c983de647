@@ -1,0 +1,27 @@
+docs/api/python/websocket.md
+  s_bde4e23955e0d2::t_87c0205ca218de 63
+docs/filesystem.md
+  s_bde4e23955e0d2::t_87c0205ca218de 207
+crates/monty-python/tests/test_websocket.py
+  s_bde4e23955e0d2::t_87c0205ca218de 614-616
+CLAUDE.md
+  s_bde4e23955e0d2::t_87c0205ca218de 1023
+crates/monty-python/src/pool.rs
+  s_bde4e23955e0d2::t_87c0205ca218de 2157-2158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "edd0486a8621e1abe9eafa6546e4721c983de647",
+  "prompts": {},
+  "sessions": {
+    "s_bde4e23955e0d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "00de70e4-f841-4113-ac04-814b2c9e74d2",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
