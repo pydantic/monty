@@ -89,6 +89,7 @@ rather than on every push: `list.append` and `list.insert`, `deque.append` and `
 assigning a new dict key.
 So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, the
 pieces `re.split` collects, and the list `re.findall` builds for a pattern with at most one capture group.
+`functools.partial` also pre-checks the keyword-name copies and table space used by its merge index.
 A wider `findall`, and `re.finditer`, allocate an object per match and are not covered — see
 [the limitations note](limitations/resource_limits.md).
 
