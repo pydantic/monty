@@ -1,23 +1,16 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.13"
-# dependencies = ["rich"]
+# dependencies = ["rich==15.0.0"]
 # ///
 """Show the LOC diff of each commit on the current branch, split into production, test and other code.
 
 Usage:
     uv run scripts/branch_diff.py [--check] [--markdown] [--head HEAD] [base]
 
-`base` is the branch to compare against, by default the PR's base branch in GitHub Actions and `main` elsewhere.
-Rows are the commits in `base..HEAD`, oldest first, then any uncommitted changes, then the branch's net
-change against the merge-base.
-`--head` reads another ref instead of the checkout, so CI can report on a PR without checking out its code.
-
-Every changed path must match a glob in `RULES`, the script exits with an error listing the paths that do not.
-`--check` classifies every tracked file instead of printing a table.
-
-On a `pull_request` run in GitHub Actions with `GH_TOKEN` set, the table is also written to the job summary
-and posted as a PR comment, which later runs update in place.
+Rows are the commits in `base..HEAD`, then uncommitted changes (untracked files included), then the total.
+Every path must match a glob in `RULES`; `--check` tests that for all tracked files.
+In GitHub Actions the table is also written to the job summary and posted as a PR comment.
 """
 
 from __future__ import annotations
@@ -25,19 +18,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 MSG_WIDTH = 20
 # hidden marker identifying the comment this script owns, so later runs edit it rather than adding another
 COMMENT_MARKER = '<!-- branch-diff -->'
+# author of the workflow's comments, checked since anyone can write the marker
+COMMENT_AUTHOR = 'github-actions[bot]'
 
 
 class Category(StrEnum):
@@ -47,6 +44,9 @@ class Category(StrEnum):
     TEST = 'test'
     OTHER = 'other'
 
+
+# lines added and removed in a path, as `git diff --numstat` reports them
+Numstat = tuple[int, int, str]
 
 PRODUCTION = Category.PRODUCTION
 TEST = Category.TEST
@@ -190,35 +190,49 @@ def build_rows(base: str, head: str | None, classifier: Classifier) -> list[Row]
 
     Without `head` the checkout is used, and its uncommitted changes get a row and count towards the total.
     """
+    # `git diff` never reports untracked files, so they are counted separately
+    untracked = [] if head else list(untracked_numstat())
     rows: list[Row] = []
     # merges are skipped, in particular the `refs/pull/N/merge` commit CI checks out
     log = git('log', '--reverse', '--no-merges', '--format=%H%x09%s', f'{base}..{head or "HEAD"}')
     for line in log.splitlines():
         sha, message = line.split('\t', 1)
-        rows.append(diff_row(sha[:9], message, classifier, 'show', '--format=', sha))
+        rows.append(diff_row(sha[:9], message, classifier, [], 'show', '--format=', sha))
 
     if head is None:
-        working = diff_row('', 'working changes', classifier, 'diff', 'HEAD')
+        working = diff_row('', 'working changes', classifier, untracked, 'diff', 'HEAD')
         if any(c.added or c.removed for c in working.counts.values()):
             rows.append(working)
 
     # with no second ref the working tree is diffed, so the total includes uncommitted changes
     merge_base = git('merge-base', base, head or 'HEAD')
-    rows.append(diff_row('', 'TOTAL', classifier, 'diff', merge_base, *([head] if head else [])))
+    rows.append(diff_row('', 'TOTAL', classifier, untracked, 'diff', merge_base, *([head] if head else [])))
     return rows
 
 
-def diff_row(commit: str, message: str, classifier: Classifier, *git_args: str) -> Row:
-    """Run a git diff command with `--numstat` and sum its counts by category."""
+def untracked_numstat() -> Iterator[Numstat]:
+    """Yield the line counts of untracked files that are not ignored, binary files counting as no lines."""
+    # `--numstat` paths are relative to the top level, so list from there
+    top_level = git('rev-parse', '--show-toplevel')
+    for path in git('-C', top_level, 'ls-files', '--others', '--exclude-standard', '-z').split('\0'):
+        file = Path(top_level, path)
+        if path and file.is_file():
+            content = file.read_bytes()
+            binary = b'\0' in content
+            yield (0 if binary else len(content.splitlines()), 0, path)
+
+
+def diff_row(commit: str, message: str, classifier: Classifier, extra: list[Numstat], *git_args: str) -> Row:
+    """Sum the counts of a git diff command and of `extra` by category."""
     row = Row(commit, message)
-    for added, removed, path in parse_numstat(git(*git_args, '--numstat', '-z')):
+    for added, removed, path in (*parse_numstat(git(*git_args, '--numstat', '-z')), *extra):
         if category := classifier.classify(path):
             row.counts[category].added += added
             row.counts[category].removed += removed
     return row
 
 
-def parse_numstat(output: str) -> Iterator[tuple[int, int, str]]:
+def parse_numstat(output: str) -> Iterator[Numstat]:
     """Yield `(added, removed, path)` from `--numstat -z` output, binary files counting as no lines.
 
     A rename is `added\\tremoved\\t` followed by the old and new paths as separate fields, it is reported
@@ -247,7 +261,8 @@ def truncate(message: str) -> str:
 
 def print_table(branch: str, rows: list[Row]) -> None:
     """Print the table with rich, the `+` and `-` counts of each column aligned across rows."""
-    table = Table(title=f'Branch: {branch}', title_style='bold cyan', title_justify='left')
+    # escape untrusted branch names and commit messages, rich would parse them as markup
+    table = Table(title=f'Branch: {escape(branch)}', title_style='bold cyan', title_justify='left')
     table.add_column('Commit', style='yellow')
     table.add_column('Message')
     for category in Category:
@@ -270,7 +285,8 @@ def print_table(branch: str, rows: list[Row]) -> None:
             dim = '' if counts.added or counts.removed else 'dim '
             cells.append(f'[{dim}green]{added:>{added_width}}[/] [{dim}red]{removed:<{removed_width}}[/]')
         last = i == len(rows) - 1
-        table.add_row(row.commit, truncate(row.message), *cells, style='bold' if last else None, end_section=not last)
+        message = escape(truncate(row.message))
+        table.add_row(row.commit, message, *cells, style='bold' if last else None, end_section=not last)
 
     Console().print(table)
 
@@ -279,7 +295,7 @@ def render_markdown(branch: str, rows: list[Row]) -> str:
     """The table as GitHub markdown, starting with the marker that identifies the PR comment."""
     lines = [
         COMMENT_MARKER,
-        f'### Branch diff: `{branch}`',
+        f'### Branch diff: {code_span(branch)}',
         '',
         '| Commit | Message | Production | Test | Other |',
         '| --- | --- | --: | --: | --: |',
@@ -294,6 +310,14 @@ def render_markdown(branch: str, rows: list[Row]) -> str:
         # a bare sha is linked to the commit by GitHub
         lines.append(f'| {row.commit} | {message} | {" | ".join(cells)} |')
     return '\n'.join(lines) + '\n'
+
+
+def code_span(text: str) -> str:
+    """Wrap untrusted text in a markdown code span it cannot close."""
+    # a span only closes at a backtick run as long as its delimiter
+    longest_run = max((len(run) for run in re.findall('`+', text)), default=0)
+    delimiter = '`' * (longest_run + 1)
+    return f'{delimiter} {text} {delimiter}'
 
 
 def publish(markdown: str) -> None:
@@ -319,7 +343,7 @@ def publish(markdown: str) -> None:
 
 
 def post_comment(repo: str, pr_number: int, markdown: str, token: str) -> None:
-    """Update the PR comment starting with `COMMENT_MARKER`, creating it if there is none."""
+    """Update the workflow's PR comment starting with `COMMENT_MARKER`, creating it if there is none."""
     env = {**os.environ, 'GH_TOKEN': token}
 
     def gh_api(*args: str, stdin: str | None = None) -> str:
@@ -327,7 +351,7 @@ def post_comment(repo: str, pr_number: int, markdown: str, token: str) -> None:
         return result.stdout
 
     comments_url = f'repos/{repo}/issues/{pr_number}/comments'
-    jq = f'.[] | select(.body | startswith("{COMMENT_MARKER}")) | .id'
+    jq = f'.[] | select(.user.login == "{COMMENT_AUTHOR}" and (.body | startswith("{COMMENT_MARKER}"))) | .id'
     comment_ids = gh_api(comments_url, '--paginate', '--jq', jq).split()
     if comment_ids:
         gh_api('-X', 'PATCH', f'repos/{repo}/issues/comments/{comment_ids[0]}', '-F', 'body=@-', stdin=markdown)
