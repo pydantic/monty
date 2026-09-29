@@ -601,6 +601,9 @@ message Configure {
   // Relay-only: whether a serving relay may store the session. Children ignore
   // it.
   Persistence persistence = 12;
+  // Relay-only: names the server-side profile to run the session under.
+  // Absent = the relay's default. Children ignore it.
+  optional string profile = 13;
 }
 
 // How a serving relay treats the session's state; children ignore it.

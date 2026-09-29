@@ -453,6 +453,14 @@ async def test_plain_relay_names_no_session(ws_url: str):
                 assert await session.feed_run('1 + 1') == snapshot(2)
 
 
+async def test_plain_relay_ignores_profile(ws_url: str):
+    """The dev relay forwards `profile` to its worker, which ignores it."""
+    async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:
+        for profile in (None, 'gpu', ''):
+            async with pool.checkout(profile=profile) as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+
+
 async def test_loaded_session_has_no_id_on_a_plain_relay(ws_url: str):
     """Without storage `state` is dump bytes, and the loaded session gets no ID."""
     async with AsyncMontyWebsocket(ws_url, request_timeout=30.0) as pool:

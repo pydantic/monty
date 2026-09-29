@@ -784,6 +784,10 @@ pub struct Configure {
     /// it.
     #[prost(enumeration = "Persistence", tag = "12")]
     pub persistence: i32,
+    /// Relay-only: names the server-side profile to run the session under.
+    /// Absent = the relay's default. Children ignore it.
+    #[prost(string, optional, tag = "13")]
+    pub profile: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

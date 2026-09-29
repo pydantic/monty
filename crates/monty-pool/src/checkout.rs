@@ -77,6 +77,9 @@ pub struct ReplConfig {
     pub os_policy: OsPolicy,
     /// Whether a serving relay may store the session; subprocess workers ignore it.
     pub persistence: Persistence,
+    /// The serving relay's profile to run the session under; `None` takes the
+    /// relay's default. Subprocess workers ignore it.
+    pub profile: Option<String>,
 }
 
 /// How a serving relay (`monty-server`) treats a session's state.
@@ -118,6 +121,7 @@ impl Default for ReplConfig {
             print_flush_interval: None,
             os_policy: OsPolicy::default(),
             persistence: Persistence::default(),
+            profile: None,
         }
     }
 }
@@ -2137,6 +2141,7 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
         print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
+        profile: repl.profile.clone(),
     }))
 }
 

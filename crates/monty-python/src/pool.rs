@@ -224,6 +224,7 @@ impl PyMonty {
                 print_flush_interval,
                 os_policy.unwrap_or_default().0,
                 Persistence::ServerDefault,
+                None,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -618,6 +619,7 @@ impl PyAsyncMonty {
                 print_flush_interval,
                 os_policy.unwrap_or_default().0,
                 Persistence::ServerDefault,
+                None,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -741,6 +743,7 @@ impl PyAsyncMontyWebsocket {
         print_flush_interval = None,
         os_policy = None,
         ephemeral = None,
+        profile = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -756,6 +759,7 @@ impl PyAsyncMontyWebsocket {
         print_flush_interval: Option<f64>,
         os_policy: Option<OsPolicyArg>,
         ephemeral: Option<bool>,
+        profile: Option<String>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -777,6 +781,7 @@ impl PyAsyncMontyWebsocket {
                     Some(true) => Persistence::Ephemeral,
                     Some(false) => Persistence::Stored,
                 },
+                profile,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -1297,6 +1302,7 @@ pub(crate) fn parse_repl_config(
     print_flush_interval: Option<f64>,
     os_policy: OsPolicy,
     persistence: Persistence,
+    profile: Option<String>,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
         script_name: script_name.to_owned(),
@@ -1310,6 +1316,7 @@ pub(crate) fn parse_repl_config(
             .transpose()?,
         os_policy,
         persistence,
+        profile,
     })
 }
 

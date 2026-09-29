@@ -12,6 +12,10 @@ A pool of remote `monty` workers reached over a WebSocket instead of local subpr
 See [running monty-server](../../server.md) and the [remote-worker trust boundary](../../security.md#remote-workers).
 A remote peer may be CPython rather than a Monty sandbox; the transport does not provide isolation.
 
+`checkout(profile='...')` names a server-side profile to run the session under; `None` takes the server's default.
+The client sends the name to the server unchecked; what a profile means is the server's choice, and the `monty` worker
+ignores it.
+
 ## Connection loss and shutdown
 
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the connection closed mid-session.

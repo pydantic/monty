@@ -1831,7 +1831,7 @@ async fn shutdown_without_a_session_carries_no_dump() {
 // ---- session IDs -----------------------------------------------------------
 //
 // A storing relay names the session in `ChildEvent.session_id`; the client
-// treats it as opaque bytes and sends `persistence` through.
+// treats it as opaque bytes and sends `persistence` and `profile` through.
 
 /// Sends one `ChildEvent` with the given kind, naming the session `session_id`.
 fn send_with_session_id(socket: &mut WebSocket<TcpStream>, kind: pb::child_event::Kind, session_id: &[u8]) {
@@ -1871,6 +1871,37 @@ async fn configure_carries_persistence() {
     for (persistence, _) in cases {
         let repl = ReplConfig {
             persistence,
+            ..ReplConfig::default()
+        };
+        let checkout = pool.checkout(&repl).await.expect("checkout");
+        checkout.finish().await.expect("finish");
+    }
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn configure_carries_profile() {
+    let cases = [None, Some("gpu".to_owned()), Some(String::new())];
+    let expected = cases.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        for expected in expected {
+            let mut socket = accept_ws(&listener);
+            let request = try_read_request(&mut socket).expect("configure");
+            let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
+                panic!("expected Configure, got {request:?}");
+            };
+            assert_eq!(configure.profile, expected);
+            send_kind(&mut socket, ok_event());
+            while try_read_request(&mut socket).is_some() {}
+        }
+    });
+
+    let pool = websocket_pool(port).await;
+    for profile in cases {
+        let repl = ReplConfig {
+            profile,
             ..ReplConfig::default()
         };
         let checkout = pool.checkout(&repl).await.expect("checkout");
@@ -2061,6 +2092,54 @@ async fn shutdown_resumes_transparently() {
     assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
     checkout.finish().await.expect("finish");
     join_server(server).await;
+}
+
+/// The redial re-sends the session's `Configure`, so the resumed session keeps
+/// the profile the first one asked for.
+#[tokio::test]
+async fn resume_resends_the_profile() {
+    let (profile_tx, profile_rx) = mpsc::channel();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        let request = try_read_request(&mut socket).expect("first configure");
+        let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
+            panic!("expected Configure, got {request:?}");
+        };
+        profile_tx.send(configure.profile).expect("first profile");
+        send_with_session_id(&mut socket, ok_event(), b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        let mut socket = accept_ws(&listener);
+        let request = try_read_request(&mut socket).expect("second configure");
+        let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
+            panic!("expected Configure, got {request:?}");
+        };
+        profile_tx.send(configure.profile).expect("second profile");
+        send_kind(&mut socket, ok_event());
+        expect_load(&mut socket, b"sess-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_feed(&mut socket, "1 + 1");
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let repl = ReplConfig {
+        profile: Some("gpu".to_owned()),
+        ..ReplConfig::default()
+    };
+    let pool = websocket_pool(port).await;
+    let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("the drain is invisible to the caller");
+    assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+    let profiles: Vec<_> = profile_rx.iter().collect();
+    assert_eq!(profiles, [Some("gpu".to_owned()), Some("gpu".to_owned())]);
 }
 
 #[tokio::test]

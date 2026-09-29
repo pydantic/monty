@@ -1047,18 +1047,23 @@ class AsyncMontyWebsocket:
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
         ephemeral: bool | None = None,
+        profile: str | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.
 
-        Identical to `AsyncMonty.checkout`, except for `ephemeral`; the
-        connection is opened by `async with` on the returned session.
+        Identical to `AsyncMonty.checkout`, except for `ephemeral` and
+        `profile`; the connection is opened by `async with` on the returned
+        session.
 
         Arguments:
             ephemeral: Whether a server that stores sessions may store this one.
                 `True` means the server never stores it on its own and it gets
                 no `session_id`; `False` asks for it to be stored; `None` takes
                 the server's default. Servers that store nothing ignore it.
+            profile: The name of the server-side profile to run the session
+                under; `None` takes the server's default. Sent to the server
+                as-is; the `monty` worker itself ignores it.
         """
 
 @final
