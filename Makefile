@@ -94,7 +94,8 @@ format-js: install-js ## Format JS code with prettier
 # look like markdown, the AGENTS.md symlink (CLAUDE.md is formatted directly), and the crate
 # READMEs: rustdoc embeds those and clippy's `doc_overindented_list_items` rejects the
 # four-space list continuations mdformat-mkdocs writes
-MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md')
+# evals/prompts: LLM prompt text, mdformat would escape the ``` fences it tells the model to emit
+MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md' ':!:evals/prompts/**')
 
 .PHONY: format-md
 format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
@@ -136,7 +137,7 @@ lint-py: dev-py ## Lint Python code with ruff
 	uv run ruff format --check
 	uv run ruff check
 	# basedpyright type-checks examples/, so it needs that group's packages installed
-	uv run --group examples basedpyright
+	uv run --group examples --group evals basedpyright
 	# mypy-stubtest requires a build of the python package, hence dev-py
 	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
