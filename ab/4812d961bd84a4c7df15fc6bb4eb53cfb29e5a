@@ -1,0 +1,19 @@
+.github/workflows/branch-diff.yml
+  s_77447968423f83::t_05ddbb0a43ed10 4-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ab4812d961bd84a4c7df15fc6bb4eb53cfb29e5a",
+  "prompts": {},
+  "sessions": {
+    "s_77447968423f83": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a76a76fd-dc1b-4bef-961f-1cdf0d99f31d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
