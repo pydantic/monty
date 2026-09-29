@@ -30,7 +30,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-MSG_WIDTH = 20
+MSG_WIDTH = 30
 # hidden marker identifying the comment this script owns, so later runs edit it rather than adding another
 COMMENT_MARKER = '<!-- branch-diff -->'
 # author of the workflow's comments, checked since anyone can write the marker
@@ -216,10 +216,24 @@ def untracked_numstat() -> Iterator[Numstat]:
     top_level = git('rev-parse', '--show-toplevel')
     for path in git('-C', top_level, 'ls-files', '--others', '--exclude-standard', '-z').split('\0'):
         file = Path(top_level, path)
-        if path and file.is_file():
-            content = file.read_bytes()
-            binary = b'\0' in content
-            yield (0 if binary else len(content.splitlines()), 0, path)
+        if path and file.is_symlink():
+            # git stores a symlink as its target path, a single line
+            yield (1, 0, path)
+        elif path and file.is_file():
+            yield (count_lines(file), 0, path)
+
+
+def count_lines(file: Path) -> int:
+    """The lines in a file, none if it is binary; read in chunks since untracked files can be large."""
+    lines, last = 0, b'\n'
+    with file.open('rb') as f:
+        while chunk := f.read(1 << 20):
+            if b'\0' in chunk:
+                return 0
+            lines += chunk.count(b'\n')
+            last = chunk[-1:]
+    # a final line without a newline still counts
+    return lines + (last != b'\n')
 
 
 def diff_row(commit: str, message: str, classifier: Classifier, extra: list[Numstat], *git_args: str) -> Row:
@@ -250,7 +264,8 @@ def parse_numstat(output: str) -> Iterator[Numstat]:
 
 def git(*args: str) -> str:
     """Run a git command and return its stdout without the trailing newline, raising on failure."""
-    result = subprocess.run(('git', *args), capture_output=True, text=True, check=True)
+    # paths and commit messages on a PR can hold bytes that are not UTF-8, replaced rather than failing to decode
+    result = subprocess.run(('git', *args), capture_output=True, encoding='utf-8', errors='replace', check=True)
     return result.stdout.removesuffix('\n')
 
 

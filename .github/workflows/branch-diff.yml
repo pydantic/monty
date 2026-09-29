@@ -1,8 +1,6 @@
 name: branch diff
 
 on:
-  # TEMPORARY: runs the workflow from this branch to test it, remove before merge
-  pull_request: {}
   # `pull_request` tokens are read-only on PRs from forks, so commenting needs the base repo's context
   pull_request_target: {} # zizmor: ignore[dangerous-triggers] -- PR code is never checked out or run: its commits are fetched as git objects and only read with `git log` / `git diff --numstat` by the base branch's script
 
