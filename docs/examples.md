@@ -103,6 +103,11 @@ Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/e
 - [`web_scraper`](https://github.com/pydantic/monty/tree/main/examples/web_scraper): Playwright and BeautifulSoup
     exposed to the sandbox as [host objects](host-objects.md) so the model can extract prices from model labs' websites;
     `example_code.py` is the code Claude Sonnet 4.5 wrote for it.
+- [`spreadsheet`](https://github.com/pydantic/monty/tree/main/examples/spreadsheet): an untidy Excel workbook read
+    through the [`openpyxl`](https://openpyxl.readthedocs.io/) objects themselves, wrapped as
+    [host objects](host-objects.md), and returned as a list of a `Row` dataclass the sandbox code defines.
+    The policies expose cells, rows and sheets of the one document the host opened, and the wrappers bound the rows
+    and columns a call may allocate on the host.
 - [`antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity): [xkcd 353](https://xkcd.com/353/)
     ported from [PyScript](https://github.com/pyscript/examples/tree/main/antigravity), running in the browser on the
     WebAssembly build.
