@@ -1,0 +1,22 @@
+scripts/branch_diff.py
+  s_77447968423f83::t_e82a9de1bf89e1 4
+  s_77447968423f83::t_549a7e5cfe0b5f 48-50,213,235
+  s_77447968423f83::t_b6863142ce1ce0 21,27,30,37,193-194,200,203,209,216-225,228,265,288-289,298,315,318-322,346,354
+  s_77447968423f83::t_d9f58a96c23e0f 11-13,36,214-215,226,264,316-317
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c037b431b7e88895e98290a45aee9e6d91240fde",
+  "prompts": {},
+  "sessions": {
+    "s_77447968423f83": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a76a76fd-dc1b-4bef-961f-1cdf0d99f31d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
