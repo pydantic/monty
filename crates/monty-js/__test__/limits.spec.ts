@@ -79,7 +79,7 @@ test('an allocation refused at an interpreter checkpoint leaves the session usab
   const maxMemory = 1024 * 1024
   await using session = await pool().checkout({ limits: { maxMemory } })
   const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), isRuntimeError)
-  assertMemoryError(error, isWasm ? 1_068_412 : 1_162_198, maxMemory)
+  assertMemoryError(error, isWasm ? 1_048_760 : 1_162_198, maxMemory)
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
@@ -101,12 +101,12 @@ test('limits with inputs', async () => {
 
 test('pow memory limit', async () => {
   const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 10_032_301 : 10_042_127, 1_000_000)
+  assertMemoryError(error, isWasm ? 10_032_301 : 10_043_994, 1_000_000)
 })
 
 test('lshift memory limit', async () => {
   const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 1_282_302 : 1_292_128, 1_000_000)
+  assertMemoryError(error, isWasm ? 1_282_302 : 1_293_995, 1_000_000)
 })
 
 test('mult memory limit', async () => {
@@ -115,7 +115,7 @@ big = 2 ** 4000000
 result = big * big
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 4_032_933 : 4_042_767, 1_000_000)
+  assertMemoryError(error, isWasm ? 4_032_933 : 4_044_770, 1_000_000)
 })
 
 test('small operations within limit', async () => {
