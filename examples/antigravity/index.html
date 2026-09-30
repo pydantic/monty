@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Monty antigravity</title>
+    <link rel="icon" href="./antigravity.svg" />
+    <!-- prettier-ignore -->
+    <style>
+      body { margin: 0 auto; padding: 2rem 1.25rem 3rem; max-width: 46rem; font-family: ui-sans-serif, system-ui, sans-serif; line-height: 1.5; color: #1b1b1d; background: #fbfbfd; }
+      h1 { margin: 0; font-size: 1.6rem; font-weight: 600; }
+      header p { margin: 0.35rem 0 0; color: #6b6b73; }
+      a { color: #2563eb; }
+      main { margin-top: 1.75rem; }
+      #canvas { border: 1px solid #d9d9e0; border-radius: 6px; background: #fff; overflow: hidden; }
+      #canvas svg { display: block; width: 100%; height: auto; }
+      /* monospace with tabular figures, so the changing numbers don't make the line jump */
+      #status { margin: 0.75rem 0 0; color: #6b6b73; font: 0.8125rem ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>antigravity</h1>
+      <p>
+        From <a href="https://xkcd.com/353/">xkcd.com/353/</a> and more directly
+        <a href="https://github.com/pyscript/examples/tree/main/antigravity">PyScript's antigravity example</a>. This is
+        Monty running in WebAssembly in the browser.
+      </p>
+    </header>
+
+    <main>
+      <div id="canvas"></div>
+      <p id="status">loading the sandbox…</p>
+    </main>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

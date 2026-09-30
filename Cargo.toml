@@ -24,11 +24,11 @@ default-members = ["crates/monty-runtime"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.23"
-rust-version = "1.95"
+version = "1.0.0"
+rust-version = "1.96"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
-description = "A sandboxed, snapshotable Python interpreter written in Rust."
+description = "A secure, snapshotable Python sandbox written in Rust."
 categories = ["compilers", "emulators", "development-tools"]
 keywords = ["python", "interpreter", "sandbox", "embedded"]
 homepage = "https://github.com/pydantic/monty/"
@@ -60,27 +60,27 @@ strip = false
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
 # RELEASING.md.
-monty = { path = "crates/monty", version = "0.0.23" }
-monty-types = { path = "crates/monty-types", version = "0.0.23" }
-monty-alloc = { path = "crates/monty-alloc", version = "0.0.23" }
-monty-fs = { path = "crates/monty-fs", version = "0.0.23" }
-monty-macros = { path = "crates/monty-macros", version = "0.0.23" }
-monty-proto = { path = "crates/monty-proto", version = "0.0.23" }
-monty-pool = { path = "crates/monty-pool", version = "0.0.23" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.23" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.23" }
+monty = { path = "crates/monty", version = "1.0.0" }
+monty-types = { path = "crates/monty-types", version = "1.0.0" }
+monty-alloc = { path = "crates/monty-alloc", version = "1.0.0" }
+monty-fs = { path = "crates/monty-fs", version = "1.0.0" }
+monty-macros = { path = "crates/monty-macros", version = "1.0.0" }
+monty-proto = { path = "crates/monty-proto", version = "1.0.0" }
+monty-pool = { path = "crates/monty-pool", version = "1.0.0" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "1.0.0" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "1.0.0" }
 # ruff, ty and related crates
-ruff_python_parser = "0.0.9"
-ruff_python_stdlib = "0.0.9"
-ruff_python_ast = "0.0.9"
-ruff_python_codegen = "0.0.9"
-ruff_source_file = "0.0.9"
-ruff_text_size = "0.0.9"
-ruff_db = { version = "0.0.9", features = ["serde"] }
-ty_python_semantic = "0.0.9"
-ty_python_core = "0.0.9"
-ty_module_resolver = "0.0.9"
-ty_vendored = "0.0.9"
+ruff_python_parser = "0.0.14"
+ruff_python_stdlib = "0.0.14"
+ruff_python_ast = "0.0.14"
+ruff_python_codegen = "0.0.14"
+ruff_source_file = "0.0.14"
+ruff_text_size = "0.0.14"
+ruff_db = { version = "0.0.14", features = ["serde"] }
+ty_python_semantic = "0.0.14"
+ty_python_core = "0.0.14"
+ty_module_resolver = "0.0.14"
+ty_vendored = "0.0.14"
 # salsa version matches the version ruff uses
 salsa = { version = "0.28.2", default-features = false, features = [
     "compact_str",
@@ -93,12 +93,6 @@ salsa = { version = "0.28.2", default-features = false, features = [
 # data, no unsafe; its Unicode version may lag CPython's, affecting only
 # recently (re)assigned code points.
 unicode-general-category = "1"
-# `unicodedata` module backing data. Both are pure generated tables, no unsafe;
-# `unicode_names2` backs `name()`/`lookup()`, `unicode-normalization` backs
-# `normalize()`/`is_normalized()`/`combining()`. Their Unicode versions may lag
-# or lead CPython's, affecting only recently (re)assigned code points.
-unicode_names2 = "1"
-unicode-normalization = "0.1"
 # Linear-time substring search over `[u8]`, which std only provides for `str`.
 # Already linked transitively via ruff/fancy-regex; this just names it directly.
 memchr = "2.7"
@@ -116,6 +110,8 @@ pyo3-async-runtimes = "0.29.0"
 pyo3-build-config = { version = "0.29.2", features = ["resolve-config"] }
 # others
 chrono = { version = "0.4", features = ["serde"] }
+# The zone rules for `SandboxTimeZone::Named`; database features are enabled per binary.
+jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
 strum = { version = "0.27", features = ["derive"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }
@@ -123,6 +119,10 @@ indexmap = "2"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 postcard = { version = "1.1", features = ["alloc"] }
+# session dump codec: self-describing, so struct fields and enum variants evolve without a `DUMP_VERSION` bump
+minicbor-serde = { version = "0.7", default-features = false, features = ["alloc"] }
+# CBOR byte strings for persisted `Vec<u8>` / `[u8; N]` fields instead of one integer per byte
+serde_bytes = "0.11"
 # exact pin: prost-build output must be byte-stable across contributors and CI
 # so `make check-proto` (regenerate + git diff) is reproducible
 prost = "=0.14.4"

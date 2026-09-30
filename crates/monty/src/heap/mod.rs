@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::{
     cell::{Cell, UnsafeCell},
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fmt,
     iter::once,
     marker::PhantomData,
@@ -24,10 +24,7 @@ use serde::{de::Error as _, ser::SerializeStruct};
 use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
-    types::{
-        ExtFunction, HostClassType, TimeZone, Tuple, datetime,
-        timezone::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS},
-    },
+    types::{ExtFunction, HostClassType, TimeZone, Tuple},
     value::Value,
 };
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -39,7 +36,7 @@ pub(crate) use crate::{
 
 mod free_list;
 mod stable_heap;
-use stable_heap::StableHeap;
+pub(crate) use stable_heap::StableHeap;
 
 /// Unique identifier for values stored inside the heap arena.
 ///
@@ -84,20 +81,24 @@ pub(crate) enum CcColor {
     /// Live and not currently a cycle candidate. Default state for every newly
     /// allocated entry.
     #[default]
+    #[serde(rename = "B")]
     Black,
     /// Visited by `MarkGray` during a collection cycle. Children's refcounts
     /// have been provisionally decremented; a later `Scan` pass decides whether
     /// to resurrect (back to [`Black`](Self::Black)) or condemn
     /// ([`White`](Self::White)) the entry.
+    #[serde(rename = "G")]
     Gray,
     /// Confirmed unreachable by the current collection: every reference into
     /// the entry comes from another condemned entry. `CollectWhite` will free
     /// it. Only seen mid-collection.
+    #[serde(rename = "W")]
     White,
     /// Candidate cycle root. Set by `dec_ref` whenever a GC-tracked entry's
     /// refcount drops to a non-zero value — the only situation in which a new
     /// reference cycle can become unreachable. The collector seeds its work
     /// from every entry currently flagged Purple.
+    #[serde(rename = "P")]
     Purple,
 }
 
@@ -265,9 +266,10 @@ macro_rules! define_heap_read_support {
         $variant:ident($storage:ident $payload:ty)
     ),* $(,)?) => {
         /// A type-safe read handle for any payload stored in the heap.
+        /// Variants mirror `HeapData`, which carries their docs; its serde attributes
+        /// would not compile here, so the registry's attributes are not repeated.
         pub enum HeapReadOutput<'a> {
             $(
-                $(#[$meta])*
                 $variant(HeapObjectRead<'a, $payload>),
             )*
         }
@@ -823,6 +825,7 @@ impl<'a> HeapPtr<'a> {
 /// collector's `mark_gray`/`scan`/`scan_black`).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct HeapEntry {
+    #[serde(rename = "R")]
     refcount: Cell<usize>,
     /// Number of active `HeapRead` pointers into this entry's data.
     ///
@@ -830,9 +833,10 @@ pub struct HeapEntry {
     /// the `HeapRead` is dropped. `dec_ref` panics if it would free an entry that
     /// still has active readers — this guarantees that `HeapRead` pointers remain
     /// valid for as long as they exist.
-    #[serde(skip, default)] // should always be 0 during serde ops
+    #[serde(skip)] // should always be 0 during serde ops
     readers: Cell<usize>,
     /// The payload data
+    #[serde(rename = "D")]
     data: UnsafeHeapData,
     /// Cycle-collector color. See [`CcColor`].
     ///
@@ -840,9 +844,16 @@ pub struct HeapEntry {
     /// instructions can capture entries in the [`Purple`](CcColor::Purple)
     /// pending-collection state; dropping the color on restore would leak
     /// any cycle that became unreachable just before the snapshot.
-    #[serde(default)]
+    #[serde(rename = "C")]
     color: Cell<CcColor>,
 }
+
+/// What one heap entry costs, payload and bookkeeping together.
+///
+/// For preflighting a burst of allocations whose count is caller-controlled:
+/// charging only the payloads would under-count by the refcount, reader count
+/// and collector colour every entry also carries.
+pub(crate) const HEAP_ENTRY_SIZE: usize = size_of::<HeapEntry>();
 
 /// This wrapper containing `UnsafeCell` exists to allow for data inside of `HeapValue`
 /// to be safely pointed to via the `HeapReader` API.
@@ -972,11 +983,8 @@ impl<'de> serde::Deserialize<'de> for Heap {
         struct HeapFields {
             entries: StableHeap<HeapEntry>,
             tracker: ResourceTracker,
-            #[serde(default)]
             purple_count: usize,
-            #[serde(default)]
             allocations_since_gc: u32,
-            #[serde(default)]
             timezone_utc: Option<HeapId>,
         }
         let fields = HeapFields::deserialize(deserializer)?;
@@ -985,7 +993,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
             ext_function_cache,
             boundary_index,
             host_type_index,
-        } = restore_entries(&mut entries, fields.timezone_utc).map_err(D::Error::custom)?;
+        } = restore_entries(&mut entries).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
             tracker: fields.tracker,
@@ -1001,37 +1009,21 @@ impl<'de> serde::Deserialize<'de> for Heap {
     }
 }
 
-/// Rebuilds the derived state a restored heap needs, and rejects entries whose
-/// contents a dump could not have produced.
+/// Rebuilds weak indexes and rejects transient GC states before the heap can be used.
 ///
-/// Deserializing installs heap data verbatim, so every invariant the interpreter
-/// treats as guaranteed by its constructors has to be re-established here, or a
-/// forged dump becomes a panic or a self-contradictory value later: `time`
-/// components are read back by `naive_time` as already validated, and the `tzinfo`
-/// references on `time` and `datetime`, along with the `timezone_utc` cache, are
-/// dereferenced without checking what they land on. Returns the rebuilt weak
-/// indexes, which are derived rather than serialized.
-///
-/// A `time` needs no agreement check: it stores only the reference, so there is
-/// no second copy to contradict. A `datetime` keeps an inline offset and name —
-/// dumps predating `tzinfo_ref` have no reference to read instead — so its two
-/// copies are still checked against each other.
-fn restore_entries(
-    entries: &mut StableHeap<HeapEntry>,
-    timezone_utc: Option<HeapId>,
-) -> Result<WeakIndexes, &'static str> {
+/// Snapshots are trusted for correctness, but must remain memory-safe even when invalid.
+/// Gray/White entries would bypass parts of marking/scanning, on which the collector's
+/// protection of live `HeapRead` pointers depends. Collection cannot suspend in these states.
+fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &'static str> {
     let mut indexes = WeakIndexes::default();
-    // Both sides of every timezone check, as owned copies: only one entry can be
-    // borrowed at a time, and whether a reference is sound is not knowable until
-    // every entry has been visited. Each copy mirrors one already in the heap.
-    let mut timezones: HashMap<HeapId, TimeZone> = HashMap::new();
-    let mut datetime_tzinfo_refs: Vec<(HeapId, Option<TimeZone>)> = Vec::new();
-    let mut time_tzinfo_refs: Vec<HeapId> = Vec::new();
     for index in 0..entries.len() {
         let id = HeapId::from_index(index);
         let Some(mut entry) = entries.entry(id) else {
             continue;
         };
+        if matches!(entry.color.get(), CcColor::Gray | CcColor::White) {
+            return Err("snapshot contains a transient GC color");
+        }
         match entry.get_mut().data.0.get_mut() {
             HeapData::ExtFunction(function) => {
                 indexes.ext_function_cache.insert(function.cache_key(), id);
@@ -1045,46 +1037,10 @@ fn restore_entries(
             HeapData::HostClassType(ty) => {
                 indexes.host_type_index.insert(ty.type_id(), id);
             }
-            HeapData::TimeZone(tz) => {
-                // Checked here rather than at each referrer: this is the only copy
-                // of the offset a `time` has, and `format_offset_hms` negates it.
-                if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
-                    return Err("timezone offset out of range");
-                }
-                timezones.insert(id, tz.clone());
-            }
-            HeapData::Time(t) => {
-                if !t.components_in_range() {
-                    return Err("time component out of range");
-                }
-                time_tzinfo_refs.extend(t.tzinfo_ref());
-            }
-            HeapData::DateTime(dt) => {
-                datetime_tzinfo_refs.extend(dt.tzinfo_ref().map(|tz_id| (tz_id, datetime::timezone_info(dt))));
-            }
             _ => {}
         }
     }
-    // A `datetime`'s `tzinfo` reference must land on a live `timezone` holding
-    // exactly what the datetime answers `utcoffset()` and `tzname()` from, or the
-    // two disagree; the `timezone_utc` cache must land on UTC's, since
-    // `get_timezone_utc` hands its target straight back as `datetime.timezone.utc`
-    // without looking at it.
-    let holds = |id: HeapId, expected: &TimeZone| timezones.get(&id).is_some_and(|tz| timezone_matches(tz, expected));
-    // The attached copy is absent only for a naive `datetime` that kept a
-    // reference anyway, leaving the referenced timezone nothing to agree with.
-    let agrees = |(id, attached): &(HeapId, Option<TimeZone>)| attached.as_ref().is_some_and(|tz| holds(*id, tz));
-    // A `time` reads its offset and name straight off the target, so the target
-    // only has to *be* a timezone; `attached_timezone` treats that as established.
-    if !time_tzinfo_refs.iter().all(|id| timezones.contains_key(id)) {
-        Err("time tzinfo reference does not point at a timezone")
-    } else if !datetime_tzinfo_refs.iter().all(agrees) {
-        Err("tzinfo reference does not match the attached timezone")
-    } else if timezone_utc.is_some_and(|id| !holds(id, &TimeZone::utc())) {
-        Err("timezone.utc cache does not point to the utc timezone")
-    } else {
-        Ok(indexes)
-    }
+    Ok(indexes)
 }
 
 /// A freed object's key in one of the heap's weak indexes.
@@ -1109,15 +1065,6 @@ impl WeakIndexes {
             self.boundary_index.insert(uuid, id);
         }
     }
-}
-
-/// Whether two timezones agree on everything a Python program can observe.
-///
-/// Not `==`, which is CPython's offset-only equality: a restored `time` whose
-/// `tzinfo` object carries a different *name* than its own copy would report one
-/// from `tzname()` and the other from `tzinfo.tzname()`.
-fn timezone_matches(a: &TimeZone, b: &TimeZone) -> bool {
-    a.offset_seconds == b.offset_seconds && a.name == b.name
 }
 
 /// Default GC interval — run cycle collection every 100 000 GC-tracked
@@ -1961,6 +1908,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     on_child(*id);
                 }
             }
+            if let Some(globals) = closure.globals {
+                on_child(globals);
+            }
         }
         HeapData::FunctionDefaults(fd) => {
             // Add default values that are heap references
@@ -1968,6 +1918,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 if let Value::Ref(id) = default {
                     on_child(*id);
                 }
+            }
+            if let Some(globals) = fd.globals {
+                on_child(globals);
             }
         }
         HeapData::Cell(cell) => {
@@ -2064,6 +2017,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
         HeapData::Itertools(iter) => iter.for_each_child_id(on_child),
         HeapData::Partial(partial) => partial.for_each_child_id(on_child),
+        HeapData::GenericAlias(alias) => alias.for_each_child_id(on_child),
+        HeapData::Union(union) => union.for_each_child_id(on_child),
         HeapData::Module(m) => {
             // Module attrs can contain references to heap values
             if !m.has_refs() {
@@ -2084,6 +2039,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 if let Value::Ref(id) = value {
                     on_child(*id);
                 }
+            }
+            if let Some(globals) = coro.globals {
+                on_child(globals);
             }
         }
         HeapData::GatherFuture(gather) => {
@@ -2115,7 +2073,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::ExternalFuture(fut) => {
             // `Pending { awaiter: Some(GatherSlot { gather, .. }) }` owns an
             // inc_ref on `gather`. `Awaiter::Task` / `None` and the `Failed`
-            // state carry no heap refs. `Resolved` owns the cached value.
+            // state carry no heap refs. `Resolved` owns the cached value, and
+            // a pending sleep owns the `result` it will resolve with.
+            if let Some(Value::Ref(id)) = &fut.sleep_result {
+                on_child(*id);
+            }
             match &fut.state {
                 ExternalFutureState::Resolved(Value::Ref(id)) => on_child(*id),
                 ExternalFutureState::Pending {
@@ -2182,12 +2144,14 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             for default in &mut closure.defaults {
                 default.py_dec_ref_ids(stack);
             }
+            stack.extend(closure.globals);
         }
         HeapData::FunctionDefaults(fd) => {
             // Decrement ref count for default values that are heap references
             for default in &mut fd.defaults {
                 default.py_dec_ref_ids(stack);
             }
+            stack.extend(fd.globals);
         }
         HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
         HeapData::HostClass(dc) => dc.py_dec_ref_ids(stack),
@@ -2210,12 +2174,15 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Itertools(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Partial(partial) => partial.py_dec_ref_ids(stack),
+        HeapData::GenericAlias(alias) => alias.py_dec_ref_ids(stack),
+        HeapData::Union(union) => union.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references
             for value in &mut coro.namespace {
                 value.py_dec_ref_ids(stack);
             }
+            stack.extend(coro.globals);
         }
         HeapData::GatherFuture(gather) => {
             // Decrement ref count for owned item HeapIds (coroutines and
@@ -2239,16 +2206,22 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
                 GatherState::Pending | GatherState::Failed(_) => {}
             }
         }
-        HeapData::ExternalFuture(fut) => match &mut fut.state {
-            ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
-            ExternalFutureState::Pending {
-                awaiter: Some(Awaiter::GatherSlot { gather, .. }),
-            } => stack.push(*gather),
-            ExternalFutureState::Pending {
-                awaiter: None | Some(Awaiter::Task(_)),
+        HeapData::ExternalFuture(fut) => {
+            // Mirror `for_each_child_id`: a pending sleep's `result` is owned too.
+            if let Some(result) = &mut fut.sleep_result {
+                result.py_dec_ref_ids(stack);
             }
-            | ExternalFutureState::Failed(_) => {}
-        },
+            match &mut fut.state {
+                ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
+                ExternalFutureState::Pending {
+                    awaiter: Some(Awaiter::GatherSlot { gather, .. }),
+                } => stack.push(*gather),
+                ExternalFutureState::Pending {
+                    awaiter: None | Some(Awaiter::Task(_)),
+                }
+                | ExternalFutureState::Failed(_) => {}
+            }
+        }
         HeapData::DateTime(dt) => {
             // Mirror `for_each_child_id`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.
@@ -2535,9 +2508,9 @@ mod tests {
         assert_eq!(heap.purple_count, 1);
         assert_eq!(heap.entries.get(id).color.get(), CcColor::Purple);
 
-        // Round-trip through postcard.
-        let bytes = postcard::to_allocvec(&heap).expect("serialize");
-        let mut restored: Heap = postcard::from_bytes(&bytes).expect("deserialize");
+        // Round-trip through the dump codec.
+        let bytes = minicbor_serde::to_vec(&heap).expect("serialize");
+        let mut restored: Heap = minicbor_serde::from_slice(&bytes).expect("deserialize");
 
         // `purple_count` and the per-entry color must round-trip.
         assert_eq!(restored.purple_count, 1);

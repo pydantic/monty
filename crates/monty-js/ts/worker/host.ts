@@ -1,6 +1,4 @@
-// Hosts the WIT-defined Monty component inside a Web Worker, a Node worker
-// thread, or the in-process fallback. Each host owns one component instance so
-// its protocol child and REPL state persist across turns.
+// Capability-limited component instantiation, used only inside workers.
 
 import { WASIShim } from '@bytecodealliance/preview2-shim/instantiation'
 
@@ -16,31 +14,20 @@ export type ComponentModules = Readonly<Record<string, WebAssembly.Module>>
 /** Semantic request accepted by the Rust component. */
 export type DispatchRequest = ComponentRequest
 
-/** Semantic events and worker status returned by the Rust component. */
-export type DispatchResult = ComponentDispatchResult
-
-/** Sends one semantic request to a persistent component instance. */
-export type Dispatcher = (request: DispatchRequest) => Promise<DispatchResult>
-
-/** Adapts a synchronous in-process [`WasmHost`] to the async [`Dispatcher`]. */
-export function inProcessDispatcher(host: WasmHost): Dispatcher {
-  return (request) => Promise.resolve(host.dispatch(request))
+/** Component output plus termination diagnostics supplied by the host runtime. */
+export interface DispatchResult extends ComponentDispatchResult {
+  exitStatus?: string | null
 }
 
-/** One instantiated Monty component, retaining its child across turns. */
-export class WasmHost {
-  private constructor(private readonly dispatchComponent: (request: DispatchRequest) => DispatchResult) {}
+/** Sends one semantic request, optionally bounded by a duration backstop. */
+export type Dispatcher = (request: DispatchRequest, timeoutMs?: number) => Promise<DispatchResult>
 
-  /** Instantiates all core modules and links their capability-limited WASI imports. */
-  static async create(modules: ComponentModules): Promise<WasmHost> {
-    const component = await instantiate((path) => getModule(modules, path), wasiImports())
-    return new WasmHost(component.worker.dispatch)
-  }
-
-  /** Runs one turn entirely through the semantic component interface. */
-  dispatch(request: DispatchRequest): DispatchResult {
-    return this.dispatchComponent(request)
-  }
+/** Instantiates an isolated component and returns its persistent turn dispatcher. */
+export async function instantiateWorker(
+  modules: ComponentModules,
+): Promise<(request: DispatchRequest) => DispatchResult> {
+  const component = await instantiate((path) => getModule(modules, path), wasiImports())
+  return component.worker.dispatch
 }
 
 /** Creates isolated WASI imports with no host filesystem, environment, or network. */

@@ -89,6 +89,7 @@ except TypeError as e:
 import datetime
 
 assert getattr(datetime.timezone, 'ut' + 'c') is datetime.timezone.utc
+assert getattr(datetime.date, 'mi' + 'n') == datetime.date(1, 1, 1)
 assert getattr(datetime.time(12, 30), 'ho' + 'ur') == 12
 assert getattr(datetime.date(2024, 6, 15), 'mon' + 'th') == 6
 assert getattr(datetime.timedelta(hours=1), 'sec' + 'onds') == 3600

@@ -74,6 +74,14 @@ static WORKER_TERMINATED: Instrument = Instrument {
     description: "Workers discarded by the pool, by reason.",
 };
 
+/// Sessions resumed after their relay shut down.
+static SESSION_RESUMED: Instrument = Instrument {
+    kind: MetricKind::Counter,
+    name: "monty.pool.session.resumed",
+    unit: "{session}",
+    description: "Sessions the pool tried to resume after a relay shutdown, by outcome.",
+};
+
 /// Checkout lifetime.
 static SESSION_DURATION: Instrument = Instrument {
     kind: MetricKind::Histogram,
@@ -231,6 +239,15 @@ impl Metrics {
         self.record(
             &SESSION_DURATION,
             MetricValue::seconds(elapsed),
+            &[KeyValue::new("outcome", outcome)],
+        );
+    }
+
+    /// One attempt to resume a session after a relay shutdown (`ok`, or why it failed).
+    pub(crate) fn session_resumed(&self, outcome: &'static str) {
+        self.record(
+            &SESSION_RESUMED,
+            MetricValue::I64(1),
             &[KeyValue::new("outcome", outcome)],
         );
     }
@@ -540,7 +557,19 @@ impl TurnMetrics {
                 };
                 self.close_suspension(outcome);
             }
-            Some(pb::parent_request::Kind::ResumeFutures(_)) => self.close_suspension("resolved"),
+            Some(pb::parent_request::Kind::ResumeFutures(r)) => {
+                let outcome = match (&self.pending, r.results.as_slice()) {
+                    (
+                        Some(Suspension {
+                            kind: SuspensionKind::FunctionCall(Some(call_id)),
+                            ..
+                        }),
+                        [result],
+                    ) if *call_id == result.call_id => ext_result(result.result.as_ref()),
+                    _ => "resolved",
+                };
+                self.close_suspension(outcome);
+            }
             Some(pb::parent_request::Kind::AbortFeed(_)) => self.close_suspension("aborted"),
             None => {}
         }
@@ -556,12 +585,24 @@ impl TurnMetrics {
             self.reported_micros = self.reported_micros.max(event.total_execution_micros);
         }
         match &event.kind {
-            Some(pb::child_event::Kind::Print(p)) => self.metrics.record(
-                &PRINT_BYTES,
-                MetricValue::bytes(p.text.len()),
-                &[KeyValue::new("stream", print_stream(p.stream))],
-            ),
-            Some(pb::child_event::Kind::FunctionCall(_)) => self.suspend(SuspensionKind::FunctionCall),
+            Some(pb::child_event::Kind::Print(p)) => {
+                // One measurement per stream rather than per run: the
+                // instrument is a counter, so the totals sum identically, and a
+                // sandbox alternating the streams starts a run per fragment.
+                let totals = print_bytes_by_stream(&p.segments);
+                for (stream, bytes) in PRINT_STREAM_NAMES.into_iter().zip(totals) {
+                    if bytes > 0 {
+                        self.metrics.record(
+                            &PRINT_BYTES,
+                            MetricValue::bytes(bytes),
+                            &[KeyValue::new("stream", stream)],
+                        );
+                    }
+                }
+            }
+            Some(pb::child_event::Kind::FunctionCall(c)) => {
+                self.suspend(SuspensionKind::FunctionCall(c.allow_eager_await.then_some(c.call_id)));
+            }
             Some(pb::child_event::Kind::OsCall(c)) => self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref()))),
             Some(pb::child_event::Kind::NameLookup(_)) => self.suspend(SuspensionKind::NameLookup),
             Some(pb::child_event::Kind::ResolveFutures(_)) => self.suspend(SuspensionKind::ResolveFutures),
@@ -719,11 +760,12 @@ struct Suspension {
 /// One variant per suspension the protocol has: the four child events that
 /// hand control to the host and wait for a `Resume*`.
 ///
-/// Only the OS call carries anything, and only values this crate chose. What
-/// the others are *for* — the called function, the looked-up name — is named
-/// by the sandboxed code, so none of it is kept (see the module docs).
+/// Function call IDs correlate eager replies but are never metric attributes.
+/// Only OS calls record their fixed function name; sandbox-chosen names are
+/// omitted to bound cardinality (see the module docs).
 enum SuspensionKind {
-    FunctionCall,
+    /// The call ID when an eager reply is allowed.
+    FunctionCall(Option<u32>),
     /// Carries the call's fixed name, which is the protocol's, not the
     /// sandbox's.
     OsCall(&'static str),
@@ -735,7 +777,7 @@ impl SuspensionKind {
     /// Value of the `kind` attribute this suspension is recorded under.
     const fn label(&self) -> &'static str {
         match self {
-            Self::FunctionCall => "function",
+            Self::FunctionCall(_) => "function",
             Self::OsCall(_) => "os",
             Self::NameLookup => "name_lookup",
             Self::ResolveFutures => "futures",
@@ -785,17 +827,36 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::GetEnviron(_)) => "get_environ",
         Some(Call::DateToday(_)) => "date_today",
         Some(Call::DateTimeNow(_)) => "date_time_now",
+        Some(Call::Urandom(_)) => "urandom",
+        Some(Call::Time(_)) => "time",
+        Some(Call::Sleep(_)) => "sleep",
+        Some(Call::AsyncSleep(_)) => "async_sleep",
+        Some(Call::SystemSleep(_)) => "system_sleep",
+        Some(Call::AsyncSystemSleep(_)) => "async_system_sleep",
         None => "unknown",
     }
 }
 
-/// The name of a `PrintStream` enum value.
-fn print_stream(stream: i32) -> &'static str {
-    match pb::PrintStream::try_from(stream) {
-        Ok(pb::PrintStream::Stdout) => "stdout",
-        Ok(pb::PrintStream::Stderr) => "stderr",
-        _ => "unspecified",
+/// The stream names a print measurement can be labelled with, in the order
+/// [`print_bytes_by_stream`] totals them.
+///
+/// An unrecognised value keeps its own total rather than folding into stdout,
+/// so a stream added to the protocol later cannot quietly inflate one.
+const PRINT_STREAM_NAMES: [&str; 3] = ["stdout", "stderr", "unspecified"];
+
+/// Totals one `Print` event's text bytes per stream, indexed into
+/// [`PRINT_STREAM_NAMES`].
+fn print_bytes_by_stream(segments: &[pb::PrintSegment]) -> [usize; 3] {
+    let mut totals = [0usize; 3];
+    for segment in segments {
+        let index = match pb::PrintStream::try_from(segment.stream) {
+            Ok(pb::PrintStream::Stdout) => 0,
+            Ok(pb::PrintStream::Stderr) => 1,
+            _ => 2,
+        };
+        totals[index] = totals[index].saturating_add(segment.text.len());
     }
+    totals
 }
 // tests live here rather than in `tests/` because `TurnMetrics` is
 // crate-private: recording is a side effect of the worker, not part of the
@@ -804,22 +865,37 @@ fn print_stream(stream: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Barrier},
+        sync::{Arc, Barrier, Mutex, PoisonError},
         thread,
         time::Duration,
     };
 
     use logfire::{Logfire, config::MetricsOptions};
-    use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
-    use monty_types::MontyObject;
-    use opentelemetry::KeyValue;
-    use opentelemetry_sdk::metrics::{
-        InMemoryMetricExporter, PeriodicReader,
-        data::{AggregatedMetrics, MetricData},
+    use monty_proto::{WireFunctionCall, ext_result_to_proto, pb, pb::os_call::Call};
+    use monty_types::{CallArgs, ExtFunctionResult, MontyObject, NameLookupResult, SourceRange};
+    use opentelemetry::{
+        KeyValue,
+        trace::{SpanId, TraceId},
+    };
+    use opentelemetry_sdk::{
+        logs::SdkLogRecord,
+        metrics::{
+            InMemoryMetricExporter, PeriodicReader,
+            data::{AggregatedMetrics, MetricData},
+        },
+        trace::SpanData,
     };
 
-    use super::{Metrics, TurnMetrics};
+    use super::{Measurement, MetricValue, Metrics, TelemetryAdapter, TurnMetrics, print_bytes_by_stream};
 
+    /// The suspension position every hand-built event carries.
+    fn position() -> SourceRange {
+        SourceRange {
+            filename: "main.py".to_owned(),
+            start: 0,
+            end: 7,
+        }
+    }
     /// A cumulative aggregate exported from the test's Logfire provider.
     struct Capture {
         logfire: Logfire,
@@ -961,6 +1037,43 @@ mod tests {
     }
 
     /// A recorder writing into a fresh local Logfire provider.
+    /// A foreign-SDK adapter that keeps every raw measurement, so a test can
+    /// count them — the aggregated exporter only ever shows their sum.
+    #[derive(Default)]
+    struct MeasurementCapture(Mutex<Vec<(String, String, i64)>>);
+
+    impl TelemetryAdapter for MeasurementCapture {
+        fn start_span(&self, _: &SpanData) -> bool {
+            true
+        }
+
+        fn end_span(&self, _: &SpanData) -> bool {
+            true
+        }
+
+        fn emit_log(&self, _: SpanId, _: &SdkLogRecord) -> bool {
+            true
+        }
+
+        fn disable_root(&self, _: TraceId, _: SpanId) {}
+
+        fn record_metric(&self, measurement: &Measurement<'_>) {
+            let stream = measurement
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == "stream")
+                .map_or_else(String::new, |kv| kv.value.to_string());
+            let value = match measurement.value {
+                MetricValue::I64(value) => value,
+                other @ MetricValue::F64(_) => panic!("{} recorded {other:?}", measurement.name),
+            };
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((measurement.name.to_owned(), stream, value));
+        }
+    }
+
     fn recorder() -> (TurnMetrics, Arc<Capture>) {
         let exporter = InMemoryMetricExporter::default();
         let logfire = logfire::configure()
@@ -986,34 +1099,52 @@ mod tests {
         pb::ChildEvent {
             kind: Some(kind),
             total_execution_micros: 0,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         }
     }
 
     fn feed() -> pb::ParentRequest {
         request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "double(2)".to_owned(),
-            inputs: vec![],
+            inputs: vec![].into(),
+            values: None,
             skip_type_check: false,
+            cwd: "/".to_owned(),
         }))
     }
 
     fn call_event(function_name: &str) -> pb::ChildEvent {
-        event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
-            function_name: function_name.to_owned(),
-            args: vec![],
-            kwargs: vec![],
-            call_id: 1,
-            object_id: None,
-        }))
+        event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            function_name.to_owned(),
+            CallArgs::new(),
+            1,
+            None,
+            false,
+            position(),
+        )))
     }
 
     fn resume_call(kind: pb::ext_function_result::Kind) -> pb::ParentRequest {
         request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
             result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
+            values: None,
+        }))
+    }
+
+    /// A `ResumeCall` returning `value`, with the arena it indexes.
+    fn resume_return(value: MontyObject) -> pb::ParentRequest {
+        let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(value));
+        request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: 1,
+            result: Some(result),
+            values,
         }))
     }
 
@@ -1045,12 +1176,10 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
-        metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
-            MontyObject::Int(4).into(),
-        )));
-        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete {
-            value: Some(MontyObject::Int(4).into()),
-        })));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
+        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(4),
+        ))));
 
         assert_eq!(
             capture.attributes("monty.run.suspensions"),
@@ -1087,10 +1216,10 @@ mod tests {
             pb::ext_function_result::Kind::Error(pb::RaisedException {
                 exc_type: "AttributeError".to_owned(),
                 message: None,
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: None,
             }),
-            pb::ext_function_result::Kind::ReturnValue(MontyObject::Int(1).into()),
+            pb::ext_function_result::Kind::ReturnValue(0),
         ];
         metrics.begin_turn(&feed());
         for (index, kind) in outcomes.into_iter().enumerate() {
@@ -1110,6 +1239,60 @@ mod tests {
         assert_eq!(outcomes, ["error", "not_found", "value"]);
     }
 
+    /// A sandbox that alternates between the streams starts a segment per
+    /// fragment, so recording one measurement per segment would let it charge
+    /// the host a measurement per byte. The instrument is a counter, so the
+    /// per-stream totals carry the same numbers at one measurement per stream.
+    #[test]
+    fn a_print_event_records_one_measurement_per_stream() {
+        let alternating: Vec<pb::PrintSegment> = (0..64)
+            .map(|i| pb::PrintSegment {
+                stream: if i % 2 == 0 {
+                    pb::PrintStream::Stdout as i32
+                } else {
+                    pb::PrintStream::Stderr as i32
+                },
+                text: "a".to_owned(),
+            })
+            .collect();
+        assert_eq!(print_bytes_by_stream(&alternating), [32, 32, 0]);
+
+        let capture = Arc::new(MeasurementCapture::default());
+        let mut metrics = TurnMetrics::new(Metrics::for_adapter(capture.clone()));
+        metrics.begin_turn(&feed());
+        metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
+            segments: alternating.into(),
+        })));
+
+        let recorded = capture.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(
+            recorded,
+            [
+                ("monty.print.bytes".to_owned(), "stdout".to_owned(), 32),
+                ("monty.print.bytes".to_owned(), "stderr".to_owned(), 32),
+            ]
+        );
+    }
+
+    /// A stream that printed nothing gets no measurement, so an unrecognised
+    /// value cannot mint a series for output that never happened.
+    #[test]
+    fn a_print_event_skips_streams_with_no_output() {
+        let capture = Arc::new(MeasurementCapture::default());
+        let mut metrics = TurnMetrics::new(Metrics::for_adapter(capture.clone()));
+        metrics.begin_turn(&feed());
+        metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
+            segments: vec![pb::PrintSegment {
+                stream: pb::PrintStream::Stdout as i32,
+                text: "hello\n".to_owned(),
+            }]
+            .into(),
+        })));
+
+        let recorded = capture.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(recorded, [("monty.print.bytes".to_owned(), "stdout".to_owned(), 6)]);
+    }
+
     /// An os call is the one suspension that names what it did — from the
     /// protocol's fixed set, so it costs a bounded number of series.
     #[test]
@@ -1118,11 +1301,12 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
+            values: None,
+            allow_eager_await: false,
+            position: Some((&position()).into()),
             call: Some(Call::ReadText("/mnt/f.txt".to_owned())),
         })));
-        metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
-            MontyObject::String("hello".to_owned()).into(),
-        )));
+        metrics.begin_turn(&resume_return(MontyObject::string("hello".to_owned())));
 
         assert_eq!(
             capture.attributes("monty.ext.call.duration"),
@@ -1142,11 +1326,15 @@ mod tests {
         for total in [100, 250] {
             metrics.begin_turn(&feed());
             metrics.event(&pb::ChildEvent {
-                kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
+                kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
                 total_execution_micros: total,
-                max_duration_micros: None,
                 max_suspensions: None,
                 restored_script_name: None,
+                session_id: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: None,
+                max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
             });
         }
 
@@ -1170,7 +1358,7 @@ mod tests {
             exception: Some(pb::RaisedException {
                 exc_type: "MyCustomError".to_owned(),
                 message: None,
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: None,
             }),
         })));
@@ -1210,7 +1398,9 @@ mod tests {
 
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&request(pb::parent_request::Kind::InstallDependencies(
-            pb::InstallDependencies { requirements: vec![] },
+            pb::InstallDependencies {
+                requirements: vec![].into(),
+            },
         )));
         metrics.event(&event(pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None })));
         assert_eq!(
@@ -1229,21 +1419,31 @@ mod tests {
     #[test]
     fn a_load_rebases_the_execution_clock() {
         let (mut metrics, capture) = recorder();
-        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![].into(),
+        })));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 10_000_000,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
+            session_id: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
         metrics.begin_turn(&feed());
         metrics.event(&pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
+            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
             total_execution_micros: 10_000_100,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
 
         let execution = capture.histograms("monty.run.execution_time");
@@ -1259,16 +1459,23 @@ mod tests {
     #[test]
     fn a_restored_suspension_closes_the_load_turn() {
         let (mut metrics, capture) = recorder();
-        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+            state: vec![].into(),
+        })));
         metrics.event(&pb::ChildEvent {
             kind: Some(pb::child_event::Kind::NameLookup(pb::NameLookup {
                 name: "value".to_owned(),
                 object_id: None,
+                position: Some((&position()).into()),
             })),
             total_execution_micros: 10_000_000,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
         let turns = capture.attributes("monty.turn.duration");
         assert_eq!(
@@ -1280,16 +1487,18 @@ mod tests {
         );
 
         metrics.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
-            pb::ResumeNameLookup {
-                kind: Some(pb::resume_name_lookup::Kind::Value(MontyObject::Int(1).into())),
-            },
+            NameLookupResult::from(MontyObject::int(1)).into(),
         )));
         metrics.event(&pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: None })),
+            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
             total_execution_micros: 10_000_050,
-            max_duration_micros: None,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
         let execution = capture.histograms("monty.run.execution_time");
         assert_eq!(execution[0].0, 1);
@@ -1304,14 +1513,14 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&request(pb::parent_request::Kind::InstallDependencies(
             pb::InstallDependencies {
-                requirements: vec!["pydantic".to_owned()],
+                requirements: vec!["pydantic".to_owned()].into(),
             },
         )));
         metrics.event(&event(pb::child_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
                 exc_type: "ValueError".to_owned(),
                 message: None,
-                traceback: vec![],
+                traceback: vec![].into(),
                 data: None,
             }),
         })));
@@ -1367,9 +1576,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 1);
-        metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
-            MontyObject::Int(4).into(),
-        )));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
 
         metrics.event(&call_event("double"));
@@ -1399,7 +1606,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
         metrics.event(&event(pb::child_event::Kind::DumpResult(pb::DumpResult {
-            state: vec![0; 32],
+            state: vec![0; 32].into(),
         })));
 
         let snapshots = capture.histograms("monty.snapshot.bytes");
@@ -1429,10 +1636,11 @@ mod tests {
 
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
-        metrics.begin_turn(&resume_call(pb::ext_function_result::Kind::ReturnValue(
-            MontyObject::Int(4).into(),
-        )));
-        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete { value: None })));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
+        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete {
+            value: 0,
+            values: None,
+        })));
         logfire.force_flush().unwrap();
 
         let exported = exporter.get_finished_metrics().unwrap();

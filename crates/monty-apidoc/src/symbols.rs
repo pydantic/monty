@@ -51,7 +51,7 @@ impl SymbolMap {
         }
         // not in this crate's index: look up the defining path of the
         // external id and match it against another rendered crate's root —
-        // the item itself, then its parent, so members (`MontyObject::Repr`)
+        // the item itself, then its parent, so members (`MontyNode::Repr`)
         // land on the parent's anchor like same-crate members do
         let summary = krate.paths.get(&id)?;
         let defining_crate = summary.path.first()?;

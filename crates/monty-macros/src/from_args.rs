@@ -88,6 +88,11 @@ enum Style {
     /// min == max the runtime collapses to `expected N argument(s)`, so
     /// exact-arity callables use this style too.
     Unpack,
+    /// `style = parse_tuple` — `PyArg_ParseTuple` with a `:name` and no
+    /// keywords at all: the same positional `min..max` range as
+    /// [`Unpack`](Self::Unpack), worded `{name}() takes at least/most N
+    /// argument(s) (M given)` (e.g. `time.gmtime`, `time.strftime`).
+    ParseTuple,
 }
 
 /// `_PyArg_BadArgument` wording shape. CPython splits between positional
@@ -223,24 +228,34 @@ impl Signature {
                          signature can never raise too-many-positional, so the style has no effect");
                 }
             }
-            Style::Unpack => {
+            Style::Unpack | Style::ParseTuple => {
+                let style = if self.style == Style::Unpack {
+                    "unpack"
+                } else {
+                    "parse_tuple"
+                };
                 if self.fields.iter().any(|f| matches!(f.kind, FieldKind::PosOrKeyword)) {
-                    return err("`style = unpack` models a positional-only `PyArg_UnpackTuple` \
-                         signature — every positional field must be `pos_only`");
+                    return err(&format!(
+                        "`style = {style}` models a positional-only signature \
+                         — every positional field must be `pos_only`"
+                    ));
                 }
                 if self.varargs_idx.is_some() || self.varkwargs_idx.is_some() {
-                    return err("`style = unpack` cannot be combined with `varargs` or `varkwargs` \
-                         — it models a fixed positional min..max range");
+                    return err(&format!(
+                        "`style = {style}` cannot be combined with `varargs` or `varkwargs` \
+                         — it models a fixed positional min..max range"
+                    ));
                 }
             }
             Style::Clinic | Style::C | Style::CNamed => {}
         }
 
         if self.at_most_total {
-            if matches!(self.style, Style::Def | Style::Unpack) {
+            if matches!(self.style, Style::Def | Style::Unpack | Style::ParseTuple) {
                 return err(
-                    "`at_most_total` cannot be combined with `style = def` or `style = unpack` \
-                     — the total pre-count models `PyArg_ParseTupleAndKeywords`-family C parsers",
+                    "`at_most_total` cannot be combined with `style = def`, `style = unpack` or \
+                     `style = parse_tuple` — the total pre-count models \
+                     `PyArg_ParseTupleAndKeywords`-family C parsers",
                 );
             }
             if self.varargs_idx.is_some() || self.varkwargs_idx.is_some() {
@@ -255,11 +270,16 @@ impl Signature {
                  — it models a `tp_vectorcall` fast path in front of a clinic parser");
         }
 
-        if self.kwarg_error_name.is_some() && !matches!(self.style, Style::Def | Style::Clinic | Style::Unpack) {
+        if self.kwarg_error_name.is_some()
+            && !matches!(
+                self.style,
+                Style::Def | Style::Clinic | Style::Unpack | Style::ParseTuple
+            )
+        {
             return err("`kwarg_error_name` is only meaningful with `style = def`, the default \
-                 `clinic` style, or `style = unpack` (where it names the function in the \
-                 `takes no keyword arguments` error) — the C families defer unknown-kwarg \
-                 errors past binding");
+                 `clinic` style, `style = unpack` or `style = parse_tuple` (where it names the \
+                 function in the `takes no keyword arguments` error) — the C families defer \
+                 unknown-kwarg errors past binding");
         }
 
         if self.kwargs_not_supported_yet {
@@ -484,6 +504,7 @@ impl Signature {
             Style::C => quote! { crate::args::ErrorFamily::C { positional_pivot: #pivot } },
             Style::CNamed => quote! { crate::args::ErrorFamily::CNamed { positional_pivot: #pivot } },
             Style::Unpack => quote! { crate::args::ErrorFamily::Unpack },
+            Style::ParseTuple => quote! { crate::args::ErrorFamily::ParseTuple },
         }
     }
 
@@ -649,15 +670,10 @@ fn render_build_field(field: &Field) -> TokenStream {
 }
 
 impl Field {
-    /// The `Param` literal for the runtime spec. `never_matchable` (the
-    /// struct's `kwargs_not_supported_yet`) forces `kwarg_id: None`.
+    /// The `Param` literal for the runtime spec.
     fn render_param(&self, never_matchable: bool) -> TokenStream {
         let name = self.ident.to_string();
-        let kwarg_id = if never_matchable {
-            quote! { ::std::option::Option::None }
-        } else {
-            self.kwarg_id_expr()
-        };
+        let keyword_name = self.keyword_name_expr(never_matchable);
         let kind = match self.kind {
             FieldKind::PosOnly => quote! { crate::args::ParamKind::PosOnly },
             FieldKind::PosOrKeyword => quote! { crate::args::ParamKind::PosOrKeyword },
@@ -668,47 +684,40 @@ impl Field {
         quote! {
             crate::args::Param {
                 name: #name,
-                kwarg_id: #kwarg_id,
+                keyword_name: #keyword_name,
                 kind: #kind,
                 required: #required,
             }
         }
     }
 
-    /// `Option<StringId>` expression for kwarg matching. Single-char ASCII
-    /// field names use the `StringId::from_ascii` fast path (they aren't
-    /// `StaticStrings` variants); plain `pos_only` fields without a
-    /// `static_string` override get `None` — not matchable by keyword, so a
-    /// kwarg with their name falls through to unknown-kwarg handling rather
-    /// than the "positional-only passed as keyword" error.
-    fn kwarg_id_expr(&self) -> TokenStream {
-        let name = self.ident.to_string();
-        if matches!(self.kind, FieldKind::PosOnly) && self.static_string.is_none() {
+    /// Executor-independent tag used to match this parameter by keyword.
+    fn keyword_name_expr(&self, never_matchable: bool) -> TokenStream {
+        if never_matchable || matches!(self.kind, FieldKind::PosOnly) && self.static_string.is_none() {
             quote! { ::std::option::Option::None }
-        } else if self.static_string.is_none() && name.len() == 1 && name.is_ascii() {
-            let byte = name.as_bytes()[0];
-            quote! { ::std::option::Option::Some(crate::intern::StringId::from_ascii(#byte)) }
         } else {
             let variant = self.static_string_variant();
-            quote! {
-                ::std::option::Option::Some(crate::intern::StringId::from_static(
-                    crate::intern::StaticStrings::#variant,
-                ))
-            }
+            quote! { ::std::option::Option::Some(crate::intern::StaticStrings::#variant) }
         }
     }
 
-    /// `StaticStrings::PascalCase(ident)` — or the override from `static_string = "..."`.
+    /// The ASCII-letter or PascalCase variant for a field, unless explicitly overridden.
     fn static_string_variant(&self) -> Ident {
         if let Some(explicit) = &self.static_string {
             explicit.clone()
         } else {
-            let pascal = snake_to_pascal(&self.ident.to_string());
-            Ident::new(&pascal, self.ident.span())
+            let name = self.ident.to_string();
+            let variant = match name.as_bytes() {
+                [byte @ b'a'..=b'z'] => format!("AsciiLower{}", char::from(byte.to_ascii_uppercase())),
+                [b'A'..=b'Z'] => format!("Ascii{name}"),
+                _ => snake_to_pascal(&name),
+            };
+            Ident::new(&variant, self.ident.span())
         }
     }
 }
 
+/// Converts a Rust snake-case field name to its `StaticStrings` variant name.
 fn snake_to_pascal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut upper = true;
@@ -786,10 +795,13 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                     "c" => Style::C,
                     "c_named" => Style::CNamed,
                     "unpack" => Style::Unpack,
+                    "parse_tuple" => Style::ParseTuple,
                     other => {
                         return Err(syn::Error::new(
                             value.span(),
-                            format!("unknown style `{other}`; expected `def`, `clinic`, `c`, `c_named`, or `unpack`"),
+                            format!(
+                                "unknown style `{other}`; expected `def`, `clinic`, `c`, `c_named`, `unpack`, or `parse_tuple`"
+                            ),
                         ));
                     }
                 });
@@ -821,7 +833,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `style = def|clinic|c|c_named|unpack`, \
+                    "unknown struct attribute; expected `name = \"...\"`, `style = def|clinic|c|c_named|unpack|parse_tuple`, \
                      `at_most_total`, `vectorcall`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, \
                      or `kwargs_not_supported_yet`",
                 ))
@@ -1002,7 +1014,7 @@ mod tests {
             #[from_args(name = "f", style = fancy)]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"unknown style `fancy`; expected `def`, `clinic`, `c`, `c_named`, or `unpack`");
+        assert_snapshot!(err, @"unknown style `fancy`; expected `def`, `clinic`, `c`, `c_named`, `unpack`, or `parse_tuple`");
     }
 
     #[test]
@@ -1032,7 +1044,7 @@ mod tests {
             #[from_args(name = "f", style = unpack)]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"`style = unpack` models a positional-only `PyArg_UnpackTuple` signature — every positional field must be `pos_only`");
+        assert_snapshot!(err, @"`style = unpack` models a positional-only signature — every positional field must be `pos_only`");
     }
 
     #[test]
@@ -1041,7 +1053,7 @@ mod tests {
             #[from_args(name = "f", style = def, at_most_total)]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"`at_most_total` cannot be combined with `style = def` or `style = unpack` — the total pre-count models `PyArg_ParseTupleAndKeywords`-family C parsers");
+        assert_snapshot!(err, @"`at_most_total` cannot be combined with `style = def`, `style = unpack` or `style = parse_tuple` — the total pre-count models `PyArg_ParseTupleAndKeywords`-family C parsers");
     }
 
     #[test]
@@ -1083,7 +1095,7 @@ mod tests {
             #[from_args(name = "f", style = c_named, kwarg_error_name = "g")]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"`kwarg_error_name` is only meaningful with `style = def`, the default `clinic` style, or `style = unpack` (where it names the function in the `takes no keyword arguments` error) — the C families defer unknown-kwarg errors past binding");
+        assert_snapshot!(err, @"`kwarg_error_name` is only meaningful with `style = def`, the default `clinic` style, `style = unpack` or `style = parse_tuple` (where it names the function in the `takes no keyword arguments` error) — the C families defer unknown-kwarg errors past binding");
     }
 
     #[test]

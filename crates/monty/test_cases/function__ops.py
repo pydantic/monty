@@ -220,6 +220,53 @@ assert not (add1 == add2), 'closures with diff captured values not equal'
 assert add1 != add2
 
 
+# === Function objects as values ===
+# A closure and a function carrying defaults are ordinary objects: truthy,
+# hashable and usable as dict keys.
+def defaulted(x=1):
+    return x
+
+
+assert bool(add1), 'a closure is truthy'
+assert bool(defaulted), 'a function with defaults is truthy'
+
+assert hash(add1) == hash(add1)
+assert hash(defaulted) == hash(defaulted)
+
+by_function = {add1: 'closure', defaulted: 'defaults'}
+assert by_function[add1] == 'closure'
+assert by_function[defaulted] == 'defaults'
+assert len(by_function) == 2
+
+# The address makes the whole repr unmatchable across implementations, so only
+# its shape is pinned here.
+assert repr(add1).startswith('<function '), 'closure reprs as a function'
+assert repr(defaulted).startswith('<function '), 'defaults repr as a function'
+
+# A function has no methods of its own, whether the name is called or only read.
+for fn in (add1, defaulted):
+    try:
+        fn.missing()
+        assert False, 'expected AttributeError calling a function attribute'
+    except AttributeError as exc:
+        assert str(exc) == "'function' object has no attribute 'missing'"
+    try:
+        fn.missing
+        assert False, 'expected AttributeError reading a function attribute'
+    except AttributeError as exc:
+        assert str(exc) == "'function' object has no attribute 'missing'"
+
+
+# === Calling a value that is not callable ===
+# Heap values reach the same TypeError as the immediate ones above.
+for not_callable in ([1, 2], {'a': 1}, {1, 2}, (1, 2)):
+    try:
+        not_callable()
+        assert False, 'expected TypeError calling a non-callable'
+    except TypeError as exc:
+        assert str(exc) == f"'{type(not_callable).__name__}' object is not callable"
+
+
 # === Cross-type inequality ===
 def cross_test():
     return 1

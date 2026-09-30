@@ -13,7 +13,7 @@ with pydantic_monty.Monty() as pool:
         print(f'Reuse: {session.feed_run("x + y", inputs={"x": 100, "y": 200})}')  # 300
 
     # With resource limits (enforced inside the worker)
-    limits = pydantic_monty.ResourceLimits(max_duration_secs=5.0, max_memory=1024 * 1024)
+    limits = pydantic_monty.ResourceLimits(max_feed_duration_secs=5.0, max_memory=1024 * 1024)
     with pool.checkout(limits=limits) as session:
         print(f'With limits: {session.feed_run("x * y * z", inputs={"x": 2, "y": 3, "z": 4})}')  # 24
 

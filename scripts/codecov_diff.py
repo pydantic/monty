@@ -20,7 +20,7 @@ import subprocess
 import sys
 from typing import Any
 
-import httpx
+import httpx2
 
 CODECOV_GRAPHQL_URL = 'https://api.codecov.io/graphql/gh'
 
@@ -178,7 +178,7 @@ def get_pr_from_gh() -> int | None:
 
 def graphql_request(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     """Make a GraphQL request to Codecov API."""
-    with httpx.Client(timeout=30.0) as client:
+    with httpx2.Client(timeout=30.0) as client:
         response = client.post(
             CODECOV_GRAPHQL_URL,
             json={'query': query, 'variables': variables},

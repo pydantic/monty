@@ -4,108 +4,106 @@
 //! and can be used in Python code execution.
 
 use monty::MontyRun;
-use monty_types::{
-    CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyObject, MontyType, MontyUuid,
-};
+use monty_types::{CompileOptions, ExcType, MontyObject, MontyUuid};
 
 // === Immediate Value Tests ===
 
 #[test]
 fn input_int() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Int(42)]).unwrap();
-    assert_eq!(result, MontyObject::Int(42));
+    let result = ex.run_no_limits(vec![MontyObject::int(42)]).unwrap();
+    assert_eq!(result, MontyObject::int(42));
 }
 
 #[test]
 fn input_int_arithmetic() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x + 1".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
-    assert_eq!(result, MontyObject::Int(42));
+    let result = ex.run_no_limits(vec![MontyObject::int(41)]).unwrap();
+    assert_eq!(result, MontyObject::int(42));
 }
 
 #[test]
 fn input_bool_true() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Bool(true)]).unwrap();
-    assert_eq!(result, MontyObject::Bool(true));
+    let result = ex.run_no_limits(vec![MontyObject::bool(true)]).unwrap();
+    assert_eq!(result, MontyObject::bool(true));
 }
 
 #[test]
 fn input_bool_false() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Bool(false)]).unwrap();
-    assert_eq!(result, MontyObject::Bool(false));
+    let result = ex.run_no_limits(vec![MontyObject::bool(false)]).unwrap();
+    assert_eq!(result, MontyObject::bool(false));
 }
 
 #[test]
 fn input_float() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Float(2.5)]).unwrap();
-    assert_eq!(result, MontyObject::Float(2.5));
+    let result = ex.run_no_limits(vec![MontyObject::float(2.5)]).unwrap();
+    assert_eq!(result, MontyObject::float(2.5));
 }
 
 #[test]
 fn input_none() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::None]).unwrap();
-    assert_eq!(result, MontyObject::None);
+    let result = ex.run_no_limits(vec![MontyObject::none()]).unwrap();
+    assert_eq!(result, MontyObject::none());
 }
 
 #[test]
 fn input_ellipsis() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Ellipsis]).unwrap();
-    assert_eq!(result, MontyObject::Ellipsis);
+    let result = ex.run_no_limits(vec![MontyObject::ellipsis()]).unwrap();
+    assert_eq!(result, MontyObject::ellipsis());
 }
 
 // === Heap-Allocated Value Tests ===
 
 #[test]
 fn input_string() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -113,14 +111,14 @@ fn input_string() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::String("hello".to_string())])
+        .run_no_limits(vec![MontyObject::string("hello".to_string())])
         .unwrap();
-    assert_eq!(result, MontyObject::String("hello".to_string()));
+    assert_eq!(result, MontyObject::string("hello".to_string()));
 }
 
 #[test]
 fn input_string_concat() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x + ' world'".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -128,27 +126,27 @@ fn input_string_concat() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::String("hello".to_string())])
+        .run_no_limits(vec![MontyObject::string("hello".to_string())])
         .unwrap();
-    assert_eq!(result, MontyObject::String("hello world".to_string()));
+    assert_eq!(result, MontyObject::string("hello world".to_string()));
 }
 
 #[test]
 fn input_bytes() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Bytes(vec![1, 2, 3])]).unwrap();
-    assert_eq!(result, MontyObject::Bytes(vec![1, 2, 3]));
+    let result = ex.run_no_limits(vec![MontyObject::bytes(vec![1, 2, 3])]).unwrap();
+    assert_eq!(result, MontyObject::bytes(vec![1, 2, 3]));
 }
 
 #[test]
 fn input_list() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -156,17 +154,14 @@ fn input_list() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])])
+        .run_no_limits(vec![MontyObject::list([MontyObject::int(1), MontyObject::int(2)])])
         .unwrap();
-    assert_eq!(
-        result,
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
-    );
+    assert_eq!(result, MontyObject::list([MontyObject::int(1), MontyObject::int(2)]));
 }
 
 #[test]
 fn input_list_append() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x.append(3)\nx".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -174,17 +169,17 @@ fn input_list_append() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])])
+        .run_no_limits(vec![MontyObject::list([MontyObject::int(1), MontyObject::int(2)])])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)])
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2), MontyObject::int(3)])
     );
 }
 
 #[test]
 fn input_tuple() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -192,22 +187,22 @@ fn input_tuple() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Tuple(vec![
-            MontyObject::Int(1),
-            MontyObject::String("two".to_string()),
+        .run_no_limits(vec![MontyObject::tuple([
+            MontyObject::int(1),
+            MontyObject::string("two".to_string()),
         ])])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::Tuple(vec![MontyObject::Int(1), MontyObject::String("two".to_string())])
+        MontyObject::tuple([MontyObject::int(1), MontyObject::string("two".to_string())])
     );
 }
 
 #[test]
 fn input_dict() {
-    let map = vec![(MontyObject::String("a".to_string()), MontyObject::Int(1))];
+    let map = vec![(MontyObject::string("a".to_string()), MontyObject::int(1))];
 
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -219,15 +214,15 @@ fn input_dict() {
     // Build expected map for comparison
     assert_eq!(
         result,
-        MontyObject::dict(vec![(MontyObject::String("a".to_string()), MontyObject::Int(1))])
+        MontyObject::dict([(MontyObject::string("a".to_string()), MontyObject::int(1))])
     );
 }
 
 #[test]
 fn input_dict_get() {
-    let map = vec![(MontyObject::String("key".to_string()), MontyObject::Int(42))];
+    let map = vec![(MontyObject::string("key".to_string()), MontyObject::int(42))];
 
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x['key']".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -235,14 +230,14 @@ fn input_dict_get() {
     )
     .unwrap();
     let result = ex.run_no_limits(vec![MontyObject::dict(map)]).unwrap();
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result, MontyObject::int(42));
 }
 
 // === Multiple Inputs ===
 
 #[test]
 fn multiple_inputs_two() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x + y".to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned()],
@@ -250,14 +245,14 @@ fn multiple_inputs_two() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Int(10), MontyObject::Int(32)])
+        .run_no_limits(vec![MontyObject::int(10), MontyObject::int(32)])
         .unwrap();
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result, MontyObject::int(42));
 }
 
 #[test]
 fn multiple_inputs_three() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x + y + z".to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned(), "z".to_owned()],
@@ -265,15 +260,15 @@ fn multiple_inputs_three() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Int(10), MontyObject::Int(20), MontyObject::Int(12)])
+        .run_no_limits(vec![MontyObject::int(10), MontyObject::int(20), MontyObject::int(12)])
         .unwrap();
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result, MontyObject::int(42));
 }
 
 #[test]
 fn multiple_inputs_mixed_types() {
     // Create a list from two inputs
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "[x, y]".to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned()],
@@ -281,11 +276,11 @@ fn multiple_inputs_mixed_types() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Int(1), MontyObject::String("two".to_string())])
+        .run_no_limits(vec![MontyObject::int(1), MontyObject::string("two".to_string())])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::String("two".to_string())])
+        MontyObject::list([MontyObject::int(1), MontyObject::string("two".to_string())])
     );
 }
 
@@ -293,14 +288,14 @@ fn multiple_inputs_mixed_types() {
 
 #[test]
 fn no_inputs() {
-    let ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result, MontyObject::int(42));
 }
 
 #[test]
 fn nested_list() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x[0][1]".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -308,45 +303,45 @@ fn nested_list() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::List(vec![MontyObject::List(vec![
-            MontyObject::Int(1),
-            MontyObject::Int(2),
+        .run_no_limits(vec![MontyObject::list([MontyObject::list([
+            MontyObject::int(1),
+            MontyObject::int(2),
         ])])])
         .unwrap();
-    assert_eq!(result, MontyObject::Int(2));
+    assert_eq!(result, MontyObject::int(2));
 }
 
 #[test]
 fn empty_list_input() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "len(x)".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::List(vec![])]).unwrap();
-    assert_eq!(result, MontyObject::Int(0));
+    let result = ex.run_no_limits(vec![MontyObject::list([])]).unwrap();
+    assert_eq!(result, MontyObject::int(0));
 }
 
 #[test]
 fn empty_string_input() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "len(x)".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::String(String::new())]).unwrap();
-    assert_eq!(result, MontyObject::Int(0));
+    let result = ex.run_no_limits(vec![MontyObject::string(String::new())]).unwrap();
+    assert_eq!(result, MontyObject::int(0));
 }
 
 // === Exception Input Tests ===
 
 #[test]
 fn input_exception() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -354,23 +349,20 @@ fn input_exception() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Exception {
-            exc_type: ExcType::ValueError,
-            arg: Some("test message".to_string()),
-        }])
+        .run_no_limits(vec![MontyObject::exception(
+            ExcType::ValueError,
+            Some("test message".to_string()),
+        )])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::Exception {
-            exc_type: ExcType::ValueError,
-            arg: Some("test message".to_string()),
-        }
+        MontyObject::exception(ExcType::ValueError, Some("test message".to_string()))
     );
 }
 
 #[test]
 fn input_exception_no_arg() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -378,23 +370,14 @@ fn input_exception_no_arg() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Exception {
-            exc_type: ExcType::TypeError,
-            arg: None,
-        }])
+        .run_no_limits(vec![MontyObject::exception(ExcType::TypeError, None)])
         .unwrap();
-    assert_eq!(
-        result,
-        MontyObject::Exception {
-            exc_type: ExcType::TypeError,
-            arg: None,
-        }
-    );
+    assert_eq!(result, MontyObject::exception(ExcType::TypeError, None));
 }
 
 #[test]
 fn input_exception_in_list() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x[0]".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -402,34 +385,31 @@ fn input_exception_in_list() {
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::List(vec![MontyObject::Exception {
-            exc_type: ExcType::KeyError,
-            arg: Some("key".to_string()),
-        }])])
+        .run_no_limits(vec![MontyObject::list([MontyObject::exception(
+            ExcType::KeyError,
+            Some("key".to_string()),
+        )])])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::Exception {
-            exc_type: ExcType::KeyError,
-            arg: Some("key".to_string()),
-        }
+        MontyObject::exception(ExcType::KeyError, Some("key".to_string()))
     );
 }
 
 #[test]
 fn input_exception_raise() {
     // Test that an exception passed as input can be raised
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "raise x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Exception {
-        exc_type: ExcType::ValueError,
-        arg: Some("input error".to_string()),
-    }]);
+    let result = ex.run_no_limits(vec![MontyObject::exception(
+        ExcType::ValueError,
+        Some("input error".to_string()),
+    )]);
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::ValueError);
     assert_eq!(exc.message(), Some("input error"));
@@ -439,20 +419,20 @@ fn input_exception_raise() {
 
 #[test]
 fn invalid_input_repr() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Repr("some repr".to_string())]);
+    let result = ex.run_no_limits(vec![MontyObject::repr("some repr".to_string())]);
     assert!(result.is_err(), "Repr should not be a valid input");
 }
 
 #[test]
 fn invalid_input_repr_nested_in_list() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -460,9 +440,7 @@ fn invalid_input_repr_nested_in_list() {
     )
     .unwrap();
     // Repr nested inside a list should still be invalid
-    let result = ex.run_no_limits(vec![MontyObject::List(vec![MontyObject::Repr(
-        "nested repr".to_string(),
-    )])]);
+    let result = ex.run_no_limits(vec![MontyObject::list([MontyObject::repr("nested repr".to_string())])]);
     assert!(result.is_err(), "Repr nested in list should be invalid");
 }
 
@@ -473,7 +451,7 @@ fn invalid_input_repr_nested_in_list() {
 
 /// Runs `x` bound to `input`, returning the conversion/execution result.
 fn run_input(input: MontyObject) -> Result<MontyObject, monty_types::MontyException> {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -485,16 +463,12 @@ fn run_input(input: MontyObject) -> Result<MontyObject, monty_types::MontyExcept
 
 /// A list element guaranteed to allocate on the heap during conversion.
 fn heap_element() -> MontyObject {
-    MontyObject::List(vec![MontyObject::Int(1)])
+    MontyObject::list([MontyObject::int(1)])
 }
 
 #[test]
 fn invalid_input_repr_in_list_after_heap_values() {
-    let err = run_input(MontyObject::List(vec![
-        heap_element(),
-        MontyObject::Repr("bad".to_owned()),
-    ]))
-    .unwrap_err();
+    let err = run_input(MontyObject::list([heap_element(), MontyObject::repr("bad".to_owned())])).unwrap_err();
     assert_eq!(
         err.message(),
         Some("invalid input type: 'Repr' is not a valid input value")
@@ -503,9 +477,9 @@ fn invalid_input_repr_in_list_after_heap_values() {
 
 #[test]
 fn invalid_input_repr_in_tuple_after_heap_values() {
-    let err = run_input(MontyObject::Tuple(vec![
+    let err = run_input(MontyObject::tuple([
         heap_element(),
-        MontyObject::Repr("bad".to_owned()),
+        MontyObject::repr("bad".to_owned()),
     ]))
     .unwrap_err();
     assert_eq!(
@@ -518,13 +492,10 @@ fn invalid_input_repr_in_tuple_after_heap_values() {
 fn invalid_input_repr_in_dict_value_after_pairs() {
     // The first pair converts fully (heap key and value); the second pair's
     // key converts before its value fails, exercising the key-guard path too.
-    let err = run_input(MontyObject::Dict(
-        vec![
-            (MontyObject::String("a".to_owned()), heap_element()),
-            (MontyObject::String("b".to_owned()), MontyObject::Repr("bad".to_owned())),
-        ]
-        .into(),
-    ))
+    let err = run_input(MontyObject::dict(vec![
+        (MontyObject::string("a".to_owned()), heap_element()),
+        (MontyObject::string("b".to_owned()), MontyObject::repr("bad".to_owned())),
+    ]))
     .unwrap_err();
     assert_eq!(
         err.message(),
@@ -534,9 +505,9 @@ fn invalid_input_repr_in_dict_value_after_pairs() {
 
 #[test]
 fn invalid_input_repr_in_set_after_heap_values() {
-    let err = run_input(MontyObject::Set(vec![
-        MontyObject::String("heap string".to_owned()),
-        MontyObject::Repr("bad".to_owned()),
+    let err = run_input(MontyObject::set([
+        MontyObject::string("heap string".to_owned()),
+        MontyObject::repr("bad".to_owned()),
     ]))
     .unwrap_err();
     assert_eq!(
@@ -547,9 +518,9 @@ fn invalid_input_repr_in_set_after_heap_values() {
 
 #[test]
 fn invalid_input_repr_in_frozenset_after_heap_values() {
-    let err = run_input(MontyObject::FrozenSet(vec![
-        MontyObject::String("heap string".to_owned()),
-        MontyObject::Repr("bad".to_owned()),
+    let err = run_input(MontyObject::frozenset([
+        MontyObject::string("heap string".to_owned()),
+        MontyObject::repr("bad".to_owned()),
     ]))
     .unwrap_err();
     assert_eq!(
@@ -560,11 +531,11 @@ fn invalid_input_repr_in_frozenset_after_heap_values() {
 
 #[test]
 fn invalid_input_repr_in_namedtuple_after_heap_values() {
-    let err = run_input(MontyObject::NamedTuple {
-        type_name: "nt".to_owned(),
-        field_names: vec!["a".to_owned(), "b".to_owned()],
-        values: vec![heap_element(), MontyObject::Repr("bad".to_owned())],
-    })
+    let err = run_input(MontyObject::named_tuple(
+        "nt".to_owned(),
+        vec!["a".to_owned(), "b".to_owned()],
+        vec![heap_element(), MontyObject::repr("bad".to_owned())],
+    ))
     .unwrap_err();
     assert_eq!(
         err.message(),
@@ -576,11 +547,11 @@ fn invalid_input_repr_in_namedtuple_after_heap_values() {
 fn invalid_input_namedtuple_length_mismatch() {
     // `NamedTuple::new` asserts equal lengths — malformed host input must
     // surface as an error, not a panic.
-    let err = run_input(MontyObject::NamedTuple {
-        type_name: "nt".to_owned(),
-        field_names: vec!["a".to_owned()],
-        values: vec![MontyObject::Int(1), MontyObject::Int(2)],
-    })
+    let err = run_input(MontyObject::named_tuple(
+        "nt".to_owned(),
+        vec!["a".to_owned()],
+        vec![MontyObject::int(1), MontyObject::int(2)],
+    ))
     .unwrap_err();
     assert_eq!(
         err.message(),
@@ -590,21 +561,14 @@ fn invalid_input_namedtuple_length_mismatch() {
 
 #[test]
 fn invalid_input_repr_in_class_instance_attrs() {
-    let err = run_input(MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: MontyClassType {
-            name: "Point".to_owned(),
-            id: MontyUuid::from_u128(1),
-            host_defined: true,
-            is_dataclass: false,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(2),
-        attrs: vec![
-            (MontyObject::String("a".to_owned()), heap_element()),
-            (MontyObject::String("b".to_owned()), MontyObject::Repr("bad".to_owned())),
-        ]
-        .into(),
-    })))
+    let err = run_input(MontyObject::class_instance(
+        MontyObject::class_type("Point", MontyUuid::from_u128(1), true, false, []),
+        MontyUuid::from_u128(2),
+        [
+            (MontyObject::string("a".to_owned()), heap_element()),
+            (MontyObject::string("b".to_owned()), MontyObject::repr("bad".to_owned())),
+        ],
+    ))
     .unwrap_err();
     assert_eq!(
         err.message(),
@@ -615,17 +579,16 @@ fn invalid_input_repr_in_class_instance_attrs() {
 /// A host `Point` class-type input carrying one eager class attr (`data`, a
 /// mutable list) — the shape used by the host-class-type tests below.
 fn host_class_type_input() -> MontyObject {
-    MontyObject::Type(MontyType::Instance(Box::new(MontyClassType {
-        name: "Point".to_owned(),
-        id: MontyUuid::from_u128(1),
-        host_defined: true,
-        is_dataclass: false,
-        attrs: vec![(
-            MontyObject::String("data".to_owned()),
-            MontyObject::List(vec![MontyObject::Int(1)]),
-        )]
-        .into(),
-    })))
+    MontyObject::class_type(
+        "Point",
+        MontyUuid::from_u128(1),
+        true,
+        false,
+        [(
+            MontyObject::string("data".to_owned()),
+            MontyObject::list([MontyObject::int(1)]),
+        )],
+    )
 }
 
 #[test]
@@ -633,7 +596,7 @@ fn type_object_missing_attr_uses_type_object_wording() {
     // Non-iterative `run` has no host to answer the AttrLookup suspension, so
     // it must raise the AttributeError locally — with CPython's type-object
     // wording, since the receiver is a class type.
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "x.missing".to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -656,7 +619,7 @@ x.data.append(x)
 x = None
 1
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -664,7 +627,7 @@ x = None
     )
     .unwrap();
     let result = ex.run_no_limits(vec![host_class_type_input()]).unwrap();
-    assert_eq!(result, MontyObject::Int(1));
+    assert_eq!(result, MontyObject::int(1));
 }
 
 #[test]
@@ -677,26 +640,21 @@ x.data.append(p)
 x = p = None
 1
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned(), "p".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let MontyObject::Type(MontyType::Instance(class_type)) = host_class_type_input() else {
-        unreachable!("host_class_type_input builds a type");
-    };
-    let instance = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: MontyClassType {
-            attrs: DictPairs::default(),
-            ..*class_type
-        },
-        instance_id: MontyUuid::from_u128(2),
-        attrs: DictPairs::default(),
-    }));
+    // the instance's class branch carries no attrs of its own
+    let instance = MontyObject::class_instance(
+        MontyObject::class_type("Point", MontyUuid::from_u128(1), true, false, []),
+        MontyUuid::from_u128(2),
+        [],
+    );
     let result = ex.run_no_limits(vec![host_class_type_input(), instance]).unwrap();
-    assert_eq!(result, MontyObject::Int(1));
+    assert_eq!(result, MontyObject::int(1));
 }
 
 // === Function Parameter Shadowing Tests ===
@@ -711,7 +669,7 @@ def foo(x):
 
 foo(x * 2)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -719,8 +677,8 @@ foo(x * 2)
     )
     .unwrap();
     // x=5 (input), foo(x * 2) = foo(10), inside foo x=10 (param), returns 11
-    let result = ex.run_no_limits(vec![MontyObject::Int(5)]).unwrap();
-    assert_eq!(result, MontyObject::Int(11));
+    let result = ex.run_no_limits(vec![MontyObject::int(5)]).unwrap();
+    assert_eq!(result, MontyObject::int(11));
 }
 
 #[test]
@@ -732,7 +690,7 @@ def add(x, y):
 
 add(x * 10, y * 100)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned()],
@@ -741,9 +699,9 @@ add(x * 10, y * 100)
     .unwrap();
     // x=2, y=3 (inputs), add(20, 300), inside add x=20, y=300, returns 320
     let result = ex
-        .run_no_limits(vec![MontyObject::Int(2), MontyObject::Int(3)])
+        .run_no_limits(vec![MontyObject::int(2), MontyObject::int(3)])
         .unwrap();
-    assert_eq!(result, MontyObject::Int(320));
+    assert_eq!(result, MontyObject::int(320));
 }
 
 #[test]
@@ -755,7 +713,7 @@ def foo(x):
 
 foo(100)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned(), "y".to_owned()],
@@ -764,9 +722,9 @@ foo(100)
     .unwrap();
     // x=5, y=3 (inputs), foo(100), inside foo x=100 (param), y=3 (global), returns 103
     let result = ex
-        .run_no_limits(vec![MontyObject::Int(5), MontyObject::Int(3)])
+        .run_no_limits(vec![MontyObject::int(5), MontyObject::int(3)])
         .unwrap();
-    assert_eq!(result, MontyObject::Int(103));
+    assert_eq!(result, MontyObject::int(103));
 }
 
 #[test]
@@ -778,7 +736,7 @@ def double(x):
 
 double(10) + x
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -786,8 +744,8 @@ double(10) + x
     )
     .unwrap();
     // x=5 (input), double(10) = 20, then 20 + x (global) = 20 + 5 = 25
-    let result = ex.run_no_limits(vec![MontyObject::Int(5)]).unwrap();
-    assert_eq!(result, MontyObject::Int(25));
+    let result = ex.run_no_limits(vec![MontyObject::int(5)]).unwrap();
+    assert_eq!(result, MontyObject::int(25));
 }
 
 #[test]
@@ -799,7 +757,7 @@ def foo(x=100):
 
 foo(x * 2)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -807,8 +765,8 @@ foo(x * 2)
     )
     .unwrap();
     // x=5 (input), foo(10), inside foo x=10 (param), returns 11
-    let result = ex.run_no_limits(vec![MontyObject::Int(5)]).unwrap();
-    assert_eq!(result, MontyObject::Int(11));
+    let result = ex.run_no_limits(vec![MontyObject::int(5)]).unwrap();
+    assert_eq!(result, MontyObject::int(11));
 }
 
 #[test]
@@ -820,7 +778,7 @@ def double(x):
 
 double(x)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -828,8 +786,8 @@ double(x)
     )
     .unwrap();
     // x=7 (input), double(7), inside double x=7 (param from arg), returns 14
-    let result = ex.run_no_limits(vec![MontyObject::Int(7)]).unwrap();
-    assert_eq!(result, MontyObject::Int(14));
+    let result = ex.run_no_limits(vec![MontyObject::int(7)]).unwrap();
+    assert_eq!(result, MontyObject::int(14));
 }
 
 #[test]
@@ -840,7 +798,7 @@ def double(x):
 
 double(2)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["x".to_owned()],
@@ -848,8 +806,8 @@ double(2)
     )
     .unwrap();
     // x=7 (input), double(7), inside double x=7 (param from arg), returns 14
-    let result = ex.run_no_limits(vec![MontyObject::Int(7)]).unwrap();
-    assert_eq!(result, MontyObject::Int(4));
+    let result = ex.run_no_limits(vec![MontyObject::int(7)]).unwrap();
+    assert_eq!(result, MontyObject::int(4));
 }
 
 #[test]

@@ -61,8 +61,7 @@ const MAX_LINE_SIZE: u8 = 76;
 
 /// `base64` module functions, one variant per Python-visible function.
 ///
-/// Serialized into dumps by discriminant, so new functions are appended here
-/// rather than slotted in beside the codec they belong with.
+/// Serialized into dumps by variant name, so renaming one needs `#[serde(alias)]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Base64Functions {
     #[strum(serialize = "b64encode")]
@@ -132,11 +131,8 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
 ];
 
 /// Creates the `base64` module on the heap.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Base64);
+    let mut module = Module::new(StaticStrings::Base64, vm.interns);
 
     for (name, func) in BASE64_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Base64(*func)), vm);

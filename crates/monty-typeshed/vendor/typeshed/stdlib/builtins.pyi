@@ -3,12 +3,13 @@ import sys
 import types
 from _collections_abc import dict_items, dict_keys, dict_values
 from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableSet, Reversible, Set as AbstractSet, Sized
-from types import GenericAlias, TracebackType
+from types import CellType, CodeType, GenericAlias, TracebackType
 from typing import (
     Any,
     ClassVar,
     Final,
     Generic,
+    Mapping,
     MutableMapping,
     MutableSequence,
     Protocol,
@@ -1040,6 +1041,47 @@ def divmod(x: SupportsDivMod[_T_contra, _T_co], y: _T_contra, /) -> _T_co: ...
 @overload
 def divmod(x: _T_contra, y: SupportsRDivMod[_T_contra, _T_co], /) -> _T_co: ...
 
+if sys.version_info >= (3, 13):
+    def eval(
+        source: str | ReadableBuffer | CodeType,
+        /,
+        globals: dict[str, Any] | None = None,
+        locals: Mapping[str, object] | None = None,
+    ) -> Any: ...
+else:
+    def eval(
+        source: str | ReadableBuffer | CodeType,
+        globals: dict[str, Any] | None = None,
+        locals: Mapping[str, object] | None = None,
+        /,
+    ) -> Any: ...
+
+if sys.version_info >= (3, 13):
+    def exec(
+        source: str | ReadableBuffer | CodeType,
+        /,
+        globals: dict[str, Any] | None = None,
+        locals: Mapping[str, object] | None = None,
+        *,
+        closure: tuple[CellType, ...] | None = None,
+    ) -> None: ...
+elif sys.version_info >= (3, 11):
+    def exec(
+        source: str | ReadableBuffer | CodeType,
+        globals: dict[str, Any] | None = None,
+        locals: Mapping[str, object] | None = None,
+        /,
+        *,
+        closure: tuple[CellType, ...] | None = None,
+    ) -> None: ...
+else:
+    def exec(
+        source: str | ReadableBuffer | CodeType,
+        globals: dict[str, Any] | None = None,
+        locals: Mapping[str, object] | None = None,
+        /,
+    ) -> None: ...
+
 exit: _sitebuiltins.Quitter
 
 def hash(obj: object, /) -> int: ...
@@ -1072,6 +1114,7 @@ def len(obj: Sized, /) -> int: ...
 
 license: _sitebuiltins._Printer
 
+def locals() -> dict[str, Any]: ...
 @overload
 def max(
     arg1: SupportsRichComparisonT, arg2: SupportsRichComparisonT, /, *_args: SupportsRichComparisonT, key: None = None

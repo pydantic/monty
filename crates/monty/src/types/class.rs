@@ -14,7 +14,7 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
         heap_read_ref_as_field_mut,
     },
-    types::str::allocate_string,
+    types::{Union, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -151,6 +151,11 @@ impl<'h> HeapRead<'h, Class> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
+    /// Constructing an instance, which runs `__init__` as an ordinary frame.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        vm.instantiate_class(self.id(), args)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // The type of a class object is `type` (matching `type(Foo) is type`).
         Type::Type
@@ -158,6 +163,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_or(self, other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Union::heap_ror(self, other, vm)
+    }
+
+    /// `Foo[int]`: a class's `__class_getitem__` is never looked up, so the
+    /// wording is CPython's for a type without one.
+    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        Err(ExcType::type_error_type_not_subscriptable(
+            self.get(vm.heap).name.as_str(vm.interns),
+        ))
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {

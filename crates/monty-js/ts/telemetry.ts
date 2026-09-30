@@ -140,10 +140,12 @@ setCallbackContextHandlers({
     )
   },
   run: withCallbackContext,
+  span: callbackSpan,
 })
 
+/** Activates the suspension's span without retrying a callback that throws. */
 function withCallbackContext<T>(parent: string | undefined, callback: () => T): T {
-  const span = parent === undefined || spansDisabled ? undefined : spans.get(parent)?.span
+  const span = callbackSpan(parent)
   if (span === undefined) {
     return callback()
   }
@@ -160,6 +162,11 @@ function withCallbackContext<T>(parent: string | undefined, callback: () => T): 
     }
     return callback()
   }
+}
+
+/** Resolves a live suspension or print callback's parent to its host span. */
+function callbackSpan(parent: string | undefined): Span | undefined {
+  return parent === undefined || spansDisabled ? undefined : spans.get(parent)?.span
 }
 
 /**

@@ -48,6 +48,13 @@ class Key:
         return self.number == other.number
 
 
+try:
+    {Key(99): first, Key(2): value, Key(3): last}
+    assert False, 'expected comparison to fail'
+except ValueError as exc:
+    assert str(exc) == 'comparison failed'
+
+
 def check_update(constructor):
     source = constructor([Key(1), Key(2), Key(3)])
     target = {Key(99)}

@@ -27,13 +27,39 @@ Each mount is configured by the host as one of:
     pool, the changes are discarded when the feed ends; each feed starts with
     a fresh overlay.
 
+### Overlapping mounts cannot both be registered
+
+A mount whose host directory is the same as, contains, or is contained by
+another mount's, or whose virtual path is already mounted, is refused with a
+`ValueError` naming both mounts — at registration, which via the pool means
+when the feed starts, since that is where the per-feed mount table is
+assembled. The bindings surface it as a `MontyRuntimeError` wrapping that
+`ValueError`, like any other feed-time failure.
+
+The access mode is checked against whichever mount the *virtual* path selects
+(longest prefix), so a host file reachable through two mounts would take the
+weaker mount's mode. In particular, mounting a directory read-write and a
+subdirectory of it read-only would **not** protect the subdirectory — every
+file in it would still be writable under the parent mount's spelling — so
+that configuration is rejected rather than half-honoured. To expose parts of
+a tree with different modes, mount disjoint directories.
+
+Disjoint host directories at nested virtual paths (`/data`, `/data/sub`)
+remain fine: each virtual path routes to exactly one mount. Two mounts on the
+*same* virtual path are refused because only one of them could ever be
+reached.
+
+The same-directory check uses the opened directory's identity on Unix, so a
+directory renamed between two mounts is still recognised; the nesting check is
+lexical over canonical paths, since an open directory cannot name its parent.
+
 ## Only regular files can be read, written, or opened
 
 Reading, writing, appending to, or `open()`ing a path that resolves to an
 existing **non-regular file** (FIFO/named pipe, socket, device node) raises
-`PermissionError`. CPython would block until a peer appears; mount I/O runs on
-the host thread driving the sandbox, so it must never block on
-sandbox-reachable input. Directories raise `IsADirectoryError` as in CPython.
+`PermissionError`. CPython can open these files and may block waiting for a peer.
+Mount I/O must not wait for a peer controlled by sandbox code.
+Directories raise `IsADirectoryError` as in CPython.
 Existence checks (`exists`, `is_file`, `is_dir`, `is_symlink`) and `stat()`
 still work on special files.
 
@@ -62,6 +88,8 @@ Consequences of the shared budget that have no CPython analogue:
     the budget is exhausted.
 - The `monty` CLI's `-m` mounts always use the default limit; there is no CLI
     flag to change it.
+- Raising the budget above 256 MiB can hit the [message size cap](host-values.md#message-size):
+    a mounted read whose result is too large raises `RuntimeError` inside the sandbox.
 
 ## Write limits
 
@@ -101,6 +129,17 @@ root.
 
 `/tmp`, `/etc`, `/proc`, `/dev`, `~`, and the host current working
 directory are **not** available unless the host explicitly mounts them.
+
+### Relative paths resolve against a virtual working directory
+
+The sandbox's working directory is a virtual path the host sets on a
+session's first feed (the first mount's virtual path by default, else `/`)
+and that persists across feeds, so a relative path never reaches a mount as
+written: the interpreter prepends the working directory, preserving every component.
+The mount validates that absolute path before collapsing `.` and `..` lexically.
+Mount-generated error messages name the absolute path supplied to the mount.
+When no handler accepts a call, the default `PermissionError` names the normalized path. See
+[os.md](os.md) for `os.getcwd()` / `os.chdir()`.
 
 ### `..` is resolved in the virtual namespace, not through symlinks
 
@@ -165,9 +204,10 @@ Null bytes otherwise behave as CPython's do, message for message. Only
 `absolute()` differs: CPython returns the path without inspecting it, while
 Monty refuses it at the boundary rather than carve out the one operation that
 never reaches a syscall. It raises `ValueError: embedded null byte`, the
-generic wording, since no syscall is involved to name. A path that is both
-over-long and null-containing reports the length error, where CPython reports
-the null byte.
+generic wording, since no syscall is involved to name.
+The interpreter checks NUL bytes before dispatch, including when no mount is configured.
+Direct Rust calls to `MountTable` check length first, so a path that is both over-long and null-containing
+reports the length error there.
 
 ### A search-only host directory may not be mountable
 
@@ -201,7 +241,8 @@ the attempt fails with `ERROR_SHARING_VIOLATION`. Unix is unaffected. The
 window is the mount's lifetime, which for `pydantic_monty` and
 `@pydantic/monty` is the lifetime of the mount object, not one feed. Close it
 ([`MountDir.close()`][pydantic_monty.MountDir.close], or the `with` / `using` block) to release the directory
-before the host touches it (see [pool-architecture.md](pool-architecture.md)).
+before the host touches it.
+An in-flight feed retains its own reference until it ends.
 
 ### A mount follows its directory, not its path
 
@@ -273,6 +314,6 @@ escapes. That matches CPython, and reveals nothing about the target.
 
 `open()` and pathlib I/O do not keep an OS handle alive between calls; each
 `read`/`write` is a separate one-shot host operation. This is what makes
-subprocess dump/load safe (see [pool-architecture.md](pool-architecture.md)), and it means
+[snapshots](../snapshots.md) possible, and it means
 external processes can observe partial state between writes. See the design
 note in [open.md](open.md).

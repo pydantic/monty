@@ -1,26 +1,17 @@
-// The worker-side dispatch loop, shared by every environment's worker entry.
-//
-// Runs inside the worker thread/context: owns one component instance and
-// answers each `DispatchRequest` by running one turn and posting its semantic
-// events back. The environment-specific entry
-// (Node `worker_threads`, browser `Worker`) only wires its message primitives
-// to `post`/`subscribe`.
+import type { WorkerMessage, DispatchRequest } from './channel.js'
+import { type ComponentModules, instantiateWorker } from './host.js'
 
-import type { DispatchReply, DispatchRequest } from './channel.js'
-import { type ComponentModules, WasmHost } from './host.js'
-
-/**
- * Serves turns for one worker until it is terminated. `subscribe` registers the
- * per-request handler; `post` sends each reply back to the channel.
- */
+/** Initializes one component, acknowledges readiness, then serves turns until termination. */
 export async function serveDispatch(
   modules: ComponentModules,
-  post: (reply: DispatchReply) => void,
+  post: (reply: WorkerMessage) => void,
   subscribe: (handler: (request: DispatchRequest) => void) => void,
 ): Promise<void> {
-  const host = await WasmHost.create(modules)
-  subscribe((request) => {
-    const result = host.dispatch(request.request)
-    post({ id: request.id, ...result })
-  })
+  try {
+    const dispatch = await instantiateWorker(modules)
+    subscribe(({ id, request }) => post({ id, ...dispatch(request) }))
+    post({ ready: true })
+  } catch (error) {
+    post({ startupError: error instanceof Error ? error.message : String(error) })
+  }
 }
