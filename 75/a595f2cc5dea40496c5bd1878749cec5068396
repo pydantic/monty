@@ -1,0 +1,31 @@
+examples/spreadsheet/main.py
+  s_9427114e2fe303::t_4a0c7d33c16166 8
+examples/spreadsheet/README.md
+  s_9427114e2fe303::t_4a0c7d33c16166 29,36,48-49,51-53,55-57,66
+docs/examples.md
+  s_9427114e2fe303::t_4a0c7d33c16166 108
+examples/spreadsheet/wrap_openpyxl.py
+  s_9427114e2fe303::t_2628d72d56d55e 137
+  s_9427114e2fe303::t_f5a2a9b40134a9 8-11
+  s_9427114e2fe303::t_4960b6da2448fc 24-40
+  s_9427114e2fe303::t_68b58dea6f718f 103-136,138-139,141
+  s_9427114e2fe303::t_798d30c9508d0c 140
+examples/spreadsheet/sandbox_code.py
+  s_9427114e2fe303::t_4a0c7d33c16166 39-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "75a595f2cc5dea40496c5bd1878749cec5068396",
+  "prompts": {},
+  "sessions": {
+    "s_9427114e2fe303": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eaeeac13-786e-4241-b8b9-87efa1ad9450",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
