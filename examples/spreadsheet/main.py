@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from document import open_document
+from wrap_openpyxl import open_document
 
 from pydantic_monty import Monty, MontyClassProxy
 

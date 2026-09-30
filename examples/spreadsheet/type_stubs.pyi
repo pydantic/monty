@@ -24,7 +24,6 @@ class Worksheet:
     max_row: int
     min_column: int
     max_column: int
-    values: list[list[CellValue]]
 
     def cell(self, row: int, column: int, value: CellValue = None) -> Cell:
         """Returns the cell at `row`, `column` (both 1-based), setting its value if one is given."""

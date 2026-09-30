@@ -26,14 +26,14 @@ Row {'date': datetime.date(2026, 7, 19), 'region': 'South', 'product': 'Widget',
 
 ## How the document is confined
 
-`document.py` wraps the real `Workbook`, `Worksheet` and `Cell` in `ClassInstance` policies.
+`wrap_openpyxl.py` wraps the real `Workbook`, `Worksheet` and `Cell` in `ClassInstance` policies.
 Every policy defaults to nothing, so the sandbox has only what is listed:
 
 - `Workbook`
     - attributes: `sheetnames`, `worksheets`, `active`
     - methods: `create_sheet`, `remove`, `save`
 - `Worksheet`
-    - attributes: `title`, `dimensions`, `min_row`, `max_row`, `min_column`, `max_column`, `values`
+    - attributes: `title`, `dimensions`, `min_row`, `max_row`, `min_column`, `max_column`
     - methods: `cell`, `append`, `iter_rows`, `iter_cols`
 - `Cell`
     - attributes: `coordinate`, `row`, `column`, `column_letter`, `value`, `data_type`, `number_format`, `is_date`
@@ -45,12 +45,16 @@ The rest of the confinement:
     `Workbook.save(filename)` is never called with a value from the sandbox.
 - `openpyxl` is not importable in the sandbox, so there is no `load_workbook`, and `Worksheet.parent`, styles, images
     and charts are not exposed.
-- `convert_value` wraps each worksheet and cell a call returns, and turns the generators `iter_rows`, `iter_cols` and
-    `values` return into lists.
+- `convert_value` wraps each worksheet and cell a call returns, and turns the generators `iter_rows` and `iter_cols`
+    return into lists.
 - `openpyxl` allocates a cell for every coordinate it is asked about, which the sandbox's `max_memory` does not count.
-    `WorksheetWrapper.call_method` refuses row and column indexes beyond `MAX_ROWS` and `MAX_COLUMNS`, and
-    `DocumentWrapper` refuses more than `MAX_SHEETS` worksheets.
+    `WorksheetWrapper.call_method` refuses row and column indexes beyond `MAX_ROWS` and `MAX_COLUMNS`, including the
+    keys of a dict passed to `append`, and an `iter_rows` or `iter_cols` call whose bounds cover more than `MAX_CELLS`.
+    `DocumentWrapper` refuses to grow the document past `MAX_SHEETS` worksheets.
     Each call suspends the sandbox, so `max_suspensions` bounds the number of calls.
+- These limits are illustrative, and only bound what sandbox code asks for: the loaded file sets the sheet's own
+    extent, which the default bounds of `iter_rows` and `iter_cols` follow.
+    A production host must choose limits for its own workload.
 
 `type_stubs.pyi` declares the same surface for the type checker, so code that calls `wb.save('other.xlsx')` fails
 before it runs.
@@ -59,7 +63,7 @@ before it runs.
 
 - Subscripting is not dispatched to host objects: use `ws.cell(row, column)` for `ws['A1']`, and `wb.worksheets` or
     `wb.sheetnames` for `wb['Orders']`.
-- A cell is a snapshot taken when it crossed.
+- A cell is a snapshot taken when it crossed, and a merged cell has only `coordinate`, `row`, `column` and `value`.
     Write with `ws.cell(row, column, value)` or `ws.append(...)`; assigning `cell.value` changes the sandbox's copy only.
 - Worksheet attributes are lazy, so `ws.max_row` reflects rows the sandbox has appended.
 - Prefer `iter_rows(values_only=True)`: without it every cell crosses as its own host object, which the session keeps

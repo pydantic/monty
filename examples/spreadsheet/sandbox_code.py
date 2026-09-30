@@ -36,6 +36,8 @@ for number, line in enumerate(lines[header + 1 :], start=header + 2):
         continue
     elif not isinstance(date, datetime.datetime):
         raise ValueError(f'row {number}: expected a date in column A, got {date!r}')
+    elif any(value is None for value in line):
+        raise ValueError(f'row {number}: missing values')
 
     row = Row(
         date=date.date(),

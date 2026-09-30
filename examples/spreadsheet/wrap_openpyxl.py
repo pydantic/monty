@@ -5,6 +5,10 @@ in `ClassInstance` policies, so sandbox code uses the `openpyxl` API it already
 knows. What keeps it to one document is what the policies leave out: no
 `load_workbook`, no `parent`, no styles or images, and a `save()` that takes no
 filename.
+
+The limits below are illustrative. `openpyxl` runs on the host, outside the
+sandbox's `max_memory`, so a production host must choose limits for its own
+workload, and consider what the loaded file itself may contain.
 """
 
 from __future__ import annotations
@@ -17,20 +21,23 @@ from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
+from openpyxl.utils import column_index_from_string
 from openpyxl.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
 from pydantic_monty import ClassInstance
 
-__all__ = 'MAX_COLUMNS', 'MAX_ROWS', 'MAX_SHEETS', 'DocumentWrapper', 'open_document'
+__all__ = 'MAX_CELLS', 'MAX_COLUMNS', 'MAX_ROWS', 'MAX_SHEETS', 'DocumentWrapper', 'open_document'
 
 MAX_ROWS = 10_000
 """Highest row index sandbox code may address; `openpyxl` allocates a cell for
 every coordinate it is asked about, so the sheet's own 1,048,576 is too many."""
 MAX_COLUMNS = 200
 """Highest column index sandbox code may address."""
+MAX_CELLS = 100_000
+"""Most cells one `iter_rows` or `iter_cols` call may materialize on the host."""
 MAX_SHEETS = 20
-"""Most worksheets the document may hold."""
+"""Most worksheets sandbox code may grow the document to."""
 
 ROW_ARGS = frozenset({'row', 'min_row', 'max_row'})
 COLUMN_ARGS = frozenset({'column', 'min_col', 'max_col'})
@@ -93,7 +100,8 @@ class WorksheetWrapper(SpreadsheetWrapper):
     value: Worksheet
 
     def __post_init__(self) -> None:
-        self.lazy_attrs = {'title', 'dimensions', 'min_row', 'max_row', 'min_column', 'max_column', 'values'}
+        # `values` is left out: it walks the whole sheet with no bounds to check
+        self.lazy_attrs = {'title', 'dimensions', 'min_row', 'max_row', 'min_column', 'max_column'}
         self.allowed_methods = WORKSHEET_METHODS
         super().__post_init__()
 
@@ -105,8 +113,9 @@ class WorksheetWrapper(SpreadsheetWrapper):
 
     def check_bounds(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
         """Raises `ValueError` for a call that would grow the sheet past
-        `MAX_ROWS` x `MAX_COLUMNS`. Arguments are bound to the method's own
-        signature, so a positional index is checked like a keyword one."""
+        `MAX_ROWS` x `MAX_COLUMNS`, or read more than `MAX_CELLS` at once.
+        Arguments are bound to the method's own signature, so a positional
+        index is checked like a keyword one."""
         arguments = signature(getattr(self.value, name)).bind(*args, **kwargs).arguments
         for arg_name, arg_value in arguments.items():
             limit = MAX_ROWS if arg_name in ROW_ARGS else MAX_COLUMNS if arg_name in COLUMN_ARGS else None
@@ -114,9 +123,22 @@ class WorksheetWrapper(SpreadsheetWrapper):
                 if not isinstance(arg_value, int) or arg_value > limit:
                     raise ValueError(f'{name}() {arg_name}={arg_value!r} is not an integer up to {limit}')
         if name == 'append':
-            row = list(arguments['iterable'])
-            if self.value.max_row >= MAX_ROWS or len(row) > MAX_COLUMNS:
-                raise ValueError(f'append() would grow the sheet beyond {MAX_ROWS} rows x {MAX_COLUMNS} columns')
+            self.check_append(arguments['iterable'])
+        elif name in {'iter_rows', 'iter_cols'}:
+            # an omitted bound defaults to the sheet's own extent, which the loaded file decides
+            rows = (arguments.get('max_row') or self.value.max_row) - (arguments.get('min_row') or 1) + 1
+            columns = (arguments.get('max_col') or self.value.max_column) - (arguments.get('min_col') or 1) + 1
+            if rows * columns > MAX_CELLS:
+                raise ValueError(f'{name}() would read {rows} rows x {columns} columns, more than {MAX_CELLS} cells')
+
+    def check_append(self, row: Any) -> None:
+        """A dict row addresses columns by index or letter, so its keys are the
+        columns it would allocate; a sequence row fills columns from the first."""
+        columns: list[Any] = [len(row)]
+        if isinstance(row, dict):
+            columns = [column_index_from_string(key) if isinstance(key, str) else key for key in row]  # pyright: ignore[reportUnknownVariableType]
+        if self.value.max_row >= MAX_ROWS or any(not isinstance(c, int) or c > MAX_COLUMNS for c in columns):
+            raise ValueError(f'append() would grow the sheet beyond {MAX_ROWS} rows x {MAX_COLUMNS} columns')
 
 
 def cell_wrapper(cell: Cell | MergedCell) -> ClassInstance:
