@@ -1,12 +1,15 @@
 use std::mem;
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, DictPairs, ExcType, MontyClassInstance, MontyClassType, MontyObject, MontyUuid};
+use monty_types::{
+    CompileOptions, ExcType, MontyObject, MontyUuid,
+    unstable::{self, MontyNode},
+};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]
 fn repeat_exec() {
-    let ex = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
@@ -17,9 +20,31 @@ fn repeat_exec() {
     assert_eq!(int_value, 3);
 }
 
+/// Shared module code must remain usable as clones independently append runtime functions and literals.
+#[test]
+fn cloned_runners_compile_independently() {
+    let mut runner = MontyRun::new(
+        "exec(source)\nresult()".to_owned(),
+        "test.py",
+        vec!["source".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let mut cloned = runner.clone();
+        for (runner, text) in [(&mut runner, "original"), (&mut cloned, "cloned")] {
+            let source = format!("def result():\n    return {text:?}");
+            assert_eq!(
+                runner.run_no_limits(vec![MontyObject::string(source)]).unwrap(),
+                MontyObject::string(text.to_owned())
+            );
+        }
+    }
+}
+
 #[test]
 fn test_get_interned_string() {
-    let ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: String = r.as_ref().try_into().unwrap();
@@ -34,7 +59,7 @@ fn test_get_interned_string() {
 /// to the host and must fail before the call escapes the formatter.
 #[test]
 fn str_format_os_attribute_reports_suspension_limit() {
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "import os\n'{0.environ}'.format(os)".to_owned(),
         "test.py",
         vec![],
@@ -52,23 +77,16 @@ fn str_format_os_attribute_reports_suspension_limit() {
 /// This exercises the `FrameExit::MethodCall` path in `frame_exit_to_object`.
 #[test]
 fn class_instance_method_call_in_standard_mode_errors() {
-    let point = MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: MontyClassType {
-            name: "Point".to_string(),
-            id: MontyUuid::from_u128(1),
-            host_defined: true,
-            is_dataclass: true,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(2),
-        attrs: vec![
-            (MontyObject::String("x".to_string()), MontyObject::Int(1)),
-            (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-        ]
-        .into(),
-    }));
+    let point = MontyObject::class_instance(
+        MontyObject::class_type("Point".to_string(), MontyUuid::from_u128(1), true, true, []),
+        MontyUuid::from_u128(2),
+        vec![
+            (MontyObject::string("x".to_string()), MontyObject::int(1)),
+            (MontyObject::string("y".to_string()), MontyObject::int(2)),
+        ],
+    );
 
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         "point.sum()".to_owned(),
         "test.py",
         vec!["point".to_string()],
@@ -115,7 +133,7 @@ fn subscript_augassign_matmul_reports_not_supported() {
 #[test]
 fn multiline_preview_mixed_indentation_not_dedented() {
     let code = "if True:\n    class C:\n        x = (1 /\n\t0)";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -132,7 +150,7 @@ fn multiline_preview_mixed_indentation_not_dedented() {
 #[test]
 fn external_function_as_init_raises_not_implemented() {
     let code = "class Foo:\n    __init__ = ext_fn\n\nFoo()";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -140,10 +158,7 @@ fn external_function_as_init_raises_not_implemented() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -159,7 +174,7 @@ fn external_function_as_init_raises_not_implemented() {
 #[test]
 fn external_function_in_reduce_raises_not_implemented() {
     let code = "import functools\n\nfunctools.reduce(ext_fn, [1, 2, 3])";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -167,14 +182,36 @@ fn external_function_in_reduce_raises_not_implemented() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Traceback (most recent call last):\n  File \"test.py\", line 3, in <module>\n    functools.reduce(ext_fn, [1, 2, 3])\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nNotImplementedError: reduce(): external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
+/// A `__deepcopy__` reaching an external function cannot suspend either: the
+/// hook runs through `evaluate_function` like any other dunder, so the copy
+/// raises `NotImplementedError` at the `ext_fn()` call site inside the hook
+/// (documented in `limitations/copy.md`). Rust-side for the same reason as the
+/// tests above: on CPython the external is an ordinary function and the copy
+/// would succeed.
+#[test]
+fn external_function_in_deepcopy_raises_not_implemented() {
+    let code = "import copy\n\n\nclass Foo:\n    def __deepcopy__(self, memo):\n        return ext_fn()\n\n\ncopy.deepcopy(Foo())";
+    let mut ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::function("ext_fn", None)])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 6, in __deepcopy__\n    return ext_fn()\n           ~~~~~~~~\nNotImplementedError: __deepcopy__: external function 'ext_fn' is not yet supported in this context"
     );
 }
 
@@ -187,7 +224,7 @@ fn external_function_in_reduce_raises_not_implemented() {
 #[test]
 fn external_function_in_next_raises_not_implemented() {
     let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -195,10 +232,7 @@ fn external_function_in_next_raises_not_implemented() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -220,7 +254,7 @@ def key_fn(x):
 
 sorted([1, 2, 3], key=key_fn)
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -228,14 +262,11 @@ sorted([1, 2, 3], key=key_fn)
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(3), MontyObject::Int(2), MontyObject::Int(1)])
+        MontyObject::list([MontyObject::int(3), MontyObject::int(2), MontyObject::int(1)])
     );
 }
 
@@ -257,7 +288,7 @@ except NotImplementedError:
 seen.append('after')
 seen
 ";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -265,17 +296,14 @@ seen
     )
     .unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![
-            MontyObject::Int(1),
-            MontyObject::String("caught".to_owned()),
-            MontyObject::String("after".to_owned()),
+        MontyObject::list([
+            MontyObject::int(1),
+            MontyObject::string("caught".to_owned()),
+            MontyObject::string("after".to_owned()),
         ])
     );
 }
@@ -284,7 +312,7 @@ seen
 #[test]
 fn not_implemented_in_list_sort_key_names_sort() {
     let code = "[1, 2].sort(key=lambda x: ext_fn())";
-    let ex = MontyRun::new(
+    let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
@@ -292,10 +320,7 @@ fn not_implemented_in_list_sort_key_names_sort() {
     )
     .unwrap();
     let err = ex
-        .run_no_limits(vec![MontyObject::Function {
-            name: "ext_fn".to_owned(),
-            docstring: None,
-        }])
+        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -310,24 +335,22 @@ fn not_implemented_in_list_sort_key_names_sort() {
 /// function and the call would succeed.
 ///
 /// Every call site is covered — the predicate helper shared by `takewhile`,
-/// `dropwhile` and `filterfalse`, plus `starmap` and `accumulate`, which each
-/// call their callable themselves and so name themselves in the error.
-/// `accumulate` needs two items, since the first is yielded untouched.
+/// `dropwhile` and `filterfalse`, plus `starmap`, `accumulate` and `groupby`,
+/// which each call their callable themselves and so name themselves in the
+/// error. `accumulate` needs two items, since the first is yielded untouched.
 #[test]
 fn external_function_as_itertools_callable_raises_not_implemented() {
     for (call, adaptor) in [
         ("itertools.takewhile(ext_fn, [1])", "takewhile"),
         ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
         ("itertools.accumulate([1, 2], ext_fn)", "accumulate"),
+        ("itertools.groupby([1], ext_fn)", "groupby"),
     ] {
         let expr = format!("list({call})");
         let code = format!("import itertools\n\n{expr}");
-        let ex = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
+        let mut ex = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
         let err = ex
-            .run_no_limits(vec![MontyObject::Function {
-                name: "ext_fn".to_owned(),
-                docstring: None,
-            }])
+            .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
             .unwrap_err();
         let carets = "~".repeat(expr.len());
         assert_eq!(
@@ -346,7 +369,7 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
 #[test]
 fn dynamic_type_with_bases_raises_type_error() {
     let code = "type('A', (int,), {})";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -363,7 +386,7 @@ fn dynamic_type_with_bases_raises_type_error() {
 #[test]
 fn dynamic_type_with_non_string_key_raises_type_error() {
     let code = "type('A', (), {1: 'one'})";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -379,58 +402,25 @@ fn dynamic_type_with_non_string_key_raises_type_error() {
 
 /// Structured `ClassInstance` a sandbox `Evil()` instance converts to.
 fn evil_instance() -> MontyObject {
-    MontyObject::ClassInstance(Box::new(MontyClassInstance {
-        class_type: MontyClassType {
-            name: "Evil".to_owned(),
-            id: MontyUuid::from_u128(0xE0),
-            host_defined: false,
-            is_dataclass: false,
-            attrs: DictPairs::default(),
-        },
-        instance_id: MontyUuid::from_u128(0xE1),
-        attrs: vec![].into(),
-    }))
+    MontyObject::class_instance(
+        MontyObject::class_type("Evil".to_owned(), MontyUuid::from_u128(0xE0), false, false, []),
+        MontyUuid::from_u128(0xE1),
+        vec![],
+    )
 }
 
 /// Replaces the worker-generated (random) class/instance uuids in `obj` with the
 /// deterministic ids [`evil_instance`] uses, so structural comparison works.
 fn normalize_instance_uuids(obj: &mut MontyObject) {
-    match obj {
-        MontyObject::ClassInstance(instance) => {
-            let MontyClassInstance {
-                class_type,
-                instance_id,
-                attrs,
-            } = instance.as_mut();
-            class_type.id = MontyUuid::from_u128(0xE0);
-            *instance_id = MontyUuid::from_u128(0xE1);
-            let pairs = mem::replace(attrs, DictPairs::from(vec![]))
-                .into_iter()
-                .map(|(mut key, mut value)| {
-                    normalize_instance_uuids(&mut key);
-                    normalize_instance_uuids(&mut value);
-                    (key, value)
-                })
-                .collect::<Vec<_>>();
-            *attrs = pairs.into();
+    let (mut graph, root) = unstable::into_graph_parts(mem::replace(obj, MontyObject::none()));
+    for node in graph.nodes_mut() {
+        match node {
+            MontyNode::ClassType(class) => class.id = MontyUuid::from_u128(0xE0),
+            MontyNode::ClassInstance { instance_id, .. } => *instance_id = MontyUuid::from_u128(0xE1),
+            _ => {}
         }
-        MontyObject::List(items)
-        | MontyObject::Tuple(items)
-        | MontyObject::Set(items)
-        | MontyObject::FrozenSet(items) => items.iter_mut().for_each(normalize_instance_uuids),
-        MontyObject::Dict(pairs) => {
-            let normalized = mem::replace(pairs, DictPairs::from(vec![]))
-                .into_iter()
-                .map(|(mut key, mut value)| {
-                    normalize_instance_uuids(&mut key);
-                    normalize_instance_uuids(&mut value);
-                    (key, value)
-                })
-                .collect::<Vec<_>>();
-            *pairs = normalized.into();
-        }
-        _ => {}
     }
+    *obj = unstable::object_from_graph(graph, root).unwrap();
 }
 
 #[test]
@@ -443,12 +433,12 @@ class Evil:
 
 lst = [Evil(), 1, 2]
 lst";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut result = ex.run_no_limits(vec![]).unwrap();
     normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
-        MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::list([evil_instance(), MontyObject::int(1), MontyObject::int(2)])
     );
 }
 
@@ -462,18 +452,15 @@ class Evil:
 
 d = {'k': Evil(), 'a': 1}
 d";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut result = ex.run_no_limits(vec![]).unwrap();
     normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
-        MontyObject::Dict(
-            vec![
-                (MontyObject::String("k".to_owned()), evil_instance()),
-                (MontyObject::String("a".to_owned()), MontyObject::Int(1)),
-            ]
-            .into()
-        )
+        MontyObject::dict(vec![
+            (MontyObject::string("k".to_owned()), evil_instance()),
+            (MontyObject::string("a".to_owned()), MontyObject::int(1)),
+        ])
     );
 }
 
@@ -489,11 +476,80 @@ class Evil:
 
 d = deque([Evil(), 1, 2])
 d";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut result = ex.run_no_limits(vec![]).unwrap();
     normalize_instance_uuids(&mut result);
     assert_eq!(
         result,
-        MontyObject::List(vec![evil_instance(), MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::list([evil_instance(), MontyObject::int(1), MontyObject::int(2)])
+    );
+}
+
+/// A `groupby` key comparison that steps the same `groupby` and consumes the
+/// pair it was comparing must not leave the skip loop with nothing to open a
+/// group from.
+///
+/// Rust-side because CPython segfaults on this program (its `_grouper` reaches
+/// through a parent whose state the comparison invalidated), so there is no
+/// shared behaviour for a `test_cases` fixture to assert. Monty reads the next
+/// pair instead, as CPython's own loop condition intends, and the run finishes
+/// with an ordinary `StopIteration` the program can catch.
+#[test]
+fn reentrant_groupby_key_comparison_does_not_panic() {
+    let code = "import itertools
+
+depth = [0]
+holder = [None]
+
+class Key:
+    def __eq__(self, other):
+        if depth[0] == 0 and holder[0] is not None:
+            depth[0] += 1
+            try:
+                key, group = next(holder[0])
+                next(group, None)
+            except StopIteration:
+                pass
+            depth[0] -= 1
+        return False
+
+grouped = itertools.groupby([Key(), Key(), Key(), Key(), Key()])
+holder[0] = grouped
+seen = 0
+try:
+    while True:
+        next(grouped)
+        seen += 1
+except StopIteration:
+    pass
+seen";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(ex.run_no_limits(vec![]).unwrap(), MontyObject::int(1));
+}
+
+/// Exporting a `functools.partial` runs the `__repr__` of its bound instance,
+/// which can free an already-exported object; a later allocation reusing its
+/// heap slot must export as itself, not as the freed object's node.
+#[test]
+fn export_pins_memoized_objects_across_a_user_repr() {
+    let code = "import functools
+
+class Holder:
+    pass
+
+class Mutator:
+    def __repr__(self):
+        inner.clear()
+        holder.x = [9]
+        return 'm'
+
+inner = [[1, 2, 3]]
+holder = Holder()
+p = functools.partial(len, Mutator())
+[inner, p, holder]";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        ex.run_no_limits(vec![]).unwrap().py_repr(),
+        "[[[1, 2, 3]], Repr('functools.partial(<built-in function len>, m)'), Holder(x=[9])]"
     );
 }

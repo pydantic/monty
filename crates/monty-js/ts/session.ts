@@ -9,9 +9,18 @@
 // external future so other sandbox tasks keep executing, and results are
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
+import { context as ContextAPI, type Context } from '@opentelemetry/api'
+
 import type { NativeSession } from '../native-addon.js'
-import { bindPrintCallback, runWithCallbackContext } from './callbackContext.js'
-import { AttrNotExposed, attributeErrorMessage, InstanceStore, prepare, restore } from './classInstance.js'
+import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
+import {
+  AttrNotExposed,
+  attributeErrorMessage,
+  InstanceStore,
+  prepare,
+  restore,
+  type WalkMemo,
+} from './classInstance.js'
 import {
   MontyCrashedError,
   MontyError,
@@ -19,20 +28,22 @@ import {
   MontyTypingError,
   notCallableMessage,
   ProtocolError,
+  type SourceRange,
 } from './errors.js'
 import { PYTHON_EXC_NAMES } from './errors.js'
 import { mountsToNative } from './mount.js'
 import type { MountDir } from './mountDir.js'
-import type {
-  FunctionCallTurn,
-  LoadedTurn,
-  NameLookupTurn,
-  NativeFutureResult,
-  NativeTurn,
-  OkTurn,
-  NotMountedTurn,
-  OsCallTurn,
-  ResolveFuturesTurn,
+import {
+  type FunctionCallTurn,
+  type LoadedTurn,
+  type NameLookupTurn,
+  type NativeFutureResult,
+  type NativeTurn,
+  type OkTurn,
+  type NotMountedTurn,
+  type OsCallTurn,
+  type ResolveFuturesTurn,
+  osCallAcceptsFuture,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
 
@@ -158,12 +169,15 @@ interface PendingFuture {
 }
 
 /**
- * One worker process dedicated to one REPL session; created by
+ * One worker dedicated to one REPL session; created by
  * [`Monty.checkout`]. Session state (globals, functions) persists across
  * `feedRun` calls. Close it (or `await using`) to return the worker to the
  * pool.
  */
 export class MontySession {
+  /** Stable worker identity within its pool, retained during turns and after session close. */
+  readonly workerId: number | undefined
+
   private readonly native: NativeSession
   /** Set once the session is unusable: crashed worker or protocol error. */
   private broken: Error | null = null
@@ -175,16 +189,21 @@ export class MontySession {
    *  wrapper sent through any boundary of this session lives here so method
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
+  /** Host results remain available until delivered or the session ends. */
+  private readonly futures = new Map<number, PendingFuture>()
 
   /** @internal — sessions are created by `Monty.checkout`. */
   constructor(native: NativeSession) {
     this.native = native
+    this.workerId = native.workerId ?? undefined
   }
 
   /**
    * Executes one snippet in the worker, driving external function calls
    * (which may return promises), OS callbacks, and print callbacks in this
    * process. Returns the snippet's trailing expression value.
+   * Unawaited host futures remain available to later feeds in this session;
+   * new calls use the current feed's handlers.
    *
    * Node callbacks preserve the caller's async context. With telemetry enabled,
    * spans created inside callbacks nest under the corresponding Monty operation.
@@ -194,9 +213,7 @@ export class MontySession {
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
-    // A fresh answerer (and its pending-future map) per feed, so promises the
-    // worker never asks about again cannot accumulate across feeds.
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(this.native, this.instances, this.futures, options.externalLookup, options.os)
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -234,7 +251,7 @@ export class MontySession {
         // A handler that throws instead of answering leaves the worker
         // suspended, awaiting a resume that will never come — the session
         // cannot be trusted any more.
-        this.broken ??= err instanceof Error ? err : new Error(String(err))
+        this.poison(this.broken ?? (err instanceof Error ? err : new Error(String(err))))
         throw err
       }
     }
@@ -284,6 +301,11 @@ export class MontySession {
    * Valid only on a fresh session, before any feed or load (it replaces the
    * whole session); throws otherwise. The dump restores its own resource limits
    * and type-check state. Throws if the dump is actually a suspended snapshot.
+   *
+   * Only load unmodified bytes from a trusted, compatible Monty producer.
+   * The caller must establish provenance and integrity; Monty does not authenticate
+   * snapshots. Invalid snapshots have no correctness or availability guarantees.
+   * Successful loading does not establish validity.
    */
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
@@ -308,7 +330,8 @@ export class MontySession {
   /**
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
-   * [`loadSession`] for a dump taken between feeds.
+   * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
+   * also apply here.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
@@ -363,7 +386,7 @@ export class MontySession {
    *  captured `externalLookup` / `os` back `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(this.native, this.instances, this.futures, options.externalLookup, options.os)
     return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
@@ -422,12 +445,14 @@ export class MontySession {
   /**
    * Ends the session and returns the worker to the pool. A crashed or
    * poisoned worker has already been discarded and replaced.
+   * Releases tracked results but does not cancel host promises.
    */
   async close(): Promise<void> {
     if (this.closed) {
       return
     }
     this.closed = true
+    this.futures.clear()
     await this.native.finish()
   }
 
@@ -438,6 +463,7 @@ export class MontySession {
   /** Poisons the session over a worker death or protocol violation. */
   private poison(err: Error): Error {
     this.broken = err
+    this.futures.clear()
     return err
   }
 
@@ -455,19 +481,17 @@ export class MontySession {
  * Answers one suspension turn from a captured `externalLookup` / `os`, tracking
  * promise-returning externals as pending futures. Shared by
  * [`MontySession.feedRun`]'s drive loop and [`SnapshotDriver`]'s `resumeAuto`
- * so both resolve suspensions identically. Built fresh per feed / per snapshot
- * chain — its `futures` map is scoped to that run, never leaking across feeds.
+ * so both resolve suspensions identically. Handlers are captured per feed;
+ * pending results are shared across the owning session's feeds.
  *
  * `answer` deliberately does **not** catch: a handler that throws leaves the
  * worker suspended, so the caller poisons the session and rethrows.
  */
 class TurnAnswerer {
-  /** Pending async external calls, by call id. */
-  readonly futures = new Map<number, PendingFuture>()
-
   constructor(
     private readonly native: NativeSession,
     private readonly instances: InstanceStore,
+    readonly futures: Map<number, PendingFuture>,
     readonly externalLookup: Record<string, unknown> | undefined,
     readonly os: OsCallback | undefined,
   ) {}
@@ -545,20 +569,15 @@ class TurnAnswerer {
     const fn = entry as ExternalFunction
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      returned = fn(...(buildCallArgs(args, restoreKwargPairs(call.kwargs, this.instances)) as never[]))
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = fn(...(buildCallArgs(args, kwargs) as never[]))
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
-    if (isThenable(returned)) {
-      if (call.allowEagerAwait) {
-        return this.answerEagerCoroutine(call.callId, returned, onPrint)
-      }
-      this.registerFuture(call.callId, Promise.resolve(returned))
-      return this.native.resumeFuture(onPrint)
-    }
-    return this.resumeWithValue(returned, onPrint)
+    return isThenable(returned)
+      ? this.answerAwaitedCall(call, returned, onPrint)
+      : this.resumeWithValue(returned, onPrint)
   }
 
   /**
@@ -589,9 +608,8 @@ class TurnAnswerer {
     }
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      const kwargs = kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances))
-      returned = wrapper.callMethod(call.functionName, args, kwargs)
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = wrapper.callMethod(call.functionName, args, kwargsToRecord(kwargs))
     } catch (err) {
       if (err instanceof AttrNotExposed) {
         return this.native.resumeError('AttributeError', err.message, onPrint)
@@ -599,14 +617,9 @@ class TurnAnswerer {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
-    if (isThenable(returned)) {
-      if (call.allowEagerAwait) {
-        return this.answerEagerCoroutine(call.callId, returned, onPrint)
-      }
-      this.registerFuture(call.callId, Promise.resolve(returned))
-      return this.native.resumeFuture(onPrint)
-    }
-    return this.resumeWithValue(returned, onPrint)
+    return isThenable(returned)
+      ? this.answerAwaitedCall(call, returned, onPrint)
+      : this.resumeWithValue(returned, onPrint)
   }
 
   /**
@@ -657,10 +670,17 @@ class TurnAnswerer {
   }
 
   /**
-   * Answers an OS call: the feed's mounts get first refusal, then the `os`
-   * callback, then the sandbox's own no-handler default.
+   * Handles system sleeps locally; other calls try mounts, `os`, then the sandbox's no-handler default.
    */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
+    const wait = this.systemSleepFor(call)
+    if (wait !== null) {
+      if (osCallAcceptsFuture(call.functionName)) {
+        return await this.answerAwaitedCall(call, wait, onPrint)
+      }
+      await wait
+      return await this.resumeWithValue(null, onPrint)
+    }
     const mounted = (await this.native.resumeFromMounts(onPrint)) as NativeTurn | NotMountedTurn
     if (mounted.kind !== 'notMounted') {
       return mounted
@@ -670,9 +690,14 @@ class TurnAnswerer {
     }
     let returned: unknown
     try {
-      const args = restoreValues(call.args, this.instances)
-      returned = this.os(call.functionName, args, kwargsToRecord(restoreKwargPairs(call.kwargs, this.instances)))
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = this.os(call.functionName, args, kwargsToRecord(kwargs))
       if (isThenable(returned)) {
+        if (osCallAcceptsFuture(call.functionName)) {
+          return await this.answerAwaitedCall(call, returned, onPrint)
+        }
+        // The sandbox does not await any other OS call, so a future would be
+        // an error: the wait happens here and only this session is held up.
         returned = await returned
       }
     } catch (err) {
@@ -683,6 +708,30 @@ class TurnAnswerer {
       return await this.native.resumeNotHandled(onPrint)
     }
     return await this.resumeWithValue(returned, onPrint)
+  }
+
+  /**
+   * Uses the call's sleep marker, so restored sessions need no local copy of their sleep policy.
+   */
+  private systemSleepFor(call: OsCallTurn): Promise<void> | null {
+    return call.systemSleepSecs === undefined ? null : sleepMs(call.systemSleepSecs * 1000)
+  }
+
+  /**
+   * Answers a call the sandbox awaits with the promise a host callback
+   * returned: settled here when the sandbox has nothing else to run, otherwise
+   * registered as a future so its other tasks run meanwhile.
+   */
+  private answerAwaitedCall(
+    call: { callId: number; allowEagerAwait?: boolean },
+    promise: PromiseLike<unknown>,
+    onPrint: PrintCallback,
+  ): Promise<object> {
+    if (call.allowEagerAwait) {
+      return this.answerEagerCoroutine(call.callId, promise, onPrint)
+    }
+    this.registerFuture(call.callId, Promise.resolve(promise))
+    return this.native.resumeFuture(onPrint)
   }
 
   /** Settles an eligible coroutine at its call suspension, including conversion errors. */
@@ -779,7 +828,11 @@ class PrintTarget {
       return
     }
     if (this.callback === undefined) {
-      ;(stream === 'stdout' ? process.stdout : process.stderr).write(text)
+      if (typeof process !== 'undefined' && process.stdout && process.stderr) {
+        ;(stream === 'stdout' ? process.stdout : process.stderr).write(text)
+      } else {
+        ;(stream === 'stdout' ? console.log : console.error)(text)
+      }
       return
     }
     try {
@@ -807,6 +860,9 @@ class PrintTarget {
  * produces, so they all answer the same worker with the same print sink.
  */
 class SnapshotDriver {
+  /** Captured before the first feed/load await and shared by the snapshot chain, never serialized. */
+  readonly traceBaseContext = ContextAPI.active()
+
   /** Exposed so the session's first turn can stream prints through it. */
   get onPrint(): PrintCallback {
     return bindPrintCallback(this.printTarget.write.bind(this.printTarget))
@@ -929,7 +985,9 @@ class SnapshotDriver {
   }
 
   async resolveFutures(results: NativeFutureResult[]): Promise<Snapshot> {
-    return this.advance((await this.native.resolveFutures(results, this.onPrint)) as NativeTurn)
+    const turn = (await this.native.resolveFutures(results, this.onPrint)) as NativeTurn
+    for (const result of results) this.answerer.futures.delete(result.callId)
+    return this.advance(turn)
   }
 
   async dump(): Promise<Buffer> {
@@ -937,14 +995,38 @@ class SnapshotDriver {
   }
 }
 
-/** Marks a snapshot single-use: each may be resumed at most once. */
+/** Shares tracing context access and the single-resume check across snapshot kinds. */
 class SingleUse {
   private used = false
+
+  /** Retains the suspension's telemetry parent until the snapshot is resumed. */
+  protected constructor(
+    private readonly callbackSpanKey: string | undefined,
+    private readonly traceBaseContext: Context,
+  ) {}
+
+  /**
+   * Returns the suspension's OTel context without activating it or resuming execution.
+   * Preserves context entries captured at `feedStart` / `loadSnapshot`; without Monty tracing,
+   * returns that captured context unchanged. Access after resume throws; previously returned
+   * contexts remain usable but do not keep the suspension span open.
+   */
+  traceContext(): Context {
+    this.ensureUnused()
+    return getCallbackContext(this.callbackSpanKey, this.traceBaseContext)
+  }
+
+  /** Consumes the snapshot's single resume, independently of its tracing context. */
   protected claim(): void {
+    this.ensureUnused()
+    this.used = true
+  }
+
+  /** Rejects operations on a suspension the caller has already answered. */
+  private ensureUnused(): void {
     if (this.used) {
       throw new Error('snapshot has already been resumed')
     }
-    this.used = true
   }
 }
 
@@ -967,6 +1049,8 @@ export class FunctionSnapshot extends SingleUse {
    *  instance, or a class type (a classmethod, or `__call__` construction).
    *  The receiver is not in `args`; `null` for plain external calls. */
   readonly objectId: string | null
+  /** Where the call expression is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
@@ -974,13 +1058,15 @@ export class FunctionSnapshot extends SingleUse {
     private readonly turn: FunctionCallTurn | OsCallTurn,
     isOsFunction: boolean,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.functionName = turn.functionName
-    this.args = restoreValues(turn.args, driver.instances)
-    this.kwargs = kwargsToRecord(restoreKwargPairs(turn.kwargs, driver.instances))
+    const [args, kwargs] = restoreCallArgs(turn, driver.instances)
+    this.args = args
+    this.kwargs = kwargsToRecord(kwargs)
     this.callId = turn.callId
     this.isOsFunction = isOsFunction
-    this.allowEagerAwait = turn.kind === 'functionCall' && (turn.allowEagerAwait ?? false)
+    this.allowEagerAwait = turn.allowEagerAwait ?? false
     this.objectId = 'objectId' in turn ? (turn.objectId ?? null) : null
   }
 
@@ -1043,13 +1129,16 @@ export class NameLookupSnapshot extends SingleUse {
    *  instance, or a class type): the receiver's store uuid. `null` for
    *  plain name lookups. */
   readonly objectId: string | null
+  /** Where the name (or attribute access) is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
     private readonly driver: SnapshotDriver,
     private readonly turn: NameLookupTurn,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.variableName = turn.name
     this.objectId = turn.objectId ?? null
   }
@@ -1090,13 +1179,16 @@ export class NameLookupSnapshot extends SingleUse {
 /** A paused execution where every sandbox task is blocked on external futures. */
 export class FutureSnapshot extends SingleUse {
   readonly pendingCallIds: number[]
+  /** Where the main task's blocked `await` is in the source. */
+  readonly position: SourceRange
 
   /** @internal */
   constructor(
     private readonly driver: SnapshotDriver,
     private readonly turn: ResolveFuturesTurn,
   ) {
-    super()
+    super(turn.callbackSpanKey, driver.traceBaseContext)
+    this.position = turn.position
     this.pendingCallIds = turn.pendingCallIds
   }
 
@@ -1122,7 +1214,7 @@ export class FutureSnapshot extends SingleUse {
 
   /**
    * Waits for one or more of the pending promises registered by earlier
-   * `resumeAuto` calls to settle, delivers them, and resolves to the next
+   * automatic calls in this session to settle, delivers them, and resolves to the next
    * snapshot. Throws if there are no tracked promises for these ids — e.g. on a
    * snapshot restored via `loadSnapshot`, whose promises lived in the previous
    * process (resolve those manually with `resume([...])`). Resumes at most once.
@@ -1151,7 +1243,8 @@ function buildCallArgs(args: unknown[], kwargs: [unknown, unknown][]): unknown[]
   return [...args, kwargsToRecord(kwargs)]
 }
 
-/** Prepares each input value for the wire (feed's `inputs` record). */
+/** Prepares each input value for the wire (feed's `inputs` record) with one
+ *  memo, so an object passed under two names is one sandbox object. */
 function prepareInputs(
   inputs: Record<string, unknown> | undefined,
   store: InstanceStore,
@@ -1162,22 +1255,25 @@ function prepareInputs(
   // null prototype so an exotic input name (e.g. `__proto__`) stays a plain
   // property of the rebuilt record
   const prepared: Record<string, unknown> = Object.create(null)
+  const memo: WalkMemo = new Map()
   let changed = false
   for (const [name, value] of Object.entries(inputs)) {
-    prepared[name] = prepare(value, store)
+    prepared[name] = prepare(value, store, memo)
     changed ||= prepared[name] !== value
   }
   return changed ? prepared : inputs
 }
 
-/** Restores each element of a sandbox-produced args array. */
-function restoreValues(values: unknown[], store: InstanceStore): unknown[] {
-  return values.map((value) => restore(value, store))
-}
-
-/** Restores the values of sandbox-produced `[key, value]` kwarg pairs. */
-function restoreKwargPairs(pairs: [unknown, unknown][], store: InstanceStore): [unknown, unknown][] {
-  return pairs.map(([key, value]): [unknown, unknown] => [key, restore(value, store)])
+/** Restores a call's args and the values of its `[key, value]` kwarg pairs
+ *  with one memo, so an object the sandbox passed twice is one host object. */
+function restoreCallArgs(
+  call: { args: unknown[]; kwargs: [unknown, unknown][] },
+  store: InstanceStore,
+): [unknown[], [unknown, unknown][]] {
+  const memo: WalkMemo = new Map()
+  const args = call.args.map((value) => restore(value, store, memo))
+  const kwargs = call.kwargs.map(([key, value]): [unknown, unknown] => [key, restore(value, store, memo)])
+  return [args, kwargs]
 }
 
 /**
@@ -1225,4 +1321,18 @@ function bytesForNative(bytes: Uint8Array): Buffer {
 
 function bufferFrom(bytes: Uint8Array): Buffer {
   return (typeof Buffer === 'undefined' ? bytes : Buffer.from(bytes)) as Buffer
+}
+
+/**
+ * Resolves after `ms` milliseconds. `setTimeout` takes a signed 32-bit
+ * millisecond count, so a longer wait is chained rather than cut short.
+ */
+async function sleepMs(ms: number): Promise<void> {
+  const MAX_TIMEOUT_MS = 2 ** 31 - 1
+  let left = ms
+  while (left > MAX_TIMEOUT_MS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, MAX_TIMEOUT_MS))
+    left -= MAX_TIMEOUT_MS
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, left))
 }

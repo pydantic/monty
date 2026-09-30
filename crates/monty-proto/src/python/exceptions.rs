@@ -2,12 +2,12 @@
 //! exceptions, in both directions.
 //!
 //! `exc_monty_to_py` rebuilds the closest native exception for a sandbox error
-//! surfacing to the host; `exc_py_to_monty`/`exc_to_monty_object` classify a
+//! surfacing to the host; `exc_py_to_monty`/`exc_to_monty_node` classify a
 //! host exception flowing into the sandbox (external-function errors, resumed
 //! snapshots). The Python-facing `MontyError` class hierarchy stays in
 //! `pydantic-monty` — this module only maps values.
 
-use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, MontyObject, UnicodeErrorObject};
+use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, UnicodeErrorObject, unstable::MontyNode};
 use pyo3::{
     PyTypeCheck,
     exceptions::{self},
@@ -107,6 +107,21 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyException::new_err(msg)
             }
         }
+    }
+}
+
+/// The host class for an exception type: the class its instances decode to,
+/// except the three whose instances need a payload, which resolve directly
+/// so the class never degrades to the payload-less `ValueError` fallback.
+pub(super) fn exc_class_to_py(py: Python<'_>, exc_type: ExcType) -> PyResult<Py<PyAny>> {
+    match exc_type {
+        ExcType::JsonDecodeError => get_json_decode_error(py).map(|b| b.clone().unbind()),
+        ExcType::UnicodeDecodeError => Ok(py.get_type::<exceptions::PyUnicodeDecodeError>().into_any().unbind()),
+        ExcType::UnicodeEncodeError => Ok(py.get_type::<exceptions::PyUnicodeEncodeError>().into_any().unbind()),
+        _ => Ok(exc_monty_to_py(py, MontyException::new(exc_type, None))
+            .get_type(py)
+            .into_any()
+            .unbind()),
     }
 }
 
@@ -217,13 +232,13 @@ fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
     extract().map_or(ExcData::None, |data| ExcData::Json(Box::new(data)))
 }
 
-/// Converts a Python exception to Monty's `MontyObject::Exception`.
+/// Converts a Python exception to an exception value node.
 #[must_use]
-pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyObject {
+pub fn exc_to_monty_node(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyNode {
     let exc_type = py_err_to_exc_type(exc);
     let arg = exception_arg(exc);
 
-    MontyObject::Exception { exc_type, arg }
+    MontyNode::Exception { exc_type, arg }
 }
 
 /// Maps a Python exception type to Monty's `ExcType` enum.

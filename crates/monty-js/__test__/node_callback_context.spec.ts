@@ -11,10 +11,10 @@ function runChild(source: string): void {
       `
     import assert from 'node:assert/strict'
     import { AsyncLocalStorage } from 'node:async_hooks'
-    import { context, trace, propagation } from '@opentelemetry/api'
+    import { context, trace, propagation, createContextKey, diag } from '@opentelemetry/api'
     import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
     import { AlwaysOffSampler, BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
-    import { Monty, MontyComplete, instrumentTelemetry, flushTelemetry } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
+    import { Monty, MontyComplete, FunctionSnapshot, NameLookupSnapshot, FutureSnapshot, instrumentTelemetry, flushTelemetry } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
 
     const manager = new AsyncLocalStorageContextManager().enable()
     context.setGlobalContextManager(manager)
@@ -166,6 +166,199 @@ test('callback failures are not retried and do not leak context', () => {
         await second.close()
       } finally { await pool.close(); host.end() }
     }))
+  `)
+})
+
+test.each([
+  ['function', 'callback()', 'call {function_name}'],
+  ['os', "from pathlib import Path\nPath('/file').exists()", 'os call {function}'],
+  ['name', 'missing', 'name lookup {name}'],
+  ['future', 'await callback()', 'resolve futures'],
+])('manual snapshot context: %s', (kind, code, parentName) => {
+  runChild(`
+    instrumentTelemetry({ tracer })
+    const pool = await Monty.create()
+    const session = await pool.checkout()
+    await storage.run('caller', () => tracer.startActiveSpan('host', async host => {
+      try {
+        const baggage = propagation.createBaggage({ request: { value: 'manual' } })
+        const key = createContextKey('custom entry')
+        const feedContext = propagation.setBaggage(context.active(), baggage).setValue(key, 'feed value')
+        let paused = await context.with(feedContext, () => session.feedStart(${JSON.stringify(code)}))
+        if (${JSON.stringify(kind)} === 'future') paused = await paused.resumeFuture()
+        const callerBaggage = propagation.createBaggage({ request: { value: 'caller' } })
+        await context.with(propagation.setBaggage(context.active(), callerBaggage), async () => {
+          const saved = paused.traceContext()
+          assert.equal(saved.getValue(key), 'feed value')
+          assert.equal(propagation.getBaggage(context.active()).getEntry('request').value, 'caller')
+          const suspension = trace.getSpan(saved)
+          assert.notEqual(suspension, host)
+          assert.equal(trace.getSpan(context.active()), host)
+          const result = await context.with(saved, async () => {
+            assert.equal(trace.getSpan(context.active()), suspension)
+            assert.equal(propagation.getBaggage(context.active()).getEntry('request').value, 'manual')
+            return tracer.startActiveSpan('handler', async child => {
+              try {
+                await new Promise(resolve => setTimeout(resolve, 1))
+                assert.equal(trace.getSpan(context.active()), child)
+                assert.equal(storage.getStore(), 'caller')
+                return 42
+              } finally { child.end() }
+            })
+          })
+          assert.equal(trace.getSpan(context.active()), host)
+          assert.equal(suspension.isRecording(), true)
+          assert.throws(() => context.with(saved, () => { throw new Error('handler failed') }), {
+            message: 'handler failed',
+          })
+          await assert.rejects(context.with(saved, async () => {
+            await Promise.resolve()
+            throw new Error('async handler failed')
+          }), { message: 'async handler failed' })
+          assert.equal(trace.getSpan(context.active()), host)
+          const done = paused instanceof NameLookupSnapshot
+            ? await paused.resumeValue(result)
+            : paused instanceof FutureSnapshot
+              ? await paused.resume([{ callId: paused.pendingCallIds[0], value: result }])
+              : await paused.resume(result)
+          assert.equal(done.output, 42)
+          assert.throws(() => paused.traceContext(), { message: 'snapshot has already been resumed' })
+          await flushTelemetry()
+          assert.equal(suspension.isRecording(), false)
+          context.with(saved, () => assert.equal(trace.getSpan(context.active()), suspension))
+          assert.equal(trace.getSpan(context.active()), host)
+        })
+      } finally { host.end() }
+    }))
+    await session.close()
+    await pool.close()
+    await flushTelemetry()
+    const spans = exporter.getFinishedSpans()
+    const handler = spans.find(span => span.name === 'handler')
+    const parent = spans.find(span => span.spanContext().spanId === handler.parentSpanContext.spanId)
+    assert.equal(parent.name, ${JSON.stringify(parentName)})
+  `)
+})
+
+test('manual snapshot contexts stay isolated across concurrent async handlers', () => {
+  runChild(`
+    instrumentTelemetry({ tracer })
+    const pool = await Monty.create({ minProcesses: 2, maxProcesses: 2 })
+    let entered = 0
+    let release
+    const ready = new Promise(resolve => { release = resolve })
+    const parents = await Promise.all([1, 2].map(index => storage.run(index, () =>
+      tracer.startActiveSpan('host ' + index, async host => {
+        const session = await pool.checkout()
+        try {
+          const baggage = propagation.createBaggage({ request: { value: String(index) } })
+          const paused = await context.with(propagation.setBaggage(context.active(), baggage), () => session.feedStart('callback()'))
+          const suspension = trace.getSpan(paused.traceContext())
+          const value = await context.with(paused.traceContext(), async () => {
+            if (++entered === 2) release()
+            await ready
+            assert.equal(propagation.getBaggage(context.active()).getEntry('request').value, String(index))
+            assert.equal(trace.getSpan(context.active()), suspension)
+            assert.equal(storage.getStore(), index)
+            tracer.startActiveSpan('handler ' + index, span => span.end())
+            return index
+          })
+          assert.equal(trace.getSpan(context.active()), host)
+          assert.equal((await paused.resume(value)).output, index)
+          return suspension.spanContext().spanId
+        } finally { await session.close(); host.end() }
+      })
+    )))
+    await pool.close()
+    await flushTelemetry()
+    assert.notEqual(parents[0], parents[1])
+    const spans = exporter.getFinishedSpans()
+    for (const index of [1, 2]) {
+      const handler = spans.find(span => span.name === 'handler ' + index)
+      assert.equal(handler.parentSpanContext.spanId, parents[index - 1])
+    }
+  `)
+})
+
+test.each(['disabled', 'broken-tracer', 'broken-context', 'sampled-out'])('snapshot context fallback: %s', (mode) => {
+  runChild(`
+    const mode = ${JSON.stringify(mode)}
+    const offProvider = new BasicTracerProvider({ sampler: new AlwaysOffSampler() })
+    const offTracer = offProvider.getTracer('not-recording')
+    const warnings = []
+    diag.setLogger({
+      warn: (...args) => warnings.push(args),
+      error() {}, info() {}, debug() {}, verbose() {},
+    })
+    const contextError = new Error('context failed')
+    let callSpan
+    if (mode !== 'disabled') instrumentTelemetry({ tracer: {
+      startSpan(name, ...args) {
+        if (mode === 'broken-tracer') throw new Error('tracer failed')
+        const span = (mode === 'sampled-out' ? offTracer : tracer).startSpan(name, ...args)
+        if (name === 'call {function_name}') callSpan = span
+        return span
+      },
+    } })
+    await tracer.startActiveSpan('host', async host => {
+      const pool = await Monty.create()
+      const session = await pool.checkout()
+      const originalSetSpan = trace.setSpan
+      try {
+        const paused = await session.feedStart('callback()')
+        if (mode === 'broken-context') trace.setSpan = () => { throw contextError }
+        const key = createContextKey('after feed')
+        const saved = context.with(context.active().setValue(key, 'caller'), () => paused.traceContext())
+        assert.deepEqual(warnings, mode === 'broken-context' ? [[
+          'Monty could not compose the snapshot trace context; using the captured context', contextError,
+        ]] : [])
+        assert.equal(saved.getValue(key), undefined)
+        assert.equal(trace.getSpan(saved), mode === 'sampled-out' ? callSpan : host)
+        assert.equal(trace.getSpan(context.active()), host)
+        await context.with(saved, async () => {
+          await Promise.resolve()
+          assert.equal(trace.getSpan(context.active()), mode === 'sampled-out' ? callSpan : host)
+        })
+        assert.equal(trace.getSpan(context.active()), host)
+        if (mode === 'sampled-out') assert.equal(callSpan.isRecording(), false)
+        trace.setSpan = originalSetSpan
+        assert.equal((await paused.resume(42)).output, 42)
+      } finally {
+        trace.setSpan = originalSetSpan
+        diag.disable()
+        await session.close()
+        await pool.close()
+        host.end()
+      }
+    })
+    await offProvider.shutdown()
+  `)
+})
+
+test('restored snapshots expose their new suspension context', () => {
+  runChild(`
+    instrumentTelemetry({ tracer })
+    const pool = await Monty.create()
+    const session = await pool.checkout()
+    const originalBaggage = propagation.createBaggage({ request: { value: 'original' } })
+    const original = await context.with(propagation.setBaggage(context.active(), originalBaggage), () => session.feedStart('callback()'))
+    const originalSpan = trace.getSpan(original.traceContext())
+    const dump = await original.dump()
+    await session.close()
+    const restoredSession = await pool.checkout()
+    const restoredBaggage = propagation.createBaggage({ request: { value: 'restored' } })
+    const restored = await context.with(propagation.setBaggage(context.active(), restoredBaggage), () => restoredSession.loadSnapshot(dump))
+    const restoredContext = restored.traceContext()
+    assert.equal(propagation.getBaggage(restoredContext).getEntry('request').value, 'restored')
+    const restoredSpan = trace.getSpan(restoredContext)
+    assert.notEqual(restoredSpan.spanContext().spanId, originalSpan.spanContext().spanId)
+    context.with(restoredContext, () => tracer.startActiveSpan('restored handler', span => span.end()))
+    assert.equal((await restored.resume(42)).output, 42)
+    await restoredSession.close()
+    await pool.close()
+    await flushTelemetry()
+    const handler = exporter.getFinishedSpans().find(span => span.name === 'restored handler')
+    assert.equal(handler.parentSpanContext.spanId, restoredSpan.spanContext().spanId)
   `)
 })
 

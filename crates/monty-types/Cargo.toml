@@ -18,21 +18,23 @@ name = "monty_types"
 [dependencies]
 monty-macros = { workspace = true }
 serde = { workspace = true }
+serde_bytes = { workspace = true }
 strum = { workspace = true }
 chrono = { workspace = true }
+jiff = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 unicode-general-category = { workspace = true }
 
 # `std::time::Instant` panics on `wasm32-unknown-unknown`, so the resource
 # tracker uses `web_time::Instant` (a `performance.now()`-backed drop-in) there
-# to keep `max_duration` working when `monty` is embedded directly in a browser
+# to keep the duration limits working when `monty` is embedded directly in a browser
 # wasm module. Only that target needs it; every other target uses std directly.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 web-time = "1.1"
 
 [dev-dependencies]
-postcard = { workspace = true }
+minicbor-serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
@@ -40,6 +42,12 @@ serde_json = { workspace = true }
 # exercise production behavior (e.g. `ResourceTracker::lower_recursion_limit`
 # backing `sys.setrecursionlimit`). Forwarded by monty's own `test-hooks`.
 test-hooks = []
+# Where `SandboxTimeZone::named` finds IANA zone rules. `tzdb-bundled` is the
+# copy compiled into the binary, which needs no filesystem (the wasm worker);
+# `tzdb` prefers the OS database (`TZDIR`, `/usr/share/zoneinfo`) and falls
+# back to that copy. Without either every name is unknown.
+tzdb = ["jiff/tzdb-zoneinfo", "tzdb-bundled"]
+tzdb-bundled = ["jiff/tzdb-bundle-always"]
 
 [lints]
 workspace = true

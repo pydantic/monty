@@ -76,7 +76,7 @@ def test_print_empty(monty_run: RunMonty) -> None:
 def test_print_with_limits(monty_run: RunMonty) -> None:
     """Verify print_callback works together with resource limits."""
     output, callback = make_print_collector()
-    monty_run('print("with limits")', print_callback=callback, limits={'max_duration_secs': 5.0})
+    monty_run('print("with limits")', print_callback=callback, limits={'max_feed_duration_secs': 5.0})
     assert ''.join(output) == snapshot('with limits\n')
 
 

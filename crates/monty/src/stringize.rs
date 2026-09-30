@@ -129,7 +129,7 @@ fn merge_f_string_parts(expr: &mut ast::ExprFString) {
     let mut flags = None;
     for part in &expr.value {
         match part {
-            ast::FStringPart::Literal(literal) => {
+            ast::FStringPartRef::Literal(literal) => {
                 elements.push(ast::InterpolatedStringElement::Literal(
                     ast::InterpolatedStringLiteralElement {
                         range: literal.range,
@@ -138,7 +138,7 @@ fn merge_f_string_parts(expr: &mut ast::ExprFString) {
                     },
                 ));
             }
-            ast::FStringPart::FString(f_string) => {
+            ast::FStringPartRef::FString(f_string) => {
                 flags = flags.or(Some(f_string.flags));
                 elements.extend(f_string.elements.iter().cloned());
             }

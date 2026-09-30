@@ -143,12 +143,8 @@ pub(crate) trait FromValue: Sized {
     /// CPython does in the function body belongs in the body (see
     /// `NormForm::parse` in `unicodedata.rs`).
     fn extract_into(value: Value, slot: &mut Option<Self>, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<()> {
-        // Snapshot the incoming type's arg-error name before `from_value`
-        // consumes the value — a `Type::Instance` cannot be named once the
-        // value is dropped. Only impls that constrain their input (an
-        // `EXPECTED_TYPE_NAME`) can report `WrongType`, so the lookup is
-        // skipped for accept-anything impls. The slice borrows only the
-        // interner, so it stays valid after the value is dropped.
+        // Capture the name before conversion can free the instance's class.
+        // The result borrows only the interner, never the heap.
         let got_name =
             Self::EXPECTED_TYPE_NAME.map(|_| value.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns));
         match Self::from_value(value, vm) {

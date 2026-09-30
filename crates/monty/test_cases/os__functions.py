@@ -318,3 +318,15 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'replace() takes exactly 2 positional arguments (3 given)'
+
+# === urandom argument errors raise before any host call ===
+try:
+    os.urandom(-1)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'negative argument not allowed'
+try:
+    os.urandom(1.5)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'float' object cannot be interpreted as an integer"

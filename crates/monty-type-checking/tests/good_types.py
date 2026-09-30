@@ -1,8 +1,10 @@
 import asyncio
 import datetime
 import functools
+import itertools
 import json
 import os
+import random
 import re
 import sys
 from collections.abc import Iterator
@@ -381,6 +383,13 @@ def not_implemented() -> None:
 
 print(sys.version)
 print(sys.version_info)
+print(sys.argv[0])
+print(sys.maxsize + sys.maxunicode + sys.hexversion + sys.api_version)
+print(sys.byteorder, sys.copyright, sys.platlibdir, sys.abiflags)
+print(sys.executable, sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix)
+print(sys.dont_write_bytecode, sys.pycache_prefix, sys.builtin_module_names)
+print(sys.float_repr_style, sys.float_info.epsilon, sys.float_info.mant_dig)
+print(sys.flags.optimize, sys.flags.dev_mode, sys.flags.int_max_str_digits)
 print(None, file=sys.stdout)
 print(None, file=sys.stderr)
 
@@ -619,3 +628,32 @@ for k_dict, v_dict in {'a': 1}.items():
     assert_type(k_dict, str)
     assert_type(v_dict, int)
 assert_type([y_comp for y_comp in [1, 2]], list[int])
+
+# `itertools`: the combinatoric iterators yield tuples, `groupby` yields
+# `(key, group)` pairs whose group iterates the source's items, and
+# `chain.from_iterable` flattens one level. `r` is a variable rather than a
+# literal because this file is also checked against upstream typeshed, whose
+# per-arity overloads would give a fixed-width tuple for a literal.
+combination_r = len([1, 2])
+assert_type(next(itertools.combinations([1, 2], combination_r)), tuple[int, ...])
+assert_type(next(itertools.combinations_with_replacement([1, 2], combination_r)), tuple[int, ...])
+assert_type(next(itertools.permutations([1, 2])), tuple[int, ...])
+assert_type(next(itertools.permutations([1, 2], combination_r)), tuple[int, ...])
+# `chain.from_iterable` is deliberately not asserted: upstream typeshed
+# declares it as a classmethod, whose element type ty does not carry through.
+for key, group in itertools.groupby([1, 1, 2]):
+    assert_type(key, int)
+    assert_type(list(group), list[int])
+for key_fn, group_fn in itertools.groupby([1, 1, 2], key=lambda i: i > 1):
+    assert_type(key_fn, bool)
+    assert_type(list(group_fn), list[int])
+
+# === random ===
+assert_type(random.random(), float)
+assert_type(random.randint(1, 6), int)
+assert_type(random.choice([1, 2, 3]), int)
+assert_type(random.sample(['a', 'b'], 1), list[str])
+assert_type(random.choices('abc', k=2), list[str])
+assert_type(random.Random(42).uniform(1, 2), float)
+assert_type(random.Random().getrandbits(8), int)
+assert_type(os.urandom(4), bytes)

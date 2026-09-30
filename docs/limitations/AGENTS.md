@@ -6,9 +6,12 @@ here is published.
 
 ## What goes here
 
-Every pull request that adds, changes, or removes user-visible behavior MUST add (or update) a page here describing
-how the feature diverges from CPython, and what subset of the CPython surface Monty implements.
+Every pull request that changes a CPython divergence MUST update its topic page here.
 Docstrings and inline comments do not count: the divergence has to be written down here.
+Host-API contracts belong in the relevant `docs/` topic and binding reference; implementation rationale belongs in
+crate READMEs or code comments, not a general limitations page.
+Do not record migration history or differences from a removed Monty API.
+Check for an existing explanation before adding a caveat, and link to its owner rather than duplicating it.
 
 One file per feature, named after the builtin, module, or construct it covers (`open.md`, `asyncio.md`, `re.md`).
 Add a section to an existing file when the feature is already documented; create a new file only when there is no
@@ -48,6 +51,7 @@ The pages outside this directory are conceptual and how-to material.
 They link here rather than restating divergences, and these pages never duplicate them.
 A divergence belongs here, not in a concept page.
 
-When a change alters the shape of the subset — a stdlib module becomes importable, a parse-time rejection lands or
-is lifted — update `index.md` and the root `README.md` bullets as well as the page for the feature.
+When a change alters the shape of the subset — a stdlib module becomes importable, a parse-time rejection is added or
+lifted — update `index.md` as well as the page for the feature.
+The root `README.md` links to the subset overview rather than maintaining its own feature list.
 See "Documentation surfaces that must stay in sync" in the repository's `CLAUDE.md`.

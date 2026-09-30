@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
 use std::process::ExitCode;
+#[cfg(feature = "standalone")]
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use monty_types::TypeCheckingFormat;
@@ -16,7 +18,7 @@ mod subprocess;
 #[global_allocator]
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
-/// Monty — a sandboxed Python interpreter written in Rust.
+/// Monty — a secure Python sandbox written in Rust.
 ///
 /// Run `monty` to start an empty interactive REPL. Run a python file with `monty <file>`.
 /// Execute a command with `monty -c <cmd>`.
@@ -50,6 +52,9 @@ pub(crate) struct Cli {
     /// Uses `::` as separator to avoid ambiguity with Windows drive letters.
     /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
     /// `write_limit_bytes` is optional and applies to all write modes.
+    /// Host directories must be disjoint and virtual paths distinct: mounting
+    /// a directory and a subdirectory of it, the same directory twice, or two
+    /// directories at one virtual path is rejected.
     ///
     /// WARNING: with `rw`, files written by sandboxed code persist on the
     /// host, where your own tools may later execute them. Prefer `overlay`.
@@ -63,9 +68,20 @@ pub(crate) struct Cli {
     #[arg(long)]
     cwd: Option<String>,
 
-    /// Maximum execution time in seconds (e.g. `0.5` for 500ms).
+    /// Maximum execution time for a single feed, in seconds (e.g. `0.5` for
+    /// 500ms).
+    ///
+    /// Only the REPL feeds more than once — `monty` with no file, or
+    /// `--interactive`; elsewhere this bounds the one run.
     #[arg(long)]
-    max_duration: Option<f64>,
+    max_feed_duration: Option<f64>,
+
+    /// Maximum execution time between host round trips, in seconds.
+    ///
+    /// Bounds the stretch of code before each external call, so a snippet may
+    /// still run longer than this in total.
+    #[arg(long)]
+    max_turn_duration: Option<f64>,
 
     /// Maximum heap memory (e.g. `1024`, `512KB`, `10MB`, `1GB`).
     #[arg(long, value_parser = parse_memory_size)]
@@ -82,6 +98,16 @@ pub(crate) struct Cli {
     /// Maximum suspensions serviced in one CLI session (defaults to 1000).
     #[arg(long)]
     max_suspensions: Option<usize>,
+
+    /// Maximum cumulative sleep duration in seconds, charged before each wait.
+    /// Sleeps exceeding it are refused. Omit or use `inf` for no limit.
+    #[arg(long)]
+    max_total_sleep: Option<f64>,
+
+    /// Maximum duration of each `time.sleep()` or `asyncio.sleep()`, in seconds.
+    /// Longer sleeps are cut short (default 10, `inf` for no limit).
+    #[arg(long)]
+    max_sleep: Option<f64>,
 
     #[command(subcommand)]
     subcommand: Option<Command>,
@@ -116,6 +142,8 @@ impl Cli {
             Some("--cwd")
         } else if self.any_resource_limit_flag() {
             Some("a resource-limit flag")
+        } else if self.max_sleep.is_some() {
+            Some("--max-sleep")
         } else {
             None
         }
@@ -124,29 +152,31 @@ impl Cli {
     /// Whether any resource-limit flag was *supplied* (regardless of whether its
     /// value is valid). Used for the `subprocess` conflict check: we must not go
     /// through `resource_limits()` there, because its parse errors (e.g. a
-    /// `--max-duration` that fails `std::time::Duration::try_from_secs_f64`) would be
+    /// `--max-feed-duration` that fails `std::time::Duration::try_from_secs_f64`) would be
     /// swallowed and let an invalid flag slip past the conflict guard.
     fn any_resource_limit_flag(&self) -> bool {
-        self.max_duration.is_some()
+        self.max_feed_duration.is_some()
+            || self.max_turn_duration.is_some()
             || self.max_memory.is_some()
             || self.gc_interval.is_some()
             || self.max_recursion_depth.is_some()
             || self.max_suspensions.is_some()
+            || self.max_total_sleep.is_some()
     }
 
     /// Builds `ResourceLimits` from the parsed CLI arguments.
     ///
-    /// When no resource flags were provided, returns the default
-    /// recursion-only limits (`ResourceLimits::default()`).
+    /// When no resource flags were provided, returns the default limits
+    /// (`ResourceLimits::default()`).
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
     #[cfg(feature = "standalone")]
     fn resource_limits(&self) -> Result<monty_types::ResourceLimits, String> {
         let mut limits = monty_types::ResourceLimits::default();
-        if let Some(secs) = self.max_duration {
-            limits = limits.max_duration(
-                #[expect(clippy::absolute_paths)]
-                std::time::Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid --max-duration: {err}"))?,
-            );
+        if let Some(secs) = self.max_feed_duration {
+            limits = limits.max_feed_duration(duration_flag(secs, "--max-feed-duration")?);
+        }
+        if let Some(secs) = self.max_turn_duration {
+            limits = limits.max_turn_duration(duration_flag(secs, "--max-turn-duration")?);
         }
         if let Some(bytes) = self.max_memory {
             limits = limits.max_memory(bytes);
@@ -160,7 +190,30 @@ impl Cli {
         if let Some(max) = self.max_suspensions {
             limits = limits.max_suspensions(max);
         }
+        // `inf` is the same as leaving the flag off
+        if let Some(secs) = self.max_total_sleep
+            && !(secs.is_infinite() && secs > 0.0)
+        {
+            limits = limits.max_total_sleep(
+                #[expect(clippy::absolute_paths)]
+                std::time::Duration::try_from_secs_f64(secs)
+                    .map_err(|err| format!("invalid --max-total-sleep: {err}"))?,
+            );
+        }
         Ok(limits)
+    }
+
+    /// Parses `--max-sleep` (default 10s; `inf` removes the cap), rejecting negative or NaN values.
+    #[cfg(feature = "standalone")]
+    #[expect(clippy::absolute_paths)]
+    fn max_sleep(&self) -> Result<std::time::Duration, String> {
+        const DEFAULT: f64 = 10.0;
+        let seconds = self.max_sleep.unwrap_or(DEFAULT);
+        if seconds.is_infinite() && seconds > 0.0 {
+            Ok(std::time::Duration::MAX)
+        } else {
+            std::time::Duration::try_from_secs_f64(seconds).map_err(|err| format!("invalid --max-sleep: {err}"))
+        }
     }
 }
 
@@ -192,6 +245,13 @@ fn run_standalone(cli: Cli) -> ExitCode {
 fn run_standalone(_cli: Cli) -> ExitCode {
     eprintln!("error: this build runs `monty subprocess` only — rebuild with the `standalone` feature for the CLI");
     ExitCode::FAILURE
+}
+
+/// Converts a duration flag's seconds into a `Duration`, naming the flag in
+/// the rejection so a caller who passed several knows which one was bad.
+#[cfg(feature = "standalone")]
+fn duration_flag(secs: f64, flag: &str) -> Result<Duration, String> {
+    Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid {flag}: {err}"))
 }
 
 /// Parses a memory size string with optional unit suffix.

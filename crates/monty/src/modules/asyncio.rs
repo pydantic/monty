@@ -3,19 +3,28 @@
 //! Provides a minimal implementation of Python's `asyncio` module with:
 //! - `run(coro)`: Runs a coroutine to completion, equivalent to `await coro`
 //! - `gather(*awaitables)`: Collects coroutines for concurrent execution
+//! - `sleep(delay, result=None)`: An awaitable governed by the session's `SleepMode`
 //!
-//! Other asyncio functions (`create_task`, `sleep`, `wait`, etc.) are not implemented.
+//! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
+
+use monty_types::{OsFunctionCall, sleep_duration_saturating};
+use num_traits::ToPrimitive;
 
 use crate::{
     args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
     bytecode::{CallResult, VM},
-    defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{Heap, HeapData, HeapId},
+    heap_traits::DropGuard,
     intern::StaticStrings,
-    modules::ModuleFunctions,
+    modules::{
+        ModuleFunctions,
+        time::{HostSleep, host_sleep},
+    },
+    os_dispatch::PostConversionEffect,
     types::Module,
     value::Value,
 };
@@ -26,17 +35,15 @@ use crate::{
 pub(crate) enum AsyncioFunctions {
     Gather,
     Run,
+    Sleep,
 }
 
 /// Creates the `asyncio` module and allocates it on the heap.
 ///
-/// The module contains only the `run` and `gather` functions. Other asyncio functions
-/// are not implemented as they would require additional VM/scheduler features.
-///
-/// # Panics
-/// Panics if the required strings have not been pre-interned during prepare phase.
+/// The module contains only the `run`, `gather` and `sleep` functions. Other asyncio
+/// functions are not implemented as they would require additional VM/scheduler features.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Asyncio);
+    let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
     module.set_attr(
         StaticStrings::Gather,
@@ -48,6 +55,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Run)),
         vm,
     );
+    module.set_attr(
+        StaticStrings::Sleep,
+        Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Sleep)),
+        vm,
+    );
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
@@ -55,6 +67,66 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
     match functions {
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
+        AsyncioFunctions::Sleep => sleep(vm, args),
+    }
+}
+
+/// Returns an awaitable producing `result`, retained by [`PostConversionEffect::SleepResult`].
+/// Unlike CPython, waiting starts at the call. The host answers with a future
+/// or inline; [`host_sleep`] determines the destination and delay.
+/// `Zero` and zero-length system sleeps settle immediately. See `limitations/asyncio.md`.
+fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
+    // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
+    let mut result_guard = DropGuard::new(result, vm);
+    let delay = {
+        let (_, vm) = result_guard.as_parts_mut();
+        defer_drop!(delay, vm);
+        let seconds = delay_seconds(delay, vm)?;
+        // NaN is the one delay CPython refuses; the rest clamp.
+        let delay = sleep_duration_saturating(seconds)
+            .map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?;
+        host_sleep(vm, delay)
+    };
+    let (result, vm) = result_guard.into_parts();
+    let call = match delay {
+        Some(HostSleep::CallHost(delay)) => OsFunctionCall::AsyncSleep(delay),
+        // Avoid a host round trip for a zero-length system sleep.
+        Some(HostSleep::System(delay)) if !delay.is_zero() => OsFunctionCall::AsyncSystemSleep(delay),
+        _ => return Ok(CallResult::Value(vm.settled_awaitable(result))),
+    };
+    Ok(CallResult::OsCallWithEffect {
+        call,
+        effect: PostConversionEffect::SleepResult { result }.into(),
+    })
+}
+
+/// `asyncio.sleep(delay, result=None)` — a pure-Python `def` in CPython, so
+/// both parameters bind by keyword and neither is type-checked while binding.
+#[derive(FromArgs)]
+#[from_args(name = "sleep", style = def)]
+struct SleepArgs {
+    #[from_args(static_string = "Delay")]
+    delay: Value,
+    #[from_args(static_string = "ResultArg", default = Value::None)]
+    result: Value,
+}
+
+/// Reads `delay` as float seconds.
+///
+/// CPython never converts it: it compares `delay <= 0` and hands whatever is
+/// left to the loop, so only real numbers work — an `__index__`-able class is
+/// rejected here although `time.sleep()` accepts it — and a non-number fails as
+/// an unsupported comparison rather than as a bad argument.
+fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
+    match delay {
+        Value::Float(f) => Ok(*f),
+        Value::Int(n) => Ok(*n as f64),
+        Value::Bool(b) => Ok(f64::from(*b)),
+        _ => match delay.as_long_int(vm) {
+            Some(n) => Ok(n.to_f64().unwrap_or(f64::INFINITY)),
+            None => Err(ExcType::type_error_ordering("<=", &delay.py_type_name(vm), "int")),
+        },
     }
 }
 

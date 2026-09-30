@@ -277,12 +277,12 @@ def test_print_callback_across_feeds(session: MontySession):
 
 
 def test_checkout_with_limits(monty_run: RunMonty):
-    assert monty_run('1 + 1', limits={'max_duration_secs': 5.0}) == snapshot(2)
+    assert monty_run('1 + 1', limits={'max_feed_duration_secs': 5.0}) == snapshot(2)
 
 
 def test_infinite_loop_with_limits(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError):
-        monty_run('while True:\n    pass', limits={'max_duration_secs': 0.5})
+        monty_run('while True:\n    pass', limits={'max_feed_duration_secs': 0.5})
 
 
 # === External functions ===

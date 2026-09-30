@@ -13,7 +13,6 @@
 import { test } from 'vitest'
 
 import { t } from './assertions.js'
-import { skipIfBrowser } from './env.js'
 import { Monty, MontyRuntimeError } from '@pydantic/monty/wasm'
 
 // each case is `(2**40)`: over a 32-bit `usize`, under `i64::MAX`
@@ -23,8 +22,7 @@ const OVER_32_BIT = [
 ] as const
 
 for (const [name, code, message] of OVER_32_BIT) {
-  test(`an over-32-bit ${name} raises rather than trapping`, async (ctx) => {
-    skipIfBrowser(ctx)
+  test(`an over-32-bit ${name} raises rather than trapping`, async () => {
     await using pool = await Monty.create()
     await using session = await pool.checkout({})
     const error = await t.throwsAsync(() => session.feedRun(code), { instanceOf: MontyRuntimeError })

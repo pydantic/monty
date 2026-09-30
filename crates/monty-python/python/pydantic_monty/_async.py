@@ -1,13 +1,12 @@
-"""Own Python callbacks for one automatically driven async feed."""
+"""Own Python callbacks for one async session."""
 
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
-from contextlib import suppress
 from typing import Any
 
 
 class CallbackTasks:
-    """Cancel and join unfinished callbacks owned by one feed."""
+    """Keep callbacks across feeds, then cancel and join them at session exit."""
 
     def __init__(self) -> None:
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -17,6 +16,13 @@ class CallbackTasks:
     def run(self, start: Callable[[], Awaitable[Any]]) -> asyncio.Task[Any]:
         """Start the native drive only after its cleanup owner is running."""
         return asyncio.create_task(self._run(start))
+
+    async def finish(self, release: Callable[[], Awaitable[Any]]) -> Any:
+        """Join callbacks before releasing the checkout and native result waiters."""
+        try:
+            await self.close()
+        finally:
+            await release()
 
     def wrap(self, coro: Coroutine[Any, Any, Any]) -> Coroutine[Any, Any, Any]:
         """Register callbacks before the Rust bridge schedules them on asyncio."""
@@ -39,18 +45,21 @@ class CallbackTasks:
             self._tasks.discard(task)
 
     async def _run(self, start: Callable[[], Awaitable[Any]]) -> Any:
-        try:
-            return await start()
-        finally:
-            await self.close()
+        return await start()
 
     async def close(self) -> None:
         """Cancel callbacks and join them, forwarding any further caller cancellation."""
         self._closed = True
+        interrupt: BaseException | None = None
         for coro in self._pending.values():
-            # Ordinary cleanup errors must not replace the feed outcome or skip other callbacks.
-            with suppress(Exception, asyncio.CancelledError):
+            try:
                 coro.close()
+            except (Exception, asyncio.CancelledError):
+                pass
+            except BaseException as exc:
+                # Finish other cleanup before propagating a host interrupt.
+                if interrupt is None:
+                    interrupt = exc
         self._pending.clear()
         tasks = self._tasks.copy()
         self._tasks.clear()
@@ -58,3 +67,5 @@ class CallbackTasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if interrupt is not None:
+            raise interrupt

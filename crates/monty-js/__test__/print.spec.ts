@@ -1,4 +1,4 @@
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 import { t } from './assertions.js'
 
 import { CollectString, CollectStreams, MontyRuntimeError } from '@pydantic/monty'
@@ -23,6 +23,25 @@ function makePrintCollector() {
 
   return { callback, output }
 }
+
+test('omitted printCallback uses the host output sink', async () => {
+  const stdout =
+    typeof process !== 'undefined' && process.stdout
+      ? vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+      : vi.spyOn(console, 'log').mockImplementation(() => {})
+  const stderr =
+    typeof process !== 'undefined' && process.stderr
+      ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      : vi.spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    t.is(await run("import sys\nprint('hello')\nprint('error', file=sys.stderr)\n42"), 42)
+    t.is(stdout.mock.calls.map(([text]) => text).join(''), 'hello\n')
+    t.is(stderr.mock.calls.map(([text]) => text).join(''), 'error\n')
+  } finally {
+    stdout.mockRestore()
+    stderr.mockRestore()
+  }
+})
 
 test('basic', async () => {
   const { output, callback } = makePrintCollector()
@@ -124,7 +143,7 @@ test('empty', async () => {
 
 test('with limits', async () => {
   const { output, callback } = makePrintCollector()
-  await run('print("with limits")', { printCallback: callback, limits: { maxDurationSecs: 5.0 } })
+  await run('print("with limits")', { printCallback: callback, limits: { maxFeedDurationSecs: 5.0 } })
   t.deepEqual(output, ['with limits\n'])
 })
 

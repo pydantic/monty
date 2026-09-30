@@ -5,7 +5,7 @@ external calls. The sandbox schedules its own tasks; host event loops execute ex
 
 ## Module surface
 
-The `asyncio` module exposes exactly two functions:
+The `asyncio` module exposes exactly three functions:
 
 - `asyncio.run(coro)` — runs a coroutine to completion. Returns the value
     the coroutine `return`s, or re-raises an exception from it.
@@ -16,10 +16,13 @@ The `asyncio` module exposes exactly two functions:
     where CPython raises
     `TypeError: gather() got an unexpected keyword argument 'X'` because
     `return_exceptions` is a real kwarg there.
+- `asyncio.sleep(delay, result=None)` — waits as the session's `sleep` setting
+    says, then produces `result`. See
+    [below](#asynciosleep-waits-at-the-call-not-at-the-await).
 
 Not implemented (raise `AttributeError`):
 
-`create_task`, `sleep`, `wait`, `wait_for`, `shield`, `to_thread`,
+`create_task`, `wait`, `wait_for`, `shield`, `to_thread`,
 `new_event_loop`, `get_event_loop`, `get_running_loop`, `Queue`, `Lock`,
 `Semaphore`, `Event`, `Future`, `Task`, `TaskGroup`, `timeout`,
 `timeout_at`, `Timeout`, `as_completed`, `iscoroutine`, `ensure_future`,
@@ -46,6 +49,49 @@ time (see [language.md](language.md)).
     knows internally: coroutines from `async def`, gather futures, and external
     function call futures returned by host bindings.
 
+## `asyncio.sleep()` waits at the call, not at the `await`
+
+CPython's `asyncio.sleep()` returns a coroutine that does nothing until it is
+awaited. Monty starts waiting at the call; `await` produces `result` when the wait finishes.
+The session's `sleep` setting determines concurrency (see [time.md](time.md)):
+
+- `'system'`: all pools answer with futures, so gathered sleeps overlap and sibling tasks can run meanwhile.
+    Standard Rust execution and the CLI wait inline, making gathered sleeps sequential.
+    An immediately awaited sleep may be answered eagerly if no other task can run.
+- `'call_host'`: async handlers in `AsyncMonty` and JavaScript allow gathered sleeps to overlap.
+    `OSAccess` is async by default under `AsyncMonty`.
+    Sync handlers, including `Monty` callbacks, wait sequentially; results are unchanged.
+- `'zero'`: the awaitable settles immediately without yielding to sibling tasks, unlike CPython's `sleep(0)`.
+    Zero-delay system sleeps also settle without a round trip.
+    Under `'call_host'`, a handler returning a pending future allows sibling tasks to run even for zero delay.
+
+Suspending sleeps count against `max_suspensions`; system sleeps also count against `max_total_sleep`.
+Waiting consumes neither execution-time limit (see [time.md](time.md)).
+
+What follows from waiting at the call:
+
+- `asyncio.sleep(...)` whose result is never awaited has still started the
+    wait, where CPython runs nothing and warns that the coroutine was never
+    awaited.
+- A bad `delay` raises at the call rather than at the `await`. The error is the
+    one CPython's `delay <= 0` produces —
+    `TypeError: '<=' not supported between instances of 'str' and 'int'` — but it
+    surfaces one step earlier.
+- The value is a future rather than a coroutine, though `type(...).__name__`
+    is `coroutine` either way. Its `repr()` is `<coroutine external_future(N)>`,
+    not CPython's `<coroutine object sleep at 0x...>`, and awaiting it a second
+    time replays the same result where CPython raises
+    `RuntimeError: cannot reuse already awaited coroutine`.
+
+`delay` accepts only real numbers, matching CPython's `delay <= 0`: an
+`__index__`-able class is rejected here although `time.sleep()` accepts it.
+A negative delay waits zero seconds instead of raising, as CPython
+effectively does, and one past ~9223372036.85 seconds is clamped to that
+maximum rather than raising the `OverflowError` `time.sleep()` raises (see
+[time.md](time.md)).
+A NaN delay raises CPython's `ValueError: Invalid delay: NaN (not a number)`,
+but at the call rather than at the `await`.
+
 ## Concurrency model
 
 Concurrency is cooperative and host-driven. `gather` suspends Monty whenever
@@ -55,14 +101,9 @@ threads and no exposed event loop.
 
 ### Python callback lifetime
 
-[`AsyncMontySession.feed_run()`][pydantic_monty.AsyncMontySession.feed_run] cancels and joins unfinished Python
-coroutine callbacks when the feed ends, including callbacks the sandbox called without awaiting.
+Monty starts Python coroutine callbacks when the sandbox calls them, even without an `await`.
 In CPython, calling a coroutine function without awaiting or scheduling its result does not start it.
-Tasks created by a callback remain the callback's responsibility.
-Further caller cancellation reaches callback cleanup.
-Cleanup has no fixed deadline: callbacks must cooperate with cancellation, and Python cannot forcibly terminate them.
-Snapshot-driven execution, started with [`AsyncMontySession.feed_start()`][pydantic_monty.AsyncMontySession.feed_start]
-and [resumed by the host](../snapshots.md), has a separate lifetime and is not covered by this cleanup.
+See [async host functions](../host-functions.md#async-host-functions) for callback lifetime and cleanup.
 
 ### Siblings left running by a failed `gather` only advance while something else suspends
 

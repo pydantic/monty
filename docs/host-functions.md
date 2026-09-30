@@ -117,6 +117,8 @@ Both put host values in front of the sandbox, but they differ in *when*:
 | Missing name | not applicable                   | `NameError` in the sandbox    |
 
 A name present in both is served by the eager `inputs` binding.
+Lookup only runs for undefined names; it does not override builtins.
+See [host-function proxies](limitations/host-values.md#host-function-proxies) for caching and rebinding rules.
 
 Pass host functions through `external_lookup`.
 A callable in `inputs` binds only a reference carrying the callable's `__name__`, and calling it resolves *that* name
@@ -166,20 +168,11 @@ Return values must be types Monty can represent — the same set `inputs` and `e
 Arguments come the other way, out of the sandbox.
 A sandbox-defined class instance arrives as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy]; see
 [host objects](host-objects.md#sandbox-instances).
-A sandbox value with no host equivalent arrives silently as a *string* rather than raising: the repr of a sandbox
-class object, function or compiled `re` pattern, or the bare name of a host function handed back in.
-A host function cannot tell it from a sandbox `str` of the same text.
-
-A return value Monty cannot represent does not raise [`MontyConversionError`][pydantic_monty.MontyConversionError].
-It is delivered into the sandbox as `TypeError: Cannot convert X to Monty value`, which sandboxed code can catch;
-uncaught, it reaches you as [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError].
-The same is true of an `os=` callback's return value.
-`MontyConversionError` is for host values you hand over up front, in `inputs` or `external_lookup`.
-
-Values are also bounded in shape and size.
-Nesting is capped (roughly 48 nested lists, 32 nested dicts, 24 nested class instances), and a wire frame — the value plus
-its envelope — is capped at 256 MiB.
-Exceeding either fails the call; it does not crash the worker.
+A builtin function or a non-data type object arrives as a [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy]
+naming it, never the host's own `open` or `exec`; `type` is the one builtin function that arrives as the host class.
+Not every value crosses unchanged: unsupported sandbox values become strings, and cycles and deeply nested values
+are truncated.
+See [host-value limitations](limitations/host-values.md) for conversion failures, identity rules and size caps.
 
 ## Raising into the sandbox
 
@@ -237,6 +230,8 @@ sandbox, so sandboxed code can catch it:
 If the sandbox does not catch it, `feed_run` raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] with the sandbox traceback.
 Only [the exception types Monty implements](limitations/index.md) can cross; the type name is what carries over, not your
 exception class.
+JavaScript uses `error.name`; an unrecognised name becomes `RuntimeError`.
+Host tracebacks are not preserved.
 
 ## Async host functions
 
@@ -302,10 +297,16 @@ In JavaScript every host function may be async, and there is no separate pool cl
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
-In Python, [`AsyncMontySession.feed_run()`][pydantic_monty.AsyncMontySession.feed_run] cancels unfinished coroutine
-callbacks and joins them before returning a result, raising an error, or propagating caller cancellation.
-Further caller cancellation reaches callback cleanup, so callbacks must cooperate with cancellation.
-See [Python callback lifetime](limitations/asyncio.md#python-callback-lifetime) for the ownership boundary.
+Host futures belong to the session, not to one feed.
+A future returned by a host call can be awaited in a later feed, including after switching between automatic and
+[manual driving](snapshots.md#driving-automatically).
+New calls use the current feed's `external_lookup` / `externalLookup` and `os` handlers.
+In Python, leaving the [`AsyncMontySession`][pydantic_monty.AsyncMontySession]'s `async with` block cancels unfinished
+callbacks and joins them before releasing the checkout.
+Cleanup is cooperative: further caller cancellation reaches callbacks, and there is no fixed cleanup deadline.
+Tasks created by a callback remain the callback's responsibility.
+JavaScript session teardown releases tracked results but does not cancel host promises.
+Live callbacks [do not travel with dumps](snapshots.md#what-restoring-does-and-does-not-carry).
 
 ## Driving suspensions yourself
 
@@ -347,6 +348,8 @@ serialize it and continue tomorrow:
 
 `resume` also takes `{'exception': SomeError('...')}` to raise into the sandbox, or `{'exc_type': 'ValueError', 'message': '...'}` when you only have the type by name.
 In JavaScript `resume(value)` takes the return value directly and `resumeError(err)` raises.
+Each snapshot's `position` locates the suspending expression in the source; see
+[where execution stopped](snapshots.md#where-execution-stopped).
 See [snapshots](snapshots.md) for the full set of snapshot kinds.
 
 ## Designing a safe tool surface

@@ -184,6 +184,28 @@ r = divmod(7.5, 2.5)
 assert r[0] == 3.0 and r[1] == 0.0, 'divmod floats'
 assert divmod(True, 2) == (0, 1)
 assert divmod(5, True) == (5, 0)
+assert divmod(True, 1.5) == (0.0, 1.0)
+assert divmod(1.5, True) == (1.0, 0.5)
+
+# bool reaches the int arms but is still named as itself in a TypeError
+_big = 2**70
+assert divmod(True, _big) == (0, 1)
+assert divmod(_big, True) == (_big, 0)
+try:
+    divmod(True, 'x')
+    assert False, 'expected divmod to fail'
+except TypeError as exc:
+    assert str(exc) == "unsupported operand type(s) for divmod(): 'bool' and 'str'"
+try:
+    divmod('x', True)
+    assert False, 'expected divmod to fail'
+except TypeError as exc:
+    assert str(exc) == "unsupported operand type(s) for divmod(): 'str' and 'bool'"
+try:
+    divmod(_big, False)
+    assert False, 'expected divmod to fail'
+except ZeroDivisionError as exc:
+    assert str(exc) == 'division by zero'
 
 # === pow() ===
 # Basic pow operations
@@ -226,6 +248,14 @@ assert pow(5, 0, -1) == 0
 assert pow(-9223372036854775808, 1, -1) == 0
 assert pow(-9223372036854775808, 7, -1) == 0
 assert pow(True, 2) == 1
+
+# Large modular exponentiation takes the interruptible square-and-multiply path
+# once the work estimate passes Monty's threshold; both parities of modulus
+# reach it and must agree with the fast path.
+big_odd = pow(3, (1 << 33) - 1, (1 << 131072) + 1)
+assert (big_odd % 1000003, big_odd % 999983, len(bin(big_odd)) - 2) == (518390, 765077, 131071)
+big_even = pow(3, (1 << 33) - 1, (1 << 131072) - 1)
+assert (big_even % 1000003, big_even % 999983, len(bin(big_even)) - 2) == (676515, 996886, 131072)
 assert pow(2, True) == 2
 assert pow(True, True) == 1
 assert pow(True, -1) == 1.0

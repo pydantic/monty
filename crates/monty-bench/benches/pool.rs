@@ -90,7 +90,7 @@ async fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> 
             TurnEvent::Complete(value) => break value,
             TurnEvent::FunctionCall { .. } => {
                 event = session
-                    .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+                    .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
                     .await
                     .unwrap();
             }
@@ -181,27 +181,27 @@ total
 /// with string keys and mixed str/int values. This is the payload shape real
 /// agents pull across the wire on every external call.
 fn make_rows() -> MontyObject {
-    MontyObject::List(
+    MontyObject::list(
         (0..100)
             .map(|i| {
-                MontyObject::dict(vec![
-                    (MontyObject::String("order_id".to_owned()), MontyObject::Int(i)),
+                MontyObject::dict([
+                    (MontyObject::string("order_id".to_owned()), MontyObject::int(i)),
                     (
-                        MontyObject::String("customer".to_owned()),
-                        MontyObject::String(format!("customer-{i}@example.com")),
+                        MontyObject::string("customer".to_owned()),
+                        MontyObject::string(format!("customer-{i}@example.com")),
                     ),
                     (
-                        MontyObject::String("region".to_owned()),
-                        MontyObject::String("north".to_owned()),
+                        MontyObject::string("region".to_owned()),
+                        MontyObject::string("north".to_owned()),
                     ),
                     (
-                        MontyObject::String("amount".to_owned()),
-                        MontyObject::Int((i * 37) % 500 + 1),
+                        MontyObject::string("amount".to_owned()),
+                        MontyObject::int((i * 37) % 500 + 1),
                     ),
-                    (MontyObject::String("quantity".to_owned()), MontyObject::Int(i % 7 + 1)),
+                    (MontyObject::string("quantity".to_owned()), MontyObject::int(i % 7 + 1)),
                 ])
             })
-            .collect(),
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -215,7 +215,7 @@ fn ext_call_rows(bench: &mut Bencher) {
     let rows = make_rows();
     // Expected sandbox result: 20 identical calls, each summing amount * quantity.
     let per_call: i64 = (0..100).map(|i| ((i * 37) % 500 + 1) * (i % 7 + 1)).sum();
-    let expected = MontyObject::Int(per_call * 20);
+    let expected = MontyObject::int(per_call * 20);
     let pool = runtime
         .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
         .unwrap();

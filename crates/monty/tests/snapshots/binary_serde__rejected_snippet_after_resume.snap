@@ -1,0 +1,17 @@
+---
+source: crates/monty/tests/binary_serde.rs
+expression: "errors.join(\"\\n\\n\")"
+---
+Traceback (most recent call last):
+  File "test.py", line 3, in fail
+    exec("\nglobal __name__\n__name__ = 'changed'")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  File "<string>", line 3, in <module>
+NotImplementedError: cannot reassign read-only module attribute '__name__'
+
+Traceback (most recent call last):
+  File "test.py", line 3, in fail
+    exec("\n\nfrom . import missing")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  File "<string>", line 3, in <module>
+ImportError: attempted relative import with no known parent package

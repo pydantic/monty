@@ -8,6 +8,12 @@ enclosing scope.
 
 ## Divergences from CPython
 
+- **A comprehension target must be a name.** CPython accepts
+    `[i for obj.x in xs]` and `[i for d[k] in xs]`; Monty raises
+    `SyntaxError: comprehension target must be a name, not an attribute` (or
+    `not a subscript`). A comprehension's targets live in operand-stack slots,
+    which a store to an object cannot reach. Attribute and subscript targets
+    work in every other unpacking position.
 - **`locals()` while a comprehension is running.** CPython exposes the
     comprehension's active targets in `locals()` during the comprehension body.
     Monty does not implement `locals()` introspection.

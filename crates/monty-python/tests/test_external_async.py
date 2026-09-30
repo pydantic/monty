@@ -43,7 +43,7 @@ async def run_async(code: str, **kwargs: Any) -> Any:
 @pytest.mark.parametrize('exit_mode', ['complete', 'error', 'cancel', 'cancel_deferred'])
 @pytest.mark.parametrize('cleanup_raises', [False, True])
 async def test_async_run_joins_unfinished_callbacks(exit_mode: str, cleanup_raises: bool):
-    """Every run exit joins its unfinished callbacks."""
+    """Leaving the session joins its unfinished callbacks on every run exit."""
     started = asyncio.Event()
     cleaned_up = asyncio.Event()
     callback_tasks: list[asyncio.Task[Any]] = []
@@ -234,7 +234,8 @@ async def test_async_run_cancelled_before_start_leaves_session_healthy():
             assert await session.feed_run('1 + 1') == snapshot(2)
 
 
-async def test_async_run_callback_cleanup_preserves_session():
+@pytest.mark.parametrize('manual', [False, True])
+async def test_unfinished_callbacks_live_until_session_exit(manual: bool):
     started = asyncio.Event()
     cleaned_up = asyncio.Event()
 
@@ -251,12 +252,226 @@ async def test_async_run_callback_cleanup_preserves_session():
 
     async with pydantic_monty.AsyncMonty() as pool:
         async with pool.checkout() as session:
-            await session.feed_run(
-                'background()\nawait wait_until_started()\nx = 42',
-                external_lookup={'background': background, 'wait_until_started': wait_until_started},
-            )
-            assert cleaned_up.is_set() == snapshot(True)
+            code = 'background()\nawait wait_until_started()\nx = 42'
+            external_lookup = {'background': background, 'wait_until_started': wait_until_started}
+            if manual:
+                progress = await session.feed_start(code, external_lookup=external_lookup)
+                while not isinstance(progress, pydantic_monty.MontyComplete):
+                    progress = await progress.resume_auto()
+            else:
+                await session.feed_run(code, external_lookup=external_lookup)
+            assert cleaned_up.is_set() == snapshot(False)
             assert await session.feed_run('x') == snapshot(42)
+        assert cleaned_up.is_set() == snapshot(True)
+
+
+@pytest.mark.parametrize('manual_start,manual_finish', [(False, False), (False, True), (True, False), (True, True)])
+async def test_external_future_survives_feeds(manual_start: bool, manual_finish: bool):
+    ready = asyncio.Event()
+    started = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    async def fetch():
+        try:
+            started.set()
+            await ready.wait()
+            return 42
+        finally:
+            cleaned_up.set()
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            if manual_start:
+                progress = await session.feed_start('f = fetch()', external_lookup={'fetch': fetch})
+                while not isinstance(progress, pydantic_monty.MontyComplete):
+                    progress = await progress.resume_auto()
+            else:
+                await session.feed_run('f = fetch()', external_lookup={'fetch': fetch})
+            await asyncio.wait_for(started.wait(), timeout=5)
+            assert cleaned_up.is_set() == snapshot(False)
+            ready.set()
+            if manual_finish:
+                progress = await session.feed_start('await f')
+                while not isinstance(progress, pydantic_monty.MontyComplete):
+                    progress = await asyncio.wait_for(progress.resume_auto(), timeout=5)
+                result = progress.output
+            else:
+                result = await asyncio.wait_for(session.feed_run('await f'), timeout=5)
+            assert result == snapshot(42)
+            assert await session.feed_run('await f') == snapshot(42)
+            assert cleaned_up.is_set() == snapshot(True)
+
+
+@pytest.mark.parametrize('manual', [False, True])
+@pytest.mark.parametrize('callback_raises', [False, True])
+async def test_manually_resolved_callback_does_not_settle_twice(manual: bool, callback_raises: bool):
+    ready = asyncio.Event()
+    started = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def original():
+        started.set()
+        await ready.wait()
+        finished.set()
+        if callback_raises:
+            raise ValueError('superseded result')
+        return 11
+
+    async def following():
+        await asyncio.sleep(0)
+        return 22
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('f = original()', external_lookup={'original': original})
+            await asyncio.wait_for(started.wait(), timeout=5)
+            progress = await session.feed_start('await f')
+            assert isinstance(progress, pydantic_monty.AsyncFutureSnapshot)
+            result = await progress.resume({progress.pending_call_ids[0]: {'return_value': 42}})
+            assert isinstance(result, pydantic_monty.MontyComplete)
+            assert result.output == snapshot(42)
+            ready.set()
+            await asyncio.wait_for(finished.wait(), timeout=5)
+            code = 'g = following()\nawait g'
+            if manual:
+                progress = await session.feed_start(code, external_lookup={'following': following})
+                while not isinstance(progress, pydantic_monty.MontyComplete):
+                    progress = await asyncio.wait_for(progress.resume_auto(), timeout=5)
+                output = progress.output
+            else:
+                output = await asyncio.wait_for(
+                    session.feed_run(code, external_lookup={'following': following}), timeout=5
+                )
+            assert output == snapshot(22)
+            assert await session.feed_run('await f') == snapshot(42)
+
+
+@pytest.mark.parametrize('failed_feed', ['raise ValueError("feed failed")', 'await asyncio.gather(f, fail())'])
+async def test_external_future_survives_failed_feed(failed_feed: str):
+    ready = asyncio.Event()
+
+    async def fetch():
+        await ready.wait()
+        return 42
+
+    async def fail():
+        raise ValueError('feed failed')
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('import asyncio\nf = fetch()', external_lookup={'fetch': fetch})
+            with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+                await session.feed_run(failed_feed, external_lookup={'fail': fail})
+            assert str(exc_info.value.exception()) == snapshot('feed failed')
+            ready.set()
+            assert await asyncio.wait_for(session.feed_run('await f'), timeout=5) == snapshot(42)
+
+
+async def test_external_futures_from_multiple_feeds_do_not_collide():
+    ready = asyncio.Event()
+
+    async def first():
+        await ready.wait()
+        return 11
+
+    async def second():
+        ready.set()
+        return 22
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('f = first()', external_lookup={'first': first})
+            await session.feed_run('g = second()', external_lookup={'second': second})
+            assert await asyncio.wait_for(session.feed_run('(await f, await g)'), timeout=5) == snapshot((11, 22))
+
+
+async def test_system_sleep_future_survives_feeds():
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('import asyncio\nf = asyncio.sleep(0.01)')
+            assert await asyncio.wait_for(session.feed_run('await f'), timeout=5) == snapshot(None)
+
+
+@pytest.mark.parametrize('manual', [False, True])
+@pytest.mark.parametrize('resolve', [False, True])
+async def test_os_callback_has_session_lifetime(manual: bool, resolve: bool):
+    started = asyncio.Event()
+    ready = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    async def os_handler(**_: Any):
+        try:
+            started.set()
+            await ready.wait()
+        finally:
+            await asyncio.sleep(0)
+            cleaned_up.set()
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout(os_policy={'sleep': 'call_host'}) as session:
+            code = 'import asyncio\nf = asyncio.sleep(1)'
+            if manual:
+                progress = await session.feed_start(code, os=os_handler)
+                while not isinstance(progress, pydantic_monty.MontyComplete):
+                    progress = await progress.resume_auto()
+            else:
+                await session.feed_run(code, os=os_handler)
+            await asyncio.wait_for(started.wait(), timeout=5)
+            assert cleaned_up.is_set() == snapshot(False)
+            if resolve:
+                ready.set()
+                assert await asyncio.wait_for(session.feed_run('await f'), timeout=5) == snapshot(None)
+        assert cleaned_up.is_set() == snapshot(True)
+
+
+async def test_idle_dump_does_not_transfer_host_callbacks():
+    ready = asyncio.Event()
+    started = asyncio.Event()
+
+    async def fetch():
+        started.set()
+        await ready.wait()
+        return 42
+
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as original:
+            await original.feed_run('f = fetch()', external_lookup={'fetch': fetch})
+            await asyncio.wait_for(started.wait(), timeout=5)
+            blob = await original.dump()
+            async with pool.checkout() as restored:
+                await restored.load_session(blob)
+                progress = await restored.feed_start('await f')
+                assert isinstance(progress, pydantic_monty.AsyncFutureSnapshot)
+                assert progress.pending_call_ids == snapshot([0])
+                with pytest.raises(RuntimeError) as exc_info:
+                    await progress.resume_auto()
+                assert str(exc_info.value) == snapshot('No pending async tasks but ResolveFutures requested')
+            async with pool.checkout() as restored:
+                await restored.load_session(blob)
+                progress = await restored.feed_start('await f')
+                assert isinstance(progress, pydantic_monty.AsyncFutureSnapshot)
+                result = await progress.resume({0: {'return_value': 99}})
+                assert isinstance(result, pydantic_monty.MontyComplete)
+                assert result.output == snapshot(99)
+            ready.set()
+            assert await asyncio.wait_for(original.feed_run('await f'), timeout=5) == snapshot(42)
+
+
+async def test_session_exit_aborts_system_sleep_before_worker_reuse():
+    async with pydantic_monty.AsyncMonty(min_processes=1, max_processes=1) as pool:
+
+        async def run():
+            async with pool.checkout() as session:
+                worker_pid = session.worker_pid
+                await session.feed_run('import asyncio\nf = asyncio.sleep(60)')
+            async with pool.checkout() as session:
+                assert session.worker_pid == worker_pid
+                assert await session.feed_run('1 + 1') == snapshot(2)
+                with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+                    await session.feed_run('f')
+                assert str(exc_info.value.exception()) == snapshot("name 'f' is not defined")
+
+        await asyncio.wait_for(run(), timeout=5)
 
 
 async def test_async_run_does_not_own_tasks_created_by_callbacks():

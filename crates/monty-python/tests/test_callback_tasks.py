@@ -1,4 +1,4 @@
-"""Callback registration can race with completion of the native feed."""
+"""Callback registration can race with session teardown."""
 
 import asyncio
 import inspect
@@ -13,7 +13,7 @@ from pydantic_monty._async import CallbackTasks
 
 
 @pytest.mark.parametrize('register_before_exit', [True, False])
-async def test_callback_queued_after_feed_exit_never_starts(register_before_exit: bool):
+async def test_callback_queued_after_session_exit_never_starts(register_before_exit: bool):
     callbacks = CallbackTasks()
     started = False
 
@@ -28,6 +28,7 @@ async def test_callback_queued_after_feed_exit_never_starts(register_before_exit
     wrapped = callbacks.wrap(coro) if register_before_exit else None
     try:
         assert await callbacks.run(complete) == snapshot(42)
+        await callbacks.close()
         if wrapped is None:
             wrapped = callbacks.wrap(coro)
         with pytest.raises(asyncio.CancelledError):
@@ -85,6 +86,7 @@ async def test_pending_callback_cleanup_error_preserves_outcome_and_other_cleanu
             assert str(exc_info.value) == snapshot('feed failed')
         else:
             assert await callbacks.run(complete) == snapshot(42)
+        await callbacks.close()
         assert cleaned_up == snapshot(['first', 'second', 'active'])
         assert active_task.done() == snapshot(True)
         assert [inspect.getcoroutinestate(coro) for coro in pending_coros] == snapshot(['CORO_CLOSED', 'CORO_CLOSED'])
@@ -96,23 +98,58 @@ async def test_pending_callback_cleanup_error_preserves_outcome_and_other_cleanu
                 coro.close()
 
 
-@pytest.mark.parametrize('cleanup_error', [KeyboardInterrupt, SystemExit])
-async def test_pending_callback_cleanup_preserves_host_control_flow(cleanup_error: type[BaseException]):
+@pytest.mark.parametrize(
+    'cleanup_error,cancel_join', [(KeyboardInterrupt, False), (SystemExit, False), (BaseException, True)]
+)
+async def test_pending_callback_cleanup_preserves_host_control_flow(
+    cleanup_error: type[BaseException], cancel_join: bool
+):
     callbacks = CallbackTasks()
+    caller = asyncio.current_task()
+    assert caller is not None
+    started = asyncio.Event()
+    cleaned_up: list[str] = []
+    released: list[list[str]] = []
 
-    async def pending():
+    async def release():
+        released.append(cleaned_up.copy())
+
+    async def active():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleaned_up.append('active')
+            if cancel_join:
+                caller.cancel('caller cancelled')
+
+    async def pending(name: str, raises: bool):
         try:
             await asyncio.sleep(0)
         finally:
-            raise cleanup_error('host interrupted')
+            cleaned_up.append(name)
+            if raises:
+                raise cleanup_error('host interrupted')
 
-    coro = pending()
-    coro.send(None)
-    wrapped = callbacks.wrap(coro)
+    task = asyncio.create_task(callbacks.wrap(active()))
+    pending_coros = [pending('first', True), pending('second', False)]
+    wrappers: list[Coroutine[Any, Any, Any]] = []
     try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        for coro in pending_coros:
+            coro.send(None)
+            wrappers.append(callbacks.wrap(coro))
         # Await directly so asyncio's task-level interrupt handling cannot stop the test runner.
-        with pytest.raises(cleanup_error):
-            await callbacks.close()
+        with pytest.raises(asyncio.CancelledError if cancel_join else cleanup_error) as exc_info:
+            await callbacks.finish(release)
+        if not cancel_join:
+            assert str(exc_info.value) == snapshot('host interrupted')
+        assert released == snapshot([['first', 'second', 'active']])
+        assert task.done() == snapshot(True)
     finally:
-        wrapped.close()
-        coro.close()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        for coro in [*wrappers, *pending_coros]:
+            with suppress(BaseException):
+                coro.close()

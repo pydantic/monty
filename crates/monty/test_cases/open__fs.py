@@ -340,7 +340,8 @@ mixed2.close()
 
 # read(0) without prior reads short-circuits without loading
 zero = open(root / 'sized.txt')
-assert zero.read(0) == ''
+empty = ''
+assert zero.read(0) is empty, 'zero-length text read should reuse the empty string'
 assert zero.read(5) == 'hello'
 zero.close()
 

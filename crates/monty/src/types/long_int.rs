@@ -20,6 +20,7 @@ use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
+use smallvec::smallvec;
 
 use crate::{
     bytecode::VM,
@@ -27,8 +28,8 @@ use crate::{
     hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData, HeapObjectRead, HeapRead},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
-    types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
-    value::{Value, eq_bigint, float_pow, py_float_divmod, py_float_mod},
+    types::{LazyHeapSet, PyTrait, Type, str::allocate_string, tuple::allocate_tuple},
+    value::{Value, eq_bigint, float_divmod_tuple, float_pow, py_float_divmod, py_float_mod},
 };
 
 /// Maximum number of decimal digits allowed for integer-string conversion.
@@ -622,6 +623,40 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
+    fn py_divmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let lhs = self.get(vm.heap);
+        if let Value::Float(rhs) = other {
+            return if *rhs == 0.0 {
+                Err(ExcType::zero_division().into())
+            } else {
+                float_divmod_tuple(lhs.to_f64_checked()?, *rhs, vm.heap).map(Some)
+            };
+        }
+        // A long divisor stays borrowed: it is already on the heap and accounted
+        // for there, so copying its digits would be memory the tracker never sees.
+        let Some(rhs) = integer_value(other, vm.heap) else {
+            return Ok(None);
+        };
+        if rhs.is_zero() {
+            return Err(ExcType::zero_division().into());
+        }
+        check_div_size(lhs.bits(), &vm.heap.tracker)?;
+        Ok(Some(bigint_divmod_tuple(lhs.inner(), &rhs, vm.heap)))
+    }
+
+    fn py_rdivmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // A long divisor is never zero: zero always fits in `i64`.
+        let rhs = self.get(vm.heap);
+        let lhs = match other {
+            Value::Int(lhs) => *lhs,
+            Value::Bool(lhs) => i64::from(*lhs),
+            Value::Float(lhs) => return float_divmod_tuple(*lhs, rhs.to_f64_checked()?, vm.heap).map(Some),
+            _ => return Ok(None),
+        };
+        check_div_size(i64_bits(lhs), &vm.heap.tracker)?;
+        Ok(Some(bigint_divmod_tuple(&BigInt::from(lhs), rhs.inner(), vm.heap)))
+    }
+
     fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let base = self.get(vm.heap);
         if let Some(modulus) = modulus {
@@ -742,7 +777,18 @@ impl<'h> HeapRead<'h, LongInt> {
     }
 }
 
+/// Work above which `modular_pow` polls the time limit between exponent bits.
+///
+/// Measured in exponent bits × modulus digits², the cost of square-and-multiply with a
+/// quadratic reduction. Below it `num-bigint`'s monolithic `modpow` runs uninterrupted,
+/// about 0.2 s on a 2024 laptop and well inside the pool's grace on slower hosts.
+const MODPOW_UNPOLLED_WORK: u64 = 1 << 27;
+
 /// Performs modular exponentiation for integer values of any storage representation.
+///
+/// Small inputs take `num-bigint`'s Montgomery `modpow`; anything past
+/// `MODPOW_UNPOLLED_WORK` takes the slower [`polled_modpow`] so a time limit can
+/// interrupt it, as CPython computes these rather than rejecting them.
 pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap: &Heap) -> RunResult<Option<Value>> {
     let Some(exponent) = integer_value(exponent, heap) else {
         return Ok(None);
@@ -758,11 +804,46 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap
     }
 
     let modulus_abs = modulus.abs();
-    let mut result = base.modpow(exponent.as_ref(), &modulus_abs);
+    // Reducing first keeps the base non-negative and no larger than the modulus.
+    let base = base.mod_floor(&modulus_abs);
+    let (base, exponent, modulus_mag) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
+    // A `num-bigint` digit is pointer-sized, so wasm32 counts twice as many words.
+    let words = modulus_mag.bits().div_ceil(u64::from(usize::BITS));
+    let work = exponent.bits().saturating_mul(words.saturating_mul(words));
+    let result = if work <= MODPOW_UNPOLLED_WORK {
+        base.modpow(exponent, modulus_mag)
+    } else {
+        polled_modpow(base, exponent, modulus_mag, &heap.tracker)?
+    };
+    let mut result = BigInt::from(result);
     if modulus.is_negative() && !result.is_zero() {
         result -= modulus_abs;
     }
     Ok(Some(LongInt::new(result).into_value(heap)))
+}
+
+/// Left-to-right square-and-multiply that polls the time limit before every exponent bit.
+///
+/// Slower than Montgomery reduction, so only the large inputs `modular_pow` routes here pay
+/// for it. Each step is one squaring and one reduction of a value no larger than the
+/// modulus, so intermediates stay within a constant multiple of already-tracked inputs.
+/// It polls every bit rather than every 64th because one step on a huge modulus can take
+/// most of a second on its own.
+fn polled_modpow(
+    base: &BigUint,
+    exponent: &BigUint,
+    modulus: &BigUint,
+    tracker: &ResourceTracker,
+) -> RunResult<BigUint> {
+    let mut result = BigUint::one() % modulus;
+    for bit in (0..exponent.bits()).rev() {
+        tracker.check_time()?;
+        result = &result * &result % modulus;
+        if exponent.bit(bit) {
+            result = result * base % modulus;
+        }
+    }
+    Ok(result)
 }
 
 /// Raises a long integer to another integer value.
@@ -904,6 +985,17 @@ fn bigint_pow(mut base: BigInt, mut exp: u64) -> BigInt {
 /// Returns the significant bit count of an immediate integer.
 fn i64_bits(value: i64) -> u64 {
     u64::from(i64::BITS - value.unsigned_abs().leading_zeros())
+}
+
+/// Builds `divmod()`'s `(quotient, remainder)` tuple for arbitrary-precision operands.
+///
+/// `div_mod_floor` gives Python's floor semantics directly, so the remainder takes the
+/// divisor's sign. Callers must reject a zero divisor and preflight the quotient's size.
+pub(crate) fn bigint_divmod_tuple(lhs: &BigInt, rhs: &BigInt, heap: &Heap) -> Value {
+    let (quotient, remainder) = lhs.div_mod_floor(rhs);
+    let quotient = LongInt::new(quotient).into_value(heap);
+    let remainder = LongInt::new(remainder).into_value(heap);
+    allocate_tuple(smallvec![quotient, remainder], heap)
 }
 
 /// Extracts a validated non-negative shift amount from an integer value.

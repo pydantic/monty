@@ -10,6 +10,7 @@ use std::env;
 use std::{
     fmt, fs, io,
     process::ExitCode,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -19,27 +20,22 @@ use std::{
 // output keeps using `std::println!` — it is program data, not our styling.
 use anstream::{AutoStream, ColorChoice, eprintln};
 use anstyle::{AnsiColor, Color, Style};
-use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
+use monty::{
+    MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode,
+    source_within_nesting_bound,
+};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, HostClock, MontyException, MontyObject,
-    NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker, TypeCheckingConfig, validate_cwd,
+    CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject,
+    NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
+    SleepMode, TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
 use tracing::field::Empty;
 
 use crate::Cli;
-
-/// The clock the CLI lends to sandboxed code for `date.today()` and
-/// `datetime.now()`.
-///
-/// The same clock a fresh [`MontyRun`] already has, named here so the CLI's
-/// choice does not quietly follow a change to that default.
-/// [`handle_os_call`] reads it too, so the mounted REPL path answers the
-/// suspended calls from the same source.
-const CLI_CLOCK: HostClock = HostClock::System;
 
 /// Dim/gray text (timings). `{DIM}` opens the style, `{DIM:#}` closes it.
 const DIM: Style = Style::new().dimmed();
@@ -112,17 +108,29 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    monty_alloc::set_limit(limits.max_memory, type_check.is_some())
-        .expect("monty-runtime must install LimitedAllocator globally");
+    let hard_memory_limit = memory_limit_with_headroom(limits.max_memory, type_check.is_some());
+    monty_alloc::set_hard_limit(hard_memory_limit).expect("monty-runtime must install LimitedAllocator globally");
 
     // Build mount table early to fail fast on bad -m args.
-    let (mount_table, first_mount) = match build_mount_table(&cli.mounts) {
+    let (mounts, first_mount) = match build_mount_table(&cli.mounts) {
         Ok(Some((mt, first_mount))) => (Some(mt), Some(first_mount)),
         Ok(None) => (None, None),
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}: {err}");
             return ExitCode::FAILURE;
         }
+    };
+    let max_sleep = match cli.max_sleep() {
+        Ok(max_sleep) => max_sleep,
+        Err(err) => {
+            eprintln!("{BOLD_RED}error{BOLD_RED:#}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let host = HostOs {
+        mounts,
+        max_sleep,
+        sleep_budget: limits.max_total_sleep.map(SleepBudget::new),
     };
     let cwd = match sandbox_cwd(cli.cwd.as_deref(), first_mount) {
         Ok(cwd) => cwd,
@@ -138,9 +146,9 @@ fn run_cli(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
         return if cli.interactive {
-            dispatch_repl("<string>", &cmd, limits, mount_table, &cwd)
+            dispatch_repl("<string>", &cmd, limits, host, &cwd)
         } else {
-            dispatch_script("<string>", cmd, type_check, limits, mount_table, &cwd)
+            dispatch_script("<string>", cmd, type_check, limits, host, &cwd)
         };
     }
 
@@ -153,13 +161,13 @@ fn run_cli(cli: Cli) -> ExitCode {
             }
         };
         return if cli.interactive {
-            dispatch_repl(file_path, &code, limits, mount_table, &cwd)
+            dispatch_repl(file_path, &code, limits, host, &cwd)
         } else {
-            dispatch_script(file_path, code, type_check, limits, mount_table, &cwd)
+            dispatch_script(file_path, code, type_check, limits, host, &cwd)
         };
     }
 
-    dispatch_repl("repl.py", "", limits, mount_table, &cwd)
+    dispatch_repl("repl.py", "", limits, host, &cwd)
 }
 
 /// Resolves the sandbox working directory: `--cwd`, else the first `--mount`
@@ -177,28 +185,15 @@ fn dispatch_script(
     code: String,
     type_check: Option<TypeCheckingConfig>,
     limits: ResourceLimits,
-    mount_table: Option<MountTable>,
+    host: HostOs,
     cwd: &str,
 ) -> ExitCode {
-    run_script(
-        file_path,
-        code,
-        type_check,
-        ResourceTracker::new(limits),
-        mount_table,
-        cwd,
-    )
+    run_script(file_path, code, type_check, ResourceTracker::new(limits), host, cwd)
 }
 
 /// REPL analog of [`dispatch_script`].
-fn dispatch_repl(
-    file_path: &str,
-    code: &str,
-    limits: ResourceLimits,
-    mount_table: Option<MountTable>,
-    cwd: &str,
-) -> ExitCode {
-    run_repl(file_path, code, ResourceTracker::new(limits), mount_table, cwd)
+fn dispatch_repl(file_path: &str, code: &str, limits: ResourceLimits, host: HostOs, cwd: &str) -> ExitCode {
+    run_repl(file_path, code, ResourceTracker::new(limits), host, cwd)
 }
 
 /// Executes a Python file in one-shot CLI mode.
@@ -215,10 +210,13 @@ fn run_script(
     code: String,
     type_check: Option<TypeCheckingConfig>,
     tracker: ResourceTracker,
-    mut mount_table: Option<MountTable>,
+    mut host: HostOs,
     cwd: &str,
 ) -> ExitCode {
-    if let Some(config) = type_check {
+    // A source the compiler will reject as too deeply nested skips the (unguarded) type checker.
+    if let Some(config) = type_check
+        && source_within_nesting_bound(&code, SOURCE_SCAN_THRESHOLD)
+    {
         let start = Instant::now();
         let mut checker = TypeChecker::default();
         if let Some(failure) = checker.run(&SourceFile::new(&code, file_path), None, config).unwrap() {
@@ -240,7 +238,7 @@ fn run_script(
     let inputs = vec![];
 
     let mut runner = match MontyRun::new(code, file_path, input_names, CompileOptions::default()) {
-        Ok(ex) => ex.with_host_clock(CLI_CLOCK),
+        Ok(ex) => ex.with_os_policy(host.os_policy()),
         Err(err) => {
             eprintln!("{BOLD_RED}error{BOLD_RED:#}:\n{err}");
             return ExitCode::FAILURE;
@@ -250,7 +248,7 @@ fn run_script(
 
     // Use the start() + loop path when mounts are configured or external functions
     // are enabled, since we need to intercept OsCalls.
-    if EXT_FUNCTIONS || mount_table.is_some() {
+    if EXT_FUNCTIONS || host.suspends() {
         let start = Instant::now();
         let progress = match runner.start(inputs, tracker, PrintWriter::Stdout) {
             Ok(p) => p,
@@ -265,7 +263,7 @@ fn run_script(
         };
 
         let mut suspensions = SuspensionBudget::from_progress(&progress);
-        match run_until_complete(progress, &mut mount_table, &mut suspensions) {
+        match run_until_complete(progress, &mut host, &mut suspensions) {
             Ok(value) => {
                 let elapsed = start.elapsed();
                 eprintln!(
@@ -315,20 +313,14 @@ fn run_script(
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(
-    file_path: &str,
-    code: &str,
-    tracker: ResourceTracker,
-    mut mount_table: Option<MountTable>,
-    cwd: &str,
-) -> ExitCode {
+fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut host: HostOs, cwd: &str) -> ExitCode {
     let mut suspensions = SuspensionBudget::new(&tracker);
-    let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default()).with_host_clock(CLI_CLOCK);
+    let mut repl = MontyRepl::new(file_path, tracker, CompileOptions::default()).with_os_policy(host.os_policy());
     repl.set_cwd(cwd);
     let mut repl = Some(repl);
 
     if !code.is_empty() {
-        execute_repl_snippet(&mut repl, code, &mut mount_table, &mut suspensions);
+        execute_repl_snippet(&mut repl, code, &mut host, &mut suspensions);
     }
 
     eprintln!("Monty v{} REPL. Type `exit` to exit.", env!("CARGO_PKG_VERSION"));
@@ -387,7 +379,7 @@ fn run_repl(
 
         if continuation_mode == ReplContinuationMode::IncompleteBlock && snippet.is_empty() {
             let _ = rl.add_history_entry(pending_snippet.trim_end());
-            execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table, &mut suspensions);
+            execute_repl_snippet(&mut repl, &pending_snippet, &mut host, &mut suspensions);
             pending_snippet.clear();
             continuation_mode = ReplContinuationMode::Complete;
             continue;
@@ -400,7 +392,7 @@ fn run_repl(
                     continue;
                 }
                 let _ = rl.add_history_entry(pending_snippet.trim_end());
-                execute_repl_snippet(&mut repl, &pending_snippet, &mut mount_table, &mut suspensions);
+                execute_repl_snippet(&mut repl, &pending_snippet, &mut host, &mut suspensions);
                 pending_snippet.clear();
                 continuation_mode = ReplContinuationMode::Complete;
             }
@@ -424,15 +416,15 @@ fn run_repl(
 fn execute_repl_snippet(
     repl: &mut Option<MontyRepl>,
     snippet: &str,
-    mount_table: &mut Option<MountTable>,
+    host: &mut HostOs,
     suspensions: &mut SuspensionBudget,
 ) {
     let r = repl.take().expect("repl must be present");
 
-    if mount_table.is_some() {
-        match execute_repl_with_mounts(r, snippet, mount_table, suspensions) {
+    if host.suspends() {
+        match execute_repl_with_mounts(r, snippet, host, suspensions) {
             Ok((returned_repl, output)) => {
-                if output != MontyObject::None {
+                if output != MontyObject::none() {
                     println!("{output}");
                 }
                 *repl = Some(returned_repl);
@@ -447,7 +439,7 @@ fn execute_repl_snippet(
         let mut r = r;
         match r.feed_run(snippet, vec![], PrintWriter::Stdout) {
             Ok(output) => {
-                if output != MontyObject::None {
+                if output != MontyObject::none() {
                     println!("{output}");
                 }
             }
@@ -467,7 +459,7 @@ fn execute_repl_snippet(
 fn execute_repl_with_mounts(
     r: MontyRepl,
     snippet: &str,
-    mount_table: &mut Option<MountTable>,
+    host: &mut HostOs,
     suspensions: &mut SuspensionBudget,
 ) -> Result<(MontyRepl, MontyObject), (MontyRepl, String)> {
     let mut progress = match r.feed_start(snippet, vec![], PrintWriter::Stdout) {
@@ -496,7 +488,11 @@ fn execute_repl_with_mounts(
         match progress {
             ReplProgress::Complete { repl, value } => return Ok((repl, value)),
             ReplProgress::OsCall(call) => {
-                match call.resume_with(PrintWriter::Stdout, |fc| handle_os_call(fc, mount_table)) {
+                let outcome = match host.refuse_sleep(&call.function_call) {
+                    Some(exc) => call.abort(exc, PrintWriter::Stdout),
+                    None => call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)),
+                };
+                match outcome {
                     Ok(p) => progress = p,
                     Err(err) => return Err((err.repl, format!("{}", err.error))),
                 }
@@ -529,7 +525,7 @@ fn execute_repl_with_mounts(
 /// produce an error.
 fn run_until_complete(
     mut progress: RunProgress,
-    mount_table: &mut Option<MountTable>,
+    host: &mut HostOs,
     suspensions: &mut SuspensionBudget,
 ) -> Result<MontyObject, String> {
     loop {
@@ -563,10 +559,7 @@ fn run_until_complete(
             }
             RunProgress::NameLookup(lookup) => {
                 let result = if lookup.name == "add_ints" {
-                    NameLookupResult::Value(MontyObject::Function {
-                        name: "add_ints".to_string(),
-                        docstring: None,
-                    })
+                    NameLookupResult::from(MontyObject::function("add_ints".to_string(), None))
                 } else {
                     NameLookupResult::Undefined
                 };
@@ -575,10 +568,42 @@ fn run_until_complete(
                     .map_err(|err| format!("{err}"))?;
             }
             RunProgress::OsCall(call) => {
-                progress = call
-                    .resume_with(PrintWriter::Stdout, |fc| handle_os_call(fc, mount_table))
-                    .map_err(|err| format!("{err}"))?;
+                let outcome = match host.refuse_sleep(&call.function_call) {
+                    Some(exc) => call.abort(exc, PrintWriter::Stdout),
+                    None => call.resume_with(PrintWriter::Stdout, |fc| host.handle_os_call(fc)),
+                };
+                progress = outcome.map_err(|err| format!("{err}"))?;
             }
+        }
+    }
+}
+
+/// Charges requested delays before waiting, so `--max-total-sleep` refusal is deterministic.
+struct SleepBudget {
+    limit: Duration,
+    /// Capped delays accepted so far, checked against `limit`.
+    used: Duration,
+}
+
+impl SleepBudget {
+    fn new(limit: Duration) -> Self {
+        Self {
+            limit,
+            used: Duration::ZERO,
+        }
+    }
+
+    /// Charges `delay` or returns an uncatchable error with the same message as the pools.
+    fn charge(&mut self, delay: Duration) -> Option<MontyException> {
+        let total = self.used.saturating_add(delay);
+        if total > self.limit {
+            Some(MontyException::new(
+                ExcType::TimeoutError,
+                Some(format!("sleep limit exceeded: {total:?} > {:?}", self.limit)),
+            ))
+        } else {
+            self.used = total;
+            None
         }
     }
 }
@@ -625,26 +650,55 @@ impl SuspensionBudget {
     }
 }
 
-/// Handles a filesystem `OsCall` using the mount table if available.
-///
-/// Consumes the call (moving write payloads into the mount backend) and
-/// returns the operation result as an `ExtFunctionResult` — either a
-/// successful `MontyObject` or an exception for errors / unsupported
-/// operations.
-fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) -> ExtFunctionResult {
-    // The clock answers `date.today()` / `datetime.now()` here for the same
-    // reason it is granted to the non-suspending path: the CLI is the host, and
-    // a local script expecting CPython's clock should get one either way.
-    if let Some(now) = CLI_CLOCK.resolve(&call) {
-        return now.into();
+/// Handles CLI mounts and sleeps, enforcing per-sleep and total sleep limits.
+struct HostOs {
+    mounts: Option<MountTable>,
+    /// Longest wait a sleep performs; longer ones are cut short.
+    max_sleep: Duration,
+    sleep_budget: Option<SleepBudget>,
+}
+
+impl HostOs {
+    /// Mount dispatch and total sleep accounting require OS calls to reach the host.
+    fn suspends(&self) -> bool {
+        self.mounts.is_some() || self.sleep_budget.is_some()
     }
-    match mount_table.as_mut() {
-        Some(mounts) => match mounts.handle_os_call(call) {
-            MountCallOutcome::Handled(Ok(obj)) => obj.into(),
-            MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
-            MountCallOutcome::NotHandled(call) => call.on_no_handler().into(),
-        },
-        None => call.on_no_handler().into(),
+
+    /// Uses the system clock and entropy, with `--max-sleep` capping each sleep.
+    /// Without mounts or a sleep budget, the interpreter waits instead of the CLI.
+    fn os_policy(&self) -> OsPolicy {
+        OsPolicy {
+            sleep: SleepMode::System(self.max_sleep),
+            ..OsPolicy::default()
+        }
+    }
+
+    /// Charges system sleeps after capping them at `--max-sleep`, or returns an error to abort the feed.
+    /// Other calls are free.
+    fn refuse_sleep(&mut self, call: &OsFunctionCall) -> Option<MontyException> {
+        match (call, self.sleep_budget.as_mut()) {
+            (OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay), Some(budget)) => {
+                budget.charge((*delay).min(self.max_sleep))
+            }
+            _ => None,
+        }
+    }
+
+    /// Waits for system sleeps, enforcing `--max-sleep` again in case the sandbox did not.
+    /// Other calls go to the mounts, transferring write payloads without copying.
+    fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
+        if let OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) = call {
+            thread::sleep(delay.min(self.max_sleep));
+            return MontyObject::none().into();
+        }
+        match self.mounts.as_mut() {
+            Some(mounts) => match mounts.handle_os_call(call) {
+                MountCallOutcome::Handled(Ok(obj)) => obj.into(),
+                MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
+                MountCallOutcome::NotHandled(call) => call.on_no_handler().into(),
+            },
+            None => call.on_no_handler().into(),
+        }
     }
 }
 
@@ -655,19 +709,28 @@ fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) ->
 ///
 /// Returns a runtime-like error string for unknown function names, wrong arity,
 /// or incorrect argument types.
-fn resolve_external_call(function_name: &str, args: &[MontyObject]) -> Result<MontyObject, String> {
+fn resolve_external_call(function_name: &str, args: &CallArgs) -> Result<MontyObject, String> {
+    let rendered = || args.args().map(|arg| arg.py_repr()).collect::<Vec<_>>().join(", ");
     if function_name != "add_ints" {
-        return Err(format!("unknown external function: {function_name}({args:?})"));
+        return Err(format!("unknown external function: {function_name}({})", rendered()));
     }
 
-    if args.len() != 2 {
-        return Err(format!("add_ints requires exactly 2 arguments, got {}", args.len()));
+    if args.args().len() != 2 {
+        return Err(format!(
+            "add_ints requires exactly 2 arguments, got {}",
+            args.args().len()
+        ));
     }
 
-    if let (MontyObject::Int(a), MontyObject::Int(b)) = (&args[0], &args[1]) {
-        Ok(MontyObject::Int(a + b))
-    } else {
-        Err(format!("add_ints requires integer arguments, got {args:?}"))
+    match (
+        args.arg(0).and_then(|a| a.as_int()),
+        args.arg(1).and_then(|b| b.as_int()),
+    ) {
+        (Some(a), Some(b)) => a
+            .checked_add(b)
+            .map(MontyObject::int)
+            .ok_or_else(|| format!("add_ints result is out of i64 range, got {}", rendered())),
+        _ => Err(format!("add_ints requires integer arguments, got {}", rendered())),
     }
 }
 

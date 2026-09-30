@@ -1,5 +1,5 @@
 site_name: Monty
-site_description: A sandboxed Python interpreter, written in Rust, for code written by AI.
+site_description: A secure Python sandbox, written in Rust, for code written by AI.
 
 theme:
   name: 'material'
@@ -44,6 +44,7 @@ nav:
       - Overview: 'limitations/index.md'
       - Python language / parser: 'limitations/language.md'
       - Built-in functions: 'limitations/builtins.md'
+      - eval(), exec() and locals(): 'limitations/eval_exec.md'
       - Classes: 'limitations/classes.md'
       - dataclasses: 'limitations/dataclasses.md'
       - Named tuples: 'limitations/namedtuple.md'
@@ -60,6 +61,7 @@ nav:
       - Standard library modules: 'limitations/modules.md'
       - base64: 'limitations/base64.md'
       - collections: 'limitations/collections.md'
+      - copy: 'limitations/copy.md'
       - datetime: 'limitations/datetime.md'
       - functools: 'limitations/functools.md'
       - itertools: 'limitations/itertools.md'
@@ -67,13 +69,15 @@ nav:
       - math: 'limitations/math.md'
       - os: 'limitations/os.md'
       - pathlib: 'limitations/pathlib.md'
+      - random: 'limitations/random.md'
       - re: 'limitations/re.md'
       - sys: 'limitations/sys.md'
+      - time: 'limitations/time.md'
       - unicodedata: 'limitations/unicodedata.md'
       - open() and file objects: 'limitations/open.md'
       - Filesystem and sandbox boundary: 'limitations/filesystem.md'
       - Resource limits: 'limitations/resource_limits.md'
-      - Worker execution: 'limitations/pool-architecture.md'
+      - Host values: 'limitations/host-values.md'
   - API Docs:
       - Python:
           - Pools: 'api/python/pools.md'

@@ -1,6 +1,11 @@
+use hashbrown::HashTable;
 use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker};
 
-use crate::exception_private::{RunError, SimpleException};
+use crate::{
+    bytecode::VM,
+    exception_private::{RunError, RunResult, SimpleException},
+    value::{VALUE_SIZE, Value},
+};
 
 /// Pre-checks that an operation producing `item_len * count` bytes won't exceed resource limits.
 ///
@@ -98,6 +103,61 @@ pub fn check_replace_size(
     };
 
     check_estimated_size(estimated, tracker)
+}
+
+/// Pre-checks the reallocation a push into a full `Value` buffer causes,
+/// dropping `item` if the container cannot grow.
+///
+/// Callers reach it only at a capacity boundary, hence `#[cold]`. Without it the
+/// doubling that straddles the soft memory limit lands past the allocator's hard
+/// ceiling in one allocation, killing the worker instead of raising `MemoryError`.
+/// Buffers of other element types call [`ResourceTracker::check_growth`] directly.
+#[cold]
+pub(crate) fn check_value_buffer_growth(vm: &mut VM<'_>, len: usize, capacity: usize, item: Value) -> RunResult<Value> {
+    match vm.heap.tracker.check_growth(len, capacity, VALUE_SIZE) {
+        Ok(()) => Ok(item),
+        Err(err) => {
+            item.drop_with(vm);
+            Err(err.into())
+        }
+    }
+}
+
+/// Pre-checks the reallocation one insertion into a dict or set would cause,
+/// summing both of the buffers it grows.
+///
+/// The dense entry vector and the `HashTable<usize>` indexing it reallocate
+/// independently, with no allocation in between, so checking each increment
+/// against the same pre-insertion usage lets both pass while their sum clears
+/// the allocator's hard headroom.
+pub(crate) fn check_entry_table_growth(
+    entries_len: usize,
+    entries_capacity: usize,
+    entry_size: usize,
+    indices: &HashTable<usize>,
+    tracker: &ResourceTracker,
+) -> Result<(), ResourceError> {
+    let pending =
+        ResourceTracker::growth_bytes(entries_len, entries_capacity, entry_size).saturating_add(table_growth(indices));
+    tracker.check_pending_allocation(pending)
+}
+
+/// The bytes an insertion into a full index table would allocate, and zero if
+/// the table has room.
+///
+/// hashbrown rehashes into a table of roughly double the current allocation and
+/// keeps the old one live until the move finishes, so the increment is about
+/// twice `allocation_size()`.
+fn table_growth(indices: &HashTable<usize>) -> usize {
+    let current = indices.allocation_size();
+    // An unallocated table reports `allocation_size() == 0` with `len == capacity == 0`,
+    // so the doubling model has nothing to work from; its first table is a few dozen
+    // bytes, far below the headroom this check guards.
+    if current == 0 || indices.len() < indices.capacity() {
+        0
+    } else {
+        current.saturating_mul(2)
+    }
 }
 
 /// Checks an estimated result size against the resource tracker.

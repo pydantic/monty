@@ -1,0 +1,31 @@
+---
+source: crates/monty/tests/repl.rs
+expression: "errors.join(\"\\n\\n\")"
+---
+Traceback (most recent call last):
+  File "<python-input-1>", line 1, in <module>
+    exec("\n\nfrom . import missing")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  File "<string>", line 3, in <module>
+ImportError: attempted relative import with no known parent package
+
+Traceback (most recent call last):
+  File "<python-input-2>", line 1, in <module>
+    exec("\n\nfrom math import *")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  File "<string>", line 3, in <module>
+NotImplementedError: Wildcard imports (`from ... import *`) are not supported
+
+Traceback (most recent call last):
+  File "<python-input-3>", line 1, in <module>
+    exec("\n\ndel missing")
+    ~~~~~~~~~~~~~~~~~~~~~~~
+  File "<string>", line 3, in <module>
+NotImplementedError: The monty syntax parser does not yet support the 'del' statement
+
+Traceback (most recent call last):
+  File "<python-input-4>", line 1, in <module>
+    exec("\n\n__name__ = 'changed'")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  File "<string>", line 3, in <module>
+NotImplementedError: cannot reassign read-only module attribute '__name__'

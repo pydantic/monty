@@ -36,6 +36,22 @@ impl CallId {
     }
 }
 
+/// Pending host answers and their IDs, moved between a REPL and its active VM.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExternalFutures {
+    pub next_call_id: u32,
+    /// Owns one reference per unresolved future, independently of guest awaiters.
+    pub pending_externals: AHashMap<CallId, HeapId>,
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for ExternalFutures {
+    fn drop_with(self, heap: &mut C) {
+        for future_id in self.pending_externals.into_values() {
+            heap.heap_mut().dec_ref(future_id);
+        }
+    }
+}
+
 /// Unique identifier for an async task.
 ///
 /// Sequential integers allocated by the scheduler. Task 0 is always the main task
@@ -99,6 +115,9 @@ pub(crate) struct Coroutine {
     pub namespace: Vec<Value>,
     /// Current execution state.
     pub state: CoroutineState,
+    /// Owned reference to the `exec()` / `eval()` globals dict the async
+    /// function was defined under; `None` when its globals are module slots.
+    pub globals: Option<HeapId>,
 }
 impl Coroutine {
     /// Creates a new coroutine for an async function call.
@@ -106,11 +125,13 @@ impl Coroutine {
     /// # Arguments
     /// * `func_id` - The async function to execute
     /// * `namespace` - Pre-bound namespace with parameters and captured variables
-    pub fn new(func_id: FunctionId, namespace: Vec<Value>) -> Self {
+    /// * `globals` - The function's globals dict, already inc_ref'd for this coroutine
+    pub fn new(func_id: FunctionId, namespace: Vec<Value>, globals: Option<HeapId>) -> Self {
         Self {
             func_id,
             namespace,
             state: CoroutineState::New,
+            globals,
         }
     }
 }
@@ -138,6 +159,10 @@ pub(crate) struct ExternalFuture {
     pub call_id: CallId,
     /// Current state.
     pub state: ExternalFutureState,
+    /// `asyncio.sleep(delay, result)`: the value to resolve with in place of
+    /// the host's, which is only the wake-up signal. Owned; taken on
+    /// resolution and released on failure or when the entry is freed.
+    pub sleep_result: Option<Value>,
 }
 
 /// State machine for [`ExternalFuture`].
@@ -155,10 +180,11 @@ pub(crate) enum ExternalFutureState {
 
 impl ExternalFuture {
     /// Creates a new `ExternalFuture` in the `Pending` state with no awaiter.
-    pub fn new_pending(call_id: CallId) -> Self {
+    pub fn new_pending(call_id: CallId, sleep_result: Option<Value>) -> Self {
         Self {
             call_id,
             state: ExternalFutureState::Pending { awaiter: None },
+            sleep_result,
         }
     }
 }

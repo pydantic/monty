@@ -22,7 +22,7 @@ import jiter
 from pydantic_monty import AsyncMonty, CollectString, MontyCrashedError, MontyError, ResourceLimits
 
 DEFAULT_LIMITS: ResourceLimits = {
-    'max_duration_secs': 1.0,
+    'max_feed_duration_secs': 1.0,
     'max_memory': 64 * 1024 * 1024,
     'max_recursion_depth': 500,
 }

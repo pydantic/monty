@@ -1,56 +1,7 @@
-// Node/native API of @pydantic/monty/node: the subprocess-backed pool,
-// filesystem mounts, native-only helpers, and the shared error/value types.
-
-export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
-export {
-  ClassInstance,
-  ClassType,
-  MontyClassProxy,
-  type AttrPolicy,
-  type BaseWrapperOptions,
-  type ClassInstanceOptions,
-  type ClassTypeOptions,
-} from './classInstance.js'
-export {
-  FunctionSnapshot,
-  FutureSnapshot,
-  MontyComplete,
-  MontySession,
-  NameLookupSnapshot,
-  NOT_HANDLED,
-  type ExternalFunction,
-  type FeedOptions,
-  type FeedStartOptions,
-  type FutureResolution,
-  type LoadSnapshotOptions,
-  type OsCallback,
-  type PrintCallback,
-  type PrintTargetInput,
-  type Snapshot,
-} from './session.js'
-export { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, type CollectedStreamEntry } from './print.js'
+// Node-specific capabilities extend the shared public API.
+export * from './index.js'
 export { type MountDirMode, type MountDirOptions } from './mount.js'
 export { MountDir } from './mountDir.js'
-export {
-  MontyCrashedError,
-  MontyError,
-  MontyRuntimeError,
-  MontySyntaxError,
-  MontyTypingError,
-  ProtocolError,
-  type ExceptionInfo,
-  type Frame,
-} from './errors.js'
-export {
-  type MontyDate,
-  type MontyDateTime,
-  type MontyException,
-  MontyFileHandle,
-  type MontyFileHandleOptions,
-  type MontyTime,
-  type MontyTimeDelta,
-  type MontyTimeZone,
-} from './types.js'
 export { findMontyBinary } from './binary.js'
 export {
   flushTelemetry,
@@ -59,4 +10,3 @@ export {
   type MontyInstrumentationConfig,
   type TelemetryComponents,
 } from './telemetry.js'
-export { MAX_VALUE_DEPTH } from '../native-addon.js'

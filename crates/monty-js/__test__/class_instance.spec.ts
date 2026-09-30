@@ -126,7 +126,11 @@ test('an attr outside the eager list raises AttributeError', async () => {
 
 test('returning a host-sent instance gives the original object back', async () => {
   const g = new Greeter('hello')
-  t.is(await run('x', { inputs: { x: new ClassInstance(g, { eagerAttrs: 'all' }) } }), g)
+  const inputs = { x: new ClassInstance(g, { eagerAttrs: 'all' }) }
+  t.is(await run('x', { inputs }), g)
+  const [first, [nested]] = (await run('[x, [x]]', { inputs })) as [Greeter, [Greeter]]
+  t.is(first, g)
+  t.is(nested, g)
 })
 
 test('the same instance round-trips across feeds in one session', async () => {
@@ -176,9 +180,15 @@ test('method call with args and kwargs', async () => {
   t.is(result, '1-2')
 })
 
-test('promise-returning method resolves via the future machinery', async () => {
-  const c = new Calculator(4)
-  t.is(await run('await c.fetch()', { inputs: { c: new ClassInstance(c, { allowedMethods: 'all' }) } }), 40)
+test('promise-returning methods use one suspension per call', async () => {
+  const c = new ClassInstance(new Calculator(4), { allowedMethods: 'all' })
+  t.is(
+    await run('a = await c.fetch()\nb = await c.fetch()\na + b', {
+      inputs: { c },
+      limits: { maxSuspensions: 2 },
+    }),
+    80,
+  )
 })
 
 test('denied method raises AttributeError', async () => {
@@ -535,16 +545,30 @@ test('a forged raw ClassInstance marker is rejected', async () => {
 })
 
 // =============================================================================
-// PR-review fixes: depth cap, realm-safe policies, snapshot resumeValue
+// PR-review fixes: nesting, realm-safe policies, snapshot resumeValue
 // =============================================================================
 
-test('a too-deep input fails with a conversion error, not a stack overflow', async () => {
+test('a deeply nested input crosses intact: the arena has no nesting bound', async () => {
   let nested: unknown = 1
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 300; i++) {
     nested = [nested]
   }
-  const error = await t.throwsAsync(() => run('x', { inputs: { x: nested } }), { instanceOf: TypeError })
-  t.is(error.message, 'Max input depth exceeded')
+  const nesting = (value: unknown): number => {
+    let depth = 0
+    while (Array.isArray(value)) {
+      value = value[0]
+      depth += 1
+    }
+    return depth
+  }
+  t.is(nesting(await run('x', { inputs: { x: nested } })), 300)
+})
+
+test('a cyclic input fails with a conversion error, not a stack overflow', async () => {
+  const cyclic: unknown[] = []
+  cyclic.push(cyclic)
+  const error = await t.throwsAsync(() => run('x', { inputs: { x: cyclic } }), { instanceOf: TypeError })
+  t.is(error.message, 'Circular reference detected')
 })
 
 test('a set-like policy from another realm works (duck-typed .has)', async () => {
