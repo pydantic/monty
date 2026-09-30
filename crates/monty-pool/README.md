@@ -217,6 +217,8 @@ A local subprocess claiming shutdown is a protocol violation.
 
 A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`;
 `ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
+`ReplConfig::profile` names a server-side profile to run the session under; it is sent in `Configure` as-is, and
+subprocess workers ignore it too.
 `Checkout::restore` can accept this ID instead of dump bytes to restore a session's state after a disconnect, whether
 intentional or due to parking from e.g. an idle timeout or a remote restart.
 The remote is free to determine what `Checkout::restore` will do, for example it may lock the existing session to

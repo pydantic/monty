@@ -507,6 +507,8 @@ impl Child {
             os_policy: _,
             // a relay's concern; the child never stores sessions
             persistence: _,
+            // a relay's concern; the child has no profiles
+            profile: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;

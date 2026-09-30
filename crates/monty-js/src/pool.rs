@@ -321,6 +321,8 @@ impl NativePool {
                 os_policy,
                 // only a serving relay stores sessions; its default applies
                 persistence: Persistence::ServerDefault,
+                // only a serving relay has profiles; its default applies
+                profile: None,
             },
             checkout: Arc::new(AsyncMutex::new(None)),
         })

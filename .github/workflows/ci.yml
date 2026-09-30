@@ -1090,12 +1090,16 @@ jobs:
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             triple: win32-x64-msvc
+          # Linux gnu addons link against napi-rs's glibc 2.17 sysroot rather than the
+          # runner's, so they load on older distros (RHEL 9, Ubuntu 22.04, Debian 12).
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             triple: linux-x64-gnu
-          - host: ubuntu-24.04-arm
+            napi-cross: true
+          - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             triple: linux-arm64-gnu
+            napi-cross: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1123,8 +1127,19 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
+      # `--use-napi-cross` downloads the napi-rs cross toolchain itself.
       - name: Build the napi shared library
-        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }}
+        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.napi-cross && '--use-napi-cross' || '' }}
+        working-directory: crates/monty-js
+
+      # If the toolchain download fails, the CLI only warns and builds with the host
+      # toolchain, so fail if the addon needs a glibc newer than 2.17.
+      - name: Check the glibc floor
+        if: matrix.settings.napi-cross
+        run: |
+          newest=$(readelf --dyn-syms -W monty.${{ matrix.settings.triple }}.node | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
+          echo "newest glibc symbol: $newest"
+          test "$(printf '%s\nGLIBC_2.17\n' "$newest" | sort -V | tail -n1)" = GLIBC_2.17
         working-directory: crates/monty-js
 
       - name: Upload artifact

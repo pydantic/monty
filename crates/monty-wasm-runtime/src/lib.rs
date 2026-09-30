@@ -391,6 +391,8 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         os_policy: request.os_policy.map(os_policy_from_component),
         // a relay's concern; the component is a child and never stores sessions
         persistence: pb::Persistence::Unspecified.into(),
+        // a relay's concern; the component is a child and has no profiles
+        profile: None,
     }
 }
 
