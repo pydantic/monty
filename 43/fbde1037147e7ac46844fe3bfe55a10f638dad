@@ -1,61 +1,15 @@
-examples/spreadsheet/sandbox_code.py
-  s_d5bc8a36850bfe::t_1c728e3d729de3 4
-  s_d5bc8a36850bfe::t_df6b7461c47189 9-11
-  s_d5bc8a36850bfe::t_c401fc71459ee5 31-47
-  s_d5bc8a36850bfe::t_afcb736d399e6a 3,8,12-22
-  s_d5bc8a36850bfe::t_3a7962bfa32bd4 28
-  s_d5bc8a36850bfe::t_e1084a80239be3 2,5-6
-  s_d5bc8a36850bfe::t_f5e47ec60d2d17 1,7,23-27,29-30,48
-  s_d5bc8a36850bfe::t_0cebcf19c50dd2 49
-examples/spreadsheet/type_stubs.pyi
-  s_d5bc8a36850bfe::t_ab4aba3483c6e0 1-88
-docs/examples.md
-  s_9427114e2fe303::t_b504aadab4566d 106-110
-pyproject.toml
-  s_9427114e2fe303::t_b504aadab4566d 26-27
-uv.lock
-  ai_agent 412-419,1301,1304,1331,1334,1449-1460,2432-2438
-examples/spreadsheet/document.py
-  s_d5bc8a36850bfe::t_ed40af58e4fb97 37,97,102
-  s_d5bc8a36850bfe::t_25a50ff2db3c5c 113-115
-  s_d5bc8a36850bfe::t_836efbb084a33e 1-36,38-96,98-101,103-112,116-129
-examples/spreadsheet/main.py
-  ai_agent 6
-  s_d5bc8a36850bfe::t_f5e47ec60d2d17 1,15-16,28,30
-  s_d5bc8a36850bfe::t_0e8d7842eecf6d 10
-  s_d5bc8a36850bfe::t_afcb736d399e6a 24,26,29,31-32
-  s_d5bc8a36850bfe::t_c401fc71459ee5 18-23,25,27
-  s_d5bc8a36850bfe::t_e1084a80239be3 12,14
-  s_d5bc8a36850bfe::t_53886f29a75c50 13
-  s_d5bc8a36850bfe::t_b799726548efa3 2-5,7-9,11,17,33-36
-examples/spreadsheet/README.md
-  s_d5bc8a36850bfe::t_3ba803480200ac 4-5,14-15,17-18,21-23,55-56
-  s_d5bc8a36850bfe::t_1952bf6de6efa1 32-42
-  s_d5bc8a36850bfe::t_599f68a69c4273 1-3,19-20,25
-  s_d5bc8a36850bfe::t_83da213185d890 12-13,16,24
-  s_d5bc8a36850bfe::t_9a10da9b665132 6-11,26-31,43-54,57-67
+crates/monty-pool/tests/pool_test.rs
+  s_d5bc8a36850bfe::t_53886f29a75c50 2308-2309
+crates/monty-python/tests/test_type_check.py
+  s_d5bc8a36850bfe::t_53886f29a75c50 93,104,106,330,424,543,618
+crates/monty-proto/src/worker.rs
+  s_d5bc8a36850bfe::t_53886f29a75c50 898
+crates/monty-runtime/tests/subprocess.rs
+  s_d5bc8a36850bfe::t_53886f29a75c50 2217-2218
 ---
 {
   "schema_version": "authorship/3.0.0",
   "git_ai_version": "1.5.2",
   "base_commit_sha": "43fbde1037147e7ac46844fe3bfe55a10f638dad",
-  "prompts": {},
-  "sessions": {
-    "s_9427114e2fe303": {
-      "agent_id": {
-        "tool": "claude",
-        "id": "eaeeac13-786e-4241-b8b9-87efa1ad9450",
-        "model": "claude-fable-5-1"
-      },
-      "human_author": "Samuel Colvin <s@muelcolvin.com>"
-    },
-    "s_d5bc8a36850bfe": {
-      "agent_id": {
-        "tool": "claude",
-        "id": "2aee3def-7022-4b8f-93fa-2c73e5efc1b5",
-        "model": "claude-fable-5-1"
-      },
-      "human_author": "Samuel Colvin <s@muelcolvin.com>"
-    }
-  }
+  "prompts": {}
 }
