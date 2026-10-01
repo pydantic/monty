@@ -1,0 +1,21 @@
+crates/monty-proto/src/lib.rs
+  s_0157e6e84b7e1f::t_887858dcc4392d 39-43
+  s_0157e6e84b7e1f::t_471f349d4d9a85 44,49,51
+  s_0157e6e84b7e1f::t_cee5457383ee40 34-35,50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "bdd689a28ffe29ae4f7c0f591643a0b016ad7562",
+  "prompts": {},
+  "sessions": {
+    "s_0157e6e84b7e1f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf635df7-0d12-4bd3-ba95-d9848fa58051",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
