@@ -189,6 +189,8 @@ export class MontySession {
    *  wrapper sent through any boundary of this session lives here so method
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
+  /** Host results remain available until delivered or the session ends. */
+  private readonly futures = new Map<number, PendingFuture>()
 
   /** @internal — sessions are created by `Monty.checkout`. */
   constructor(native: NativeSession) {
@@ -200,6 +202,8 @@ export class MontySession {
    * Executes one snippet in the worker, driving external function calls
    * (which may return promises), OS callbacks, and print callbacks in this
    * process. Returns the snippet's trailing expression value.
+   * Unawaited host futures remain available to later feeds in this session;
+   * new calls use the current feed's handlers.
    *
    * Node callbacks preserve the caller's async context. With telemetry enabled,
    * spans created inside callbacks nest under the corresponding Monty operation.
@@ -209,9 +213,7 @@ export class MontySession {
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
-    // A fresh answerer (and its pending-future map) per feed, so promises the
-    // worker never asks about again cannot accumulate across feeds.
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(this.native, this.instances, this.futures, options.externalLookup, options.os)
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -249,7 +251,7 @@ export class MontySession {
         // A handler that throws instead of answering leaves the worker
         // suspended, awaiting a resume that will never come — the session
         // cannot be trusted any more.
-        this.broken ??= err instanceof Error ? err : new Error(String(err))
+        this.poison(this.broken ?? (err instanceof Error ? err : new Error(String(err))))
         throw err
       }
     }
@@ -384,7 +386,7 @@ export class MontySession {
    *  captured `externalLookup` / `os` back `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, options.os)
+    const answerer = new TurnAnswerer(this.native, this.instances, this.futures, options.externalLookup, options.os)
     return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
@@ -443,12 +445,14 @@ export class MontySession {
   /**
    * Ends the session and returns the worker to the pool. A crashed or
    * poisoned worker has already been discarded and replaced.
+   * Releases tracked results but does not cancel host promises.
    */
   async close(): Promise<void> {
     if (this.closed) {
       return
     }
     this.closed = true
+    this.futures.clear()
     await this.native.finish()
   }
 
@@ -459,6 +463,7 @@ export class MontySession {
   /** Poisons the session over a worker death or protocol violation. */
   private poison(err: Error): Error {
     this.broken = err
+    this.futures.clear()
     return err
   }
 
@@ -476,19 +481,17 @@ export class MontySession {
  * Answers one suspension turn from a captured `externalLookup` / `os`, tracking
  * promise-returning externals as pending futures. Shared by
  * [`MontySession.feedRun`]'s drive loop and [`SnapshotDriver`]'s `resumeAuto`
- * so both resolve suspensions identically. Built fresh per feed / per snapshot
- * chain — its `futures` map is scoped to that run, never leaking across feeds.
+ * so both resolve suspensions identically. Handlers are captured per feed;
+ * pending results are shared across the owning session's feeds.
  *
  * `answer` deliberately does **not** catch: a handler that throws leaves the
  * worker suspended, so the caller poisons the session and rethrows.
  */
 class TurnAnswerer {
-  /** Pending async external calls, by call id. */
-  readonly futures = new Map<number, PendingFuture>()
-
   constructor(
     private readonly native: NativeSession,
     private readonly instances: InstanceStore,
+    readonly futures: Map<number, PendingFuture>,
     readonly externalLookup: Record<string, unknown> | undefined,
     readonly os: OsCallback | undefined,
   ) {}
@@ -982,7 +985,9 @@ class SnapshotDriver {
   }
 
   async resolveFutures(results: NativeFutureResult[]): Promise<Snapshot> {
-    return this.advance((await this.native.resolveFutures(results, this.onPrint)) as NativeTurn)
+    const turn = (await this.native.resolveFutures(results, this.onPrint)) as NativeTurn
+    for (const result of results) this.answerer.futures.delete(result.callId)
+    return this.advance(turn)
   }
 
   async dump(): Promise<Buffer> {
@@ -1209,7 +1214,7 @@ export class FutureSnapshot extends SingleUse {
 
   /**
    * Waits for one or more of the pending promises registered by earlier
-   * `resumeAuto` calls to settle, delivers them, and resolves to the next
+   * automatic calls in this session to settle, delivers them, and resolves to the next
    * snapshot. Throws if there are no tracked promises for these ids — e.g. on a
    * snapshot restored via `loadSnapshot`, whose promises lived in the previous
    * process (resolve those manually with `resume([...])`). Resumes at most once.

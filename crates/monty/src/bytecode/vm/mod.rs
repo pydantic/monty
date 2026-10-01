@@ -28,7 +28,7 @@ use scheduler::Scheduler;
 
 use crate::{
     args::ArgValues,
-    asyncio::{CallId, TaskId},
+    asyncio::{CallId, ExternalFutures, TaskId},
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
@@ -731,10 +731,9 @@ impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
     /// stacks, scheduler tasks, pending resume effects), and returns the
-    /// globals, working directory and `random` generator so an abandoned REPL
-    /// snippet keeps its namespace, any `os.chdir` it made and any seed it
-    /// set. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom) {
+    /// globals, working directory, `random` generator and unresolved host futures
+    /// for later REPL feeds. Guest tasks are released as in `VM::drop`.
+    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom, ExternalFutures) {
         let Self {
             stack,
             globals,
@@ -747,7 +746,7 @@ impl VMSnapshot {
             random,
             ..
         } = self;
-        HeapReader::with(heap, &mut (), |heap, ()| {
+        let external_futures = HeapReader::with(heap, &mut (), |heap, ()| {
             release_pending_effect(pending_effect, heap);
             pending_lookup_effect.drop_with(heap);
             exception_stack.drop_with(heap);
@@ -755,9 +754,11 @@ impl VMSnapshot {
             for frame in frames {
                 frame.namespace.drop_with(heap);
             }
+            let external_futures = scheduler.take_external_futures(heap);
             scheduler.cleanup(heap);
+            external_futures
         });
-        (globals, cwd, random)
+        (globals, cwd, random, external_futures)
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -1027,6 +1028,16 @@ impl<'h> VM<'h> {
                 env
             },
         }
+    }
+
+    /// Restores the host futures retained by a REPL between feeds.
+    pub(crate) fn set_external_futures(&mut self, futures: ExternalFutures) {
+        self.scheduler.external_futures = futures;
+    }
+
+    /// Retains host futures while the rest of this feed's execution is discarded.
+    pub(crate) fn take_external_futures(&mut self) -> ExternalFutures {
+        self.scheduler.take_external_futures(self.heap)
     }
 
     /// Consumes the VM and creates a snapshot for pause/resume.

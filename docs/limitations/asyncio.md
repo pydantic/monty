@@ -99,6 +99,12 @@ every branch is blocked on an external call, hands the pending calls to the
 host, and resumes when the host returns results. There is no preemption, no
 threads and no exposed event loop.
 
+### Python callback lifetime
+
+Monty starts Python coroutine callbacks when the sandbox calls them, even without an `await`.
+In CPython, calling a coroutine function without awaiting or scheduling its result does not start it.
+See [async host functions](../host-functions.md#async-host-functions) for callback lifetime and cleanup.
+
 ### Siblings left running by a failed `gather` only advance while something else suspends
 
 When one child of a `gather` raises, the siblings keep running as they do in CPython.

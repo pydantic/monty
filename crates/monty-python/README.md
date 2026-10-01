@@ -178,3 +178,9 @@ Return the generated values or `rng.getstate()` instead.
 
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.
+
+Coroutine callbacks belong to the `AsyncMontySession`: a host-call future can be awaited in a later feed.
+`feed_run()` and snapshot `resume_auto()` share that lifetime.
+Leaving the session's `async with` block cancels and joins unfinished callbacks before releasing the checkout.
+Further caller cancellation reaches callback cleanup, which has no fixed deadline.
+Callbacks must cooperate with cancellation; tasks they create themselves remain their responsibility.

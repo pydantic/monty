@@ -360,9 +360,12 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     Uncovered calls fall through to `os=` or the sandbox's no-handler error.
     A dump suspended on an OS call re-announces that call, so a newly supplied mount can answer it.
     Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.
-- **A restored [`FutureSnapshot`][pydantic_monty.FutureSnapshot] cannot be driven with `resume_auto()`.** Its pending coroutines lived in the previous
-    process.
-    Resolve them by hand with `resume({call_id: ...})`.
+- **Live host callbacks do not travel.** Dumps can retain unresolved external futures, including between feeds, but
+    do not serialize the host coroutines or JavaScript promises that will answer them.
+    A restored [`FutureSnapshot`][pydantic_monty.FutureSnapshot] therefore cannot obtain those results with
+    `resume_auto()` / `resumeAuto()`.
+    Resolve them by hand with `resume({call_id: ...})` in Python or `resume([{callId, value}])` in JavaScript.
+    After loading an idle dump, use `feed_start()` / `feedStart()` to await the future and obtain its pending call ID.
 - **A dump is your own session state, not untrusted input.** Loading checks the magic, the version, the size cap and the
     structural invariants the interpreter relies on (function metadata, for one), but it is not a security boundary:
     load only dumps this host produced.

@@ -12,7 +12,7 @@ use smallvec::{SmallVec, smallvec};
 
 use super::FrameNamespace;
 use crate::{
-    asyncio::{Awaiter, CallId, TaskId},
+    asyncio::{Awaiter, CallId, ExternalFutureState, ExternalFutures, TaskId},
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
@@ -132,14 +132,9 @@ pub(crate) struct Scheduler {
     current_task: Option<TaskId>,
     /// Counter for generating new task IDs.
     next_task_id: u32,
-    /// Counter for external call IDs (always incremented, even for sync resolution).
-    next_call_id: u32,
-    /// Host-side index mapping each unresolved external call to its
-    /// `HeapData::ExternalFuture` entry. The scheduler holds an inc_ref on
-    /// each value until the host resolves or fails the call — that ref keeps
-    /// the future entry alive between yield and resume even if no awaiter is
-    /// holding a `Value::Ref` to it.
-    pending_externals: AHashMap<CallId, HeapId>,
+    /// Flattened to preserve the existing scheduler dump fields.
+    #[serde(flatten)]
+    pub external_futures: ExternalFutures,
     /// Index mapping a spawned coroutine's `HeapId` to the `TaskId` driving
     /// it. Populated in [`Scheduler::spawn`] and removed in
     /// [`Scheduler::cancel_task`]. Lets `GatherFuture` and other call sites
@@ -160,8 +155,7 @@ impl Scheduler {
             ready_queue: VecDeque::new(), // Main task is current, not in ready queue
             current_task: Some(main_task_id),
             next_task_id: 1,
-            next_call_id: 0,
-            pending_externals: AHashMap::new(),
+            external_futures: ExternalFutures::default(),
             coroutine_to_task: AHashMap::new(),
         }
     }
@@ -174,7 +168,7 @@ impl Scheduler {
 
     /// Whether awaiting the current call can proceed without delaying other work.
     pub fn can_await_eagerly(&self) -> bool {
-        self.ready_queue.is_empty() && self.pending_externals.is_empty()
+        self.ready_queue.is_empty() && self.external_futures.pending_externals.is_empty()
     }
 
     /// Returns the main task, whose context is saved here whenever another
@@ -198,8 +192,8 @@ impl Scheduler {
     ///
     /// The counter always increments, even for sync resolution, to keep IDs unique.
     pub fn allocate_call_id(&mut self) -> CallId {
-        let id = CallId::new(self.next_call_id);
-        self.next_call_id += 1;
+        let id = CallId::new(self.external_futures.next_call_id);
+        self.external_futures.next_call_id += 1;
         id
     }
 
@@ -210,7 +204,7 @@ impl Scheduler {
     /// call, even if no awaiter holds a `Value::Ref` to it.
     pub fn add_pending_external(&mut self, call_id: CallId, future_id: HeapId, heap: &Heap) {
         heap.inc_ref(future_id);
-        let prev = self.pending_externals.insert(call_id, future_id);
+        let prev = self.external_futures.pending_externals.insert(call_id, future_id);
         debug_assert!(prev.is_none(), "add_pending_external: CallId already registered");
     }
 
@@ -219,7 +213,7 @@ impl Scheduler {
     /// The caller becomes responsible for the inc_ref previously held by the
     /// scheduler (typically dec_ref'd once the state transition is committed).
     pub fn take_pending_external(&mut self, call_id: CallId) -> Option<HeapId> {
-        self.pending_externals.remove(&call_id)
+        self.external_futures.pending_externals.remove(&call_id)
     }
 
     /// Marks the current task as `Blocked` on the awaitable at `awaitable_id`.
@@ -238,7 +232,23 @@ impl Scheduler {
 
     /// Returns all pending (unresolved) CallIds.
     pub fn pending_call_ids(&self) -> Vec<CallId> {
-        self.pending_externals.keys().copied().collect()
+        self.external_futures.pending_externals.keys().copied().collect()
+    }
+
+    /// Detaches feed-local awaiters before returning the host futures to the REPL.
+    pub fn take_external_futures(&mut self, heap: &mut HeapReader<'_>) -> ExternalFutures {
+        for &future_id in self.external_futures.pending_externals.values() {
+            let HeapReadOutput::ExternalFuture(mut future) = heap.read(future_id) else {
+                panic!("pending external call is not an ExternalFuture")
+            };
+            let ExternalFutureState::Pending { awaiter } = &mut future.get_mut(heap).state else {
+                panic!("pending external call is already resolved")
+            };
+            let awaiter = awaiter.take();
+            drop(future);
+            awaiter.drop_with(heap);
+        }
+        mem::take(&mut self.external_futures)
     }
 
     /// Removes the queue entry when delivering directly to an exiting task's waiter.
@@ -414,9 +424,7 @@ impl Scheduler {
     /// every remaining task (via [`Scheduler::cancel_task`]).
     pub fn cleanup(&mut self, heap: &mut HeapReader<'_>) {
         // Release the inc_refs the scheduler holds on each pending future.
-        for (_, future_id) in mem::take(&mut self.pending_externals) {
-            heap.dec_ref(future_id);
-        }
+        mem::take(&mut self.external_futures).drop_with(heap);
         let task_ids: Vec<TaskId> = self.tasks.keys().copied().collect();
         for task_id in task_ids {
             self.cancel_task(task_id, heap);

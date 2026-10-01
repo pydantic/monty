@@ -297,6 +297,17 @@ In JavaScript every host function may be async, and there is no separate pool cl
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
+Host futures belong to the session, not to one feed.
+A future returned by a host call can be awaited in a later feed, including after switching between automatic and
+[manual driving](snapshots.md#driving-automatically).
+New calls use the current feed's `external_lookup` / `externalLookup` and `os` handlers.
+In Python, leaving the [`AsyncMontySession`][pydantic_monty.AsyncMontySession]'s `async with` block cancels unfinished
+callbacks and joins them before releasing the checkout.
+Cleanup is cooperative: further caller cancellation reaches callbacks, and there is no fixed cleanup deadline.
+Tasks created by a callback remain the callback's responsibility.
+JavaScript session teardown releases tracked results but does not cancel host promises.
+Live callbacks [do not travel with dumps](snapshots.md#what-restoring-does-and-does-not-carry).
+
 ## Driving suspensions yourself
 
 `feed_run` answers every suspension for you and returns only the final value.

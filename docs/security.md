@@ -32,7 +32,10 @@ In practice that means:
 
 ## The three host-access mechanisms
 
-Everything the sandbox can reach outside itself goes through one of three mechanisms, and all are opt-in per feed.
+Everything the sandbox can reach outside itself goes through one of three mechanisms.
+Host access is opt-in. Callbacks started by an earlier feed can still be running, even if their handler is omitted
+from the next feed.
+See [host callback lifetime and cleanup](host-functions.md#async-host-functions).
 
 ### Host functions
 

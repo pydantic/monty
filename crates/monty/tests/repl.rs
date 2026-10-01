@@ -827,6 +827,187 @@ async def main():
 }
 
 #[test]
+fn repl_external_future_survives_feed() {
+    for restore in [false, true] {
+        let (repl, _) = init_repl("");
+        let call = repl
+            .feed_start("f = fetch()", vec![], PrintWriter::Disabled)
+            .unwrap()
+            .into_function_call()
+            .unwrap();
+        let call_id = call.call_id;
+        let (mut repl, _) = call
+            .resume_pending(PrintWriter::Disabled)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        if restore {
+            repl = round_trip_repl(&repl);
+        }
+        let pending = repl
+            .feed_start("await f", vec![], PrintWriter::Disabled)
+            .unwrap()
+            .into_resolve_futures()
+            .unwrap();
+        assert_eq!(pending.pending_call_ids(), &[call_id]);
+        let (_, value) = pending
+            .resume(
+                vec![(call_id, ExtFunctionResult::Return(MontyObject::int(42)))],
+                PrintWriter::Disabled,
+            )
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(value, MontyObject::int(42));
+    }
+}
+
+#[test]
+fn repl_external_future_ids_do_not_collide_across_feeds() {
+    let (repl, _) = init_repl("");
+    let first = repl
+        .feed_start("f = fetch()", vec![], PrintWriter::Disabled)
+        .unwrap()
+        .into_function_call()
+        .unwrap();
+    let first_id = first.call_id;
+    let (repl, _) = first
+        .resume_pending(PrintWriter::Disabled)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    let second = repl
+        .feed_start("g = fetch()", vec![], PrintWriter::Disabled)
+        .unwrap()
+        .into_function_call()
+        .unwrap();
+    let second_id = second.call_id;
+    assert_ne!(first_id, second_id);
+    let (repl, _) = second
+        .resume_pending(PrintWriter::Disabled)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    let pending = repl
+        .feed_start("(await f, await g)", vec![], PrintWriter::Disabled)
+        .unwrap()
+        .into_resolve_futures()
+        .unwrap();
+    let (mut repl, value) = pending
+        .resume(
+            vec![
+                (second_id, ExtFunctionResult::Return(MontyObject::int(22))),
+                (first_id, ExtFunctionResult::Return(MontyObject::int(11))),
+            ],
+            PrintWriter::Disabled,
+        )
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(value, MontyObject::tuple([MontyObject::int(11), MontyObject::int(22)]));
+    assert_eq!(feed_run_print(&mut repl, "await f").unwrap(), MontyObject::int(11));
+}
+
+#[test]
+fn repl_external_future_survives_failed_feed() {
+    for code in [
+        "f = fetch()\nraise ValueError('failed feed')",
+        "import asyncio\nf = fetch()\nasync def fail():\n    raise ValueError('failed feed')\nawait asyncio.gather(f, fail())",
+    ] {
+        let (repl, _) = init_repl("");
+        let call = repl
+            .feed_start(code, vec![], PrintWriter::Disabled)
+            .unwrap()
+            .into_function_call()
+            .unwrap();
+        let call_id = call.call_id;
+        let error = call.resume_pending(PrintWriter::Disabled).unwrap_err();
+        assert_eq!(error.error.exc_type(), ExcType::ValueError);
+        let mut repl = error.repl;
+        assert_eq!(
+            repl.feed_run("1 / 0", vec![], PrintWriter::Disabled)
+                .unwrap_err()
+                .exc_type(),
+            ExcType::ZeroDivisionError
+        );
+        repl.feed_run("def value():\n    return 1", vec![], PrintWriter::Disabled)
+            .unwrap();
+        assert_eq!(
+            repl.call_function("value", vec![], PrintWriter::Disabled).unwrap(),
+            MontyObject::int(1)
+        );
+        let pending = repl
+            .feed_start("await f", vec![], PrintWriter::Disabled)
+            .unwrap()
+            .into_resolve_futures()
+            .unwrap();
+        assert_eq!(pending.pending_call_ids(), &[call_id]);
+        let (repl, value) = pending
+            .resume(
+                vec![(call_id, ExtFunctionResult::Return(MontyObject::int(42)))],
+                PrintWriter::Disabled,
+            )
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(value, MontyObject::int(42));
+        drop(repl);
+    }
+}
+
+#[test]
+fn repl_external_future_can_be_awaited_after_interruption() {
+    for mode in ["abandon", "abort", "invalid_call_id"] {
+        let (repl, _) = init_repl("");
+        let call = repl
+            .feed_start("f = fetch()\nawait f", vec![], PrintWriter::Disabled)
+            .unwrap()
+            .into_function_call()
+            .unwrap();
+        let call_id = call.call_id;
+        let pending = call
+            .resume_pending(PrintWriter::Disabled)
+            .unwrap()
+            .into_resolve_futures()
+            .unwrap();
+        let repl = match mode {
+            "abandon" => pending.into_repl(),
+            "abort" => {
+                pending
+                    .abort(MontyException::runtime_error("host abort"), PrintWriter::Disabled)
+                    .unwrap_err()
+                    .repl
+            }
+            "invalid_call_id" => {
+                pending
+                    .resume(
+                        vec![(call_id + 1, ExtFunctionResult::Return(MontyObject::int(99)))],
+                        PrintWriter::Disabled,
+                    )
+                    .unwrap_err()
+                    .repl
+            }
+            _ => unreachable!(),
+        };
+        let pending = repl
+            .feed_start("await f", vec![], PrintWriter::Disabled)
+            .unwrap()
+            .into_resolve_futures()
+            .unwrap();
+        assert_eq!(pending.pending_call_ids(), &[call_id]);
+        let (_, value) = pending
+            .resume(
+                vec![(call_id, ExtFunctionResult::Return(MontyObject::int(42)))],
+                PrintWriter::Disabled,
+            )
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(value, MontyObject::int(42));
+    }
+}
+
+#[test]
 fn repl_start_runtime_error_preserves_repl_state() {
     // Simulate an agent loop: create variables, then a later snippet raises.
     // The REPL must survive so subsequent snippets can access prior variables.

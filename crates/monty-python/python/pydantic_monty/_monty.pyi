@@ -1072,8 +1072,9 @@ class AsyncMontySession:
     A REPL session running in a dedicated `monty` worker, local or remote.
 
     Obtained from `AsyncMonty.checkout()` or `AsyncMontyWebsocket.checkout()`
-    and used as an async context manager. Session state (globals, functions) persists across
-    `feed_run` calls within the session.
+    and used as an async context manager. Session state, including external futures,
+    persists across feeds. Leaving the context cancels and joins unfinished coroutine
+    callbacks started by `feed_run` or snapshot `resume_auto`.
     """
 
     async def __aenter__(self) -> Self: ...
@@ -1099,6 +1100,11 @@ class AsyncMontySession:
         Worker I/O runs off the event loop; external functions (the callable
         entries in `external_lookup`) may be coroutines, awaited concurrently.
         See `MontySession.feed_run` for the shared error types.
+
+        Unfinished coroutine callbacks survive this feed and can be awaited in a
+        later feed. They are cancelled and joined when the session context exits.
+        Further cancellation reaches their cleanup; callbacks must cooperate with cancellation.
+        Tasks callbacks create themselves remain their responsibility.
 
         Host callbacks run in copies of the caller's Python context. With tracing
         enabled, telemetry emitted inside callbacks is parented to the corresponding
@@ -1510,8 +1516,8 @@ class AsyncFutureSnapshot:
 
     async def resume(self, results: dict[int, ExternalSettledResult]) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
-        """Wait for one or more coroutine externals spawned by earlier
-        `resume_auto` calls to settle, deliver them, and return the next
+        """Wait for one or more coroutine externals started in this session by
+        `feed_run` or `resume_auto` to settle, deliver them, and return the next
         snapshot. Raises if there are no pending coroutines to await (e.g. a
         snapshot restored via `load_snapshot`)."""
 
