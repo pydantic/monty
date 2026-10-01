@@ -795,10 +795,12 @@ jobs:
             --out dist
           rust-toolchain: stable
           rustup-components: ${{ matrix.pgo-runtime && 'llvm-tools-preview' || '' }}
-          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME -e CFLAGS_s390x_unknown_linux_gnu
+          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME -e RUSTFLAGS -e CFLAGS_s390x_unknown_linux_gnu
           working-directory: crates/monty-runtime
         env:
           PGO_RUNTIME: ${{ matrix.pgo-runtime }}
+          # LLVM 23 can corrupt select counters; disable them during both PGO generation and use.
+          RUSTFLAGS: ${{ matrix.pgo-runtime && '-Cllvm-args=-pgo-instr-select=false' || '' }}
           # The s390x cross assembler defaults to z900, which lacks the `lay`
           # instruction `psm` (via ruff's `stacker`) uses; z10 is Rust's baseline.
           CFLAGS_s390x_unknown_linux_gnu: -march=z10
