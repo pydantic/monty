@@ -276,10 +276,10 @@ export class WorkerTransport {
   }
 
   /** The stubs of the session's host-provided modules, keyed by module name. */
-  async getTypes(): Promise<Record<string, string>> {
-    const event = await this.control({ tag: 'get-types' }, 'type-stubs', 'GetTypes')
+  async getStubs(): Promise<Record<string, string>> {
+    const event = await this.control({ tag: 'get-stubs' }, 'type-stubs', 'GetStubs')
     if (event.tag === 'type-stubs') return Object.fromEntries(event.val.map((stub) => [stub.module, stub.source]))
-    throw new Error('GetTypes returned an unexpected event')
+    throw new Error('GetStubs returned an unexpected event')
   }
 
   /** Restores a previously dumped session into this fresh worker. */

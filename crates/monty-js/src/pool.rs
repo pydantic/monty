@@ -730,12 +730,12 @@ impl NativeSession {
     /// name: what `typeCheckModuleStubs` declared, plus whatever a serving
     /// relay renders for its own modules.
     #[napi]
-    pub fn get_types<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, HashMap<String, String>>> {
+    pub fn get_stubs<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, HashMap<String, String>>> {
         let slot = Arc::clone(&self.checkout);
         env.spawn_future(async move {
             let mut guard = slot.lock().await;
             let checkout = guard.as_mut().ok_or_else(|| pool_error(PoolError::Finished))?;
-            let stubs = checkout.get_types().await.map_err(pool_error)?;
+            let stubs = checkout.get_stubs().await.map_err(pool_error)?;
             Ok(stubs
                 .into_iter()
                 .map(|stub| (stub.module().to_owned(), stub.source().to_owned()))

@@ -460,9 +460,9 @@ impl PyMontySession {
     /// The type stubs of the session's host-provided modules as a
     /// `{module: source}` dict: what `type_check_module_stubs` declared.
     /// Blocks with the GIL released, bounded by the pool's `request_timeout`.
-    fn get_types<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    fn get_stubs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let stubs = py
-            .detach(|| block_on_sync(get_types_checkout(&self.checkout)))?
+            .detach(|| block_on_sync(get_stubs_checkout(&self.checkout)))?
             .map_err(|e| pool_err_to_py(py, e))?;
         module_stubs_dict(py, &stubs)
     }
@@ -1060,12 +1060,12 @@ impl PyAsyncMontySession {
         })
     }
 
-    /// Async counterpart of [`PyMontySession::get_types`]: the coroutine
+    /// Async counterpart of [`PyMontySession::get_stubs`]: the coroutine
     /// resolves to the `{module: source}` dict of the stubs in effect.
-    fn get_types<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn get_stubs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let checkout = Arc::clone(&self.checkout);
         future_into_py(py, async move {
-            let stubs = get_types_checkout(&checkout)
+            let stubs = get_stubs_checkout(&checkout)
                 .await
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             Python::attach(|py| module_stubs_dict(py, &stubs).map(Bound::unbind))
@@ -1436,16 +1436,16 @@ async fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> 
 }
 
 /// Asks a live checkout's peer for the module stubs in effect (shared by the
-/// sync and async `get_types` methods; runs without the GIL).
-async fn get_types_checkout(checkout: &SharedCheckout) -> Result<Vec<ModuleStub>, PoolError> {
+/// sync and async `get_stubs` methods; runs without the GIL).
+async fn get_stubs_checkout(checkout: &SharedCheckout) -> Result<Vec<ModuleStub>, PoolError> {
     let mut guard = checkout.lock().await;
     match guard.as_mut() {
-        Some(checkout) => checkout.get_types().await,
+        Some(checkout) => checkout.get_stubs().await,
         None => Err(PoolError::Finished),
     }
 }
 
-/// `stubs` as the `{module: source}` dict `get_types` returns.
+/// `stubs` as the `{module: source}` dict `get_stubs` returns.
 fn module_stubs_dict<'py>(py: Python<'py>, stubs: &[ModuleStub]) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     for stub in stubs {

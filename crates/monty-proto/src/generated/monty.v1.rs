@@ -737,7 +737,7 @@ pub mod parent_request {
         #[prost(message, tag = "11")]
         AbortFeed(super::AbortFeed),
         #[prost(message, tag = "12")]
-        GetTypes(super::GetTypes),
+        GetStubs(super::GetStubs),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -815,7 +815,7 @@ pub struct Configure {
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
     /// Type stubs for host-provided modules, one `.pyi` per module, so that
-    /// `import <module>` resolves during type checking; `GetTypes` reports the
+    /// `import <module>` resolves during type checking; `GetStubs` reports the
     /// stubs in effect. Ignored when `type_check` is false.
     #[prost(message, repeated, tag = "14")]
     pub type_check_module_stubs: crate::budgeted_prost::alloc::vec::Vec<ModuleStub>,
@@ -971,7 +971,7 @@ pub struct InstallDependencies {
 /// it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
-pub struct GetTypes {}
+pub struct GetStubs {}
 /// A oneof shares its field-number space with the enclosing message, so tags
 /// 1-19 are reserved by convention for `kind` arms and the message-level
 /// fields start at 20 — a new arm then never has to jump the numbering. Note
@@ -1423,7 +1423,7 @@ pub struct ShutdownDump {
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
 }
-/// Answers `GetTypes`: the stub of every host-provided module, as the type
+/// Answers `GetStubs`: the stub of every host-provided module, as the type
 /// checker sees them.
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]

@@ -179,7 +179,7 @@ impl Recorder {
                 self.feed = None;
                 self.session = None;
             }
-            Some(pb::parent_request::Kind::GetTypes(_)) => {
+            Some(pb::parent_request::Kind::GetStubs(_)) => {
                 self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
                     "get types",
@@ -442,7 +442,7 @@ impl Recorder {
             // a bare acknowledgement ending a housekeeping turn; the turn
             // span itself is the record
             Some(pb::child_event::Kind::Ok(_)) => self.turn = None,
-            // the get-types span names the modules it was answered with, and
+            // the get-stubs span names the modules it was answered with, and
             // closes on it; capped like every other rendered attribute
             Some(pb::child_event::Kind::TypeStubs(t)) => {
                 if let Some(turn) = &self.turn {

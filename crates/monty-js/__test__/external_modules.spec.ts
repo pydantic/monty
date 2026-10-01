@@ -79,11 +79,11 @@ test('resumeAuto answers imports', async () => {
   }
 })
 
-test('module stubs type-check imports and come back from getTypes', async () => {
+test('module stubs type-check imports and come back from getStubs', async () => {
   const typeCheckModuleStubs = { tools: 'def add(a: int, b: int) -> int: ...\n' }
   const session = await pool().checkout({ typeCheck: true, typeCheckFormat: 'concise', typeCheckModuleStubs })
   try {
-    t.deepEqual(await session.getTypes(), typeCheckModuleStubs)
+    t.deepEqual(await session.getStubs(), typeCheckModuleStubs)
     await t.throwsAsync(session.feedRun("from tools import add\nadd('x', 2)", { externalModules: { tools } }), {
       instanceOf: MontyTypingError,
       message:

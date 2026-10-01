@@ -82,7 +82,7 @@ pub struct ReplConfig {
     pub profile: Option<String>,
     /// Type stubs for the host-provided modules, one `.pyi` each, so that
     /// `import <module>` type-checks. Validated on `Configure` and reported
-    /// by [`Checkout::get_types`] whether or not `type_check` is on; only a
+    /// by [`Checkout::get_stubs`] whether or not `type_check` is on; only a
     /// type-checked session reads them.
     pub type_check_module_stubs: Vec<ModuleStub>,
 }
@@ -1173,15 +1173,15 @@ impl Checkout {
         }
     }
 
-    /// The type stubs of the session's host-provided modules, as `GetTypes`
+    /// The type stubs of the session's host-provided modules, as `GetStubs`
     /// reports them: what the session was configured with, plus whatever a
     /// serving relay renders for its own modules. Valid while idle or
     /// suspended. A peer that predates the request refuses it with a
     /// [`PoolError::Runtime`] (`RuntimeError: protocol violation: request has
     /// no kind`), and the session carries on, a suspended feed still
     /// resumable.
-    pub async fn get_types(&mut self) -> Result<Vec<ModuleStub>, PoolError> {
-        let request = request(pb::parent_request::Kind::GetTypes(pb::GetTypes {}));
+    pub async fn get_stubs(&mut self) -> Result<Vec<ModuleStub>, PoolError> {
+        let request = request(pb::parent_request::Kind::GetStubs(pb::GetStubs {}));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
         match self.request_turn(&request, deadline, &mut no_print).await? {
@@ -1189,7 +1189,7 @@ impl Checkout {
                 Ok(stubs) => Ok(stubs),
                 Err(err) => Err(self.protocol_violation(format!("invalid TypeStubs: {err}"))),
             },
-            other => Err(self.protocol_violation(format!("unexpected reply to GetTypes: {other:?}"))),
+            other => Err(self.protocol_violation(format!("unexpected reply to GetStubs: {other:?}"))),
         }
     }
 
@@ -1869,12 +1869,12 @@ impl Checkout {
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
                     // an error reply to `Dump` (e.g. an oversize dump) or to
-                    // `GetTypes` (a peer that predates it) does not end the
+                    // `GetStubs` (a peer that predates it) does not end the
                     // in-flight feed — the child stays suspended and
                     // resumable, so keep the pending call and mounts
                     if !matches!(
                         request.kind,
-                        Some(pb::parent_request::Kind::Dump(_) | pb::parent_request::Kind::GetTypes(_))
+                        Some(pb::parent_request::Kind::Dump(_) | pb::parent_request::Kind::GetStubs(_))
                     ) {
                         self.pending = None;
                         self.feed_mounts = None;
@@ -2224,7 +2224,7 @@ enum ControlEvent {
     Turn(TurnEvent),
     Ok,
     Dump(Vec<u8>),
-    /// The module stubs `GetTypes` asked for.
+    /// The module stubs `GetStubs` asked for.
     TypeStubs(Vec<pb::ModuleStub>),
 }
 

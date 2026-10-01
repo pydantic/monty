@@ -546,7 +546,7 @@ message ParentRequest {
     Reset reset = 9;
     Shutdown shutdown = 10;
     AbortFeed abort_feed = 11;
-    GetTypes get_types = 12;
+    GetStubs get_stubs = 12;
   }
 
   // W3C `traceparent` identifying the caller's span, so a child that exports
@@ -614,7 +614,7 @@ message Configure {
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
   // Type stubs for host-provided modules, one `.pyi` per module, so that
-  // `import <module>` resolves during type checking; `GetTypes` reports the
+  // `import <module>` resolves during type checking; `GetStubs` reports the
   // stubs in effect. Ignored when `type_check` is false.
   repeated ModuleStub type_check_module_stubs = 14;
 }
@@ -760,7 +760,7 @@ message InstallDependencies {
 // "protocol violation: request has no kind") and the session carries on:
 // there is no in-band negotiation, so only send it to a peer known to serve
 // it.
-message GetTypes {}
+message GetStubs {}
 
 // ============================================================================
 // Events (child -> parent)
@@ -1102,7 +1102,7 @@ message ShutdownDump {
   optional bytes dump = 1;
 }
 
-// Answers `GetTypes`: the stub of every host-provided module, as the type
+// Answers `GetStubs`: the stub of every host-provided module, as the type
 // checker sees them.
 message TypeStubs {
   repeated ModuleStub modules = 1;

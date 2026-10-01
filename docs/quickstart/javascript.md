@@ -262,7 +262,7 @@ console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data
 ```
 
 `typeCheckModuleStubs` gives the checker one `.pyi` per module the code imports through `externalModules`, and
-`session.getTypes()` returns the stubs in effect; see [type checking](../type-checking.md#declaring-what-the-host-provides).
+`session.getStubs()` returns the stubs in effect; see [type checking](../type-checking.md#declaring-what-the-host-provides).
 
 Omitted `maxMemory` / `maxFeedDurationSecs` means unlimited.
 `maxFeedDurationSecs` and `maxTurnDurationSecs` bound one execution clock over one feed

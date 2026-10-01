@@ -355,7 +355,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             exception: Some(raised_exception_from_component(error)),
         }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
-        Request::GetTypes => pb::parent_request::Kind::GetTypes(pb::GetTypes {}),
+        Request::GetStubs => pb::parent_request::Kind::GetStubs(pb::GetStubs {}),
         Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state: state.into() }),
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
     };

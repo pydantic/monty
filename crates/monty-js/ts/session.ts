@@ -434,9 +434,9 @@ export class MontySession {
    * renders for its own modules. Give them to a model writing code for the
    * session, alongside `typeCheckStubs`.
    */
-  async getTypes(): Promise<Record<string, string>> {
+  async getStubs(): Promise<Record<string, string>> {
     this.ensureUsable()
-    return await this.native.getTypes()
+    return await this.native.getStubs()
   }
 
   /**

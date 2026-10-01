@@ -2909,10 +2909,10 @@ fn position() -> SourceRange {
     }
 }
 
-// ---- module stubs and GetTypes --------------------------------------------
+// ---- module stubs and GetStubs --------------------------------------------
 //
 // A serving relay reads `type_check_module_stubs` off the `Configure`, and
-// answers `GetTypes` itself with the stubs in effect.
+// answers `GetStubs` itself with the stubs in effect.
 
 fn module_stub(module: &str, source: &str) -> ModuleStub {
     ModuleStub::new(module, source).expect("a valid stub name")
@@ -2949,7 +2949,7 @@ async fn configure_carries_module_stubs() {
 }
 
 #[tokio::test]
-async fn get_types_reads_the_type_stubs_reply() {
+async fn get_stubs_reads_the_type_stubs_reply() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = thread::spawn(move || {
@@ -2958,8 +2958,8 @@ async fn get_types_reads_the_type_stubs_reply() {
         send_kind(&mut socket, ok_event());
         let request = try_read_request(&mut socket).expect("get types");
         assert!(
-            matches!(request.kind, Some(pb::parent_request::Kind::GetTypes(_))),
-            "expected GetTypes, got {request:?}"
+            matches!(request.kind, Some(pb::parent_request::Kind::GetStubs(_))),
+            "expected GetStubs, got {request:?}"
         );
         send_kind(
             &mut socket,
@@ -2987,7 +2987,7 @@ async fn get_types_reads_the_type_stubs_reply() {
     });
 
     let (_pool, mut checkout) = websocket_checkout(port).await;
-    let stubs = checkout.get_types().await.expect("get_types");
+    let stubs = checkout.get_stubs().await.expect("get_stubs");
     assert_eq!(
         stubs,
         vec![module_stub(
@@ -2995,7 +2995,7 @@ async fn get_types_reads_the_type_stubs_reply() {
             "async def list_payments(*, limit: int = ...) -> str: ...\n"
         )]
     );
-    let err = checkout.get_types().await.unwrap_err();
+    let err = checkout.get_stubs().await.unwrap_err();
     assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
     assert_eq!(
         err.to_string(),
@@ -3004,11 +3004,11 @@ async fn get_types_reads_the_type_stubs_reply() {
     join_server(server).await;
 }
 
-/// A peer that predates `GetTypes` answers it with an `Error` and stays as
+/// A peer that predates `GetStubs` answers it with an `Error` and stays as
 /// it was, so a feed suspended at the time is still resumable, as after a
 /// refused `Dump`.
 #[tokio::test]
-async fn get_types_refused_mid_feed_keeps_the_suspension() {
+async fn get_stubs_refused_mid_feed_keeps_the_suspension() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = thread::spawn(move || {
@@ -3029,7 +3029,7 @@ async fn get_types_refused_mid_feed_keeps_the_suspension() {
         );
         assert!(matches!(
             read_request(&mut socket),
-            pb::parent_request::Kind::GetTypes(_)
+            pb::parent_request::Kind::GetStubs(_)
         ));
         send_kind(
             &mut socket,
@@ -3059,7 +3059,7 @@ async fn get_types_refused_mid_feed_keeps_the_suspension() {
         .await
         .expect("feed");
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
-    let err = checkout.get_types().await.unwrap_err();
+    let err = checkout.get_stubs().await.unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };

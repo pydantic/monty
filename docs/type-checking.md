@@ -126,7 +126,7 @@ so `import tools` resolves and `from tools import add` sees its declarations, wi
 
     with Monty() as pool:
         with pool.checkout(type_check=True, type_check_module_stubs=stubs) as session:
-            print(session.get_types() == stubs)
+            print(session.get_stubs() == stubs)
             #> True
             try:
                 session.feed_run("from tools import add\nadd('x', 2)")
@@ -144,7 +144,7 @@ so `import tools` resolves and `from tools import add` sees its declarations, wi
 
     await using pool = await Monty.create()
     await using session = await pool.checkout({ typeCheck: true, typeCheckModuleStubs })
-    console.log(await session.getTypes()) // { tools: 'def add(a: int, b: int) -> int: ...\n' }
+    console.log(await session.getStubs()) // { tools: 'def add(a: int, b: int) -> int: ...\n' }
     try {
       await session.feedRun("from tools import add\nadd('x', 2)")
     } catch (err) {
@@ -158,7 +158,7 @@ raises `ValueError` (throws in JavaScript).
 The reserved names are the modules of the vendored typeshed, which include ones the checker resolves but the runtime
 does not, such as `abc` and `enum`: a host can serve those through `external_modules`, but the checker keeps its own
 stub for them; see [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
-[`get_types()`][pydantic_monty.MontySession.get_types] returns the stubs in effect.
+[`get_stubs()`][pydantic_monty.MontySession.get_stubs] returns the stubs in effect.
 The runtime side of an imported host module is `external_modules`; see
 [importing host modules](host-functions.md#importing-host-modules).
 

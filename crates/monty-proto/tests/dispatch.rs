@@ -579,7 +579,7 @@ fn turn_events_carry_the_suspension_budget() {
 }
 
 // ---------------------------------------------------------------------------
-// Module stubs and GetTypes
+// Module stubs and GetStubs
 // ---------------------------------------------------------------------------
 
 fn module_stub(module: &str, source: &str) -> pb::ModuleStub {
@@ -610,8 +610,8 @@ fn configure_with_module_stubs(
     split_turn(&bytes).1
 }
 
-fn get_types(child: &mut Child) -> pb::child_event::Kind {
-    let request = frame_request(pb::parent_request::Kind::GetTypes(pb::GetTypes {}));
+fn get_stubs(child: &mut Child) -> pb::child_event::Kind {
+    let request = frame_request(pb::parent_request::Kind::GetStubs(pb::GetStubs {}));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     split_turn(&bytes).1
@@ -637,14 +637,14 @@ fn expect_error_message(event: pb::child_event::Kind) -> String {
     error.exception.unwrap().message.unwrap()
 }
 
-/// `GetTypes` answers with the stubs `Configure` carried, whether or not the
+/// `GetStubs` answers with the stubs `Configure` carried, whether or not the
 /// session type-checks or has run, until `Reset` clears them.
 #[test]
-fn get_types_reports_the_configured_module_stubs() {
+fn get_stubs_reports_the_configured_module_stubs() {
     let mut child = Child::default();
     assert_eq!(
-        expect_error_message(get_types(&mut child)),
-        "protocol violation: GetTypes before Configure"
+        expect_error_message(get_stubs(&mut child)),
+        "protocol violation: GetStubs before Configure"
     );
 
     let tools = ("tools".to_owned(), "def add(a: int, b: int) -> int: ...\n".to_owned());
@@ -653,10 +653,10 @@ fn get_types_reports_the_configured_module_stubs() {
         configure_with_module_stubs(&mut child, false, stubs),
         pb::child_event::Kind::Ok(_)
     ));
-    assert_eq!(expect_type_stubs(get_types(&mut child)), vec![tools.clone()]);
+    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![tools.clone()]);
     let (_, event) = feed(&mut child, "1 + 1");
     assert_eq!(expect_complete(event), MontyObject::int(2));
-    assert_eq!(expect_type_stubs(get_types(&mut child)), vec![tools]);
+    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![tools]);
 
     let request = frame_request(pb::parent_request::Kind::Reset(pb::Reset {}));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
@@ -664,11 +664,11 @@ fn get_types_reports_the_configured_module_stubs() {
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
     // the stubs went with the session: nothing is left to report
     assert_eq!(
-        expect_error_message(get_types(&mut child)),
-        "protocol violation: GetTypes before Configure"
+        expect_error_message(get_stubs(&mut child)),
+        "protocol violation: GetStubs before Configure"
     );
     create_repl(&mut child);
-    assert_eq!(expect_type_stubs(get_types(&mut child)), vec![]);
+    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![]);
 }
 
 /// A module named twice would be checked against one stub and reported as
@@ -696,7 +696,7 @@ fn a_refused_configure_keeps_no_stubs() {
         "protocol violation: invalid type_check_module_stubs: tools stub source is too deeply nested"
     );
     load_state(&mut child, state);
-    assert_eq!(expect_type_stubs(get_types(&mut child)), vec![]);
+    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![]);
 }
 
 /// A stub for a module the sandbox provides itself is refused on the
@@ -707,8 +707,8 @@ fn configure_refuses_a_reserved_module_stub() {
     let event = configure_with_module_stubs(&mut child, false, vec![module_stub("json", "")]);
     insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: invalid type_check_module_stubs: invalid value for ModuleStub.module: module "json" is provided by the sandbox or its type checker and cannot be replaced"#);
     assert_eq!(
-        expect_error_message(get_types(&mut child)),
-        "protocol violation: GetTypes before Configure"
+        expect_error_message(get_stubs(&mut child)),
+        "protocol violation: GetStubs before Configure"
     );
 }
 
@@ -750,7 +750,7 @@ fn load_restores_the_dumped_module_stubs() {
         ));
         load_state(&mut child, state);
         assert_eq!(
-            expect_type_stubs(get_types(&mut child)),
+            expect_type_stubs(get_stubs(&mut child)),
             vec![("tools".to_owned(), "x: int\n".to_owned())],
             "type_check={type_check}"
         );

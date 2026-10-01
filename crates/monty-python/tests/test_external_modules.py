@@ -112,10 +112,10 @@ async def test_async_tools_run_concurrently():
     assert result == snapshot([1, 2])
 
 
-def test_module_stubs_type_check_and_get_types(pool: Monty):
+def test_module_stubs_type_check_and_get_stubs(pool: Monty):
     stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
     with pool.checkout(type_check=True, type_check_format='concise', type_check_module_stubs=stubs) as session:
-        assert session.get_types() == snapshot({'tools': 'def add(a: int, b: int) -> int: ...\n'})
+        assert session.get_stubs() == snapshot({'tools': 'def add(a: int, b: int) -> int: ...\n'})
         with pytest.raises(MontyTypingError) as exc_info:
             session.feed_run("from tools import add\nadd('x', 2)", external_modules={'tools': TOOLS})
         assert str(exc_info.value) == snapshot(

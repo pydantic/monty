@@ -635,7 +635,7 @@ class Monty:
                 keyed by the module name, so that `import <module>` resolves
                 during type checking (the stub is never star-imported). A
                 name that is not an identifier, or is a module the sandbox
-                provides, raises `ValueError`. `get_types()` reports them.
+                provides, raises `ValueError`. `get_stubs()` reports them.
             type_check_format: How `MontyTypingError` diagnostics are rendered;
                 `None` (the default) means `'full'`. Chosen here rather than on
                 the error because the checker's structured diagnostics never
@@ -882,7 +882,7 @@ class MontySession:
         bytes using monty's existing dump format. The session stays usable.
         """
 
-    def get_types(self) -> dict[str, str]:
+    def get_stubs(self) -> dict[str, str]:
         """
         The type stubs of the session's host-provided modules, keyed by module
         name: what `type_check_module_stubs` declared. Give them to a model
@@ -1299,9 +1299,9 @@ class AsyncMontySession:
         `MontyRuntimeError`; the session stays usable.
         """
 
-    async def get_types(self) -> dict[str, str]:
+    async def get_stubs(self) -> dict[str, str]:
         """
-        Async counterpart of `MontySession.get_types`: the stubs of the
+        Async counterpart of `MontySession.get_stubs`: the stubs of the
         session's host-provided modules.
         """
 

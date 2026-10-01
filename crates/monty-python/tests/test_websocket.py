@@ -509,7 +509,7 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_w
 
 
 async def test_module_stubs_over_websocket(ws_url: str):
-    """`get_types` reports the configured module stubs from the far side."""
+    """`get_stubs` reports the configured module stubs from the far side."""
     stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
 
     def add(a: int, b: int) -> int:
@@ -517,6 +517,6 @@ async def test_module_stubs_over_websocket(ws_url: str):
 
     async with AsyncMontyWebsocket(ws_url) as pool:
         async with pool.checkout(type_check=True, type_check_module_stubs=stubs) as session:
-            assert await session.get_types() == snapshot({'tools': 'def add(a: int, b: int) -> int: ...\n'})
+            assert await session.get_stubs() == snapshot({'tools': 'def add(a: int, b: int) -> int: ...\n'})
             result = await session.feed_run('import tools\ntools.add(1, 2)', external_modules={'tools': {'add': add}})
             assert result == snapshot(3)

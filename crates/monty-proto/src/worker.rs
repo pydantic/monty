@@ -218,7 +218,7 @@ pub struct Child {
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
     os_policy: OsPolicy,
     /// The stubs of the session's host-provided modules, from `Configure` (or
-    /// the dump a `Load` restored): what `GetTypes` reports, and what the type
+    /// the dump a `Load` restored): what `GetStubs` reports, and what the type
     /// checker resolves their imports against.
     module_stubs: Vec<ModuleStub>,
 }
@@ -277,7 +277,7 @@ impl Child {
             pb::parent_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
             pb::parent_request::Kind::Dump(_) => self.handle_dump(),
             pb::parent_request::Kind::Load(load) => self.handle_load(&load),
-            pb::parent_request::Kind::GetTypes(_) => self.handle_get_types(),
+            pb::parent_request::Kind::GetStubs(_) => self.handle_get_stubs(),
             pb::parent_request::Kind::Reset(_) => match self.reset() {
                 Ok(()) => ok_event(),
                 // A failed scrub leaves the finished session's files in the
@@ -472,7 +472,7 @@ impl Child {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
             // Validated in full before anything is kept, so a refused
-            // `Configure` leaves nothing for a later `GetTypes` to report.
+            // `Configure` leaves nothing for a later `GetStubs` to report.
             let module_stubs = match module_stubs_from_proto(&configure.type_check_module_stubs) {
                 Ok(stubs) => stubs,
                 Err(err) => return protocol_violation(&format!("invalid type_check_module_stubs: {err}")),
@@ -486,7 +486,7 @@ impl Child {
                     stub.module()
                 ));
             }
-            // Kept whether or not the session type-checks: `GetTypes` reports them either way.
+            // Kept whether or not the session type-checks: `GetStubs` reports them either way.
             self.module_stubs = module_stubs;
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
@@ -856,11 +856,11 @@ impl Child {
         event
     }
 
-    /// Answers `GetTypes` with the module stubs the session holds; a worker
+    /// Answers `GetStubs` with the module stubs the session holds; a worker
     /// with no session has nothing to report.
-    fn handle_get_types(&self) -> pb::ChildEvent {
+    fn handle_get_stubs(&self) -> pb::ChildEvent {
         if matches!(self.state, SessionState::Configured(None)) {
-            protocol_violation("GetTypes before Configure")
+            protocol_violation("GetStubs before Configure")
         } else {
             event(pb::child_event::Kind::TypeStubs(pb::TypeStubs {
                 modules: module_stubs_to_proto(&self.module_stubs).into(),

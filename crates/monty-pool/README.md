@@ -227,10 +227,10 @@ A remote without persistence refuses `Checkout::dump` and `Checkout::restore` wi
 session carries on.
 
 `ReplConfig::type_check_module_stubs` gives the type checker one `.pyi` per host-provided module, and
-`Checkout::get_types` reports the stubs in effect.
+`Checkout::get_stubs` reports the stubs in effect.
 `ModuleStub::new` refuses a module name that is not an identifier or that the sandbox or its type checker already
 provides.
-A worker that predates `GetTypes` answers it with an `Error` (`PoolError::Runtime`) and the session carries on, a
+A worker that predates `GetStubs` answers it with an `Error` (`PoolError::Runtime`) and the session carries on, a
 suspended feed still resumable.
 With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
 checkout redials, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new

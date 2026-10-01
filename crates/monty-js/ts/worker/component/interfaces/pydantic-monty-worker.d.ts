@@ -457,7 +457,7 @@ export type Request =
   | RequestDump
   | RequestLoad
   | RequestReset
-  | RequestGetTypes
+  | RequestGetStubs
 export interface RequestConfigure {
   tag: 'configure'
   val: ConfigureRequest
@@ -492,8 +492,8 @@ export interface RequestLoad {
 export interface RequestReset {
   tag: 'reset'
 }
-export interface RequestGetTypes {
-  tag: 'get-types'
+export interface RequestGetStubs {
+  tag: 'get-stubs'
 }
 export interface StackFrame {
   filename: string

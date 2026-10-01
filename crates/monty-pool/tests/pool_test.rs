@@ -2917,7 +2917,7 @@ async fn an_import_is_answered_by_the_host() {
 }
 
 /// The session's module stubs type-check imports of host modules and come
-/// back from `get_types`.
+/// back from `get_stubs`.
 #[tokio::test]
 async fn module_stubs_type_check_and_are_reported() {
     let pool = Pool::new(config()).await.unwrap();
@@ -2934,7 +2934,7 @@ async fn module_stubs_type_check_and_are_reported() {
         })
         .await
         .unwrap();
-    assert_eq!(session.get_types().await.unwrap(), vec![stub]);
+    assert_eq!(session.get_stubs().await.unwrap(), vec![stub]);
     let err = session
         .feed(
             "from tools import add\nadd('x', 2)",
