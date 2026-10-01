@@ -80,7 +80,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
     // `MISSING` is a bare sentinel compared by identity, so it needs no state
-    // beyond its name — a `Marker`, like `sys.stdout` and the `typing` forms.
+    // beyond its name — a `Marker` like `sys.stdout`, with a type of its own.
     module.set_attr(
         StaticStrings::Missing,
         Value::Marker(Marker(StaticStrings::Missing)),

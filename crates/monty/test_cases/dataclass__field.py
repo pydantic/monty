@@ -99,6 +99,22 @@ except ValueError as e:
 
 # === MISSING is a singleton compared by identity ===
 assert MISSING is MISSING
+# It is a plain object of its own private type, as CPython's `_MISSING_TYPE()` is.
+assert repr(type(MISSING)) == "<class 'dataclasses._MISSING_TYPE'>"
+assert type(MISSING).__name__ == '_MISSING_TYPE'
+assert isinstance(MISSING, type(MISSING))
+missing_repr = repr(MISSING)
+assert missing_repr.startswith('<dataclasses._MISSING_TYPE object at 0x')
+assert str(MISSING) == missing_repr
+assert bool(MISSING) is True
+assert MISSING != None
+assert hash(MISSING) == hash(MISSING)
+# An unadopted `field()` has no annotation, so its whole repr matches CPython.
+assert repr(field()) == (
+    f'Field(name=None,type=None,default={missing_repr},default_factory={missing_repr},'
+    f'init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({{}}),'
+    f'kw_only={missing_repr},doc=None,_field_type=None)'
+)
 # It is what an unset default or factory reads as, on both kinds of field.
 assert Plain.__dataclass_fields__['a'].default == 5
 assert Plain.__dataclass_fields__['a'].default_factory is MISSING

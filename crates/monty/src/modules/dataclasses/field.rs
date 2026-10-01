@@ -290,9 +290,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
         Ok(Some(identity_hash(self.id())))
     }
 
-    /// CPython's `Field.__repr__`, attribute for attribute. The spellings Monty
-    /// cannot reproduce are documented divergences: `type` is annotation text,
-    /// and `MISSING` prints as a bare name rather than the sentinel object.
+    /// CPython's `Field.__repr__`, attribute for attribute. `type` is annotation
+    /// text, the one spelling Monty cannot reproduce (a documented divergence).
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
@@ -313,27 +312,28 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
         defer_drop!(default, vm);
         defer_drop!(factory, vm);
         f.write_str("Field(name=")?;
-        write_or(name.as_ref(), "None", f, vm, heap_ids)?;
+        name.as_ref().unwrap_or(&Value::None).py_repr_fmt(f, vm, heap_ids)?;
         f.write_str(",type=")?;
-        write_or(annotation.as_ref(), "None", f, vm, heap_ids)?;
+        annotation
+            .as_ref()
+            .unwrap_or(&Value::None)
+            .py_repr_fmt(f, vm, heap_ids)?;
         f.write_str(",default=")?;
-        write_or(default.as_ref(), "MISSING", f, vm, heap_ids)?;
+        default.as_ref().unwrap_or(&missing()).py_repr_fmt(f, vm, heap_ids)?;
         f.write_str(",default_factory=")?;
-        write_or(factory.as_ref(), "MISSING", f, vm, heap_ids)?;
+        factory.as_ref().unwrap_or(&missing()).py_repr_fmt(f, vm, heap_ids)?;
         // Constants, because `field()` refuses every argument that would vary
         // them — as `py_getattr` below notes.
-        f.write_str(",init=True,repr=True,hash=None,compare=True,")?;
+        f.write_str(",init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=")?;
         // A field CPython has not adopted still reports `kw_only` as MISSING and
         // `_field_type` as None; adoption is what fills them in.
-        let (kw_only, field_type) = if adopted {
-            ("False", "_FIELD")
+        if adopted {
+            f.write_str("False")?;
         } else {
-            ("MISSING", "None")
-        };
-        Ok(write!(
-            f,
-            "metadata=mappingproxy({{}}),kw_only={kw_only},doc=None,_field_type={field_type})"
-        )?)
+            missing().py_repr_fmt(f, vm, heap_ids)?;
+        }
+        let field_type = if adopted { "_FIELD" } else { "None" };
+        Ok(write!(f, ",doc=None,_field_type={field_type})")?)
     }
 
     /// Everything but `name`/`type`/`default`/`default_factory` is a constant,
@@ -376,21 +376,6 @@ fn unmodelled_attr_error(attr: &str, missing: &str) -> RunError {
         "Field.{attr} is not yet supported, {missing} is not implemented"
     ))
     .into()
-}
-
-/// Writes a repr slot, or `absent` when it holds nothing — `None` for the two
-/// adoption fills, `MISSING` for the two CPython sentinels.
-fn write_or(
-    value: Option<&Value>,
-    absent: &str,
-    f: &mut impl Write,
-    vm: &mut VM<'_>,
-    heap_ids: &mut LazyHeapSet,
-) -> RunResult<()> {
-    match value {
-        Some(value) => value.py_repr_fmt(f, vm, heap_ids),
-        None => Ok(f.write_str(absent)?),
-    }
 }
 
 /// Clones a stored slot for `py_getattr`, reporting `MISSING` when it is unset.

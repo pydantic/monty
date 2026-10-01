@@ -1,6 +1,6 @@
 //! The `__dataclass_fields__` mapping `@dataclass` writes and the `Field`
-//! objects in it, where the behaviour cannot be dual-run against CPython —
-//! Monty stringizes annotations and has no `MISSING` sentinel to render.
+//! objects in it, where the behaviour cannot be dual-run against CPython
+//! because Monty stringizes annotations.
 //!
 //! Everything the two interpreters agree on lives in
 //! `test_cases/dataclass__is_dataclass.py` instead.
@@ -43,18 +43,22 @@ fn expect_error(expr: &str) -> String {
     }
 }
 
-/// CPython's `Field.__repr__` attribute for attribute, bar the two spellings
-/// Monty cannot produce: `type` is annotation text (CPython evaluates it to
-/// `<class 'int'>`) and the `MISSING` sentinel has no object of its own
-/// (CPython renders `<dataclasses._MISSING_TYPE object at 0x..>`).
+/// CPython's `Field.__repr__` attribute for attribute, bar `type`: annotation
+/// text where CPython evaluates it to `<class 'int'>`. The `MISSING` repr is
+/// swapped for its name, since it carries the sentinel's `id()`.
 #[test]
-fn field_repr_renders_missing_as_a_bare_name() {
+fn field_repr_renders_type_as_annotation_text() {
+    let repr = |name: &str| {
+        eval_str(&format!(
+            "from dataclasses import MISSING\nrepr(Point.__dataclass_fields__['{name}']).replace(repr(MISSING), 'MISSING')"
+        ))
+    };
     assert_snapshot!(
-        eval_str("repr(Point.__dataclass_fields__['y'])"),
+        repr("y"),
         @"Field(name='y',type='int',default=5,default_factory=MISSING,init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=False,doc=None,_field_type=_FIELD)"
     );
     assert_snapshot!(
-        eval_str("repr(Point.__dataclass_fields__['x'])"),
+        repr("x"),
         @"Field(name='x',type='int',default=MISSING,default_factory=MISSING,init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=False,doc=None,_field_type=_FIELD)"
     );
 }
