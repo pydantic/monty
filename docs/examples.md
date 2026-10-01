@@ -117,3 +117,8 @@ Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/e
 - [`classes`](https://github.com/pydantic/monty/tree/main/examples/classes): one short file per behaviour of [host
     objects](host-objects.md), in Python and TypeScript: explicit policies, lazy attributes, sandbox-side copies,
     `convert_value` hooks, constructing host classes from the sandbox, and round-tripping sandbox-defined classes.
+- [`julia_image.py`](https://github.com/pydantic/monty/blob/main/examples/julia_image.py): the sandbox renders a
+    Julia set as one escape count per pixel and returns them as a flat `list[int]`; the host maps the counts through a
+    palette with Pillow and writes a PNG.
+    A flat list of ints crosses the boundary several times faster than a list of `(r, g, b)` tuples, and the sandbox
+    cannot build `bytes` from ints, so colouring and encoding stay on the host.
