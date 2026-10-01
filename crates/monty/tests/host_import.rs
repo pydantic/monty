@@ -2,7 +2,7 @@
 //! suspends as an `__import__` host call, and the host's answer is the module.
 
 use insta::assert_snapshot;
-use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, IMPORT_FUNCTION, MontyException, MontyObject, MontyUuid,
     NameLookupResult, PrintWriter, ResourceTracker,
@@ -144,6 +144,52 @@ fn a_repl_import_suspends_and_the_module_persists() {
         panic!("expected the snippet to complete");
     };
     assert_eq!(value, MontyObject::int(42));
+}
+
+/// The module a `from ... import` names travels with a suspended frame: a
+/// session dumped while the host resolves one name still raises the
+/// `ImportError` for the next, naming the module, after a restore.
+#[test]
+fn a_restored_from_import_still_names_its_module() {
+    let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    let ReplProgress::FunctionCall(call) = repl
+        .feed_start(
+            "from tools import a, b",
+            Vec::<(String, MontyObject)>::new(),
+            PrintWriter::Stdout,
+        )
+        .unwrap()
+    else {
+        panic!("expected the import to suspend");
+    };
+    // no eager attrs, so each name is a lazy lookup the host answers
+    let progress = call
+        .resume(host_object("tools", 1, vec![]), PrintWriter::Stdout)
+        .unwrap();
+    let ReplProgress::NameLookup(lookup) = &progress else {
+        panic!("expected the lookup of `a`, got {progress:?}");
+    };
+    assert_eq!(lookup.name, "a");
+    let bytes = dump("test.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped while suspended");
+    };
+    let progress = progress
+        .into_name_lookup()
+        .unwrap()
+        .resume(NameLookupResult::Value(MontyObject::int(1)), PrintWriter::Stdout)
+        .unwrap();
+    let lookup = progress.into_name_lookup().unwrap();
+    assert_eq!(lookup.name, "b");
+    let err = lookup
+        .resume(NameLookupResult::Undefined, PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err.error.to_string(), @r#"
+    Traceback (most recent call last):
+      File "<python-input-0>", line 1, in <module>
+        from tools import a, b
+    ImportError: cannot import name 'b' from 'tools' (unknown location)
+    "#);
 }
 
 #[test]

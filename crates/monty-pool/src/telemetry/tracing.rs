@@ -59,9 +59,10 @@ pub(crate) struct Recorder {
     /// The session span every turn nests inside; `Configure` opens it and
     /// `Reset` closes it.
     session: Option<Span>,
-    /// Whether the current turn is a `Dump`: an `Error` reply to one leaves
-    /// the feed suspended and resumable, so it closes only the dump span.
-    dump_turn: bool,
+    /// Whether the current turn is a `Dump` or `GetStubs`: an `Error` reply
+    /// to one leaves the feed suspended and resumable, so it closes only the
+    /// turn span.
+    resumable_turn: bool,
     /// One-shot host context consumed when `Configure` starts the root span.
     adapter_context: Option<TelemetryContext>,
     /// Scoped dispatcher installed only while this recorder emits telemetry.
@@ -77,7 +78,7 @@ impl Recorder {
             pending: None,
             feed: None,
             session: None,
-            dump_turn: false,
+            resumable_turn: false,
             adapter_context: None,
             logfire: None,
         }
@@ -122,7 +123,7 @@ impl Recorder {
             // new turn starts rather than leaking open.
             self.turn = None;
         }
-        self.dump_turn = false;
+        self.resumable_turn = false;
         match &request.kind {
             // a stale session (impossible via the checkout state machine, but
             // cheap to be safe against) is closed by the overwrite
@@ -180,6 +181,7 @@ impl Recorder {
                 self.session = None;
             }
             Some(pb::parent_request::Kind::GetStubs(_)) => {
+                self.resumable_turn = true;
                 self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
                     "get stubs",
@@ -262,7 +264,7 @@ impl Recorder {
                 }
             }
             Some(pb::parent_request::Kind::Dump(_)) => {
-                self.dump_turn = true;
+                self.resumable_turn = true;
                 self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
                     "dump",
@@ -395,9 +397,9 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::Error(e)) => {
                 record_error(e, micros, max_feed_duration, &self.context_span());
-                // an error reply to `Dump` leaves the feed suspended and
-                // resumable, so it closes only the dump span
-                if self.dump_turn {
+                // an error reply to `Dump` or `GetStubs` leaves the feed
+                // suspended and resumable, so it closes only that turn's span
+                if self.resumable_turn {
                     self.turn = None;
                 } else {
                     self.end_feed();
@@ -1424,6 +1426,54 @@ mod tests {
             .find(|(k, _)| k.as_str() == "output")
             .map(|(_, v)| v.clone());
         assert_eq!(value, Some(AnyValue::Int(7)));
+    }
+
+    /// A refused `GetStubs` mid-feed (a peer that predates it) closes only its
+    /// own span: the feed stays suspended and resumable, as after a refused
+    /// `Dump`, so its result still lands on the feed span.
+    #[test]
+    fn a_refused_get_stubs_keeps_the_feed_span() {
+        let (logfire, spans, _logs) = test_logfire();
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
+        recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "fetch()".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })));
+        recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            "fetch".to_owned(),
+            CallArgs::new(),
+            1,
+            None,
+            false,
+            position(),
+        ))));
+        recorder.begin_turn(&request(pb::parent_request::Kind::GetStubs(pb::GetStubs {})));
+        recorder.event(&event(pb::child_event::Kind::Error(pb::Error {
+            exception: Some(pb::RaisedException {
+                exc_type: "RuntimeError".to_owned(),
+                message: Some("protocol violation: request has no kind".to_owned()),
+                traceback: vec![].into(),
+                data: None,
+            }),
+        })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: 1,
+            ..pb::ResumeCall::from(MontyObject::int(4))
+        })));
+        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(4),
+        ))));
+
+        let spans = spans.get_finished_spans().unwrap();
+        let names: Vec<&str> = spans.iter().map(|s| s.name.as_ref()).collect();
+        assert_eq!(names, ["get stubs", "call {function_name}", "run code"]);
+        let feed = spans.iter().find(|s| s.name == "run code").unwrap();
+        let output = feed.attributes.iter().find(|kv| kv.key.as_str() == "output");
+        assert_eq!(output.map(|kv| kv.value.clone()), Some(4.into()));
     }
 
     /// Every attribute a host or the sandbox can make arbitrarily long is

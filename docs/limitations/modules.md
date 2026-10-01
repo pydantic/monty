@@ -8,13 +8,14 @@ modules itself.
 
 `os.path` (also importable as `posixpath`) is the only submodule.
 
-Every `import` builds a fresh module object; there is no `sys.modules` cache.
-So two imports of the same module are not the same object
+Every `import` of a bundled module builds a fresh module object; there is no
+`sys.modules` cache. So two imports of the same module are not the same object
 (`import math as a; import math as b` leaves `a is not b`), and a mutable
 attribute reverts on the next import — `sys.argv.append(...)` is not seen by a
-later `import sys`. Module attributes cannot be set at all
+later `import sys`. A bundled module's attributes cannot be set at all
 (`sys.x = 1` raises `AttributeError`), so there is no way to share state
-through a module.
+through one. A host module is a host object, with the rules of the
+[Host modules](#host-modules) section instead.
 The one exception is `random`'s module-level generator, which is session
 state: a `random.seed(...)` is still in effect after a later `import random`,
 in the next feed, and after a dump (see [random.md](random.md)).
@@ -101,6 +102,8 @@ The value the host answers with (in the bindings, the matching `external_modules
     CPython's `module 'm' has no attribute 'x'`;
 - every `import` statement asks again, since there is no `sys.modules` cache, so two imports of one module bind two
     objects (`import m as a; import m as b` leaves `a is not b`), and an import inside a function asks on each call;
+- an attribute can be assigned, as on any host object, but only that binding sees it: the next `import` starts
+    from the host's attributes again;
 - a not-found answer raises `ModuleNotFoundError: No module named 'm'`, as in CPython, and an exception raised by the
     host is raised at the `import`;
 - `from m import x` reads `x` from the answered value, whether sent with it or looked up lazily, and raises

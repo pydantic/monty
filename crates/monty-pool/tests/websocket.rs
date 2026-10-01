@@ -3008,6 +3008,41 @@ async fn get_stubs_reads_the_type_stubs_reply() {
     join_server(server).await;
 }
 
+/// Only a feed is type-checked, so a `TypingError` answering `GetStubs` means
+/// the peer has lost sync: the worker is discarded rather than kept with the
+/// parent believing a suspended feed ended.
+#[tokio::test]
+async fn a_typing_error_reply_to_get_stubs_is_a_protocol_violation() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_kind(&mut socket, ok_event());
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::GetStubs(_)
+        ));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::TypingError(pb::TypingError {
+                diagnostics: "main.py:1:1: error[unresolved-import]".to_owned(),
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout.get_stubs().await.unwrap_err();
+    assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "monty worker protocol error: TypingError reply to a request that is not a Feed"
+    );
+    assert!(checkout.worker_id().is_none(), "the worker must be discarded");
+    join_server(server).await;
+}
+
 /// A peer that predates `GetStubs` answers it with an `Error` and stays as
 /// it was, so a feed suspended at the time is still resumable, as after a
 /// refused `Dump`.

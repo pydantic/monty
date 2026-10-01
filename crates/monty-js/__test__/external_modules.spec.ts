@@ -49,6 +49,35 @@ test('a ClassInstance module', async () => {
   t.is(await run('import tools\ntools.add(2, 3)', { externalModules: { tools: module } }), 5)
 })
 
+test('name-based calls respect module exposure', async () => {
+  // A `tools.<attr>` call reaches only what `import tools` exposed: never a private
+  // name, and nothing on a ClassInstance module, whose methods route by uuid under
+  // its policy. A host function input carrying such a name (as a forged frame would) finds nothing.
+  const privateProbe = () => 'hidden'
+  Object.defineProperty(privateProbe, 'name', { value: 'tools._secret' })
+  await t.throwsAsync(
+    run('probe()', {
+      inputs: { probe: privateProbe },
+      externalModules: { tools: { _secret: () => 'hidden' } },
+    }),
+    { instanceOf: MontyRuntimeError, message: "NameError: name 'tools._secret' is not defined" },
+  )
+  class Tools {
+    reveal(): string {
+      return 'hidden'
+    }
+  }
+  const instanceProbe = () => 'hidden'
+  Object.defineProperty(instanceProbe, 'name', { value: 'tools.callMethod' })
+  await t.throwsAsync(
+    run('probe()', {
+      inputs: { probe: instanceProbe },
+      externalModules: { tools: new ClassInstance(new Tools()) },
+    }),
+    { instanceOf: MontyRuntimeError, message: "NameError: name 'tools.callMethod' is not defined" },
+  )
+})
+
 test('async tools run concurrently', async () => {
   let release: () => void = () => {}
   const ready = new Promise<void>((resolve) => {

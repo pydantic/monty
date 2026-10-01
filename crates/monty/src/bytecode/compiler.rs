@@ -1111,7 +1111,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.code.emit(Opcode::Dup)?;
             }
             let name_idx = check_name_index_u16(*import_name, position)?;
-            self.code.emit_u16_u16(Opcode::LoadAttrImport, name_idx, module_idx)?;
+            // the module name for an `ImportError` rides on the frame, set by `LoadModule`
+            self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
             self.compile_store(binding)?;
         }
         Ok(())

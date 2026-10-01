@@ -803,7 +803,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
         // an import nobody serves is a missing module, as in `run_to_completion`
         FrameExit::ExternalCall { .. } if vm.suspended_import().is_some() => {
             let module_id = vm.suspended_import().expect("checked by the guard");
-            ExcType::module_not_found_error(vm.interns.get_str(module_id))
+            ExcType::module_not_found_error(vm.interns.get_str(module_id), None)
         }
         FrameExit::ExternalCall { function_name, .. } => {
             let function_name = function_name.as_str(vm.interns);

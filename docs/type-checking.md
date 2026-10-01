@@ -156,9 +156,11 @@ sees its declarations; module stubs are not star-imported:
 
 A module name that is not an identifier, or that the sandbox or its type checker already provides, raises `ValueError`
 (throws in JavaScript).
-The reserved names are the sandbox's own modules and the rest of the vendored typeshed, including modules the checker
-resolves but the runtime does not, such as `abc` and `enum`: a host can serve those through `external_modules`, but the
-checker keeps typeshed's stub for them; see
+The reserved names are the sandbox's own modules, the rest of the vendored typeshed (`__future__` and `__main__`
+included), and the few names the runtime or the checker provide without a typeshed entry, such as `gc` and
+`ty_extensions`.
+Typeshed includes modules the checker resolves but the runtime does not, such as `abc` and `enum`: a host can serve
+those through `external_modules`, but the checker keeps typeshed's stub for them; see
 [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
 [`get_stubs()`][pydantic_monty.MontySession.get_stubs] returns the stubs in effect.
 The runtime side of a host module is `external_modules`; see

@@ -291,10 +291,11 @@ pub enum Opcode {
     // NOTE: DeleteSubscr removed - `del` statement not supported by parser
     /// Pop obj, push obj.attr. Operand: u16 name_id.
     LoadAttr = 77,
-    /// Pop module, push module.attr for `from ... import`. Operands: u16 name_id, u16 module name_id.
+    /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
     ///
     /// Like `LoadAttr` but raises `ImportError` instead of `AttributeError` when the
-    /// attribute is missing. The module name feeds that message: a host-provided
+    /// attribute is missing. That message names the module from the frame's
+    /// `import_from_module`, which the statement's `LoadModule` set: a host-provided
     /// module is whatever value the host returned, not necessarily a `Module`.
     LoadAttrImport = 78,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
@@ -699,6 +700,7 @@ impl Opcode {
             | Self::BuildFString
             | Self::DictMerge
             | Self::LoadAttr
+            | Self::LoadAttrImport
             | Self::StoreAttr
             | Self::DeleteGlobal
             | Self::RaiseUnboundLocal
@@ -711,7 +713,7 @@ impl Opcode {
             | Self::ForIter => OperandShape::Offset,
             Self::CallBuiltinFunction | Self::CallBuiltinType | Self::UnpackEx => OperandShape::U8U8,
             Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction => OperandShape::U16U8,
-            Self::LoadGlobalCallable | Self::LoadAttrImport => OperandShape::U16U16,
+            Self::LoadGlobalCallable => OperandShape::U16U16,
             Self::MakeClosure => OperandShape::U16U8U8,
             Self::LoadName | Self::StoreName | Self::DeleteName => OperandShape::U16U16U8,
             Self::CallFunctionKw => OperandShape::CallKw,
@@ -953,7 +955,7 @@ impl Opcode {
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
             (DeleteGlobal | DeleteCell, Operand::U16(_)) => 0,
-            (LoadAttr, Operand::U16(_)) => 0,
+            (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
             (StoreAttr, Operand::U16(_)) => -2,
             // `DictMerge` takes a u16 operand carrying the func_name_id for
             // the duplicate-key TypeError message. `MethodDictMerge` shares
@@ -966,7 +968,6 @@ impl Opcode {
             (RaiseUnboundLocal, Operand::U16(_)) => 0,
             // === Fixed-effect, U16U16 operand ===
             (LoadGlobalCallable, Operand::U16U16(..)) => 1,
-            (LoadAttrImport, Operand::U16U16(..)) => 0,
 
             // === Fixed-effect, U16U16U8 operand ===
             (LoadName, Operand::U16U16U8(..)) => 1,

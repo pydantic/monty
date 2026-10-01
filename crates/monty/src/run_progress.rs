@@ -975,7 +975,7 @@ fn resume_import(
             vm.resume_with_exception(RunError::Exc(raise))
         }
         (ExtFunctionResult::NotFound(_), None) => {
-            vm.resume_with_exception(ExcType::module_not_found_error(vm.interns.get_str(module_id)))
+            vm.resume_with_exception(ExcType::module_not_found_error(vm.interns.get_str(module_id), None))
         }
         (ExtFunctionResult::Future(_), _) | (_, Some(_)) => {
             let message = format!(

@@ -52,6 +52,43 @@ def test_a_dotted_dict_key(pool: Monty):
         assert session.feed_run(code, external_modules={'tools': {'a.b': add}}) == snapshot(3)
 
 
+class _Tools:
+    def reveal(self) -> str:
+        return 'hidden'
+
+
+@pytest.mark.parametrize(
+    ('tools', 'name', 'message'),
+    [
+        pytest.param(
+            {'_secret': lambda: 'hidden'},
+            'tools._secret',
+            snapshot("NameError: name 'tools._secret' is not defined"),
+            id='private',
+        ),
+        pytest.param(
+            ClassInstance(_Tools()),
+            'tools.get_attr',
+            snapshot("NameError: name 'tools.get_attr' is not defined"),
+            id='class-instance',
+        ),
+    ],
+)
+def test_name_based_calls_respect_module_exposure(pool: Monty, tools: Any, name: str, message: str):
+    """A name-based `tools.<attr>` call reaches only what `import tools` exposed: never a private name,
+    and nothing on a `ClassInstance` module, whose methods route by uuid under the wrapper's policy.
+    A host function input carrying such a name, as a forged frame would, finds nothing."""
+
+    def probe() -> str:
+        return 'hidden'
+
+    probe.__name__ = name
+    with pool.checkout() as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('probe()', inputs={'probe': probe}, external_modules={'tools': tools})
+        assert str(exc_info.value) == message
+
+
 def test_the_module_object(pool: Monty):
     code = 'import tools\nimport tools as t\n[tools.add is t.add, type(tools).__name__, hasattr(tools, "nope")]'
     with pool.checkout() as session:

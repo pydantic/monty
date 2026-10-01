@@ -269,7 +269,14 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         if function_name.contains('.') {
             for (dot, _) in function_name.rmatch_indices('.') {
                 if let Some(module) = self.module(&function_name[..dot])? {
-                    return module_attr(&module, &function_name[dot + 1..]);
+                    // a `ClassInstance` module routes its calls by uuid under the wrapper's
+                    // policy, so a name-based call into it (which only a non-conforming
+                    // worker sends) finds nothing
+                    return if is_class_instance_wrapper(&module)? {
+                        Ok(None)
+                    } else {
+                        module_attr(&module, &function_name[dot + 1..])
+                    };
                 }
             }
             Ok(None)

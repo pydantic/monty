@@ -643,7 +643,14 @@ class TurnAnswerer {
     for (let dot = functionName.lastIndexOf('.'); dot > 0; dot = functionName.lastIndexOf('.', dot - 1)) {
       const module = ownEntry(this.externalModules, functionName.slice(0, dot))
       if (module !== undefined) {
-        const entry = ownEntry(module, functionName.slice(dot + 1))
+        const attr = functionName.slice(dot + 1)
+        // the rule `moduleValue` sends by: a `ClassInstance` module routes by uuid
+        // under its own policy, and a private name is never a module function, so a
+        // frame naming either (only a non-conforming worker sends one) finds nothing
+        if (module instanceof ClassInstance || attr.startsWith('_')) {
+          return undefined
+        }
+        const entry = ownEntry(module, attr)
         // called with the module as its receiver, as `module.attr(...)` would be
         return typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry
       }

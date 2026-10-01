@@ -31,8 +31,11 @@ pub mod worker;
 ///
 /// `Configure.persistence`, `Configure.profile` and `ChildEvent.session_id` did not bump it: a
 /// serving relay and its client act on them, children ignore them, and a
-/// child that drops them loses nothing.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// child that drops them loses nothing. Version 6 added
+/// `Configure.type_check_module_stubs` and `GetStubs`: a version 5 child would
+/// accept the stubs and type-check without them, which the parent could not tell
+/// from a working one.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
