@@ -916,8 +916,9 @@ jobs:
       - name: list files
         run: |
           ls -lhR dist/
-          ls -1 dist/ | wc -l
-          echo "Expected 88 files (6 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          count=$(find dist/ -maxdepth 1 -type f | wc -l)
+          echo "Found $count files; expected 112 (8 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          test "$count" -eq 112
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
