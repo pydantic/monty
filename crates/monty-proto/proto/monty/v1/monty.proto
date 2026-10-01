@@ -613,32 +613,10 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
-  // Relay-only: MCP servers a serving relay connects to on the host's behalf
-  // and serves as importable modules — their `__import__` calls and tool calls
-  // never reach the host. Children ignore it; a relay strips it before
-  // forwarding.
-  repeated McpServer mcp_servers = 14;
   // Type stubs for host-provided modules, one `.pyi` per module, so that
   // `import <module>` resolves during type checking; `GetTypes` reports the
   // stubs in effect. Ignored when `type_check` is false.
-  repeated ModuleStub type_check_module_stubs = 15;
-}
-
-// An MCP server a serving relay exposes to the sandbox as the module `module`.
-message McpServer {
-  // The name sandbox code imports the server as: an identifier that no
-  // sandbox module uses (see `ModuleStub`).
-  string module = 1;
-  // The server's streamable-HTTP endpoint.
-  string url = 2;
-  // Request headers sent to the server, typically its authorization.
-  repeated Header headers = 3;
-}
-
-// One HTTP request header.
-message Header {
-  string name = 1;
-  string value = 2;
+  repeated ModuleStub type_check_module_stubs = 14;
 }
 
 // The `.pyi` source describing one host-provided module for type checking.
@@ -772,11 +750,11 @@ message InstallDependencies {
   repeated string requirements = 1;
 }
 
-// Asks for the per-module type stubs in effect, answered with `TypeStubs`. A
-// child answers with its configured `type_check_module_stubs`; a serving relay
-// answers with those plus the stubs it renders for `mcp_servers`, never
-// forwarding the request. Valid whenever no turn is in flight (a session that
-// is idle or suspended, or one configured but not yet fed).
+// Asks for the per-module type stubs in effect, answered with `TypeStubs`: the
+// session's configured `type_check_module_stubs`. Valid whenever no turn is in
+// flight (a session that is idle or suspended, or one configured but not yet
+// fed).
+
 //
 // A peer that predates this request answers an `Error` (a `RuntimeError`,
 // "protocol violation: request has no kind") and the session carries on:

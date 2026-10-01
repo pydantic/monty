@@ -530,11 +530,10 @@ impl Child {
             // validated and stored when the `Configure` arrived
             os_policy: _,
             type_check_module_stubs: _,
-            // a relay's concern; the child never stores sessions, or connects anywhere
+            // a relay's concern; the child never stores sessions
             persistence: _,
             // a relay's concern; the child has no profiles
             profile: _,
-            mcp_servers: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;

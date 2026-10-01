@@ -54,7 +54,6 @@ from .os_access import (
 __all__ = (
     # this file
     'ResourceLimits',
-    'McpServer',
     'OSPolicy',
     'RandomSeed',
     'TimeZone',
@@ -172,27 +171,6 @@ class ResourceLimits(TypedDict, total=False):
     max_total_sleep_secs: float | None
     """Maximum cumulative seconds of `'system'` sleep, excluded from execution duration limits.
     The pool charges each sleep before waiting; exceeding the limit raises an uncatchable `TimeoutError`."""
-
-
-class McpServer(TypedDict):
-    """An MCP server a serving `monty-server` exposes to the sandbox as an
-    importable module.
-
-    The server connects on the host's behalf and answers the sandbox's `import`
-    and tool calls itself, so the headers go no further than the server, and
-    the stub it renders from the server's tools is in the mapping
-    `AsyncMontySession.get_types()` returns. Only
-    `AsyncMontyWebsocket.checkout()` accepts these.
-    """
-
-    module: str
-    """The name sandbox code imports the server as: an identifier that no sandbox module uses."""
-
-    url: str
-    """The server's streamable-HTTP endpoint."""
-
-    headers: NotRequired[dict[str, str]]
-    """Request headers sent to the server, typically its authorization."""
 
 
 class TimeZone(TypedDict):

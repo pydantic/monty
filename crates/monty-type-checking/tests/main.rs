@@ -609,10 +609,7 @@ fn module_stub_names_are_validated() {
     assert_eq!(stub("builtins"), ModuleStubError::ReservedName("builtins".to_owned()));
     assert_snapshot!(stub("a.b").to_string(), @r#"module name "a.b" is not a valid identifier"#);
     assert_snapshot!(stub("json").to_string(), @r#"module "json" is provided by the sandbox or its type checker and cannot be replaced"#);
-    assert_eq!(
-        ModuleStub::new("stripe_mcp", "x: int\n").unwrap().module(),
-        "stripe_mcp"
-    );
+    assert_eq!(ModuleStub::new("stripe", "x: int\n").unwrap().module(), "stripe");
 }
 
 /// Every module of the vendored typeshed must be reserved, or a stub could

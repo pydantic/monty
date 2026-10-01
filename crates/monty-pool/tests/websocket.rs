@@ -17,13 +17,11 @@ use std::{
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
-    Checkout, CheckoutOptions, McpServer, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError,
-    PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError, PrintFuture,
+    ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{
-    CallArgs, ExtFunctionResult, ModuleStub, ModuleStubError, MontyObject, PrintStream, ResourceLimits, SourceRange,
-};
+use monty_types::{CallArgs, ExtFunctionResult, ModuleStub, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -2911,20 +2909,17 @@ fn position() -> SourceRange {
     }
 }
 
-// ---- module stubs, MCP servers and GetTypes -------------------------------
+// ---- module stubs and GetTypes --------------------------------------------
 //
-// A serving relay reads `mcp_servers` and `type_check_module_stubs` off the
-// `Configure`, and answers `GetTypes` itself with the stubs in effect.
+// A serving relay reads `type_check_module_stubs` off the `Configure`, and
+// answers `GetTypes` itself with the stubs in effect.
 
 fn module_stub(module: &str, source: &str) -> ModuleStub {
     ModuleStub::new(module, source).expect("a valid stub name")
 }
 
-/// One `McpServer` as read off the wire: `(module, url, headers)`.
-type WireMcpServer = (String, String, Vec<(String, String)>);
-
 #[tokio::test]
-async fn configure_carries_mcp_servers_and_module_stubs() {
+async fn configure_carries_module_stubs() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = thread::spawn(move || {
@@ -2933,26 +2928,6 @@ async fn configure_carries_mcp_servers_and_module_stubs() {
         let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
             panic!("expected Configure, got {request:?}");
         };
-        let servers: Vec<WireMcpServer> = configure
-            .mcp_servers
-            .iter()
-            .map(|server| {
-                let headers = server
-                    .headers
-                    .iter()
-                    .map(|header| (header.name.clone(), header.value.clone()))
-                    .collect();
-                (server.module.clone(), server.url.clone(), headers)
-            })
-            .collect();
-        assert_eq!(
-            servers,
-            vec![(
-                "stripe_mcp".to_owned(),
-                "https://mcp.example/stripe".to_owned(),
-                vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())],
-            )]
-        );
         let stubs: Vec<(String, String)> = configure
             .type_check_module_stubs
             .iter()
@@ -2965,35 +2940,12 @@ async fn configure_carries_mcp_servers_and_module_stubs() {
 
     let pool = websocket_pool(port).await;
     let repl = ReplConfig {
-        mcp_servers: vec![
-            McpServer::new("stripe_mcp", "https://mcp.example/stripe")
-                .expect("a valid module name")
-                .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]),
-        ],
         type_check_module_stubs: vec![module_stub("tools", "x: int\n")],
         ..ReplConfig::default()
     };
     let checkout = pool.checkout(&repl).await.expect("checkout");
     checkout.finish().await.expect("finish");
     join_server(server).await;
-}
-
-/// A config gets logged, so its `Debug` names the headers without their
-/// values and drops the userinfo a URL may carry.
-#[test]
-fn mcp_server_debug_hides_its_credentials() {
-    let server = McpServer::new("stripe_mcp", "https://user:sk_test@mcp.example/stripe?v=1#top")
-        .expect("a valid module name")
-        .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]);
-    insta::assert_snapshot!(
-        format!("{server:?}"),
-        @r#"McpServer { module: "stripe_mcp", url: "https://***@mcp.example/stripe?v=1#top", headers: ["Authorization"] }"#
-    );
-    let plain = McpServer::new("m", "https://mcp.example/@handle/path").expect("a valid module name");
-    assert_eq!(
-        format!("{plain:?}"),
-        r#"McpServer { module: "m", url: "https://mcp.example/@handle/path", headers: [] }"#
-    );
 }
 
 #[tokio::test]
@@ -3013,7 +2965,7 @@ async fn get_types_reads_the_type_stubs_reply() {
             &mut socket,
             pb::child_event::Kind::TypeStubs(pb::TypeStubs {
                 modules: vec![pb::ModuleStub {
-                    module: "stripe_mcp".to_owned(),
+                    module: "stripe".to_owned(),
                     source: "async def list_payments(*, limit: int = ...) -> str: ...\n".to_owned(),
                 }]
                 .into(),
@@ -3039,7 +2991,7 @@ async fn get_types_reads_the_type_stubs_reply() {
     assert_eq!(
         stubs,
         vec![module_stub(
-            "stripe_mcp",
+            "stripe",
             "async def list_payments(*, limit: int = ...) -> str: ...\n"
         )]
     );
@@ -3123,31 +3075,4 @@ async fn get_types_refused_mid_feed_keeps_the_suspension() {
     // the relay thread reads until the socket closes
     drop(checkout);
     join_server(server).await;
-}
-
-/// A name the sandbox binds itself is refused when the config is built, so
-/// no `Configure` ever carries it.
-#[test]
-fn mcp_server_refuses_an_unusable_module_name() {
-    let err = McpServer::new("json", "https://mcp.example/json").unwrap_err();
-    assert_eq!(err, ModuleStubError::ReservedName("json".to_owned()));
-    assert_eq!(
-        err.to_string(),
-        "module \"json\" is provided by the sandbox or its type checker and cannot be replaced"
-    );
-    let err = McpServer::new("stripe-mcp", "https://mcp.example/stripe").unwrap_err();
-    assert_eq!(err.to_string(), "module name \"stripe-mcp\" is not a valid identifier");
-}
-
-#[test]
-fn mcp_server_debug_hides_header_values() {
-    let server = McpServer::new("stripe_mcp", "https://mcp.example/stripe")
-        .expect("a valid module name")
-        .with_headers(vec![("Authorization".to_owned(), "Bearer sk_test".to_owned())]);
-    let rendered = format!("{server:?}");
-    assert!(!rendered.contains("sk_test"), "{rendered}");
-    assert_eq!(
-        rendered,
-        r#"McpServer { module: "stripe_mcp", url: "https://mcp.example/stripe", headers: ["Authorization"] }"#
-    );
 }

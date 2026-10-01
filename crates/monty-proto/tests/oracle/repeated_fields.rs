@@ -46,25 +46,11 @@ fn every_schema_repeated_field_is_budgeted() {
         |message: &pb::RaisedException| &message.traceback,
     );
     check_repeated(
-        "monty.v1.Configure.mcp_servers",
+        "monty.v1.Configure.type_check_module_stubs",
         14,
         WireType::LengthDelimited,
         &[],
-        |message: &pb::Configure| &message.mcp_servers,
-    );
-    check_repeated(
-        "monty.v1.Configure.type_check_module_stubs",
-        15,
-        WireType::LengthDelimited,
-        &[],
         |message: &pb::Configure| &message.type_check_module_stubs,
-    );
-    check_repeated(
-        "monty.v1.McpServer.headers",
-        3,
-        WireType::LengthDelimited,
-        &[],
-        |message: &pb::McpServer| &message.headers,
     );
     check_repeated(
         "monty.v1.Feed.inputs",

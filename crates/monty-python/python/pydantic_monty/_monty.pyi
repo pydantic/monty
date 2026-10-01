@@ -10,7 +10,6 @@ from . import (
     AsyncSnapshot,
     ExternalResult,
     ExternalSettledResult,
-    McpServer,
     OsHandler,
     OSPolicy,
     PrintCallback,
@@ -886,8 +885,7 @@ class MontySession:
     def get_types(self) -> dict[str, str]:
         """
         The type stubs of the session's host-provided modules, keyed by module
-        name: what `type_check_module_stubs` declared, plus whatever a serving
-        `monty-server` renders for its `mcp_servers`. Give them to a model
+        name: what `type_check_module_stubs` declared. Give them to a model
         writing code for the session, alongside `type_check_stubs`.
 
         Blocks the calling thread with the GIL released, bounded by the pool's
@@ -1086,26 +1084,17 @@ class AsyncMontyWebsocket:
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
-        mcp_servers: list[McpServer] | None = None,
         ephemeral: bool | None = None,
         profile: str | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.
 
-        Identical to `AsyncMonty.checkout`, except for `mcp_servers`, `ephemeral`
-        and `profile`; the connection is opened by `async with` on the returned
+        Identical to `AsyncMonty.checkout`, except for `ephemeral` and
+        `profile`; the connection is opened by `async with` on the returned
         session.
 
         Arguments:
-            mcp_servers: MCP servers the server connects to on this session's
-                behalf and serves as importable modules, so `import <module>`
-                and the module's tool calls never reach this process; see
-                `McpServer`. The tools are async: `await <module>.<tool>(...)`.
-                `get_types()` returns the stubs the server renders from them
-                (put them in the prompt of a model writing the code), and
-                they type-check the session's snippets. A server that does
-                not support MCP ignores this, which `get_types()` shows.
             ephemeral: Whether a server that stores sessions may store this one.
                 `True` means the server never stores it on its own and it gets
                 no `session_id`; `False` asks for it to be stored; `None` takes
@@ -1313,8 +1302,7 @@ class AsyncMontySession:
     async def get_types(self) -> dict[str, str]:
         """
         Async counterpart of `MontySession.get_types`: the stubs of the
-        session's host-provided modules, which against `monty-server` include
-        the ones it renders for the session's `mcp_servers`.
+        session's host-provided modules.
         """
 
     async def install_dependencies(self, requirements: list[str]) -> None:

@@ -390,12 +390,10 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         // and a print collector charges its cap per frame.
         print_flush_interval_ms: request.print_flush_interval_ms,
         os_policy: request.os_policy.map(os_policy_from_component),
-        // a relay's concern; the component is a child and never stores
-        // sessions, or connects anywhere
+        // a relay's concern; the component is a child and never stores sessions
         persistence: pb::Persistence::Unspecified.into(),
         // a relay's concern; the component is a child and has no profiles
         profile: None,
-        mcp_servers: BudgetVec::default(),
         type_check_module_stubs: request
             .type_check_module_stubs
             .into_iter()

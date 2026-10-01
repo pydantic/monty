@@ -21,8 +21,8 @@ use monty_proto::{
 };
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION, ModuleStub,
-    ModuleStubError, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy,
-    PrintStream, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd, validate_module_name,
+    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
+    ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -85,90 +85,6 @@ pub struct ReplConfig {
     /// by [`Checkout::get_types`] whether or not `type_check` is on; only a
     /// type-checked session reads them.
     pub type_check_module_stubs: Vec<ModuleStub>,
-    /// MCP servers a serving relay connects to on the host's behalf and serves
-    /// as importable modules; subprocess workers ignore it, and a relay that
-    /// does not support MCP silently drops it — [`Checkout::get_types`]
-    /// tells them apart.
-    pub mcp_servers: Vec<McpServer>,
-}
-
-/// An MCP server a serving relay (`monty-server`) exposes to the sandbox as
-/// the module `module`: the relay connects to `url` with `headers`, serves the
-/// sandbox's `import` and tool calls itself, and renders the server's tools
-/// as the module's type stub. The headers cross the WebSocket to the relay,
-/// which sends them only to the MCP server; the worker and the sandbox never
-/// see them.
-#[derive(Clone, PartialEq, Eq)]
-pub struct McpServer {
-    module: String,
-    url: String,
-    headers: Vec<(String, String)>,
-}
-
-impl McpServer {
-    /// A server imported as `module`, reached at `url`, with no headers.
-    /// `module` follows [`validate_module_name`]: an `import` of one of the
-    /// sandbox's own modules never asks the relay, so such a name is refused
-    /// here rather than on the relay.
-    pub fn new(module: impl Into<String>, url: impl Into<String>) -> Result<Self, ModuleStubError> {
-        let module = module.into();
-        validate_module_name(&module)?;
-        Ok(Self {
-            module,
-            url: url.into(),
-            headers: Vec::new(),
-        })
-    }
-
-    /// Sets the request headers sent to the server.
-    #[must_use]
-    pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
-        self.headers = headers;
-        self
-    }
-
-    /// The name sandbox code imports the server as.
-    #[must_use]
-    pub fn module(&self) -> &str {
-        &self.module
-    }
-
-    /// The server's streamable-HTTP endpoint.
-    #[must_use]
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-
-    /// Request headers sent to the server, typically its authorization.
-    #[must_use]
-    pub fn headers(&self) -> &[(String, String)] {
-        &self.headers
-    }
-}
-
-/// Names each header, never its value, and drops the URL's userinfo: both
-/// are the server's credentials, and configs get logged.
-impl fmt::Debug for McpServer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let header_names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
-        f.debug_struct("McpServer")
-            .field("module", &self.module)
-            .field("url", &redact_userinfo(&self.url))
-            .field("headers", &header_names)
-            .finish()
-    }
-}
-
-/// `url` with any `user:password@` in its authority replaced by `***@`.
-fn redact_userinfo(url: &str) -> Cow<'_, str> {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return Cow::Borrowed(url);
-    };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    match rest[..authority_end].rfind('@') {
-        Some(at) => Cow::Owned(format!("{scheme}://***@{}", &rest[at + 1..])),
-        None => Cow::Borrowed(url),
-    }
 }
 
 /// How a serving relay (`monty-server`) treats a session's state.
@@ -212,7 +128,6 @@ impl Default for ReplConfig {
             persistence: Persistence::default(),
             profile: None,
             type_check_module_stubs: Vec::new(),
-            mcp_servers: Vec::new(),
         }
     }
 }
@@ -846,7 +761,7 @@ impl Checkout {
         repl: &ReplConfig,
         redial: Option<Redial>,
     ) -> Result<Self, PoolError> {
-        let request = configure_request(repl, pool.config.transport.is_websocket());
+        let request = configure_request(repl);
         let mut this = Self {
             worker: Some(worker),
             pool,
@@ -1583,7 +1498,7 @@ impl Checkout {
     /// is kept, not re-adopted as `restore` does: it is the same session, so the
     /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
-        let configure = configure_request(&redial.repl, self.pool.config.transport.is_websocket());
+        let configure = configure_request(&redial.repl);
         let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
@@ -2246,10 +2161,7 @@ impl Drop for Checkout {
 }
 
 /// Builds the `Configure` that creates `repl`'s session on a fresh worker.
-/// `mcp_servers` rides only a WebSocket transport: it carries the servers'
-/// credentials, and only a serving relay uses them, so a subprocess worker is
-/// never sent them.
-fn configure_request(repl: &ReplConfig, websocket: bool) -> pb::ParentRequest {
+fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: repl.script_name.clone(),
         limits: repl.limits.as_ref().map(Into::into),
@@ -2269,25 +2181,6 @@ fn configure_request(repl: &ReplConfig, websocket: bool) -> pb::ParentRequest {
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
-        mcp_servers: repl
-            .mcp_servers
-            .iter()
-            .filter(|_| websocket)
-            .map(|server| pb::McpServer {
-                module: server.module.clone(),
-                url: server.url.clone(),
-                headers: server
-                    .headers
-                    .iter()
-                    .map(|(name, value)| pb::Header {
-                        name: name.clone(),
-                        value: value.clone(),
-                    })
-                    .collect::<Vec<_>>()
-                    .into(),
-            })
-            .collect::<Vec<_>>()
-            .into(),
         type_check_module_stubs: module_stubs_to_proto(&repl.type_check_module_stubs).into(),
     }))
 }

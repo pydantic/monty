@@ -69,7 +69,7 @@ use crate::{
         CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_system_sleep, wait_for_futures,
     },
     build::{
-        extract_connect_headers, extract_mcp_servers, extract_module_stubs, extract_repl_inputs, extract_source_code,
+        extract_connect_headers, extract_module_stubs, extract_repl_inputs, extract_source_code,
         extract_type_check_stubs,
     },
     callback_context::{self, CallbackContext},
@@ -232,7 +232,6 @@ impl PyMonty {
                 Persistence::ServerDefault,
                 None,
                 type_check_module_stubs,
-                None,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -459,8 +458,7 @@ impl PyMontySession {
     }
 
     /// The type stubs of the session's host-provided modules as a
-    /// `{module: source}` dict: what `type_check_module_stubs` declared, plus
-    /// whatever a serving `monty-server` renders for its `mcp_servers`.
+    /// `{module: source}` dict: what `type_check_module_stubs` declared.
     /// Blocks with the GIL released, bounded by the pool's `request_timeout`.
     fn get_types<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let stubs = py
@@ -646,7 +644,6 @@ impl PyAsyncMonty {
                 Persistence::ServerDefault,
                 None,
                 type_check_module_stubs,
-                None,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -770,7 +767,6 @@ impl PyAsyncMontyWebsocket {
         print_flush_interval = None,
         os_policy = None,
         type_check_module_stubs = None,
-        mcp_servers = None,
         ephemeral = None,
         profile = None,
     ))]
@@ -788,7 +784,6 @@ impl PyAsyncMontyWebsocket {
         print_flush_interval: Option<f64>,
         os_policy: Option<OsPolicyArg>,
         type_check_module_stubs: Option<&Bound<'_, PyDict>>,
-        mcp_servers: Option<&Bound<'_, PyAny>>,
         ephemeral: Option<bool>,
         profile: Option<String>,
     ) -> PyResult<PyAsyncMontySession> {
@@ -814,7 +809,6 @@ impl PyAsyncMontyWebsocket {
                 },
                 profile,
                 type_check_module_stubs,
-                mcp_servers,
             )?,
             instances: InstanceStore::new(py),
             checkout: Arc::new(AsyncMutex::new(None)),
@@ -1353,7 +1347,6 @@ pub(crate) fn parse_repl_config(
     persistence: Persistence,
     profile: Option<String>,
     type_check_module_stubs: Option<&Bound<'_, PyDict>>,
-    mcp_servers: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
         script_name: script_name.to_owned(),
@@ -1369,7 +1362,6 @@ pub(crate) fn parse_repl_config(
         persistence,
         profile,
         type_check_module_stubs: extract_module_stubs(type_check_module_stubs)?,
-        mcp_servers: extract_mcp_servers(mcp_servers)?,
     })
 }
 

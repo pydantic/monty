@@ -334,9 +334,8 @@ impl NativePool {
                 // only a serving relay has profiles; its default applies
                 profile: None,
                 type_check_module_stubs,
-                // only a serving relay connects anywhere
-                mcp_servers: Vec::new(),
             },
+
             checkout: Arc::new(AsyncMutex::new(None)),
         })
     }

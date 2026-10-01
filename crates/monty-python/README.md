@@ -19,8 +19,6 @@ pip install pydantic-monty-client
 ## Usage with a remote monty server and websockets
 
 You can use this library alone to connect to a remote monty server via websockets.
-`checkout(mcp_servers=[...])` asks a server that supports it to serve MCP servers as importable modules, and
-`await session.get_types()` returns the stubs it renders from their tools.
 
 ```python test="skip"
 from pydantic_monty import AsyncMontyWebsocket

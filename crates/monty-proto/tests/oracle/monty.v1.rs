@@ -801,39 +801,11 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<::prost::alloc::string::String>,
-    /// Relay-only: MCP servers a serving relay connects to on the host's behalf
-    /// and serves as importable modules — their `__import__` calls and tool calls
-    /// never reach the host. Children ignore it; a relay strips it before
-    /// forwarding.
-    #[prost(message, repeated, tag = "14")]
-    pub mcp_servers: ::prost::alloc::vec::Vec<McpServer>,
     /// Type stubs for host-provided modules, one `.pyi` per module, so that
     /// `import <module>` resolves during type checking; `GetTypes` reports the
     /// stubs in effect. Ignored when `type_check` is false.
-    #[prost(message, repeated, tag = "15")]
+    #[prost(message, repeated, tag = "14")]
     pub type_check_module_stubs: ::prost::alloc::vec::Vec<ModuleStub>,
-}
-/// An MCP server a serving relay exposes to the sandbox as the module `module`.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct McpServer {
-    /// The name sandbox code imports the server as: an identifier that no
-    /// sandbox module uses (see `ModuleStub`).
-    #[prost(string, tag = "1")]
-    pub module: ::prost::alloc::string::String,
-    /// The server's streamable-HTTP endpoint.
-    #[prost(string, tag = "2")]
-    pub url: ::prost::alloc::string::String,
-    /// Request headers sent to the server, typically its authorization.
-    #[prost(message, repeated, tag = "3")]
-    pub headers: ::prost::alloc::vec::Vec<Header>,
-}
-/// One HTTP request header.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Header {
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub value: ::prost::alloc::string::String,
 }
 /// The `.pyi` source describing one host-provided module for type checking.
 /// `module` must be an identifier that is not one of the sandbox's own
@@ -965,11 +937,6 @@ pub struct InstallDependencies {
     #[prost(string, repeated, tag = "1")]
     pub requirements: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-/// Asks for the per-module type stubs in effect, answered with `TypeStubs`. A
-/// child answers with its configured `type_check_module_stubs`; a serving relay
-/// answers with those plus the stubs it renders for `mcp_servers`, never
-/// forwarding the request. Valid whenever no turn is in flight (a session that
-/// is idle or suspended, or one configured but not yet fed).
 ///
 /// A peer that predates this request answers an `Error` (a `RuntimeError`,
 /// "protocol violation: request has no kind") and the session carries on:
