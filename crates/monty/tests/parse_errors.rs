@@ -18,10 +18,30 @@ fn complex_numbers_return_not_implemented_error() {
 }
 
 #[test]
-fn yield_expressions_return_not_implemented_error() {
-    let err = get_parse_err("def foo():\n    yield 1");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support yield expressions");
+fn yield_expressions_return_syntax_error() {
+    for code in [
+        "def foo():\n    yield 1",
+        "def foo():\n    x = (yield 5)",
+        "f = lambda: (yield 1)",
+    ] {
+        let err = get_parse_err(code);
+        assert_eq!(err.exc_type(), ExcType::SyntaxError, "{code}");
+        assert_eq!(
+            err.message().unwrap(),
+            "yield expressions are not supported in this version",
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn yield_from_expressions_return_syntax_error() {
+    let err = get_parse_err("def foo():\n    yield from items");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message().unwrap(),
+        "yield from expressions are not supported in this version"
+    );
 }
 
 #[test]

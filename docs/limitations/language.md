@@ -1,9 +1,10 @@
 # Python language / parser
 
 Monty parses Python source with Ruff's parser but rejects several constructs
-at parse time. Anything listed below raises `NotImplementedError` (prefixed
-with "The monty syntax parser does not yet support ") at compile time, before
-any code runs.
+at parse time. Most unsupported constructs listed below raise
+`NotImplementedError` (prefixed with "The monty syntax parser does not yet
+support ") at compile time, before any code runs. `yield` and `yield from` are
+reported as `SyntaxError` because generator functions are not supported.
 
 ## Statements rejected at parse time
 

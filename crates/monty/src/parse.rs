@@ -1506,12 +1506,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let value = self.parse_expression(*a.value)?;
                 Ok(ExprLoc::new(self.convert_range(a.range), Expr::Await(Box::new(value))))
             }
-            AstExpr::Yield(y) => Err(ParseError::not_implemented(
-                "yield expressions",
+            AstExpr::Yield(y) => Err(ParseError::syntax(
+                "yield expressions are not supported in this version",
                 self.convert_range(y.range),
             )),
-            AstExpr::YieldFrom(y) => Err(ParseError::not_implemented(
-                "yield from expressions",
+            AstExpr::YieldFrom(y) => Err(ParseError::syntax(
+                "yield from expressions are not supported in this version",
                 self.convert_range(y.range),
             )),
             AstExpr::Compare(ast::ExprCompare {
