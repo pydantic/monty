@@ -1,3 +1,4 @@
+import { deepStrictEqual } from 'node:assert'
 import {
   chmodSync,
   cpSync,
@@ -78,6 +79,14 @@ rmSync(output, { recursive: true, force: true })
 mkdirSync(output, { recursive: true })
 
 execFileSync('npx', ['napi', 'create-npm-dirs'], { cwd: root, stdio: 'inherit' })
+deepStrictEqual(
+  readdirSync(join(root, 'npm'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort(),
+  [...triples].sort(),
+  'napi.targets must match runtimeArtifacts',
+)
 execFileSync('node', ['scripts/create-platform-packages.mjs'], { cwd: root, stdio: 'inherit' })
 
 for (const triple of triples) {

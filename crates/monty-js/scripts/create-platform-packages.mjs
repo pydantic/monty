@@ -4,11 +4,9 @@
 // shared library, and `ts/binary.ts` resolves `@pydantic/monty-<triple>/monty`
 // for the worker subprocesses.
 //
-// Usage (CI, before publishing):
-//   npx napi create-npm-dirs
-//   node scripts/create-platform-packages.mjs
-//   # copy the built artifacts (monty[.exe], monty.<triple>.node) into
-//   # npm/<triple>/ and `npm publish` each directory
+// Called by `npm run assemble-packages`, which validates the target set,
+// copies the build artifacts, and packs the main package with exact platform pins.
+// Publish the resulting tarballs after the CI smoke tests pass.
 //
 // The browser/wasm path no longer ships a napi platform package: it runs the
 // lean `crates/monty-wasm-runtime` module in a Web Worker, not a napi binding.
