@@ -2918,6 +2918,8 @@ fn module_stub(module: &str, source: &str) -> ModuleStub {
     ModuleStub::new(module, source).expect("a valid stub name")
 }
 
+/// `ReplConfig::type_check_module_stubs` crosses the wire on `Configure`,
+/// module name and source intact.
 #[tokio::test]
 async fn configure_carries_module_stubs() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -2948,6 +2950,8 @@ async fn configure_carries_module_stubs() {
     join_server(server).await;
 }
 
+/// `get_stubs` converts the `TypeStubs` reply, and a stub naming a module the
+/// sandbox already provides is a protocol violation, not a stub.
 #[tokio::test]
 async fn get_stubs_reads_the_type_stubs_reply() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -2956,7 +2960,7 @@ async fn get_stubs_reads_the_type_stubs_reply() {
         let mut socket = accept_ws(&listener);
         try_read_request(&mut socket).expect("configure");
         send_kind(&mut socket, ok_event());
-        let request = try_read_request(&mut socket).expect("get types");
+        let request = try_read_request(&mut socket).expect("get stubs");
         assert!(
             matches!(request.kind, Some(pb::parent_request::Kind::GetStubs(_))),
             "expected GetStubs, got {request:?}"
@@ -2972,7 +2976,7 @@ async fn get_stubs_reads_the_type_stubs_reply() {
             }),
         );
         // a relay answering with a name no stub may have is a protocol violation
-        try_read_request(&mut socket).expect("get types again");
+        try_read_request(&mut socket).expect("get stubs again");
         send_kind(
             &mut socket,
             pb::child_event::Kind::TypeStubs(pb::TypeStubs {

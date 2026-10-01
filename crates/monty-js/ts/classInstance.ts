@@ -127,10 +127,9 @@ export abstract class BaseWrapper {
    * take named options. The return value passes through `convertValue`
    * (after settling, for a promise-returning method).
    *
-   * Calling the instance itself, which the sandbox sends as `__call__`,
-   * throws `TypeError` as for any value that is not callable: only
-   * [`ClassType`] accepts `__call__` (as construction), so even
-   * `allowedMethods: 'all'` cannot invoke the instance.
+   * `__call__` (the sandbox calling the instance itself) throws `TypeError`
+   * as for any non-callable value: only [`ClassType`] accepts it, as
+   * construction, so even `allowedMethods: 'all'` cannot invoke the instance.
    */
   callMethod(name: string, args: unknown[], kwargs: Record<string, unknown>): unknown {
     if (name === '__call__') {

@@ -21,7 +21,6 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
-// only the unix-gated exit-code test snapshots a message
 use insta::assert_snapshot;
 use monty_pool::{
     MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,

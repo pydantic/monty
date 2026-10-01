@@ -5,11 +5,11 @@
 //! [`ExternalLookup`] owns both halves of the lazy-resolution protocol — the
 //! `NameLookup` that resolves a bare name and the `FunctionCall` that invokes a
 //! resolved host function — so the callable-vs-value rule linking them lives in
-//! one place, and the `__import__` call that binds a module next to the dotted
-//! calls into it. Host-routed calls (`dispatch_object_call*`) and lazy
-//! attribute lookups (`resolve_object_attr`) are a separate concern: they
-//! route through the session's [`InstanceStore`] to the original wrapped
-//! object or class, not `external_lookup`.
+//! one place. It also answers the `__import__` call that binds a module and
+//! the dotted calls (`tools.add`) into it. Host-routed calls
+//! (`dispatch_object_call*`) and lazy attribute lookups (`resolve_object_attr`)
+//! are a separate concern: they route through the session's [`InstanceStore`]
+//! to the original wrapped object or class, not `external_lookup`.
 
 use monty_proto::python::{
     DecodedArena, InstanceStore, exc_py_to_monty, is_class_instance_wrapper, py_to_monty, py_to_monty_value,
@@ -139,6 +139,7 @@ impl HostNames {
         }
     }
 
+    /// A second owner of the same dicts, for a snapshot's drive context.
     pub(crate) fn clone_ref(&self, py: Python<'_>) -> Self {
         Self {
             lookup: self.lookup.as_ref().map(|d| d.clone_ref(py)),
@@ -154,11 +155,10 @@ impl HostNames {
 /// [`call`](Self::call) / [`call_or_coroutine`](Self::call_or_coroutine)
 /// answer the follow-up `FunctionCall` by invoking the current dict entry —
 /// which may have been replaced since it resolved, so calling a now
-/// non-callable entry raises `TypeError` exactly as CPython would. The same
-/// two methods answer an `import` (the `__import__` call) from
-/// `external_modules`, and a dotted name (`tools.add`) as that module's
-/// attribute. `ClassInstance` wrappers in return values register in
-/// `instances` transparently.
+/// non-callable entry raises `TypeError` exactly as CPython would. They also
+/// answer `__import__` from `external_modules`, and a dotted name
+/// (`tools.add`) as that module's attribute. `ClassInstance` wrappers in
+/// return values register in `instances` transparently.
 pub struct ExternalLookup<'a, 'py> {
     py: Python<'py>,
     lookup: Option<&'py Bound<'py, PyDict>>,
@@ -262,9 +262,9 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
     /// The host callable `function_name` names: an entry of `external_lookup`,
     /// or, for a dotted name, that attribute of the `external_modules` entry
-    /// (a host function bound by an import is named `<module>.<attr>`). Both
-    /// the module's name and a dict key may hold dots, so the module is the
-    /// longest prefix `external_modules` has. `None` when neither has it.
+    /// (a host function bound by an import is named `<module>.<attr>`). Module
+    /// names and dict keys may both contain dots, so the module is the longest
+    /// prefix `external_modules` has. `None` when neither has it.
     fn callable(&self, function_name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
         if function_name.contains('.') {
             for (dot, _) in function_name.rmatch_indices('.') {
@@ -372,9 +372,9 @@ fn module_attrs<'py>(module: &Bound<'py, PyAny>) -> PyResult<Vec<(String, Bound<
     Ok(attrs)
 }
 
-/// A stable identity for the host object standing in for module `name`, so a
-/// second `import` of it — or one after a dump is restored — is the same
-/// object: FNV-1a over `kind:name`, folded into the two uuid halves.
+/// A stable identity for the host object standing in for module `name`, so
+/// every `import` of it — including after a dump is restored — carries the
+/// same uuid: FNV-1a over `kind:name`, folded into the two uuid halves.
 fn module_uuid(kind: &str, name: &str) -> MontyUuid {
     let fnv = |seed: u64| {
         let mut hash = seed;

@@ -343,25 +343,24 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
     console.log(await session.feedRun(code, { externalModules: { tools } })) // 10
     ```
 
-A dict (an object in JavaScript), a module or a namespace becomes a host object named after the module whose public
-attributes are sent with it: a callable becomes a host function named `<module>.<attr>`, dispatched like an
-`external_lookup` entry (a Python coroutine is awaited by `AsyncMonty` and raises `RuntimeError` under `Monty`, and a
-JavaScript promise is awaited, as for `external_lookup`), and any other value is converted when the module is
-imported.
+A dict (a plain object in JavaScript), a module or a namespace becomes a host object named after the module, with its
+public attributes (names not starting with `_`) sent along.
+A callable attribute becomes a host function named `<module>.<attr>`, dispatched like an `external_lookup` entry: a
+JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
+Any other attribute is converted when the module is imported.
 A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
-`from tools import add` reads the attribute of that object, so it works for the attributes above and raises
-`ImportError` for any other name.
+`from tools import add` reads the attribute of that object and raises `ImportError` for a name it does not have.
 An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
 or `math`, are never looked up here.
-Every `import` statement asks again: the sandbox keeps no module cache, and the module bound by an earlier feed stays a
+Every `import` statement asks again: the sandbox has no module cache, and a module bound by an earlier feed is a
 plain global.
-The bound value is a host object, so `type(tools)` is its host class rather than `module`; see
+The bound value is a host object, so `type(tools)` is its host class, not `module`; see
 [modules](limitations/modules.md#host-modules).
 
-On the wire this is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the module name as its
-argument, answered with the module value, so a host driving suspensions itself answers it like any other call.
-The name is reserved for that: an `external_lookup` entry called `__import__` is never called, and the sandbox's own
-`__import__(...)` call raises `NameError`.
+On the wire the import is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the module name
+as its argument, answered with the module value, so a host driving suspensions itself answers it like any other call.
+The name is reserved: an `external_lookup` entry called `__import__` is never called, and `__import__(...)` in the
+sandbox raises `NameError`.
 To type-check code that imports a host module, give the checker its stub with `type_check_module_stubs`; see
 [type checking](type-checking.md#declaring-what-the-host-provides).
 

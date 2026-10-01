@@ -39,7 +39,7 @@ def test_import_binds_the_host_module(pool: Monty, tools: Any):
 
 
 def test_a_dotted_module_name(pool: Monty):
-    """A module's own name may hold dots; the attribute a call names never does."""
+    """A module name may itself hold dots: `pkg.tools` is one `external_modules` entry."""
     with pool.checkout() as session:
         code = 'from pkg.tools import add\nadd(1, 2)'
         assert session.feed_run(code, external_modules={'pkg.tools': TOOLS}) == snapshot(3)

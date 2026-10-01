@@ -281,9 +281,8 @@ interface worker {
         github,
     }
 
-    /// The `.pyi` source describing one host-provided module for type
-    /// checking; `module` must be an identifier that is not one of the
-    /// sandbox's own modules.
+    /// The `.pyi` source of one host-provided module for type checking;
+    /// `module` must be an identifier the sandbox's own modules do not use.
     record module-stub {
         module: string,
         source: string,

@@ -80,10 +80,9 @@ pub struct ReplConfig {
     /// The serving relay's profile to run the session under; `None` takes the
     /// relay's default. Subprocess workers ignore it.
     pub profile: Option<String>,
-    /// Type stubs for the host-provided modules, one `.pyi` each, so that
-    /// `import <module>` type-checks. Validated on `Configure` and reported
-    /// by [`Checkout::get_stubs`] whether or not `type_check` is on; only a
-    /// type-checked session reads them.
+    /// One `.pyi` per host-provided module, so `import <module>` type-checks.
+    /// Stored and reported by [`Checkout::get_stubs`] even when `type_check`
+    /// is off; only a type-checked session reads them.
     pub type_check_module_stubs: Vec<ModuleStub>,
 }
 
@@ -1173,13 +1172,11 @@ impl Checkout {
         }
     }
 
-    /// The type stubs of the session's host-provided modules, as `GetStubs`
-    /// reports them: what the session was configured with, plus whatever a
-    /// serving relay renders for its own modules. Valid while idle or
-    /// suspended. A peer that predates the request refuses it with a
-    /// [`PoolError::Runtime`] (`RuntimeError: protocol violation: request has
-    /// no kind`), and the session carries on, a suspended feed still
-    /// resumable.
+    /// The type stubs of the session's host-provided modules: what it was
+    /// configured with, or restored from a dump. Valid while idle or suspended.
+    /// A peer that predates `GetStubs` refuses it with [`PoolError::Runtime`]
+    /// (`RuntimeError: protocol violation: request has no kind`) and the
+    /// session carries on, a suspended feed still resumable.
     pub async fn get_stubs(&mut self) -> Result<Vec<ModuleStub>, PoolError> {
         let request = request(pb::parent_request::Kind::GetStubs(pb::GetStubs {}));
         let mut no_print = on_print_sync(|_, _| {});
@@ -1868,10 +1865,9 @@ impl Checkout {
                     return self.convert_turn(|| Ok(TurnEvent::Complete(MontyObject::try_from(complete)?)));
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
-                    // an error reply to `Dump` (e.g. an oversize dump) or to
-                    // `GetStubs` (a peer that predates it) does not end the
-                    // in-flight feed — the child stays suspended and
-                    // resumable, so keep the pending call and mounts
+                    // an error reply to `Dump` (e.g. an oversize dump) or `GetStubs` (a peer
+                    // that predates it) does not end the in-flight feed — the child stays
+                    // suspended and resumable, so keep the pending call and mounts
                     if !matches!(
                         request.kind,
                         Some(pb::parent_request::Kind::Dump(_) | pb::parent_request::Kind::GetStubs(_))

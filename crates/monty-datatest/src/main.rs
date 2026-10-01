@@ -593,9 +593,8 @@ fn dispatch_external_call(name: &str, call: &CallArgs, registry: &mut FixtureReg
             DispatchResult::AsyncFail(MontyException::new(exc_type, Some(message)))
         }
         IMPORT_FUNCTION => {
-            // `import tools` is answered with a host object carrying the fixture
-            // functions; any other module is not found, which the sandbox turns
-            // into `ModuleNotFoundError`.
+            // `import tools` binds a host object carrying the fixture functions;
+            // any other module is not found, which the sandbox raises as `ModuleNotFoundError`.
             assert!(args.len() == 1, "__import__ requires 1 argument");
             let module = String::try_from(&args[0]).expect("__import__: module name must be str");
             if module == "tools" {
@@ -661,9 +660,8 @@ impl FixtureRegistry {
         value
     }
 
-    /// Registers and returns the `tools` module an `import tools` binds: a
-    /// host object whose eager attrs are the fixture functions, so
-    /// `tools.add_ints(1, 2)` dispatches exactly like a bare `add_ints(1, 2)`.
+    /// Registers and returns the host object `import tools` binds: its eager attrs are
+    /// the fixture functions, so `tools.add_ints(1, 2)` dispatches like a bare `add_ints(1, 2)`.
     fn make_tools_module(&mut self) -> MontyObject {
         let functions = [
             "add_ints",
@@ -732,9 +730,8 @@ fn dispatch_method_call(
     let class_name = fixture.class_name;
 
     match (class_name, method_name) {
-        // Calling an instance suspends `__call__` to the host, which decides
-        // whether the object is callable; none of the fixtures are, so answer
-        // the TypeError CPython raises for `point()`.
+        // Calling an instance suspends `__call__` to the host, which decides whether the
+        // object is callable; no fixture is, so answer CPython's TypeError for `point()`.
         (_, "__call__") => {
             let message = format!("'{class_name}' object is not callable");
             MontyException::new(ExcType::TypeError, Some(message)).into()

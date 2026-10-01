@@ -814,15 +814,15 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
-    /// Type stubs for host-provided modules, one `.pyi` per module, so that
-    /// `import <module>` resolves during type checking; `GetStubs` reports the
-    /// stubs in effect. Ignored when `type_check` is false.
+    /// One `.pyi` per host-provided module, so `import <module>` resolves during
+    /// type checking. Checked only when `type_check` is true; `GetStubs` reports
+    /// them either way.
     #[prost(message, repeated, tag = "14")]
     pub type_check_module_stubs: crate::budgeted_prost::alloc::vec::Vec<ModuleStub>,
 }
-/// The `.pyi` source describing one host-provided module for type checking.
-/// `module` must be an identifier that is not one of the sandbox's own
-/// modules, or the runtime and the checker would disagree about the import.
+/// The `.pyi` source of one host-provided module. `module` must be an
+/// identifier and not a module the sandbox provides itself, or the runtime and
+/// the checker would disagree about the import.
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct ModuleStub {
@@ -964,11 +964,12 @@ pub struct InstallDependencies {
         crate::budgeted_prost::alloc::string::String,
     >,
 }
+/// Asks for the session's `type_check_module_stubs`, answered with `TypeStubs`.
+/// Valid whenever no turn is in flight, including before the first `Feed`.
 ///
 /// A peer that predates this request answers an `Error` (a `RuntimeError`,
-/// "protocol violation: request has no kind") and the session carries on:
-/// there is no in-band negotiation, so only send it to a peer known to serve
-/// it.
+/// "protocol violation: request has no kind") and the session carries on; there
+/// is no in-band negotiation, so only send it to a peer known to serve it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct GetStubs {}
@@ -1423,8 +1424,8 @@ pub struct ShutdownDump {
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
 }
-/// Answers `GetStubs`: the stub of every host-provided module, as the type
-/// checker sees them.
+/// Answers `GetStubs` with the session's module stubs, as the type checker sees
+/// them.
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct TypeStubs {

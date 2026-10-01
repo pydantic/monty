@@ -217,9 +217,8 @@ pub struct Child {
     print_flush_interval: Duration,
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
     os_policy: OsPolicy,
-    /// The stubs of the session's host-provided modules, from `Configure` (or
-    /// the dump a `Load` restored): what `GetStubs` reports, and what the type
-    /// checker resolves their imports against.
+    /// The session's host-provided module stubs, from `Configure` or a `Load`:
+    /// what `GetStubs` reports and the type checker resolves imports against.
     module_stubs: Vec<ModuleStub>,
 }
 
@@ -471,8 +470,8 @@ impl Child {
             {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
-            // Validated in full before anything is kept, so a refused
-            // `Configure` leaves nothing for a later `GetStubs` to report.
+            // validated in full before anything is kept, so a refused
+            // `Configure` leaves nothing for `GetStubs` to report
             let module_stubs = match module_stubs_from_proto(&configure.type_check_module_stubs) {
                 Ok(stubs) => stubs,
                 Err(err) => return protocol_violation(&format!("invalid type_check_module_stubs: {err}")),
@@ -486,7 +485,7 @@ impl Child {
                     stub.module()
                 ));
             }
-            // Kept whether or not the session type-checks: `GetStubs` reports them either way.
+            // kept whether or not the session type-checks: `GetStubs` reports them either way
             self.module_stubs = module_stubs;
             self.state = SessionState::Configured(Some(Box::new(configure)));
             ok_event()
@@ -847,8 +846,7 @@ impl Child {
         // name so the parent can report it without parsing the opaque dump.
         if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
             self.script_name = script_name;
-            // the dump's stubs, not the restoring `Configure`'s: they are the
-            // ones a type-checked session ran its checks against
+            // the dump's stubs, not this worker's `Configure`: the session was checked against them
             self.module_stubs = module_stubs;
             self.type_check = type_check;
             event.restored_script_name = Some(self.script_name.clone());
@@ -856,8 +854,8 @@ impl Child {
         event
     }
 
-    /// Answers `GetStubs` with the module stubs the session holds; a worker
-    /// with no session has nothing to report.
+    /// Answers `GetStubs` with the session's module stubs; an unconfigured
+    /// worker has no session to report on.
     fn handle_get_stubs(&self) -> pb::ChildEvent {
         if matches!(self.state, SessionState::Configured(None)) {
             protocol_violation("GetStubs before Configure")
@@ -877,8 +875,8 @@ impl Child {
                 if let Some(state) = &mut self.type_check
                     && let Some(snippet) = state.pending_snippet.take()
                 {
-                    // the star import of the stubs drops the snippet's own
-                    // imports, so they are re-injected ahead of it
+                    // the stubs' star import does not re-export the snippet's
+                    // imports, so they are injected ahead of it
                     state.committed_imports.push_str(&top_level_imports(&snippet));
                     state.committed_stubs.push('\n');
                     state.committed_stubs.push_str(&snippet);
@@ -936,10 +934,9 @@ impl Child {
         error_event(ExcType::RuntimeError, message)
     }
 
-    /// Type-checks a snippet against the accumulated session stubs, the
-    /// host-provided modules' stubs and the imports of the committed
-    /// snippets. Returns the turn-ending event if the check fails (or
-    /// errors), `None` to proceed with execution.
+    /// Type-checks a snippet against the session's accumulated stubs, module
+    /// stubs and committed imports. Returns the turn-ending event if the check
+    /// fails (or errors), `None` to proceed with execution.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
         let stubs =

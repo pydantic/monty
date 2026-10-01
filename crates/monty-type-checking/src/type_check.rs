@@ -87,11 +87,10 @@ impl TypeChecker {
         self.run_with(python_source, &context, config)
     }
 
-    /// [`run`](Self::run) with everything a session adds: the module stubs
-    /// are written beside the snippet so their imports resolve, and the
-    /// prelude goes ahead of the stubs' star import so a later stub binding
-    /// shadows it, as at runtime. Diagnostics are shifted back onto the
-    /// snippet's own lines.
+    /// [`run`](Self::run) with everything a session adds: module stubs are
+    /// written beside the snippet so their imports resolve, and the prelude
+    /// goes ahead of the stubs' star import so a later stub binding shadows
+    /// it, as at runtime. Diagnostics are shifted back onto the snippet's lines.
     pub fn run_with<'a>(
         &'a mut self,
         python_source: &SourceFile<'_>,
@@ -103,8 +102,8 @@ impl TypeChecker {
         let main_source = python_source.source_code;
 
         for stub in context.module_stubs {
-            // `ModuleStub` validates its name, but a path component here would
-            // write outside the root that `reset` scrubs, so refuse it again.
+            // `ModuleStub::new` validates the name, but a deserialized stub skips
+            // it, and a path component here would write outside the root `reset` scrubs.
             if !is_identifier(stub.module()) {
                 return Err(format!("invalid module name {:?}", stub.module()));
             }

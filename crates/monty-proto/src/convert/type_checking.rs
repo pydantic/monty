@@ -13,9 +13,8 @@ use super::ProtoConvertError;
 use crate::pb;
 
 /// The module stubs a `Configure` or `TypeStubs` carries, validated as
-/// [`ModuleStub`]s: a name that is not an identifier, or is a module the
-/// sandbox provides, is refused, and so is a module named twice, which would
-/// otherwise be checked against one stub and reported as both.
+/// [`ModuleStub`]s. A module named twice is refused too: it would be checked
+/// against one stub and reported as both.
 pub fn module_stubs_from_proto(stubs: &[pb::ModuleStub]) -> Result<Vec<ModuleStub>, ProtoConvertError> {
     let invalid = |reason: String| ProtoConvertError::InvalidValue {
         field: "ModuleStub.module",

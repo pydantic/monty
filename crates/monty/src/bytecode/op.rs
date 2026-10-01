@@ -291,13 +291,11 @@ pub enum Opcode {
     // NOTE: DeleteSubscr removed - `del` statement not supported by parser
     /// Pop obj, push obj.attr. Operand: u16 name_id.
     LoadAttr = 77,
-    /// Pop module, push module.attr for `from ... import`. Operands: u16
-    /// name_id, u16 module name_id.
+    /// Pop module, push module.attr for `from ... import`. Operands: u16 name_id, u16 module name_id.
     ///
-    /// Like `LoadAttr` but raises `ImportError` instead of `AttributeError`
-    /// when the attribute is not found. The module name is carried for that
-    /// message, since a host-provided module is whatever value the host
-    /// returned for the import.
+    /// Like `LoadAttr` but raises `ImportError` instead of `AttributeError` when the
+    /// attribute is missing. The module name feeds that message: a host-provided
+    /// module is whatever value the host returned, not necessarily a `Module`.
     LoadAttrImport = 78,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr = 79,

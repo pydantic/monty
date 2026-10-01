@@ -78,10 +78,10 @@ export interface CheckoutOptions {
   /** Stub file contents used by type checking. */
   typeCheckStubs?: string
   /**
-   * A `.pyi` source per host-provided module, keyed by module name, so that
-   * `import <module>` resolves during type checking (the stub is never
-   * star-imported). A name that is not an identifier, or is a module the
-   * sandbox provides, throws. [`MontySession.getStubs`] reports them.
+   * A `.pyi` source per host-provided module, keyed by module name, so
+   * `import <module>` type-checks; unlike `typeCheckStubs`, its names are in
+   * scope only once imported. A name that is not an identifier, or that the
+   * sandbox provides itself, throws. [`MontySession.getStubs`] reports them.
    */
   typeCheckModuleStubs?: Record<string, string>
   /**

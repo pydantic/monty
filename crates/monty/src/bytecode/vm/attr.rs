@@ -73,9 +73,8 @@ impl VM<'_> {
     /// Loads an attribute from a module for `from ... import` and pushes it onto the stack.
     ///
     /// Returns an ImportError (not AttributeError) if the attribute doesn't exist,
-    /// matching CPython's behavior for `from module import name`. `module_id`
-    /// names the module for that message: the value may be whatever the host
-    /// answered the import with, not a `Module`.
+    /// matching CPython's behavior for `from module import name`. `module_id` names
+    /// the module for that message, since a host-provided module need not be a `Module`.
     pub(super) fn load_attr_import(&mut self, name_id: StringId, module_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
@@ -93,10 +92,9 @@ impl VM<'_> {
         }
     }
 
-    /// The module a suspended `from <module> import <name>` is loading from:
-    /// `Some` while the instruction that suspended is its attribute load, so
-    /// a host's answer to that lookup can raise the `ImportError` the
-    /// synchronous load does.
+    /// The module a suspended `from <module> import <name>` is loading from: `Some`
+    /// while the suspended instruction is its attribute load, so a host's answer to
+    /// that lookup can raise the same `ImportError` the synchronous load does.
     pub(crate) fn suspended_import_from(&self) -> Option<StringId> {
         let ip = self.instruction_ip;
         let bytecode = self.current_frame.bytecode;
@@ -106,9 +104,9 @@ impl VM<'_> {
         })
     }
 
-    /// The module a suspended `import <module>` is loading: `Some` while the
-    /// instruction that suspended is its `LoadModule`, which tells the host
-    /// call an import makes from a direct call of an undefined `__import__`.
+    /// The module a suspended `import <module>` is loading: `Some` while the suspended
+    /// instruction is its `LoadModule`. This is what distinguishes an import's host call
+    /// from a direct call of an undefined `__import__`.
     pub(crate) fn suspended_import(&self) -> Option<StringId> {
         let ip = self.instruction_ip;
         let bytecode = self.current_frame.bytecode;

@@ -90,12 +90,11 @@ export interface FeedOptions {
   externalLookup?: Record<string, unknown>
   /**
    * Host modules the snippet may `import`, keyed by module name. A plain
-   * object's own public properties become the module's: functions as host
-   * functions named `<module>.<attr>` (a returned promise is awaited as in
-   * `externalLookup`), other values converted when imported; a
-   * [`ClassInstance`] is sent as itself. `from <module> import name` works
-   * for those attributes. An import of an absent module raises
-   * `ModuleNotFoundError`; the sandbox's own modules are never looked up here.
+   * object's own public properties become the module's attributes: functions
+   * as host functions (a returned promise is awaited, as in `externalLookup`),
+   * other values converted at import; a [`ClassInstance`] is sent as itself.
+   * `from <module> import name` works too. Importing an absent module raises
+   * `ModuleNotFoundError`; the sandbox's own modules never consult this.
    */
   externalModules?: Record<string, unknown>
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
@@ -430,9 +429,9 @@ export class MontySession {
 
   /**
    * The type stubs of the session's host-provided modules, keyed by module
-   * name: what `typeCheckModuleStubs` declared, plus whatever a serving relay
-   * renders for its own modules. Give them to a model writing code for the
-   * session, alongside `typeCheckStubs`.
+   * name: what `typeCheckModuleStubs` declared, or a restored dump carried.
+   * Give them to a model writing code for the session, alongside
+   * `typeCheckStubs`.
    */
   async getStubs(): Promise<Record<string, string>> {
     this.ensureUsable()
@@ -526,8 +525,8 @@ export class MontySession {
 class TurnAnswerer {
   /** Pending async external calls, by call id. */
   readonly futures = new Map<number, PendingFuture>()
-  /** The module wrappers this feed's imports built, one per module: each
-   *  wrapper sent is kept by the session's instance store. */
+  /** Module values built by this feed's imports, so importing a module twice
+   *  yields one wrapper (the instance store keeps each wrapper sent). */
   private readonly moduleValues = new Map<string, unknown>()
 
   constructor(
@@ -631,13 +630,11 @@ class TurnAnswerer {
   }
 
   /**
-   * The host value `functionName` names: an own entry of `externalLookup`, or,
-   * for a dotted name, that own property of the `externalModules` entry (a
-   * host function bound by an import is named `<module>.<attr>`). Both the
-   * module's name and a plain object's key may hold dots, so the module is
-   * the longest prefix `externalModules` has. Own keys only: an inherited
-   * callable (e.g. `Object.prototype.toString`) must never be dispatched as
-   * a host function.
+   * The host value `functionName` names: an own entry of `externalLookup`, or
+   * for `<module>.<attr>` (an import's host function) that own property of the
+   * `externalModules` entry. Both parts may hold dots, so the module is the
+   * longest prefix `externalModules` has. Own keys only: an inherited callable
+   * (e.g. `Object.prototype.toString`) must never be dispatched as a host function.
    */
   private hostEntry(functionName: string): unknown {
     if (!functionName.includes('.')) {
@@ -670,8 +667,7 @@ class TurnAnswerer {
       value = this.moduleValues.get(name) ?? moduleValue(name, module)
       this.moduleValues.set(name, value)
     } catch (err) {
-      // a getter that throws while the module is read raises at the import,
-      // as a host function that throws raises at its call
+      // a getter that throws while the module is read raises at the import
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
@@ -1331,8 +1327,7 @@ export class MontyComplete {
   constructor(readonly output: unknown) {}
 }
 
-/** Positional args, with kwargs appended as an object when present. */
-/** The external function name an `import` of a module the sandbox lacks calls. */
+/** The host function name the sandbox calls for an `import` it cannot resolve itself. */
 const IMPORT_FUNCTION = '__import__'
 
 /** `record[key]` when it is an own key, else `undefined`. */
@@ -1344,15 +1339,11 @@ function ownEntry(record: unknown, key: string): unknown {
 
 /**
  * The sandbox value of an `externalModules` entry: a [`ClassInstance`] as
- * itself (its methods route back by id), anything else as a host object named
- * after the module whose own public properties are sent eagerly — functions
- * as host functions named `<module>.<attr>` (only the name crosses), so the
- * sandbox's calls into the module come back through
- * [`TurnAnswerer.hostEntry`]. Its class id derives from the module name, so
- * each module is its own class (not the default wrapper class of plain
- * objects), the same on every import; the instance is new each feed (the
- * feed's imports of one module share it), since it is host state that does
- * not travel.
+ * itself, anything else as a host object whose own public properties are sent
+ * eagerly, functions as host functions named `<module>.<attr>` so calls route
+ * back through [`TurnAnswerer.hostEntry`]. The class id derives from the module
+ * name, so each module is its own class, the same on every import and in every
+ * process; the instance is host state, so it is new per feed.
  */
 function moduleValue(name: string, module: unknown): unknown {
   if (module instanceof ClassInstance || module === null || typeof module !== 'object') {
@@ -1390,6 +1381,7 @@ function moduleUuid(kind: string, name: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+/** Positional args, with kwargs appended as an object when present. */
 function buildCallArgs(args: unknown[], kwargs: [unknown, unknown][]): unknown[] {
   if (kwargs.length === 0) {
     return args

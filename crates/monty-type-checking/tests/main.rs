@@ -492,6 +492,7 @@ fn render_with(checker: &mut TypeChecker, code: &str, context: &TypeCheckContext
         .map(|diagnostics| diagnostics.to_string())
 }
 
+/// A stub for a host module `tools` with one async function.
 fn tools_stub() -> ModuleStub {
     ModuleStub::new("tools", "async def add(*, a: int, b: int) -> int: ...\n").unwrap()
 }

@@ -113,9 +113,10 @@ Stubs are scoped to the checkout.
 A later session does not see them.
 
 A stub declares names at the top level of the snippet.
-A host-provided module the code imports needs a stub of its own, one `.pyi` per module in `type_check_module_stubs`
-(`typeCheckModuleStubs`), keyed by the module name; the checker writes each one as `<module>.pyi` beside the snippet,
-so `import tools` resolves and `from tools import add` sees its declarations, without star-importing them:
+A host-provided module the code imports needs its own stub: `type_check_module_stubs` (`typeCheckModuleStubs`) maps a
+module name to its `.pyi` source.
+The checker writes each one as `<module>.pyi` beside the snippet, so `import tools` resolves and `from tools import add`
+sees its declarations; module stubs are not star-imported:
 
 === "Python"
 
@@ -153,13 +154,14 @@ so `import tools` resolves and `from tools import add` sees its declarations, wi
     }
     ```
 
-A module name that is not an identifier, or that names a module the sandbox or its type checker already provides,
-raises `ValueError` (throws in JavaScript).
-The reserved names are the modules of the vendored typeshed, which include ones the checker resolves but the runtime
-does not, such as `abc` and `enum`: a host can serve those through `external_modules`, but the checker keeps its own
-stub for them; see [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
+A module name that is not an identifier, or that the sandbox or its type checker already provides, raises `ValueError`
+(throws in JavaScript).
+The reserved names are the sandbox's own modules and the rest of the vendored typeshed, including modules the checker
+resolves but the runtime does not, such as `abc` and `enum`: a host can serve those through `external_modules`, but the
+checker keeps typeshed's stub for them; see
+[modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
 [`get_stubs()`][pydantic_monty.MontySession.get_stubs] returns the stubs in effect.
-The runtime side of an imported host module is `external_modules`; see
+The runtime side of a host module is `external_modules`; see
 [importing host modules](host-functions.md#importing-host-modules).
 
 Passing the same declarations to the model in its prompt, and to `type_check_stubs` here, is the pattern the
@@ -203,12 +205,12 @@ checks as one growing program:
     ```
 
 A snippet that fails the check never runs, so it never enters the accumulated context.
-The `import` statements of a committed snippet are carried too (those outside any function or class body, a
-module-level `if` or `try` included), so `import math` in one feed still binds `math` for the next feed's check.
-They are re-emitted ahead of the snippet's other definitions, so a later rebinding of the name in a snippet wins for
-the checker as at runtime, while a name the snippet deleted after importing stays bound for the checker.
-An import inside an `if` or `try` is carried whether or not its branch ran, as ty sees both branches of one program:
-a later use of a name bound only in the branch that did not run checks clean and then raises `NameError` at runtime.
+A committed snippet's module-level `import` statements (outside any function or class body, a module-level `if` or
+`try` included) are carried too, so `import math` in one feed binds `math` for the next feed's check.
+They are re-emitted ahead of the committed definitions, so a later rebinding of the name wins for the checker as at
+runtime, while a name deleted after being imported stays bound for the checker.
+An import under an `if` or `try` is carried whether or not its branch ran: a later use of a name bound only in the
+branch that did not run checks clean and raises `NameError` at runtime.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.

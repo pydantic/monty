@@ -127,8 +127,8 @@ pub struct NativeCheckoutOptions {
     pub type_check: bool,
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
-    /// A `.pyi` source per host-provided module, keyed by module name, so that
-    /// `import <module>` resolves during type checking.
+    /// A `.pyi` source per host-provided module, keyed by module name, so
+    /// `import <module>` type-checks.
     pub type_check_module_stubs: Option<HashMap<String, String>>,
     /// How typing diagnostics are rendered, e.g. `'full'` or `'concise'`.
     /// Chosen here rather than on the thrown error because the checker's
@@ -727,8 +727,7 @@ impl NativeSession {
     }
 
     /// The type stubs of the session's host-provided modules, keyed by module
-    /// name: what `typeCheckModuleStubs` declared, plus whatever a serving
-    /// relay renders for its own modules.
+    /// name: what `typeCheckModuleStubs` declared, or a restored dump carried.
     #[napi]
     pub fn get_stubs<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, HashMap<String, String>>> {
         let slot = Arc::clone(&self.checkout);

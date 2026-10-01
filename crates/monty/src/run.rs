@@ -736,9 +736,9 @@ impl Program {
                     name_load_ip,
                     ..
                 }) => {
-                    // In non-iterative execution, an ExtFunction from LoadGlobalCallable
-                    // means the name was undefined — raise NameError — and an import
-                    // nobody serves raises ModuleNotFoundError.
+                    // In non-iterative execution no host answers: an ExtFunction from
+                    // LoadGlobalCallable means the name was undefined (NameError), one
+                    // from LoadModule means the module is missing (ModuleNotFoundError).
                     // Restore the frame IP to the load instruction so the traceback
                     // points to the name reference, not the call expression.
                     if let Some(load_ip) = name_load_ip {

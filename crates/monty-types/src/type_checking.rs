@@ -131,11 +131,9 @@ impl ModuleStub {
     }
 }
 
-/// Refuses a name a host-provided module may not have: not an identifier, or
-/// one of [`RESERVED_MODULE_NAMES`], a module the runtime binds itself or one
-/// the vendored typeshed already declares, which a stub would shadow for the
-/// checker alone. What [`ModuleStub::new`] checks, for modules that carry no
-/// stub of their own.
+/// Refuses a name a host-provided module may not have: not an identifier, or one
+/// of [`RESERVED_MODULE_NAMES`]. What [`ModuleStub::new`] checks, exported so a
+/// host can refuse a module name before building anything on it.
 pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
     if !is_identifier(name) {
         Err(ModuleStubError::InvalidName(name.to_owned()))
@@ -170,9 +168,9 @@ impl Display for ModuleStubError {
 impl Error for ModuleStubError {}
 
 /// Module names a [`ModuleStub`] may not use: every module of the vendored
-/// typeshed (the sandbox's own stdlib and the private modules its stubs
-/// import), plus the names an `import` never asks the host for. A stub under
-/// one of these would shadow that module for the checker alone.
+/// typeshed (the sandbox's stdlib and the private modules its stubs import), plus
+/// those the runtime or ty provide without a typeshed entry (`gc`, `ty_extensions`).
+/// A stub under one of these would shadow that module for the checker alone.
 pub const RESERVED_MODULE_NAMES: &[&str] = &[
     "__future__",
     "__main__",

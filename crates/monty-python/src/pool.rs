@@ -402,7 +402,7 @@ impl PyMontySession {
     /// starts empty (host state is never part of a dump). Raises if the dump
     /// is actually an idle session.
     ///
-    /// `external_lookup` / `os` are captured on the restored snapshot so it
+    /// `external_lookup` / `external_modules` / `os` are captured on the restored snapshot so it
     /// supports `resume_auto()`, just like `feed_start`. One caveat applies to a
     /// restored snapshot: a restored `FutureSnapshot`'s pending coroutines are
     /// gone (they lived in the previous process), so async `resume_auto()` on it
@@ -935,7 +935,7 @@ impl PyAsyncMontySession {
     /// Async counterpart of [`PyMontySession::feed_start`]: the returned
     /// coroutine resolves to a snapshot (whose `resume(...)` / `resume_auto()`
     /// is awaitable) or a `MontyComplete`. See that method for the
-    /// snapshot-driven protocol and the `external_lookup` / `os` capture that
+    /// snapshot-driven protocol and the `external_lookup` / `external_modules` / `os` capture that
     /// backs `resume_auto()`.
     #[pyo3(signature = (code, *, inputs=None, external_lookup=None, external_modules=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]

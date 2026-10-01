@@ -717,11 +717,11 @@ class MontySession:
                 the module name: a dict, a module or any object whose public
                 attributes become the module's — callables as host functions
                 (a coroutine raises `RuntimeError`, as in `external_lookup`;
-                `AsyncMonty` awaits it), other values
-                converted when imported — or a `ClassInstance` sent as itself.
-                `from <module> import name` works for those attributes. An
-                import of an absent module raises `ModuleNotFoundError`; the
-                sandbox's own modules are never looked up here.
+                `AsyncMonty` awaits it), other values converted when imported
+                — or a `ClassInstance` sent as itself. `from <module> import
+                name` works for those attributes. An import of an absent
+                module raises `ModuleNotFoundError`; the sandbox's own modules
+                are never looked up here.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -890,8 +890,8 @@ class MontySession:
 
         Blocks the calling thread with the GIL released, bounded by the pool's
         `request_timeout`; valid while the session is idle or suspended. A
-        worker that predates the request refuses it with `MontyRuntimeError`
-        and the session carries on; a server that predates it ends the session.
+        worker or server that predates the request refuses it with
+        `MontyRuntimeError` and the session carries on.
         """
 
     def install_dependencies(self, requirements: list[str]) -> None:
@@ -1282,9 +1282,9 @@ class AsyncMontySession:
 
         `external_lookup` / `external_modules` / `os` are captured for
         `resume_auto()`, with the same restored-snapshot caveats as the sync
-        method (they are passed again, and a restored `FutureSnapshot` cannot be
-        driven with `resume_auto()` — its pending coroutines are gone).
-        `state` may be an ID, as in `load_session`.
+        method (host state is not in the dump, so pass them again; a restored
+        `FutureSnapshot` cannot be driven with `resume_auto()` — its pending
+        coroutines are gone). `state` may be an ID, as in `load_session`.
         """
 
     async def dump(self) -> bytes:

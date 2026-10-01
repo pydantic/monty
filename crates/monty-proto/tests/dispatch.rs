@@ -589,8 +589,7 @@ fn module_stub(module: &str, source: &str) -> pb::ModuleStub {
     }
 }
 
-/// Configures a session with `stubs` for its host-provided modules, returning
-/// the reply.
+/// Configures a session with `stubs` as its module stubs, returning the reply.
 fn configure_with_module_stubs(
     child: &mut Child,
     type_check: bool,
@@ -637,8 +636,8 @@ fn expect_error_message(event: pb::child_event::Kind) -> String {
     error.exception.unwrap().message.unwrap()
 }
 
-/// `GetStubs` answers with the stubs `Configure` carried, whether or not the
-/// session type-checks or has run, until `Reset` clears them.
+/// `GetStubs` reports the configured stubs whether or not the session
+/// type-checks or has run, until `Reset` clears them.
 #[test]
 fn get_stubs_reports_the_configured_module_stubs() {
     let mut child = Child::default();
@@ -671,8 +670,7 @@ fn get_stubs_reports_the_configured_module_stubs() {
     assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![]);
 }
 
-/// A module named twice would be checked against one stub and reported as
-/// both, so the `Configure` is refused.
+/// A module named twice is refused on `Configure`.
 #[test]
 fn configure_refuses_a_duplicate_module_stub() {
     let mut child = Child::default();
@@ -681,9 +679,8 @@ fn configure_refuses_a_duplicate_module_stub() {
     insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: invalid type_check_module_stubs: invalid value for ModuleStub.module: module "tools" has more than one stub"#);
 }
 
-/// A `Configure` refused for a stub's source keeps none of its stubs: a
-/// session then loaded into the worker reports the dump's, not the refused
-/// configuration's.
+/// A refused `Configure` keeps none of its stubs: a session loaded afterwards
+/// reports the dump's, not the refused configuration's.
 #[test]
 fn a_refused_configure_keeps_no_stubs() {
     let state = dump_configured(false, vec![]);
@@ -699,8 +696,7 @@ fn a_refused_configure_keeps_no_stubs() {
     assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![]);
 }
 
-/// A stub for a module the sandbox provides itself is refused on the
-/// `Configure` turn, and no session is created.
+/// A stub for a module the sandbox provides is refused, and no session is created.
 #[test]
 fn configure_refuses_a_reserved_module_stub() {
     let mut child = Child::default();
@@ -736,8 +732,8 @@ fn load_state(child: &mut Child, state: Vec<u8>) {
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
 }
 
-/// A dump carries the session's module stubs whether or not it type-checked,
-/// and `Load` restores those over the ones the new worker was configured with.
+/// A dump carries the module stubs whether or not the session type-checked,
+/// and `Load` restores them over the new worker's own.
 #[test]
 fn load_restores_the_dumped_module_stubs() {
     for type_check in [true, false] {
@@ -765,9 +761,8 @@ fn expect_typing_error(event: pb::child_event::Kind) -> String {
     typing.diagnostics
 }
 
-/// A type-checked session resolves `import tools` against its stub: a bad
-/// call is rejected before the import ever asks the host, and a good one runs
-/// on to the `__import__` call.
+/// A type-checked feed resolves `import tools` against its stub: a bad call
+/// is rejected before the host is asked, a good one suspends on `__import__`.
 #[test]
 fn a_type_checked_feed_resolves_the_module_stubs() {
     let mut child = Child::default();

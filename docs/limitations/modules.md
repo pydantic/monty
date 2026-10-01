@@ -81,31 +81,29 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 
 `abc`, `enum`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed`
 back the vendored stubs (e.g. `@abstractmethod` on protocol members), so they
-have to resolve during type checking. Importing them therefore type-checks
-clean, while at runtime they are host modules like any other name the sandbox
-lacks: the host may serve them, and an `import` the host does not answer
-raises `ModuleNotFoundError`. A host cannot declare a module stub under these
-names (nor under any
-other module of the vendored typeshed), so the checker checks a host-served
-`abc` against typeshed's `abc`, not against what the host serves.
+have to resolve during type checking. Importing them type-checks clean; at
+runtime they are host modules like any other name the sandbox lacks, so the
+host may serve them, and a not-found answer raises `ModuleNotFoundError`.
+A module stub cannot be declared under these names, nor under any other module
+of the vendored typeshed, so the checker checks a host-served `abc` against
+typeshed's `abc`, not against what the host serves.
 
 ## Host modules
 
-An `import` of any module the runtime does not ship, including the checker-only ones above, asks the host for it, as
-the external function call `__import__` with the module name as its argument, instead of raising
-`ModuleNotFoundError` outright.
-The host binds whatever value it answers with (in the bindings, the matching `external_modules` entry), so:
+An `import` of any module the runtime does not ship, the checker-only ones above included, asks the host for it as
+the external function call `__import__` with the module name as its argument.
+The value the host answers with (in the bindings, the matching `external_modules` entry) is bound as the module, so:
 
-- the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr, `m.__class__` that
-    class, and `m.__name__` and `m.__dict__` raise `AttributeError`, as every other dunder attribute of a host object
-    does;
+- the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr and `m.__class__`
+    that class, while `m.__name__` and `m.__dict__` raise `AttributeError`, as every other dunder attribute of a host
+    object does;
 - a missing attribute raises `AttributeError: 'm' object has no attribute 'x'`, naming the host class rather than
     CPython's `module 'm' has no attribute 'x'`;
 - every `import` statement asks again, since there is no `sys.modules` cache, so two imports of one module bind two
-    objects (`import m as a` then `import m as b` leaves `a is b` false), and an import inside a function asks on
-    each call;
-- a host that answers with not-found raises CPython's `ModuleNotFoundError: No module named 'm'`, and one that raises
-    raises that exception at the import;
-- `from m import x` reads `x` from the answered value, raising `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute, whether the attribute was sent with the object or looked up lazily.
+    objects (`import m as a; import m as b` leaves `a is not b`), and an import inside a function asks on each call;
+- a not-found answer raises `ModuleNotFoundError: No module named 'm'`, as in CPython, and an exception raised by the
+    host is raised at the `import`;
+- `from m import x` reads `x` from the answered value, whether sent with it or looked up lazily, and raises
+    `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute.
 
-A run with no host, `monty run` included, still raises `ModuleNotFoundError` for every unknown module.
+With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.

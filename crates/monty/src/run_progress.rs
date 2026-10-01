@@ -562,9 +562,9 @@ pub(crate) fn resume_lookup(
     vm.run_external()
 }
 
-/// The `ImportError` a `from <module> import <name>` raises when the host
-/// answers its attribute lookup with `AttributeError` or nothing, as the
-/// synchronous load does; any other error, or one outside an import, is `err`.
+/// The `ImportError` a `from <module> import <name>` raises when the host answers
+/// its attribute lookup with `AttributeError` or nothing, matching the synchronous
+/// load; any other error, or one outside an import, passes through unchanged.
 fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
     match (&err, vm.suspended_import_from()) {
         (RunError::Exc(exc), Some(module)) if exc.exc.exc_type() == ExcType::AttributeError => {
@@ -956,12 +956,11 @@ pub(crate) fn resume_with_result(
     }
 }
 
-/// Resumes a suspended `import <module>` with the host's answer to its
-/// [`IMPORT_FUNCTION`](monty_types::IMPORT_FUNCTION) call: the value becomes the module, `not_found` raises
-/// `ModuleNotFoundError`, an exception is raised at the statement without
-/// carets (as CPython renders import errors), and a future is refused, since
-/// nothing awaits a module into place. A direct call of an undefined
-/// `__import__` never reaches here: it is not suspended at a `LoadModule`.
+/// Resumes a suspended `import <module>` with the host's answer: the value becomes
+/// the module, `NotFound` raises `ModuleNotFoundError`, an exception is raised without
+/// carets (as CPython renders import errors), and a future is refused since nothing
+/// awaits a module into place. A direct call of an undefined `__import__` is not
+/// suspended at a `LoadModule`, so it never lands here.
 fn resume_import(
     vm: &mut VM<'_>,
     module_id: StringId,

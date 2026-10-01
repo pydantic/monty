@@ -190,9 +190,9 @@ fn a_host_exception_hides_its_caret_only_at_an_import() {
     "#);
 }
 
-/// `__import__` is not a builtin: calling it is a call of an undefined name,
-/// which reaches a host as the same `__import__` call an `import` makes but
-/// is not an import, so `not_found` stays a `NameError`.
+/// `__import__` is not a builtin: calling it directly is an undefined-name call that
+/// reaches the host under the same name an `import` uses, but is not an import, so
+/// `NotFound` stays a `NameError`.
 #[test]
 fn a_direct_dunder_import_call_is_an_undefined_name() {
     let err = MontyRun::new(
