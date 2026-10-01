@@ -8,7 +8,7 @@ use crate::{
     intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
-    value::{EitherStr, Marker, Value},
+    value::{EitherStr, Marker},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -25,8 +25,10 @@ pub enum NameScope {
     ///
     /// If accessed before assignment, raises `UnboundLocalError`.
     #[default]
+    #[serde(rename = "L")]
     Local,
     /// Variable is in the module-level global namespace.
+    #[serde(rename = "G")]
     Global,
     /// Variable accessed through a cell (heap-allocated container).
     ///
@@ -36,17 +38,20 @@ pub enum NameScope {
     ///
     /// The namespace slot contains `Value::Ref(cell_id)` pointing to a `HeapData::Cell`.
     /// Access requires dereferencing through the cell.
+    #[serde(rename = "C")]
     Cell,
     /// Comprehension target stored in isolated operand-stack storage.
     ///
     /// The namespace ID is a comprehension-local slot ID. The compiler stores
     /// uncaptured targets directly and gives captured targets a stable cell.
+    #[serde(rename = "V")]
     CompVar,
     /// Top-level name of an `eval()` / `exec()` snippet that runs with a locals
     /// dict or dict globals: resolved by name at runtime through the frame's
     /// namespace. The namespace ID is the session global slot for the name (a
     /// scratch slot under dict globals) so the slot-globals tail of the lookup
     /// reuses the `LoadGlobal` machinery.
+    #[serde(rename = "N")]
     Name,
 }
 
@@ -65,11 +70,15 @@ pub enum CaptureSource {
 /// To get the actual string, look it up in the `Interns` storage.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Identifier {
+    #[serde(rename = "P")]
     pub position: CodeRange,
     /// Interned name ID - look up in Interns to get the actual string.
+    #[serde(rename = "N")]
     pub name_id: StringId,
+    #[serde(rename = "I")]
     opt_namespace_id: Option<NamespaceId>,
     /// Which namespace this identifier refers to (determined at prepare time)
+    #[serde(rename = "S")]
     pub scope: NameScope,
 }
 
@@ -495,6 +504,10 @@ pub enum Literal {
     Bool(bool),
     Int(i64),
     Float(f64),
+    /// An imaginary literal such as `2j`, holding its imaginary part (the real
+    /// part is always zero). It has no constant-pool form: the compiler emits a
+    /// `complex()` constructor call, since a complex value lives on the heap.
+    Complex(f64),
     /// An interned string literal. The StringId references the string in the Interns table.
     Str(StringId),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
@@ -504,26 +517,6 @@ pub enum Literal {
     LongInt(LongIntId),
     /// A marker value (e.g., typing constructs like Any, Optional, etc.).
     Marker(Marker),
-}
-
-impl From<Literal> for Value {
-    /// Converts the literal into its runtime `Value` counterpart.
-    ///
-    /// This is the only place parse-time data crosses the boundary into runtime
-    /// semantics, ensuring every literal follows the same conversion path.
-    fn from(literal: Literal) -> Self {
-        match literal {
-            Literal::Ellipsis => Self::Ellipsis,
-            Literal::None => Self::None,
-            Literal::Bool(b) => Self::Bool(b),
-            Literal::Int(v) => Self::Int(v),
-            Literal::Float(v) => Self::Float(v),
-            Literal::Str(string_id) => Self::InternString(string_id),
-            Literal::Bytes(bytes_id) => Self::InternBytes(bytes_id),
-            Literal::LongInt(long_int_id) => Self::InternLongInt(long_int_id),
-            Literal::Marker(marker) => Self::Marker(marker),
-        }
-    }
 }
 
 /// An expression with its source location.

@@ -7,7 +7,15 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
-import { type AssertMessageAnnotations, type TypeCheckFormat, encodeAssertMessageAnnotations } from './options.js'
+import {
+  type AssertMessageAnnotations,
+  type OsPolicy,
+  type EncodedOsPolicy,
+  type TypeCheckFormat,
+  encodeAssertMessageAnnotations,
+  encodeOsPolicy,
+  validateMaxCheckouts,
+} from './options.js'
 import { MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
@@ -49,7 +57,8 @@ export interface MontyOptions {
    * `null` disables).
    */
   turnDurationLimitGrace?: number | null
-  /** Recycle a worker (kill and replace) after serving this many sessions. */
+  /** Recycle a worker after this many sessions: an integer from 0 to 4294967295.
+   *  Both 0 and 1 retire after each checkout; omitted means no recycling. */
   maxCheckoutsPerWorker?: number
 }
 
@@ -96,6 +105,12 @@ export interface CheckoutOptions {
    * lag — never what arrives, or in what order.
    */
   printFlushInterval?: number
+  /**
+   * Session clock, sleep, process-clock and random initialization policies; see `OsPolicy`.
+   * Defaults to the worker's clock in UTC and its entropy, with pool-managed sleeps capped at ten seconds.
+   * Sleeps count toward suspensions and `maxTotalSleepSecs`, but not execution duration limits.
+   */
+  osPolicy?: OsPolicy
 }
 
 /**
@@ -125,6 +140,11 @@ export interface ResourceLimits {
   gcInterval?: number
   maxRecursionDepth?: number
   maxSuspensions?: number
+  /**
+   * Maximum cumulative seconds of `'system'` sleep, excluded from execution duration limits.
+   * The pool charges each sleep before waiting; exceeding the limit raises an uncatchable `TimeoutError`.
+   */
+  maxTotalSleepSecs?: number
 }
 
 /**
@@ -148,6 +168,7 @@ export class Monty {
 
   /** Creates the pool and prewarms `minProcesses` workers. */
   static async create(options: MontyOptions = {}): Promise<Monty> {
+    validateMaxCheckouts(options.maxCheckoutsPerWorker)
     const native = new NativePool({
       binaryPath: findMontyBinary(options.binaryPath),
       minProcesses: options.minProcesses ?? 1,
@@ -173,6 +194,7 @@ export class Monty {
       throw new Error('the pool is closed — create a new Monty pool')
     }
     const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
+    const osPolicy = encodeOsPolicy(options.osPolicy ?? {})
     const native = this.native.checkout({
       scriptName: options.scriptName ?? 'main.py',
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
@@ -182,6 +204,7 @@ export class Monty {
       ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
       ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
+      ...nativeOsPolicy(osPolicy),
     })
     const telemetryContext = captureTelemetryContext()
     await native.enter(telemetryContext)
@@ -189,8 +212,8 @@ export class Monty {
   }
 
   /**
-   * Shuts the pool down: idle workers exit and no new checkouts are
-   * accepted. Sessions still checked out keep their workers until closed.
+   * Shuts the pool down: idle workers exit and pending/new checkouts reject.
+   * Sessions already checked out keep their workers until closed.
    */
   async close(): Promise<void> {
     if (this.closed) {
@@ -211,4 +234,40 @@ export class Monty {
  */
 function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
   return seconds === null ? {} : { [key]: (seconds ?? 1) * 1000 }
+}
+
+/** Flattens normalized options into native binding fields. */
+function nativeOsPolicy(calls: EncodedOsPolicy): Record<string, unknown> {
+  const fields: Record<string, unknown> = {}
+  if (typeof calls.datetime === 'string') {
+    fields.datetimeKind = calls.datetime
+  } else if (calls.datetime !== undefined) {
+    fields.datetimeKind = 'fixed'
+    fields.datetimeUnixSeconds = calls.datetime.unixSeconds
+    fields.datetimeMicrosecond = calls.datetime.microsecond
+  }
+  if (calls.timezone === 'utc') {
+    fields.timezoneKind = 'utc'
+  } else if (typeof calls.timezone === 'string') {
+    fields.timezoneKind = 'named'
+    fields.timezoneName = calls.timezone
+  } else if (calls.timezone !== undefined) {
+    fields.timezoneKind = 'fixed'
+    fields.timezoneOffsetSeconds = calls.timezone.offsetSeconds
+    if (calls.timezone.name !== undefined) fields.timezoneName = calls.timezone.name
+  }
+  if (calls.sleep !== undefined) fields.sleep = calls.sleep
+  if (calls.sleepSystemMaxSecs !== undefined) fields.sleepSystemMaxSecs = calls.sleepSystemMaxSecs
+  if (calls.randomStart === 'call_host') {
+    fields.randomStartKind = 'call_host'
+  } else if (calls.randomStart !== undefined) {
+    fields.randomStartKind = 'seed'
+    const seed = calls.randomStart.seed
+    if ('int' in seed) fields.randomSeedInt = Buffer.from(seed.int)
+    else if ('float' in seed) fields.randomSeedFloat = seed.float
+    else if ('str' in seed) fields.randomSeedStr = seed.str
+    else fields.randomSeedBytes = Buffer.from(seed.bytes)
+  }
+  if (calls.processTime !== undefined) fields.processTime = calls.processTime
+  return fields
 }

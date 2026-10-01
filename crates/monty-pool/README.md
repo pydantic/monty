@@ -65,13 +65,21 @@ async fn main() -> Result<(), PoolError> {
 }
 ```
 
-`ReplConfig` also enables per-session sandbox `ResourceLimits`, type checking of every fed
-snippet, and `print_flush_interval` — how long the worker may batch `print()` output before
-sending it, so a burst of prints costs one event rather than one each (`Duration::ZERO`
-restores line buffering, one event per completed line); `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
-per-feed filesystem mounts (`MountSpec`) and, through `Checkout::feed_with_cwd`, a switch of the
-sandbox's working directory (the first feed's first mount by default; it then persists across feeds). Sessions can be snapshotted with `Checkout::dump`
-and restored later — including on a different worker or machine — with `Checkout::restore`.
+`ReplConfig` sets per-session `ResourceLimits`, type checking of every snippet, and `print_flush_interval`.
+The flush interval batches `print()` output; `Duration::ZERO` sends one event per completed line.
+Its `os_policy` sets the clock, timezone, initial random state and sleep policy for the session.
+`CallHost` delegates calls to the caller's OS handler through `TurnEvent::OsCall`.
+Every suspension variant of `TurnEvent` carries `position`, a `SourceRange` locating the suspending expression.
+The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
+`SleepMode::Zero` returns immediately.
+
+`Checkout::feed` accepts inputs exposed as sandbox globals and per-feed filesystem mounts (`MountSpec`); mounts that
+overlap on the host or repeat a virtual path fail the feed with a session-preserving `PoolError::Runtime`.
+`Checkout::feed_with_cwd` also changes the working directory, which defaults to the first feed's first mount and persists.
+`Checkout::worker_id` identifies a worker within its pool independently of PID reuse, for either transport.
+It returns `None` after the worker is released or discarded; `Checkout::pid` remains the subprocess-only OS diagnostic.
+
+`Checkout::dump` snapshots a session; `Checkout::restore` can restore it on another worker or machine.
 The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
 Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
 Invalid snapshots have no correctness or availability guarantees.
@@ -152,12 +160,14 @@ linked SDK or streams raw measurements to the foreign host. Either turns on the 
 pool health
 (`monty.pool.workers.live`, `monty.pool.workers.idle`,
 `monty.pool.workers.suspended`, `monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
-`monty.pool.session.duration`) and per-turn cost (`monty.run.duration`,
+`monty.pool.session.duration`, `monty.pool.session.resumed`) and per-turn cost (`monty.run.duration`,
 `monty.run.execution_time`, `monty.turn.duration`, `monty.run.suspensions`,
 `monty.ext.call.duration`, `monty.snapshot.bytes`, `monty.print.bytes`,
 `monty.wire.frame.bytes`).
 `monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
 live checkout is dropped.
+`monty.pool.session.resumed` counts auto-resume attempts: `ok`, or why the reload failed (`exhausted`,
+`disconnected`, `refused`, `shutdown`, `mismatch`, `timeout`).
 
 Two differences from the spans above. Metrics cover **every** checkout, not only the ones a
 host gave a parent context — an aggregate over traced sessions alone would be misleading —
@@ -199,10 +209,30 @@ input so adapters that do not support metrics continue to work.
 
 A WebSocket connection lost mid-session reports `PoolError::Disconnected`; it cannot distinguish a worker crash
 from a server policy drop.
-A draining server can instead return `PoolError::Shutdown` with an optional session dump.
+A draining server can instead return `PoolError::Shutdown`, naming what to load the session from when it could store
+it.
 The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have
 had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
+
+A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`;
+`ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
+`ReplConfig::profile` names a server-side profile to run the session under; it is sent in `Configure` as-is, and
+subprocess workers ignore it too.
+`Checkout::restore` can accept this ID instead of dump bytes to restore a session's state after a disconnect, whether
+intentional or due to parking from e.g. an idle timeout or a remote restart.
+The remote is free to determine what `Checkout::restore` will do, for example it may lock the existing session to
+other consumers or it may issue a new session.
+A remote without persistence refuses `Checkout::dump` and `Checkout::restore` with `PoolError::Runtime`, and the
+session carries on.
+With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
+checkout redials, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
+session's ID.
+The session's host-counted suspension and sleep totals carry over, so a shutdown grants no extra allowance.
+It returns the original `PoolError::Shutdown` if the shutdown named nothing to load, if the new connection fails, or
+if the new session is not in the state the old one was in at the shutdown.
+The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
+A bare disconnect is never resumed, since the request may have run.
 
 ## Monty crates
 

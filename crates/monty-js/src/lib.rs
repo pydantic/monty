@@ -12,6 +12,7 @@
 mod convert;
 mod exceptions;
 mod limits;
+mod os_policy;
 mod pool;
 mod telemetry;
 

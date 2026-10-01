@@ -83,6 +83,57 @@ Instead of driving a snippet to completion it hands control back at every suspen
     `FutureSnapshot`.
 
 In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` and `resumeFuture()`.
+For a `NameLookupSnapshot`, use `resumeValue(value)` to answer a variable or lazy attribute read;
+`resume(name)` resolves an external function, and `resume()` leaves the lookup unresolved.
+Both call and lookup snapshots carry `objectId`, the `ClassInstance.id` or `ClassType.id` of the wrapper involved,
+or `null` for plain host calls and name lookups.
+It is a wrapper UUID, not a memory address; routing uses the session's instance store, but the UUID can be reused across sessions.
+
+### Where execution stopped
+
+Every snapshot carries `position`, a [`SourceRange`][pydantic_monty.SourceRange] locating the expression that
+suspended: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
+blocked on for a `FutureSnapshot`.
+`start` and `end` are UTF-8 byte offsets into the source, `end` exclusive, so slice the encoded source rather than
+the string.
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import FunctionSnapshot, Monty
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            code = 'x = 1\ny = greet(x)'
+            snapshot = session.feed_start(code)
+            assert isinstance(snapshot, FunctionSnapshot)
+            position = snapshot.position
+            print(position.start, position.end)
+            #> 10 18
+            print(code.encode()[position.start : position.end].decode())
+            #> greet(x)
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { FunctionSnapshot, Monty } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const code = 'x = 1\ny = greet(x)'
+    const snapshot = await session.feedStart(code)
+    if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+    const { start, end } = snapshot.position // { filename: '<python-input-0>', start: 10, end: 18 }
+    console.log(new TextDecoder().decode(new TextEncoder().encode(code).subarray(start, end))) // 'greet(x)'
+    ```
+
+`filename` names the source the range indexes the way a traceback frame does: `<python-input-N>` for the session's
+N-th feed, so a suspension inside a function defined by an earlier feed points into that feed, and `<string>` inside an
+`eval()` / `exec()` string.
+The position is part of the suspended state, so a restored snapshot reports the same one.
+A worker that predates the field (an older `monty` binary or server) reports none, and the snapshot then carries an
+empty `filename` with both offsets 0.
 
 A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
 Only one suspension is live per session.
@@ -315,16 +366,21 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 - **A dump is your own session state, not untrusted input.** Loading checks the magic, the version, the size cap and the
     structural invariants the interpreter relies on (function metadata, for one), but it is not a security boundary:
     load only dumps this host produced.
-- **Dumps are version-specific.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
-    version, and a build that reads a different version refuses them, so treat dumps as valid only within a single Monty
+- **Dumps carry a format version.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
+    version, then the state encoded as CBOR with every field and variant named.
+    A release that only changes the layout of stored data, adding fields that default when absent or removing and
+    reordering named fields, keeps the version, so its builds still load dumps written by earlier releases at that
     version.
+    A release that changes what stored data means, such as the bytecode, bumps the version and says so in its release
+    notes; a build then refuses dumps from before the bump as too old, and the session has to be rebuilt by replaying
+    its feeds.
     The same bytes load in-process, in a subprocess and over WebSocket.
 
 ## Async
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
 `resume(...)` and `resume_auto()`.
-A coroutine host function, or a coroutine answer to `asyncio.sleep()`, is awaited directly by `resume_auto()` when the
+A coroutine host function, or a coroutine answer to `asyncio.sleep()` under `os_policy={'sleep': 'call_host'}`, is awaited directly by `resume_auto()` when the
 snapshot's `allow_eager_await` is true,
 which it is for a call that is awaited immediately while no other sandbox task can run and no external future is pending.
 Otherwise it is awaited concurrently: `resume_auto()` yields an [`AsyncFutureSnapshot`][pydantic_monty.AsyncFutureSnapshot] whose
@@ -346,3 +402,5 @@ See the [Rust quickstart](quickstart/rust.md#serialization).
 - **Approval gates.** Pause at a sensitive call, store the snapshot, resume once a human approves.
 - **Forking.** One snapshot restored into several sessions explores several branches from the same state.
 - **Surviving restarts.** A remote server draining for deploy answers with a dump you can restore elsewhere.
+    A server that stores sessions instead resumes them for you; see
+    [stored sessions](api/python/websocket.md#stored-sessions).

@@ -11,6 +11,7 @@ from . import (
     ExternalResult,
     ExternalSettledResult,
     OsHandler,
+    OSPolicy,
     PrintCallback,
     ResourceLimits,
     SyncSnapshot,
@@ -28,9 +29,11 @@ __all__ = [
     'CollectStreams',
     'CollectString',
     'Frame',
+    'SourceRange',
     'Monty',
     'MontyClassProxy',
     'MontyClassTypeProxy',
+    'MontyStdTypeProxy',
     'MontyConversionError',
     'MontyCrashedError',
     'MontyDisconnectError',
@@ -93,6 +96,13 @@ class MountDir:
     The directory is opened here, and every feed this mount is passed to serves
     that same directory — so build one and reuse it. `'overlay'` writes live in
     each feed's own table and are discarded when the feed ends.
+
+    Mounts passed to one feed must have distinct virtual paths and cover
+    disjoint host directories: a mount whose host directory overlaps another's
+    (the same directory, or one inside the other), or that repeats a virtual
+    path, is rejected when the feed starts with a `MontyRuntimeError` wrapping
+    a `ValueError`, since the stricter mount's mode could otherwise be bypassed
+    through the other mount's paths.
 
     **Warning: `mode='read-write'` writes files from untrusted code to your
     real filesystem.**
@@ -303,6 +313,41 @@ class Frame:
         """dict of attributes."""
 
 @final
+class SourceRange:
+    """Where the expression that suspended execution is in the source.
+
+    Every snapshot exposes one as `position`: the call expression of a
+    `FunctionSnapshot`, the name (or attribute access) of a
+    `NameLookupSnapshot`, and the `await` the main task is blocked on
+    for a `FutureSnapshot`. `start` and `end` are UTF-8 byte offsets into
+    the source, `end` exclusive, so slice the encoded source:
+    `source.encode()[position.start:position.end].decode()`. A worker that
+    predates the field reports none: `filename` is then empty and both
+    offsets 0.
+    """
+
+    def __new__(cls, *, filename: str, start: int, end: int) -> SourceRange: ...
+    @property
+    def filename(self) -> str:
+        """The source the range indexes, named as in a traceback `Frame`:
+        `<python-input-N>` for the session's N-th feed (a suspension inside a
+        function defined by an earlier feed points into that feed), or
+        `<string>` inside an `eval()` / `exec()` string."""
+
+    @property
+    def start(self) -> int:
+        """UTF-8 byte offset where the expression starts."""
+
+    @property
+    def end(self) -> int:
+        """UTF-8 byte offset where the expression ends (exclusive)."""
+
+    def dict(self) -> dict[str, int | str]:
+        """dict of attributes."""
+
+    def __repr__(self) -> str: ...
+
+@final
 class MontyFileHandle:
     """Host-side handle to a file opened inside a Monty sandbox.
 
@@ -415,6 +460,26 @@ class MontyClassTypeProxy:
     def __eq__(self, value: object, /) -> bool: ...
 
 @final
+class MontyStdTypeProxy:
+    """Read-only proxy for a builtin function, or a type object outside the
+    data-type allowlist, returned from the sandbox: `open`, `type(print)`,
+    `functools.partial`. Only the name crosses, so the host never holds a live
+    callable built from sandbox output. Passed back in, it is the builtin again.
+    """
+
+    @property
+    def kind(self) -> Literal['function', 'type']:
+        """`'function'` for a builtin function, `'type'` for a type object."""
+
+    @property
+    def name(self) -> str:
+        """The name the sandbox renders the builtin as (`'open'`, `'functools.partial'`)."""
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+
+@final
 class MontyCrashedError(MontyError):
     """Raised when the sandbox is gone and the session with it.
 
@@ -461,10 +526,11 @@ class MontyShutdown(MontyError):
     that raised it **did not run**, so re-running it on a fresh session is
     safe.
 
-    `dump` carries the session state captured just before shutdown — restore
-    it on a new session to carry the session across a server restart, with
+    `dump` is what restores the session on a new one, with
     `session.load_session` (idle, between feeds) or `session.load_snapshot`
-    (suspended mid-feed).
+    (suspended mid-feed): the session's ID from a server that stores sessions.
+    It is `None` from a server that stores nothing, for an ephemeral session,
+    or when the server could not store the session in time.
 
     One caveat: if the interrupted request was answering a suspension (an
     external function or `os` callback), the host already ran that call and
@@ -476,7 +542,7 @@ class MontyShutdown(MontyError):
 
     @property
     def dump(self) -> bytes | None:
-        """Restorable session dump, or `None` when nothing had run yet or the server's dump failed."""
+        """What `load_session` / `load_snapshot` restores, or `None` when there is nothing to load."""
 
 @final
 class Monty:
@@ -545,6 +611,7 @@ class Monty:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        os_policy: OSPolicy | None = None,
     ) -> MontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -583,6 +650,9 @@ class Monty:
                 before a host call and before a run ends, so this only sets
                 how far live output may lag — never what arrives, or in what
                 order.
+            os_policy: Session clock, sleep and random initialization policies;
+                see `OSPolicy`. Defaults to the worker's clock in UTC and its
+                entropy, with sleeps handled by the pool and capped at ten seconds.
         """
 
 @final
@@ -859,6 +929,7 @@ class AsyncMonty:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        os_policy: OSPolicy | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -888,6 +959,14 @@ class AsyncMontyWebsocket:
     drop (idle, session or turn timeout, capacity) closes the connection and
     raises `MontyDisconnectError`.
 
+    A server that stores sessions gives each one an ID (`session.session_id`)
+    instead of handing state back: `dump()` writes the current state to a
+    record that never changes and returns its ID, and `load_session` /
+    `load_snapshot` start a new session from either ID, in any process.
+    `checkout(ephemeral=True)` opts a session out. When such a server drains,
+    the session resumes on another server without the caller noticing (see
+    `auto_resume`).
+
     ```python
     async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:
         async with pool.checkout() as session:
@@ -905,6 +984,7 @@ class AsyncMontyWebsocket:
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        auto_resume: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -944,6 +1024,12 @@ class AsyncMontyWebsocket:
                 sandbox time to raise `TimeoutError` itself rather than the
                 session dying with its worker. `None` disables this backstop.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
+            auto_resume: When a server that stores sessions drains one, redial,
+                load the state it named into a new session and re-send the
+                request it did not run, instead of raising `MontyShutdown`; the
+                session's suspension and sleep totals carry over. `MontyShutdown`
+                is still raised when the resume fails. A closed connection is
+                never resumed: the request may have run.
         """
 
     async def __aenter__(self) -> Self: ...
@@ -959,21 +1045,34 @@ class AsyncMontyWebsocket:
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
+        os_policy: OSPolicy | None = None,
+        ephemeral: bool | None = None,
+        profile: str | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated remote connection.
 
-        Identical to `AsyncMonty.checkout`; the connection is opened by
-        `async with` on the returned session.
+        Identical to `AsyncMonty.checkout`, except for `ephemeral` and
+        `profile`; the connection is opened by `async with` on the returned
+        session.
+
+        Arguments:
+            ephemeral: Whether a server that stores sessions may store this one.
+                `True` means the server never stores it on its own and it gets
+                no `session_id`; `False` asks for it to be stored; `None` takes
+                the server's default. Servers that store nothing ignore it.
+            profile: The name of the server-side profile to run the session
+                under; `None` takes the server's default. Sent to the server
+                as-is; the `monty` worker itself ignores it.
         """
 
 @final
 class AsyncMontySession:
     """
-    A REPL session running in a dedicated `monty` subprocess worker.
+    A REPL session running in a dedicated `monty` worker, local or remote.
 
-    Obtained from `AsyncMonty.checkout()` and used as an async context
-    manager. Session state (globals, functions) persists across
+    Obtained from `AsyncMonty.checkout()` or `AsyncMontyWebsocket.checkout()`
+    and used as an async context manager. Session state (globals, functions) persists across
     `feed_run` calls within the session.
     """
 
@@ -1102,6 +1201,14 @@ class AsyncMontySession:
         Async counterpart of `MontySession.load_session`: restore a session between feeds.
 
         The snapshot trust requirements of `MontySession.load_session` also apply here.
+
+        Against a server that stores sessions, `state` may be an ID: a
+        `session_id` loads the state as of that session's last park, and an ID
+        returned by `dump()` loads the state dumped. Loading either always
+        starts a new session, with its own `session_id`; the record is unchanged
+        and the session that wrote it is never resumed in place, so loading one
+        ID twice gives two independent sessions. A server that stores nothing
+        raises `MontyRuntimeError`; the session stays usable.
         """
 
     async def load_snapshot(
@@ -1123,12 +1230,19 @@ class AsyncMontySession:
         `external_lookup` / `os` are captured for `resume_auto()`, with the same
         restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
         cannot be driven with `resume_auto()` — its pending coroutines are gone).
+        `state` may be an ID, as in `load_session`.
         """
 
     async def dump(self) -> bytes:
         """
         Serialize the worker's session state (idle or suspended) to opaque
         bytes using monty's existing dump format. The session stays usable.
+
+        A server that stores sessions instead writes the state to a record that
+        never changes and returns that record's ID, which `load_session` /
+        `load_snapshot` start new sessions from. The session continues under
+        its existing `session_id`. A server that stores nothing raises
+        `MontyRuntimeError`; the session stays usable.
         """
 
     async def install_dependencies(self, requirements: list[str]) -> None:
@@ -1150,6 +1264,15 @@ class AsyncMontySession:
 
         `None` when no worker is attached or a turn is currently in flight
         on another thread (the getter never blocks on a running turn).
+        """
+
+    @property
+    def session_id(self) -> bytes | None:
+        """The opaque ID a server that stores sessions gave this session.
+
+        Pass it to `load_session` / `load_snapshot` to start a new session from
+        the state as of this one's last park, from any process. `None` for local
+        workers, ephemeral sessions and servers that store nothing.
         """
 
 @final
@@ -1182,6 +1305,9 @@ class FunctionSnapshot:
 
     @property
     def script_name(self) -> str: ...
+    @property
+    def position(self) -> SourceRange:
+        """The call expression that suspended execution."""
     @property
     def is_os_function(self) -> bool: ...
     @property
@@ -1244,6 +1370,9 @@ class NameLookupSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """The name, or the attribute access, that suspended execution."""
+    @property
     def variable_name(self) -> str: ...
     @property
     def object_id(self) -> uuid.UUID | None:
@@ -1280,6 +1409,9 @@ class FutureSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """The `await` the main task is blocked on."""
+    @property
     def pending_call_ids(self) -> list[int]: ...
     def trace_context(self) -> Context:
         """As `FunctionSnapshot.trace_context`, for this future-resolution suspension."""
@@ -1308,6 +1440,9 @@ class AsyncFunctionSnapshot:
 
     @property
     def script_name(self) -> str: ...
+    @property
+    def position(self) -> SourceRange:
+        """As `FunctionSnapshot.position`: the call expression."""
     @property
     def is_os_function(self) -> bool: ...
     @property
@@ -1341,6 +1476,9 @@ class AsyncNameLookupSnapshot:
     @property
     def script_name(self) -> str: ...
     @property
+    def position(self) -> SourceRange:
+        """As `NameLookupSnapshot.position`: the name or attribute access."""
+    @property
     def variable_name(self) -> str: ...
     @property
     def object_id(self) -> uuid.UUID | None:
@@ -1362,6 +1500,9 @@ class AsyncFutureSnapshot:
 
     @property
     def script_name(self) -> str: ...
+    @property
+    def position(self) -> SourceRange:
+        """As `FutureSnapshot.position`: the main task's `await`."""
     @property
     def pending_call_ids(self) -> list[int]: ...
     def trace_context(self) -> Context:

@@ -141,19 +141,21 @@ fn compile_and_push(
     let (_, vm) = namespace_guard.as_parts_mut();
     let mut overlay = CompileInterns::new(vm.interns);
     let filename_id = overlay.add_eval_source(Arc::clone(source));
+    let options = vm.env.options;
     let nodes = match builtin {
-        Builtin::Exec => parse_module_with_filename_id(source, filename_id, &mut overlay),
+        Builtin::Exec => {
+            parse_module_with_filename_id(source, filename_id, &mut overlay, options.source_scan_threshold)
+        }
         Builtin::Eval => {
             let trimmed = source.trim_start();
             let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
-            parse_expression_with_interner(trimmed, filename_id, &mut overlay)
+            parse_expression_with_interner(trimmed, filename_id, &mut overlay, options.source_scan_threshold)
                 .map(|expr| vec![Node::Return(Some(expr))])
                 .map_err(|e| e.shifted(skipped))
         }
     }
     .map_err(|e| e.into_run_error(source))?;
 
-    let options = vm.env.options;
     let globals_by_name = names == SnippetNames::NameOverDict;
     let mut scratch = NameMap::new();
     let globals = if globals_by_name {

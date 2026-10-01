@@ -59,6 +59,11 @@ Mounts are per-feed, and all arguments are keyword-only:
     ```
 
 Pass a list to `mount=` for several at once.
+The mounts of one feed must have distinct virtual paths and cover disjoint host directories; a feed that mounts a
+directory and one inside it, the same directory twice, or two directories at one virtual path fails before it starts
+with a `MontyRuntimeError` wrapping a `ValueError`, since the stricter mount's mode could otherwise be bypassed through
+the other mount's paths.
+See [`limitations/filesystem.md`](limitations/filesystem.md#overlapping-mounts-cannot-both-be-registered).
 In JavaScript `MountDir` comes from the `@pydantic/monty/node` subpath and `using` closes it at the end of scope; the
 WebAssembly build rejects mounts outright, because a browser has no host filesystem.
 
@@ -256,8 +261,10 @@ handler at all.
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
 `Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ`, `date.today`, `datetime.now`, `os.urandom`, `time.time`, `time.sleep` and `asyncio.sleep`.
-`os.urandom` also arrives, for 2496 bytes, the first time an unseeded `random` generator draws a value
+`os.getenv`, `os.environ` and `os.urandom`.
+With `os_policy` configured to call the host, the handler also receives clock and sleep calls
+(see [the clock](security.md#the-clock)).
+Unseeded random generators and `random.seed()` call `os.urandom` only under `random_start='call_host'`
 (see [random](limitations/random.md)).
 
 `os` callbacks run in your process with your process's authority.
@@ -323,6 +330,11 @@ JavaScript has no equivalent class, so the TypeScript tab answers the same opera
     console.log(await session.feedRun(code, { os: fs })) // 2
     ```
 
+For JavaScript `open` callbacks, return `new MontyFileHandle(path, mode, { position: 0 })` from `@pydantic/monty`.
+The marker canonicalizes `mode` and exposes `path`, `mode`, `position`, `binary`, `readable` and `writable`.
+Paths are virtual POSIX paths; `position` defaults to zero.
+Returning a handle answers only `open`; reads and writes are separate callbacks, never operations on a live host descriptor.
+
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
 
@@ -334,6 +346,8 @@ For anything more specific, subclass `OSAccess` and override the methods you wan
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
 `datetime_now`, `time`, `sleep`, `async_sleep`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make
 them raise `NotImplementedError`.
+`time` receives the name of the `time` function that asked (`'time.time'`, `'time.monotonic'`, `'time.localtime'`,
+...) so one hook can serve every clock or give each its own answer.
 
 ## Rust
 

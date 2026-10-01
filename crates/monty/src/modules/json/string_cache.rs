@@ -95,7 +95,7 @@ impl JsonStringCache {
     /// Called during `VM::drop()` before the heap is torn down.
     pub fn drop_all(&mut self, heap: &mut impl ContainsHeap) {
         if let Some(inner) = &mut self.inner {
-            for entry in inner.entries.iter_mut() {
+            for entry in &mut inner.entries {
                 if let Some((_, _, value)) = entry.take() {
                     value.drop_with(heap);
                 }

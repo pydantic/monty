@@ -28,9 +28,18 @@ pub mod worker;
 /// or repurposing a field, changing a field's meaning, or adding one the child
 /// requires. Purely additive changes an older peer can ignore do not need a
 /// bump.
+///
+/// `Configure.persistence`, `Configure.profile` and `ChildEvent.session_id` did not bump it: a
+/// serving relay and its client act on them, children ignore them, and a
+/// child that drops them loses nothing.
 pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
+///
+/// Raising this cuts off every deployed peer at the older versions, so avoid
+/// it: an additive wire change bumps [`PROTOCOL_VERSION`] alone and older
+/// peers keep working for everything but the new thing. Raising it is a
+/// breaking change that requires a major version bump.
 ///
 /// Version 4 and below are not served. Version 3 carried values as recursive
 /// `MontyObject` trees, where this build carries one flat `Arena` per message.

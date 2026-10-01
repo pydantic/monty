@@ -3,8 +3,8 @@
 //! A paused `RunProgress` goes through the real dump format ([`monty::dump`] /
 //! [`monty::Dump::load`]), which is how a host would actually snapshot it.
 //! `MontyRun` has no dump of its own — it is compiled code, not a session — but
-//! it is `Serialize`/`Deserialize`, so it is round-tripped through postcard
-//! directly to cover the serde impls a dump ultimately rests on.
+//! it is `Serialize`/`Deserialize`, so it is round-tripped through the dump
+//! codec directly to cover the serde impls a dump ultimately rests on.
 
 use std::fmt::Write;
 
@@ -16,9 +16,9 @@ use monty_types::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::to_value;
 
-/// Round-trips compiled code through postcard.
+/// Round-trips compiled code through the dump codec, without the dump header.
 fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
-    postcard::from_bytes(&postcard::to_allocvec(value).unwrap()).unwrap()
+    minicbor_serde::from_slice(&minicbor_serde::to_vec(value).unwrap()).unwrap()
 }
 
 /// Round-trips a paused run through the dump format, asserting it comes back on
@@ -161,7 +161,7 @@ fn monty_run_round_trip_comprehension_closure() {
 #[test]
 fn static_interns_deserialize_as_unknown_text() {
     let runner = MontyRun::new("'partial'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let mut bytes = postcard::to_allocvec(&runner).unwrap();
+    let mut bytes = minicbor_serde::to_vec(&runner).unwrap();
     let positions: Vec<_> = bytes
         .windows(b"partial".len())
         .enumerate()
@@ -170,7 +170,7 @@ fn static_interns_deserialize_as_unknown_text() {
     assert_eq!(positions.len(), 2, "expected interner text and source text");
     bytes[positions[0]..positions[0] + b"mystery".len()].copy_from_slice(b"mystery");
 
-    let mut loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
+    let mut loaded: MontyRun = minicbor_serde::from_slice(&bytes).unwrap();
     assert_eq!(
         loaded.run_no_limits(vec![]).unwrap(),
         MontyObject::string("mystery".to_owned()),
@@ -237,7 +237,7 @@ fn execution_interns_module_static_strings() {
         CompileOptions::default(),
     )
     .unwrap();
-    let bytes = postcard::to_allocvec(&runner).unwrap();
+    let bytes = minicbor_serde::to_vec(&runner).unwrap();
     assert_eq!(
         bytes
             .windows(b"partial".len())
@@ -245,7 +245,7 @@ fn execution_interns_module_static_strings() {
             .count(),
         0
     );
-    let mut loaded: MontyRun = postcard::from_bytes(&bytes).unwrap();
+    let mut loaded: MontyRun = minicbor_serde::from_slice(&bytes).unwrap();
     assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::int(1));
     assert_eq!(loaded.run_no_limits(vec![]).unwrap(), MontyObject::int(1));
 }
@@ -380,7 +380,7 @@ fn run_progress_round_trip_multiple_calls() {
 
 /// Live `itertools` iterators on the heap survive a round-trip with their state
 /// intact — the only coverage that carries `HeapData::Itertools` through
-/// postcard, since a `MontyRun` dump holds compiled code and no heap at all.
+/// the dump codec, since a `MontyRun` dump holds compiled code and no heap at all.
 #[test]
 fn run_progress_round_trip_preserves_itertools_iterators() {
     let code = r"
@@ -427,7 +427,7 @@ ext_fn(0)
 
 /// A live `functools.partial` on the heap survives a round-trip with its bound
 /// callable, positionals and keywords intact — the only coverage that carries
-/// `HeapData::Partial` through postcard.
+/// `HeapData::Partial` through the dump codec.
 #[test]
 fn run_progress_round_trip_preserves_partial() {
     let code = r"
@@ -474,7 +474,7 @@ ext_fn(0)
 
 /// A live `types.GenericAlias` on the heap survives a round-trip with its
 /// origin and `__args__` tuple intact — the only coverage that carries
-/// `HeapData::GenericAlias` through postcard.
+/// `HeapData::GenericAlias` through the dump codec.
 #[test]
 fn run_progress_round_trip_preserves_generic_alias() {
     let code = r"
@@ -516,7 +516,7 @@ ext_fn(0)
 }
 
 /// A live `typing.Union` on the heap survives a round-trip with its members
-/// intact — the only coverage that carries `HeapData::Union` through postcard.
+/// intact — the only coverage that carries `HeapData::Union` through the dump codec.
 #[test]
 fn run_progress_round_trip_preserves_union() {
     let code = r"

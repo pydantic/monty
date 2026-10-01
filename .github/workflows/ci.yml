@@ -86,6 +86,12 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # packaging resolves every crate's dependencies against crates.io, which
+      # catches manifests that only break at release time (e.g. a versioned
+      # path dependency on a crate that is not published yet)
+      - name: Check the workspace packages for crates.io
+        run: make check-publish
+
       # the str character-property tables are generated from the pinned CPython
       - name: Check generated str Unicode tables are in sync
         run: make check-unicode-type
@@ -331,7 +337,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.14t']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.14t', '3.15', '3.15t']
 
     env:
       UV_PYTHON: ${{ matrix.python-version }}
@@ -697,12 +703,10 @@ jobs:
           - os: linux
             target: x86_64
             pgo-runtime: true
-            pgo-args: --pgo -i /opt/uv-python/cpython-3.14-linux-x86_64-gnu/bin/python3.14
           - os: linux
             target: aarch64
             runs-on: ubuntu-24.04-arm
             pgo-runtime: true
-            pgo-args: --pgo -i /opt/uv-python/cpython-3.14-linux-aarch64-gnu/bin/python3.14
           - os: linux
             target: i686
             pgo-runtime: false
@@ -726,7 +730,6 @@ jobs:
           - os: macos
             target: aarch64
             pgo-runtime: true
-            pgo-args: --pgo -i python
           - os: macos
             target: x86_64
             pgo-runtime: false
@@ -743,16 +746,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: '3.14t'
-
       - name: build Python wheels
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14 3.14t
+          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-python
@@ -762,6 +761,19 @@ jobs:
           name: pypi_files-python-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
 
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        if: matrix.os != 'linux' && matrix.pgo-runtime
+        with:
+          enable-cache: false
+
+      - name: prepare host PGO interpreter
+        if: matrix.os != 'linux' && matrix.pgo-runtime
+        id: pgo-python
+        shell: bash
+        run: |
+          uv python install 3.14
+          echo "python=$(uv python find --managed-python 3.14)" >> "$GITHUB_OUTPUT"
+
       # Maturin performs one PGO cycle for bin bindings for all versions (runtime is not
       # tied to the Python ABI).
       - name: build runtime wheel
@@ -769,20 +781,30 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          # `uv` provides Python 3.14 inside the manylinux container. Maturin
-          # needs its full path; the `3.14` selector does not search uv installs.
+          # Resolve uv's interpreter inside the container and give Maturin a stable path.
           before-script-linux: |
             if [[ "$PGO_RUNTIME" == 'true' ]]; then
               curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
-              UV_PYTHON_INSTALL_DIR=/opt/uv-python uv python install 3.14
+              export UV_PYTHON_INSTALL_DIR=/opt/uv-python
+              uv python install 3.14
+              ln -s "$(uv python find --managed-python 3.14)" /opt/pgo-python
             fi
-          args: --release ${{ matrix.pgo-args }} --out dist
+          args: >-
+            --release
+            ${{ matrix.pgo-runtime && format('--pgo -i "{0}"', matrix.os == 'linux' && '/opt/pgo-python' || steps.pgo-python.outputs.python) || '' }}
+            --out dist
           rust-toolchain: stable
           rustup-components: ${{ matrix.pgo-runtime && 'llvm-tools-preview' || '' }}
-          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME
+          docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME -e RUSTFLAGS -e CFLAGS_s390x_unknown_linux_gnu
           working-directory: crates/monty-runtime
         env:
           PGO_RUNTIME: ${{ matrix.pgo-runtime }}
+          # Workaround issue with PGO observed in Rust 1.99
+          # https://github.com/rust-lang/rust/issues/163616
+          RUSTFLAGS: ${{ matrix.pgo-runtime && '-Cllvm-args=-pgo-instr-select=false' || '' }}
+          # The s390x cross assembler defaults to z900, which lacks the `lay`
+          # instruction `psm` (via ruff's `stacker`) uses; z10 is Rust's baseline.
+          CFLAGS_s390x_unknown_linux_gnu: -march=z10
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -907,8 +929,9 @@ jobs:
       - name: list files
         run: |
           ls -lhR dist/
-          ls -1 dist/ | wc -l
-          echo "Expected 88 files (6 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          count=$(find dist/ -maxdepth 1 -type f | wc -l)
+          echo "Found $count files; expected 112 (8 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          test "$count" -eq 112
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
@@ -1081,12 +1104,16 @@ jobs:
           - host: windows-latest
             target: x86_64-pc-windows-msvc
             triple: win32-x64-msvc
+          # Linux gnu addons link against napi-rs's glibc 2.17 sysroot rather than the
+          # runner's, so they load on older distros (RHEL 9, Ubuntu 22.04, Debian 12).
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             triple: linux-x64-gnu
-          - host: ubuntu-24.04-arm
+            napi-cross: true
+          - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             triple: linux-arm64-gnu
+            napi-cross: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1114,8 +1141,19 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
+      # `--use-napi-cross` downloads the napi-rs cross toolchain itself.
       - name: Build the napi shared library
-        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }}
+        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.napi-cross && '--use-napi-cross' || '' }}
+        working-directory: crates/monty-js
+
+      # If the toolchain download fails, the CLI only warns and builds with the host
+      # toolchain, so fail if the addon needs a glibc newer than 2.17.
+      - name: Check the glibc floor
+        if: matrix.settings.napi-cross
+        run: |
+          newest=$(readelf --dyn-syms -W monty.${{ matrix.settings.triple }}.node | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
+          echo "newest glibc symbol: $newest"
+          test "$(printf '%s\nGLIBC_2.17\n' "$newest" | sort -V | tail -n1)" = GLIBC_2.17
         working-directory: crates/monty-js
 
       - name: Upload artifact

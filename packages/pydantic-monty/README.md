@@ -1,6 +1,6 @@
 # pydantic-monty
 
-Python bindings for the Monty sandboxed Python interpreter.
+Python bindings for Monty, a sandbox for Python code written by AI.
 
 Execution always happens in a pool of `monty` worker subprocesses: a monty
 process can never be made fully crash-proof against memory errors (stack
@@ -277,6 +277,59 @@ with Monty(request_timeout=10) as pool:
             print(exc.display(format='type-msg').split(':')[0])
             #> TimeoutError
 ```
+
+### Clock, sleeping and entropy
+
+By default, clock calls read the worker's clock, and unseeded `random` generators use the worker's OS entropy.
+The pool handles sleeps without an `os=` handler, capping each at `sleep_system_max` (10 seconds).
+Gathered `asyncio.sleep()` calls overlap.
+Suspending sleeps count against `max_suspensions` and `max_total_sleep_secs`, but not the execution-time limits.
+Set `checkout(os_policy=...)` to change these defaults for the session:
+
+```python
+from datetime import datetime
+
+from pydantic_monty import Monty
+
+code = """
+import random, time
+from datetime import datetime
+time.sleep(3600)
+f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
+"""
+
+# datetime: 'system' (default), 'call_host' or a datetime
+# timezone: 'utc' (default), an IANA name like 'Europe/London' or {'offset_seconds': int, 'name': str}
+# sleep: 'system' (default), 'call_host' or 'zero'
+# sleep_system_max: seconds per 'system' sleep; float('inf') for no cap
+# random_start: 'system' (default), 'call_host' or {'seed': int | float | str | bytes}
+with Monty() as pool:
+    with pool.checkout(
+        os_policy={
+            'datetime': datetime(2026, 1, 1, 9, 30),
+            'timezone': {'offset_seconds': 3600, 'name': 'CET'},
+            'sleep': 'system',
+            'sleep_system_max': 0.5,
+            'random_start': {'seed': 42},
+        }
+    ) as session:
+        print(session.feed_run(code))
+        #> 2026-01-01 10:30 0.6394
+```
+
+A `datetime` freezes the clock and, unless `timezone` is explicit, sets the zone from its `utcoffset()` and
+`tzname()` (UTC for a naive value).
+`timezone` shifts naive `datetime.now()` and `date.today()`, and is what `astimezone()`, `strftime('%Z')` and the
+`time.timezone` / `time.tzname` constants report: an IANA name is resolved with its DST rules from the worker's tz
+database, a mapping is a fixed offset.
+`'zero'` skips both sleeps.
+`{'seed': s}` initializes the module generator as `random.seed(s)` would; unseeded `random.Random()` instances
+receive deterministic states derived from it.
+Sandboxed code can still reseed afterwards.
+
+`'call_host'` sends the selected calls to the `os=` handler.
+`OSAccess` answers from the host's clock and entropy, and caps waits at its `max_sleep`.
+Explicit `os.urandom()` calls always reach the handler.
 
 ### Type checking
 

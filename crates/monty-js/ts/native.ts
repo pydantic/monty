@@ -17,6 +17,14 @@ export interface NativeFrame {
   hideFrameName: boolean
 }
 
+/** Where the expression that suspended execution is in the source; the
+ *  `SourceRange` of `errors.ts`, as the native binding ships it. */
+export interface NativeSourceRange {
+  filename: string
+  start: number
+  end: number
+}
+
 /** A sandbox exception: type name, message, the worker-rendered Python
  *  traceback string, and the structured frames behind it. */
 export interface NativeException {
@@ -37,6 +45,8 @@ export interface CompleteTurn {
 interface CallbackTurn {
   /** Host-generated native span identity, resolved by the telemetry bridge. */
   callbackSpanKey?: string
+  /** Where the suspending expression is in the source. */
+  position: NativeSourceRange
 }
 
 /** The sandbox called an external function — answer with a `resume*` call. */
@@ -67,16 +77,21 @@ export interface OsCallTurn extends CallbackTurn {
   args: unknown[]
   kwargs: [unknown, unknown][]
   callId: number
-  /** As on `FunctionCallTurn`: the wait may settle before replying with `resolveFutures`. Only set on `asyncio.sleep`. */
+  /** As on `FunctionCallTurn`: the wait may settle before replying with `resolveFutures`. Only set on async sleeps. */
   allowEagerAwait?: boolean
+  /**
+   * Seconds for a pool-managed sleep, already capped and charged to `maxTotalSleepSecs`.
+   * Absent for calls delegated to `os`.
+   */
+  systemSleepSecs?: number
 }
 
 /**
- * Whether `resumeFuture` is a valid answer to an OS call: only `asyncio.sleep`, which the
- * sandbox awaits. Mirrors `OsFunctionCall::accepts_future` in `monty-types`.
+ * Async sleeps accept `resumeFuture` in both system and host modes.
+ * Mirrors `OsFunctionCall::accepts_future` in `monty-types`.
  */
 export function osCallAcceptsFuture(functionName: string): boolean {
-  return functionName === 'asyncio.sleep'
+  return functionName === 'asyncio.sleep' || functionName === 'system.async_sleep'
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */

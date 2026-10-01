@@ -13,10 +13,11 @@ default-run = "monty-datatest"
 monty = { workspace = true, features = ["test-hooks"] }
 monty-fs = { workspace = true }
 monty-pool = { workspace = true }
-monty-types = { workspace = true }
+# `tzdb` so `# timezone=` fixtures resolve IANA names against the same OS
+# database CPython reads, with the bundled copy as the fallback (Windows).
+monty-types = { workspace = true, features = ["tzdb"] }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 ahash = { workspace = true }
-chrono = { workspace = true }
 datatest-stable = "0.2"
 similar = "2.7.0"
 tempfile = "3"

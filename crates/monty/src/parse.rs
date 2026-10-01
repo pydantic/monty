@@ -1,5 +1,6 @@
 use std::{borrow::Cow, fmt};
 
+use ahash::AHashSet;
 use monty_types::{MontyException, StackFrame};
 use num_bigint::BigInt;
 use num_traits::Num;
@@ -10,7 +11,7 @@ use ruff_python_ast::{
     token::TokenKind,
     visitor::{Visitor, walk_expr},
 };
-use ruff_python_parser::{parse_expression, parse_module};
+use ruff_python_parser::{Mode, parse_expression, parse_module};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
@@ -23,6 +24,7 @@ use crate::{
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{CompileInterns, StringId},
     source_map::{SourceMap, StackFrameExt},
+    source_nesting::nesting_bound_exceeded,
     stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -31,6 +33,10 @@ use crate::{
 /// Maximum nesting depth for AST structures during parsing.
 /// Matches CPython's limit of ~200 for nested parentheses.
 /// This prevents stack overflow from deeply nested structures like `((((x,),),),)`.
+///
+/// ruff itself no longer limits recursion, so this is Monty's single limit:
+/// enforced approximately by the pre-parse scan (`source_nesting`) on sources
+/// over `CompileOptions::source_scan_threshold`, and exactly by this converter.
 #[cfg(not(debug_assertions))]
 pub const MAX_NESTING_DEPTH: u16 = 200;
 /// In debug builds, we use a lower limit because stack frames are much larger
@@ -197,7 +203,9 @@ pub(crate) fn parse_with_interner(
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
-    parse_module_with_filename_id(code, filename_id, interner)
+    // Module sources are scanned for nesting by their entry points
+    // (`MontyRun::new`, the REPL feeds), not here.
+    parse_module_with_filename_id(code, filename_id, interner, usize::MAX)
 }
 
 /// [`parse_with_interner`] for a filename already interned — an `exec()`
@@ -207,7 +215,9 @@ pub(crate) fn parse_module_with_filename_id(
     code: &str,
     filename_id: StringId,
     interner: &mut CompileInterns<'_>,
+    source_scan_threshold: usize,
 ) -> Result<Vec<ParseNode>, ParseError> {
+    check_source_nesting(code, Mode::Module, filename_id, source_scan_threshold)?;
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // Harvested before `into_syntax` drops the token stream.
@@ -229,12 +239,48 @@ pub(crate) fn parse_expression_with_interner(
     code: &str,
     filename_id: StringId,
     interner: &mut CompileInterns<'_>,
+    source_scan_threshold: usize,
 ) -> Result<ExprLoc, ParseError> {
+    check_source_nesting(code, Mode::Expression, filename_id, source_scan_threshold)?;
     let parsed = parse_expression(code)
         .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // No `class` keywords can occur in a bare expression.
     let mut parser = Parser::new(code, filename_id, interner, Vec::new());
     parser.parse_expression(*parsed.into_syntax().body)
+}
+
+/// [`check_source_nesting`] for a host vetting a snippet before compiling it,
+/// producing the `SyntaxError` the compile would raise.
+pub(crate) fn source_nesting_exception(
+    code: &str,
+    script_name: &str,
+    source_scan_threshold: usize,
+) -> Result<(), MontyException> {
+    // The filename id is a compiler concern; the exception names the file itself.
+    check_source_nesting(code, Mode::Module, StringId::default(), source_scan_threshold)
+        .map_err(|e| e.into_python_exc(script_name, code))
+}
+
+/// Rejects a source over `source_scan_threshold` bytes whose estimated parser
+/// nesting exceeds [`MAX_NESTING_DEPTH`] before ruff can grow its stack on it.
+///
+/// Same message as the converter's exact check, so either path reads alike.
+fn check_source_nesting(
+    code: &str,
+    mode: Mode,
+    filename_id: StringId,
+    source_scan_threshold: usize,
+) -> Result<(), ParseError> {
+    if code.len() > source_scan_threshold
+        && let Some(range) = nesting_bound_exceeded(code, mode, MAX_NESTING_DEPTH)
+    {
+        Err(ParseError::syntax(
+            "Source is too deeply nested",
+            code_range(filename_id, range),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
@@ -818,14 +864,15 @@ impl<'a, 'i> Parser<'a, 'i> {
         let position = self.class_keyword_range(&class);
         let decorators = self.parse_decorators(class.decorator_list)?;
         // `class.arguments` carries base classes and metaclass keywords.
-        if class
-            .arguments
-            .is_some_and(|a| !a.args.is_empty() || !a.keywords.is_empty())
-        {
-            return Err(ParseError::not_implemented(
-                "class inheritance and metaclasses",
-                position,
-            ));
+        if let Some(arguments) = &class.arguments {
+            // CPython rejects the repeat before it would consider the metaclass.
+            self.check_repeated_keywords(&arguments.keywords)?;
+            if !arguments.args.is_empty() || !arguments.keywords.is_empty() {
+                return Err(ParseError::not_implemented(
+                    "class inheritance and metaclasses",
+                    position,
+                ));
+            }
         }
 
         let name = self.identifier(&class.name.id, class.name.range);
@@ -1468,22 +1515,21 @@ impl<'a, 'i> Parser<'a, 'i> {
                 self.convert_range(y.range),
             )),
             AstExpr::Compare(ast::ExprCompare {
-                left,
-                ops,
-                comparators,
-                range,
-                ..
+                ops, operands, range, ..
             }) => {
                 let position = self.convert_range(range);
                 let ops_vec = ops.into_vec();
-                let comparators_vec = comparators.into_vec();
+                // `operands` holds every operand in source order, leftmost first.
+                let mut operands = operands.into_vec().into_iter();
+                let left = operands.next().expect("a comparison has a left operand");
+                let comparators_vec: Vec<AstExpr> = operands.collect();
 
                 // Simple case: single comparison (most common)
                 if ops_vec.len() == 1 {
                     return Ok(ExprLoc::new(
                         position,
                         Expr::CmpOp {
-                            left: Box::new(self.parse_expression(*left)?),
+                            left: Box::new(self.parse_expression(left)?),
                             op: convert_compare_op(ops_vec.into_iter().next().unwrap()),
                             right: Box::new(self.parse_expression(comparators_vec.into_iter().next().unwrap())?),
                         },
@@ -1491,25 +1537,25 @@ impl<'a, 'i> Parser<'a, 'i> {
                 }
 
                 // Chain comparison: transform to nested And expressions
-                self.parse_chain_comparison(*left, ops_vec, comparators_vec, position)
+                self.parse_chain_comparison(left, ops_vec, comparators_vec, position)
             }
             AstExpr::Call(call) => {
                 let position = self.convert_range(call.range());
                 let ast::ExprCall { func, arguments, .. } = call;
                 let ast::Arguments { args, keywords, .. } = arguments;
-                let args_vec = args.into_vec();
                 let keywords_vec: Vec<_> = keywords.into_iter().collect();
+                self.check_repeated_keywords(&keywords_vec)?;
 
                 // Detect whether we need the generalized path (PEP 448):
                 // - multiple *args unpacks, OR
                 // - positional argument after *args, OR
                 // - multiple **kwargs unpacks
-                let needs_generalized = Self::needs_generalized_call(&args_vec, &keywords_vec);
+                let needs_generalized = Self::needs_generalized_call(&args, &keywords_vec);
 
                 let args = if needs_generalized {
-                    self.parse_generalized_call_args(args_vec, keywords_vec)?
+                    self.parse_generalized_call_args(args, keywords_vec)?
                 } else {
-                    self.parse_simple_call_args(args_vec, keywords_vec)?
+                    self.parse_simple_call_args(args, keywords_vec)?
                 };
                 match *func {
                     AstExpr::Name(ast::ExprName { id, range, .. }) => {
@@ -1585,7 +1631,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                         }
                     }
                     Number::Float(f) => Literal::Float(f),
-                    Number::Complex { .. } => return Err(ParseError::not_implemented("complex constants", position)),
+                    // An imaginary literal has no real part; `1+2j` is a `BinOp`.
+                    Number::Complex { imag, .. } => Literal::Complex(imag),
                 };
                 Ok(ExprLoc::new(position, Expr::Literal(const_value)))
             }
@@ -1721,13 +1768,13 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// fast path for the vast majority of function calls.
     fn parse_simple_call_args(
         &mut self,
-        args_vec: Vec<AstExpr>,
+        args: impl IntoIterator<Item = AstExpr>,
         keywords_vec: Vec<Keyword>,
     ) -> Result<ArgExprs, ParseError> {
         let mut positional_args = Vec::new();
         let mut var_args_expr: Option<ExprLoc> = None;
 
-        for arg_expr in args_vec {
+        for arg_expr in args {
             match arg_expr {
                 AstExpr::Starred(ast::ExprStarred { value, .. }) => {
                     var_args_expr = Some(self.parse_expression(*value)?);
@@ -1753,11 +1800,11 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// `ListAppend`/`ListExtend`/`DictMerge` sequences.
     fn parse_generalized_call_args(
         &mut self,
-        args_vec: Vec<AstExpr>,
+        args: impl IntoIterator<Item = AstExpr>,
         keywords_vec: Vec<Keyword>,
     ) -> Result<ArgExprs, ParseError> {
         let mut call_args = Vec::new();
-        for arg_expr in args_vec {
+        for arg_expr in args {
             match arg_expr {
                 AstExpr::Starred(ast::ExprStarred { value, .. }) => {
                     call_args.push(CallArg::Unpack(self.parse_expression(*value)?));
@@ -1781,6 +1828,24 @@ impl<'a, 'i> Parser<'a, 'i> {
         }
 
         Ok(ArgExprs::new_generalized(call_args, call_kwargs))
+    }
+
+    /// Rejects `f(x=1, x=2)` as CPython's compiler does, pointing at the repeat.
+    ///
+    /// ruff reports this from its semantic checker, which Monty does not run, so
+    /// the parser alone would accept the call.
+    fn check_repeated_keywords(&self, keywords: &[Keyword]) -> Result<(), ParseError> {
+        let mut seen = AHashSet::with_capacity(keywords.len());
+        keywords
+            .iter()
+            .filter_map(|keyword| keyword.arg.as_ref().map(|arg| (arg.id.as_str(), keyword.range())))
+            .find(|(name, _)| !seen.insert(*name))
+            .map_or(Ok(()), |(name, range)| {
+                Err(ParseError::syntax(
+                    format!("keyword argument repeated: {name}"),
+                    self.convert_range(range),
+                ))
+            })
     }
 
     /// Parses keyword arguments, separating regular kwargs from var_kwargs (`**expr`).
@@ -1956,7 +2021,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// (`for x in ...`) and tuple unpacking (`for x, y in ...`).
     fn parse_comprehension_generators(
         &mut self,
-        generators: Vec<ast::Comprehension>,
+        generators: impl IntoIterator<Item = ast::Comprehension>,
     ) -> Result<Vec<Comprehension>, ParseError> {
         generators
             .into_iter()
@@ -1981,15 +2046,15 @@ impl<'a, 'i> Parser<'a, 'i> {
 
     /// Parses an f-string value into expression parts.
     ///
-    /// F-strings in ruff AST are represented as `FStringValue` containing
-    /// `FStringPart`s, which can be either literal strings or `FString`
-    /// interpolated sections. Each `FString` contains `InterpolatedStringElements`.
+    /// F-strings in ruff AST are represented as `FStringValue`, whose parts are
+    /// either literal strings or `FString` interpolated sections. Each `FString`
+    /// contains `InterpolatedStringElements`.
     fn parse_fstring(&mut self, value: &ast::FStringValue, range: TextRange) -> Result<ExprLoc, ParseError> {
         let mut parts = Vec::new();
 
         for fstring_part in value {
             match fstring_part {
-                ast::FStringPart::Literal(lit) => {
+                ast::FStringPartRef::Literal(lit) => {
                     // Literal string segment - intern for use at runtime
                     let processed = lit.value.to_string();
                     if !processed.is_empty() {
@@ -1997,7 +2062,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         parts.push(FStringPart::Literal(string_id));
                     }
                 }
-                ast::FStringPart::FString(fstring) => {
+                ast::FStringPartRef::FString(fstring) => {
                     // Interpolated f-string section
                     for element in &fstring.elements {
                         let part = self.parse_fstring_element(element)?;
@@ -2391,10 +2456,13 @@ fn describe_expr_kind(expr: &AstExpr) -> &'static str {
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeRange {
     /// Filename identity, resolved by `Interns::get_filename`.
+    #[serde(rename = "F")]
     pub filename: StringId,
     /// Byte offset of the range start within the source text.
+    #[serde(rename = "S")]
     pub start_byte: u32,
     /// Byte offset of the range end (exclusive) within the source text.
+    #[serde(rename = "E")]
     pub end_byte: u32,
 }
 

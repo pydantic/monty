@@ -16,6 +16,7 @@ use ty_python_core::{
 };
 use ty_python_semantic::{
     AnalysisSettings, Db, PythonVersionSource, PythonVersionWithSource, check_file_unwrap, default_lint_registry,
+    dependency::DependencyMetadata,
     lint::{LintRegistry, RuleSelection},
 };
 
@@ -113,7 +114,7 @@ trait ProgramDb: Db {
 /// Return the cached program configured for the database.
 #[salsa::tracked(returns(copy))]
 fn program(db: &dyn ProgramDb) -> Program<'_> {
-    Program::from_settings(db, db.program_settings().clone())
+    Program::from_settings(db, db.program_settings())
 }
 
 impl DbWithTestSystem for MemoryDb {
@@ -176,6 +177,11 @@ impl Db for MemoryDb {
 
     fn analysis_settings(&self, _file: File) -> &AnalysisSettings {
         &self.analysis_settings
+    }
+
+    fn dependency_metadata(&self, _file: File) -> Option<&DependencyMetadata> {
+        // No package manager: the sandbox sees only the vendored stdlib and its own stubs.
+        None
     }
 
     fn verbose(&self) -> bool {

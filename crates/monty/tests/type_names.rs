@@ -15,7 +15,7 @@ fn type_name_round_trips_through_from_type_name() {
         let name = t.to_string();
         assert_eq!(
             MontyType::from_type_name(&name),
-            Some(t.clone()),
+            Some(t),
             "MontyType::from_type_name({name:?}) does not round-trip {t:?}"
         );
     }

@@ -248,6 +248,14 @@ assert pow(5, 0, -1) == 0
 assert pow(-9223372036854775808, 1, -1) == 0
 assert pow(-9223372036854775808, 7, -1) == 0
 assert pow(True, 2) == 1
+
+# Large modular exponentiation takes the interruptible square-and-multiply path
+# once the work estimate passes Monty's threshold; both parities of modulus
+# reach it and must agree with the fast path.
+big_odd = pow(3, (1 << 33) - 1, (1 << 131072) + 1)
+assert (big_odd % 1000003, big_odd % 999983, len(bin(big_odd)) - 2) == (518390, 765077, 131071)
+big_even = pow(3, (1 << 33) - 1, (1 << 131072) - 1)
+assert (big_even % 1000003, big_even % 999983, len(bin(big_even)) - 2) == (676515, 996886, 131072)
 assert pow(2, True) == 2
 assert pow(True, True) == 1
 assert pow(True, -1) == 1.0

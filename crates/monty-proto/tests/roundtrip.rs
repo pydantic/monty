@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashMap, mem, time::Duration};
 
 use insta::assert_snapshot;
 use monty::MontyRun;
@@ -7,15 +7,17 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    CodeLoc, CompileOptions, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MAX_SLEEP_SECONDS,
-    MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall,
-    PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData, UrandomArgs,
-    sleep_duration, sleep_duration_saturating,
+    CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
+    MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
+    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues,
+    OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
+    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, SourceRange, StackFrame, TimeCaller,
+    UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
 use prost::Message;
+use strum::IntoEnumIterator;
 
 /// Asserts `graph` survives `MontyGraph -> wire bytes -> MontyGraph` through
 /// the hand-written `WireArena` codec (both directions).
@@ -135,6 +137,10 @@ fn datetime_values_round_trip() {
         seconds: 86399,
         microseconds: 999_999,
     }));
+    assert_value_round_trip(&MontyObject::complex(1.5, -2.0));
+    assert_value_round_trip(&MontyObject::complex(f64::NAN, f64::NEG_INFINITY));
+    // A plain `double` field would drop `-0.0` as its default.
+    assert_value_round_trip(&MontyObject::complex(-0.0, -0.0));
     assert_value_round_trip(&MontyObject::timezone(MontyTimeZone {
         offset_seconds: 19800,
         name: Some("IST".to_owned()),
@@ -564,14 +570,143 @@ fn resource_limits_round_trip() {
         gc_interval: Some(100),
         max_recursion_depth: 50,
         max_suspensions: 7,
+        max_total_sleep: Some(Duration::from_secs(30)),
     };
     let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
     assert_eq!(back.max_feed_duration, limits.max_feed_duration);
     assert_eq!(back.max_turn_duration, limits.max_turn_duration);
+    assert_eq!(back.max_total_sleep, limits.max_total_sleep);
     assert_eq!(back.max_memory, limits.max_memory);
     assert_eq!(back.gc_interval, limits.gc_interval);
     assert_eq!(back.max_recursion_depth, limits.max_recursion_depth);
     assert_eq!(back.max_suspensions, limits.max_suspensions);
+}
+
+#[test]
+fn os_policy_round_trip() {
+    let seeds = [
+        RandomSeed::Int(BigInt::from(-7)),
+        RandomSeed::Int(BigInt::from(2u8).pow(70)),
+        RandomSeed::Float(1.5),
+        RandomSeed::Str("abc".to_owned()),
+        RandomSeed::Bytes(b"abc".to_vec()),
+    ];
+    for seed in seeds {
+        let calls = OsPolicy {
+            datetime: DateTimeSource::Fixed {
+                unix_seconds: 1_700_000_000,
+                microsecond: 999_999,
+            },
+            timezone: SandboxTimeZone::Fixed {
+                offset_seconds: -3_600,
+                name: Some("EST".to_owned()),
+            },
+            sleep: SleepMode::System(Duration::from_millis(250)),
+            process_time: ProcessTime::Elapsed,
+            random_start: RandomStart::Seed(seed),
+        };
+        let back = OsPolicy::try_from(pb::OsPolicy::from(&calls)).unwrap();
+        assert_eq!(back, calls);
+    }
+    for sleep in [SleepMode::CallHost, SleepMode::Zero] {
+        let calls = OsPolicy {
+            datetime: DateTimeSource::CallHost,
+            timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+            sleep,
+            process_time: ProcessTime::Zero,
+            random_start: RandomStart::CallHost,
+        };
+        assert_eq!(OsPolicy::try_from(pb::OsPolicy::from(&calls)).unwrap(), calls);
+    }
+    // the UTC default has its own arm, so an explicit UTC survives a parent with a different default
+    let utc = pb::OsPolicy::from(&OsPolicy::default());
+    assert_eq!(
+        utc.timezone,
+        Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Utc(pb::Unit {})),
+        })
+    );
+    assert_eq!(OsPolicy::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
+    // a named zone crosses as its IANA name, which the child resolves against its own database
+    let london = pb::OsPolicy::from(&OsPolicy {
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..OsPolicy::default()
+    });
+    assert_eq!(
+        london.timezone,
+        Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Named("Europe/London".to_owned())),
+        })
+    );
+    let unknown = pb::OsPolicy {
+        timezone: Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Named("Mars/Olympus".to_owned())),
+        }),
+        ..pb::OsPolicy::default()
+    };
+    assert_eq!(
+        OsPolicy::try_from(unknown).unwrap_err().to_string(),
+        "invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+    );
+}
+
+#[test]
+fn empty_os_policy_is_the_default() {
+    let back = OsPolicy::try_from(pb::OsPolicy::default()).unwrap();
+    assert_eq!(back, OsPolicy::default());
+    assert_eq!(back.sleep, SleepMode::System(Duration::from_secs(10)));
+    // An explicit system mode can also omit its maximum.
+    let sandbox = pb::OsPolicy {
+        sleep: Some(pb::SleepMode {
+            mode: Some(pb::sleep_mode::Mode::System(pb::SystemSleep::default())),
+        }),
+        ..Default::default()
+    };
+    assert_eq!(OsPolicy::try_from(sandbox).unwrap(), OsPolicy::default());
+}
+
+#[test]
+fn malformed_os_policy_are_rejected() {
+    let fixed = pb::OsPolicy {
+        datetime: Some(pb::os_policy::Datetime::Fixed(pb::FixedDateTime {
+            unix_seconds: 0,
+            microsecond: 1_000_000,
+        })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        OsPolicy::try_from(fixed).unwrap_err().to_string(),
+        @"invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+    );
+    // a fixed zone is bounded like `datetime.timezone`: strictly within a day of UTC
+    let zone = pb::OsPolicy {
+        timezone: Some(pb::SandboxTimeZone {
+            zone: Some(pb::sandbox_time_zone::Zone::Fixed(pb::TimeZone {
+                offset_seconds: 86_400,
+                name: None,
+            })),
+        }),
+        ..Default::default()
+    };
+    assert_snapshot!(OsPolicy::try_from(zone).unwrap_err().to_string(), @"invalid value for TimeZone.offset_seconds: 86400 is outside the range -86399..=86399");
+    let seed = pb::OsPolicy {
+        random_start: Some(pb::os_policy::RandomStart::Seed(pb::RandomSeed {
+            value: Some(pb::random_seed::Value::Float(f64::NAN)),
+        })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        OsPolicy::try_from(seed).unwrap_err().to_string(),
+        @"invalid value for RandomSeed.float: NaN is not finite"
+    );
+    let empty_seed = pb::OsPolicy {
+        random_start: Some(pb::os_policy::RandomStart::Seed(pb::RandomSeed { value: None })),
+        ..Default::default()
+    };
+    assert_snapshot!(
+        OsPolicy::try_from(empty_seed).unwrap_err().to_string(),
+        @"missing required field RandomSeed.value"
+    );
 }
 
 #[test]
@@ -773,8 +908,15 @@ fn invalid_arenas_are_rejected() {
 #[track_caller]
 fn assert_os_call_round_trip(call: OsFunctionCall) {
     let expected = format!("{call:?}");
-    let bytes = os_call_to_proto(3, call, false).encode_to_vec();
+    let position = SourceRange {
+        filename: "main.py".to_owned(),
+        start: 10,
+        end: 18,
+    };
+    let bytes = os_call_to_proto(3, call, false, &position).encode_to_vec();
     let decoded = decode_frame::<pb::OsCall>(bytes.as_slice()).expect("wire bytes -> OsCall failed");
+    let back = decoded.position.clone().expect("the position survives the wire");
+    assert_eq!(SourceRange::from(back), position);
     let (call_id, back) = os_call_from_proto(decoded).expect("wire call -> OsFunctionCall failed");
     assert_eq!(call_id, 3);
     assert_eq!(format!("{back:?}"), expected);
@@ -782,6 +924,7 @@ fn assert_os_call_round_trip(call: OsFunctionCall) {
 
 #[test]
 fn os_calls_round_trip_all_variants() {
+    let mut kinds_by_name = HashMap::new();
     let p = || MontyPath::new("/mnt/data/f.txt".to_owned());
     for call in [
         OsFunctionCall::Exists(p()),
@@ -837,16 +980,31 @@ fn os_calls_round_trip_all_variants() {
             name: Some("CET".to_owned()),
         })),
         OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
-        OsFunctionCall::Time,
         OsFunctionCall::Sleep(Duration::ZERO),
         OsFunctionCall::Sleep(Duration::from_nanos(1)),
         OsFunctionCall::Sleep(Duration::from_millis(1_500)),
         OsFunctionCall::AsyncSleep(Duration::ZERO),
         OsFunctionCall::AsyncSleep(Duration::from_secs_f64(0.25)),
+        OsFunctionCall::SystemSleep(Duration::from_millis(1_500)),
+        OsFunctionCall::AsyncSystemSleep(Duration::from_secs_f64(0.25)),
         // the longest length either sleep accepts survives the f64 seconds on the wire
         OsFunctionCall::Sleep(sleep_duration(MAX_SLEEP_SECONDS).unwrap()),
         OsFunctionCall::AsyncSleep(sleep_duration_saturating(f64::INFINITY).unwrap()),
-    ] {
+    ]
+    .into_iter()
+    // every caller, so a new one cannot be added without a wire round trip
+    .chain(TimeCaller::iter().map(OsFunctionCall::Time))
+    {
+        // hosts dispatch on the name, so it must identify the kind
+        let kind = kinds_by_name
+            .entry(call.name())
+            .or_insert_with(|| mem::discriminant(&call));
+        assert_eq!(
+            *kind,
+            mem::discriminant(&call),
+            "two call kinds share the name {}",
+            call.name()
+        );
         assert_os_call_round_trip(call);
     }
 }
@@ -931,6 +1089,7 @@ fn os_call_conversion_rejects_invalid_payloads() {
             key: "HOME".to_owned(),
             default: 1,
         })),
+        position: None,
     };
     assert!(matches!(
         os_call_from_proto(getenv(None)),
@@ -960,4 +1119,38 @@ fn shutdown_event_round_trips() {
     };
     let back = decode_frame::<pb::ChildEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
     assert_eq!(back, bare);
+}
+
+/// A child-supplied fixed offset outside `datetime.timezone`'s range is refused
+/// before it can reach a host as a `MontyTimeZone`.
+#[test]
+fn out_of_range_now_timezone_is_rejected() {
+    let call = pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow {
+        tz: Some(pb::TimeZone {
+            offset_seconds: i32::MIN,
+            name: None,
+        }),
+    });
+    assert_eq!(
+        OsFunctionCall::try_from(call).unwrap_err().to_string(),
+        "invalid value for TimeZone.offset_seconds: -2147483648 is outside the range -86399..=86399"
+    );
+}
+
+#[test]
+fn source_range_filename_is_capped_on_a_char_boundary() {
+    let wire = pb::SourceRange {
+        filename: "é".repeat(200),
+        start: 1,
+        end: 2,
+    };
+    let range = SourceRange::from(&wire);
+    assert_eq!(range.filename, "é".repeat(SourceRange::MAX_FILENAME_LEN / 2));
+    assert_eq!((range.start, range.end), (1, 2));
+    let odd = format!("x{}", "é".repeat(200));
+    assert_eq!(
+        SourceRange::new(&odd, 0, 0).filename.len(),
+        SourceRange::MAX_FILENAME_LEN - 1
+    );
+    assert_eq!(SourceRange::new("<python-input-3>", 0, 0).filename, "<python-input-3>");
 }

@@ -110,6 +110,21 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
     }
 }
 
+/// The host class for an exception type: the class its instances decode to,
+/// except the three whose instances need a payload, which resolve directly
+/// so the class never degrades to the payload-less `ValueError` fallback.
+pub(super) fn exc_class_to_py(py: Python<'_>, exc_type: ExcType) -> PyResult<Py<PyAny>> {
+    match exc_type {
+        ExcType::JsonDecodeError => get_json_decode_error(py).map(|b| b.clone().unbind()),
+        ExcType::UnicodeDecodeError => Ok(py.get_type::<exceptions::PyUnicodeDecodeError>().into_any().unbind()),
+        ExcType::UnicodeEncodeError => Ok(py.get_type::<exceptions::PyUnicodeEncodeError>().into_any().unbind()),
+        _ => Ok(exc_monty_to_py(py, MontyException::new(exc_type, None))
+            .get_type(py)
+            .into_any()
+            .unbind()),
+    }
+}
+
 /// Builds a real `UnicodeDecodeError` / `UnicodeEncodeError` from the
 /// structured fields Monty attaches to codec errors, calling CPython's
 /// five-argument constructor (`encoding, object, start, end, reason`).

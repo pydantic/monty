@@ -1,6 +1,6 @@
 # pydantic-monty-client
 
-Python client for the Monty sandboxed Python interpreter.
+Python client for the Monty sandbox.
 
 Most users want [`pydantic-monty`](https://pypi.org/project/pydantic-monty/)
 instead, which pulls in this package plus
@@ -80,6 +80,30 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+## Where a snapshot stopped
+
+Every snapshot exposes `position`, a `SourceRange` with `filename`, `start` and `end` locating the suspending
+expression: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
+blocked on for a `FutureSnapshot`.
+`start` and `end` are UTF-8 byte offsets into the source, `end` exclusive, so slice the encoded source rather than the
+string; `filename` is the traceback filename of the source (`<python-input-N>` for the session's N-th feed, `<string>`
+inside `eval()` / `exec()`).
+
+```python
+from pydantic_monty import FunctionSnapshot, Monty
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        code = 'x = 1\ny = greet(x)'
+        snapshot = session.feed_start(code)
+        assert isinstance(snapshot, FunctionSnapshot)
+        position = snapshot.position
+        print(position.start, position.end)
+        #> 10 18
+        print(code.encode()[position.start : position.end].decode())
+        #> greet(x)
+```
+
 ## Tracing snapshot handlers
 
 All sync and async snapshot types provide `snapshot.trace_context()` for manual handlers.
@@ -136,7 +160,18 @@ Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to han
 
 `OSAccess(max_urandom_bytes=...)` sets the largest `os.urandom()` request the default handler serves, 1 MiB by default.
 Larger requests raise `MemoryError` before allocating.
-Zero rejects every nonempty request, including the 2496 bytes an unseeded `random` generator requests.
+Unseeded `random` generators request host entropy only under `os_policy={'random_start': 'call_host'}`.
+Otherwise they use worker OS entropy or the configured seed.
+
+By default, `date.today()`, `datetime.now()` and the `time` module's clocks read the worker's clock.
+`time.process_time()` reports `0.0` unless `os_policy={'process_time': 'elapsed'}` opts into the session's
+execution time.
+The pool handles `time.sleep()` and `asyncio.sleep()`, capped per call by `sleep_system_max`.
+Setting `datetime` or `sleep` to `'call_host'` in `checkout(os_policy=...)` routes those calls to `os=`.
+Every `time` module clock then reaches `AbstractOS.time(caller)` as the one OS function `time.time`, with `caller`
+naming the function that asked (`'time.monotonic'`, `'time.localtime'`, ...).
+A subclass that overrides `def time(self)` without the `caller` parameter raises `TypeError` on any clock read.
+`OSAccess` answers from the host process and caps each wait at `max_sleep`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.

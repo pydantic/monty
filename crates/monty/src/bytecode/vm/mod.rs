@@ -21,7 +21,7 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter};
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
@@ -39,15 +39,20 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    modules::{StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache},
+    modules::{
+        StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache, time::apply_clock_reading,
+    },
     name_map::NameMap,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths},
+    os_dispatch::{
+        PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths, urandom_reply_error,
+    },
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
     types::{
-        Dict, LongInt, PyTrait, Random,
+        Dict, LongInt, PyTrait, SessionRandom,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
+        random::SEED_BYTES,
         str::allocate_string,
     },
     value::{EitherStr, Value},
@@ -68,16 +73,13 @@ enum AwaitResult {
     Yield(Vec<CallId>),
 }
 
-/// Yields to the host when an exception left no task to run.
-///
-/// A spawned task whose exception nobody could receive is discarded with no
-/// successor loaded, leaving the parked frame `cleanup_current_task` installs,
-/// which dispatch must not execute. See [`VM::yield_parked`] for what is
-/// handed back.
+/// Yields when an unhandled task exception leaves `cleanup_current_task`'s
+/// parked frame with no successor. Dispatch must not execute that frame.
+/// [`VM::pending_futures_exit`] returns surviving tasks' pending calls.
 macro_rules! yield_if_parked {
     ($self:expr) => {
         if $self.current_frame.is_parked {
-            return $self.yield_parked();
+            return $self.pending_futures_exit();
         }
     };
 }
@@ -417,6 +419,16 @@ pub(super) fn stack_index(index: usize) -> u32 {
     u32::try_from(index).expect("VM stack index exceeds u32")
 }
 
+/// The code a saved frame runs: its function's, or `module_code` for the
+/// module-level frame, which has no function ID.
+pub(super) fn frame_code<'code>(
+    interns: &'code Interns,
+    module_code: &'code Code,
+    function_id: Option<FunctionId>,
+) -> &'code Code {
+    function_id.map_or(module_code, |id| &interns.get_function(id).code)
+}
+
 impl<'code> CallFrame<'code> {
     /// Creates a new call frame for module-level code.
     ///
@@ -600,23 +612,29 @@ impl CallFrame<'_> {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SerializedFrame {
     /// Which function's code this frame executes (None = module-level).
+    #[serde(rename = "F")]
     function_id: Option<FunctionId>,
 
     /// Instruction pointer within this frame's bytecode.
+    #[serde(rename = "P")]
     ip: usize,
 
     /// Base index into the VM stack for this frame's locals region.
+    #[serde(rename = "S")]
     stack_base: usize,
 
     /// Number of local variable slots (0 for module-level frames).
+    #[serde(rename = "L")]
     locals_count: u16,
 
     /// Base index into the VM-wide `exception_stack` for this frame.
     /// See `CallFrame.exception_stack_base`.
+    #[serde(rename = "E")]
     exception_stack_base: usize,
 
     /// Caller's bytecode offset at the call site (for tracebacks). See
     /// `CallFrame.call_offset`.
+    #[serde(rename = "C")]
     call_offset: Option<u32>,
 
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
@@ -625,11 +643,12 @@ pub struct SerializedFrame {
     /// across a suspend (an `__init__` that calls an external/OS function), so it
     /// must round-trip — otherwise the resumed frame would push `__init__`'s
     /// `None` instead of leaving the instance on the stack.
-    #[serde(default)]
+    #[serde(rename = "I")]
     is_initializer: bool,
 
     /// Frame namespace, with ownership of its dict references (see
     /// `CallFrame.namespace`).
+    #[serde(rename = "N")]
     namespace: Option<Box<FrameNamespace>>,
 }
 
@@ -697,17 +716,15 @@ pub struct VMSnapshot {
 
     /// In-flight resume effect for the paused OS call, if any. See
     /// [`VM::pending_effect`].
-    #[serde(default)]
     pending_effect: Option<PendingEffect>,
     /// In-flight resume effect for the paused lazy attribute lookup, if any.
     /// See [`VM::pending_lookup_effect`].
-    #[serde(default)]
     pending_lookup_effect: Option<PendingLookupEffect>,
 
     /// Working directory at the pause, including any `os.chdir` so far.
     cwd: String,
-    /// The module-level `random` generator at the pause, seeded or not.
-    random: Random,
+    /// The session's `random` state at the pause.
+    random: SessionRandom,
 }
 
 impl VMSnapshot {
@@ -717,7 +734,7 @@ impl VMSnapshot {
     /// globals, working directory and `random` generator so an abandoned REPL
     /// snippet keeps its namespace, any `os.chdir` it made and any seed it
     /// set. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, Random) {
+    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom) {
         let Self {
             stack,
             globals,
@@ -886,11 +903,9 @@ pub struct VM<'h> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
-    /// The module-level `random` generator behind `random.random()` and
-    /// friends. Session state like the globals: it travels in snapshots and,
-    /// through the REPL, from one feed to the next, so a `random.seed()` keeps
-    /// governing later draws.
-    pub(crate) random: Random,
+    /// Module generator and state for initializing unseeded generators.
+    /// Preserved across snapshots and REPL feeds, including `random.seed()` changes.
+    pub(crate) random: SessionRandom,
 
     /// Working directory, `__file__` inputs and the assert-repr cap for this
     /// run. Rebuilt from the executor on restore, except the working
@@ -933,7 +948,7 @@ impl<'h> VM<'h> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            random: Random::default(),
+            random: SessionRandom::default(),
             env: program.vm_env(),
         }
     }
@@ -957,10 +972,7 @@ impl<'h> VM<'h> {
             .frames
             .into_iter()
             .map(|sf| {
-                let code = match sf.function_id {
-                    Some(func_id) => &interns.get_function(func_id).code,
-                    None => &program.module_code,
-                };
+                let code = frame_code(interns, &program.module_code, sf.function_id);
                 CallFrame {
                     code,
                     bytecode: code.bytecode(),
@@ -2091,17 +2103,31 @@ impl<'h> VM<'h> {
                 obj
             }
         };
+        // Output-only entropy replies must raise the os.urandom contract error at the draw.
+        let seeding = matches!(
+            self.pending_effect,
+            Some(PendingEffect::Post(PostConversionEffect::SeedRandom { .. }))
+        );
+        let reply_type = seeding.then(|| obj.as_ref().type_name().to_owned());
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
         // `RunError::Resource` that pure-Monty allocations produce, so the
         // user sees `MemoryError` instead of `RuntimeError: invalid return
         // type`. Other input errors stay as `RuntimeError`.
-        let value = obj.to_value(self).map_err(|e| match e {
-            InvalidInputError::Resource(err) => RunError::from(err),
-            other @ InvalidInputError::InvalidType(_) => {
-                SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
+        let value = match obj.to_value(self) {
+            Ok(value) => value,
+            Err(InvalidInputError::Resource(err)) => return Err(RunError::from(err)),
+            Err(InvalidInputError::InvalidType(_)) if let Some(type_name) = reply_type => {
+                let effect = self.pending_effect.take();
+                release_pending_effect(effect, self.heap);
+                return self.resume_with_exception(urandom_reply_error(Err(&type_name), SEED_BYTES));
             }
-        })?;
+            Err(other @ InvalidInputError::InvalidType(_)) => {
+                return Err(
+                    SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into(),
+                );
+            }
+        };
         let result = match self.pending_effect.take() {
             Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {
                 apply_buffer_store(file_id, value, self)
@@ -2112,6 +2138,9 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
                 apply_seed_random(target, retry, value, self)
+            }
+            Some(PendingEffect::Post(PostConversionEffect::ClockReading { reading })) => {
+                apply_clock_reading(reading, value, self)
             }
             // The sleeps were answered above; any pre-conversion effect was consumed.
             Some(
@@ -2175,7 +2204,11 @@ impl<'h> VM<'h> {
                 PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
                 // Hold no state or heap references — nothing to roll back.
                 PendingEffect::Pre(_)
-                | PendingEffect::Post(PostConversionEffect::OpenName { .. } | PostConversionEffect::DiscardResult) => {}
+                | PendingEffect::Post(
+                    PostConversionEffect::OpenName { .. }
+                    | PostConversionEffect::DiscardResult
+                    | PostConversionEffect::ClockReading { .. },
+                ) => {}
             }
         }
         // Use the normal exception handling mechanism
@@ -2334,18 +2367,15 @@ impl<'h> VM<'h> {
         self.scheduler.cleanup(self.heap);
     }
 
-    /// Hands the surviving tasks' pending calls back to the host, for
-    /// [`yield_if_parked`] when dispatch has no frame left to run.
-    ///
-    /// Those tasks are parked on external calls, so there is normally
-    /// something to hand over. With nothing pending there is no way forward
-    /// either: resuming would fail the same way one round-trip later, blaming
-    /// the scheduler rather than the discarded task that emptied it.
-    fn yield_parked(&self) -> Result<FrameExit, RunError> {
+    /// Returns surviving tasks' pending calls when every task is blocked
+    /// or [`yield_if_parked`] detects that dispatch has no runnable frame.
+    /// With no pending calls, report the stall now: resuming cannot progress
+    /// and would obscure the discarded task that caused it.
+    pub(super) fn pending_futures_exit(&self) -> Result<FrameExit, RunError> {
         let pending_call_ids = self.scheduler.pending_call_ids();
         if pending_call_ids.is_empty() {
             Err(RunError::internal(
-                "asyncio scheduler stalled: exception discarded with no task to run and no pending external calls",
+                "asyncio scheduler stalled: no task to run and no pending external calls",
             ))
         } else {
             Ok(FrameExit::ResolveFutures(pending_call_ids))
@@ -2359,6 +2389,46 @@ impl<'h> VM<'h> {
             .location_for_offset(self.instruction_ip)
             .map(LocationEntry::range)
             .unwrap_or_default()
+    }
+
+    /// Returns the position a suspension at the current instruction reports.
+    ///
+    /// `instruction_ip` still names the suspending opcode; its location entry
+    /// gives the byte range, so this reads no source.
+    pub(crate) fn suspension_position(&self) -> SourceRange {
+        self.code_position(self.current_frame.code, self.instruction_ip)
+    }
+
+    /// Returns the source position of the `await` the main task is blocked on.
+    ///
+    /// The position reported when every task is blocked on host futures: the
+    /// blocked main task may be the loaded context, or parked in the scheduler
+    /// with its frames saved while a spawned task ran last.
+    pub(crate) fn main_task_position(&self) -> SourceRange {
+        if self.is_main_task() && !self.current_frame.is_parked {
+            self.suspension_position()
+        } else {
+            // `save_task_context` pushes the executing frame last.
+            self.scheduler
+                .main_task()
+                .and_then(|task| Some((task.frames.last()?, task.instruction_ip)))
+                .map_or_else(SourceRange::unknown, |(frame, ip)| {
+                    self.code_position(frame_code(self.interns, self.module_code, frame.function_id), ip)
+                })
+        }
+    }
+
+    /// The byte range of the instruction at `offset` in `code`, named by its source.
+    fn code_position(&self, code: &Code, offset: usize) -> SourceRange {
+        code.location_for_offset(offset)
+            .map_or_else(SourceRange::unknown, |entry| {
+                let range = entry.range();
+                SourceRange::new(
+                    self.interns.get_filename(range.filename),
+                    range.start_byte,
+                    range.end_byte,
+                )
+            })
     }
 
     /// Captures the caller's current bytecode offset for a call site, or `None`

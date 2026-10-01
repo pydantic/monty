@@ -4,24 +4,9 @@ use std::time::Duration;
 
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
-/// Extracts resource limits from a Python dict.
-///
-/// The dict should have the following optional keys:
-/// - `max_feed_duration_secs`: Maximum execution time per feed, in seconds (float)
-/// - `max_turn_duration_secs`: Maximum execution time per host turn, in seconds (float)
-/// - `max_memory`: Maximum heap memory in bytes (int)
-/// - `gc_interval`: Run garbage collection every N allocations (int)
-/// - `max_recursion_depth`: Maximum function call stack depth (int, default: 1000)
-/// - `max_suspensions`: Maximum host round trips the pool will service (int, default: 1000)
-///
-/// If a key is missing or set to `None`, that limit is not applied
-/// (except `max_recursion_depth` and `max_suspensions`, which default to 1000).
-///
-/// Raises `TypeError` if a value is present but has the wrong type.
-/// Raises `ValueError` if the dict contains an unknown key — limits are a
-/// security surface, so a misspelled key (e.g. `max_memroy`) must not silently
-/// run without the intended cap — or if a `*_duration_secs` value is not a
-/// valid duration.
+/// Extracts limits using `ResourceLimits` defaults for missing or `None` values.
+/// Wrong types raise `TypeError`; unknown keys and invalid durations raise `ValueError`.
+/// Rejecting unknown keys prevents typos from silently disabling a limit.
 pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::ResourceLimits> {
     let mut limits = monty_types::ResourceLimits::default();
     // Keys parse into `LimitKey` and values are read from the same entry, so
@@ -40,6 +25,11 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
             LimitKey::GcInterval => limits.gc_interval(value.extract()?),
             LimitKey::MaxRecursionDepth => limits.max_recursion_depth(value.extract()?),
             LimitKey::MaxSuspensions => limits.max_suspensions(value.extract()?),
+            LimitKey::MaxTotalSleepSecs => {
+                let d = Duration::try_from_secs_f64(value.extract()?)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                limits.max_total_sleep(d)
+            }
         };
     }
     Ok(limits)
@@ -61,6 +51,7 @@ enum LimitKey {
     GcInterval,
     MaxRecursionDepth,
     MaxSuspensions,
+    MaxTotalSleepSecs,
 }
 
 impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
@@ -74,6 +65,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
             "gc_interval" => Ok(Self::GcInterval),
             "max_recursion_depth" => Ok(Self::MaxRecursionDepth),
             "max_suspensions" => Ok(Self::MaxSuspensions),
+            "max_total_sleep_secs" => Ok(Self::MaxTotalSleepSecs),
             _ => {
                 // `repr()` runs user `__repr__`, which may itself raise — fall
                 // back so the promised `ValueError` is raised for every unknown key.
@@ -83,7 +75,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for LimitKey {
                 Err(PyValueError::new_err(format!(
                     "unknown limits key {key_repr}; accepted keys are \
                      'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', \
-                     'gc_interval', 'max_recursion_depth', 'max_suspensions'"
+                     'gc_interval', 'max_recursion_depth', 'max_suspensions', 'max_total_sleep_secs'"
                 )))
             }
         }

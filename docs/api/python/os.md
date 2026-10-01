@@ -23,4 +23,5 @@ See [filesystem access](../../filesystem.md) for how these fit together.
             - MontyFileHandle
             - OsHandler
             - OsFunction
+            - TimeCaller
             - NOT_HANDLED

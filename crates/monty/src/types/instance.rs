@@ -32,11 +32,14 @@ use crate::{
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Instance {
     /// The class this is an instance of (a `HeapData::Class`).
+    #[serde(rename = "C")]
     class: HeapId,
     /// Instance attributes (`__dict__`).
+    #[serde(rename = "A")]
     attrs: Dict,
     /// Boundary identity, generated lazily the first time the instance crosses
     /// to the host; dumped with the heap so it stays stable across restores.
+    #[serde(rename = "U")]
     uuid: Option<MontyUuid>,
 }
 

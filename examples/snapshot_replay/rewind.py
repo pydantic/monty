@@ -20,6 +20,7 @@ from pydantic_monty import (
     MontyComplete,
     MontyRuntimeError,
     MontySyntaxError,
+    OSPolicy,
     ResourceLimits,
 )
 
@@ -30,6 +31,13 @@ MAX_CALLS = 16
 MAX_SOURCE = 32 * 1024
 OUTPUT_ENTRY_OVERHEAD = 64
 LIMITS: ResourceLimits = {'max_memory': 64 * 1024 * 1024, 'max_feed_duration_secs': 2, 'max_suspensions': MAX_CALLS}
+OS_POLICY: OSPolicy = {
+    'datetime': 'call_host',
+    'timezone': 'utc',
+    'sleep': 'call_host',
+    'process_time': 'zero',
+    'random_start': 'call_host',
+}
 
 
 class ReplayError(ValueError):
@@ -55,7 +63,7 @@ def capture(
             }
         )
         output = Output()
-        with pool(binary) as workers, workers.checkout(limits=LIMITS) as session:
+        with pool(binary) as workers, workers.checkout(limits=LIMITS, os_policy=OS_POLICY) as session:
             count = 0
             try:
                 progress = session.feed_start(code, print_callback=output)
@@ -209,7 +217,7 @@ def replay(
     output = Output(events[index]['output_before'] if restoring else None)
     # A loaded call counts as the first suspension of the new checkout.
     limits: ResourceLimits = {**LIMITS, 'max_suspensions': MAX_CALLS - index if restoring else MAX_CALLS}
-    with pool(binary) as workers, workers.checkout(limits=limits) as session:
+    with pool(binary) as workers, workers.checkout(limits=limits, os_policy=OS_POLICY) as session:
         try:
             if restoring:
                 progress = session.load_snapshot(base64.b64decode(events[index]['snapshot']), print_callback=output)

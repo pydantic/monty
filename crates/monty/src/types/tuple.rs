@@ -68,9 +68,11 @@ pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 /// tuple contains only primitive values (ints, bools, None, etc.).
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Tuple {
+    #[serde(rename = "I")]
     items: TupleVec,
     /// True if any item in the tuple is a `Value::Ref`. Set at creation time
     /// since tuples are immutable.
+    #[serde(rename = "C")]
     contains_refs: bool,
     /// Lazily-computed Python hash. Tuples are immutable so this is
     /// computed on first `py_hash` and reused thereafter. Skipped on

@@ -75,6 +75,9 @@ Do not retry a side-effecting callback merely because its response is missing.
 This example accepts finite JSON values at the host boundary, up to 16 direct synchronous host calls, 32 KiB of source,
 256 KiB per value or captured output, 512 KiB per snapshot and 8 MiB per recording.
 It rejects host objects, OS calls, name-lookup suspensions and futures.
+Clock, sleep and unseeded random requests use `call_host` so they reach that rejection check instead of Monty's defaults.
+Snapshots retain this policy.
+Explicit random seeds remain usable; `time.process_time()` stays at zero and the zone is UTC.
 It does not inspect frames or locals, schedule async completions or persist host state.
 
 ### Replay

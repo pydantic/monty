@@ -76,8 +76,17 @@ the stored value: Monty does not track DST-fold disambiguation.
 Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
-`weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`,
+`weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`, `astimezone(tz=None)`,
 `utcoffset`, `tzname`, `dst`.
+
+`astimezone()` and a naive `timestamp()` read the [session zone](#reading-the-clock) where CPython uses the host's;
+as in CPython the `tzinfo` `astimezone()` attaches is a `timezone` carrying the offset and abbreviation at that
+instant (`BST`).
+The default zone is `timezone(timedelta(0), 'UTC')`, what CPython reports under `TZ=UTC`, so
+`datetime.now().astimezone().tzinfo == timezone.utc` holds but it is not the `timezone.utc` singleton.
+A naive value is read in the session zone, as CPython reads it in the host's, at its first occurrence in a DST fold
+and with the offset from before a DST gap: CPython's `fold=0` reading, since `fold` is not stored (below).
+`dt.astimezone(dt.tzinfo)` returns an equal copy, not `dt` itself.
 
 `fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
 `AttributeError`, where CPython returns `1`.
@@ -86,14 +95,20 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
 `fromisoformat(date_string)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
 - `now()` reads the clock — see "Reading the clock" below.
-- `now(tz)` returns a `datetime` whose `tzinfo` is `==` the input timezone
-    but not `is` it: the original `tzinfo` object isn't threaded through the
-    return path, so a fresh `timezone` is reconstructed from the
-    offset/name. This holds however the call is answered.
+- Host-answered `now(tz)` reconstructs `tzinfo` from its offset and name, so it equals `tz` but is a different object.
+    The default sandbox answer preserves identity, as CPython does.
 - `strptime()` requires the string to carry a date: a time-only format
     (`strptime('12:30', '%H:%M')`) raises
     `ValueError: time data '12:30' does not match format '%H:%M'`, where
     CPython defaults the missing date to 1900-01-01.
+- `strptime()`'s `%z` takes a sign, hours and minutes with an optional colon, optional seconds, or a bare `Z`,
+    but not CPython's fractional form: `'+010203.123456'` does not match, where CPython attaches an offset carrying
+    those microseconds, which no Monty offset can hold (see [`timezone`](#timezone)).
+- A `%z` offset whose minute and second separators disagree is rejected by both, but `'+0102:03'` (a colon before
+    the seconds only) raises `ValueError: Inconsistent use of : in +0102:03` in Monty, where CPython leaks
+    `ValueError: invalid literal for int() with base 10: ':0'`. The mirrored `'+01:0203'` matches CPython exactly.
+- Input the format does not consume raises `ValueError: time data '...' does not match format '...'`,
+    where CPython distinguishes trailing input with `ValueError: unconverted data remains: ...`.
 - `utcnow()` (the deprecated class method) and `today()` are not
     implemented.
 - `fromtimestamp()`, `fromordinal()` and `utcfromtimestamp()` are not
@@ -113,41 +128,37 @@ in Monty raises `TypeError: replace expected at most 0 arguments, got N`.
 
 ## Reading the clock
 
-`date.today()` and `datetime.now()` are the only two calls that read a
-clock, and Monty has none of its own. What answers them depends on how the
-sandbox is driven.
+The [session clock](../security.md#the-clock) has separate `datetime` and `timezone` settings.
+The `time` module's wall clocks share the `datetime` source, and its conversion functions the `timezone`
+(see [time.md](time.md)).
 
-Under the suspend/resume path — every pool session (`pydantic_monty`,
-`@pydantic/monty`, `monty-pool`) and `MontyRun::start` — both reach the host.
-A host that answers neither makes them raise
-`RuntimeError: 'date.today' is not supported in this environment`
-(`'datetime.now'` likewise), where CPython would return a time.
+`datetime`:
 
-Standard (non-suspending) execution — `MontyRun::run`, `MontyRepl::feed_run`
-and `MontyRepl::call_function` in Rust — has no host to ask and reads this
-machine's clock, so it matches CPython. The `monty` CLI reads the same clock,
-though there it is the host answering: it serves both calls itself rather than
-passing them on.
-`MontyRun::with_host_clock` / `MontyRepl::with_host_clock` choose otherwise:
-
-- `HostClock::Denied` makes both raise `NotImplementedError` — a different
-    exception from the suspend path's `RuntimeError` for the same refusal.
-    Through `MontyRun::run` and `MontyRepl::feed_run` the message is
-    `OS function 'datetime.now' not implemented with standard execution`;
-    through `MontyRepl::call_function` it is
+- A fixed instant never advances: repeated `datetime.now()` calls are equal and elapsed-time calculations stay zero.
+    Bindings also set `timezone` unless supplied explicitly: naive Python datetimes and JavaScript dates select UTC;
+    aware Python datetimes supply their offset and name.
+    A Rust fixed instant outside years 1–9999 raises `OverflowError: date value out of range` from all three clock calls.
+- `'call_host'` delegates to the pool's `os=` handler (`OSAccess.date_today()` or `datetime_now()` in Python).
+    Unanswered calls raise `RuntimeError: 'date.today' is not supported in this environment` (`datetime.now` likewise).
+    Non-suspending Rust execution instead raises `NotImplementedError`.
+    `run` and `feed_run` report `OS function 'datetime.now' not implemented with standard execution`;
+    `call_function` reports
     `MontyRepl::call_function: OS function 'datetime.now' is not yet supported in this context`.
-- `HostClock::Fixed` answers every call with one frozen instant, so
-    `datetime.now() == datetime.now()` is `True`, a loop polling
-    `datetime.now()` never sees it move, and `(datetime.now() - start)` is
-    always a zero `timedelta`. An instant outside `datetime`'s 1..=9999 years
-    reads as `Denied` rather than failing some other way.
 
-Whatever answers them, both calls read local wall time for `date.today()`
-and a naive `datetime.now()`, and convert into the argument for
-`datetime.now(tz)`, matching CPython.
+`timezone`:
 
-`time.time()` has no equivalent — the `time` module is not importable at
-all (see ./modules.md).
+- The default is UTC, not the host's zone, so a naive `datetime.now()` is the UTC wall clock and `astimezone()`
+    attaches `timezone(timedelta(0), 'UTC')`.
+- A fixed zone is a UTC offset with an optional name and no DST rules.
+    `astimezone()`, `%Z` and `time.tzname` report the name (`UTC±HH:MM` when there is none).
+- An IANA name (`'Europe/London'`) is resolved in the worker against its tz database: the OS copy under `TZDIR` or
+    `/usr/share/zoneinfo`, or the copy bundled into the binary when the worker can read none (Windows, and the wasm
+    worker).
+    The offset and abbreviation then follow the instant, so the results depend on that database's version, as
+    CPython's do on the host's.
+    An unknown name is refused when the session is checked out.
+    `time.timezone`, `time.altzone`, `time.daylight` and `time.tzname` are computed at import and need the clock's year, so a named zone under `datetime='call_host'` leaves them absent;
+    see [time.md](time.md#zone-constants).
 
 ## `time`
 
@@ -213,6 +224,10 @@ base class. Only fixed offsets can be constructed, so on `timezone`,
 `datetime` and `time` alike, `utcoffset()` is constant over time and
 `dst()` is always `None`.
 
+An offset is a whole number of seconds: `timezone(timedelta(seconds=1, microseconds=1))` raises
+`ValueError: offset must be a timedelta representing a whole number of seconds`, CPython's own message before 3.7,
+where CPython now accepts it.
+
 One error-ordering corner: `timezone('x', offset=td)` (a non-`timedelta`
 positional *and* an `offset` kwarg) raises the name-and-position conflict in
 Monty, but the type error in CPython (`timezone() argument 1 must be datetime.timedelta, not str`). CPython's parser
@@ -237,16 +252,18 @@ pass-through applies to f-string and `str.format()` formatting (below).
 
 ### Directives that need data the value lacks
 
-A directive that is *recognised* but can't be rendered for the given value
-raises `ValueError: Invalid format string` rather than substituting a default
-the way CPython does. The known cases:
+A directive that chrono *recognises* but can't render for the given value
+raises `ValueError: Invalid format string` where CPython hands it to the C
+library: `%+` (chrono's RFC 3339 form) and `%#z` (chrono's hour-only offset)
+both need an offset the naive components lack, so they raise even on an aware
+value's naive components. The other flagged forms of `%z` (`%-z`, `%_z`,
+`%Ez`, `%Oz`) are unrecognised and pass through verbatim, where macOS CPython
+renders them as an empty string.
 
-- `%z` / `%Z` on a naive `date`, `datetime` or `time`: Monty raises; CPython
-    yields `''`.
-- `%z` / `%Z` on an **aware** `datetime` or `time`: Monty formats the wall-clock
-    (naive) components and so raises rather than emitting the offset/name; CPython
-    yields `'+0200'` / `'CEST'`. Passing the timezone to the formatter is not yet
-    implemented.
+`%z`, `%:z` and `%Z` are filled from `utcoffset()` and `tzname()` as in
+CPython: empty for a naive `date`, `datetime` or `time`, and `'+0200'`,
+`'+02:00'` and the zone name for an aware value. The name of an unnamed zone
+is `UTC±HH:MM`, and a sub-minute offset renders its seconds (`'+023015'`).
 
 f-strings and `str.format()` format `date`, `datetime` and `time` values through
 `strftime`, matching CPython's `__format__`: `f'{dt:%Y-%m-%d}'` and

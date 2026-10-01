@@ -1,6 +1,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
+import { isWasm } from './env.js'
 import { setupPool } from './helpers.js'
 import { encodeValue } from '../ts/worker/value.js'
 
@@ -199,6 +200,40 @@ test('ellipsis output', async () => {
 })
 
 // =============================================================================
+// Builtin function tests
+// =============================================================================
+
+test('builtin function output', async () => {
+  t.deepEqual(await run('len'), { __monty_type__: 'BuiltinFunction', value: 'len' })
+})
+
+test('builtin function input', async () => {
+  // the marker carries only the name, and resolves back to the builtin itself
+  t.is(await run('x is len', { inputs: { x: { __monty_type__: 'BuiltinFunction', value: 'len' } } }), true)
+})
+
+test('builtin function round-trip', async () => {
+  t.deepEqual(await run('x', { inputs: { x: await run('sorted') } }), {
+    __monty_type__: 'BuiltinFunction',
+    value: 'sorted',
+  })
+})
+
+test('unknown builtin function input', async () => {
+  const error = await t.throwsAsync(
+    () => run('x', { inputs: { x: { __monty_type__: 'BuiltinFunction', value: 'nope' } } }),
+    { instanceOf: Error },
+  )
+  // both transports reject the name; the wasm one surfaces it through the component boundary
+  t.is(
+    error.message,
+    isWasm
+      ? 'RuntimeError: protocol violation: malformed component request: unknown builtin function "nope"'
+      : 'unknown builtin function "nope"',
+  )
+})
+
+// =============================================================================
 // Nested collection tests
 // =============================================================================
 
@@ -350,34 +385,76 @@ test('number at the i64 boundary', async () => {
 // datetime.time tests
 // =============================================================================
 
-test('time output from sandbox', async () => {
-  t.deepEqual(await run('import datetime\ndatetime.time(1, 2, 3, 4)'), {
+test.each([
+  [0, 0, 0, 0],
+  [1, 2, 3, 4],
+])('time output from sandbox: %s:%s:%s.%s', async (hour, minute, second, microsecond) => {
+  t.deepEqual(await run(`import datetime\ndatetime.time(${hour}, ${minute}, ${second}, ${microsecond})`), {
     __monty_type__: 'Time',
-    hour: 1,
-    minute: 2,
-    second: 3,
-    microsecond: 4,
+    hour,
+    minute,
+    second,
+    microsecond,
     fold: 0,
   })
 })
 
-test('aware time output from sandbox', async () => {
-  const code = 'import datetime\ndatetime.time(6, 7, tzinfo=datetime.timezone(datetime.timedelta(hours=2), "P2"))'
-  t.deepEqual(await run(code), {
+test.each([
+  {
+    args: '6, 7',
+    zone: 'datetime.timezone(datetime.timedelta(hours=2), "P2")',
+    time: { hour: 6, minute: 7, second: 0, microsecond: 0, offsetSeconds: 7200, timezoneName: 'P2' },
+  },
+  {
+    args: '23, 59, 59, 999999',
+    zone: 'datetime.timezone(datetime.timedelta(hours=-5))',
+    time: { hour: 23, minute: 59, second: 59, microsecond: 999999, offsetSeconds: -18000 },
+  },
+])('aware time output from sandbox: $zone', async ({ args, zone, time }) => {
+  t.deepEqual(await run(`import datetime\ndatetime.time(${args}, tzinfo=${zone})`), {
     __monty_type__: 'Time',
-    hour: 6,
-    minute: 7,
-    second: 0,
-    microsecond: 0,
-    offsetSeconds: 7200,
-    timezoneName: 'P2',
+    ...time,
     fold: 0,
   })
 })
 
-test('time input round-trips', async () => {
-  const time = { __monty_type__: 'Time', hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }
+test('complex output from sandbox', async () => {
+  t.deepEqual(await run('(1.5 - 2j) * 2'), { __monty_type__: 'Complex', real: 3, imag: -4 })
+})
+
+test('complex input round-trips', async () => {
+  const z = { __monty_type__: 'Complex', real: 1.5, imag: -2 }
+  t.deepEqual(await run('x', { inputs: { x: z } }), z)
+  t.deepEqual(await run('x.conjugate()', { inputs: { x: z } }), { __monty_type__: 'Complex', real: 1.5, imag: 2 })
+  // Negative zero is preserved in both directions.
+  const negativeZero = { __monty_type__: 'Complex', real: -0, imag: -0 }
+  t.deepEqual(await run('repr(x)', { inputs: { x: negativeZero } }), '(-0-0j)')
+  const back = (await run('complex(-0.0, -0.0)')) as { real: number; imag: number }
+  t.is(Object.is(back.real, -0) && Object.is(back.imag, -0), true)
+})
+
+test('malformed complex marker is rejected by the wasm encoder', () => {
+  t.deepEqual(encodeValue({ __monty_type__: 'Complex', real: 1.5, imag: -2 }), {
+    root: 0,
+    nodes: [{ tag: 'complex', val: { real: 1.5, imag: -2 } }],
+  })
+  t.throws(() => encodeValue({ __monty_type__: 'Complex', real: '1', imag: 2 }), {
+    instanceOf: TypeError,
+    message: 'Complex marker requires numeric real and imag',
+  })
+})
+
+test.each([
+  { fields: { hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }, iso: '10:20:30.000040' },
+  {
+    fields: { hour: 1, minute: 2, second: 3, microsecond: 4, fold: 1, offsetSeconds: 7200, timezoneName: 'P2' },
+    iso: '01:02:03.000004+02:00',
+  },
+  { fields: { hour: 12, minute: 0, second: 0, microsecond: 0, fold: 0, offsetSeconds: 0 }, iso: '12:00:00+00:00' },
+])('time input round-trips: $iso', async ({ fields, iso }) => {
+  const time = { __monty_type__: 'Time', ...fields }
   t.deepEqual(await run('x', { inputs: { x: time } }), time)
+  t.is(await run('x.isoformat()', { inputs: { x: time } }), iso)
 })
 
 test('time input is a real sandbox time', async () => {

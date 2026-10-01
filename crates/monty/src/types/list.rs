@@ -61,9 +61,11 @@ use crate::{
 /// improving GC performance for lists of primitives.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct List {
+    #[serde(rename = "I")]
     items: Vec<Value>,
     /// True if any item in the list is a `Value::Ref`. Used to skip iteration
     /// in `collect_child_ids` and `py_dec_ref_ids` when no refs are present.
+    #[serde(rename = "C")]
     contains_refs: bool,
 }
 

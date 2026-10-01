@@ -10,9 +10,8 @@ use strum::VariantNames;
 /// diagnostics borrow the salsa database and cannot cross a process boundary —
 /// so the format has to be chosen before the check, not after it.
 ///
-/// Serialized into session dumps by discriminant, so new variants must be
-/// appended — inserting one shifts every later variant and silently rewrites
-/// older dumps' format (see `DUMP_VERSION` in `monty`).
+/// Serialized into session dumps by variant name, so a rename needs
+/// `#[serde(alias)]` to keep older dumps loading (see `DUMP_VERSION` in `monty`).
 #[derive(
     Debug,
     Clone,

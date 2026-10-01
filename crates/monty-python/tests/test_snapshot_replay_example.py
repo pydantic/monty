@@ -362,6 +362,52 @@ def test_limits_and_unsupported_suspension(case: Any) -> None:
     assert str(error.value) == snapshot('Unsupported suspension')
 
 
+@pytest.mark.parametrize('mode', ['capture', 'changed-source', 'response-branch'])
+@pytest.mark.parametrize(
+    'imports, operation',
+    [
+        ('from datetime import datetime', 'datetime.now()'),
+        ('import time', 'time.time()'),
+        ('import time', 'time.sleep(0.01)'),
+        ('import asyncio', 'await asyncio.sleep(0.01)'),
+        ('import random', 'random.random()'),
+        ('import random', 'random.seed()'),
+    ],
+)
+def test_os_calls_are_not_serviced_during_replay(case: Any, mode: str, imports: str, operation: str) -> None:
+    dispatch = MagicMock(return_value={'return_value': False})
+    code = f'{imports}\nif fetch("a"):\n    {operation}\n0'
+    recording: dict[str, Any] = {}
+    if mode != 'capture':
+        r.capture(code, case.path, dispatch, binary=case.binary)
+        recording = r.load(case.path)
+    with pytest.raises(r.ReplayError) as error:
+        if mode == 'capture':
+            r.capture(f'{imports}\n{operation}\n0', case.path, dispatch, binary=case.binary)
+        elif mode == 'changed-source':
+            r.replay(recording, code=code.replace('if fetch("a"):', 'if not fetch("a"):'), binary=case.binary)
+        else:
+            r.replay(recording, at=0, response={'return_value': True}, binary=case.binary)
+    assert str(error.value) == snapshot('Only direct synchronous function calls are supported')
+    assert dispatch.call_count == (0 if mode == 'capture' else 1)
+
+
+def test_explicit_random_seed_remains_replayable(case: Any) -> None:
+    case.capture('import random, time\nrandom.seed(42)\n[random.random(), time.process_time()]')
+    recording = r.load(case.path)
+    assert recording['result']['value'] == snapshot([0.6394267984578837, 0.0])
+    assert r.replay(recording, binary=case.binary)['same_result'] == snapshot(True)
+
+
+@pytest.mark.parametrize('code', ['int', 'fetch(int)', '1j', 'fetch(1j)'])
+def test_non_json_guest_values_are_rejected(case: Any, code: str) -> None:
+    dispatch = MagicMock()
+    with pytest.raises(r.ReplayError) as error:
+        r.capture(code, case.path, dispatch, binary=case.binary)
+    assert str(error.value) == snapshot('Only finite JSON values are supported')
+    assert dispatch.call_count == snapshot(0)
+
+
 def test_saved_file_limits(case: Any) -> None:
     case.path.write_bytes(b'x' * (r.MAX_FILE + 1))
     with pytest.raises(r.ReplayError) as error:

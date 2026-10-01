@@ -29,7 +29,7 @@ use crate::{
     heap::{Heap, HeapData, HeapObjectRead, HeapRead},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
     types::{LazyHeapSet, PyTrait, Type, str::allocate_string, tuple::allocate_tuple},
-    value::{Value, eq_bigint, float_divmod_tuple, float_pow, py_float_divmod, py_float_mod},
+    value::{Value, eq_bigint, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
 
 /// Maximum number of decimal digits allowed for integer-string conversion.
@@ -671,7 +671,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         if modulus.is_some() {
             Ok(None)
         } else if let Value::Float(base) = other {
-            Ok(Some(Value::Float(float_pow(*base, exponent.to_f64_checked()?)?)))
+            Ok(Some(float_pow_value(*base, exponent.to_f64_checked()?, vm.heap)?))
         } else {
             let Some(base) = integer_value(other, vm.heap) else {
                 return Ok(None);
@@ -777,7 +777,18 @@ impl<'h> HeapRead<'h, LongInt> {
     }
 }
 
+/// Work above which `modular_pow` polls the time limit between exponent bits.
+///
+/// Measured in exponent bits × modulus digits², the cost of square-and-multiply with a
+/// quadratic reduction. Below it `num-bigint`'s monolithic `modpow` runs uninterrupted,
+/// about 0.2 s on a 2024 laptop and well inside the pool's grace on slower hosts.
+const MODPOW_UNPOLLED_WORK: u64 = 1 << 27;
+
 /// Performs modular exponentiation for integer values of any storage representation.
+///
+/// Small inputs take `num-bigint`'s Montgomery `modpow`; anything past
+/// `MODPOW_UNPOLLED_WORK` takes the slower [`polled_modpow`] so a time limit can
+/// interrupt it, as CPython computes these rather than rejecting them.
 pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap: &Heap) -> RunResult<Option<Value>> {
     let Some(exponent) = integer_value(exponent, heap) else {
         return Ok(None);
@@ -793,17 +804,52 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap
     }
 
     let modulus_abs = modulus.abs();
-    let mut result = base.modpow(exponent.as_ref(), &modulus_abs);
+    // Reducing first keeps the base non-negative and no larger than the modulus.
+    let base = base.mod_floor(&modulus_abs);
+    let (base, exponent, modulus_mag) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
+    // A `num-bigint` digit is pointer-sized, so wasm32 counts twice as many words.
+    let words = modulus_mag.bits().div_ceil(u64::from(usize::BITS));
+    let work = exponent.bits().saturating_mul(words.saturating_mul(words));
+    let result = if work <= MODPOW_UNPOLLED_WORK {
+        base.modpow(exponent, modulus_mag)
+    } else {
+        polled_modpow(base, exponent, modulus_mag, &heap.tracker)?
+    };
+    let mut result = BigInt::from(result);
     if modulus.is_negative() && !result.is_zero() {
         result -= modulus_abs;
     }
     Ok(Some(LongInt::new(result).into_value(heap)))
 }
 
+/// Left-to-right square-and-multiply that polls the time limit before every exponent bit.
+///
+/// Slower than Montgomery reduction, so only the large inputs `modular_pow` routes here pay
+/// for it. Each step is one squaring and one reduction of a value no larger than the
+/// modulus, so intermediates stay within a constant multiple of already-tracked inputs.
+/// It polls every bit rather than every 64th because one step on a huge modulus can take
+/// most of a second on its own.
+fn polled_modpow(
+    base: &BigUint,
+    exponent: &BigUint,
+    modulus: &BigUint,
+    tracker: &ResourceTracker,
+) -> RunResult<BigUint> {
+    let mut result = BigUint::one() % modulus;
+    for bit in (0..exponent.bits()).rev() {
+        tracker.check_time()?;
+        result = &result * &result % modulus;
+        if exponent.bit(bit) {
+            result = result * base % modulus;
+        }
+    }
+    Ok(result)
+}
+
 /// Raises a long integer to another integer value.
 fn long_int_pow(base: &LongInt, exponent: &Value, heap: &Heap) -> RunResult<Option<Value>> {
     if let Value::Float(exponent) = exponent {
-        return Ok(Some(Value::Float(float_pow(base.to_f64_checked()?, *exponent)?)));
+        return Ok(Some(float_pow_value(base.to_f64_checked()?, *exponent, heap)?));
     }
     let Some(exponent) = integer_value(exponent, heap) else {
         return Ok(None);
@@ -815,10 +861,11 @@ fn long_int_pow(base: &LongInt, exponent: &Value, heap: &Heap) -> RunResult<Opti
 fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResult<Option<Value>> {
     if exponent.is_negative() {
         // CPython hands off to `float_pow`, converting both operands before its zero-base check.
-        Ok(Some(Value::Float(float_pow(
+        Ok(Some(float_pow_value(
             bigint_to_f64_checked(base)?,
             bigint_to_f64_checked(exponent)?,
-        )?)))
+            heap,
+        )?))
     } else if exponent.is_zero() || base.is_one() {
         Ok(Some(Value::Int(1)))
     } else if base.is_zero() {

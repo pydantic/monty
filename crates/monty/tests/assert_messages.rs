@@ -242,6 +242,7 @@ fn operand_reprs_truncated() {
 fn custom_truncation_limit() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(10),
+        ..CompileOptions::default()
     };
     let mut run = MontyRun::new("assert list(range(200)) == []".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -251,6 +252,7 @@ fn custom_truncation_limit() {
     // A limit above the repr length leaves it untouched.
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(10_000),
+        ..CompileOptions::default()
     };
     let mut run = MontyRun::new("assert list(range(50)) == []".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -282,6 +284,7 @@ fn truncation_cuts_on_char_boundaries() {
     // `'日` (4 bytes); the next 3-byte char is dropped whole.
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(5),
+        ..CompileOptions::default()
     };
     let mut run = MontyRun::new("assert '日本語です' == ''".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -310,6 +313,7 @@ fn custom_limit_survives_repl_snippets() {
     // fed to a session (and any snapshot of it) formats the same way.
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(5),
+        ..CompileOptions::default()
     };
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), options);
     repl.feed_run("x = 'abcdefghij'", vec![], PrintWriter::Stdout).unwrap();
@@ -333,6 +337,7 @@ fn zero_limit_means_off_not_a_zero_length_repr() {
 
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(0),
+        ..CompileOptions::default()
     };
     let mut run = MontyRun::new("assert 2 == 5".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -343,10 +348,14 @@ fn zero_limit_means_off_not_a_zero_length_repr() {
 #[test]
 fn deserialization_preserves_nonzero_limit_representation() {
     // `NonZeroU32` must remain nonzero even in invalid serialized state.
-    // Pin the encoding (variant index 1, then the u32) with `MaxBytes(1)`.
-    let valid: AssertMessageAnnotations = postcard::from_bytes(&[1u8, 1u8]).expect("MaxBytes(1) should decode");
+    // Pin the encoding (a one-entry map from the variant name to the u32) with `MaxBytes(1)`.
+    let mut encoded = vec![0xa1, 0x68];
+    encoded.extend_from_slice(b"MaxBytes");
+    encoded.push(1);
+    let valid: AssertMessageAnnotations = minicbor_serde::from_slice(&encoded).expect("MaxBytes(1) should decode");
     assert_eq!(valid, AssertMessageAnnotations::from_max_bytes(1));
-    postcard::from_bytes::<AssertMessageAnnotations>(&[1u8, 0u8]).expect_err("MaxBytes(0) must not decode");
+    *encoded.last_mut().unwrap() = 0;
+    minicbor_serde::from_slice::<AssertMessageAnnotations>(&encoded).expect_err("MaxBytes(0) must not decode");
 }
 
 #[test]
@@ -378,6 +387,7 @@ fn comparison_type_errors_still_raise() {
 fn opt_out_restores_cpython_behavior() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::Off,
+        ..CompileOptions::default()
     };
     let mut run = MontyRun::new("assert 1 == 2".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -386,6 +396,7 @@ fn opt_out_restores_cpython_behavior() {
 
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::Off,
+        ..CompileOptions::default()
     };
     let mut run = MontyRun::new("assert False, 'msg'".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -407,6 +418,7 @@ fn assert_inside_repl_gets_messages() {
 fn repl_opt_out_applies_to_every_snippet() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::Off,
+        ..CompileOptions::default()
     };
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), options);
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();

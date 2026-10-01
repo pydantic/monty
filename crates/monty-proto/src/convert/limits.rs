@@ -22,6 +22,9 @@ impl From<&ResourceLimits> for pb::ResourceLimits {
             gc_interval: limits.gc_interval.map(|v| v as u64),
             max_recursion_depth: Some(limits.max_recursion_depth as u64),
             max_suspensions: Some(limits.max_suspensions as u64),
+            max_total_sleep_micros: limits
+                .max_total_sleep
+                .map(|d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX)),
         }
     }
 }
@@ -35,6 +38,7 @@ impl From<pb::ResourceLimits> for ResourceLimits {
             gc_interval: usize_field(limits.gc_interval),
             max_recursion_depth: usize_field(limits.max_recursion_depth).unwrap_or(DEFAULT_MAX_RECURSION_DEPTH),
             max_suspensions: usize_field(limits.max_suspensions).unwrap_or(DEFAULT_MAX_SUSPENSIONS),
+            max_total_sleep: limits.max_total_sleep_micros.map(Duration::from_micros),
         }
     }
 }

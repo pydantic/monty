@@ -13,15 +13,19 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Code {
     /// Variable-width instructions, addressed by body-relative offsets.
+    #[serde(with = "serde_bytes")]
+    #[serde(rename = "B")]
     bytecode: Vec<u8>,
 
     /// Immediate constants indexed by `LoadConst`; heap literals live in `Interns`.
+    #[serde(rename = "C")]
     constants: Vec<Value>,
 
     /// Source location table for tracebacks.
     ///
     /// Maps bytecode offsets to source locations. Used to generate Python-style
     /// tracebacks with line numbers and caret markers when exceptions occur.
+    #[serde(rename = "L")]
     location_table: Vec<LocationEntry>,
 
     /// Exception handler table.
@@ -29,12 +33,14 @@ pub struct Code {
     /// Maps protected bytecode ranges to their exception handlers. Consulted when
     /// an exception is raised to find the appropriate handler. Entries are ordered
     /// innermost-first for nested try blocks.
+    #[serde(rename = "E")]
     exception_table: Vec<ExceptionEntry>,
 
     /// Local variable names for error messages.
     ///
     /// Maps slot indices to variable names. Used to generate proper NameError
     /// messages when accessing undefined local variables (e.g., "name 'x' is not defined").
+    #[serde(rename = "N")]
     local_names: Vec<StringId>,
 }
 
@@ -98,12 +104,11 @@ impl Code {
     #[must_use]
     pub fn location_for_offset(&self, offset: usize) -> Option<&LocationEntry> {
         let offset_u32 = u32::try_from(offset).ok()?;
-        // Location entries are in order by bytecode offset.
-        // Find the last entry where bytecode_offset <= offset.
-        self.location_table
-            .iter()
-            .rev()
-            .find(|entry| entry.bytecode_offset <= offset_u32)
+        // Entries are sorted by bytecode offset: take the last at or before `offset`.
+        let after = self
+            .location_table
+            .partition_point(|entry| entry.bytecode_offset <= offset_u32);
+        after.checked_sub(1).map(|index| &self.location_table[index])
     }
 
     /// Finds an exception handler for the given bytecode offset.
@@ -149,15 +154,18 @@ pub struct LocationEntry {
     ///
     /// The entry applies from this offset until the next entry's offset
     /// (or end of bytecode).
+    #[serde(rename = "B")]
     bytecode_offset: u32,
 
     /// Full source range of the expression (for the underline).
+    #[serde(rename = "R")]
     range: CodeRange,
 
     /// Optional focus point within the range (for the ^ caret).
     ///
     /// If None, the entire range is underlined without a focus caret.
     /// This can be populated later for Python 3.11-style focused tracebacks.
+    #[serde(rename = "F")]
     focus: Option<CodeRange>,
 }
 
@@ -214,12 +222,15 @@ pub enum HandlerKind {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionEntry {
     /// Start of protected bytecode range (inclusive).
+    #[serde(rename = "S")]
     start: u32,
 
     /// End of protected bytecode range (exclusive).
+    #[serde(rename = "E")]
     end: u32,
 
     /// Bytecode offset of the exception handler.
+    #[serde(rename = "H")]
     handler: u32,
 
     /// Stack depth when entering the try block.
@@ -227,11 +238,13 @@ pub struct ExceptionEntry {
     /// Used to unwind the operand stack before jumping to handler.
     /// The VM pops values until the stack reaches this depth, then
     /// pushes the exception value.
+    #[serde(rename = "D")]
     stack_depth: u16,
 
     /// This frame's `exception_stack` depth at region entry.
     /// Unwinding trims later entries so bare `raise` cannot revive exceptions
     /// from abandoned handlers.
+    #[serde(rename = "C")]
     exception_stack_count: u16,
 
     /// Whether the handler wants the exception on the operand stack.

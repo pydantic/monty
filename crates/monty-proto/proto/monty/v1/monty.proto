@@ -20,7 +20,7 @@
 // act on counts as mis-read even when the change is additive, in both
 // directions: an older child ignores a limit the parent set and the parent
 // never learns, and an older parent keeps sending a limit this build no longer
-// reads. Version 5 covers both for the duration budgets.
+// reads.
 
 syntax = "proto3";
 
@@ -100,6 +100,7 @@ message MontyNode {
     // OUTPUT-ONLY: a reference back to a container enclosing this node, as
     // the placeholder its repr shows ("[...]", "(...)", "{...}" or "...").
     string cycle = 30;
+    Complex complex = 31;
   }
 }
 
@@ -125,6 +126,13 @@ message NodePairs {
 message BigInt {
   bool negative = 1;
   bytes magnitude = 2;
+}
+
+// A Python complex as its two float parts. Both are always present: a plain
+// `double` omits its default on the wire, which would turn `-0.0` into `0.0`.
+message Complex {
+  optional double real = 1;
+  optional double imag = 2;
 }
 
 message NamedTupleNode {
@@ -341,6 +349,16 @@ message CodeLoc {
   uint32 column = 2;
 }
 
+// Where the expression that suspended execution is in the source. `filename`
+// names the source as a traceback frame does: `<python-input-N>` for the
+// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
+message SourceRange {
+  string filename = 1;
+  uint32 start = 2;
+  uint32 end = 3;
+}
+
 message StackFrame {
   string filename = 1;
   CodeLoc start = 2;
@@ -375,6 +393,96 @@ message ResourceLimits {
   // resets at each feed, the turn budget at each feed and each resume.
   optional uint64 max_feed_duration_micros = 6;
   optional uint64 max_turn_duration_micros = 7;
+  // Cumulative budget for system sleeps, enforced by the parent.
+  optional uint64 max_total_sleep_micros = 8;
+}
+
+// Mirrors monty's `OsPolicy`: the clock, zone, sleep, process clock and
+// initial randomness a session gets, and which of those it asks the host for.
+// Each unset arm means that field's default.
+message OsPolicy {
+  // The instant `date.today()`, `datetime.now()` and `time.time()` read.
+  oneof datetime {
+    // The child's clock.
+    Unit system = 1;
+    // Suspend to the parent's OS handler.
+    Unit call_host = 2;
+    // One frozen instant, for reproducible runs.
+    FixedDateTime fixed = 3;
+  }
+  // The zone naive `datetime.now()` and `date.today()` read in, and that
+  // `astimezone()`, `%Z` and the `time` constants report. Absent = UTC.
+  SandboxTimeZone timezone = 4;
+  // What `time.sleep()` and `asyncio.sleep()` do.
+  // Absent (or with no arm set) = system sleep with the default maximum.
+  SleepMode sleep = 5;
+  // Where an unseeded `random` generator gets its first state.
+  oneof random_start {
+    // From the child's own OS entropy.
+    Unit random_system = 6;
+    // Suspend the first draw with an `os.urandom` call for 2496 bytes.
+    Unit random_call_host = 7;
+    // As `random.seed(seed)` would, for reproducible runs.
+    RandomSeed seed = 8;
+  }
+  // What `time.process_time()` and `time.thread_time()` report.
+  // Absent (or with no arm set) = zero.
+  oneof process_time {
+    // Always 0.0, so elapsed execution time is not observable in the sandbox.
+    Unit zero = 9;
+    // The session's accumulated execution time.
+    Unit elapsed = 10;
+  }
+}
+
+// Mirrors monty's `SandboxTimeZone`.
+message SandboxTimeZone {
+  oneof zone {
+    // UTC, the default.
+    Unit utc = 1;
+    // An IANA zone name (`Europe/London`), resolved from the child's tz database.
+    string named = 2;
+    // A fixed offset from UTC, with a name if it has one.
+    TimeZone fixed = 3;
+  }
+}
+
+// Mirrors monty's `SleepMode`.
+message SleepMode {
+  oneof mode {
+    // The parent waits without invoking its OS handler.
+    SystemSleep system = 1;
+    // Suspend to the parent, which performs the wait.
+    Unit call_host = 2;
+    // Return at once without waiting.
+    Unit zero = 3;
+  }
+}
+
+// A sleep capped by the child and performed by the parent.
+message SystemSleep {
+  // Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
+  optional uint64 max_micros = 1;
+}
+
+// A frozen clock reading.
+message FixedDateTime {
+  // Seconds since the Unix epoch, UTC.
+  int64 unix_seconds = 1;
+  // 0..=999999; anything larger is rejected.
+  uint32 microsecond = 2;
+}
+
+// A `random.seed()` argument: the types CPython accepts.
+message RandomSeed {
+  oneof value {
+    // Arbitrary-size two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`).
+    bytes int = 1;
+    // Must be finite.
+    double float = 2;
+    string str = 3;
+    bytes bytes = 4;
+  }
 }
 
 // ============================================================================
@@ -495,6 +603,25 @@ message Configure {
   // Output is always flushed before a turn-ending event whatever this says, so
   // the field trades streaming latency for event volume and nothing else.
   optional uint32 print_flush_interval_ms = 10;
+  // Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
+  // with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+  optional OsPolicy os_policy = 11;
+  // Relay-only: whether a serving relay may store the session. Children ignore
+  // it.
+  Persistence persistence = 12;
+  // Relay-only: names the server-side profile to run the session under.
+  // Absent = the relay's default. Children ignore it.
+  optional string profile = 13;
+}
+
+// How a serving relay treats the session's state; children ignore it.
+enum Persistence {
+  // The relay's default.
+  PERSISTENCE_UNSPECIFIED = 0;
+  // Never stored by the relay on its own: no session ID and never parked.
+  PERSISTENCE_EPHEMERAL = 1;
+  // Parked on idle, drain or disconnect, and loadable by its session ID.
+  PERSISTENCE_STORED = 2;
 }
 
 // Rendering of the typing diagnostics a `TypingError` carries; mirrors ty's
@@ -573,15 +700,20 @@ message ResumeFutures {
 }
 
 // Requests an opaque serialized snapshot of the current session state
-// (idle or suspended). The child stays usable afterwards. The bytes carry
-// monty's own dump format, versioned independently of this schema, and can
-// only be restored via `Load` by a child built with the same dump version.
+// (idle or suspended). The session stays usable afterwards. The byte payload
+// format is at the discretion of the remote (e.g. it may be an ID or a full dump
+// of state). A relay without session storage answers `Error` and the session
+// carries on.
 message Dump {}
 
 // Restores state produced by `Dump`. Valid only from no session. If
 // the restored state was suspended, the child re-emits the suspension event so
-// the parent learns the resume point; otherwise it replies `Ok`.
+// the parent learns the resume point; otherwise it replies `Ok`. A relay
+// without session storage answers `Error` and the session carries on.
 message Load {
+  // Either:
+  // - Dump bytes, or
+  // - A previously named session ID from `ChildEvent::session_id`
   bytes state = 1;
 }
 
@@ -662,12 +794,20 @@ message ChildEvent {
   // bytes) still learns its budgets.
   optional uint64 max_feed_duration_micros = 25;
   optional uint64 max_turn_duration_micros = 26;
+  // Parent-enforced sleep budget, also reported on `Load`.
+  optional uint64 max_total_sleep_micros = 27;
 
   // The session's script name, surfaced on a `Load` reply so a parent that
   // restored a session (whose script name, like the limits above, travels
   // inside the opaque dump bytes) learns it without parsing the dump. Set only
   // on a successful `Load` reply; unset on all other events.
   optional string restored_script_name = 23;
+
+  // The session this connection now holds, set only by a remote that stores
+  // sessions, on its first reply to `Configure` or `Load` whatever that
+  // reply's kind. Unset for ephemeral sessions or for remotes that don't
+  // support persistence.
+  optional bytes session_id = 28;
 }
 
 enum PrintStream {
@@ -713,6 +853,9 @@ message FunctionCall {
   // The arena `args` and `kwargs` index: one per call, so an object passed
   // twice crosses once.
   Arena values = 7;
+  // Where the call expression is in the source. Absent from a child that
+  // predates the field; the parent then reports an empty range at offset 0.
+  SourceRange position = 8;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent
@@ -764,9 +907,13 @@ message OsCall {
     DateTimeNow date_time_now = 24;
     // os.urandom(size), also how `random` seeds an unseeded generator.
     Urandom urandom = 25;
-    Unit time = 26; // time.time()
-    Sleep sleep = 27; // time.sleep(seconds)
-    AsyncSleep async_sleep = 28; // asyncio.sleep(delay)
+    TimeCall time = 26; // time.time() and the other time-module clock reads
+    Sleep sleep = 27; // time.sleep(seconds) under `call_host`: the handler waits
+    AsyncSleep async_sleep = 28; // asyncio.sleep(delay) under `call_host`
+    // System sleeps: capped by the child, charged to `max_total_sleep` and
+    // waited out by the parent without invoking its OS handler.
+    Sleep system_sleep = 29;
+    AsyncSleep async_system_sleep = 30;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -775,6 +922,8 @@ message OsCall {
   // `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
   // call a future may answer at all.
   bool allow_eager_await = 51;
+  // Where the call expression is in the source; absent as on `FunctionCall`.
+  SourceRange position = 52;
 
   message TextWrite {
     string path = 1;
@@ -803,6 +952,12 @@ message OsCall {
   message Getenv {
     string key = 1;
     uint32 default = 2;
+  }
+  // A `time`-module clock read. `caller` names the Python function that asked
+  // (`time.time`, `time.monotonic`, ...), so a parent may answer them
+  // differently; they all share the `time.time` call name.
+  message TimeCall {
+    string caller = 1;
   }
   // datetime.now(tz) — the VM validates the argument to None-or-timezone
   // before suspending, so the wire carries a typed TimeZone rather than an
@@ -846,12 +1001,18 @@ message NameLookup {
   // Set for attribute lookups on a host-backed object — a class instance, or
   // a class type (a lazy class attribute): the uuid of the receiver.
   Uuid object_id = 2;
+  // Where the name (or attribute access) is in the source; absent as on
+  // `FunctionCall`.
+  SourceRange position = 3;
 }
 
 // Suspension: every sandbox task is blocked on external futures previously
 // registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
 message ResolveFutures {
   repeated uint32 pending_call_ids = 1;
+  // Where the main task's blocked `await` is in the source; absent as on
+  // `FunctionCall`.
+  SourceRange position = 2;
 }
 
 // Turn end: the snippet completed with this value. The session is ready for
@@ -901,8 +1062,9 @@ message FatalError {
 // worker — only shutdown needs a message, because only shutdown has state to
 // hand back.
 message ShutdownDump {
-  // Session state captured immediately before shutdown (same bytes as
-  // `DumpResult.state`), restorable into a fresh worker via `Load`. Absent
-  // when there was no session yet or the dump itself failed.
+  // What `Load` restores the session from on a fresh connection: the ID a
+  // relay with session storage parked it under. Absent when there is nothing
+  // to load: no session yet, an ephemeral session, a relay without storage, or
+  // a park that failed.
   optional bytes dump = 1;
 }

@@ -10,9 +10,12 @@ use std::{
 };
 
 use chrono::{
-    Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
+    Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike,
+    format::{Parsed, StrftimeItems, parse as chrono_parse, parse_and_remainder},
 };
-use monty_types::{MontyTimeZone, OsFunctionCall};
+use monty_types::{
+    DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, SandboxTimeZone, local_wall_clock,
+};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -47,7 +50,6 @@ pub(crate) struct DateTime {
     /// and repeated `dt.tzinfo` access returns the same object. We store a retained
     /// heap reference so attribute lookup can return a stable object instead of
     /// allocating a new timezone each time.
-    #[serde(default)]
     tzinfo_ref: Option<HeapId>,
 }
 
@@ -215,6 +217,23 @@ pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8,
     ))
 }
 
+/// The host-value form of a datetime, or `None` when its year is outside 1..=9999.
+#[must_use]
+pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
+    let (year, month, day, hour, minute, second, microsecond) = to_components(datetime)?;
+    Some(MontyDateTime {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
+        offset_seconds: datetime.offset_seconds,
+        timezone_name: datetime.timezone_name.clone(),
+    })
+}
+
 /// Constructor for `datetime(...)`.
 pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DatetimeInitArgs {
@@ -277,18 +296,105 @@ struct DatetimeInitArgs {
     fold: i32,
 }
 
-/// Classmethod implementation for `datetime.now(tz=None)`. Yields a
-/// `DateTimeNow` OS call carrying the tz argument as a typed
-/// [`Option<MontyTimeZone>`] — validated here, so the call can never carry an
-/// arbitrary object.
+/// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
+/// Naive results use the session zone. A `CallHost` clock yields `DateTimeNow`
+/// with a validated [`Option<MontyTimeZone>`] for the host to answer.
 pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
-    let tz = tzinfo_from_value(tz, vm.heap, vm.interns)?.0.map(|tz| MontyTimeZone {
-        offset_seconds: tz.offset_seconds,
-        name: tz.name,
-    });
-    Ok(CallResult::OsCall(OsFunctionCall::DateTimeNow(tz)))
+    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    // Invalid fixed instants raise; only CallHost falls back to the host's clock.
+    let Some(utc) = sandbox_instant(vm)? else {
+        let tz = tz.map(|tz| MontyTimeZone {
+            offset_seconds: tz.offset_seconds,
+            name: tz.name,
+        });
+        return Ok(CallResult::OsCall(OsFunctionCall::DateTimeNow(tz)));
+    };
+    let mut dt = match &tz {
+        Some(tz) => from_utc_naive_with_timezone_parts(utc, tz.offset_seconds, tz.name.clone()),
+        None => from_local_naive(sandbox_local_wall_clock(vm, utc)?),
+    }
+    .ok_or_else(date_out_of_range)?;
+    attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
+    Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
+}
+
+/// `datetime.astimezone(tz=None)`: the same instant in `tz`, or in the sandbox
+/// zone at that instant when `tz` is `None`. A naive value is read as sandbox-local
+/// wall time, as CPython reads it in the host's zone.
+fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let AstimezoneArgs { tz } = AstimezoneArgs::from_args(args, vm)?;
+    defer_drop!(tz, vm);
+    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    let zone = &vm.env.os_policy.timezone;
+    // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
+    // must be in range as well as the result.
+    let utc = if dt.offset_seconds.is_some() {
+        to_utc_naive(dt).filter(|utc| year_in_python_range(utc.year()))
+    } else {
+        probe_neighbouring_days(dt.naive.date())?;
+        zone.utc_from_local(dt.naive)
+    }
+    .ok_or_else(date_out_of_range)?;
+    let target = match tz {
+        Some(tz) => MontyTimeZone {
+            offset_seconds: tz.offset_seconds,
+            name: tz.name,
+        },
+        None => zone.at(utc),
+    };
+    let mut converted =
+        from_utc_naive_with_timezone_parts(utc, target.offset_seconds, target.name).ok_or_else(date_out_of_range)?;
+    attach_or_allocate_tzinfo_ref(&mut converted, tz_ref, vm.heap);
+    Ok(CallResult::Value(Value::Ref(
+        vm.heap.allocate(HeapData::DateTime(converted)),
+    )))
+}
+
+/// CPython finds a naive value's local offset by rendering the days either side
+/// of it, so the first and last representable days raise before any conversion
+/// happens — in every zone, including UTC. Monty needs no such probe, but the
+/// error is observable, so it is reproduced.
+fn probe_neighbouring_days(date: NaiveDate) -> RunResult<()> {
+    // chrono's own range is far wider than Python's, so the years are what decide.
+    let in_range = |day: Option<NaiveDate>| day.is_some_and(|day| year_in_python_range(day.year()));
+    if !in_range(date.pred_opt()) {
+        Err(date::year_out_of_range(0))
+    } else if !in_range(date.succ_opt()) {
+        Err(date::year_out_of_range(10_000))
+    } else {
+        Ok(())
+    }
+}
+
+/// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
+/// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
+#[derive(FromArgs)]
+#[from_args(name = "astimezone", at_most_total)]
+struct AstimezoneArgs {
+    #[from_args(default = Value::None)]
+    tz: Value,
+}
+
+/// Reads the session clock in UTC; `None` means `CallHost` and requires suspension.
+/// Unrepresentable fixed instants raise `OverflowError` for all three clock calls.
+pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
+    match vm.env.os_policy.datetime {
+        DateTimeSource::CallHost => Ok(None),
+        source => source.read().map(Some).ok_or_else(date_out_of_range),
+    }
+}
+
+/// Converts UTC to the session zone's wall clock for naive `now()` and `today()`;
+/// out-of-range years raise `OverflowError`.
+pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<NaiveDateTime> {
+    let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
+    local_wall_clock(utc, offset).ok_or_else(date_out_of_range)
+}
+
+fn date_out_of_range() -> RunError {
+    SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into()
 }
 
 /// Argument shape for `datetime.now(tz=None)`.
@@ -319,28 +425,54 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
     let date_string = date_string?;
     let fmt = fmt?;
 
+    reject_bad_strptime_directive(&fmt)?;
+
     // Python's `%f` accepts 1..=6 digits and right-pads with zeros, while chrono
     // requires an explicit width. Try all valid `%f` widths before reporting a
     // mismatch so `datetime.strptime(..., '%f')` matches CPython.
-    let Some(naive) = parse_strptime_naive(&date_string, &fmt) else {
+    let Some(parsed) = parse_strptime(&date_string, &fmt) else {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!("time data '{date_string}' does not match format '{fmt}'"),
         )
         .into());
     };
+    let (naive, offset_seconds) = parsed?;
 
     if !year_in_python_range(naive.date().year()) {
         return Err(SimpleException::new_msg(ExcType::ValueError, "year is out of range").into());
     }
+    if let Some(offset_seconds) = offset_seconds {
+        timezone::check_offset_seconds(offset_seconds)?;
+    }
 
     let dt = DateTime {
         naive,
-        offset_seconds: None,
+        offset_seconds,
         timezone_name: None,
         tzinfo_ref: None,
     };
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
+}
+
+/// CPython's `strptime` has no `%:z`, so the `:` reads as a directive of its own.
+/// Monty's `strftime` does accept `%:z`, which makes silently parsing it here the
+/// wrong kind of asymmetry.
+fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
+    let mut chars = fmt.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '%'
+            && let Some(next) = chars.next()
+            && next == ':'
+        {
+            return Err(SimpleException::new_msg(
+                ExcType::ValueError,
+                format!("'{next}' is a bad directive in format '{fmt}'"),
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Classmethod `datetime.fromisoformat(date_string)`.
@@ -519,6 +651,173 @@ fn parse_iso_datetime(s: &str, heap: &mut Heap) -> Option<DateTime> {
         )
         .ok()
     }
+}
+
+/// Parses a `time.strptime()` input, whose unset fields default to 1900-01-01.
+///
+/// `datetime.strptime` needs a date; `time.strptime('12:30', '%H:%M')` does not,
+/// so a format that matched nothing is retried with the default date prefixed to
+/// both sides — the anchor CPython fills those fields from.
+pub(crate) fn parse_time_strptime(date_string: &str, fmt: &str) -> RunResult<NaiveDateTime> {
+    reject_bad_strptime_directive(fmt)?;
+    let anchored = || {
+        let dated = format!("{DEFAULT_STRPTIME_DATE} {date_string}");
+        parse_strptime(&dated, &format!("%Y-%m-%d {fmt}"))
+    };
+    match parse_strptime(date_string, fmt).or_else(anchored) {
+        Some(parsed) => parsed.map(|(naive, _)| naive),
+        None => Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!(
+                "time data {} does not match format {}",
+                StringRepr(date_string),
+                StringRepr(fmt)
+            ),
+        )
+        .into()),
+    }
+}
+
+/// The date `time.strptime` leaves in fields its format did not set.
+const DEFAULT_STRPTIME_DATE: &str = "1900-01-01";
+
+/// Parses a `strptime` input into naive components plus the offset a `%z`
+/// directive asked for, `None` when nothing in the input matches the format.
+///
+/// The outer `Option` is the match, the inner `Result` what the matched `%z`
+/// token turned out to be: CPython only rejects a mismatched pair of separators
+/// once the rest of the format has matched, so that error cannot be reported
+/// until the match is settled.
+fn parse_strptime(date_string: &str, fmt: &str) -> Option<RunResult<(NaiveDateTime, Option<i32>)>> {
+    let Some((before, after)) = split_zone_directive(fmt) else {
+        return parse_strptime_naive(date_string, fmt).map(|naive| Ok((naive, None)));
+    };
+    // Chrono cannot express CPython's `%z` — an optional colon, optional seconds,
+    // or a bare `Z` — so the directives either side of it are parsed in turn and the
+    // token is read from between them, sharing one `Parsed` as chrono's own
+    // `parse_from_str` does. Chrono reports where the leading directives stopped,
+    // which is the only place the token can begin: hunting for it through the input
+    // instead would cost a parse of the whole string per candidate position.
+    for before_fmt in chrono_strptime_formats(&before) {
+        let mut parsed = Parsed::new();
+        let Ok(rest) = parse_and_remainder(&mut parsed, date_string, StrftimeItems::new(&before_fmt)) else {
+            continue;
+        };
+        let Some(token) = strptime_offset_at(rest) else {
+            continue;
+        };
+        for after_fmt in chrono_strptime_formats(&after) {
+            let mut parsed = parsed.clone();
+            if chrono_parse(&mut parsed, &rest[token.len..], StrftimeItems::new(&after_fmt)).is_err() {
+                continue;
+            }
+            let Some(naive) = naive_from_parsed(&parsed) else {
+                continue;
+            };
+            return Some(if token.colons_agree {
+                Ok((naive, Some(token.offset_seconds)))
+            } else {
+                let matched = &rest[..token.len];
+                Err(SimpleException::new_msg(ExcType::ValueError, format!("Inconsistent use of : in {matched}")).into())
+            });
+        }
+    }
+    None
+}
+
+/// The datetime chrono accumulated, defaulting a date-only format to midnight as
+/// [`parse_strptime_naive`] does.
+fn naive_from_parsed(parsed: &Parsed) -> Option<NaiveDateTime> {
+    parsed
+        .to_naive_datetime_with_offset(0)
+        .ok()
+        .or_else(|| parsed.to_naive_date().ok()?.and_hms_opt(0, 0, 0))
+}
+
+/// The format either side of its `%z` directive, or `None` when it has none.
+/// `%%z` is a literal `z` and is not the directive.
+fn split_zone_directive(fmt: &str) -> Option<(String, String)> {
+    let mut rest = fmt;
+    let mut before = String::with_capacity(fmt.len());
+    while let Some(at) = rest.find('%') {
+        let (literal, directive) = rest.split_at(at);
+        before.push_str(literal);
+        let mut chars = directive.chars();
+        chars.next();
+        match chars.next() {
+            Some('z') => return Some((before, chars.as_str().to_owned())),
+            Some(other) => {
+                before.push('%');
+                before.push(other);
+                rest = chars.as_str();
+            }
+            None => return None,
+        }
+    }
+    None
+}
+
+/// A `%z` token matched at some position in a `strptime` input.
+struct ZoneToken {
+    offset_seconds: i32,
+    /// The token's length in bytes, so the caller can lift it out of the input.
+    len: usize,
+    /// Whether the minute and second separators agree. `+01:02:03` and
+    /// `+010203` do, `+01:0203` and `+0102:03` do not — CPython matches the
+    /// mixed pair and then rejects it, rather than reading a shorter token.
+    colons_agree: bool,
+}
+
+/// CPython's `%z` token at the start of `s`: a bare `Z`, or a sign, two hour
+/// digits and a colon-optional minute pair, optionally followed by a second
+/// pair. A fractional part is not accepted; see `limitations/datetime.md`.
+fn strptime_offset_at(s: &str) -> Option<ZoneToken> {
+    let bytes = s.as_bytes();
+    if bytes.first() == Some(&b'Z') {
+        return Some(ZoneToken {
+            offset_seconds: 0,
+            len: 1,
+            colons_agree: true,
+        });
+    }
+    let sign = match bytes.first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let (hours, at) = two_digits(bytes, 1)?;
+    let minute_colon = bytes.get(at) == Some(&b':');
+    let (minutes, at) = colon_pair(bytes, at)?;
+    // CPython's pattern caps minutes and seconds at 59 and leaves the hour to the
+    // `timezone` range check, so an out-of-range minute is simply not a match.
+    if minutes > 59 {
+        return None;
+    }
+    let second_colon = bytes.get(at) == Some(&b':');
+    let (seconds, at, colons_agree) = match colon_pair(bytes, at) {
+        Some((seconds, next)) if seconds <= 59 => (seconds, next, second_colon == minute_colon),
+        _ => (0, at, true),
+    };
+    let total = i32::try_from(hours * 3600 + minutes * 60 + seconds).ok()?;
+    Some(ZoneToken {
+        offset_seconds: sign * total,
+        len: at,
+        colons_agree,
+    })
+}
+
+/// Two decimal digits at `at`, with the index just past them.
+fn two_digits(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
+    let pair = bytes.get(at..at.checked_add(2)?)?;
+    pair.iter()
+        .all(u8::is_ascii_digit)
+        .then(|| (u32::from(pair[0] - b'0') * 10 + u32::from(pair[1] - b'0'), at + 2))
+}
+
+/// An optional `:` then two digits, the separator `%z` allows between its parts.
+fn colon_pair(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
+    let at = if bytes.get(at) == Some(&b':') { at + 1 } else { at };
+    two_digits(bytes, at)
 }
 
 /// Parses a `datetime.strptime()` input using chrono format strings expanded for
@@ -778,9 +1077,11 @@ fn year_in_python_range(year: i32) -> bool {
 /// Uses the naive (wall-clock) components, mirroring `chrono`'s formatting of
 /// `NaiveDateTime`, with the **lenient** parser so an unrecognised directive is
 /// passed through verbatim to match glibc/Linux CPython (see
-/// [`date::format_date_strftime`]).
-pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str) -> RunResult<String> {
-    let format = date::rewrite_microsecond_directive(format);
+/// [`date::format_date_strftime`]). The zone directives are substituted from
+/// the offset and name first (`%z` and `%Z` are empty for a naive value).
+pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
+    let format = date::rewrite_zone_directives(format, dt.offset_seconds, dt.timezone_name.as_deref(), tracker)?;
+    let format = date::rewrite_microsecond_directive(&format);
     date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(&format)))
         .ok_or_else(date::invalid_strftime_error)
 }
@@ -848,24 +1149,44 @@ fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
     }
 }
 
-/// Computes the POSIX timestamp for a datetime.
-///
-/// For naive datetimes, treats them as local time and computes the UTC epoch
-/// assuming the local wall clock matches UTC (CPython's `datetime.timestamp()`
-/// for naive datetimes actually uses the system timezone, but since Monty runs
-/// in a sandbox with no timezone database, treating naive as UTC is the best
-/// approximation).
-///
-/// For aware datetimes, converts to UTC first via the stored offset.
-fn compute_timestamp(dt: &DateTime) -> f64 {
-    let utc_naive = if dt.offset_seconds.is_some() {
-        to_utc_naive(dt).unwrap_or(dt.naive)
+/// `datetime.timestamp()`: seconds since the Unix epoch. An aware value converts
+/// through its own offset; a naive one is read as session-local wall time, as
+/// CPython reads it in the host's zone, at its first occurrence in a DST fold.
+fn compute_timestamp(dt: &DateTime, zone: &SandboxTimeZone) -> RunResult<f64> {
+    let offset = if let Some(offset) = dt.offset_seconds {
+        offset
     } else {
-        dt.naive
+        probe_local_offset(dt.naive, zone)?;
+        zone.offset_for_local(dt.naive).ok_or_else(date_out_of_range)?
     };
-    let secs = utc_naive.and_utc().timestamp();
-    let micros = utc_naive.and_utc().timestamp_subsec_micros();
-    secs as f64 + f64::from(micros) / 1_000_000.0
+    // Seconds, not a datetime: the instant may fall outside the range a `datetime`
+    // holds at either end of it, and CPython still returns the number.
+    let local = dt.naive.and_utc();
+    let seconds = local.timestamp() - i64::from(offset);
+    Ok(seconds as f64 + f64::from(local.timestamp_subsec_micros()) / 1_000_000.0)
+}
+
+/// CPython solves a naive value's instant by rendering two candidates as civil
+/// datetimes: the value shifted by the zone's offset, and the day before it.
+/// Either can leave `datetime`'s range at the ends of it, where CPython's own
+/// error escapes, so it is reproduced. Unlike [`probe_neighbouring_days`] this
+/// depends on the offset: at the last representable day only a zone east of UTC
+/// shifts past the end.
+fn probe_local_offset(naive: NaiveDateTime, zone: &SandboxTimeZone) -> RunResult<()> {
+    let offset = ChronoTimeDelta::seconds(i64::from(zone.at(naive).offset_seconds));
+    // chrono's range is far wider than Python's, so a shift of at most a day lands.
+    let shifted = naive.checked_add_signed(offset).unwrap_or(naive).year();
+    if naive
+        .date()
+        .pred_opt()
+        .is_none_or(|day| !year_in_python_range(day.year()))
+    {
+        Err(date::year_out_of_range(0))
+    } else if year_in_python_range(shifted) {
+        Ok(())
+    } else {
+        Err(date::year_out_of_range(shifted))
+    }
 }
 
 impl HeapItem for DateTime {
@@ -1015,7 +1336,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             Some(StaticStrings::Strftime) => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
-                let formatted = format_datetime_strftime(&dt, format.as_str(vm))?;
+                let formatted = format_datetime_strftime(&dt, format.as_str(vm), &vm.heap.tracker)?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
             }
             Some(StaticStrings::Replace) => Ok(CallResult::Value(self.replace(vm, args)?)),
@@ -1064,9 +1385,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             }
             Some(StaticStrings::Timestamp) => {
                 args.check_zero_args("datetime.timestamp", vm.heap)?;
-                let ts = compute_timestamp(&dt);
+                let ts = compute_timestamp(&dt, &vm.env.os_policy.timezone)?;
                 Ok(CallResult::Value(Value::Float(ts)))
             }
+            Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),
             Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("datetime.utcoffset", vm.heap)?;
                 Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
@@ -1162,16 +1484,13 @@ impl<'h> HeapObjectRead<'h, DateTime> {
         } = DatetimeReplaceArgs::from_args(args, vm)?;
 
         // `tzinfo` is `Some(v)` only when the caller actually passed the kwarg;
-        // absent → preserve existing tzinfo. When present, the inner `Value` owns
-        // the input ref and must be kept alive across `tzinfo_from_value` and
-        // `from_components` so the heap-allocated TimeZone isn't freed before
-        // `from_components` takes its own reference.
-        let (new_tz, new_tz_ref) = match tzinfo {
+        // absent → preserve existing tzinfo. The guard has to span `from_components`,
+        // which is where the new datetime takes its own reference: an argument built
+        // in the call, `replace(tzinfo=timezone(...))`, has no other holder until then.
+        defer_drop_mut!(tzinfo, vm);
+        let (new_tz, new_tz_ref) = match &*tzinfo {
             None => (current_tz, current_tz_ref),
-            Some(tzinfo_value) => {
-                defer_drop_mut!(tzinfo_value, vm);
-                tzinfo_from_value(tzinfo_value, vm.heap, vm.interns)?
-            }
+            Some(tzinfo_value) => tzinfo_from_value(tzinfo_value, vm.heap, vm.interns)?,
         };
 
         let new_dt = from_components(

@@ -2,7 +2,8 @@
 
 Named tuples can be constructed with `collections.namedtuple` (see
 [collections.md](collections.md)), and also enter the sandbox as
-`sys.version_info` and as values passed in from the host via the `MontyObject`
+`sys.version_info`, as the `time` module's `struct_time` (see [time.md](time.md#struct_time)) and as
+values passed in from the host via the `MontyObject`
 API. `typing.NamedTuple` is a marker only; subscripting it or inheriting from
 it does not produce a type, since there is no class inheritance (see
 [classes.md](classes.md)).
@@ -13,7 +14,7 @@ and the inherited `tuple` surface (membership, `count`, `index`, ordering
 against plain tuples and other namedtuple classes alike, slicing,
 concatenation, and repetition, each producing a plain `tuple`). `_fields`,
 `_field_defaults`, `_make`, `_replace` and `_asdict` require a
-`collections.namedtuple` class: `sys.version_info` and host-supplied named
+`collections.namedtuple` class: `sys.version_info`, `time.gmtime()` and host-supplied named
 tuples model CPython *structseqs*, which expose none of them
 (`sys.version_info._fields` raises `AttributeError`, as in CPython).
 

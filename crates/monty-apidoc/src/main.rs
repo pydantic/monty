@@ -55,6 +55,8 @@ const CRATES: &[CrateConfig] = &[
             "dump",
             "Dump",
             "DumpError",
+            "DumpDecodeError",
+            "DumpEncodeError",
             "DUMP_VERSION",
             "MIN_SUPPORTED_DUMP_VERSION",
         ],

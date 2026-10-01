@@ -100,6 +100,12 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// The `AttributeError` for assigning to a read-only data attribute such as `complex.real`.
+    #[must_use]
+    fn attribute_error_readonly() -> RunError {
+        SimpleException::new_msg(ExcType::AttributeError, "readonly attribute").into()
+    }
+
     /// Creates an AttributeError for a missing module attribute.
     ///
     /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
@@ -404,6 +410,33 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(
             ExcType::TypeError,
             format!("{name}() takes at most {max} {kind}argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// `PyArg_ParseTuple`'s wording for a fixed arity, which it uses whenever
+    /// min == max: `{name}() takes exactly {n} argument ({actual} given)`
+    /// (plural for `n != 1`; the digit, unlike `METH_O`'s `exactly one`).
+    #[must_use]
+    fn type_error_method_exact(name: &str, n: usize, actual: usize) -> RunError {
+        let plural = if n == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes exactly {n} argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for too few arguments to a `PyArg_ParseTuple` call:
+    /// `{name}() takes at least {min} argument(s) ({actual} given)`. Unlike
+    /// [`type_error_at_least_positional`] there is no `positional` qualifier —
+    /// these functions accept no keywords, so CPython never distinguishes.
+    #[must_use]
+    fn type_error_method_at_least(name: &str, min: usize, actual: usize) -> RunError {
+        let plural = if min == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes at least {min} argument{plural} ({actual} given)"),
         )
         .into()
     }
@@ -976,6 +1009,28 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn sleep_too_long() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for C PyTime_t").into()
+    }
+
+    /// The `OverflowError` the `time` conversion functions raise for epoch
+    /// seconds outside the range a broken-down time can hold:
+    /// `timestamp out of range for platform time_t`.
+    #[must_use]
+    fn timestamp_out_of_range() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for platform time_t").into()
+    }
+
+    /// `time.mktime()`'s `OverflowError` for a wall clock it cannot place on
+    /// the epoch: `mktime argument out of range`.
+    #[must_use]
+    fn mktime_out_of_range() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "mktime argument out of range").into()
+    }
+
+    /// The `TypeError` the `time` conversion functions raise for a time tuple of
+    /// the wrong length: `{name}(): illegal time tuple argument`.
+    #[must_use]
+    fn illegal_time_tuple(name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("{name}(): illegal time tuple argument")).into()
     }
 
     /// Creates a TypeError for bytes() constructor with invalid type.
@@ -1698,6 +1753,24 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ZeroDivisionError, "zero to a negative power").into()
     }
 
+    /// The `ZeroDivisionError` for `0j ** w` with a negative or non-real `w`.
+    #[must_use]
+    fn zero_division_complex_power() -> RunError {
+        SimpleException::new_msg(ExcType::ZeroDivisionError, "zero to a negative or complex power").into()
+    }
+
+    /// The `ValueError` for three-argument `pow()` with a complex operand.
+    #[must_use]
+    fn value_error_complex_modulo() -> RunError {
+        Self::value_error("complex modulo")
+    }
+
+    /// Creates a generic `OverflowError` with a custom message.
+    #[must_use]
+    fn overflow_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, msg).into()
+    }
+
     /// Creates an OverflowError for exponents that are too large.
     ///
     /// Matches CPython's format: `OverflowError: exponent too large`
@@ -2304,10 +2377,7 @@ pub(crate) struct SimpleException {
     arg: Option<String>,
     /// Structured payload (e.g. unicode-error constructor fields), carried
     /// through catch/re-raise so it reaches the public `MontyException` when
-    /// the exception escapes the sandbox. No `skip_serializing_if`:
-    /// exceptions round-trip through non-self-describing snapshot formats
-    /// where skipped fields break deserialization.
-    #[serde(default)]
+    /// the exception escapes the sandbox.
     data: ExcData,
 }
 
@@ -2466,7 +2536,6 @@ pub struct ExceptionRaise {
     /// CPython doesn't show carets for attribute GET errors, but does show them
     /// for attribute SET errors. This flag allows error creators to specify
     /// whether the caret should be hidden.
-    #[serde(default)]
     pub hide_caret: bool,
 }
 

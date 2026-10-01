@@ -163,6 +163,10 @@ struct Prepare<'i, 'g> {
     /// released when the surrounding comprehension finishes. IDs are unique
     /// among simultaneously active comprehensions; siblings reuse them.
     comp_var_depth: u16,
+    /// Highest `comp_var_depth` reached since it was last reset.
+    ///
+    /// Lets a comprehension reserve every slot its first iterable used, however deeply nested.
+    comp_var_peak: u16,
     /// Stack of comprehension-name → binding maps for currently active comprehensions.
     ///
     /// Pushed on entry to a comprehension, popped on exit. Read by `get_id`
@@ -511,6 +515,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             names_assigned_in_order: AHashSet::new(),
             names_used: AHashSet::new(),
             comp_var_depth: 0,
+            comp_var_peak: 0,
             comp_name_scopes: Vec::new(),
             top_level_by_name: false,
             module_global_names: AHashSet::new(),
@@ -624,6 +629,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             names_assigned_in_order: AHashSet::new(),
             names_used: AHashSet::new(),
             comp_var_depth: 0,
+            comp_var_peak: 0,
             comp_name_scopes: Vec::new(),
             top_level_by_name: false,
             module_global_names: AHashSet::new(),
@@ -1343,7 +1349,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let first_gen = generators_iter
             .next()
             .expect("comprehension must have at least one generator");
+        let saved_var_peak = mem::replace(&mut self.comp_var_peak, self.comp_var_depth);
         let first_iter = self.prepare_expression(first_gen.iter)?;
+        // The compiler activates this comprehension's captured cells before compiling the
+        // first iterable, so its targets must not reuse any slot a comprehension nested there used.
+        self.comp_var_depth = self.comp_var_peak;
+        self.comp_var_peak = saved_var_peak.max(self.comp_var_peak);
         let remaining_gens: Vec<Comprehension> = generators_iter.collect();
 
         // Predeclare every generator target's names as comp-var slots BEFORE
@@ -1556,6 +1567,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         } else {
             let slot = self.comp_var_depth;
             self.comp_var_depth = slot.checked_add(1).ok_or_else(|| namespace_overflow(position))?;
+            self.comp_var_peak = self.comp_var_peak.max(self.comp_var_depth);
             top.insert(name_id, CompBinding { slot, captured: false });
             Ok(slot)
         }

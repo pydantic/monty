@@ -82,6 +82,14 @@ def test_timeout_limit(monty_run: RunMonty):
     assert exc_info.value.display(format='type-msg').startswith('TimeoutError: feed time limit exceeded')
 
 
+def test_total_sleep_limit(monty_run: RunMonty):
+    # exact binary fractions, so the reported total is exact too
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import time\ntime.sleep(0.125)\ntime.sleep(0.5)', limits={'max_total_sleep_secs': 0.25})
+    assert isinstance(exc_info.value.exception(), TimeoutError)
+    assert exc_info.value.display(format='type-msg') == snapshot('TimeoutError: sleep limit exceeded: 625ms > 250ms')
+
+
 def test_worker_reusable_after_resource_error(pool: Monty):
     """A sandbox resource error ends the feed, not the worker: the next checkout
     gets the same process back.
@@ -158,7 +166,7 @@ def test_limits_unknown_key_raises_error(pool: Monty):
     assert exc_info.value.args[0] == snapshot(
         "unknown limits key 'max_memroy'; accepted keys are "
         "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions', 'max_total_sleep_secs'"
     )
 
 
@@ -169,7 +177,7 @@ def test_limits_non_string_key_raises_error(pool: Monty):
     assert exc_info.value.args[0] == snapshot(
         'unknown limits key 1; accepted keys are '
         "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions', 'max_total_sleep_secs'"
     )
 
 
@@ -184,7 +192,7 @@ def test_limits_unprintable_key_still_raises_value_error(pool: Monty):
     assert exc_info.value.args[0] == snapshot(
         'unknown limits key <unprintable key>; accepted keys are '
         "'max_feed_duration_secs', 'max_turn_duration_secs', 'max_memory', "
-        "'gc_interval', 'max_recursion_depth', 'max_suspensions'"
+        "'gc_interval', 'max_recursion_depth', 'max_suspensions', 'max_total_sleep_secs'"
     )
 
 

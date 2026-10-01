@@ -126,7 +126,7 @@ fn bind_slow<const N: usize>(
     // pre-count; the "at least M positional" check reproduces
     // `_PyArg_UnpackKeywords` for C methods whose required positional-only
     // params cannot be filled by keyword.
-    if matches!(spec.family, ErrorFamily::Unpack) {
+    if matches!(spec.family, ErrorFamily::Unpack | ErrorFamily::ParseTuple) {
         if n_kw > 0 {
             let name = spec.kwarg_error_name.unwrap_or(spec.func_name);
             return Err(ExcType::type_error_no_kwargs(name));
@@ -389,6 +389,11 @@ pub(crate) enum ErrorFamily {
     /// `… exactly/at most N positional argument(s) …`, pivoting back to the
     /// total count once the overflow exceeds all slots (e.g. `os.stat`).
     CNamed { positional_pivot: bool },
+    /// `PyArg_ParseTuple` with a `:name` and no keyword support (`style = parse_tuple`).
+    /// Same order as [`ErrorFamily::Unpack`] — keywords rejected wholesale, then a
+    /// fixed positional `min..max` range — but worded `{name}() takes at
+    /// least/most N argument(s) (M given)` (`time.gmtime`, `time.strftime`).
+    ParseTuple,
     /// `PyArg_UnpackTuple` (`style = unpack`): any keyword argument is
     /// rejected first with `{name}() takes no keyword arguments` (CPython's
     /// `_PyArg_NoKeywords` / `METH_FASTCALL` dispatch), then a fixed
@@ -605,7 +610,8 @@ fn duplicate_error(spec: &ParamSpec, idx: usize, param: &Param) -> DuplicateOutc
         )),
         ErrorFamily::CNamed { .. } => DuplicateOutcome::Defer(named_conflict()),
         ErrorFamily::Clinic => DuplicateOutcome::Raise(named_conflict()),
-        ErrorFamily::Def | ErrorFamily::Unpack => {
+        // `Unpack`/`ParseTuple` accept no keywords, so they never get here.
+        ErrorFamily::Def | ErrorFamily::Unpack | ErrorFamily::ParseTuple => {
             DuplicateOutcome::Raise(ExcType::type_error_duplicate_arg(spec.func_name, param.name))
         }
     }
@@ -616,17 +622,21 @@ fn duplicate_error(spec: &ParamSpec, idx: usize, param: &Param) -> DuplicateOutc
 #[cold]
 fn unpack_arity_error(spec: &ParamSpec, n_pos: usize) -> Option<RunError> {
     let (min, max) = (spec.n_required_positional, spec.n_positional);
+    let parse_tuple = matches!(spec.family, ErrorFamily::ParseTuple);
+    // Both parsers collapse a fixed arity to "exactly"; they differ only in wording.
     if n_pos < min {
-        Some(if min == max {
-            ExcType::type_error_expected_exact(spec.func_name, min, n_pos)
-        } else {
-            ExcType::type_error_at_least(spec.func_name, min, n_pos)
+        Some(match (parse_tuple, min == max) {
+            (true, true) => ExcType::type_error_method_exact(spec.func_name, min, n_pos),
+            (true, false) => ExcType::type_error_method_at_least(spec.func_name, min, n_pos),
+            (false, true) => ExcType::type_error_expected_exact(spec.func_name, min, n_pos),
+            (false, false) => ExcType::type_error_at_least(spec.func_name, min, n_pos),
         })
     } else if n_pos > max {
-        Some(if min == max {
-            ExcType::type_error_expected_exact(spec.func_name, max, n_pos)
-        } else {
-            ExcType::type_error_at_most(spec.func_name, max, n_pos)
+        Some(match (parse_tuple, min == max) {
+            (true, true) => ExcType::type_error_method_exact(spec.func_name, max, n_pos),
+            (true, false) => ExcType::type_error_method_at_most(spec.func_name, max, n_pos, false),
+            (false, true) => ExcType::type_error_expected_exact(spec.func_name, max, n_pos),
+            (false, false) => ExcType::type_error_at_most(spec.func_name, max, n_pos),
         })
     } else {
         None
@@ -656,8 +666,9 @@ fn total_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> RunError
 fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> RunError {
     let max = spec.n_positional;
     match spec.family {
-        // Unreachable: `def` defers, the unpack pre-check already covered both
-        // directions. Match unpack's wording anyway rather than panicking.
+        // Unreachable: `def` defers, and the positional-only pre-check already
+        // covered both directions. Match their wording anyway rather than panicking.
+        ErrorFamily::ParseTuple => ExcType::type_error_method_at_most(spec.func_name, max, n_pos, false),
         ErrorFamily::Def | ErrorFamily::Unpack => ExcType::type_error_at_most(spec.func_name, max, n_pos),
         // The exact form again outranks the generic C-method wording for
         // required positional-only slots; the total-count fallback below still

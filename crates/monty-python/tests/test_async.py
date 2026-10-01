@@ -7,6 +7,7 @@ unchanged inside the worker.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
@@ -38,6 +39,13 @@ async def apool() -> AsyncIterator[AsyncMonty]:
 async def asession(apool: AsyncMonty) -> AsyncIterator[AsyncMontySession]:
     """A fresh checked-out async session for one test."""
     async with apool.checkout() as session:
+        yield session
+
+
+@pytest.fixture
+async def asession_call_host(apool: AsyncMonty) -> AsyncIterator[AsyncMontySession]:
+    """A session whose clock and sleep calls reach the `os=` handler."""
+    async with apool.checkout(os_policy={'datetime': 'call_host', 'sleep': 'call_host'}) as session:
         yield session
 
 
@@ -1121,7 +1129,7 @@ async def test_sync_monty_inside_print_callback(asession: AsyncMontySession):
 # =============================================================================
 
 
-async def test_async_os_callback_answers_asyncio_sleep_as_a_future(asession: AsyncMontySession):
+async def test_async_os_callback_answers_asyncio_sleep_as_a_future(asession_call_host: AsyncMontySession):
     """A coroutine answer to asyncio.sleep runs alongside the sandbox's other tasks."""
     calls: list[Any] = []
     started: list[float] = []
@@ -1142,21 +1150,32 @@ async def main():
 
 asyncio.run(main())
 """
-    result = await asession.feed_run(code, os=os_handler)
+    result = await asession_call_host.feed_run(code, os=os_handler)
     assert result == snapshot(['a', 'b'])
     assert calls == snapshot([('asyncio.sleep', (0.05,)), ('asyncio.sleep', (0.05,))])
     # the second sleep started before the first finished, so they overlapped
     assert started[1] < finished[0]
 
 
-async def test_os_access_sleeps_concurrently_under_async_monty(asession: AsyncMontySession):
+async def test_os_access_sleeps_concurrently_under_async_monty(asession_call_host: AsyncMontySession):
     """`OSAccess` needs no override for gathered sleeps to overlap."""
-    dispatched: list[float] = []
+    started: list[float] = []
+    finished: list[float] = []
 
     class Timed(OSAccess):
         def dispatch(self, function_name: OsFunction, args: tuple[Any, ...], kwargs: Any = None, **rest: Any) -> Any:
-            dispatched.append(time.monotonic())
-            return super().dispatch(function_name, args, kwargs, **rest)
+            started.append(time.monotonic())
+            result = super().dispatch(function_name, args, kwargs, **rest)
+            if not inspect.isawaitable(result):
+                finished.append(time.monotonic())
+                return result
+
+            async def finish() -> Any:
+                value = await result
+                finished.append(time.monotonic())
+                return value
+
+            return finish()
 
     code = """
 import asyncio
@@ -1166,13 +1185,13 @@ async def main():
 
 asyncio.run(main())
 """
-    result = await asession.feed_run(code, os=Timed())
+    result = await asession_call_host.feed_run(code, os=Timed())
     assert result == snapshot([1, 2])
-    # the second sleep was dispatched while the first was still waiting
-    assert dispatched[1] - dispatched[0] < 0.05
+    # the second sleep was dispatched before the first finished waiting
+    assert started[1] < finished[0]
 
 
-async def test_legacy_dispatch_override_still_sleeps(asession: AsyncMontySession):
+async def test_legacy_dispatch_override_still_sleeps(asession_call_host: AsyncMontySession):
     """A three-argument `dispatch` override never sees `is_async`, so its sleep blocks but works."""
     seen: list[str] = []
 
@@ -1182,19 +1201,19 @@ async def test_legacy_dispatch_override_still_sleeps(asession: AsyncMontySession
             return super().dispatch(function_name, args, kwargs)
 
     code = "import asyncio\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
-    assert await asession.feed_run(code, os=Legacy()) == snapshot('woken')
+    assert await asession_call_host.feed_run(code, os=Legacy()) == snapshot('woken')
     assert seen == snapshot(['asyncio.sleep'])
 
 
-async def test_max_sleep_caps_an_async_wait(asession: AsyncMontySession):
+async def test_max_sleep_caps_an_async_wait(asession_call_host: AsyncMontySession):
     """`max_sleep` bounds the coroutine `async_sleep` hands the pool as well."""
     start = time.monotonic()
     code = "import asyncio\nasyncio.run(asyncio.sleep(3600, 'woken'))"
-    assert await asession.feed_run(code, os=OSAccess(max_sleep=0.001)) == snapshot('woken')
+    assert await asession_call_host.feed_run(code, os=OSAccess(max_sleep=0.001)) == snapshot('woken')
     assert time.monotonic() - start < 5
 
 
-async def test_sleep_coroutine_value_is_ignored(asession: AsyncMontySession):
+async def test_sleep_coroutine_value_is_ignored(asession_call_host: AsyncMontySession):
     """Whatever the coroutine answering asyncio.sleep returns, the await produces `result`."""
 
     class Odd(OSAccess):
@@ -1215,10 +1234,10 @@ async def main():
 
 asyncio.run(main())
 """
-    assert await asession.feed_run(code, os=Odd()) == snapshot(['eager', 'a', 'b'])
+    assert await asession_call_host.feed_run(code, os=Odd()) == snapshot(['eager', 'a', 'b'])
 
 
-async def test_is_async_is_passed_to_sync_callbacks(asession: AsyncMontySession):
+async def test_is_async_is_passed_to_sync_callbacks(asession_call_host: AsyncMontySession):
     """A sync callback reads `is_async` to decide whether it may hand back a coroutine."""
     seen: list[bool] = []
 
@@ -1227,15 +1246,15 @@ async def test_is_async_is_passed_to_sync_callbacks(asession: AsyncMontySession)
         return asyncio.sleep(args[0]) if is_async else None
 
     code = "import asyncio\nasyncio.run(asyncio.sleep(0.001, 'woken'))"
-    assert await asession.feed_run(code, os=os_handler) == snapshot('woken')
+    assert await asession_call_host.feed_run(code, os=os_handler) == snapshot('woken')
     assert seen == snapshot([True])
 
 
-async def test_async_os_callback_for_time_sleep_is_awaited_in_place(asession: AsyncMontySession):
+async def test_async_os_callback_for_time_sleep_is_awaited_in_place(asession_call_host: AsyncMontySession):
     """Any call but asyncio.sleep waits for the coroutine before the sandbox resumes."""
 
     async def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
         await asyncio.sleep(0.001)
         return 'ignored'
 
-    assert await asession.feed_run('import time; time.sleep(0.001) is None', os=os_handler) == snapshot(True)
+    assert await asession_call_host.feed_run('import time; time.sleep(0.001) is None', os=os_handler) == snapshot(True)

@@ -54,18 +54,19 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
 | `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                      |
 | `gc_interval`            | Run garbage collection every N allocations                                                                            |
 | `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
+| `max_total_sleep_secs`   | Maximum cumulative time the host waits on `time.sleep()` and `asyncio.sleep()`, in seconds                            |
 
 Every key is optional.
-Omit `max_memory` or either duration key, or set them to `None`, to disable that limit.
+Omit `max_memory`, either duration key or `max_total_sleep_secs`, or set them to `None`, to disable that limit.
 `max_recursion_depth` and `max_suspensions` cannot be disabled: omitting either, or passing `None`, leaves its 1000
 default.
 `gc_interval` omitted or `None` uses the built-in schedule of every 100,000 allocations; collection cannot be turned
 off.
 
 In JavaScript the same fields are `maxMemory`, `maxFeedDurationSecs`, `maxTurnDurationSecs`,
-`maxRecursionDepth`, `gcInterval` and `maxSuspensions`, passed as `limits` to `pool.checkout()`.
+`maxRecursionDepth`, `gcInterval`, `maxSuspensions` and `maxTotalSleepSecs`, passed as `limits` to `pool.checkout()`.
 In Rust they are the fields of [`monty_types::ResourceLimits`](api/rust/monty-types.md#resourcelimits), where the
-durations are `Duration`s named `max_feed_duration` and `max_turn_duration`.
+durations are `Duration`s named `max_feed_duration`, `max_turn_duration` and `max_total_sleep`.
 
 ## Memory
 
@@ -103,8 +104,14 @@ Both duration limits count **execution time**, not wall clock:
 
 - The clock runs only while the interpreter executes bytecode.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
-    minute costs nothing, and neither does a `time.sleep()` your `os=` handler waited out.
+    minute costs nothing, and neither does a `time.sleep()` or `asyncio.sleep()`, which the host waits out.
+    Under the default `'system'` sleep mode the pool charges those sleeps to `max_total_sleep_secs` instead, refusing
+    a sleep that would take the total over with an uncatchable `TimeoutError`; each is also a suspension, so
+    `max_suspensions` bounds a sleeping loop as well. Under `'call_host'` the host waits uncharged, and a `'zero'`
+    sleep does not suspend at all. See [security](security.md#waiting).
 - There is no way for sandboxed code to observe a budget or the time remaining.
+    `os_policy={'process_time': 'elapsed'}` exposes this same execution clock as `time.process_time()`; the
+    default `'zero'` keeps it hidden.
 
 They read the same clock and differ only in when it restarts:
 
@@ -176,7 +183,8 @@ could abort the process.
 ## Suspensions
 
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
-callbacks (the sleeps among them), name lookups and future-resolution events.
+callbacks (the sleeps among them in every mode but `'zero'`, the clock only under `'call_host'`), name lookups and
+future-resolution events.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because the duration limits pause during suspensions, a snippet could otherwise retry rejected calls indefinitely.
@@ -196,6 +204,8 @@ caps the dump's, so a worker cannot report a looser one.
     budget; memory retained by compiled code does count toward `max_memory` in workers.
     Compilation has its own structural caps (AST nesting at 200 levels, bytecode operand sizes, comprehension nesting, and
     a 1,024-copy cap on `finally` expansion that raises `SyntaxError`).
+    The nesting cap is also checked before parsing for sources over 4 KiB, because the parser grows its native stack
+    outside the allocator's accounting; see [source nesting depth](limitations/language.md#source-nesting-depth).
     A host accepting untrusted source should still isolate compilation, as the subprocess and WebAssembly runtimes do.
     Source compiled at runtime by `eval()` / `exec()` is charged against the duration budget.
     Once a snippet starts executing, its compilation products stay allocated for the rest of the session;

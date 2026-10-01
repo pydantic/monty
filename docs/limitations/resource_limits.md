@@ -1,6 +1,6 @@
 # Resource limits
 
-Monty limits memory, time, and recursion, while the host limits suspension
+Monty limits memory, time, sleep and recursion, while the host limits suspension
 events. Exceeding the memory, time, or suspension limit returns `MemoryError`,
 `TimeoutError`, or `RuntimeError`, respectively; sandboxed code cannot catch
 these exceptions. `RecursionError` is catchable, as in CPython.
@@ -12,7 +12,9 @@ bytecode compilation do not consume them. In workers, allocations retained by
 compiled code do count toward `max_memory`; transient compilation allocations
 are released before execution reaches its first memory checkpoint.
 Compilation has separate structural caps for parser nesting, bytecode operand
-sizes, comprehension nesting, and repeated `finally` expansion. A code object
+sizes, comprehension nesting, and repeated `finally` expansion. The parser
+grows its native stack outside the sandbox allocator, so a source over 4 KiB is
+scanned for nesting before it is parsed (see [language.md](language.md)). A code object
 requiring more than 1,024 emitted copies of `finally` bodies is rejected with
 `SyntaxError`; CPython has no equivalent limit. Production hosts should still
 isolate compilation when accepting untrusted source, as the subprocess and
@@ -98,7 +100,8 @@ without one is unlimited.
     with type checking. Use `max_processes` and an OS-level limit to bound a host.
 - **Per session, but against a fixed baseline.** A worker serves many checkouts
     and re-derives the cap for each session, always from the leanest the process
-    has been. Memory retained between sessions therefore consumes the headroom
+    has been, plus the type checker once a session has needed it.
+    Other memory retained between sessions therefore consumes the headroom
     rather than raising the cap, and a worker whose residue outgrows it is killed
     and replaced rather than allowed to grow indefinitely.
 - **Restoring a dump is bounded by the checkout it lands in.** `load_session` /
@@ -133,6 +136,10 @@ indistinguishable from a stack overflow.
     bases 0, 1 and -1, which are computed.
 - `pow(base, exp, mod)` requires all integer arguments and rejects negative
     exponents (`ValueError`).
+    A call whose work estimate (exponent bits × modulus words²) is at most 2²⁷ runs
+    to completion without polling the time limit, about 0.2 s on a laptop; larger
+    calls poll between exponent bits, so a single squaring of the modulus is the
+    longest uninterruptible step.
 - `int(str_or_bytes, base)` rejects inputs over 4,300 digits before the
     potentially quadratic BigInt parse when the effective base is not a power
     of two. The fixed cap matches CPython's
@@ -195,6 +202,20 @@ indistinguishable from a stack overflow.
     restoring checkout caps the dump's (the smaller of the two applies, and
     the configured one alone if the worker's reply omits it).
 - There is no in-sandbox way to observe the budget or remaining count.
+
+## Sleep
+
+- `max_total_sleep` bounds cumulative system sleep durations (see [time.md](time.md)).
+    It is disabled by default; sleeping loops remain bounded by `max_suspensions`.
+    Bindings expose `max_total_sleep_secs` or `maxTotalSleepSecs`; the CLI uses `--max-total-sleep`.
+- Pools and the CLI charge each capped delay before waiting.
+    Exceeding the total raises an uncatchable `TimeoutError: sleep limit exceeded: <total> > <limit>`.
+    The reported total includes the refused sleep and uses Rust `Duration` formatting, such as `1.5s > 1s`.
+    An `asyncio.sleep()` costs its full capped delay when created, regardless of how long the host waits.
+    Non-suspending `MontyRun::run` enforces no total sleep limit.
+- The time already slept travels in dumps with the limit, like execution time,
+    so a restored session resumes its budget rather than restarting from zero.
+- Sleeps handed to the host under `'call_host'` are not charged to it.
 
 ## Time
 

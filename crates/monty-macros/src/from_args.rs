@@ -88,6 +88,11 @@ enum Style {
     /// min == max the runtime collapses to `expected N argument(s)`, so
     /// exact-arity callables use this style too.
     Unpack,
+    /// `style = parse_tuple` — `PyArg_ParseTuple` with a `:name` and no
+    /// keywords at all: the same positional `min..max` range as
+    /// [`Unpack`](Self::Unpack), worded `{name}() takes at least/most N
+    /// argument(s) (M given)` (e.g. `time.gmtime`, `time.strftime`).
+    ParseTuple,
 }
 
 /// `_PyArg_BadArgument` wording shape. CPython splits between positional
@@ -223,24 +228,34 @@ impl Signature {
                          signature can never raise too-many-positional, so the style has no effect");
                 }
             }
-            Style::Unpack => {
+            Style::Unpack | Style::ParseTuple => {
+                let style = if self.style == Style::Unpack {
+                    "unpack"
+                } else {
+                    "parse_tuple"
+                };
                 if self.fields.iter().any(|f| matches!(f.kind, FieldKind::PosOrKeyword)) {
-                    return err("`style = unpack` models a positional-only `PyArg_UnpackTuple` \
-                         signature — every positional field must be `pos_only`");
+                    return err(&format!(
+                        "`style = {style}` models a positional-only signature \
+                         — every positional field must be `pos_only`"
+                    ));
                 }
                 if self.varargs_idx.is_some() || self.varkwargs_idx.is_some() {
-                    return err("`style = unpack` cannot be combined with `varargs` or `varkwargs` \
-                         — it models a fixed positional min..max range");
+                    return err(&format!(
+                        "`style = {style}` cannot be combined with `varargs` or `varkwargs` \
+                         — it models a fixed positional min..max range"
+                    ));
                 }
             }
             Style::Clinic | Style::C | Style::CNamed => {}
         }
 
         if self.at_most_total {
-            if matches!(self.style, Style::Def | Style::Unpack) {
+            if matches!(self.style, Style::Def | Style::Unpack | Style::ParseTuple) {
                 return err(
-                    "`at_most_total` cannot be combined with `style = def` or `style = unpack` \
-                     — the total pre-count models `PyArg_ParseTupleAndKeywords`-family C parsers",
+                    "`at_most_total` cannot be combined with `style = def`, `style = unpack` or \
+                     `style = parse_tuple` — the total pre-count models \
+                     `PyArg_ParseTupleAndKeywords`-family C parsers",
                 );
             }
             if self.varargs_idx.is_some() || self.varkwargs_idx.is_some() {
@@ -255,11 +270,16 @@ impl Signature {
                  — it models a `tp_vectorcall` fast path in front of a clinic parser");
         }
 
-        if self.kwarg_error_name.is_some() && !matches!(self.style, Style::Def | Style::Clinic | Style::Unpack) {
+        if self.kwarg_error_name.is_some()
+            && !matches!(
+                self.style,
+                Style::Def | Style::Clinic | Style::Unpack | Style::ParseTuple
+            )
+        {
             return err("`kwarg_error_name` is only meaningful with `style = def`, the default \
-                 `clinic` style, or `style = unpack` (where it names the function in the \
-                 `takes no keyword arguments` error) — the C families defer unknown-kwarg \
-                 errors past binding");
+                 `clinic` style, `style = unpack` or `style = parse_tuple` (where it names the \
+                 function in the `takes no keyword arguments` error) — the C families defer \
+                 unknown-kwarg errors past binding");
         }
 
         if self.kwargs_not_supported_yet {
@@ -484,6 +504,7 @@ impl Signature {
             Style::C => quote! { crate::args::ErrorFamily::C { positional_pivot: #pivot } },
             Style::CNamed => quote! { crate::args::ErrorFamily::CNamed { positional_pivot: #pivot } },
             Style::Unpack => quote! { crate::args::ErrorFamily::Unpack },
+            Style::ParseTuple => quote! { crate::args::ErrorFamily::ParseTuple },
         }
     }
 
@@ -774,10 +795,13 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                     "c" => Style::C,
                     "c_named" => Style::CNamed,
                     "unpack" => Style::Unpack,
+                    "parse_tuple" => Style::ParseTuple,
                     other => {
                         return Err(syn::Error::new(
                             value.span(),
-                            format!("unknown style `{other}`; expected `def`, `clinic`, `c`, `c_named`, or `unpack`"),
+                            format!(
+                                "unknown style `{other}`; expected `def`, `clinic`, `c`, `c_named`, `unpack`, or `parse_tuple`"
+                            ),
                         ));
                     }
                 });
@@ -809,7 +833,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `style = def|clinic|c|c_named|unpack`, \
+                    "unknown struct attribute; expected `name = \"...\"`, `style = def|clinic|c|c_named|unpack|parse_tuple`, \
                      `at_most_total`, `vectorcall`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, \
                      or `kwargs_not_supported_yet`",
                 ))
@@ -990,7 +1014,7 @@ mod tests {
             #[from_args(name = "f", style = fancy)]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"unknown style `fancy`; expected `def`, `clinic`, `c`, `c_named`, or `unpack`");
+        assert_snapshot!(err, @"unknown style `fancy`; expected `def`, `clinic`, `c`, `c_named`, `unpack`, or `parse_tuple`");
     }
 
     #[test]
@@ -1020,7 +1044,7 @@ mod tests {
             #[from_args(name = "f", style = unpack)]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"`style = unpack` models a positional-only `PyArg_UnpackTuple` signature — every positional field must be `pos_only`");
+        assert_snapshot!(err, @"`style = unpack` models a positional-only signature — every positional field must be `pos_only`");
     }
 
     #[test]
@@ -1029,7 +1053,7 @@ mod tests {
             #[from_args(name = "f", style = def, at_most_total)]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"`at_most_total` cannot be combined with `style = def` or `style = unpack` — the total pre-count models `PyArg_ParseTupleAndKeywords`-family C parsers");
+        assert_snapshot!(err, @"`at_most_total` cannot be combined with `style = def`, `style = unpack` or `style = parse_tuple` — the total pre-count models `PyArg_ParseTupleAndKeywords`-family C parsers");
     }
 
     #[test]
@@ -1071,7 +1095,7 @@ mod tests {
             #[from_args(name = "f", style = c_named, kwarg_error_name = "g")]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"`kwarg_error_name` is only meaningful with `style = def`, the default `clinic` style, or `style = unpack` (where it names the function in the `takes no keyword arguments` error) — the C families defer unknown-kwarg errors past binding");
+        assert_snapshot!(err, @"`kwarg_error_name` is only meaningful with `style = def`, the default `clinic` style, `style = unpack` or `style = parse_tuple` (where it names the function in the `takes no keyword arguments` error) — the C families defer unknown-kwarg errors past binding");
     }
 
     #[test]

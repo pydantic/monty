@@ -89,6 +89,11 @@ pub(crate) struct NamedTuple {
 }
 
 impl NamedTuple {
+    /// The values, in field order.
+    pub(crate) fn items(&self) -> &[Value] {
+        &self.items
+    }
+
     /// Creates a new named tuple.
     ///
     /// # Arguments

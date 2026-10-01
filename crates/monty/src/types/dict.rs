@@ -150,9 +150,12 @@ impl DictKind {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct DictEntry {
+    #[serde(rename = "K")]
     key: Value,
+    #[serde(rename = "V")]
     value: Value,
     /// the hash is needed here for correct use of insert_unique
+    #[serde(rename = "H")]
     hash: u64,
 }
 
@@ -2142,9 +2145,9 @@ fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult
 impl serde::Serialize for Dict {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut state = serializer.serialize_struct("Dict", 3)?;
-        state.serialize_field("entries", &self.entries)?;
-        state.serialize_field("contains_refs", &self.contains_refs)?;
-        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("E", &self.entries)?;
+        state.serialize_field("C", &self.contains_refs)?;
+        state.serialize_field("K", &self.kind)?;
         state.end()
     }
 }
@@ -2153,8 +2156,11 @@ impl<'de> serde::Deserialize<'de> for Dict {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct DictFields {
+            #[serde(rename = "E")]
             entries: Vec<DictEntry>,
+            #[serde(rename = "C")]
             contains_refs: bool,
+            #[serde(rename = "K")]
             kind: DictKind,
         }
         let fields = DictFields::deserialize(deserializer)?;
@@ -2220,8 +2226,7 @@ struct DictIteratorState {
     /// Set once a `next` call has reached the end. Mirrors CPython clearing
     /// `di_dict`: an already-exhausted iterator returns `StopIteration` on every
     /// further call and never re-checks the size, even if the dict was mutated
-    /// after exhaustion. Defaulted for backward-compatible snapshot decode.
-    #[serde(default)]
+    /// after exhaustion.
     exhausted: bool,
 }
 

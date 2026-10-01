@@ -93,10 +93,11 @@ fn dump_error_messages_are_stable() {
         .to_string(),
         @"dump format version 7 is unsupported: `Heap` changed in version 9"
     );
-    assert_snapshot!(
-        DumpError::Payload(postcard::Error::DeserializeBadEncoding).to_string(),
-        @"malformed dump payload: The original data was not well encoded"
-    );
+    // a header with nothing after it is the shortest payload failure
+    let truncated = dump_repl("")[..8].to_vec();
+    let err = Dump::load(&truncated).unwrap_err();
+    assert!(matches!(err, DumpError::Payload(_)));
+    assert_snapshot!(err.to_string(), @"malformed dump payload: end of input bytes");
 }
 
 /// The header must reject anything this build cannot read, and each rejection
@@ -144,33 +145,39 @@ fn dump_header_rejects_incompatible_data() {
     // decode as the shorter valid one it starts with
     let mut trailing_data = bytes;
     trailing_data.push(0);
-    assert_eq!(
-        Dump::load(&trailing_data).unwrap_err(),
-        DumpError::Payload(postcard::Error::DeserializeBadEncoding)
-    );
+    let err = Dump::load(&trailing_data).unwrap_err();
+    assert!(matches!(err, DumpError::Payload(_)));
+    assert_snapshot!(err.to_string(), @"malformed dump payload: decode error: trailing bytes after the payload");
 }
 
 /// Transient GC colors cannot be restored: the collector's reader protection
 /// relies on establishing Gray/White itself, even when the snapshot is invalid.
 #[test]
 fn dump_rejects_transient_gc_colors() {
-    // A distinctive naive time payload: hour, minute, second, microsecond
-    // (varint), fold, tzinfo. The heap entry's color immediately follows it.
-    const TIME: [u8; 8] = [11, 22, 33, 0x8B, 0x91, 0x1B, 0, 0];
+    // The microsecond 444555 as a CBOR u32 is distinctive; the heap entry's
+    // `color` field follows its time payload.
+    const MICROSECOND: [u8; 5] = [0x1a, 0x00, 0x06, 0xc8, 0x8b];
+    // `color` is serialized as key `C`, `Black` as `B`, `Gray`/`White` as `G`/`W`.
+    const BLACK: &[u8] = b"\x61C\x61B";
     let bytes = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
-    let color = offset_of(&bytes, &TIME) + TIME.len();
-    assert_eq!(bytes[color], 0); // Black
+    let after_time = offset_of(&bytes, &MICROSECOND) + MICROSECOND.len();
+    let color = after_time + offset_of(&bytes[after_time..], BLACK) + b"\x61C".len();
     assert!(Dump::load(&bytes).is_ok());
 
-    for transient in [1, 2] {
-        // Gray, White
-        let mut forged = bytes.clone();
-        forged[color] = transient;
-        assert_eq!(
-            Dump::load(&forged).unwrap_err(),
-            DumpError::Payload(postcard::Error::SerdeDeCustom)
-        );
-    }
+    let rejections: Vec<String> = [&b"\x61G"[..], b"\x61W"]
+        .into_iter()
+        .map(|transient| {
+            let mut forged = bytes.clone();
+            forged.splice(color..color + b"\x61B".len(), transient.iter().copied());
+            let err = Dump::load(&forged).unwrap_err();
+            assert!(matches!(err, DumpError::Payload(_)));
+            err.to_string()
+        })
+        .collect();
+    assert_snapshot!(rejections.join("\n"), @"
+    malformed dump payload: decode error: snapshot contains a transient GC color
+    malformed dump payload: decode error: snapshot contains a transient GC color
+    ");
 }
 
 /// Dumps an idle session after running `code`.
@@ -179,16 +186,13 @@ fn dump_repl(code: &str) -> Vec<u8> {
     dump("repl.py", None, SessionRef::Idle(&repl)).unwrap()
 }
 
-/// The offset of the one occurrence of `marker` in `bytes`, so a forged dump can
-/// be built by patching a known field rather than by rebuilding the payload.
+/// The offset of the first occurrence of `marker` in `bytes`, so a forged dump
+/// can be built by patching a known field rather than by rebuilding the payload.
 fn offset_of(bytes: &[u8], marker: &[u8]) -> usize {
-    let mut found = bytes
+    bytes
         .windows(marker.len())
-        .enumerate()
-        .filter_map(|(index, window)| (window == marker).then_some(index));
-    let offset = found.next().expect("marker not found in dump");
-    assert_eq!(found.next(), None, "marker is not unique in dump");
-    offset
+        .position(|window| window == marker)
+        .expect("marker not found in dump")
 }
 
 #[test]

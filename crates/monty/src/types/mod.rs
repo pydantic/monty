@@ -8,6 +8,7 @@
 pub mod bytes;
 pub mod callable_iterator;
 pub mod class;
+pub mod complex;
 pub mod date;
 pub mod datetime;
 pub mod deque;
@@ -46,6 +47,7 @@ pub mod union;
 
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::{Class, DataclassOptions};
+pub(crate) use complex::Complex;
 pub(crate) use deque::Deque;
 pub(crate) use dict::{Dict, DictItemIterator, DictKeyIterator, DictValueIterator};
 pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};
@@ -64,7 +66,7 @@ pub(crate) use partial::Partial;
 pub(crate) use path::Path;
 pub(crate) use property::Property;
 pub(crate) use py_trait::{CmpOrder, LazyHeapSet, PyTrait, attribute_name_value};
-pub(crate) use random::Random;
+pub(crate) use random::{Random, SessionRandom};
 pub(crate) use range::{Range, RangeIterator};
 pub(crate) use re_match::ReMatch;
 pub(crate) use re_pattern::{BoundedCompileError, RePattern};

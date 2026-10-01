@@ -8,7 +8,7 @@ use std::{
     iter::repeat_n,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use monty_proto::{
@@ -16,7 +16,8 @@ use monty_proto::{
     WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
+    CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
+    OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
     unstable::{self, MontyNode},
 };
 
@@ -24,6 +25,28 @@ use monty_types::{
 /// the regression it guards is "the child never dies", so the only cost of a
 /// long wait is how late that failure is reported on a slow CI machine.
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn configure() -> pb::Configure {
+    pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        assert_message_annotations: None,
+        ..Default::default()
+    }
+}
+
+/// The clock and the sleeps routed to the parent.
+fn call_host() -> OsPolicy {
+    OsPolicy {
+        datetime: DateTimeSource::CallHost,
+        sleep: SleepMode::CallHost,
+        ..OsPolicy::default()
+    }
+}
 
 /// A spawned `monty subprocess` child with framed pipes.
 struct ChildProc {
@@ -91,15 +114,13 @@ impl ChildProc {
     }
 
     fn create_repl(&mut self) {
+        self.create_repl_with(configure());
+    }
+
+    fn create_repl_with_os_policy(&mut self, os_policy: &OsPolicy) {
         self.create_repl_with(pb::Configure {
-            script_name: "main.py".to_owned(),
-            limits: None,
-            type_check: false,
-            type_check_stubs: None,
-            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
-            protocol_version: PROTOCOL_VERSION,
-            assert_message_annotations: None,
-            ..Default::default()
+            os_policy: Some(os_policy.into()),
+            ..configure()
         });
     }
 
@@ -393,6 +414,11 @@ fn near_limit_suspension_is_refused_cleanly() {
             1,
             None,
             false,
+            SourceRange {
+                filename: "main.py".to_owned(),
+                start: 0,
+                end: 7,
+            },
         ))),
         ..Default::default()
     };
@@ -519,14 +545,139 @@ fn external_function_not_found_raises_name_error() {
     child.shutdown();
 }
 
-/// The worker's `MontyRepl` carries a `HostClock`, but drives `feed_start`,
-/// which never reads it. Only this test holds the two apart: routing a worker
-/// feed through `feed_run` would answer the clock inside the sandbox instead
-/// of asking the parent.
+/// Default sleeps reach the parent capped at ten seconds; clock and entropy calls stay in the worker.
 #[test]
-fn clock_calls_bubble_to_parent() {
+fn clock_and_entropy_are_answered_in_the_worker_by_default() {
     let mut child = ChildProc::spawn();
     child.create_repl();
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before the epoch")
+        .as_secs_f64();
+    let (_, event) = child.feed(&format!(
+        "import time
+from datetime import date, datetime
+abs(time.time() - {now}) < 60 and date.today().year == datetime.now().year"
+    ));
+    assert_eq!(expect_complete(event), MontyObject::bool(true));
+    let (_, event) = child.feed("import time\ntime.sleep(3600)");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds: 10.0 }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
+    assert_eq!(expect_complete(event), MontyObject::none());
+    let (_, event) = child.feed(
+        "import asyncio
+asyncio.run(asyncio.sleep(3600, 'woken'))",
+    );
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::AsyncSystemSleep(pb::os_call::AsyncSleep {
+            delay: 10.0
+        }))
+    );
+    let (_, event) = child.resume_return(call.call_id, MontyObject::none());
+    assert_eq!(expect_complete(event), MontyObject::string("woken"));
+    let (_, event) = child.feed(
+        "import random
+0 <= random.random() < 1",
+    );
+    assert_eq!(expect_complete(event), MontyObject::bool(true));
+    child.shutdown();
+}
+
+#[test]
+fn fixed_clock_and_seed_are_answered_in_the_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with_os_policy(&OsPolicy {
+        datetime: DateTimeSource::Fixed {
+            unix_seconds: 1_700_000_000,
+            microsecond: 123_456,
+        },
+        timezone: SandboxTimeZone::Fixed {
+            offset_seconds: 7_200,
+            name: None,
+        },
+        random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+        ..OsPolicy::default()
+    });
+
+    let (_, event) = child.feed(
+        "from datetime import datetime
+repr(datetime.now())",
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::string("datetime.datetime(2023, 11, 15, 0, 13, 20, 123456)")
+    );
+    let (_, event) = child.feed(
+        "import time
+time.time()",
+    );
+    assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.123_456));
+    // the zone is also what `astimezone()`, `%Z` and the `time` constants report
+    let (_, event) = child.feed(
+        "import time
+(datetime.now().astimezone().strftime('%H:%M %Z'), time.timezone, time.tzname)",
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::string("00:13 UTC+02:00".to_owned()),
+            MontyObject::int(-7_200),
+            MontyObject::tuple([
+                MontyObject::string("UTC+02:00".to_owned()),
+                MontyObject::string("UTC+02:00".to_owned()),
+            ]),
+        ])
+    );
+    // CPython: random.seed(42); random.random()
+    let (_, event) = child.feed(
+        "import random
+random.random()",
+    );
+    assert_eq!(expect_complete(event), MontyObject::float(0.639_426_798_457_883_7));
+    child.shutdown();
+}
+
+/// Rejecting malformed `OsPolicy` leaves the worker usable.
+#[test]
+fn invalid_os_policy_is_rejected_on_configure() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+        os_policy: Some(pb::OsPolicy {
+            datetime: Some(pb::os_policy::Datetime::Fixed(pb::FixedDateTime {
+                unix_seconds: 0,
+                microsecond: 1_000_000,
+            })),
+            ..Default::default()
+        }),
+        ..configure()
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(
+        error.message.as_deref(),
+        Some(
+            "protocol violation: invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+        )
+    );
+    child.create_repl();
+    child.feed_complete("1 + 1");
+    child.shutdown();
+}
+
+#[test]
+fn clock_calls_bubble_to_parent_under_call_host() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with_os_policy(&call_host());
 
     let today = MontyDate {
         year: 2024,
@@ -567,20 +718,23 @@ fn clock_calls_bubble_to_parent() {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    assert_eq!(call.call, Some(pb::os_call::Call::Time(pb::Unit {})));
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::Time(pb::os_call::TimeCall {
+            caller: "time.time".to_owned(),
+        }))
+    );
     let (_, event) = child.resume_return(call.call_id, MontyObject::float(1_700_000_000.5));
     assert_eq!(expect_complete(event), MontyObject::float(1_700_000_000.5));
 
     child.shutdown();
 }
 
-/// Neither sleep waits in the worker: both cross the wire so the parent can
-/// decide how long a wait it will perform, and `time.sleep()` evaluates to
-/// `None` whatever the parent answers with.
+/// `CallHost` lets the parent choose the wait; `time.sleep()` returns `None` regardless of its answer.
 #[test]
-fn sleep_calls_bubble_to_parent() {
+fn sleep_calls_bubble_to_parent_under_call_host() {
     let mut child = ChildProc::spawn();
-    child.create_repl();
+    child.create_repl_with_os_policy(&call_host());
 
     let (_, event) = child.feed("import time\ntime.sleep(1.5)");
     let pb::child_event::Kind::OsCall(call) = event else {
@@ -850,7 +1004,12 @@ fn large_unnested_format_spec_preserves_the_worker() {
 
 #[test]
 fn numeric_formatting_peak_memory_preserves_the_worker() {
-    for code in ["'{:08000000d}'.format(1)", "'{:.8000000f}'.format(1.0)"] {
+    for code in [
+        "'{:08000000d}'.format(1)",
+        "'{:.8000000f}'.format(1.0)",
+        // Both parts of a complex expand to the precision.
+        "'{:.4000000f}'.format(1 + 1j)",
+    ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(10_000_000));
         let (_, event) = child.feed(code);
@@ -858,6 +1017,30 @@ fn numeric_formatting_peak_memory_preserves_the_worker() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// A complex spec that CPython rejects outright must raise its `ValueError`
+/// however large its precision, not the `MemoryError` the precision would cost.
+#[test]
+fn invalid_complex_spec_is_rejected_before_its_precision_is_charged() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(10_000_000));
+    for (code, message) in [
+        (
+            "'{:=.4000000f}'.format(1 + 1j)",
+            "'=' alignment flag is not allowed in complex format specifier",
+        ),
+        (
+            "'{:0.4000000f}'.format(1 + 1j)",
+            "Zero padding is not allowed in complex format specifier",
+        ),
+    ] {
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "ValueError", "{code}");
+        assert_eq!(error.message.as_deref(), Some(message), "{code}");
+    }
+    child.shutdown();
 }
 
 /// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no
@@ -973,6 +1156,13 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
         ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_439),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_422),
+        // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
+        // capacity doubling like the formatter cases above: fixed-size pushes
+        // make that step deterministic.
+        (
+            "from datetime import datetime, timezone, timedelta\ntz = timezone(timedelta(0), 'n' * 100_000)\ndatetime(2024, 1, 1, tzinfo=tz).strftime('%Z' * 5_000)",
+            1_254_024,
+        ),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
         ("x = [None] * 40_000\nx += x", 1_962_551),
@@ -1888,6 +2078,52 @@ fn install_dependencies_is_rejected_but_session_survives() {
 // =============================================================================
 // Type checking
 // =============================================================================
+
+/// Stubs reach ty with every feed and nothing else scans them, so a
+/// `Configure` carrying deeply nested stubs is refused up front.
+#[test]
+fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+        type_check: true,
+        type_check_stubs: Some(format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000))),
+        ..configure()
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(
+        error.message.as_deref(),
+        Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
+    );
+    child.create_repl();
+    child.feed_complete("1 + 1");
+    child.shutdown();
+}
+
+/// The type checker parses with no nesting limit, so a source the compiler
+/// will reject as too deeply nested must bypass it: the feed ends in the
+/// compiler's SyntaxError, not a crash, and the session survives.
+#[test]
+fn type_checked_session_skips_the_checker_for_deeply_nested_source() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: true,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        assert_message_annotations: None,
+        ..Default::default()
+    });
+
+    let (_, event) = child.feed(&format!("{}1{}", "(".repeat(200_000), ")".repeat(200_000)));
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "SyntaxError");
+    assert_eq!(error.message.as_deref(), Some("Source is too deeply nested"));
+
+    assert_eq!(child.feed_complete("1"), MontyObject::int(1));
+    child.shutdown();
+}
 
 #[test]
 fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {

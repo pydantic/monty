@@ -1,5 +1,6 @@
 # call-external
-# The `time` stdlib module: `time()` and `sleep()`, both served by the host.
+# The `time` stdlib module's clocks and `sleep()`. The conversion functions are in
+# time__struct_time.py; the zone-dependent ones in datetime__zone_*.py.
 import time
 
 
@@ -19,6 +20,39 @@ assert isinstance(start, float)
 assert 1_600_000_000.0 < start < 32_000_000_000.0
 assert time.time() >= start
 
+# === the other wall clocks ===
+# all of these read the same session clock, so they agree to within the time the
+# assertions themselves take
+assert isinstance(time.time_ns(), int)
+assert time.time_ns() > 1_600_000_000_000_000_000
+assert abs(time.time_ns() / 1e9 - time.time()) < 60
+for clock in (time.monotonic, time.perf_counter):
+    first = clock()
+    assert isinstance(first, float)
+    assert clock() >= first
+
+# === the process clocks ===
+# only the shape here: Monty's default `process_time='zero'` makes these constant,
+# which CPython cannot match, so os_policy.rs asserts the values
+for process_clock in (time.process_time, time.thread_time):
+    assert isinstance(process_clock(), float)
+    assert process_clock() >= 0.0
+for process_clock_ns in (time.process_time_ns, time.thread_time_ns):
+    assert isinstance(process_clock_ns(), int)
+    assert process_clock_ns() >= 0
+
+# === zone constants ===
+# only the shape here: the values are asserted in datetime__zone_default.py, which
+# skips CPython on Windows because the harness cannot set its zone there
+assert type(time.timezone) is int
+assert type(time.altzone) is int
+assert time.daylight in (0, 1)
+assert -86400 < time.timezone < 86400
+assert -86400 < time.altzone < 86400
+assert type(time.tzname) is tuple
+assert len(time.tzname) == 2
+assert all(type(name) is str for name in time.tzname)
+
 # === time.sleep() ===
 assert time.sleep(0) is None
 assert time.sleep(0.001) is None
@@ -34,6 +68,20 @@ check(lambda: time.time(x=1), 'TypeError: time.time() takes no keyword arguments
 check(lambda: time.sleep(), 'TypeError: time.sleep() takes exactly one argument (0 given)')
 check(lambda: time.sleep(0, 1), 'TypeError: time.sleep() takes exactly one argument (2 given)')
 check(lambda: time.sleep(secs=0), 'TypeError: time.sleep() takes no keyword arguments')
+# every other clock takes nothing at all, and says so the same way
+for name, zero_arg in (
+    ('time_ns', time.time_ns),
+    ('monotonic', time.monotonic),
+    ('monotonic_ns', time.monotonic_ns),
+    ('perf_counter', time.perf_counter),
+    ('perf_counter_ns', time.perf_counter_ns),
+    ('process_time', time.process_time),
+    ('process_time_ns', time.process_time_ns),
+    ('thread_time', time.thread_time),
+    ('thread_time_ns', time.thread_time_ns),
+):
+    check(lambda fn=zero_arg: fn(1), f'TypeError: time.{name}() takes no arguments (1 given)')
+    check(lambda fn=zero_arg: fn(x=1), f'TypeError: time.{name}() takes no keyword arguments')
 
 # === bad sleep lengths ===
 # a float passes straight through, anything else must be an integer, so a type

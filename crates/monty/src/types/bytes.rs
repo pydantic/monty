@@ -133,7 +133,10 @@ pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
 /// computes its Python hash once. See [`super::Str`] for the same pattern.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub(crate) struct Bytes(Vec<u8>, #[serde(skip)] Cell<Option<HashValue>>);
+pub(crate) struct Bytes(
+    #[serde(with = "serde_bytes")] Vec<u8>,
+    #[serde(skip)] Cell<Option<HashValue>>,
+);
 
 impl PartialEq for Bytes {
     /// Compares only the byte content — `cached_hash` is a pure optimisation.

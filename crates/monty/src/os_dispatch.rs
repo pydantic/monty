@@ -34,7 +34,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    modules::random::RandomRetry,
+    modules::{random::RandomRetry, time::ClockReading},
     types::{Path, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
@@ -79,6 +79,9 @@ impl PendingEffect {
             // `time.sleep` blocks by definition, so a future would leave the
             // sandbox running before the wait it asked for finished.
             Self::Post(PostConversionEffect::DiscardResult) => Some("time.sleep"),
+            // The reading still has to become a `struct_time` or a string, which
+            // a future defers past the point the sandbox needs it.
+            Self::Post(PostConversionEffect::ClockReading { .. }) => Some("time.time"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
             // `asyncio.sleep` wants the future: `resume_with_result` moves the
@@ -191,6 +194,10 @@ pub(crate) enum PostConversionEffect {
     /// Drop the host's answer and evaluate to `None` (`time.sleep`, whose
     /// CPython return value is always `None`).
     DiscardResult,
+    /// Turn the host's `time.time` answer into what the `time` function that
+    /// asked for it returns — a `struct_time`, a formatted string or
+    /// nanoseconds. Holds no heap reference, so nothing to release.
+    ClockReading { reading: ClockReading },
     /// Drop the host's answer and produce `result` from an awaitable, so
     /// `asyncio.sleep(delay, result)` is awaitable whether the host answered
     /// immediately (a settled awaitable) or with a future (the pending
@@ -206,7 +213,7 @@ impl PostConversionEffect {
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
             Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => heap.heap_mut().dec_ref(file_id),
-            Self::OpenName { .. } | Self::DiscardResult => {}
+            Self::OpenName { .. } | Self::DiscardResult | Self::ClockReading { .. } => {}
             Self::SleepResult { result } => result.drop_with(heap),
             Self::SeedRandom { target, retry } => {
                 if let RandomTarget::Instance(id) = target {

@@ -91,10 +91,12 @@ A name present in both is served by the eager `inputs` binding.
 
 ### Which values cross the boundary
 
-`None`, `bool`, `int` (arbitrary precision), `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
+`None`, `bool`, `int` (arbitrary precision), `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
 `Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named
-tuples, exception instances, and the type objects Monty models (`int`, `str`, `datetime.date`, ...) all convert in both
-directions.
+tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
+all convert in both directions.
+Builtin functions and other type objects come out as a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy]
+carrying the name; see [host-value limitations](../limitations/host-values.md#lossy-outputs).
 Class instances differ in each direction: a host instance enters only wrapped in [`ClassInstance`][pydantic_monty.ClassInstance], and a sandbox-defined
 instance comes out as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy].
 See [host objects](../host-objects.md).
@@ -171,8 +173,35 @@ with Monty() as pool:
             #> True
 ```
 
+Sessions default to the worker's clock and entropy, with sleeps capped at ten seconds per call.
+For reproducible runs, `checkout(os_policy=...)` can fix the clock, timezone and random seed, and skip sleeps:
+
+```python
+from datetime import datetime
+
+from pydantic_monty import Monty
+
+code = """
+import random, time
+from datetime import datetime
+time.sleep(3600)
+f'{datetime.now():%Y-%m-%d %H:%M} {random.random():.4f}'
+"""
+
+with Monty() as pool:
+    with pool.checkout(
+        os_policy={
+            'datetime': datetime(2026, 1, 1, 9, 30),
+            'sleep': 'zero',
+            'random_start': {'seed': 42},
+        }
+    ) as session:
+        print(session.feed_run(code))
+        #> 2026-01-01 09:30 0.6394
+```
+
 See [resource limits](../resource-limits.md), [type checking](../type-checking.md) and the [security
-model](../security.md).
+model](../security.md#the-clock).
 
 ## Async
 

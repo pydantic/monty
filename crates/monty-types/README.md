@@ -1,8 +1,8 @@
 # monty-types
 
 Shared boundary types for [Monty](https://github.com/pydantic/monty), the
-sandboxed Python interpreter — the owned, heap-free data types that cross
-between the interpreter and the hosts that embed it, with **no interpreter
+Python sandbox — the owned, heap-free data types that cross between the
+sandbox and the hosts that embed it, with **no interpreter
 implementation**.
 
 ## What's here

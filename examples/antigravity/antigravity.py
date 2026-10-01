@@ -1,7 +1,10 @@
-# The PyScript antigravity example, unchanged apart from these lines, which
-# replace its five imports. `random`, `pydom` and `DOMParser` are host objects,
-# `open_url` and `set_interval` are host functions, and main.ts decides what
-# each of them is allowed to do.
+# The PyScript antigravity example. `random` is Monty's own, and `fly` sleeps
+# in a loop instead of handing `self.move` to `set_interval`. Its other three
+# imports were `pydom`, `DOMParser` and `open_url`: `pydom` and `DOMParser` are
+# host objects, `open_url` is a host function, and main.ts decides what each
+# of them is allowed to do.
+import random
+import time
 
 
 class Antigravity:
@@ -31,7 +34,9 @@ class Antigravity:
             self.fly()
 
     def fly(self):
-        set_interval(self.move, self.interval)
+        while True:
+            self.move()
+            time.sleep(self.interval / 1000)
 
     def move(self):
         char = self.node.getElementsByTagName("g")[1]

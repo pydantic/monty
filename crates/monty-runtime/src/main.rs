@@ -18,7 +18,7 @@ mod subprocess;
 #[global_allocator]
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
-/// Monty — a sandboxed Python interpreter written in Rust.
+/// Monty — a secure Python sandbox written in Rust.
 ///
 /// Run `monty` to start an empty interactive REPL. Run a python file with `monty <file>`.
 /// Execute a command with `monty -c <cmd>`.
@@ -52,6 +52,9 @@ pub(crate) struct Cli {
     /// Uses `::` as separator to avoid ambiguity with Windows drive letters.
     /// Modes: `ro` (read-only, default), `rw` (read-write), `overlay` (in-memory overlay).
     /// `write_limit_bytes` is optional and applies to all write modes.
+    /// Host directories must be disjoint and virtual paths distinct: mounting
+    /// a directory and a subdirectory of it, the same directory twice, or two
+    /// directories at one virtual path is rejected.
     ///
     /// WARNING: with `rw`, files written by sandboxed code persist on the
     /// host, where your own tools may later execute them. Prefer `overlay`.
@@ -96,8 +99,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     max_suspensions: Option<usize>,
 
-    /// Longest wait a `time.sleep()` or `asyncio.sleep()` performs, in
-    /// seconds; longer sleeps are cut short (defaults to 10, `inf` for no limit).
+    /// Maximum cumulative sleep duration in seconds, charged before each wait.
+    /// Sleeps exceeding it are refused. Omit or use `inf` for no limit.
+    #[arg(long)]
+    max_total_sleep: Option<f64>,
+
+    /// Maximum duration of each `time.sleep()` or `asyncio.sleep()`, in seconds.
+    /// Longer sleeps are cut short (default 10, `inf` for no limit).
     #[arg(long)]
     max_sleep: Option<f64>,
 
@@ -153,12 +161,13 @@ impl Cli {
             || self.gc_interval.is_some()
             || self.max_recursion_depth.is_some()
             || self.max_suspensions.is_some()
+            || self.max_total_sleep.is_some()
     }
 
     /// Builds `ResourceLimits` from the parsed CLI arguments.
     ///
-    /// When no resource flags were provided, returns the default
-    /// recursion-only limits (`ResourceLimits::default()`).
+    /// When no resource flags were provided, returns the default limits
+    /// (`ResourceLimits::default()`).
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
     #[cfg(feature = "standalone")]
     fn resource_limits(&self) -> Result<monty_types::ResourceLimits, String> {
@@ -181,11 +190,20 @@ impl Cli {
         if let Some(max) = self.max_suspensions {
             limits = limits.max_suspensions(max);
         }
+        // `inf` is the same as leaving the flag off
+        if let Some(secs) = self.max_total_sleep
+            && !(secs.is_infinite() && secs > 0.0)
+        {
+            limits = limits.max_total_sleep(
+                #[expect(clippy::absolute_paths)]
+                std::time::Duration::try_from_secs_f64(secs)
+                    .map_err(|err| format!("invalid --max-total-sleep: {err}"))?,
+            );
+        }
         Ok(limits)
     }
 
-    /// The longest sleep the CLI performs, from `--max-sleep` (default 10s;
-    /// `inf` lifts the cap). A negative or NaN value is an error.
+    /// Parses `--max-sleep` (default 10s; `inf` removes the cap), rejecting negative or NaN values.
     #[cfg(feature = "standalone")]
     #[expect(clippy::absolute_paths)]
     fn max_sleep(&self) -> Result<std::time::Duration, String> {

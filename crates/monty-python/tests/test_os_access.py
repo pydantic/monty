@@ -14,7 +14,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from conftest import RunMonty
+from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
 from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess
@@ -119,7 +119,6 @@ def test_urandom_limit_must_be_int(limit: Any):
 
 
 def test_default_clock_and_sleeps(monty_run: RunMonty):
-    """OSAccess answers the clock and both sleeps from the host process."""
     fs = OSAccess()
 
     result = monty_run(
@@ -129,6 +128,7 @@ def test_default_clock_and_sleeps(monty_run: RunMonty):
         "woken = asyncio.run(asyncio.sleep(0.001, 'woken'))\n"
         '(time.time() >= start, woken)',
         os=fs,
+        checkout=CALL_HOST,
     )
     assert result == snapshot((True, 'woken'))
 
@@ -139,7 +139,9 @@ def test_max_sleep_caps_the_wait(monty_run: RunMonty):
     assert OSAccess(max_sleep=None).max_sleep is None
 
     start = time.monotonic()
-    assert monty_run('import time; time.sleep(3600) is None', os=OSAccess(max_sleep=0.001)) == snapshot(True)
+    assert monty_run('import time; time.sleep(3600) is None', os=OSAccess(max_sleep=0.001), checkout=CALL_HOST) == (
+        snapshot(True)
+    )
     assert time.monotonic() - start < 5
 
 
@@ -163,7 +165,7 @@ def test_max_sleep_set_to_nan_after_construction_fails_closed(monty_run: RunMont
     fs = OSAccess()
     fs.max_sleep = float('nan')
     with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run('import time; time.sleep(3600)', os=fs)
+        monty_run('import time; time.sleep(3600)', os=fs, checkout=CALL_HOST)
     assert str(exc_info.value) == snapshot('ValueError: Invalid value NaN (not a number)')
 
 
@@ -176,7 +178,8 @@ def test_sleep_override_sees_the_requested_length(monty_run: RunMonty):
             waited.append(seconds)
             super().sleep(seconds)
 
-    assert monty_run('import time; time.sleep(3600) is None', os=RecordingSleep(max_sleep=0.001)) == snapshot(True)
+    result = monty_run('import time; time.sleep(3600) is None', os=RecordingSleep(max_sleep=0.001), checkout=CALL_HOST)
+    assert result == snapshot(True)
     assert waited == snapshot([3600.0])
 
 

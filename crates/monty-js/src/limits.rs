@@ -30,6 +30,8 @@ pub struct JsResourceLimits {
     pub max_recursion_depth: Option<f64>,
     /// Maximum suspensions (host round trips) the pool will service (default: 1000).
     pub max_suspensions: Option<f64>,
+    /// Maximum cumulative seconds of pool-managed system sleeps.
+    pub max_total_sleep_secs: Option<f64>,
 }
 
 /// Extracts a Rust resource-limit configuration from a JS resource-limit object.
@@ -65,6 +67,11 @@ pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
     }
     if let Some(max) = js_limits.max_suspensions {
         limits = limits.max_suspensions(js_number_to_usize(max, "maxSuspensions")?);
+    }
+    if let Some(secs) = js_limits.max_total_sleep_secs {
+        limits = limits.max_total_sleep(
+            Duration::try_from_secs_f64(secs).map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?,
+        );
     }
 
     Ok(limits)

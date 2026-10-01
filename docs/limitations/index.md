@@ -1,6 +1,6 @@
 # Limitations
 
-Monty is not a Python implementation aiming for completeness.
+Monty is a sandbox, not a Python implementation aiming for completeness.
 It implements enough Python for a model to express what it wants to do, and deliberately stops there.
 Everything it does implement is meant to behave exactly like CPython 3.14; everywhere it does not, the divergence is
 written down.
@@ -50,7 +50,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions
 - Wildcard imports (`from m import *`)
-- Complex literals (`1j`) and t-strings
+- t-strings
 
 **Missing in other ways:**
 

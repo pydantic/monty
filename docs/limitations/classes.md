@@ -126,9 +126,8 @@ order and error wording, but with these divergences:
     interpreter on the native Rust call stack once per nesting level, unlike
     ordinary Python-level recursion, which lives on a heap-allocated frame stack
     and is bounded at 1000 by the normal recursion limit. A native stack overflow
-    would abort the process, which is fatal for the in-process/wasm API sharing
-    the host process, so this native re-entry is capped independently at a much
-    lower, fixed depth, raising a catchable `RecursionError` once exceeded. So
+    would abort the native process (the caller for direct Rust use, otherwise the worker) or trap a WASM worker.
+    This native re-entry is capped independently at a much lower, fixed depth, raising a catchable `RecursionError` once exceeded. So
     infinite `__repr__` recursion raises `RecursionError` (matching CPython's
     outcome, though not its exact depth), but a deep-but-finite chain that
     CPython's default 1000-frame limit would still render may raise

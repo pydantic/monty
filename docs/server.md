@@ -18,7 +18,7 @@ The server is closed-source and distributed as a container image.
     [contact us](https://pydantic.dev/contact). We're currently offering Full Monty free to a select set of
     organizations while we finalize the commercial platform.
 
-## Why Monty over WebSocket
+## Why Full Monty over OSS Monty
 
 Running Monty on a remote server provides:
 
@@ -28,7 +28,7 @@ Running Monty on a remote server provides:
     execution, instead of every service running its own worker pool.
 - **Density**: Monty workers have a small baseline footprint (as little as 2MB), plus additional memory for limits and
     optional type checking, so a single machine can run hundreds.
-- **Same behavior as local Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
+- **Same behavior as OSS Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
     client directories, so code that runs against a local pool runs unchanged against the server.
 - **Full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
     exposed through the same interface.
@@ -253,10 +253,15 @@ Use `/health` for readiness and `/` for liveness.
 
 On SIGTERM, the server stops listening immediately, so new HTTP and WebSocket connections are refused rather than
 receiving a 503 response. Existing WebSocket sessions remain connected while the server drains. Each existing session's
-next request raises `pydantic_monty.MontyShutdown`; that protocol request did not run and can be resent after restoration.
-Its `dump` contains the signed session state when state exists and dumping succeeds, or `None` otherwise. Check that the
-dump is not `None`, then restore an idle dump on a fresh session with `await session.load_session(exc.dump)` before
-resending the request; a dump captured while a feed is suspended instead uses
+next request is answered with a shutdown instead of being run.
+With a session store, the server parks the session first and the client resumes it on another replica without the
+caller noticing; see [stored sessions](api/python/websocket.md#stored-sessions).
+Otherwise, or when the session has no ID, or when that resume fails or is disabled, the request raises
+`pydantic_monty.MontyShutdown`; it did not run and can be resent after restoration.
+Its `dump` is the session's ID, which restores the session on another replica sharing the store, or `None` when
+nothing could be stored: the server has no store, the session is ephemeral, or the park failed. Check that the
+dump is not `None`, then restore an idle session on a fresh one with `await session.load_session(exc.dump)` before
+resending the request; a session that was suspended mid-feed instead uses
 `await session.load_snapshot(exc.dump, ...)`.
 
 If the interrupted request was answering an external function or `os` callback, the host already ran that callback and
@@ -264,9 +269,11 @@ the restored snapshot re-announces it. Make such callbacks idempotent or dedupli
 shutdown.
 
 Sessions that remain silent through `--drain-grace` (default 30s) are dropped without a dump.
-Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`. Use the same `MONTY_SERVER_DUMP_KEY` on every
-replica so the client can restore a dump after reconnecting to a different one.
-Dumps only load into a worker of the same Monty version, so roll clients and servers together.
+Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`. Point every replica at the same store with the
+same `MONTY_SERVER_DUMP_KEY`: a session parked or dumped by one replica is loaded by another.
+A server without a store refuses `dump()` and `load_session()` / `load_snapshot()` with `MontyRuntimeError`, and its
+drain hands nothing back.
+Stored sessions only load into a worker of the same Monty version, so roll clients and servers together.
 
 ## Tracing
 

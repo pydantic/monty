@@ -31,9 +31,11 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
+#[cfg(unix)]
+use monty_types::SourceRange;
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, PrintStream, ResourceLimits, TypeCheckingConfig,
-    TypeCheckingFormat,
+    CallArgs, DateTimeSource, ExcType, MontyException, MontyObject, NameLookupResult, OsPolicy, PrintStream,
+    RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
@@ -228,6 +230,7 @@ async fn feed_and_finish_reuses_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let first_pid = session.pid().unwrap();
+    let first_id = session.worker_id().unwrap();
 
     let event = session
         .feed("x = 40\nx + 2", vec![], vec![], false, &mut no_print)
@@ -248,6 +251,7 @@ async fn feed_and_finish_reuses_the_worker() {
     // at NameLookup and resolving it as undefined raises NameError
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_eq!(session.pid().unwrap(), first_pid);
+    assert_eq!(session.worker_id(), Some(first_id));
     let event = session.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
     assert!(matches!(event, TurnEvent::NameLookup { name, .. } if name == "x"));
     let err = session
@@ -1876,6 +1880,128 @@ async fn suspension_time_does_not_consume_the_duration_budget() {
     session.finish().await.unwrap();
 }
 
+/// Clock and entropy requests cost no turns; system sleeps reach the caller capped.
+/// Fixed clocks and seeds survive `Configure` unchanged.
+#[tokio::test]
+async fn os_policy_are_answered_in_the_worker() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            os_policy: OsPolicy {
+                sleep: SleepMode::System(Duration::from_millis(10)),
+                ..OsPolicy::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "import asyncio, random, time\nfrom datetime import date\nt = time.time()\ntime.sleep(3600)\n\
+                (date.today().year >= 2026, time.time() >= t + 0.01, \
+                asyncio.run(asyncio.sleep(3600, 'woken')), 0 <= random.random() < 1)";
+    let mut event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    let mut slept = vec![];
+    while let TurnEvent::OsCall {
+        function_name,
+        system_sleep,
+        ..
+    } = &event
+    {
+        let delay = system_sleep.expect("only the sleeps reach the caller");
+        slept.push((function_name.clone(), delay));
+        sleep(delay).await;
+        event = session
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        slept,
+        vec![
+            ("system.sleep".to_owned(), Duration::from_millis(10)),
+            ("system.async_sleep".to_owned(), Duration::from_millis(10)),
+        ]
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::bool(true),
+            MontyObject::bool(true),
+            MontyObject::string("woken"),
+            MontyObject::bool(true),
+        ])
+    );
+    session.finish().await.unwrap();
+
+    let mut session = pool
+        .checkout(&ReplConfig {
+            os_policy: OsPolicy {
+                datetime: DateTimeSource::Fixed {
+                    unix_seconds: 1_700_000_000,
+                    microsecond: 0,
+                },
+                sleep: SleepMode::Zero,
+                random_start: RandomStart::Seed(RandomSeed::Int(42.into())),
+                ..OsPolicy::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    // CPython: random.seed(42); random.random()
+    let code = "import random, time\ntime.sleep(3600)\n(time.time(), random.random())";
+    let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([
+            MontyObject::float(1_700_000_000.0),
+            MontyObject::float(0.639_426_798_457_883_7),
+        ])
+    );
+    session.finish().await.unwrap();
+}
+
+#[tokio::test]
+async fn call_host_delivers_clock_and_sleeps_as_os_calls() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            os_policy: OsPolicy {
+                datetime: DateTimeSource::CallHost,
+                sleep: SleepMode::CallHost,
+                ..OsPolicy::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "import time
+time.sleep(1.5)
+time.time()";
+    let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::OsCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "time.sleep");
+    assert_eq!(args, CallArgs::from(vec![MontyObject::float(1.5)]));
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::OsCall { function_name, .. } = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "time.time");
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::float(7.5)), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(7.5));
+    session.finish().await.unwrap();
+}
+
 /// The pool aborts the first suspension past the limit uncatchably. The
 /// session remains usable, but its suspension budget stays spent.
 #[tokio::test]
@@ -2053,11 +2179,13 @@ async fn workers_are_recycled_after_max_checkouts() {
 
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let first_pid = session.pid().unwrap();
+    let first_id = session.worker_id().unwrap();
     session.finish().await.unwrap();
     assert_eq!(pool.idle_workers(), 0, "worker must be retired, not pooled");
 
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_ne!(session.pid().unwrap(), first_pid);
+    assert_ne!(session.worker_id().unwrap(), first_id);
     session.finish().await.unwrap();
 }
 
@@ -2521,6 +2649,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
         ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
+            position: Some(position()),
         }))
     };
     // `Ok` answers Configure, then the honest suspension and the rewound one.
@@ -2579,6 +2708,40 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
     assert_eq!(timeout, grace);
 }
 
+/// A child that predates the position field announces suspensions without
+/// it; the parent reports an unknown range rather than rejecting them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_suspension_without_a_position_reads_as_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&child_event(pb::child_event::Kind::NameLookup(
+        pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: None,
+            position: None,
+        },
+    ))));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let event = checkout.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::NameLookup { name, position, .. } = event else {
+        panic!("expected a name lookup, got {event:?}");
+    };
+    assert_eq!(name, "x");
+    assert_eq!(position, SourceRange::unknown());
+}
+
 /// A second raw `Feed` restarts the parent's feed clock, as `Checkout::feed`
 /// does — the previous feed's total must not shorten the new feed's backstop.
 ///
@@ -2599,6 +2762,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
         ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
+            position: Some(position()),
         }))
     }));
     let replies_path = dir.path().join("replies.bin");
@@ -2668,4 +2832,15 @@ async fn a_disabled_grace_leaves_the_sandbox_limit_in_charge() {
     assert_eq!(exc.exc_type().to_string(), "TimeoutError");
     session.finish().await.unwrap();
     assert_eq!(pool.idle_workers(), 1);
+}
+
+/// The suspension position every hand-built event carries; only the
+/// unix-gated forged-frame tests build events.
+#[cfg(unix)]
+fn position() -> pb::SourceRange {
+    pb::SourceRange {
+        filename: "main.py".to_owned(),
+        start: 0,
+        end: 1,
+    }
 }

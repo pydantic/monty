@@ -18,8 +18,8 @@ use monty_types::MontyException;
 use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
-        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, PrintFuture, ReplConfig, ResumeValue,
-        TurnEvent, on_print_sync,
+        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, Persistence, PrintFuture, ReplConfig,
+        ResumeValue, TurnEvent, on_print_sync,
     },
     pool::Pool,
 };
@@ -94,6 +94,11 @@ pub struct PoolConfig {
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
+    /// Resume a session transparently when a relay that stores sessions answers
+    /// a request with `Shutdown`: the checkout redials, reloads the state the
+    /// shutdown named and re-sends the request the relay reported it did not run. The session's suspension
+    /// and sleep totals carry over. WebSocket transport only; on by default.
+    pub auto_resume: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -130,6 +135,7 @@ impl PoolConfig {
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
+            auto_resume: true,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
@@ -187,12 +193,14 @@ pub enum PoolError {
         context: String,
     },
     /// The remote server is shutting down and did **not** run the request —
-    /// re-running it on a fresh session is safe. `dump` carries the session
-    /// state captured just before shutdown, restorable via
-    /// [`Checkout::restore`] on a fresh checkout.
+    /// re-running it on a fresh session is safe. `dump` restores the session
+    /// via [`Checkout::restore`] on a fresh checkout: the session's ID from a
+    /// relay that stores sessions, returned only when
+    /// [`PoolConfig::auto_resume`] could not resume it.
     Shutdown {
-        /// Restorable session dump, absent when there was no session yet or
-        /// the server's dump failed.
+        /// What restores the session; absent when there is nothing to load —
+        /// no session yet, an ephemeral one, a relay without storage, or a
+        /// park that failed.
         dump: Option<Vec<u8>>,
     },
 }
@@ -249,7 +257,7 @@ impl fmt::Display for PoolError {
             Self::Disconnected { context } => write!(f, "monty worker connection closed while {context}"),
             Self::Shutdown { dump } => match dump {
                 Some(_) => {
-                    f.write_str("monty server is shutting down; the request did not run (session dump attached)")
+                    f.write_str("monty server is shutting down; the request did not run (restorable state attached)")
                 }
                 None => f.write_str("monty server is shutting down; the request did not run"),
             },

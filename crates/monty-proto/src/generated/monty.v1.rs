@@ -17,7 +17,7 @@ pub struct Unit {}
 pub struct MontyNode {
     #[prost(
         oneof = "monty_node::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub kind: ::core::option::Option<monty_node::Kind>,
 }
@@ -100,6 +100,8 @@ pub mod monty_node {
         /// the placeholder its repr shows ("\[...\]", "(...)", "{...}" or "...").
         #[prost(string, tag = "30")]
         Cycle(crate::budgeted_prost::alloc::string::String),
+        #[prost(message, tag = "31")]
+        Complex(super::Complex),
     }
 }
 /// One key/value entry as node indexes. Used for dicts, attrs and kwargs:
@@ -122,6 +124,16 @@ pub struct BigInt {
     pub negative: bool,
     #[prost(bytes = "vec", tag = "2")]
     pub magnitude: crate::budgeted_prost::alloc::vec::Vec<u8>,
+}
+/// A Python complex as its two float parts. Both are always present: a plain
+/// `double` omits its default on the wire, which would turn `-0.0` into `0.0`.
+#[derive(Clone, Copy, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct Complex {
+    #[prost(double, optional, tag = "1")]
+    pub real: ::core::option::Option<f64>,
+    #[prost(double, optional, tag = "2")]
+    pub imag: ::core::option::Option<f64>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
@@ -401,6 +413,20 @@ pub struct CodeLoc {
     #[prost(uint32, tag = "2")]
     pub column: u32,
 }
+/// Where the expression that suspended execution is in the source. `filename`
+/// names the source as a traceback frame does: `<python-input-N>` for the
+/// session's N-th feed, or `<string>` inside an `eval()` / `exec()` string.
+/// `start` and `end` are UTF-8 byte offsets into that source, `end` exclusive.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SourceRange {
+    #[prost(string, tag = "1")]
+    pub filename: crate::budgeted_prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub start: u32,
+    #[prost(uint32, tag = "3")]
+    pub end: u32,
+}
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct StackFrame {
@@ -446,6 +472,166 @@ pub struct ResourceLimits {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "7")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Cumulative budget for system sleeps, enforced by the parent.
+    #[prost(uint64, optional, tag = "8")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
+}
+/// Mirrors monty's `OsPolicy`: the clock, zone, sleep, process clock and
+/// initial randomness a session gets, and which of those it asks the host for.
+/// Each unset arm means that field's default.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct OsPolicy {
+    /// The zone naive `datetime.now()` and `date.today()` read in, and that
+    /// `astimezone()`, `%Z` and the `time` constants report. Absent = UTC.
+    #[prost(message, optional, tag = "4")]
+    pub timezone: ::core::option::Option<SandboxTimeZone>,
+    /// What `time.sleep()` and `asyncio.sleep()` do.
+    /// Absent (or with no arm set) = system sleep with the default maximum.
+    #[prost(message, optional, tag = "5")]
+    pub sleep: ::core::option::Option<SleepMode>,
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
+    #[prost(oneof = "os_policy::Datetime", tags = "1, 2, 3")]
+    pub datetime: ::core::option::Option<os_policy::Datetime>,
+    /// Where an unseeded `random` generator gets its first state.
+    #[prost(oneof = "os_policy::RandomStart", tags = "6, 7, 8")]
+    pub random_start: ::core::option::Option<os_policy::RandomStart>,
+    /// What `time.process_time()` and `time.thread_time()` report.
+    /// Absent (or with no arm set) = zero.
+    #[prost(oneof = "os_policy::ProcessTime", tags = "9, 10")]
+    pub process_time: ::core::option::Option<os_policy::ProcessTime>,
+}
+/// Nested message and enum types in `OsPolicy`.
+pub mod os_policy {
+    /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Datetime {
+        /// The child's clock.
+        #[prost(message, tag = "1")]
+        System(super::Unit),
+        /// Suspend to the parent's OS handler.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// One frozen instant, for reproducible runs.
+        #[prost(message, tag = "3")]
+        Fixed(super::FixedDateTime),
+    }
+    /// Where an unseeded `random` generator gets its first state.
+    #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum RandomStart {
+        /// From the child's own OS entropy.
+        #[prost(message, tag = "6")]
+        RandomSystem(super::Unit),
+        /// Suspend the first draw with an `os.urandom` call for 2496 bytes.
+        #[prost(message, tag = "7")]
+        RandomCallHost(super::Unit),
+        /// As `random.seed(seed)` would, for reproducible runs.
+        #[prost(message, tag = "8")]
+        Seed(super::RandomSeed),
+    }
+    /// What `time.process_time()` and `time.thread_time()` report.
+    /// Absent (or with no arm set) = zero.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum ProcessTime {
+        /// Always 0.0, so elapsed execution time is not observable in the sandbox.
+        #[prost(message, tag = "9")]
+        Zero(super::Unit),
+        /// The session's accumulated execution time.
+        #[prost(message, tag = "10")]
+        Elapsed(super::Unit),
+    }
+}
+/// Mirrors monty's `SandboxTimeZone`.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SandboxTimeZone {
+    #[prost(oneof = "sandbox_time_zone::Zone", tags = "1, 2, 3")]
+    pub zone: ::core::option::Option<sandbox_time_zone::Zone>,
+}
+/// Nested message and enum types in `SandboxTimeZone`.
+pub mod sandbox_time_zone {
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Zone {
+        /// UTC, the default.
+        #[prost(message, tag = "1")]
+        Utc(super::Unit),
+        /// An IANA zone name (`Europe/London`), resolved from the child's tz database.
+        #[prost(string, tag = "2")]
+        Named(crate::budgeted_prost::alloc::string::String),
+        /// A fixed offset from UTC, with a name if it has one.
+        #[prost(message, tag = "3")]
+        Fixed(super::TimeZone),
+    }
+}
+/// Mirrors monty's `SleepMode`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SleepMode {
+    #[prost(oneof = "sleep_mode::Mode", tags = "1, 2, 3")]
+    pub mode: ::core::option::Option<sleep_mode::Mode>,
+}
+/// Nested message and enum types in `SleepMode`.
+pub mod sleep_mode {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Mode {
+        /// The parent waits without invoking its OS handler.
+        #[prost(message, tag = "1")]
+        System(super::SystemSleep),
+        /// Suspend to the parent, which performs the wait.
+        #[prost(message, tag = "2")]
+        CallHost(super::Unit),
+        /// Return at once without waiting.
+        #[prost(message, tag = "3")]
+        Zero(super::Unit),
+    }
+}
+/// A sleep capped by the child and performed by the parent.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SystemSleep {
+    /// Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
+    #[prost(uint64, optional, tag = "1")]
+    pub max_micros: ::core::option::Option<u64>,
+}
+/// A frozen clock reading.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct FixedDateTime {
+    /// Seconds since the Unix epoch, UTC.
+    #[prost(int64, tag = "1")]
+    pub unix_seconds: i64,
+    /// 0..=999999; anything larger is rejected.
+    #[prost(uint32, tag = "2")]
+    pub microsecond: u32,
+}
+/// A `random.seed()` argument: the types CPython accepts.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct RandomSeed {
+    #[prost(oneof = "random_seed::Value", tags = "1, 2, 3, 4")]
+    pub value: ::core::option::Option<random_seed::Value>,
+}
+/// Nested message and enum types in `RandomSeed`.
+pub mod random_seed {
+    #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Value {
+        /// Arbitrary-size two's-complement little-endian bytes (`BigInt::to_signed_bytes_le`).
+        #[prost(bytes, tag = "1")]
+        Int(crate::budgeted_prost::alloc::vec::Vec<u8>),
+        /// Must be finite.
+        #[prost(double, tag = "2")]
+        Float(f64),
+        #[prost(string, tag = "3")]
+        Str(crate::budgeted_prost::alloc::string::String),
+        #[prost(bytes, tag = "4")]
+        Bytes(crate::budgeted_prost::alloc::vec::Vec<u8>),
+    }
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
@@ -554,7 +740,7 @@ pub mod parent_request {
 /// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
 /// worker can still be initialized by `Load` instead. Valid only when the
 /// worker has no session yet.
-#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Configure {
     #[prost(string, tag = "1")]
@@ -611,6 +797,18 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
+    /// Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
+    /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+    #[prost(message, optional, tag = "11")]
+    pub os_policy: ::core::option::Option<OsPolicy>,
+    /// Relay-only: whether a serving relay may store the session. Children ignore
+    /// it.
+    #[prost(enumeration = "Persistence", tag = "12")]
+    pub persistence: i32,
+    /// Relay-only: names the server-side profile to run the session under.
+    /// Absent = the relay's default. Children ignore it.
+    #[prost(string, optional, tag = "13")]
+    pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -699,18 +897,23 @@ pub struct ResumeFutures {
     pub values: ::core::option::Option<crate::WireArena>,
 }
 /// Requests an opaque serialized snapshot of the current session state
-/// (idle or suspended). The child stays usable afterwards. The bytes carry
-/// monty's own dump format, versioned independently of this schema, and can
-/// only be restored via `Load` by a child built with the same dump version.
+/// (idle or suspended). The session stays usable afterwards. The byte payload
+/// format is at the discretion of the remote (e.g. it may be an ID or a full dump
+/// of state). A relay without session storage answers `Error` and the session
+/// carries on.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
 /// the restored state was suspended, the child re-emits the suspension event so
-/// the parent learns the resume point; otherwise it replies `Ok`.
+/// the parent learns the resume point; otherwise it replies `Ok`. A relay
+/// without session storage answers `Error` and the session carries on.
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Load {
+    /// Either:
+    /// - Dump bytes, or
+    /// - A previously named session ID from `ChildEvent::session_id`
     #[prost(bytes = "vec", tag = "1")]
     pub state: crate::budgeted_prost::alloc::vec::Vec<u8>,
 }
@@ -779,6 +982,9 @@ pub struct ChildEvent {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "26")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
+    /// Parent-enforced sleep budget, also reported on `Load`.
+    #[prost(uint64, optional, tag = "27")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
@@ -787,6 +993,12 @@ pub struct ChildEvent {
     pub restored_script_name: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
     >,
+    /// The session this connection now holds, set only by a remote that stores
+    /// sessions, on its first reply to `Configure` or `Load` whatever that
+    /// reply's kind. Unset for ephemeral sessions or for remotes that don't
+    /// support persistence.
+    #[prost(bytes = "vec", optional, tag = "28")]
+    pub session_id: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
@@ -868,9 +1080,12 @@ pub struct OsCall {
     /// call a future may answer at all.
     #[prost(bool, tag = "51")]
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source; absent as on `FunctionCall`.
+    #[prost(message, optional, tag = "52")]
+    pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -928,6 +1143,15 @@ pub mod os_call {
         pub key: crate::budgeted_prost::alloc::string::String,
         #[prost(uint32, tag = "2")]
         pub default: u32,
+    }
+    /// A `time`-module clock read. `caller` names the Python function that asked
+    /// (`time.time`, `time.monotonic`, ...), so a parent may answer them
+    /// differently; they all share the `time.time` call name.
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct TimeCall {
+        #[prost(string, tag = "1")]
+        pub caller: crate::budgeted_prost::alloc::string::String,
     }
     /// datetime.now(tz) — the VM validates the argument to None-or-timezone
     /// before suspending, so the wire carries a typed TimeZone rather than an
@@ -1049,15 +1273,21 @@ pub mod os_call {
         /// os.urandom(size), also how `random` seeds an unseeded generator.
         #[prost(message, tag = "25")]
         Urandom(Urandom),
-        /// time.time()
+        /// time.time() and the other time-module clock reads
         #[prost(message, tag = "26")]
-        Time(super::Unit),
-        /// time.sleep(seconds)
+        Time(TimeCall),
+        /// time.sleep(seconds) under `call_host`: the handler waits
         #[prost(message, tag = "27")]
         Sleep(Sleep),
-        /// asyncio.sleep(delay)
+        /// asyncio.sleep(delay) under `call_host`
         #[prost(message, tag = "28")]
         AsyncSleep(AsyncSleep),
+        /// System sleeps: capped by the child, charged to `max_total_sleep` and
+        /// waited out by the parent without invoking its OS handler.
+        #[prost(message, tag = "29")]
+        SystemSleep(Sleep),
+        #[prost(message, tag = "30")]
+        AsyncSystemSleep(AsyncSleep),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
@@ -1074,6 +1304,10 @@ pub struct NameLookup {
     /// a class type (a lazy class attribute): the uuid of the receiver.
     #[prost(message, optional, tag = "2")]
     pub object_id: ::core::option::Option<Uuid>,
+    /// Where the name (or attribute access) is in the source; absent as on
+    /// `FunctionCall`.
+    #[prost(message, optional, tag = "3")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
 /// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
@@ -1082,6 +1316,10 @@ pub struct NameLookup {
 pub struct ResolveFutures {
     #[prost(uint32, repeated, tag = "1")]
     pub pending_call_ids: crate::budgeted_prost::alloc::vec::Vec<u32>,
+    /// Where the main task's blocked `await` is in the source; absent as on
+    /// `FunctionCall`.
+    #[prost(message, optional, tag = "2")]
+    pub position: ::core::option::Option<SourceRange>,
 }
 /// Turn end: the snippet completed with this value. The session is ready for
 /// the next `Feed`.
@@ -1144,9 +1382,10 @@ pub struct FatalError {
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct ShutdownDump {
-    /// Session state captured immediately before shutdown (same bytes as
-    /// `DumpResult.state`), restorable into a fresh worker via `Load`. Absent
-    /// when there was no session yet or the dump itself failed.
+    /// What `Load` restores the session from on a fresh connection: the ID a
+    /// relay with session storage parked it under. Absent when there is nothing
+    /// to load: no session yet, an ephemeral session, a relay without storage, or
+    /// a park that failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
 }
@@ -1199,6 +1438,50 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
+}
+/// How a serving relay treats the session's state; children ignore it.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    crate::budgeted_prost::Enumeration
+)]
+#[prost(prost_path = "crate::budgeted_prost")]
+#[repr(i32)]
+pub enum Persistence {
+    /// The relay's default.
+    Unspecified = 0,
+    /// Never stored by the relay on its own: no session ID and never parked.
+    Ephemeral = 1,
+    /// Parked on idle, drain or disconnect, and loadable by its session ID.
+    Stored = 2,
+}
+impl Persistence {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PERSISTENCE_UNSPECIFIED",
+            Self::Ephemeral => "PERSISTENCE_EPHEMERAL",
+            Self::Stored => "PERSISTENCE_STORED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PERSISTENCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "PERSISTENCE_EPHEMERAL" => Some(Self::Ephemeral),
+            "PERSISTENCE_STORED" => Some(Self::Stored),
             _ => None,
         }
     }

@@ -7,10 +7,10 @@
 //! module-level functions and the `random.Random` methods share one
 //! dispatcher, [`random_dispatch`], parameterised by the [`RandomTarget`].
 //!
-//! Entropy comes from the host: an unseeded generator suspends with an
-//! `os.urandom` call on its first draw, and the resume ([`apply_seed_random`])
-//! seeds it and re-runs the draw. See `limitations/random.md` for the
-//! divergences.
+//! The first draw seeds an unseeded generator according to `RandomStart`:
+//! OS entropy, a session seed, or an `os.urandom` host call. For host calls,
+//! [`apply_seed_random`] seeds the generator and retries the draw on resume.
+//! See `limitations/random.md` for divergences.
 
 use std::{
     cmp::Ordering,
@@ -136,9 +136,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: RandomFunctions, args: ArgValues) 
 /// Runs `function` against `target`'s generator, for module functions and
 /// `Random` methods alike.
 ///
-/// A draw from an unseeded generator suspends for host entropy instead,
-/// stashing the call in a [`RandomRetry`] that the resume replays once the
-/// generator is seeded. Only `seed(x)` and `setstate()` never need entropy.
+/// Unseeded generators initialize from `RandomStart`, except for `seed(x)` and
+/// `setstate()`. `CallHost` stores the call in a [`RandomRetry`] to replay after seeding.
 pub(crate) fn random_dispatch(
     target: RandomTarget,
     function: RandomFunctions,
@@ -148,8 +147,19 @@ pub(crate) fn random_dispatch(
     match function {
         RandomFunctions::Seed => seed(target, args, vm),
         RandomFunctions::Setstate => setstate(target, args, vm).map(CallResult::Value),
-        _ if !target.is_seeded(vm) => Ok(request_entropy(target, Some(RandomRetry { function, args }), vm)),
-        _ => call_seeded(target, function, args, vm).map(CallResult::Value),
+        _ => {
+            if !target.is_seeded(vm) {
+                match vm.random.first_state(target, &vm.env.os_policy.random_start) {
+                    Ok(Some(state)) => target.reseed(vm, state),
+                    Ok(None) => return Ok(request_entropy(target, Some(RandomRetry { function, args }), vm)),
+                    Err(err) => {
+                        args.drop_with(vm);
+                        return Err(err);
+                    }
+                }
+            }
+            call_seeded(target, function, args, vm).map(CallResult::Value)
+        }
     }
 }
 
@@ -288,17 +298,21 @@ struct SeedArgs {
     version: Value,
 }
 
-/// `seed(a=None, version=2)`: `None` asks the host for entropy (and answers
-/// `None` on resume); anything else seeds synchronously.
+/// `seed(a=None, version=2)`: `None` takes a fresh state according to `RandomStart`;
+/// explicit seeds follow `random.py`.
 fn seed(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let SeedArgs { a, version } = SeedArgs::from_args(args, vm)?;
     defer_drop!(a, vm);
     defer_drop!(version, vm);
-    if matches!(a, Value::None) {
-        return Ok(request_entropy(target, None, vm));
-    }
-    let key = seed_key_from_value(a, version_number(version), vm)?;
-    target.reseed(vm, Mt19937::from_key(&key));
+    let state = if matches!(a, Value::None) {
+        match vm.random.fresh_state(&vm.env.os_policy.random_start)? {
+            Some(state) => state,
+            None => return Ok(request_entropy(target, None, vm)),
+        }
+    } else {
+        Mt19937::from_key(&seed_key_from_value(a, version_number(version), vm)?)
+    };
+    target.reseed(vm, state);
     Ok(CallResult::Value(Value::None))
 }
 

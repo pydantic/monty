@@ -16,7 +16,7 @@ use std::fmt::{self, Write};
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
 use monty_types::{
-    MontyUuid, bytes_repr,
+    MontyUuid, SourceRange, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
 use opentelemetry::Value as OtelValue;
@@ -86,6 +86,14 @@ impl Recorder {
     pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
         self.logfire = Some(context.logfire());
         self.adapter_context = Some(context);
+    }
+
+    /// Marks the open session span as one resumed on this worker after its
+    /// relay shut down, so a trace shows where the session moved.
+    pub(crate) fn mark_resumed(&mut self) {
+        if let Some(session) = &self.session {
+            session.set_attribute("resumed", true);
+        }
     }
 
     /// Starts recording one turn; called once the frame is on the wire, so a
@@ -192,6 +200,10 @@ impl Recorder {
                     "run code",
                     code = &code,
                     code.language = "python",
+                    // the proposed `sandbox.*` conventions: which attribute
+                    // holds the executed code, and its language
+                    sandbox.execution.code.attribute = "code",
+                    sandbox.execution.language = "python",
                     inputs = inputs,
                     skip_type_check = f.skip_type_check,
                     length_limit_exceeded = cut.then_some(true),
@@ -298,7 +310,8 @@ impl Recorder {
             Some(pb::child_event::Kind::FunctionCall(c)) => {
                 let (args, kwargs, args_cut) = render_call_arguments(c);
                 let (function_name, name_cut) = truncate_str(&c.function_name);
-                let cut = args_cut | name_cut;
+                let position = PositionAttrs::new(c.position.as_ref());
+                let cut = args_cut | name_cut | position.cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "call {function_name}",
@@ -307,6 +320,9 @@ impl Recorder {
                     kwargs = kwargs,
                     call_id = c.call_id,
                     object_id = c.object_id.as_ref().map(MontyUuid::to_string),
+                    sandbox.code.file.path = position.file,
+                    sandbox.code.offset.start = position.start,
+                    sandbox.code.offset.end = position.end,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
@@ -322,11 +338,17 @@ impl Recorder {
                 self.pending = Some(os_call_span(c, micros, max_feed_duration, &self.context_span()));
             }
             Some(pb::child_event::Kind::NameLookup(n)) => {
-                let (name, cut) = truncate_str(&n.name);
+                let (name, name_cut) = truncate_str(&n.name);
+                let range = n.position.as_ref().map(SourceRange::from);
+                let position = PositionAttrs::new(range.as_ref());
+                let cut = name_cut | position.cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "name lookup {name}",
                     name = name,
+                    sandbox.code.file.path = position.file,
+                    sandbox.code.offset.start = position.start,
+                    sandbox.code.offset.end = position.end,
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
                     // filled in by the answering `ResumeNameLookup`, or an `AbortFeed`
@@ -337,11 +359,17 @@ impl Recorder {
                 self.pending = Some(OpenSpan::new(span, cut));
             }
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
-                let (pending_call_ids, cut) = render_call_ids(&r.pending_call_ids);
+                let (pending_call_ids, ids_cut) = render_call_ids(&r.pending_call_ids);
+                let range = r.position.as_ref().map(SourceRange::from);
+                let position = PositionAttrs::new(range.as_ref());
+                let cut = ids_cut | position.cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "resolve futures",
                     pending_call_ids = pending_call_ids,
+                    sandbox.code.file.path = position.file,
+                    sandbox.code.offset.start = position.start,
+                    sandbox.code.offset.end = position.end,
                     length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
@@ -639,6 +667,41 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
     }
 }
 
+/// The `sandbox.code.*` attributes locating a suspension in the sandboxed
+/// source; OpenTelemetry's `code.*` keys describe the host code instead.
+///
+/// Every value is absent when the child sent no position. Offsets are UTF-8
+/// byte offsets into the source, `i64` because the span visitor renders
+/// unsigned values as strings.
+struct PositionAttrs {
+    /// The child-supplied filename, capped like every other attribute.
+    file: Option<String>,
+    cut: bool,
+    start: Option<i64>,
+    end: Option<i64>,
+}
+
+impl PositionAttrs {
+    /// The attributes of a suspension's position, or none when it sent none.
+    fn new(position: Option<&SourceRange>) -> Self {
+        let (file, cut) = capped_filename(position.map(|p| p.filename.as_str()));
+        Self {
+            file,
+            cut,
+            start: position.map(|p| i64::from(p.start)),
+            end: position.map(|p| i64::from(p.end)),
+        }
+    }
+}
+
+/// Caps a position's filename like any other attribute; absent stays absent.
+fn capped_filename(filename: Option<&str>) -> (Option<String>, bool) {
+    filename.map_or((None, false), |name| {
+        let (name, cut) = truncate_str(name);
+        (Some(name), cut)
+    })
+}
+
 /// Opens the span for one os call suspension: the function name plus each
 /// argument as an `args.*` attribute named after its proto field. Every path
 /// is a virtual sandbox path.
@@ -648,9 +711,11 @@ fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
 /// call would surface every unused argument as `null` in the UI.
 fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64>, parent: &Span) -> OpenSpan {
     let call_id = os_call.call_id;
+    let range = os_call.position.as_ref().map(SourceRange::from);
+    let position = PositionAttrs::new(range.as_ref());
     // set by the arms whose arguments can be cut; recorded once below, so that
     // the answering `ResumeCall` can tell whether the flag is already there
-    let mut args_cut = false;
+    let mut args_cut = position.cut;
     /// One span with only the given `args.*` attributes plus the shared tail.
     macro_rules! os_call {
         ($function:expr $(, $($key:ident).+ = $value:expr)* $(,)?) => {
@@ -660,6 +725,9 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
                 function = $function,
                 $($($key).+ = $value,)*
                 call_id = call_id,
+                sandbox.code.file.path = position.file,
+                sandbox.code.offset.start = position.start,
+                sandbox.code.offset.end = position.end,
                 total_execution_micros = micros,
                 max_feed_duration_micros = max_feed_duration,
                 // filled in by the answering `ResumeCall`, or an `AbortFeed`
@@ -748,6 +816,8 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
         Some(Call::Time(_)) => os_call!("time"),
         Some(Call::Sleep(s)) => os_call!("sleep", args.seconds = s.seconds),
         Some(Call::AsyncSleep(s)) => os_call!("async_sleep", args.delay = s.delay),
+        Some(Call::SystemSleep(s)) => os_call!("system_sleep", args.seconds = s.seconds),
+        Some(Call::AsyncSystemSleep(s)) => os_call!("async_system_sleep", args.delay = s.delay),
         None => os_call!(MISSING),
     });
     if args_cut {
@@ -986,15 +1056,23 @@ mod tests {
 
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
-    use monty_types::{CallArgs, MontyObject, NameLookupResult};
+    use monty_types::{CallArgs, MontyObject, NameLookupResult, SourceRange};
     use opentelemetry::{logs::AnyValue, trace::SpanId};
     use opentelemetry_sdk::{
         logs::{InMemoryLogExporter, SimpleLogProcessor},
         trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
     };
 
-    use super::{ATTR_SIZE_LIMIT, Recorder, bytes_attr, render_ext_result};
+    use super::{ATTR_SIZE_LIMIT, PositionAttrs, Recorder, bytes_attr, render_ext_result};
 
+    /// The suspension position every hand-built event carries.
+    fn position() -> SourceRange {
+        SourceRange {
+            filename: "main.py".to_owned(),
+            start: 0,
+            end: 7,
+        }
+    }
     /// Every subscriber these tests install, held for the life of the process.
     ///
     /// `set_local_logfire` registers the subscriber with tracing-core, which
@@ -1037,9 +1115,11 @@ mod tests {
             total_execution_micros: 42,
             max_suspensions: None,
             restored_script_name: None,
+            session_id: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         }
     }
 
@@ -1074,6 +1154,7 @@ mod tests {
             1,
             None,
             false,
+            position(),
         ))));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
@@ -1107,7 +1188,13 @@ mod tests {
         // than child records — which leaves this session with no records at all
         assert_eq!(attr(feed, "output"), Some(4.into()));
         assert_eq!(attr(feed, "total_execution_micros"), Some(42.into()));
+        assert_eq!(attr(feed, "sandbox.execution.code.attribute"), Some("code".into()));
+        assert_eq!(attr(feed, "sandbox.execution.language"), Some("python".into()));
         assert_eq!(attr(call, "return_value"), Some(4.into()));
+        // where in the sandboxed source the call sits, from the event's position
+        assert_eq!(attr(call, "sandbox.code.file.path"), Some("main.py".into()));
+        assert_eq!(attr(call, "sandbox.code.offset.start"), Some(0.into()));
+        assert_eq!(attr(call, "sandbox.code.offset.end"), Some(7.into()));
         assert!(logs.get_emitted_logs().unwrap().is_empty());
     }
 
@@ -1125,6 +1212,7 @@ mod tests {
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "fetch".to_owned(),
             object_id: None,
+            position: Some((&position()).into()),
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             NameLookupResult::from(MontyObject::string("<function>".to_owned())).into(),
@@ -1133,6 +1221,7 @@ mod tests {
             call_id: 1,
             values: None,
             allow_eager_await: false,
+            position: Some((&position()).into()),
             call: Some(Call::WriteText(pb::os_call::TextWrite {
                 path: "/mnt/data/f.txt".to_owned(),
                 data: long.clone(),
@@ -1175,9 +1264,11 @@ mod tests {
             total_execution_micros: 42,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
+            session_id: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
         recorder.event(&event(pb::child_event::Kind::DumpResult(pb::DumpResult {
@@ -1227,9 +1318,11 @@ mod tests {
             total_execution_micros: 42,
             max_suspensions: None,
             restored_script_name: Some("restored.py".to_owned()),
+            session_id: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            max_total_sleep_micros: None,
         });
         recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1".to_owned(),
@@ -1263,6 +1356,7 @@ mod tests {
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "value".to_owned(),
             object_id: None,
+            position: Some((&position()).into()),
         })));
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             NameLookupResult::from(MontyObject::int(1)).into(),
@@ -1339,6 +1433,14 @@ mod tests {
         assert!(cut);
         assert_eq!(text.len(), ATTR_SIZE_LIMIT);
         assert_eq!(bytes_attr(b"hi\xff"), ("hi\\xff".to_owned(), false));
+
+        // a suspension's filename is child-supplied, so it is capped like the rest
+        let position = PositionAttrs::new(Some(&SourceRange {
+            filename: "f".repeat(ATTR_SIZE_LIMIT * 2),
+            ..SourceRange::unknown()
+        }));
+        assert!(position.cut);
+        assert_eq!(position.file.as_deref().map(str::len), Some(ATTR_SIZE_LIMIT));
     }
 
     /// The `Error` event's structured `exc_data.*` payload fields are capped
