@@ -68,15 +68,15 @@ field after a defaulted one
     them in `fields()`. Monty has no field kinds, so the mapping *is* the field
     list and class variables never appear in it.
 - **`Field` renders differently.** `repr(field)` follows CPython's layout but
-    writes `MISSING` where CPython writes `<dataclasses._MISSING_TYPE object at 0x..>`, and the stringized `type`.
+    writes the stringized `type`.
     `repr(type(field))` is `<class 'Field'>`,
     not `<class 'dataclasses.Field'>` (`Field.__name__` matches either way, so
     attribute errors read the same).
-- **`MISSING` is a marker, not an instance of its own type.** It compares by
-    identity as CPython's does, and `repr(MISSING)` is `MISSING` rather than
-    `<dataclasses._MISSING_TYPE object at 0x..>`, but it shares Monty's internal
-    marker type: `type(MISSING)` reports `<class 'typing._SpecialForm'>` where
-    CPython says `<class 'dataclasses._MISSING_TYPE'>`.
+- **Error messages name `MISSING`'s type with its module.** `MISSING | int` and
+    `MISSING.foo` say `'dataclasses._MISSING_TYPE'` where CPython says
+    `'_MISSING_TYPE'`. `type(MISSING)` and `__name__` match.
+- **`type(MISSING)()` raises** `TypeError: cannot create 'dataclasses._MISSING_TYPE' instances`, where CPython builds
+    a second, distinct object.
 - **A `default_factory` cannot observe a mid-construction change to the
     fields.** Every default and factory is read out of `__dataclass_fields__`
     before the first factory runs, so a factory that rebinds the mapping does
