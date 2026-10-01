@@ -975,13 +975,11 @@ impl CallArgs {
     }
 
     /// The positional arguments, in order.
-    #[must_use]
     pub fn args(&self) -> impl ExactSizeIterator<Item = ObjectRef<'_>> {
         self.arg_ids.iter().map(|id| self.graph.value(*id))
     }
 
     /// The keyword arguments as `(key, value)` views, in order.
-    #[must_use]
     pub fn kwargs(&self) -> impl ExactSizeIterator<Item = (ObjectRef<'_>, ObjectRef<'_>)> {
         self.kwarg_ids
             .iter()
@@ -1058,7 +1056,6 @@ impl NamedValues {
     }
 
     /// The `(name, value)` pairs, in order.
-    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, ObjectRef<'_>)> {
         self.names
             .iter()

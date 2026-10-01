@@ -46,7 +46,7 @@ pub fn allocate_into_baseline<T>(build: impl FnOnce() -> T) -> T {
     let value = build();
     let cost = LIVE_MEMORY.load(Ordering::Relaxed).saturating_sub(before);
     // `Err` just means the baseline is still unset
-    let _ = BASELINE_MEMORY.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |baseline| {
+    let _ = BASELINE_MEMORY.try_update(Ordering::Relaxed, Ordering::Relaxed, |baseline| {
         (baseline != usize::MAX).then(|| baseline.saturating_add(cost))
     });
     value
