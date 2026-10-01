@@ -1,6 +1,7 @@
-//! The `__dataclass_fields__` mapping `@dataclass` writes and the `Field`
-//! objects in it, where the behaviour cannot be dual-run against CPython
-//! because Monty stringizes annotations.
+//! The metadata `@dataclass` writes into a class namespace, where the
+//! behaviour cannot be dual-run against CPython: Monty stringizes annotations,
+//! and reads `__dataclass_params__` and `__post_init__` live where CPython
+//! bakes them into the methods it generates.
 //!
 //! Everything the two interpreters agree on lives in
 //! `test_cases/dataclass__is_dataclass.py` instead.
@@ -84,4 +85,48 @@ fn unmodelled_field_attributes_are_not_implemented() {
 #[test]
 fn classvars_are_absent_from_the_mapping() {
     assert_snapshot!(eval_str("repr(list(Point.__dataclass_fields__))"), @"['x', 'y']");
+}
+
+/// The options are read from `__dataclass_params__` at each use, so lending a
+/// class another one's params changes how it behaves. CPython's generated
+/// methods ignore the swap.
+#[test]
+fn rebound_params_change_the_options_in_force() {
+    let lend_frozen = "
+@dataclass(frozen=True)
+class Frozen:
+    a: int
+
+Point.__dataclass_params__ = Frozen.__dataclass_params__
+p = Point(1)
+";
+    assert_eq!(
+        expect_error(&format!("{lend_frozen}p.x = 2")),
+        "cannot assign to field 'x'"
+    );
+    assert_eq!(eval_str(&format!("{lend_frozen}str(hash(p) == hash((1, 5)))")), "True");
+}
+
+/// Params rebound to something else leave the class on CPython's default
+/// options rather than without any.
+#[test]
+fn foreign_params_fall_back_to_the_defaults() {
+    assert_eq!(
+        eval_str("Point.__dataclass_params__ = None\nstr(Point(1) == Point(1))"),
+        "True"
+    );
+    assert_eq!(
+        expect_error("Point.__dataclass_params__ = None\nhash(Point(1))"),
+        "unhashable type: 'Point'"
+    );
+}
+
+/// `__post_init__` is looked up at each construction, so a hook attached after
+/// decoration runs. CPython decides at decoration and never calls it.
+#[test]
+fn late_post_init_runs() {
+    assert_eq!(
+        eval_str("def hook(self):\n    self.y = 99\nPoint.__post_init__ = hook\nstr(Point(1).y)"),
+        "99"
+    );
 }
