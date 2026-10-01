@@ -1,0 +1,61 @@
+crates/monty-pool/src/telemetry/tracing.rs
+  s_5f0f63c3ca2d00::t_aef2771e51ac81 62-65,81,126,184,267,400-402
+  s_5f0f63c3ca2d00::t_965e9a7e81be3c 1431-1478
+crates/monty-js/__test__/external_modules.spec.ts
+  s_5f0f63c3ca2d00::t_965e9a7e81be3c 52-54,56-59,62-73,76-80
+  s_5f0f63c3ca2d00::t_afefa33a162f88 55,60,74
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_5f0f63c3ca2d00::t_5610b42f73ac57 517,531,599
+docs/limitations/modules.md
+  s_5f0f63c3ca2d00::t_aef2771e51ac81 9-10,13,15-16,99-100
+crates/monty/src/bytecode/vm/scheduler.rs
+  s_5f0f63c3ca2d00::t_aa04d55c5763b0 18,104-106
+crates/monty-python/src/external.rs
+  s_5f0f63c3ca2d00::t_aef2771e51ac81 272-279
+crates/monty-proto/src/lib.rs
+  s_5f0f63c3ca2d00::t_aef2771e51ac81 34-38
+crates/monty/src/bytecode/vm/mod.rs
+  s_5f0f63c3ca2d00::t_5610b42f73ac57 413-418,459,516,663-666,687,1004,1627,1629-1633,2062-2063
+crates/monty/src/bytecode/op.rs
+  s_5f0f63c3ca2d00::t_9c4e213da2152f 294,297-298,703,716,958
+crates/monty-pool/tests/websocket.rs
+  s_5f0f63c3ca2d00::t_965e9a7e81be3c 3011-3045
+crates/monty/tests/host_import.rs
+  s_5f0f63c3ca2d00::t_7199f3c70fe4a0 189
+  s_5f0f63c3ca2d00::t_e63a47977f3a5b 187
+  s_5f0f63c3ca2d00::t_3cc9e25dc72e19 5,149-158,160-186,188,190-192
+crates/monty/src/bytecode/compiler.rs
+  s_5f0f63c3ca2d00::t_9c4e213da2152f 1101-1102
+crates/monty-js/ts/session.ts
+  s_5f0f63c3ca2d00::t_aef2771e51ac81 646-653
+crates/monty-pool/src/checkout.rs
+  s_5f0f63c3ca2d00::t_aef2771e51ac81 1887-1892
+docs/host-functions.md
+  s_5f0f63c3ca2d00::t_aef2771e51ac81 357-358
+crates/monty/src/dump_format.rs
+  s_5f0f63c3ca2d00::t_aa04d55c5763b0 52,345
+docs/type-checking.md
+  s_5f0f63c3ca2d00::t_aef2771e51ac81 156-160
+crates/monty-python/tests/test_external_modules.py
+  s_5f0f63c3ca2d00::t_965e9a7e81be3c 55-60,62,75-76,78-79,81-87,90-91
+  s_5f0f63c3ca2d00::t_54492009324317 61,63-74,77,89
+  s_5f0f63c3ca2d00::t_68a05260df2737 80,88
+crates/monty/src/bytecode/vm/attr.rs
+  s_5f0f63c3ca2d00::t_5610b42f73ac57 76-78,100-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ab660bf53693c95ffb0fd55087c1add4eed9db25",
+  "prompts": {},
+  "sessions": {
+    "s_5f0f63c3ca2d00": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2a92e99-9dd9-4389-a144-529abbe98eb7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
