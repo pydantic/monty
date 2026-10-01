@@ -36,6 +36,11 @@ Once the tag is pushed, CI will:
 - Publish to NPM (`@pydantic/monty` + the platform packages carrying the napi library, the `monty` binary, and the wasm build)
 - Publish the Rust crates to crates.io (`monty`, `monty-types`, `monty-alloc`, `monty-fs`, `monty-runtime`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
 
+`crates/monty-js/scripts/assemble-packages.mjs` stages the main npm package under `npm/main/`
+and adds exact platform `optionalDependencies` there before packing.
+The development manifest and lockfile omit these dependencies so version bumps do not need unpublished packages.
+CI tests the assembled tarballs, then publishes the platform packages before the main package.
+
 Monitor the workflow at https://github.com/pydantic/monty/actions
 
 ## Pre-release Tags

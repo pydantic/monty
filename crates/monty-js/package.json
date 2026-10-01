@@ -102,12 +102,5 @@
     "trailingComma": "all",
     "singleQuote": true,
     "arrowParens": "always"
-  },
-  "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "1.0.0",
-    "@pydantic/monty-darwin-arm64": "1.0.0",
-    "@pydantic/monty-linux-x64-gnu": "1.0.0",
-    "@pydantic/monty-linux-arm64-gnu": "1.0.0",
-    "@pydantic/monty-win32-x64-msvc": "1.0.0"
   }
 }

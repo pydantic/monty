@@ -18,19 +18,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
-const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-
 /** Native triples that ship a binary (kept in lockstep with `napi.targets`). */
 const NATIVE_TRIPLES = ['darwin-x64', 'darwin-arm64', 'linux-x64-gnu', 'linux-arm64-gnu', 'win32-x64-msvc']
-
-// The main package must depend on every platform package at the exact same
-// version, otherwise npm installs a stale binary or shared library.
-const expected = Object.fromEntries(NATIVE_TRIPLES.map((t) => [`@pydantic/monty-${t}`, pkg.version]))
-if (JSON.stringify(pkg.optionalDependencies ?? {}) !== JSON.stringify(expected)) {
-  console.error('package.json optionalDependencies are out of sync with version/targets; expected:')
-  console.error(JSON.stringify(expected, null, 2))
-  process.exit(1)
-}
 
 for (const triple of NATIVE_TRIPLES) {
   const manifestPath = join(root, 'npm', triple, 'package.json')
