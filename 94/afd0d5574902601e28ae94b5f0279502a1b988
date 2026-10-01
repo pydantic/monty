@@ -1,0 +1,25 @@
+pyproject.toml
+  s_42b0e5b480be65::t_a85d9d0da0ccc6 27
+docs/examples.md
+  s_42b0e5b480be65::t_90ca88601a4bba 120-121,123-124
+examples/julia_image.py
+  s_42b0e5b480be65::t_a85d9d0da0ccc6 1-8,10-11,13-51,55-60,62-75,83
+  s_42b0e5b480be65::t_7fd6c393b5bcaa 52-54
+  s_42b0e5b480be65::t_1164563470690c 81-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "94afd0d5574902601e28ae94b5f0279502a1b988",
+  "prompts": {},
+  "sessions": {
+    "s_42b0e5b480be65": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9646229b-42aa-49af-9651-3a5017349f69",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

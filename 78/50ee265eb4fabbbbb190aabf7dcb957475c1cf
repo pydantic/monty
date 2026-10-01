@@ -1,0 +1,66 @@
+crates/monty/src/types/complex.rs
+  s_c28b48c3390bf6::t_6a6153516e2843 1-16,19-21,26-76,83-143,149-151,158,165-168,176,184-185,187-188,224-228,230-286,288-297,300-352,371-381,384,386,393-440,442-446,449-453,455-466,470-544,550-596,598-716,721,723-733,735-744,746-777,197-198,206,209,220,222-223,389,391-392,454
+  s_c28b48c3390bf6::t_2a823aec034c9a 18
+  s_c28b48c3390bf6::t_9b4d6492a9032f 22-25
+  s_c28b48c3390bf6::t_60b60b5bac14f8 77-82
+  s_c28b48c3390bf6::t_d02d5b50c832e7 144-148,152-157,159-164,169-175,177-182,186
+  s_c28b48c3390bf6::t_525ef4b5db910b 183,597
+  s_c28b48c3390bf6::t_0baf327ad39bd9 229
+  s_c28b48c3390bf6::t_beb156d46105bb 298-299
+  s_c28b48c3390bf6::t_59eb723c8cbf9a 353-370
+  s_c28b48c3390bf6::t_14e86fb4f6611e 383,734,745
+  s_c28b48c3390bf6::t_e063acff9a04b9 467-469,545-549
+  s_c28b48c3390bf6::t_4f0f36eb0e60ce 17,192-196,199-205,207-208,221,382,385,387-388,390,447-448,717-720,722
+  s_c28b48c3390bf6::t_d36cfccb72e58e 189-191,210-219
+  s_b280a2a99f7829::t_acdfd03e866737 287,441
+crates/monty/src/heap_data.rs
+  s_c28b48c3390bf6::t_14e86fb4f6611e 123,125,257,331,669
+  s_c28b48c3390bf6::t_beb156d46105bb 1157
+  s_b280a2a99f7829::t_acdfd03e866737 124
+crates/monty/test_cases/complex__all.py
+  s_c28b48c3390bf6::t_560da5fc2e0151 1-13,17-22,24-119,125-234,254,263-268,277-289,294-301,303-348,356-363,373-377,379-406,415-419,421-514,253,269,275-276,120,122-123
+  s_c28b48c3390bf6::t_59eb723c8cbf9a 14-16
+  s_c28b48c3390bf6::t_ab5b71d99953fd 23,364-372,378,407-414,420
+  s_c28b48c3390bf6::t_9b651f10e5b8f1 255-262
+  s_c28b48c3390bf6::t_8085f6c84be838 515
+  s_c28b48c3390bf6::t_528607e1d684ab 235-252
+  s_0157e6e84b7e1f::t_412eabd9d026f8 270,274,290-293,302,349-355
+  s_b280a2a99f7829::t_acdfd03e866737 121,124
+  s_b280a2a99f7829::t_8b3e34e2da1be1 271-273
+docs/limitations/complex.md
+  s_c28b48c3390bf6::t_3445830fadcb12 1-29,35
+  s_c28b48c3390bf6::t_21278b9639034f 30-32
+  s_b280a2a99f7829::t_acdfd03e866737 33-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7850ee265eb4fabbbbb190aabf7dcb957475c1cf",
+  "prompts": {},
+  "sessions": {
+    "s_0157e6e84b7e1f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf635df7-0d12-4bd3-ba95-d9848fa58051",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_b280a2a99f7829": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "04c1ad10-01b4-475d-96fd-294487be6afe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_c28b48c3390bf6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3392ac7-4c10-4214-a9c9-a744dc0a7787",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
