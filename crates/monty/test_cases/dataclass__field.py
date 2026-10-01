@@ -279,22 +279,6 @@ assert r.a == 'first'
 assert r.b == []
 
 
-# === __post_init__ is decided at decoration, not at construction ===
-# CPython bakes the call into the generated `__init__`, so a hook attached to
-# the class afterwards is never reached.
-@dataclass
-class Late:
-    a: int = 1
-
-
-def never(self):
-    raise AssertionError('a late __post_init__ must not run')
-
-
-Late.__post_init__ = never
-assert Late().a == 1
-
-
 # === A field object adopted twice keeps each class's own parameter name ===
 # Adoption writes the name into the `field()` object itself, so the second
 # class overwrites what the first recorded. Each class was built from its own

@@ -19,7 +19,10 @@ use std::{
 };
 
 use self::field::{adoptable_field, field_at, field_at_id};
-pub(crate) use self::{field::DataclassField, options::DataclassParams};
+pub(crate) use self::{
+    field::DataclassField,
+    options::{DataclassOptions, DataclassParams},
+};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     builtins::Builtins,
@@ -31,7 +34,7 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
-        Class, DataclassOptions, Dict, Instance, LazyHeapSet, Module, PyTrait,
+        Class, Dict, Instance, LazyHeapSet, Module, PyTrait,
         host_class::{host_class_type, write_dataclass_repr},
         instance::{class_defines, class_dunder, class_name, instance_attr},
     },
@@ -256,19 +259,12 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
         unreachable!("the fields mapping is a dict")
     };
     // Fields first, so nothing owns the mapping while the params allocation
-    // can still fail; a class left with fields alone reads back as a default one.
+    // can still fail; a class left with fields alone acts as a default one.
     store_dataclass_fields(&mut class, fields, vm)?;
     // Now that the mapping owns them, the `field()` objects the class body left
     // as attributes can be rewritten to what CPython leaves behind.
     rewrite_field_attributes(&mut class, fields_id, vm)?;
     store_dataclass_params(&mut class, options, vm)?;
-    // Last, so what the class acts on is only ever from a decoration that ran
-    // to completion. `__post_init__` is decided here rather than at
-    // construction: CPython bakes the call into the generated `__init__`, so a
-    // hook attached to the class afterwards is never reached.
-    let has_post_init = class_defines(*class_id, StaticStrings::PostInit.into(), vm);
-    class.set_has_post_init(has_post_init, vm);
-    class.set_dataclass_options(options, vm);
     Ok(guard.into_inner())
 }
 
@@ -342,9 +338,8 @@ fn store_dataclass_fields<'h>(class: &mut HeapRead<'h, Class>, fields: Value, vm
 /// Writes `__dataclass_params__` into the class namespace, as CPython's
 /// `_DataclassParams` records the same options.
 ///
-/// Purely introspection: the options the class *acts* on live on the [`Class`],
-/// so overwriting this entry reports something else without changing behaviour,
-/// exactly as it does in CPython.
+/// The synthesized dunders read the options back from here (see
+/// [`dataclass_options`]), so this entry is the class's only copy of them.
 fn store_dataclass_params<'h>(
     class: &mut HeapRead<'h, Class>,
     options: DataclassOptions,
@@ -616,14 +611,30 @@ fn class_fields_dict_id(class_id: HeapId, vm: &VM<'_>) -> Option<HeapId> {
 /// The options `@dataclass` recorded on `class_id`, or `None` for a class that
 /// is not a dataclass — the split the `Instance` dunders branch on.
 ///
-/// Still gated on the fields, which stay the mark of a dataclass: overwriting
+/// Gated on the fields, which stay the mark of a dataclass: overwriting
 /// `__dataclass_fields__` un-marks the class, as it does for `is_dataclass`.
 pub(crate) fn dataclass_options(class_id: HeapId, vm: &VM<'_>) -> Option<DataclassOptions> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         return None;
     };
     fields_dict_id(class.namespace(), vm)?;
-    Some(class.dataclass_options())
+    Some(namespace_options(class.namespace(), vm))
+}
+
+/// The options in a class namespace's `__dataclass_params__`, read live.
+///
+/// CPython's defaults when the entry is absent or was rebound to something
+/// other than a params object, so a rebinding cannot leave a dataclass without
+/// options to act on.
+fn namespace_options(namespace: &Dict, vm: &VM<'_>) -> DataclassOptions {
+    let name: &'static str = StaticStrings::DataclassParams.into();
+    match namespace.get_by_str(name, vm.heap, vm.interns) {
+        Some(Value::Ref(id)) => match vm.heap.get(*id) {
+            HeapData::DataclassParams(params) => params.options(),
+            _ => DataclassOptions::default(),
+        },
+        _ => DataclassOptions::default(),
+    }
 }
 
 /// The `__hash__` a `@dataclass` decoration generates, where it generates one.
@@ -662,14 +673,14 @@ pub(crate) fn hash_action(class_id: HeapId, vm: &VM<'_>) -> Option<DataclassHash
 /// The error assigning `name` raises on a `frozen=True` dataclass instance, or
 /// `None` when the write may proceed.
 ///
-/// Every instance assignment passes through here, so it reads the class's
-/// options alone: only a decoration sets them, so [`dataclass_options`]' field
-/// lookup would be redundant work on this path.
+/// Every instance assignment passes through here, so it reads the params
+/// alone: a plain class has none, so [`dataclass_options`]' field lookup would
+/// be redundant work on this path.
 pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &VM<'_>) -> Option<RunError> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         return None;
     };
-    if !class.dataclass_options().frozen {
+    if !namespace_options(class.namespace(), vm).frozen {
         return None;
     }
     // Refused for any attribute, declared field or not, as CPython's generated
@@ -756,13 +767,17 @@ pub(crate) fn dataclass_init<'h>(
 /// Calls the class's `__post_init__` once every field is stored, as CPython's
 /// generated `__init__` ends by doing.
 ///
+/// Looked up in the class namespace at each construction, where CPython decides
+/// at decoration, so a hook attached afterwards runs too.
 /// Runs through [`VM::evaluate_function`], like a `default_factory`, so it
 /// cannot suspend on an external or OS call where a hand-written `__init__`
 /// can — documented in `limitations/dataclasses.md`. Its return value is
 /// discarded, and anything it raises propagates out of the constructor, leaving
 /// the half-built instance to the caller's guard.
 fn run_post_init<'h>(instance_id: HeapId, class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> RunResult<()> {
-    if !class.get(vm.heap).has_post_init() {
+    let post_init_name: &'static str = StaticStrings::PostInit.into();
+    let namespace = class.get(vm.heap).namespace();
+    if namespace.get_by_str(post_init_name, vm.heap, vm.interns).is_none() {
         return Ok(());
     }
     // Read as an attribute, so the method arrives bound to the instance.

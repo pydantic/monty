@@ -1,8 +1,5 @@
-//! The `__dataclass_params__` object a decorated class reports its
-//! `@dataclass(...)` options in.
-//!
-//! The options themselves are [`DataclassOptions`], which lives in
-//! [`crate::types::class`] because a `Class` stores them.
+//! The `@dataclass(...)` options, and the `__dataclass_params__` object a
+//! decorated class keeps them in.
 
 use std::fmt::Write;
 
@@ -11,16 +8,42 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{HeapId, HeapItem, HeapObjectRead},
-    types::{DataclassOptions, LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
+
+/// The `@dataclass(...)` options Monty implements.
+///
+/// Small and `Copy`, so it doubles as the payload of the *configured decorator*
+/// (`dataclass(frozen=True)`) without a heap allocation. Every other CPython
+/// flag is rejected at the call, so each is either stored here or known to hold
+/// its default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DataclassOptions {
+    /// Synthesize a field-wise `__eq__` (CPython's `eq`, default `True`).
+    pub eq: bool,
+    /// Reject attribute assignment, and hash by field values when `eq` is also
+    /// set (CPython's `frozen`, default `False`).
+    pub frozen: bool,
+}
+
+impl Default for DataclassOptions {
+    /// CPython's defaults: `eq=True, frozen=False`.
+    fn default() -> Self {
+        Self {
+            eq: true,
+            frozen: false,
+        }
+    }
+}
 
 /// The `__dataclass_params__` object `@dataclass` writes into a class
 /// namespace: CPython's `dataclasses._DataclassParams`.
 ///
-/// A report of what the class was decorated with, never a control — the options
-/// the class acts on live on the `Class` itself. Holds no heap references, so it
-/// is the cheap half of a class's metadata; `__dataclass_fields__` owns the
+/// Also what the synthesized dunders read the options from, so rebinding
+/// `__dataclass_params__` changes the class's behaviour where CPython's would
+/// not (see `limitations/dataclasses.md`). Holds no heap references, so it is
+/// the cheap half of a class's metadata; `__dataclass_fields__` owns the
 /// captured defaults.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DataclassParams {
@@ -32,6 +55,12 @@ impl DataclassParams {
     #[must_use]
     pub fn new(options: DataclassOptions) -> Self {
         Self { options }
+    }
+
+    /// The options the class was decorated with.
+    #[must_use]
+    pub fn options(&self) -> DataclassOptions {
+        self.options
     }
 }
 

@@ -77,22 +77,11 @@ field after a defaulted one
     `'_MISSING_TYPE'`. `type(MISSING)` and `__name__` match.
 - **`type(MISSING)()` raises** `TypeError: cannot create 'dataclasses._MISSING_TYPE' instances`, where CPython builds
     a second, distinct object.
-- **A `default_factory` cannot observe a mid-construction change to the
-    fields.** Every default and factory is read out of `__dataclass_fields__`
-    before the first factory runs, so a factory that rebinds the mapping does
-    not change what the fields after it are given. CPython bakes the same values
-    into the generated `__init__` at decoration, so it agrees; the two differ
-    only if the mapping is rebound *between* constructions, which Monty then
-    honours and CPython ignores.
 - **`default_factory` and `__post_init__` cannot suspend.** Both run in a
     synchronous position the interpreter cannot preserve and resume, so calling an
     external function, an `os` function, or awaiting inside one raises
     `NotImplementedError: dataclass field default_factory: external function 'f' is not yet supported in this context`
     (and the `__post_init__` equivalent). Ordinary in-sandbox code in them runs normally.
-- **Overwriting `__dataclass_fields__` un-marks the class.** Every dunder reads
-    the mapping from the class namespace, so `C.__dataclass_fields__ = 5` makes
-    `is_dataclass(C)` false and `C(...)` construct like a plain class. CPython
-    keeps its generated methods and still calls `C` a dataclass.
 - **`ClassVar` / `InitVar` detection is purely textual.** Monty matches the
     annotation text (bare, dotted, subscripted, or quoted) without checking that
     the name is actually imported, where CPython resolves a *string* annotation
@@ -126,18 +115,37 @@ field after a defaulted one
     because Monty's parser has no `del` statement at all. (Assignment matches
     CPython, message included, and `dataclasses.FrozenInstanceError` is
     importable.)
-- **Re-decorating a dataclass rebuilds it.** `C = dataclass(frozen=True)(C)`
-    gives Monty a fully frozen class, where CPython keeps the `__init__` its first
-    decoration generated — one that writes fields through the *new* frozen
-    `__setattr__`, so CPython's re-decorated class raises `FrozenInstanceError`
-    the moment you construct it. Monty synthesizes from the current metadata, so
-    it constructs normally.
 - **`__dataclass_params__` reads back normalised.** `C.__dataclass_params__`
     exists, reprs like CPython's and answers all ten flags, but each is the `bool`
     Monty acted on: `@dataclass(frozen=1)` reports `frozen=True` where CPython
-    echoes the `1` you passed. As in CPython the object only reports the options —
-    the class acts on what it was decorated with — so assigning another one
-    changes what you read back and nothing else.
+    echoes the `1` you passed.
+- **The class's metadata is read at use time, not built in at decoration.**
+    CPython's `@dataclass` generates `__init__`, `__eq__`, `__hash__`, `__repr__`
+    and `__setattr__` with the decoration's choices built in, and leaves
+    `__dataclass_fields__` and `__dataclass_params__` behind as records nothing
+    reads again. Monty generates no methods. It acts on those two namespace entries
+    and on `__post_init__` each time an instance is built, compared, hashed,
+    printed or assigned to. Changing any of them after decoration therefore changes
+    the class in Monty and nothing in CPython:
+    - **Rebinding `__dataclass_params__`** switches the `eq` and `frozen` in force.
+        `C.__dataclass_params__ = Frozen.__dataclass_params__` freezes `C` and makes
+        it hashable; borrowing an `eq=False` class's params makes `C(1) == C(1)`
+        false. Binding anything that is not a params object (`None`) puts `C` on
+        the defaults, `eq=True, frozen=False`, unfreezing a frozen class.
+    - **Overwriting `__dataclass_fields__`** with a non-dict un-marks the class:
+        `is_dataclass(C)` is false and `C(...)` constructs like a plain class.
+        Rebinding it to another dict changes the fields, defaults and factories
+        the next construction uses. Every default and factory is read out before
+        the first factory runs, so a factory that rebinds it mid-construction
+        changes nothing, as in CPython.
+    - **A `__post_init__` added to a class that had none when decorated** runs on
+        the next construction; CPython's generated `__init__` never calls it.
+        Replacing a hook the class already had matches CPython, which also looks
+        `self.__post_init__` up when it calls it.
+    - **Re-decorating rebuilds the class.** `C = dataclass(frozen=True)(C)` gives
+        Monty a fully frozen class that constructs normally. CPython keeps the
+        `__init__` its first decoration generated, which writes fields through the
+        new frozen `__setattr__` and so raises `FrozenInstanceError` on construction.
 
 ## Architectural gaps (cannot match)
 
