@@ -30,7 +30,9 @@ use monty_types::{
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
+    builtins::open::validate_ignored_open_kwarg,
     bytecode::VM,
+    defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
@@ -446,7 +448,10 @@ pub(crate) fn build_path_os_call(
         StaticStrings::IsFile => path_only!("is_file", IsFile),
         StaticStrings::IsDir => path_only!("is_dir", IsDir),
         StaticStrings::IsSymlink => path_only!("is_symlink", IsSymlink),
-        StaticStrings::ReadText => path_only!("read_text", ReadText),
+        StaticStrings::ReadText => {
+            extract_read_text_args(args, vm)?;
+            OsFunctionCall::ReadText(path)
+        }
         StaticStrings::ReadBytes => path_only!("read_bytes", ReadBytes),
         StaticStrings::StatMethod => path_only!("stat", Stat),
         StaticStrings::Iterdir => path_only!("iterdir", Iterdir),
@@ -454,12 +459,8 @@ pub(crate) fn build_path_os_call(
         StaticStrings::Absolute => path_only!("absolute", Absolute),
         StaticStrings::Unlink => path_only!("unlink", Unlink),
         StaticStrings::Rmdir => path_only!("rmdir", Rmdir),
-        StaticStrings::WriteText => {
-            OsFunctionCall::WriteText(extract_str_data("write_text", path, args, vm.heap, vm.interns)?)
-        }
-        StaticStrings::AppendText => {
-            OsFunctionCall::AppendText(extract_str_data("append_text", path, args, vm.heap, vm.interns)?)
-        }
+        StaticStrings::WriteText => OsFunctionCall::WriteText(extract_write_text_args(path, args, vm)?),
+        StaticStrings::AppendText => OsFunctionCall::AppendText(extract_append_text_args(path, args, vm)?),
         StaticStrings::WriteBytes => {
             OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, vm.heap, vm.interns)?)
         }
@@ -479,20 +480,106 @@ pub(crate) fn build_path_os_call(
     Ok(Some(call))
 }
 
-/// Extracts the `data` arg for `write_text` / `append_text`. Error wording
-/// matches the legacy `fs/` dispatcher so existing tests stay green.
-fn extract_str_data(
-    method: &'static str,
-    path: MontyPath,
-    args: ArgValues,
-    heap: &mut Heap,
-    interns: &Interns,
-) -> RunResult<PathStringDataArgs> {
-    let data = arg_or_missing_data(method, args, heap)?;
-    let data_str = value_to_owned_string(&data, heap, interns);
+/// Python-facing argument shape for `Path.read_text(encoding=None, errors=None, newline=None)`.
+///
+/// CPython implements `read_text`/`write_text`/`append_text` as pure-Python `def`s that
+/// delegate to `self.open(...)`, hence `style = def` (matching [`PathMkdirArgs`]) and the
+/// `open()`-worded errors `validate_ignored_open_kwarg` raises for a non-default value. The
+/// three kwargs are validated and discarded: the host never sees them, since
+/// [`OsFunctionCall::ReadText`] carries only a `MontyPath` and Monty's text I/O is always UTF-8.
+#[derive(FromArgs)]
+#[from_args(name = "Path.read_text", style = def)]
+struct PathReadTextArgs {
+    #[from_args(default = Value::None)]
+    encoding: Value,
+    #[from_args(default = Value::None)]
+    errors: Value,
+    #[from_args(default = Value::None)]
+    newline: Value,
+}
 
-    let py_type = data.py_type_name_heap(heap, interns);
-    data.drop_with(heap);
+/// Extracts and validates `read_text`'s `encoding`/`errors`/`newline`, rejecting unknown,
+/// excessive, or unsupported-value arguments before the host sees the OS call.
+fn extract_read_text_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
+    let PathReadTextArgs {
+        encoding,
+        errors,
+        newline,
+    } = PathReadTextArgs::from_args(args, vm)?;
+    defer_drop!(encoding, vm);
+    defer_drop!(errors, vm);
+    defer_drop!(newline, vm);
+    validate_ignored_open_kwarg("encoding", encoding, vm)?;
+    validate_ignored_open_kwarg("errors", errors, vm)?;
+    validate_ignored_open_kwarg("newline", newline, vm)
+}
+
+/// Declares a `style = def` argument struct for `write_text`/`append_text`: a required `data`
+/// positional plus the same `encoding`/`errors`/`newline` kwargs as [`PathReadTextArgs`]. A macro
+/// because the two methods need distinct types (their `name` drives arity/kwarg error wording),
+/// not because the shape is reused elsewhere.
+macro_rules! path_str_data_args {
+    ($struct_name:ident, $method_name:literal) => {
+        #[derive(FromArgs)]
+        #[from_args(name = $method_name, style = def)]
+        struct $struct_name {
+            data: Value,
+            #[from_args(default = Value::None)]
+            encoding: Value,
+            #[from_args(default = Value::None)]
+            errors: Value,
+            #[from_args(default = Value::None)]
+            newline: Value,
+        }
+    };
+}
+path_str_data_args!(PathWriteTextArgs, "Path.write_text");
+path_str_data_args!(PathAppendTextArgs, "Path.append_text");
+
+/// Extracts `write_text`'s `data`/`encoding`/`errors`/`newline`.
+fn extract_write_text_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<PathStringDataArgs> {
+    let PathWriteTextArgs {
+        data,
+        encoding,
+        errors,
+        newline,
+    } = PathWriteTextArgs::from_args(args, vm)?;
+    finish_str_data_args(path, data, encoding, errors, newline, vm)
+}
+
+/// Extracts `append_text`'s `data`/`encoding`/`errors`/`newline`.
+fn extract_append_text_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<PathStringDataArgs> {
+    let PathAppendTextArgs {
+        data,
+        encoding,
+        errors,
+        newline,
+    } = PathAppendTextArgs::from_args(args, vm)?;
+    finish_str_data_args(path, data, encoding, errors, newline, vm)
+}
+
+/// Shared tail of [`extract_write_text_args`]/[`extract_append_text_args`]: validates
+/// `encoding`/`errors`/`newline` like `open()` does, then converts `data` to the owned `String`
+/// the OS call carries. Error wording for a non-`str` `data` matches the legacy `fs/` dispatcher
+/// so existing tests stay green.
+fn finish_str_data_args(
+    path: MontyPath,
+    data: Value,
+    encoding: Value,
+    errors: Value,
+    newline: Value,
+    vm: &mut VM<'_>,
+) -> RunResult<PathStringDataArgs> {
+    defer_drop!(data, vm);
+    defer_drop!(encoding, vm);
+    defer_drop!(errors, vm);
+    defer_drop!(newline, vm);
+    validate_ignored_open_kwarg("encoding", encoding, vm)?;
+    validate_ignored_open_kwarg("errors", errors, vm)?;
+    validate_ignored_open_kwarg("newline", newline, vm)?;
+
+    let data_str = value_to_owned_string(data, vm.heap, vm.interns);
+    let py_type = data.py_type_name_heap(vm.heap, vm.interns);
 
     match data_str {
         Some(data) => Ok(PathStringDataArgs { path, data }),
@@ -501,7 +588,9 @@ fn extract_str_data(
 }
 
 /// Extracts the `data` arg for `write_bytes` / `append_bytes` — binary
-/// companion to [`extract_str_data`].
+/// companion to [`finish_str_data_args`]. CPython's `read_bytes`/`write_bytes`
+/// take no `encoding`/`errors`/`newline` (bytes have no text encoding), so
+/// unlike the `str` variants this stays a single positional `data` arg.
 fn extract_bytes_data(
     method: &'static str,
     path: MontyPath,

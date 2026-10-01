@@ -186,7 +186,12 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
 /// Non-default values raise `TypeError` ("'<name>' argument is not yet
 /// supported"). A wrong *type* (e.g. `encoding=123`) is reported as a
 /// dedicated type error so it remains diagnosable.
-fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result<(), RunError> {
+///
+/// Shared with `Path.read_text`/`write_text`/`append_text` (`os_dispatch.rs`):
+/// CPython implements those by delegating to `self.open(...)`, so its
+/// `encoding`/`errors`/`newline` error messages already say `open()`, not
+/// `read_text()` — reusing this validator produces the same wording for free.
+pub(crate) fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result<(), RunError> {
     let is_default = match name {
         // CPython default is -1 (sentinel for "interpreter picks the
         // buffer size"). Monty has no buffering layer to tune.
