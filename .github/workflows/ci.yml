@@ -799,7 +799,8 @@ jobs:
           working-directory: crates/monty-runtime
         env:
           PGO_RUNTIME: ${{ matrix.pgo-runtime }}
-          # LLVM 23 can corrupt select counters; disable them during both PGO generation and use.
+          # Workaround issue with PGO observed in Rust 1.99
+          # https://github.com/rust-lang/rust/issues/163616
           RUSTFLAGS: ${{ matrix.pgo-runtime && '-Cllvm-args=-pgo-instr-select=false' || '' }}
           # The s390x cross assembler defaults to z900, which lacks the `lay`
           # instruction `psm` (via ruff's `stacker`) uses; z10 is Rust's baseline.
