@@ -6,10 +6,10 @@ and saves the image. Colouring and encoding stay on the host because the
 sandbox cannot build `bytes` from ints and a flat list of ints crosses the
 boundary several times faster than a list of `(r, g, b)` tuples.
 
-Run with `uv run --group examples python examples/julia_image.py [OUT.png] [RE IM] [WIDTH HEIGHT]`.
+Run with `uv run --group examples python examples/julia_image.py --help` for the options.
 """
 
-import sys
+import argparse
 import time
 from pathlib import Path
 
@@ -58,7 +58,9 @@ def palette() -> list[int]:
 
 def julia_png(c: complex, width: int, height: int, out: Path) -> None:
     """Run the render in Monty and save the palette-indexed result at `out`."""
-    with pydantic_monty.Monty() as pool, pool.checkout() as session:
+    # The sandbox holds `width * height` ints, so bound its memory and time rather than trusting the dimensions.
+    limits: pydantic_monty.ResourceLimits = {'max_memory': 512 * 1024 * 1024, 'max_feed_duration_secs': 120}
+    with pydantic_monty.Monty() as pool, pool.checkout(limits=limits) as session:
         start = time.perf_counter()
         counts: list[int] = session.feed_run(
             SANDBOX_CODE,
@@ -73,12 +75,22 @@ def julia_png(c: complex, width: int, height: int, out: Path) -> None:
     print(f'wrote {out}')
 
 
-def main(argv: list[str]) -> None:
-    out = Path(argv[1]) if len(argv) >= 2 else Path('julia.png')
-    c = complex(float(argv[2]), float(argv[3])) if len(argv) >= 4 else complex(-0.7, 0.27015)
-    width, height = (int(argv[4]), int(argv[5])) if len(argv) >= 6 else (800, 800)
-    julia_png(c, width, height, out)
+def positive_int(text: str) -> int:
+    """`argparse` type for a pixel dimension: an int of at least 1."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f'{text!r} is not a positive integer')
+    return value
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Render a Julia set in Monty and save it as a PNG.')
+    parser.add_argument('out', nargs='?', type=Path, default=Path('julia.png'), help='output file (default: julia.png)')
+    parser.add_argument('--c', nargs=2, type=float, default=(-0.7, 0.27015), metavar=('RE', 'IM'), help='the constant c')
+    parser.add_argument('--size', nargs=2, type=positive_int, default=(800, 800), metavar=('WIDTH', 'HEIGHT'))
+    args = parser.parse_args()
+    julia_png(complex(*args.c), args.size[0], args.size[1], args.out)
 
 
 if __name__ == '__main__':
-    main(sys.argv)
+    main()
