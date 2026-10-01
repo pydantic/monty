@@ -65,16 +65,21 @@ pub struct MontyRepl {
     global_names: NameMap,
     /// Persistent intern table across snippets so intern/function IDs remain valid.
     ///
-    /// Same ownership hand-off as `global_names`.
+    /// Same ownership hand-off as `global_names`. It also keeps the source of
+    /// every input that compiled, under that input's `<python-input-N>`
+    /// filename id: a traceback raised in input N can include frames from
+    /// functions defined in input M < N, whose byte offsets index into M's
+    /// source, so the current executor's code is not enough to render them.
     interns: Interns,
-    /// Source text of every snippet that has been fed, keyed by its
-    /// generated script name (`<python-input-N>`).
+    /// Source text of inputs fed before this session was restored from a dump
+    /// written by Monty 1.0.0, keyed by their `<python-input-N>` name.
     ///
-    /// Required because a traceback raised in snippet N can include frames
-    /// from functions defined in snippet M < N. Those frames carry
-    /// `CodeRange` byte offsets that index into snippet M's source, so the
-    /// diagnostic pass must be able to look that source up by filename —
-    /// the current snippet's `Executor.code` is not sufficient.
+    /// Those builds interned each input's filename as an ordinary string and
+    /// kept its source here rather than in `interns`, so frames from those
+    /// inputs can only be rendered from this map. New inputs never add to it,
+    /// so a session created by this build keeps it empty. Still dumped, so a
+    /// restored 1.0.0 session keeps it across later dumps.
+    #[serde(default)]
     sources: AHashMap<String, Arc<str>>,
     /// [`CompileOptions`] applied to every snippet fed to this session, fixed
     /// at construction so all snippets compile consistently.
@@ -246,9 +251,8 @@ impl MontyRepl {
         let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
 
         let input_script_name = this.next_input_script_name();
-        // Preserve this snippet's source (see `feed_run` for rationale).
+        // Compilation records the source for later tracebacks (see `feed_run`).
         let code: Arc<str> = Arc::from(code);
-        this.sources.insert(input_script_name.clone(), Arc::clone(&code));
         let session = ReplSession {
             script_name: &this.script_name,
             cwd: &this.cwd,
@@ -338,12 +342,12 @@ impl MontyRepl {
         let (input_names, input_ids): (Vec<_>, Vec<_>) = names.into_iter().unzip();
 
         let input_script_name = self.next_input_script_name();
-        // Preserve this snippet's source before anything can fail, so later
-        // tracebacks with frames from this snippet can still resolve line/
-        // column/preview information — `Executor.code` only survives until
-        // the next feed. The one copy of the text is shared with the executor.
+        // Compiling records this snippet's source in the session's interns, so
+        // later tracebacks with frames from it can still resolve line/column/
+        // preview information after `Executor.code` is gone. The one copy of
+        // the text is shared with the executor. A snippet that fails to
+        // compile records nothing: no frame can ever point into it.
         let code: Arc<str> = Arc::from(code);
-        self.sources.insert(input_script_name.clone(), Arc::clone(&code));
         let session = ReplSession {
             script_name: &self.script_name,
             cwd: &self.cwd,
@@ -395,7 +399,8 @@ impl MontyRepl {
         self.commit_executor(executor);
 
         // Resolve every traceback frame against the source of the snippet that
-        // produced it — frames from earlier snippets live in `self.sources`.
+        // produced it — frames from earlier snippets resolve via `self.interns`,
+        // or `self.sources` for inputs fed before a 1.0.0 dump.
         result?.map_err(|e| {
             e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source))
         })
@@ -453,7 +458,6 @@ impl MontyRepl {
                 os_policy: &self.os_policy,
             },
         )?;
-        self.sources.insert(input_script_name, executor.program.code.clone());
 
         self.ensure_globals_size(executor.namespace_size());
         // A host-driven call is its own unit of work, so it opens a fresh feed.
@@ -1440,10 +1444,10 @@ fn build_repl_progress(
         })),
         ConvertedExit::Error(err) => {
             // Resolve traceback frames against every snippet the REPL has
-            // seen, not just the currently-executing one. `executor.interns`
-            // is still required because it holds the StringIds referenced by
-            // the in-flight frames; `repl.sources` holds every snippet's
-            // source text and is what owns any older snippets' sources.
+            // seen, not just the currently-executing one. The executor holds
+            // the session's interns while it runs, and with them the source
+            // of every input, including the in-flight one; inputs fed before
+            // a 1.0.0 dump resolve from `repl.sources`.
             let error = err.into_python_exception(&executor.tables.interns, |fname| {
                 repl.sources.get(fname).map(|source| &**source)
             });
