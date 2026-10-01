@@ -12,23 +12,20 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 /// Each function has its own Code object; module-level code also gets one.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Code {
-    /// Raw bytecode instructions as a byte vector.
-    ///
-    /// Opcodes are 1 byte each, followed by their operands (0-3 bytes depending
-    /// on the instruction). The variable-width encoding gives better cache locality
-    /// than fixed-width alternatives.
+    /// Variable-width instructions, addressed by body-relative offsets.
+    #[serde(with = "serde_bytes")]
+    #[serde(rename = "B")]
     bytecode: Vec<u8>,
 
-    /// Constant pool for this code object.
-    ///
-    /// Values referenced by `LoadConst` instructions. Includes numbers, strings
-    /// (as `Value::InternString`), and other literal values.
-    constants: ConstPool,
+    /// Immediate constants indexed by `LoadConst`; heap literals live in `Interns`.
+    #[serde(rename = "C")]
+    constants: Vec<Value>,
 
     /// Source location table for tracebacks.
     ///
     /// Maps bytecode offsets to source locations. Used to generate Python-style
     /// tracebacks with line numbers and caret markers when exceptions occur.
+    #[serde(rename = "L")]
     location_table: Vec<LocationEntry>,
 
     /// Exception handler table.
@@ -36,23 +33,14 @@ pub struct Code {
     /// Maps protected bytecode ranges to their exception handlers. Consulted when
     /// an exception is raised to find the appropriate handler. Entries are ordered
     /// innermost-first for nested try blocks.
+    #[serde(rename = "E")]
     exception_table: Vec<ExceptionEntry>,
-
-    /// Number of local variables (namespace slots needed).
-    ///
-    /// Used to pre-allocate the namespace when entering this code.
-    num_locals: u16,
-
-    /// Maximum stack depth needed during execution.
-    ///
-    /// Used as a hint for pre-allocating the operand stack. Computed during
-    /// compilation by tracking push/pop operations.
-    stack_size: u16,
 
     /// Local variable names for error messages.
     ///
     /// Maps slot indices to variable names. Used to generate proper NameError
     /// messages when accessing undefined local variables (e.g., "name 'x' is not defined").
+    #[serde(rename = "N")]
     local_names: Vec<StringId>,
 }
 
@@ -60,15 +48,7 @@ impl Code {
     /// Creates an empty code object for tests that only need VM context.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
-        Self::new(
-            Vec::new(),
-            ConstPool::default(),
-            Vec::new(),
-            Vec::new(),
-            0,
-            0,
-            Vec::new(),
-        )
+        Self::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
 
     /// Creates a new Code object with all components.
@@ -77,11 +57,9 @@ impl Code {
     #[must_use]
     pub fn new(
         bytecode: Vec<u8>,
-        constants: ConstPool,
+        constants: Vec<Value>,
         location_table: Vec<LocationEntry>,
         exception_table: Vec<ExceptionEntry>,
-        num_locals: u16,
-        stack_size: u16,
         local_names: Vec<StringId>,
     ) -> Self {
         Self {
@@ -89,8 +67,6 @@ impl Code {
             constants,
             location_table,
             exception_table,
-            num_locals,
-            stack_size,
             local_names,
         }
     }
@@ -101,10 +77,11 @@ impl Code {
         &self.bytecode
     }
 
-    /// Returns the constant pool.
+    /// Returns the constant referenced by a `LoadConst` operand.
+    /// Panics for an index not produced by this code's compiler.
     #[must_use]
-    pub fn constants(&self) -> &ConstPool {
-        &self.constants
+    pub fn constant(&self, index: u16) -> &Value {
+        &self.constants[usize::from(index)]
     }
 
     /// Returns the local variable name for a given slot index.
@@ -127,12 +104,11 @@ impl Code {
     #[must_use]
     pub fn location_for_offset(&self, offset: usize) -> Option<&LocationEntry> {
         let offset_u32 = u32::try_from(offset).ok()?;
-        // Location entries are in order by bytecode offset.
-        // Find the last entry where bytecode_offset <= offset.
-        self.location_table
-            .iter()
-            .rev()
-            .find(|entry| entry.bytecode_offset <= offset_u32)
+        // Entries are sorted by bytecode offset: take the last at or before `offset`.
+        let after = self
+            .location_table
+            .partition_point(|entry| entry.bytecode_offset <= offset_u32);
+        after.checked_sub(1).map(|index| &self.location_table[index])
     }
 
     /// Finds an exception handler for the given bytecode offset.
@@ -148,35 +124,16 @@ impl Code {
     }
 }
 
-/// TODO remove, this doesn't add any value
-/// Constant pool for a code object.
-///
-/// Stores literal values referenced by `LoadConst` instructions. Strings are stored
-/// as `Value::InternString(StringId)` pointing to the global `Interns` table, not
-/// duplicated here. At runtime, constants are loaded via `clone_with_heap()` to
-/// handle reference counting properly.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ConstPool {
-    /// The constant values, indexed by the operand of `LoadConst`.
-    values: Vec<Value>,
-}
-
-impl ConstPool {
-    /// Creates a constant pool from a vector of values.
-    #[must_use]
-    pub fn from_vec(values: Vec<Value>) -> Self {
-        Self { values }
-    }
-
-    /// Returns the constant at the given index.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the index is out of bounds. This should never happen with
-    /// valid bytecode since indices come from the compiler.
-    #[must_use]
-    pub fn get(&self, index: u16) -> &Value {
-        &self.values[index as usize]
+impl Clone for Code {
+    /// Constants are immediates, so copying compiled code needs no heap references.
+    fn clone(&self) -> Self {
+        Self {
+            bytecode: self.bytecode.clone(),
+            constants: self.constants.iter().map(Value::copy_immediate).collect(),
+            location_table: self.location_table.clone(),
+            exception_table: self.exception_table.clone(),
+            local_names: self.local_names.clone(),
+        }
     }
 }
 
@@ -197,15 +154,18 @@ pub struct LocationEntry {
     ///
     /// The entry applies from this offset until the next entry's offset
     /// (or end of bytecode).
+    #[serde(rename = "B")]
     bytecode_offset: u32,
 
     /// Full source range of the expression (for the underline).
+    #[serde(rename = "R")]
     range: CodeRange,
 
     /// Optional focus point within the range (for the ^ caret).
     ///
     /// If None, the entire range is underlined without a focus caret.
     /// This can be populated later for Python 3.11-style focused tracebacks.
+    #[serde(rename = "F")]
     focus: Option<CodeRange>,
 }
 
@@ -262,12 +222,15 @@ pub enum HandlerKind {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionEntry {
     /// Start of protected bytecode range (inclusive).
+    #[serde(rename = "S")]
     start: u32,
 
     /// End of protected bytecode range (exclusive).
+    #[serde(rename = "E")]
     end: u32,
 
     /// Bytecode offset of the exception handler.
+    #[serde(rename = "H")]
     handler: u32,
 
     /// Stack depth when entering the try block.
@@ -275,11 +238,13 @@ pub struct ExceptionEntry {
     /// Used to unwind the operand stack before jumping to handler.
     /// The VM pops values until the stack reaches this depth, then
     /// pushes the exception value.
+    #[serde(rename = "D")]
     stack_depth: u16,
 
     /// This frame's `exception_stack` depth at region entry.
     /// Unwinding trims later entries so bare `raise` cannot revive exceptions
     /// from abandoned handlers.
+    #[serde(rename = "C")]
     exception_stack_count: u16,
 
     /// Whether the handler wants the exception on the operand stack.

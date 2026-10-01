@@ -1,7 +1,7 @@
 # monty-fs
 
 Host-side filesystem mounts for [Monty](https://github.com/pydantic/monty), the
-sandboxed Python interpreter.
+Python sandbox.
 
 Provides `MountTable`, which maps virtual POSIX paths inside the sandbox
 (e.g. `/mnt/data`) to real host directories with configurable access modes
@@ -18,7 +18,8 @@ Confinement is structural rather than a check: each mount holds a
 `cap_std::fs::Dir` opened at mount time, and every operation runs relative to
 that descriptor, so `..`, symlinks, and directories swapped mid-operation
 cannot reach outside it. `path_security.rs` is left with path policy alone —
-normalization, null-byte rejection, and length limits.
+null-byte rejection and length limits, with lexical normalization delegated to
+`monty_types::normalize_virtual_path`.
 
 Each mount has a configurable aggregate memory budget that defaults to 100 MB.
 Retained in-memory overlay data and transient filesystem results share that

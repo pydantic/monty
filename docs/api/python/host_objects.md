@@ -18,3 +18,4 @@ See [host objects](../../host-objects.md) for the concepts.
             - ClassType
             - MontyClassProxy
             - MontyClassTypeProxy
+            - MontyStdTypeProxy

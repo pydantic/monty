@@ -3,9 +3,10 @@ from __future__ import annotations
 import collections
 import datetime
 import itertools
+import json
 import pathlib
 import re
-import sys
+import types
 import zoneinfo
 from typing import NamedTuple
 
@@ -13,7 +14,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import MontyConversionError, MontyRuntimeError
+from pydantic_monty import MontyConversionError, MontyRuntimeError, MontyStdTypeProxy
 
 
 def test_none_input(monty_run: RunMonty):
@@ -129,6 +130,27 @@ def test_set_output(monty_run: RunMonty):
     assert monty_run('{1, 2, 3}') == snapshot({1, 2, 3})
 
 
+def test_builtin_function_output(monty_run: RunMonty):
+    """A builtin function reaching the host is a `MontyStdTypeProxy` carrying its
+    name, never the host's own callable, and crosses back in as the builtin."""
+    proxy = monty_run('open')
+    assert isinstance(proxy, MontyStdTypeProxy)
+    assert (proxy.kind, proxy.name) == snapshot(('function', 'open'))
+    assert repr(proxy) == snapshot("MontyStdTypeProxy(kind='function', name='open')")
+    assert not callable(proxy)
+    assert [p.name for p in monty_run('[getattr, exec, object.__setattr__]')] == snapshot(
+        ['getattr', 'exec', 'object.__setattr__']
+    )
+    assert monty_run('x is open', inputs={'x': proxy}) is True
+    assert monty_run('x', inputs={'x': proxy}) == proxy
+    assert {proxy, monty_run('open')} == {proxy}
+
+    def check(f: object) -> bool:
+        return isinstance(f, MontyStdTypeProxy) and f.name == 'len'
+
+    assert monty_run('check(len)', external_lookup={'check': check}) is True
+
+
 def test_type_object_output(monty_run: RunMonty):
     """A type object returned from the sandbox reconstructs as the matching host
     class; modeled stdlib types resolve from their real module (`Path` → `PurePosixPath`)."""
@@ -137,7 +159,7 @@ import datetime, re
 from pathlib import Path
 from collections import deque
 [
-    int, str, type, type(None), type(...), type(iter([])), type(iter(lambda: 0, 0)),
+    int, str, type, object, type(None), type(...), type(NotImplemented),
     type(Path('/x')), Path,
     datetime.datetime, datetime.date, datetime.time, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
@@ -149,10 +171,10 @@ from collections import deque
         int,
         str,
         type,
+        object,
         type(None),
         type(...),
-        type(iter([])),
-        type(iter(lambda: 0, 0)),
+        type(NotImplemented),
         pathlib.PurePosixPath,
         pathlib.PurePosixPath,
         datetime.datetime,
@@ -169,15 +191,15 @@ from collections import deque
 def test_type_object_input_roundtrip(monty_run: RunMonty):
     """A type object passed in as an input is preserved as a type (not degraded to
     a callable) and round-trips back out by identity."""
-    types: list[type[object]] = [
+    type_objects: list[type[object]] = [
         int,
         str,
         type,
+        object,
         bool,
         type(None),
         type(...),
-        type(iter([])),
-        type(iter(lambda: 0, 0)),
+        type(NotImplemented),
         datetime.datetime,
         datetime.date,
         datetime.time,
@@ -189,60 +211,89 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         re.Pattern,
         re.Match,
         collections.deque,
+        types.GenericAlias,
+        ValueError,
+        json.JSONDecodeError,
     ]
-    for ty in types:
+    for ty in type_objects:
         # The pathlib family all collapses to a single Monty path type, which
         # re-emerges as PurePosixPath; everything else round-trips by identity.
         expected: type[object] = pathlib.PurePosixPath if issubclass(ty, pathlib.PurePath) else ty
         assert monty_run('x', inputs={'x': ty}) is expected
+    # The type of `int | None`: `types.UnionType` on every host, which is
+    # `typing.Union` itself from 3.14 (and a `_SpecialForm` before it).
+    assert monty_run('x', inputs={'x': types.UnionType}) is types.UnionType
+    # an exception class passed in is usable as one
+    assert monty_run('isinstance(ValueError(), x)', inputs={'x': ValueError}) is True
 
 
-@pytest.mark.skipif(sys.version_info >= (3, 12), reason='batched round-trips like the rest from 3.12')
-def test_itertools_batched_type_on_older_host(monty_run: RunMonty):
-    """The sandbox can still build a `batched` on a host too old to have one, so its
-    type object crossing out names the type it cannot supply rather than raising a bare
-    `AttributeError` from the import behind it."""
-    with pytest.raises(TypeError) as exc_info:
-        monty_run('import itertools\ntype(itertools.batched([1, 2], 1))')
-    assert exc_info.value.args[0] == 'Cannot convert itertools.batched to a host type: this Python does not define it'
-
-
-# Every `itertools` adaptor Monty models, paired with the expression that builds
-# one inside the sandbox. `batched` is 3.12+, so on an older host it is neither
-# importable here nor present in the round-trip table.
-ITERTOOLS_TYPES: list[tuple[type[object], str]] = [
-    (itertools.accumulate, 'itertools.accumulate([1, 2])'),
-    (itertools.chain, 'itertools.chain([1], [2])'),
-    (itertools.compress, 'itertools.compress([1, 2], [1, 0])'),
-    (itertools.count, 'itertools.count()'),
-    (itertools.cycle, 'itertools.cycle([1, 2])'),
-    (itertools.dropwhile, 'itertools.dropwhile(bool, [1, 2])'),
-    (itertools.filterfalse, 'itertools.filterfalse(bool, [1, 2])'),
-    (itertools.islice, 'itertools.islice([1, 2], 1)'),
-    (itertools.pairwise, 'itertools.pairwise([1, 2])'),
-    (itertools.repeat, 'itertools.repeat(1)'),
-    (itertools.starmap, 'itertools.starmap(max, [(1, 2)])'),
-    (itertools.takewhile, 'itertools.takewhile(bool, [1, 2])'),
-    (itertools.zip_longest, 'itertools.zip_longest([1], [2])'),
+# Type objects outside the data-type allowlist, with the name each crosses out as.
+PROXIED_TYPES: list[tuple[str, str]] = [
+    ('type(print)', 'builtin_function_or_method'),
+    ('type(lambda: 0)', 'function'),
+    ('type({}.keys())', 'dict_keys'),
+    ('type(iter([]))', 'list_iterator'),
+    ('type(iter(lambda: 0, 0))', 'callable_iterator'),
+    ('type(itertools.chain([1]))', 'itertools.chain'),
+    ('functools.partial', 'functools.partial'),
+    ('type(sys.version_info)', 'namedtuple'),
 ]
-if sys.version_info >= (3, 12):
-    ITERTOOLS_TYPES.append((itertools.batched, 'itertools.batched([1, 2], 1)'))
 
 
-@pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
-def test_itertools_type_object_roundtrip(monty_run: RunMonty, ty: type[object], build: str):
-    """Each adaptor's type object survives both directions: recognised by identity
-    on the way in, and rebuilt as the same host class on the way out."""
-    assert monty_run('x', inputs={'x': ty}) is ty
-    assert monty_run(f'import itertools\ntype({build})') is ty
+@pytest.mark.parametrize(('expression', 'name'), PROXIED_TYPES, ids=[name for _, name in PROXIED_TYPES])
+def test_type_object_proxy_output(monty_run: RunMonty, expression: str, name: str):
+    """A type object outside the allowlist crosses out as a `MontyStdTypeProxy`
+    naming the type, never the host class, and re-enters as the sandbox type."""
+    proxy = monty_run(f'import functools, itertools, sys\n{expression}')
+    assert isinstance(proxy, MontyStdTypeProxy)
+    assert (proxy.kind, proxy.name) == ('type', name)
+    assert monty_run(f'import functools, itertools, sys\nx is {expression}', inputs={'x': proxy}) is True
 
 
-@pytest.mark.parametrize(('ty', 'build'), ITERTOOLS_TYPES, ids=[ty.__name__ for ty, _ in ITERTOOLS_TYPES])
-def test_itertools_type_object_isinstance(monty_run: RunMonty, ty: type[object], build: str):
-    """An adaptor type passed in is usable against an instance built in the sandbox,
-    which is what identity recognition is actually for."""
-    code = f'import itertools\nisinstance({build}, t)'
-    assert monty_run(code, inputs={'t': ty}) is True
+def test_proxied_type_input_becomes_callable(monty_run: RunMonty):
+    """A host class outside the allowlist is not modelled, so like any other
+    unmodelled class it enters as a host function."""
+    assert monty_run('(type(x).__name__, repr(x))', inputs={'x': itertools.chain}) == snapshot(
+        ('function', "<function 'chain' external>")
+    )
+
+
+def test_generic_alias_crosses_as_repr(monty_run: RunMonty):
+    """A `list[int]` built in the sandbox has no host counterpart that could be
+    rebuilt faithfully, so it crosses as its repr, while its type object is the
+    host's `types.GenericAlias` and its `__args__` are real type objects."""
+    assert monty_run('list[int]') == snapshot('list[int]')
+    assert monty_run('type(dict[str, int])') is types.GenericAlias
+    # A plain comparison: inline-snapshot reads `...` inside `snapshot()` as its placeholder.
+    assert monty_run('tuple[int, str, ...].__args__') == (int, str, ...)
+
+
+def test_union_crosses_as_repr(monty_run: RunMonty):
+    """`int | None` built in the sandbox crosses as its repr, its type object is
+    the host's `types.UnionType` (`typing.Union` itself from 3.14), and its
+    `__args__` are real type objects."""
+    assert monty_run('int | None') == snapshot('int | None')
+    assert monty_run('type(int | None)') is types.UnionType
+    assert monty_run('(int | None).__args__') == (int, type(None))
+
+
+def test_generic_alias_input_becomes_callable(monty_run: RunMonty):
+    """A host-built `list[int]` has no `MontyObject` form; being callable, it
+    degrades to an external function the way an unmodeled class does."""
+    assert monty_run('(type(x).__name__, repr(x))', inputs={'x': list[int]}) == snapshot(
+        ('function', "<function 'list' external>")
+    )
+
+
+def test_union_input_is_rejected(monty_run: RunMonty):
+    """A host-built `int | None` is not even callable, so it has no boundary form.
+    The message names the host's union type, which differs before 3.14."""
+    with pytest.raises(MontyConversionError) as exc_info:
+        monty_run('x', inputs={'x': int | None})
+    union_type = f'{types.UnionType.__module__}.{types.UnionType.__qualname__}'
+    assert str(exc_info.value) == (
+        f'Cannot convert {union_type} to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+    )
 
 
 def test_type_object_input_isinstance(monty_run: RunMonty):
@@ -477,10 +528,11 @@ def test_return_int(monty_run: RunMonty):
 def test_return_exception(monty_run: RunMonty):
     assert monty_run('x = ValueError()\ntype(x)') is ValueError
     assert monty_run('ValueError') is ValueError
-
-
-def test_return_builtin(monty_run: RunMonty):
-    assert monty_run('len') is len
+    # a stdlib exception class resolves from its module, not `builtins`, and
+    # one whose instances need a payload still resolves as its own class
+    assert monty_run('import re\nre.error') is re.error
+    assert monty_run('import json\njson.JSONDecodeError') is json.JSONDecodeError
+    assert monty_run('UnicodeDecodeError') is UnicodeDecodeError
 
 
 # === BigInt (arbitrary precision integers) ===

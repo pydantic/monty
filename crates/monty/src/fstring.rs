@@ -1971,7 +1971,7 @@ fn push_padding(output: &mut StringBuilder<'_>, fill: char, count: usize, tracke
 
 /// Defers large timed allocations so emission can poll before reserving the full result.
 fn format_builder(capacity: usize, tracker: &ResourceTracker) -> RunResult<StringBuilder<'_>> {
-    if capacity > LARGE_RESULT_THRESHOLD && tracker.max_duration().is_some() {
+    if capacity > LARGE_RESULT_THRESHOLD && tracker.has_time_limit() {
         Ok(StringBuilder::new(tracker))
     } else {
         Ok(StringBuilder::with_capacity(capacity, tracker)?)
@@ -1980,7 +1980,7 @@ fn format_builder(capacity: usize, tracker: &ResourceTracker) -> RunResult<Strin
 
 /// Copies large timed fragments incrementally so the deadline is polled during the copy.
 fn push_format_str(output: &mut StringBuilder<'_>, value: &str, tracker: &ResourceTracker) -> RunResult<()> {
-    if value.len() <= LARGE_RESULT_THRESHOLD || tracker.max_duration().is_none() {
+    if value.len() <= LARGE_RESULT_THRESHOLD || !tracker.has_time_limit() {
         output.push_str(value)?;
     } else {
         for (i, c) in value.chars().enumerate() {

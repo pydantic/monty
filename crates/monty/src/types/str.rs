@@ -1,15 +1,14 @@
 use std::{cell::Cell, fmt::Write, ops};
 
-/// Python string type, wrapping a Rust `String`.
-///
-/// This type provides Python string semantics. Currently supports basic
-/// operations like length and equality comparison.
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
-use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
 use smallvec::smallvec;
 
-use super::{Bytes, CmpOrder, PyTrait};
+use super::{
+    Bytes, CmpOrder, PyTrait,
+    unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
+    unicode_type_data::TypeRecord,
+};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -83,7 +82,7 @@ impl Str {
         defer_drop!(errors, vm);
         if encoding.is_none() && errors.is_none() {
             return match object {
-                None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
+                None => Ok(Value::InternString(StringId::EMPTY)),
                 Some(v) => v.py_str(vm),
             };
         }
@@ -93,7 +92,7 @@ impl Str {
         str_ctor_arg_check(errors.as_ref(), "errors", vm)?;
         let Some(object) = object else {
             // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
-            return Ok(Value::InternString(StaticStrings::EmptyString.into()));
+            return Ok(Value::InternString(StringId::EMPTY));
         };
         let bytes: &[u8] = match object {
             Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
@@ -162,29 +161,13 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
     }
 }
 
-/// Allocates a string, using interned versions when possible.
-///
-/// Optimizations:
-/// - Empty strings return the pre-interned `StaticStrings::EmptyString`
-/// - Single ASCII characters return pre-interned ASCII strings
-/// - Other strings are allocated on the heap
-///
-/// This avoids heap allocation for common cases like results from `strip()`,
-/// `split()`, string iteration, etc. Prefer this over manual `Str` construction
-/// so callsites consistently benefit from interning. When the caller can prove
-/// the string is longer than one byte, [`allocate_string_no_interning`] avoids
-/// the length branch.
-///
-/// The dual bound `AsRef<str> + Into<Box<str>>` lets the function peek the
-/// length via the borrow before committing to a conversion. Callers with an
-/// owned `String`/`Box<str>` move the value in (consumed only on the heap
-/// path), and borrowed `&str` callers avoid an upfront `to_owned()` —
-/// allocation happens only when the string actually needs heap storage.
-///
+/// Allocates a string, reusing reserved IDs for empty strings and ASCII characters.
+/// Other strings are heap-allocated without consulting the executor interner.
+/// Owned buffers move into heap storage; borrowed text is copied only when needed.
 pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
-        0 => Value::InternString(StaticStrings::EmptyString.into()),
+        0 => Value::InternString(StringId::EMPTY),
         1 => Value::InternString(StringId::from_ascii(bytes[0])),
         _ => allocate_string_no_interning(s, heap),
     }
@@ -371,7 +354,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string() else {
+        let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
@@ -394,7 +377,7 @@ impl HeapItem for Str {
 /// Converts the `StringId` to `StaticStrings` and delegates to `call_str_method_impl`.
 pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let args_guard = DropGuard::new(args, vm.heap);
-    let Some(method) = StaticStrings::from_string_id(method_id) else {
+    let Some(method) = vm.interns.static_string(method_id) else {
         return Err(ExcType::attribute_error(Type::Str, vm.interns.get_str(method_id)));
     };
     let args = args_guard.into_inner();
@@ -434,8 +417,6 @@ pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) ->
 /// - `maketrans()` / `translate()` - Character translation tables; moderate complexity,
 ///   requires building and applying Unicode translation maps.
 /// - `expandtabs(tabsize=8)` - Tab expansion; simple but rarely used in practice.
-/// - `isprintable()` - Checks if all characters are printable; requires accurate Unicode
-///   category data for the "printable" property.
 fn call_str_method_impl<'h>(
     s: &HeapRead<'h, str>,
     method: StaticStrings,
@@ -552,6 +533,10 @@ fn call_str_method_impl<'h>(
             args.check_zero_args("str.istitle", vm.heap)?;
             Ok(Value::Bool(str_istitle(s.get(vm.heap))))
         }
+        StaticStrings::Isprintable => {
+            args.check_zero_args("str.isprintable", vm.heap)?;
+            Ok(Value::Bool(str_isprintable(s.get(vm.heap))))
+        }
         // Existing method
         StaticStrings::Join => {
             let iterable = args.get_one_arg("str.join", vm.heap)?;
@@ -629,47 +614,44 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
 
 /// Implements Python's `str.lower()` method.
 fn str_lower(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string(s.to_lowercase(), vm.heap)
+    allocate_string(lowercase(s), vm.heap)
 }
 
 /// Implements Python's `str.upper()` method.
 fn str_upper(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string(s.to_uppercase(), vm.heap)
+    allocate_string(uppercase(s), vm.heap)
 }
 
 /// Implements Python's `str.capitalize()` method.
 ///
-/// Returns a copy of the string with its first character capitalized and the rest lowercased.
+/// Returns a copy of the string with its first character titlecased and the rest lowercased.
 fn str_capitalize(s: &str, vm: &VM<'_>) -> Value {
-    let mut chars = s.chars();
-    let result = match chars.next() {
-        None => String::new(),
-        Some(first) => {
-            let mut result = first.to_uppercase().to_string();
-            for c in chars {
-                result.extend(c.to_lowercase());
-            }
-            result
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.char_indices();
+    if let Some((_, first)) = chars.next() {
+        type_record(first).push_title(&mut result, first);
+        for (i, c) in chars {
+            type_record(c).push_lower(&mut result, s, i, c);
         }
-    };
+    }
     allocate_string(result, vm.heap)
 }
 
 /// Implements Python's `str.title()` method.
 ///
-/// Returns a titlecased version of the string where words start with an uppercase
-/// character and the remaining characters are lowercase.
+/// Titlecases the first character after each uncased one and lowercases the rest.
 fn str_title(s: &str, vm: &VM<'_>) -> Value {
     let mut result = String::with_capacity(s.len());
     let mut prev_is_cased = false;
 
-    for c in s.chars() {
+    for (i, c) in s.char_indices() {
+        let record = type_record(c);
         if prev_is_cased {
-            result.extend(c.to_lowercase());
+            record.push_lower(&mut result, s, i, c);
         } else {
-            result.extend(c.to_uppercase());
+            record.push_title(&mut result, c);
         }
-        prev_is_cased = c.is_alphabetic();
+        prev_is_cased = record.is_cased();
     }
 
     allocate_string(result, vm.heap)
@@ -681,11 +663,12 @@ fn str_title(s: &str, vm: &VM<'_>) -> Value {
 fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
     let mut result = String::with_capacity(s.len());
 
-    for c in s.chars() {
-        if c.is_uppercase() {
-            result.extend(c.to_lowercase());
-        } else if c.is_lowercase() {
-            result.extend(c.to_uppercase());
+    for (i, c) in s.char_indices() {
+        let record = type_record(c);
+        if record.is_upper() {
+            record.push_lower(&mut result, s, i, c);
+        } else if record.is_lower() {
+            record.push_upper(&mut result, c);
         } else {
             result.push(c);
         }
@@ -696,11 +679,9 @@ fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
 
 /// Implements Python's `str.casefold()` method.
 ///
-/// Returns a casefolded copy of the string. Casefolding is similar to lowercasing
-/// but more aggressive because it is intended for caseless string matching.
+/// Uses full default Unicode folding without normalization or locale tailoring.
 fn str_casefold(s: &str, vm: &VM<'_>) -> Value {
-    // Rust's to_lowercase() is equivalent to Unicode casefolding for most purposes
-    allocate_string(s.to_lowercase(), vm.heap)
+    allocate_string(casefold(s), vm.heap)
 }
 
 // =============================================================================
@@ -711,7 +692,13 @@ fn str_casefold(s: &str, vm: &VM<'_>) -> Value {
 ///
 /// Returns True if all characters in the string are alphabetic and there is at least one character.
 fn str_isalpha(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(char::is_alphabetic)
+    all_chars(s, TypeRecord::is_alpha)
+}
+
+/// Whether `s` is non-empty and every character's record satisfies `pred`, the shape shared by
+/// the `is*` predicates.
+fn all_chars(s: &str, pred: fn(&TypeRecord) -> bool) -> bool {
+    !s.is_empty() && s.chars().all(|c| pred(type_record(c)))
 }
 
 /// Implements Python's `str.isdigit()` method.
@@ -720,30 +707,38 @@ fn str_isalpha(s: &str) -> bool {
 /// In Python, digits include decimal digits (Nd) plus characters with Numeric_Type=Digit
 /// (superscripts, subscripts, circled digits, etc.).
 fn str_isdigit(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(is_unicode_digit)
+    all_chars(s, TypeRecord::is_digit)
 }
 
 /// Implements Python's `str.isalnum()` method.
 ///
 /// Returns True if all characters in the string are alphanumeric and there is at least one character.
 fn str_isalnum(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(char::is_alphanumeric)
+    all_chars(s, |record| {
+        record.is_alpha() || record.is_decimal() || record.is_digit() || record.is_numeric()
+    })
 }
 
 /// Implements Python's `str.isnumeric()` method.
 ///
 /// Returns True if all characters in the string are numeric and there is at least one character.
-/// In Python, numeric includes decimal digits (Nd), letter numerals (Nl), and other numerals (No).
-/// Rust's `char::is_numeric()` checks for all of these categories.
+/// Numeric characters carry any `Numeric_Type`, including CJK ideographs such as `一`.
 fn str_isnumeric(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(char::is_numeric)
+    all_chars(s, TypeRecord::is_numeric)
 }
 
 /// Implements Python's `str.isspace()` method.
 ///
 /// Returns True if all characters in the string are whitespace and there is at least one character.
 fn str_isspace(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(char::is_whitespace)
+    all_chars(s, TypeRecord::is_space)
+}
+
+/// Implements Python's `str.isprintable()` method.
+///
+/// Returns True if all characters are printable or the string is empty.
+fn str_isprintable(s: &str) -> bool {
+    s.chars().all(|c| type_record(c).is_printable())
 }
 
 /// Implements Python's `str.islower()` method.
@@ -752,12 +747,11 @@ fn str_isspace(s: &str) -> bool {
 fn str_islower(s: &str) -> bool {
     let mut has_cased = false;
     for c in s.chars() {
-        if c.is_uppercase() {
+        let record = type_record(c);
+        if record.is_upper() || record.is_title() {
             return false;
         }
-        if c.is_lowercase() {
-            has_cased = true;
-        }
+        has_cased |= record.is_lower();
     }
     has_cased
 }
@@ -768,12 +762,11 @@ fn str_islower(s: &str) -> bool {
 fn str_isupper(s: &str) -> bool {
     let mut has_cased = false;
     for c in s.chars() {
-        if c.is_lowercase() {
+        let record = type_record(c);
+        if record.is_lower() || record.is_title() {
             return false;
         }
-        if c.is_uppercase() {
-            has_cased = true;
-        }
+        has_cased |= record.is_upper();
     }
     has_cased
 }
@@ -784,175 +777,7 @@ fn str_isupper(s: &str) -> bool {
 /// Decimal characters are those in Unicode category Nd (Decimal_Number) - digits that can be used
 /// to form numbers in base 10.
 fn str_isdecimal(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(is_unicode_decimal)
-}
-
-/// Checks if a character is a Unicode decimal digit (Nd category).
-///
-/// This covers decimal digit ranges from various scripts including ASCII, Arabic-Indic,
-/// Devanagari, Bengali, Thai, Fullwidth, and many others.
-fn is_unicode_decimal(c: char) -> bool {
-    let cp = c as u32;
-    matches!(
-        cp,
-        // Basic Latin (ASCII digits)
-        0x0030..=0x0039
-        // Arabic-Indic digits
-        | 0x0660..=0x0669
-        // Extended Arabic-Indic digits
-        | 0x06F0..=0x06F9
-        // NKo digits
-        | 0x07C0..=0x07C9
-        // Devanagari digits
-        | 0x0966..=0x096F
-        // Bengali digits
-        | 0x09E6..=0x09EF
-        // Gurmukhi digits
-        | 0x0A66..=0x0A6F
-        // Gujarati digits
-        | 0x0AE6..=0x0AEF
-        // Oriya digits
-        | 0x0B66..=0x0B6F
-        // Tamil digits
-        | 0x0BE6..=0x0BEF
-        // Telugu digits
-        | 0x0C66..=0x0C6F
-        // Kannada digits
-        | 0x0CE6..=0x0CEF
-        // Malayalam digits
-        | 0x0D66..=0x0D6F
-        // Sinhala Lith digits
-        | 0x0DE6..=0x0DEF
-        // Thai digits
-        | 0x0E50..=0x0E59
-        // Lao digits
-        | 0x0ED0..=0x0ED9
-        // Tibetan digits
-        | 0x0F20..=0x0F29
-        // Myanmar digits
-        | 0x1040..=0x1049
-        // Myanmar Shan digits
-        | 0x1090..=0x1099
-        // Khmer digits
-        | 0x17E0..=0x17E9
-        // Mongolian digits
-        | 0x1810..=0x1819
-        // Limbu digits
-        | 0x1946..=0x194F
-        // New Tai Lue digits
-        | 0x19D0..=0x19D9
-        // Tai Tham Hora digits
-        | 0x1A80..=0x1A89
-        // Tai Tham Tham digits
-        | 0x1A90..=0x1A99
-        // Balinese digits
-        | 0x1B50..=0x1B59
-        // Sundanese digits
-        | 0x1BB0..=0x1BB9
-        // Lepcha digits
-        | 0x1C40..=0x1C49
-        // Ol Chiki digits
-        | 0x1C50..=0x1C59
-        // Vai digits
-        | 0xA620..=0xA629
-        // Saurashtra digits
-        | 0xA8D0..=0xA8D9
-        // Kayah Li digits
-        | 0xA900..=0xA909
-        // Javanese digits
-        | 0xA9D0..=0xA9D9
-        // Myanmar Tai Laing digits
-        | 0xA9F0..=0xA9F9
-        // Cham digits
-        | 0xAA50..=0xAA59
-        // Meetei Mayek digits
-        | 0xABF0..=0xABF9
-        // Fullwidth digits
-        | 0xFF10..=0xFF19
-        // Osmanya digits
-        | 0x104A0..=0x104A9
-        // Hanifi Rohingya digits
-        | 0x10D30..=0x10D39
-        // Brahmi digits
-        | 0x11066..=0x1106F
-        // Sora Sompeng digits
-        | 0x110F0..=0x110F9
-        // Chakma digits
-        | 0x11136..=0x1113F
-        // Sharada digits
-        | 0x111D0..=0x111D9
-        // Khudawadi digits
-        | 0x112F0..=0x112F9
-        // Newa digits
-        | 0x11450..=0x11459
-        // Tirhuta digits
-        | 0x114D0..=0x114D9
-        // Modi digits
-        | 0x11650..=0x11659
-        // Takri digits
-        | 0x116C0..=0x116C9
-        // Ahom digits
-        | 0x11730..=0x11739
-        // Warang Citi digits
-        | 0x118E0..=0x118E9
-        // Dives Akuru digits
-        | 0x11950..=0x11959
-        // Bhaiksuki digits
-        | 0x11C50..=0x11C59
-        // Masaram Gondi digits
-        | 0x11D50..=0x11D59
-        // Gunjala Gondi digits
-        | 0x11DA0..=0x11DA9
-        // Adlam digits
-        | 0x1E950..=0x1E959
-        // Segmented digits
-        | 0x1FBF0..=0x1FBF9
-    )
-}
-
-/// Checks if a character is a Unicode digit (isdigit).
-///
-/// This includes decimal digits (Nd) plus characters with Numeric_Type=Digit
-/// such as superscripts, subscripts, and circled digits.
-fn is_unicode_digit(c: char) -> bool {
-    // First check if it's a decimal digit
-    if is_unicode_decimal(c) {
-        return true;
-    }
-
-    let cp = c as u32;
-    matches!(
-        cp,
-        // Superscripts (², ³)
-        0x00B2..=0x00B3
-        // Superscript 1
-        | 0x00B9
-        // Superscript digits 0, 4-9
-        | 0x2070
-        | 0x2074..=0x2079
-        // Subscript digits 0-9
-        | 0x2080..=0x2089
-        // Circled digits 1-9
-        | 0x2460..=0x2468
-        // Circled digit 0
-        | 0x24EA
-        // Circled digits 10-20
-        | 0x2469..=0x2473
-        // Parenthesized digits 1-9
-        | 0x2474..=0x247C
-        // Period digits 1-9
-        | 0x2488..=0x2490
-        // Double circled digits 1-10
-        | 0x24F5..=0x24FE
-        // Dingbat circled sans-serif digits 1-10
-        | 0x2780..=0x2789
-        // Dingbat negative circled digits 1-10
-        | 0x278A..=0x2793
-        // Dingbat circled sans-serif digits 1-10
-        | 0x24FF
-        // Fullwidth digit zero (already in decimal, but include for completeness)
-        // | 0xFF10..=0xFF19  // Already covered by is_unicode_decimal
-    )
+    all_chars(s, TypeRecord::is_decimal)
 }
 
 // =============================================================================
@@ -1262,7 +1087,7 @@ fn str_strip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
     let s = s.get(vm.heap);
     let result = match &chars {
         Some(c) => s.trim_matches(|ch| c.contains(ch)).to_owned(),
-        None => s.trim().to_owned(),
+        None => s.trim_matches(is_space).to_owned(),
     };
     Ok(allocate_string(result, vm.heap))
 }
@@ -1275,7 +1100,7 @@ fn str_lstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     let s = s.get(vm.heap);
     let result = match &chars {
         Some(c) => s.trim_start_matches(|ch| c.contains(ch)).to_owned(),
-        None => s.trim_start().to_owned(),
+        None => s.trim_start_matches(is_space).to_owned(),
     };
     Ok(allocate_string(result, vm.heap))
 }
@@ -1288,7 +1113,7 @@ fn str_rstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
     let s = s.get(vm.heap);
     let result = match &chars {
         Some(c) => s.trim_end_matches(|ch| c.contains(ch)).to_owned(),
-        None => s.trim_end().to_owned(),
+        None => s.trim_end_matches(is_space).to_owned(),
     };
     Ok(allocate_string(result, vm.heap))
 }
@@ -1366,7 +1191,7 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
         None => {
             // Split on whitespace, filtering empty strings
             if maxsplit < 0 {
-                s.split_whitespace().collect()
+                s.split(is_space).filter(|part| !part.is_empty()).collect()
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
@@ -1415,7 +1240,7 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
         None => {
             // Split on whitespace from right
             if maxsplit < 0 {
-                s.split_whitespace().collect()
+                s.split(is_space).filter(|part| !part.is_empty()).collect()
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
@@ -1477,13 +1302,13 @@ struct RsplitArgs {
 /// Split string on whitespace, returning at most `maxsplit + 1` parts.
 fn split_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     let mut parts = Vec::new();
-    let mut remaining = s.trim_start();
+    let mut remaining = s.trim_start_matches(is_space);
     let mut count = 0;
 
     while !remaining.is_empty() && count < maxsplit {
-        if let Some(end) = remaining.find(|c: char| c.is_whitespace()) {
+        if let Some(end) = remaining.find(is_space) {
             parts.push(&remaining[..end]);
-            remaining = remaining[end..].trim_start();
+            remaining = remaining[end..].trim_start_matches(is_space);
             count += 1;
         } else {
             break;
@@ -1500,14 +1325,14 @@ fn split_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
 /// Split string on whitespace from the right, returning at most `maxsplit + 1` parts.
 fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     let mut parts = Vec::new();
-    let mut remaining = s.trim_end();
+    let mut remaining = s.trim_end_matches(is_space);
     let mut count = 0;
 
     while !remaining.is_empty() && count < maxsplit {
-        if let Some(start) = remaining.rfind(|c: char| c.is_whitespace()) {
+        if let Some(start) = remaining.rfind(is_space) {
             let ws_len = remaining[start..].chars().next().unwrap().len_utf8();
             parts.push(&remaining[start + ws_len..]);
-            remaining = remaining[..start].trim_end();
+            remaining = remaining[..start].trim_end_matches(is_space);
             count += 1;
         } else {
             break;
@@ -1978,24 +1803,14 @@ struct EncodeArgs {
     errors: Option<StrArg>,
 }
 
-/// Implements Python's `str.isidentifier()` predicate.
+/// Implements Python's `str.isidentifier()` predicate: `XID_Start` or `_`, then `XID_Continue`
+/// characters; the empty string is not an identifier.
 ///
-/// Returns True if the string is a valid Python identifier according to
-/// the language definition (starts with letter or underscore, followed by
-/// letters, digits, or underscores). Empty strings return False.
-///
-/// Note this matches `str.isidentifier()`, which accepts keywords (`'def'`
-/// is an identifier); callers needing the keyword distinction (e.g.
-/// `collections.namedtuple`) must combine this with a separate keyword check.
-///
-/// Uses ruff's `is_identifier` — the full Unicode `XID_Start`/`XID_Continue`
-/// tables, so combining marks and other non-ASCII identifier characters are
-/// accepted like CPython (a bare `is_alphanumeric` check would reject them).
-/// `is_identifier` rejects keywords, but every keyword is XID-valid, so OR-ing
-/// the keyword check back in reconstructs `str.isidentifier()`'s "keywords are
-/// identifiers" behaviour exactly.
+/// Keywords are accepted (`'def'` is an identifier), as in CPython; callers needing the keyword
+/// distinction (e.g. `collections.namedtuple`) must combine this with a separate keyword check.
 pub(crate) fn str_isidentifier(s: &str) -> bool {
-    is_identifier(s) || is_keyword(s)
+    let mut chars = s.chars();
+    chars.next().is_some_and(|first| type_record(first).is_id_start()) && chars.all(|c| type_record(c).is_id_continue())
 }
 
 /// Implements Python's `str.istitle()` predicate.
@@ -2012,14 +1827,15 @@ fn str_istitle(s: &str) -> bool {
     let mut has_cased = false;
 
     for c in s.chars() {
-        if c.is_uppercase() {
-            // Uppercase must follow uncased
+        let record = type_record(c);
+        if record.is_upper() || record.is_title() {
+            // Uppercase or titlecase must follow uncased
             if prev_cased {
                 return false;
             }
             prev_cased = true;
             has_cased = true;
-        } else if c.is_lowercase() {
+        } else if record.is_lower() {
             // Lowercase must follow cased
             if !prev_cased {
                 return false;

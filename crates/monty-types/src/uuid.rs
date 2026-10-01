@@ -11,7 +11,7 @@ use std::fmt;
 /// A 16-byte UUID identifying a host or sandbox class/instance across the
 /// sandbox boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-pub struct MontyUuid([u8; 16]);
+pub struct MontyUuid(#[serde(with = "serde_bytes")] [u8; 16]);
 
 impl MontyUuid {
     /// Wraps raw bytes as-is; used when the bytes are already a valid uuid.

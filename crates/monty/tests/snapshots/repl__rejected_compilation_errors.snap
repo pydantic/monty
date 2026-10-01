@@ -1,0 +1,21 @@
+---
+source: crates/monty/tests/repl.rs
+expression: "errors.join(\"\\n\\n\")"
+---
+Traceback (most recent call last):
+  File "<python-input-1>", line 1
+    def broken(:
+               ~
+SyntaxError: Expected a parameter or the end of the parameter list
+
+Traceback (most recent call last):
+  File "<python-input-2>", line 2
+    nonlocal absent
+    ~~~~~~~~~~~~~~~
+SyntaxError: no binding for nonlocal 'absent' found
+
+Traceback (most recent call last):
+  File "<python-input-3>", line 3, in <module>
+    __name__ = 'rejected'
+    ~~~~~~~~
+NotImplementedError: cannot reassign read-only module attribute '__name__'

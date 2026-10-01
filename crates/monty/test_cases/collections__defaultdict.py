@@ -227,3 +227,24 @@ try:
     assert False, 'expected the factory insert to invalidate the iterator'
 except RuntimeError as e:
     assert str(e) == 'dictionary changed size during iteration'
+
+# === `|` keeps the defaultdict's factory whichever side it is on ===
+dd = defaultdict(list, a=[1])
+merged = dd | {'b': 2}
+assert type(merged) is defaultdict
+assert merged.default_factory is list
+assert merged == {'a': [1], 'b': 2}
+assert merged['c'] == []
+merged = {'a': 1} | dd
+assert type(merged) is defaultdict
+assert merged.default_factory is list
+assert merged == {'a': [1]}
+merged = defaultdict(int) | defaultdict(list)
+assert merged.default_factory is int
+assert dd == {'a': [1]}
+
+# === `|=` keeps the left defaultdict ===
+dd |= {'b': 2}
+assert type(dd) is defaultdict
+assert dd == {'a': [1], 'b': 2}
+assert dd['c'] == []

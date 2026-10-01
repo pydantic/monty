@@ -1,9 +1,10 @@
-import { test } from 'vitest'
+import { ROOT_CONTEXT, context, createContextKey, propagation } from '@opentelemetry/api'
+import { test, vi } from 'vitest'
 import { t } from './assertions.js'
 
 import { FunctionSnapshot, FutureSnapshot, MontyComplete, MontyRuntimeError, NameLookupSnapshot } from '@pydantic/monty'
 import { MountDir } from '@pydantic/monty/node'
-import { kind } from './env.js'
+import { isWasm } from './env.js'
 import { setupPool } from './helpers.js'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -39,6 +40,57 @@ test('feedStart surfaces a name lookup', async () => {
   }
 })
 
+test('snapshot trace contexts preserve the captured context without Monty tracing', async () => {
+  const key = createContextKey('snapshot context')
+  const [feedContext, loadContext, callerContext] = ['feed', 'load', 'caller'].map((value) =>
+    propagation.setBaggage(ROOT_CONTEXT, propagation.createBaggage({ request: { value } })).setValue(key, value),
+  )
+  const session = await pool().checkout()
+  // Control the active context without a Node-only async context manager.
+  const active = vi.spyOn(context, 'active').mockReturnValue(feedContext)
+  try {
+    const pendingName = session.feedStart('missing')
+    active.mockReturnValue(callerContext)
+    const name = (await pendingName) as NameLookupSnapshot
+    t.is(name.traceContext(), feedContext)
+    t.is(name.traceContext().getValue(key), 'feed')
+    t.deepEqual(propagation.getBaggage(name.traceContext())?.getEntry('request'), { value: 'feed' })
+    t.is(context.active(), callerContext)
+    const dump = await name.dump()
+    await name.resumeValue(42)
+    t.throws(() => name.traceContext(), { message: 'snapshot has already been resumed' })
+
+    active.mockReturnValue(feedContext)
+    const pendingCall = session.feedStart('await callback()')
+    active.mockReturnValue(callerContext)
+    const call = (await pendingCall) as FunctionSnapshot
+    t.is(call.traceContext(), feedContext)
+    const futures = (await call.resumeFuture()) as FutureSnapshot
+    t.throws(() => call.traceContext(), { message: 'snapshot has already been resumed' })
+    t.is(futures.traceContext(), feedContext)
+    await futures.resume([{ callId: call.callId, value: 42 }])
+    t.throws(() => futures.traceContext(), { message: 'snapshot has already been resumed' })
+
+    const restoredSession = await pool().checkout()
+    try {
+      active.mockReturnValue(loadContext)
+      const pendingRestore = restoredSession.loadSnapshot(dump)
+      active.mockReturnValue(callerContext)
+      const restored = (await pendingRestore) as NameLookupSnapshot
+      t.is(restored.traceContext(), loadContext)
+      t.is(restored.traceContext().getValue(key), 'load')
+      t.deepEqual(propagation.getBaggage(restored.traceContext())?.getEntry('request'), { value: 'load' })
+      t.is(context.active(), callerContext)
+      await restored.resumeValue(42)
+    } finally {
+      await restoredSession.close()
+    }
+  } finally {
+    active.mockRestore()
+    await session.close()
+  }
+})
+
 test('a snapshot resumes at most once', async () => {
   const session = await pool().checkout()
   try {
@@ -70,6 +122,26 @@ test('os handler is used by resumeAuto, not auto-dispatched', async () => {
   }
 })
 
+test('resumeAuto settles an immediately awaited asyncio.sleep in place', async () => {
+  const session = await pool().checkout({ osPolicy: { sleep: 'call_host' } })
+  try {
+    const snap = await session.feedStart("import asyncio\nawait asyncio.sleep(0.001, 'woken')", {
+      os: async (name, args) => {
+        t.is(name, 'asyncio.sleep')
+        await new Promise((resolve) => setTimeout(resolve, (args[0] as number) * 1000))
+      },
+    })
+    t.true(snap instanceof FunctionSnapshot)
+    t.true((snap as FunctionSnapshot).allowEagerAwait)
+    // no FutureSnapshot in between: the wait is done when the answer arrives
+    const done = (await (snap as FunctionSnapshot).resumeAuto()) as MontyComplete
+    t.true(done instanceof MontyComplete)
+    t.is(done.output, 'woken')
+  } finally {
+    await session.close()
+  }
+})
+
 test('the sandbox future mechanism is caller-driven', async () => {
   const session = await pool().checkout()
   try {
@@ -82,6 +154,72 @@ test('the sandbox future mechanism is caller-driven', async () => {
     const done = (await futures.resume([{ callId: call.callId, value: 99 }])) as MontyComplete
     t.true(done instanceof MontyComplete)
     t.is(done.output, 99)
+  } finally {
+    await session.close()
+  }
+})
+
+test('every snapshot kind carries the position of the suspending expression', async () => {
+  const session = await pool().checkout()
+  try {
+    const call = (await session.feedStart('x = 1\ny = add(x, 2) + 1')) as FunctionSnapshot
+    t.true(call instanceof FunctionSnapshot)
+    t.deepEqual(call.position, { filename: '<python-input-0>', start: 10, end: 19 })
+    await call.resume(3)
+
+    const name = (await session.feedStart('total = 1 + missing')) as NameLookupSnapshot
+    t.true(name instanceof NameLookupSnapshot)
+    t.deepEqual(name.position, { filename: '<python-input-1>', start: 12, end: 19 })
+    await name.resumeValue(1)
+
+    const osCall = (await session.feedStart("from pathlib import Path\nPath('/etc/x').read_text()")) as FunctionSnapshot
+    t.true(osCall.isOsFunction)
+    t.deepEqual(osCall.position, { filename: '<python-input-2>', start: 25, end: 51 })
+    await osCall.resume('body')
+
+    const code = 'import asyncio\n\nasync def go():\n    return await fetch()\n\nawait asyncio.gather(go(), go())'
+    const first = (await session.feedStart(code)) as FunctionSnapshot
+    t.deepEqual(first.position, { filename: '<python-input-3>', start: 49, end: 56 })
+    const second = (await first.resumeFuture()) as FunctionSnapshot
+    const futures = (await second.resumeFuture()) as FutureSnapshot
+    t.true(futures instanceof FutureSnapshot)
+    t.deepEqual(futures.position, { filename: '<python-input-3>', start: 58, end: 90 })
+    await futures.resume([
+      { callId: first.callId, value: 1 },
+      { callId: second.callId, value: 2 },
+    ])
+  } finally {
+    await session.close()
+  }
+})
+
+test('the position counts UTF-8 bytes, not characters', async () => {
+  const session = await pool().checkout()
+  try {
+    // the two-byte `é` puts the call at byte 13 but character 12
+    const code = "x = 'é'\ny = add(x, 2)"
+    const call = (await session.feedStart(code)) as FunctionSnapshot
+    t.deepEqual(call.position, { filename: '<python-input-0>', start: 13, end: 22 })
+    const bytes = new TextEncoder().encode(code).subarray(call.position.start, call.position.end)
+    t.is(new TextDecoder().decode(bytes), 'add(x, 2)')
+    await call.resume(3)
+  } finally {
+    await session.close()
+  }
+})
+
+test('the position survives dump and loadSnapshot', async () => {
+  let blob: Buffer
+  {
+    const session = await pool().checkout()
+    const snap = (await session.feedStart('y = fetch()\ny + 1')) as FunctionSnapshot
+    blob = await snap.dump()
+    await session.close()
+  }
+  const session = await pool().checkout()
+  try {
+    const snap = (await session.loadSnapshot(blob)) as FunctionSnapshot
+    t.deepEqual(snap.position, { filename: '<python-input-0>', start: 4, end: 11 })
   } finally {
     await session.close()
   }
@@ -171,7 +309,7 @@ test('load after a feed is rejected', async () => {
 })
 
 test('mounts are re-supplied to loadSnapshot', async () => {
-  if (kind === 'browser') {
+  if (isWasm) {
     const session = await pool().checkout()
     try {
       const snap = (await session.feedStart('f()')) as FunctionSnapshot
@@ -338,15 +476,13 @@ test('resumeAuto answers an OS call with the default unhandled error', async () 
   }
 })
 
-test('resumeAuto spawns a promise external and settles it via a FutureSnapshot', async () => {
+test('resumeAuto settles an immediately awaited promise without a FutureSnapshot', async () => {
   const session = await pool().checkout()
   try {
     const code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
     const snap = (await session.feedStart(code, { externalLookup: { go: async () => 99 } })) as FunctionSnapshot
-    // the coroutine is spawned and answered with a pending future
-    const futures = (await snap.resumeAuto()) as FutureSnapshot
-    t.true(futures instanceof FutureSnapshot)
-    const done = (await futures.resumeAuto()) as MontyComplete
+    t.true(snap.allowEagerAwait)
+    const done = (await snap.resumeAuto()) as MontyComplete
     t.is(done.output, 99)
   } finally {
     await session.close()

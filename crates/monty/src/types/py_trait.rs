@@ -1,6 +1,7 @@
 use std::{borrow::Cow, cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
+
 /// Trait for heap-allocated Python values that need common operations.
 ///
 /// This trait abstracts over container types (List, Tuple, Str, Bytes) stored
@@ -12,8 +13,6 @@ use ahash::AHashSet;
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
-use monty_types::OsFunctionCall;
-
 use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
@@ -23,48 +22,8 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
     identity::Identity,
-    intern::StringId,
     value::{EitherStr, Value},
 };
-
-/// Return type for attribute method calls on heap-allocated types.
-///
-/// Similar to `CallResult` but without the `FramePushed` variant, since attribute
-/// methods never push new frames directly. Used by `py_call_attr` implementations
-/// to signal the VM about what action to take after the call completes.
-///
-/// When needed for features like `list.sort(key=func)`, we can add:
-/// ```ignore
-/// CallFunction(Value, ArgValues)  // Call a callable, result becomes attr result
-/// ```
-#[derive(Debug)]
-pub enum AttrCallResult {
-    /// Call completed synchronously with a value to return.
-    Value(Value),
-
-    /// The method needs an OS operation. VM should yield `FrameExit::OsCall` to host.
-    ///
-    /// The host executes the OS operation and resumes the VM with the result.
-    /// Used by `Path` filesystem methods like `exists()`, `read_text()`, etc.
-    OsCall(OsFunctionCall),
-
-    /// The method needs to call an external function. VM should yield `FrameExit::ExternalCall`.
-    ///
-    /// Used when attribute methods delegate to registered external functions.
-    /// Currently unused - will be used when types need to call external functions from attribute methods.
-    #[expect(dead_code)]
-    ExternalCall(StringId, ArgValues),
-}
-
-impl From<AttrCallResult> for CallResult {
-    fn from(result: AttrCallResult) -> Self {
-        match result {
-            AttrCallResult::Value(v) => Self::Value(v),
-            AttrCallResult::OsCall(call) => Self::OsCall(call),
-            AttrCallResult::ExternalCall(ext_id, args) => Self::External(EitherStr::Interned(ext_id), args),
-        }
-    }
-}
 
 /// Outcome of an ordering comparison ([`PyTrait::py_cmp`] / [`Value::py_cmp`]).
 ///
@@ -421,6 +380,16 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Ok(None)
     }
 
+    /// One-sided implementation of Python `divmod()` (`__divmod__`).
+    fn py_divmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python `divmod()` (`__rdivmod__`).
+    fn py_rdivmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
     /// One-sided implementation of Python power (`__pow__`).
     fn py_pow_impl(&self, _other: &Value, _modulus: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
@@ -507,6 +476,33 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Python in-place bitwise OR (`__ior__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
     fn py_ior_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(false)
+    }
+
+    /// Calls this value itself (`obj(...)`), the counterpart of
+    /// [`py_call_attr`](Self::py_call_attr) for the callable rather than one of
+    /// its methods.
+    ///
+    /// The same `CallResult` contract applies: a synchronous result is
+    /// `Value`, running a Python function is `FramePushed` (the VM's loop takes
+    /// over from there), and anything needing the host is the matching
+    /// suspension.
+    ///
+    /// Overriding this is what makes a type callable.
+    /// [`HeapData::is_callable`](crate::heap::HeapData::is_callable) is a
+    /// deliberate subset of the overrides, so a new one need not be added
+    /// there — but everything listed there must override this.
+    ///
+    /// A callable that dispatches onward holds its `HeapRead`, and so an active
+    /// reader count, for the whole nested call. That is sound only because every
+    /// caller of `VM::call_function` owns a reference to the callable meanwhile,
+    /// so it cannot be freed underneath. Such a callable must still not hold a
+    /// `get`/`get_mut` borrow across the dispatch, since the callee can reach
+    /// this same object again.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        // As in `py_call_attr`, the arguments are owned by this call and must
+        // be released before reporting that the value cannot take them.
+        args.drop_with(vm);
+        Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)))
     }
 
     /// Calls an attribute method on this value (e.g., `list.append()`), returning a

@@ -21,8 +21,8 @@ handle, no buffered data, no descriptor number.
 
 This is what makes subprocess `dump()` / `load()` safe: a session can be
 serialized at a pause point and resumed later without dangling references to
-host resources. The wasm in-process API exposes the same idea as
-`MontySnapshot`. It also means external processes can observe partial state
+host resources, including when using WASM worker sessions and snapshots.
+It also means external processes can observe partial state
 between calls, and that there is no protection against the underlying file
 being changed or removed between calls, both documented further down.
 
@@ -104,6 +104,10 @@ methods and attributes are:
     [with.md](with.md) for the shared protocol divergences.
 - `name`, `mode`, `closed` attributes.
 - `encoding` attribute on text files (always `"utf-8"`).
+
+`open('data.txt').name` is `'data.txt'`, matching the supplied filename rather than the absolute path sent to the host.
+Bytes filenames remain bytes, and `Path.open()` uses the path's string spelling.
+Subsequent reads and writes still target the file opened originally, even after `os.chdir()`.
 
 Everything else raises `AttributeError`, including: `truncate()`,
 `fileno()`, `isatty()`, `detach()`, `buffer`, `raw`, and the iterator

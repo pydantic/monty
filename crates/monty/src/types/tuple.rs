@@ -32,8 +32,9 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
     types::{
         LazyHeapSet, Type,
@@ -67,9 +68,11 @@ pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 /// tuple contains only primitive values (ints, bools, None, etc.).
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Tuple {
+    #[serde(rename = "I")]
     items: TupleVec,
     /// True if any item in the tuple is a `Value::Ref`. Set at creation time
     /// since tuples are immutable.
+    #[serde(rename = "C")]
     contains_refs: bool,
     /// Lazily-computed Python hash. Tuples are immutable so this is
     /// computed on first `py_hash` and reused thereafter. Skipped on
@@ -465,7 +468,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string() {
+        match attr.static_string(vm.interns) {
             Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
             Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
             _ => {
@@ -683,5 +686,38 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
             self.get_mut(vm.heap).index += 1;
         }
         Ok(item)
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
+    /// Copies a tuple, rebuilding it only when deep-copying changed an item — so
+    /// a tuple of immutables copies to itself, as in CPython.
+    #[inline(never)]
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let items = deep_copy_slots(self.get(vm.heap).as_slice().len(), memo, vm, |index, vm| {
+            self.clone_item(index, vm)
+        })?;
+        // The items are guarded from here on: the memo read below can fail, and
+        // two of the three outcomes discard them.
+        let mut guard = DropGuard::new(items, vm);
+        let (items, vm) = guard.as_parts_mut();
+        // A tuple is memoized only after its items are done, so a cycle running
+        // back through a mutable item copies this tuple in full before the
+        // outer call returns. CPython's `_deepcopy_tuple` re-reads the memo
+        // here and hands back that copy, leaving the cycle closed on one tuple
+        // rather than on a second one built from these items.
+        let existing = memo.get(source, vm)?;
+        let unchanged = items
+            .iter()
+            .enumerate()
+            .all(|(index, item)| self.get(vm.heap).as_slice()[index].id() == item.id());
+        match existing {
+            Some(existing) => Ok(existing),
+            None if unchanged => Ok(source.clone_with_heap(vm.heap)),
+            None => {
+                let (items, vm) = guard.into_parts();
+                Ok(allocate_tuple(items.into_iter().collect(), vm.heap))
+            }
+        }
     }
 }

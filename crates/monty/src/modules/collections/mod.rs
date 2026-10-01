@@ -22,7 +22,7 @@ pub(crate) mod defaultdict;
 
 use std::iter::once;
 
-use ruff_python_stdlib::identifiers::is_identifier;
+use ruff_python_stdlib::keyword::is_keyword;
 
 use self::counter::counter_update;
 use crate::{
@@ -43,11 +43,8 @@ use crate::{
 
 /// Creates the `collections` module and allocates it on the heap.
 ///
-/// # Panics
-///
-/// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Collections);
+    let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
     module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
     module.set_attr(
@@ -147,7 +144,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
             value.drop_with(vm);
             pos.drop_with(vm);
             kwargs.drop_with(vm);
-            return Err(ExcType::type_error("first argument must be callable or None"));
+            return Err(ExcType::defaultdict_factory_not_callable());
         }
     };
 
@@ -248,7 +245,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython substitutes the calling module's `__name__` for a `None` module, and
     // otherwise stores the argument unvalidated (it need not be a string).
     let module = match module {
-        Value::None => Value::InternString(StaticStrings::DunderMain.into()),
+        Value::None => Value::InternString(vm.interns.intern_static(StaticStrings::DunderMain)),
         other => other.clone_with_heap(vm.heap),
     };
 
@@ -306,7 +303,7 @@ fn apply_rename(names: &mut [String]) {
     let mut seen: Vec<String> = Vec::with_capacity(names.len());
     for (index, name) in names.iter_mut().enumerate() {
         let invalid =
-            !str_isidentifier(name) || !is_identifier(name) || name.starts_with('_') || seen.iter().any(|s| s == name);
+            !str_isidentifier(name) || is_keyword(name) || name.starts_with('_') || seen.iter().any(|s| s == name);
         seen.push(name.clone());
         if invalid {
             *name = format!("_{index}");
@@ -328,9 +325,7 @@ fn validate_names(type_name: &str, field_names: &[String], rename: bool) -> RunR
                 repr_name(name)
             )));
         }
-        // `str.isidentifier()` accepts keywords, but ruff's `is_identifier`
-        // rejects them — so an identifier ruff rejects is exactly a keyword.
-        if !is_identifier(name) {
+        if is_keyword(name) {
             return Err(ExcType::value_error(format!(
                 "Type names and field names cannot be a keyword: {}",
                 repr_name(name)

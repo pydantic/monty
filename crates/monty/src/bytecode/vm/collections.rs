@@ -3,8 +3,8 @@
 use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
-    heap::{DropGuard, HeapData, HeapReadOutput},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StringId,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
@@ -51,14 +51,25 @@ impl VM<'_> {
     }
 
     /// Builds a set from the top n stack values.
+    ///
+    /// An insertion can raise — the item may be unhashable, or a colliding
+    /// `__eq__` may raise — so both the items still on the way in and the
+    /// half-built set ride in guards until the set reaches the heap.
     pub(super) fn build_set(&mut self, count: usize) -> Result<(), RunError> {
-        let items = self.pop_n(count);
-        let mut set = Set::new();
-        for item in items {
-            set.add(item, self)?;
+        let this = self;
+        let items = this.pop_n(count).into_iter();
+        defer_drop_mut!(items, this);
+        let mut set_guard = DropGuard::new(Set::new(), this);
+        loop {
+            let (set, this) = set_guard.as_parts_mut();
+            let Some(item) = items.next() else {
+                break;
+            };
+            set.add(item, this)?;
         }
-        let heap_id = self.heap.allocate(HeapData::Set(set));
-        self.push(Value::Ref(heap_id));
+        let (set, this) = set_guard.into_parts();
+        let heap_id = this.heap.allocate(HeapData::Set(set));
+        this.push(Value::Ref(heap_id));
         Ok(())
     }
 
@@ -401,8 +412,7 @@ impl VM<'_> {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
-        list.append(self, value);
-        Ok(())
+        list.append(self, value)
     }
 
     /// Adds TOS to set for comprehension.
@@ -476,45 +486,9 @@ impl VM<'_> {
 
         let value = this.pop();
         defer_drop!(value, this);
-
-        if !value.py_is_iterable(this) {
-            return Err(unpack_type_error(value, this));
-        }
-        // CPython's `UNPACK_SEQUENCE` special-cases exactly these three, so only
-        // they can report a total in the "too many" message. It is deliberately
-        // a local match rather than a `PyTrait` method: the set is a quirk of
-        // one CPython error message, not a property types should declare, and
-        // nothing may branch on it to decide *how* to iterate.
-        let total = match value {
-            Value::Ref(id) => match this.heap.get(*id) {
-                HeapData::List(list) => Some(list.len()),
-                HeapData::Tuple(tuple) => Some(tuple.as_slice().len()),
-                HeapData::Dict(dict) => Some(dict.len()),
-                _ => None,
-            },
-            _ => None,
-        };
-        // Pull one past `count` so a too-long iterable is detected without
-        // draining it — CPython stops consuming there too, which is why every
-        // other type has no total to report.
-        let items = collect_iterable_bounded(value, count + 1, this)?;
-        defer_drop_mut!(items, this);
-        if items.len() != count {
-            let err = if items.len() > count {
-                match total {
-                    Some(total) => unpack_size_error(count, total),
-                    None => unpack_too_many_unknown_error(count),
-                }
-            } else {
-                // Short of `count`, so the iterable was drained and its true
-                // length is known whether or not the type could report one.
-                unpack_size_error(count, items.len())
-            };
-            return Err(err);
-        }
-
+        let items = unpack_exact(value, count, this)?;
         // Push items in reverse order so first item is on top
-        for item in items.drain(..).rev() {
+        for item in items.into_iter().rev() {
             this.push(item);
         }
         Ok(())
@@ -592,6 +566,50 @@ fn func_name_for_dict_merge(func_name_id: u16, vm: &VM<'_>) -> String {
 fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
     let message = format!("not enough values to unpack (expected at least {min_needed}, got {actual})");
     SimpleException::new_msg(ExcType::ValueError, message).into()
+}
+
+/// `a, b, c = value` as owned items: exactly `count` of them, with CPython's
+/// unpack errors. Shared by `UNPACK_SEQUENCE` and native code that mirrors a
+/// Python unpack (`random.setstate`). Consumes at most `count + 1` items, so an
+/// endless iterable still fails.
+pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+    if !value.py_is_iterable(vm) {
+        return Err(unpack_type_error(value, vm));
+    }
+    // CPython's `UNPACK_SEQUENCE` special-cases exactly these three, so only
+    // they can report a total in the "too many" message. It is deliberately
+    // a local match rather than a `PyTrait` method: the set is a quirk of
+    // one CPython error message, not a property types should declare, and
+    // nothing may branch on it to decide *how* to iterate.
+    let total = match value {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => Some(list.len()),
+            HeapData::Tuple(tuple) => Some(tuple.as_slice().len()),
+            HeapData::Dict(dict) => Some(dict.len()),
+            _ => None,
+        },
+        _ => None,
+    };
+    // Pull one past `count` so a too-long iterable is detected without
+    // draining it — CPython stops consuming there too, which is why every
+    // other type has no total to report.
+    let items = collect_iterable_bounded(value, count + 1, vm)?;
+    if items.len() == count {
+        Ok(items)
+    } else {
+        let err = if items.len() > count {
+            match total {
+                Some(total) => unpack_size_error(count, total),
+                None => unpack_too_many_unknown_error(count),
+            }
+        } else {
+            // Short of `count`, so the iterable was drained and its true
+            // length is known whether or not the type could report one.
+            unpack_size_error(count, items.len())
+        };
+        items.drop_with(vm);
+        Err(err)
+    }
 }
 
 /// Creates the appropriate ValueError for unpacking size mismatches.

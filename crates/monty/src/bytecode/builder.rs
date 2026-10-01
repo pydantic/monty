@@ -4,7 +4,7 @@
 //! forward jumps with patching, and tracking source locations for tracebacks.
 
 use super::{
-    code::{Code, ConstPool, ExceptionEntry, HandlerKind, LocationEntry},
+    code::{Code, ExceptionEntry, HandlerKind, LocationEntry},
     compiler::CompileError,
     op::{Opcode, Operand},
 };
@@ -17,20 +17,6 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 ///
 /// The builder maintains an internal "dead code" state; during dead code emission
 /// no bytes are written and no work is done.
-///
-/// # Usage
-///
-/// ```ignore
-/// let mut builder = CodeBuilder::new();
-/// builder.enter_region(0); // open the initial region at depth 0
-/// builder.set_location(some_range, None);
-/// builder.emit(Opcode::LoadNone);
-/// builder.emit_u8(Opcode::LoadLocal, 0);
-/// let jump = builder.emit_jump(Opcode::JumpIfFalse);
-/// // ... emit more code ...
-/// builder.patch_jump(jump);
-/// let code = builder.build(num_locals);
-/// ```
 #[derive(Debug, Default)]
 pub struct CodeBuilder {
     /// The bytecode being built.
@@ -54,9 +40,6 @@ pub struct CodeBuilder {
     /// Operand-stack depth before the next opcode, or `None` in dead code.
     /// Unconditional terminators include `AssertFailed`, but not `Assert`.
     current_stack_depth: Option<u16>,
-
-    /// Maximum stack depth seen during compilation.
-    max_stack_depth: u16,
 
     /// Local variable names indexed by slot number.
     ///
@@ -322,11 +305,17 @@ impl CodeBuilder {
         }))
     }
 
-    /// Emits `LoadLocal`, using specialized opcodes for slots 0-3.
+    /// Registers the names of slots `0..names.len()` in one pass.
     ///
-    /// Slots 0-3 use zero-operand opcodes (`LoadLocal0`, etc.) for efficiency.
-    /// Slots 4-255 use `LoadLocal` with a u8 operand.
-    /// Slots 256+ use `LoadLocalW` with a u16 operand.
+    /// Used for module frames, whose namespace is known in full before
+    /// compilation starts; a long REPL session's globals run to thousands of
+    /// slots, so this must stay a plain copy rather than a per-slot insert.
+    /// Must be called before any [`register_local_name`](Self::register_local_name).
+    pub fn register_local_names(&mut self, names: &[StringId]) {
+        debug_assert!(self.local_names.is_empty(), "register_local_names must run first");
+        self.local_names.extend(names.iter().map(|&name| Some(name)));
+    }
+
     /// Registers a local variable name for a given slot.
     ///
     /// This is called during compilation when we encounter a variable access.
@@ -378,6 +367,14 @@ impl CodeBuilder {
     pub fn emit_load_global_callable(&mut self, slot: u16, name_id: StringId) -> Result<(), CompileError> {
         let name_id_u16 = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
         self.emit_with_operand(Opcode::LoadGlobalCallable, Operand::U16U16(slot, name_id_u16))
+    }
+
+    /// Emits a `LoadName` / `StoreName` / `DeleteName` with its slot, interned
+    /// name and `NAME_*` flags; the name is encoded for the same reason as in
+    /// [`emit_load_global_callable`](Self::emit_load_global_callable).
+    pub fn emit_name_op(&mut self, op: Opcode, slot: u16, name_id: StringId, flags: u8) -> Result<(), CompileError> {
+        let name_id_u16 = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
+        self.emit_with_operand(op, Operand::U16U16U8(slot, name_id_u16, flags))
     }
 
     /// Emits `StoreLocal`, using wide variant for slots > 255.
@@ -439,23 +436,16 @@ impl CodeBuilder {
         self.current_stack_depth.is_none()
     }
 
-    /// Builds the final Code object.
-    ///
-    /// Consumes the builder and returns a Code object containing the
-    /// compiled bytecode and all metadata.
+    /// Finishes a compiled body, transferring its buffers and metadata to `Code`.
     #[must_use]
-    pub fn build(self, num_locals: u16) -> Code {
-        // Convert local_names from Vec<Option<StringId>> to Vec<StringId>,
-        // using StringId::default() for slots with no recorded name
-        let local_names: Vec<StringId> = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
-
+    pub fn build(self) -> Code {
+        // Unnamed slots use the sentinel understood by local-name lookup.
+        let local_names = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
         Code::new(
             self.bytecode,
-            ConstPool::from_vec(self.constants),
+            self.constants,
             self.location_table,
             self.exception_table,
-            num_locals,
-            self.max_stack_depth,
             local_names,
         )
     }
@@ -494,7 +484,6 @@ impl CodeBuilder {
             }
             None => self.current_stack_depth = Some(depth),
         }
-        self.max_stack_depth = self.max_stack_depth.max(depth);
     }
 
     /// Adjusts the stack depth by the given delta.
@@ -511,7 +500,6 @@ impl CodeBuilder {
         debug_assert!(new_depth >= 0, "Stack depth went negative: {new_depth}");
         let new_depth = u16::try_from(new_depth.max(0)).map_err(|_| self.stack_too_large())?;
         self.current_stack_depth = Some(new_depth);
-        self.max_stack_depth = self.max_stack_depth.max(new_depth);
         Ok(())
     }
 
@@ -547,6 +535,11 @@ impl CodeBuilder {
                 self.bytecode.push(b1);
                 self.bytecode.push(b2);
             }
+            Operand::U16U16U8(w1, w2, b) => {
+                self.bytecode.extend(w1.to_le_bytes());
+                self.bytecode.extend(w2.to_le_bytes());
+                self.bytecode.push(b);
+            }
             Operand::CallKw { pos_count, kwname_ids } => {
                 let kw_count = u8::try_from(kwname_ids.len()).map_err(|_| self.kw_count_too_large())?;
                 self.bytecode.push(pos_count);
@@ -575,7 +568,6 @@ impl CodeBuilder {
             Opcode::ReturnValue
                 | Opcode::Raise
                 | Opcode::Reraise
-                | Opcode::RaiseImportError
                 | Opcode::RaiseUnboundLocal
                 | Opcode::AssertFailed
                 | Opcode::Jump
@@ -798,7 +790,7 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap();
         builder.emit(Opcode::Pop).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build();
         assert_eq!(code.bytecode(), &[Opcode::LoadNone as u8, Opcode::Pop as u8]);
     }
 
@@ -808,7 +800,7 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u8(Opcode::LoadLocal, 42).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build();
         assert_eq!(code.bytecode(), &[Opcode::LoadLocal as u8, 42]);
     }
 
@@ -818,7 +810,7 @@ mod tests {
         builder.new_code_region(0);
         builder.emit_u16(Opcode::LoadConst, 0x1234).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build();
         assert_eq!(code.bytecode(), &[Opcode::LoadConst as u8, 0x34, 0x12]);
     }
 
@@ -834,7 +826,7 @@ mod tests {
         builder.emit(Opcode::LoadNone).unwrap(); // Return value
         builder.emit(Opcode::ReturnValue).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build();
         assert_eq!(
             code.bytecode(),
             &[
@@ -858,7 +850,7 @@ mod tests {
         builder.emit(Opcode::Pop).unwrap(); // offset 1, 1 byte
         builder.emit_jump_to(Opcode::Jump, loop_start).unwrap(); // offset 2, target 0
 
-        let code = builder.build(0);
+        let code = builder.build();
         // Jump at offset 2, target at offset 0
         // Offset = 0 - (2 + 3) = -5
         let expected_offset = (-5i16).to_le_bytes();
@@ -885,7 +877,7 @@ mod tests {
         builder.emit_load_local(4).unwrap();
         builder.emit_load_local(256).unwrap();
 
-        let code = builder.build(0);
+        let code = builder.build();
         assert_eq!(
             code.bytecode(),
             &[

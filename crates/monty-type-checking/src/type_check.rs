@@ -329,10 +329,6 @@ impl TouchedRootFile {
                 // removed by a later `cleanup` call. Every ancestor above this
                 // one is necessarily also non-empty (they contain this directory),
                 // so there is no point walking further up.
-                //
-                // `MemoryFileSystem::remove_directory` reports "directory not
-                // empty" as `io::Error::other(...)` (kind `Other`), so we match on
-                // the message rather than on `ErrorKind::DirectoryNotEmpty`.
                 Err(err) if err.to_string().contains("directory not empty") => break,
                 // `NotFound` at this point would mean the directory never existed
                 // or was already removed, both of which indicate a logic bug

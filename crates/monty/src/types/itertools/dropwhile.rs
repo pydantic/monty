@@ -63,7 +63,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a
         // discarding pass over an infinite source reaches none. Poll the
-        // tracker so `max_duration` still bites (see `VM::run`'s
+        // tracker so the time limits still bite (see `VM::run`'s
         // `CHECK_INTERVAL`).
         vm.heap.tracker.check_time_every(steps)?;
         steps += 1;

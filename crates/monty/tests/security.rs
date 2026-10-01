@@ -2,6 +2,8 @@ use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_types::CompileOptions;
 
+/// Over the source-scan threshold, so the pre-parse scan rejects this before
+/// ruff can grow its stack on it (see `tests/source_nesting.rs`).
 #[test]
 fn deeply_nested_parentheses_do_not_stack_overflow() {
     let depth = 5000;

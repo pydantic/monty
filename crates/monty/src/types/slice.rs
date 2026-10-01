@@ -243,20 +243,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
-        // Fast path: interned strings can be matched by ID without string comparison
-        if let Some(ss) = attr.static_string() {
-            return match ss {
-                StaticStrings::Start => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
-                StaticStrings::Stop => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
-                StaticStrings::Step => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
-                _ => Ok(None),
-            };
-        }
-        // Slow path: heap-allocated strings need string comparison
-        match attr.as_str(vm.interns) {
-            "start" => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
-            "stop" => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
-            "step" => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Start) => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
+            Some(StaticStrings::Stop) => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
+            Some(StaticStrings::Step) => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
             _ => Ok(None),
         }
     }

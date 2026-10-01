@@ -25,8 +25,10 @@ pub enum NameScope {
     ///
     /// If accessed before assignment, raises `UnboundLocalError`.
     #[default]
+    #[serde(rename = "L")]
     Local,
     /// Variable is in the module-level global namespace.
+    #[serde(rename = "G")]
     Global,
     /// Variable accessed through a cell (heap-allocated container).
     ///
@@ -36,12 +38,21 @@ pub enum NameScope {
     ///
     /// The namespace slot contains `Value::Ref(cell_id)` pointing to a `HeapData::Cell`.
     /// Access requires dereferencing through the cell.
+    #[serde(rename = "C")]
     Cell,
     /// Comprehension target stored in isolated operand-stack storage.
     ///
     /// The namespace ID is a comprehension-local slot ID. The compiler stores
     /// uncaptured targets directly and gives captured targets a stable cell.
+    #[serde(rename = "V")]
     CompVar,
+    /// Top-level name of an `eval()` / `exec()` snippet that runs with a locals
+    /// dict or dict globals: resolved by name at runtime through the frame's
+    /// namespace. The namespace ID is the session global slot for the name (a
+    /// scratch slot under dict globals) so the slot-globals tail of the lookup
+    /// reuses the `LoadGlobal` machinery.
+    #[serde(rename = "N")]
+    Name,
 }
 
 /// Identifies where an enclosing scope stores a cell captured by a callable.
@@ -59,11 +70,15 @@ pub enum CaptureSource {
 /// To get the actual string, look it up in the `Interns` storage.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Identifier {
+    #[serde(rename = "P")]
     pub position: CodeRange,
     /// Interned name ID - look up in Interns to get the actual string.
+    #[serde(rename = "N")]
     pub name_id: StringId,
+    #[serde(rename = "I")]
     opt_namespace_id: Option<NamespaceId>,
     /// Which namespace this identifier refers to (determined at prepare time)
+    #[serde(rename = "S")]
     pub scope: NameScope,
 }
 
@@ -364,11 +379,21 @@ pub enum Expr {
     },
 }
 
-/// Target for tuple unpacking - can be a single name, nested tuple, or starred target.
+/// Target for tuple unpacking - a name, attribute, subscript, nested tuple or
+/// starred target.
 ///
 /// Supports recursive structures like `(a, b), c` or `a, (b, c)`.
 /// Also supports starred targets like `first, *rest = [1, 2, 3, 4]`.
 /// Used in assignment statements, for loop targets, and comprehension targets.
+///
+/// `Attr` and `Subscript` mirror the same-named [`AssignTarget`] variants and
+/// compile to the same stores, so `self.x, self.y = pair` behaves as the two
+/// single-target assignments would. Comprehension targets are the exception:
+/// their leaves live on the operand stack as comp-var slots, so only names
+/// reach that path (`prepare` rejects the rest).
+///
+/// Their expressions are boxed: `Node::For` and `Node::With` embed a target
+/// inline, so an inline `ExprLoc` here would grow every `Node`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnpackTarget {
     /// Single identifier: `a`
@@ -383,7 +408,25 @@ pub enum UnpackTarget {
     /// Starred target: `*rest` - captures remaining values into a list.
     ///
     /// Only one starred target is allowed per unpacking level.
-    Starred(Identifier),
+    Starred(Box<Self>),
+    /// Attribute target: `obj.attr`.
+    Attr {
+        /// Expression evaluating to the object whose attribute is being set.
+        object: Box<ExprLoc>,
+        /// The attribute name.
+        attr: EitherStr,
+        /// Position of the full attribute expression (for traceback carets).
+        position: CodeRange,
+    },
+    /// Subscript target: `container[index]`.
+    Subscript {
+        /// Expression evaluating to the container object.
+        container: Box<ExprLoc>,
+        /// Expression evaluating to the index/key.
+        index: Box<ExprLoc>,
+        /// Position of the full subscript expression (for traceback carets).
+        position: CodeRange,
+    },
 }
 
 /// Target of a single assignment step within a chained assignment.
@@ -791,6 +834,9 @@ pub struct PreparedFunctionDef {
     /// preparation and so does not fall in the contiguous param/cell/free
     /// region the namespace layout otherwise follows.
     pub free_var_slots: Vec<NamespaceId>,
+    /// Names parallel to `free_var_slots`, including captures never read by this body.
+    /// The compiler records them so `locals()` can report pass-through cells.
+    pub free_var_names: Vec<StringId>,
     /// This function's own namespace slots for cell variables (locals captured
     /// by nested functions). A fresh cell is created for each at call time and
     /// stored at `cell_var_slots[i]`. Parallel to [`Self::cell_param_indices`].

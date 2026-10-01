@@ -1,7 +1,7 @@
 # Argument-extraction errors emitted by the `#[derive(FromArgs)]` macro.
 #
 # This file is the source of truth for every error path the macro (and
-# the runtime binder in `crates/monty/src/args/binder.rs`) can produce,
+# the runtime binder in `crates/monty/src/args/bind_native.rs`) can produce,
 # exercising each across the style families (`def`, `clinic`, `c`,
 # `c_named`, `unpack`) and the `at_most_total` modifier.
 #
@@ -12,6 +12,7 @@
 import asyncio
 import base64
 import binascii
+import copy
 import datetime
 import json
 import math
@@ -20,6 +21,27 @@ import sys
 import unicodedata
 
 is_monty = sys.platform == 'monty'
+
+# === Static keyword matching: ASCII and multi-character names ===
+assert base64.b64encode(s=b'a') == b'YQ=='
+assert base64.a85encode(b=b'') == b''
+assert base64.b64decode(s='YQ==') == b'a'
+assert base64.b64decode(**{'S'.lower(): 'YQ=='}) == b'a'
+assert base64.b64decode(**{'s': '-w==', ''.join(['alt', 'chars']): b'-_'}) == b'\xfb'
+
+for key in ['s', 'S'.lower()]:
+    try:
+        base64.b64decode('YQ==', **{key: 'Yg=='})
+        assert False, 'expected duplicate keyword to fail'
+    except TypeError as e:
+        assert str(e) == "b64decode() got multiple values for argument 's'"
+
+for key in ['Z', 'z'.upper(), ''.join(['un', 'known'])]:
+    try:
+        base64.b64decode('YQ==', **{key: 'Yg=='})
+        assert False, 'expected unknown keyword to fail'
+    except TypeError as e:
+        assert str(e) == f"b64decode() got an unexpected keyword argument '{key}'"
 
 # === Math aggregations: positional-only calls and keyword-only start ===
 for function, args, kwargs, message in [
@@ -250,6 +272,45 @@ try:
     assert False, 'map(fn) should require ≥2 args'
 except TypeError as e:
     assert str(e) == 'map() must have at least two arguments.', f'py-missing-1: {e}'
+
+# === def: copy() / deepcopy() arity and kwargs ===
+# Both are pure-Python `def`s in CPython, so binding names the missing
+# parameter and counts the optional ones in the too-many wording.
+try:
+    copy.copy()
+    assert False, 'copy() with no args should raise'
+except TypeError as e:
+    assert str(e) == "copy() missing 1 required positional argument: 'x'"
+
+try:
+    copy.deepcopy()
+    assert False, 'deepcopy() with no args should raise'
+except TypeError as e:
+    assert str(e) == "deepcopy() missing 1 required positional argument: 'x'"
+
+try:
+    copy.copy([], [])
+    assert False, 'copy() with 2 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'copy() takes 1 positional argument but 2 were given'
+
+try:
+    copy.deepcopy([], {}, None, 1)
+    assert False, 'deepcopy() with 4 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'deepcopy() takes from 1 to 3 positional arguments but 4 were given'
+
+try:
+    copy.copy(bogus=1)
+    assert False, 'copy() with an unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "copy() got an unexpected keyword argument 'bogus'"
+
+try:
+    copy.deepcopy([1], memo={}, bogus=2)
+    assert False, 'deepcopy() with an unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "deepcopy() got an unexpected keyword argument 'bogus'"
 
 # =====================================================================
 # === C style (`style = c` — anonymous "function" wording)           ===
