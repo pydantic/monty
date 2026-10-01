@@ -1061,9 +1061,7 @@ jobs:
         run: npm run lint
         working-directory: crates/monty-js
 
-      # Point the workers at the binary just built above, not the published
-      # platform package `npm install` pulled in — otherwise `npm test`
-      # silently runs a stale binary at the same version (see `make test-js`).
+      # Development installs omit platform packages; use the binary built above (see `make test-js`).
       - name: Test
         run: npm test
         working-directory: crates/monty-js
