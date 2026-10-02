@@ -50,10 +50,15 @@ use tokio::{sync::Mutex, task::JoinSet};
 mod tests;
 
 use crate::{
-    async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
+    async_dispatch::{
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_coroutine,
+        wait_for_futures,
+    },
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
-    external::{CallResult, ExternalLookup, HostNames, resolve_object_attr, wire_call_arguments},
+    external::{
+        CallResult, ExternalLookup, HostNames, resolve_object_attr, sync_module_coroutine_error, wire_call_arguments,
+    },
     pool::{
         FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
@@ -771,6 +776,10 @@ impl PyFunctionSnapshot {
                     discard_checkout_sync(py, &ctx.checkout);
                     return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
                 }
+                // raised at the import, as the sync `feed_run` raises it
+                CallResult::ModuleCoroutine { name, coro } => ext_result_to_resume(ExtFunctionResult::Error(
+                    exc_py_to_monty(py, &sync_module_coroutine_error(&name, coro.bind(py))),
+                )),
             }
         };
         drop(guard);
@@ -928,6 +937,9 @@ impl PyAsyncFunctionSnapshot {
                         CallResult::Coroutine(coro) => {
                             let mode = CoroutineMode::for_function_call(call.allow_eager_await);
                             dispatch_coroutine(coro, call.call_id, mode, &mut join_set, &ctx.instances)
+                        }
+                        CallResult::ModuleCoroutine { name, coro } => {
+                            dispatch_module_coroutine(name, coro, &ctx.names, &ctx.instances)
                         }
                     }
                 })

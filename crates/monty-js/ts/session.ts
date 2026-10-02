@@ -93,10 +93,13 @@ export interface FeedOptions {
    * object's own public properties become the module's attributes: functions
    * as host functions (a returned promise is awaited, as in `externalLookup`),
    * other values converted at import; a [`ClassInstance`] is sent as itself.
-   * `from <module> import name` works too. Importing an absent module raises
-   * `ModuleNotFoundError`; the sandbox's own modules never consult this.
+   * A zero-argument function returning one of those, or a promise of one,
+   * runs at the module's first import in the feed. `from <module> import name`
+   * works too. Importing an
+   * absent module raises `ModuleNotFoundError`; the sandbox's own modules never
+   * consult this.
    */
-  externalModules?: Record<string, unknown>
+  externalModules?: ExternalModules
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -134,7 +137,7 @@ export interface FeedStartOptions {
   externalLookup?: Record<string, unknown>
   /** Host modules `resumeAuto()` answers imports from, as in
    *  [`FeedOptions.externalModules`]; captured like `externalLookup`. */
-  externalModules?: Record<string, unknown>
+  externalModules?: ExternalModules
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -165,7 +168,7 @@ export interface LoadSnapshotOptions {
   externalLookup?: Record<string, unknown>
   /** Host modules `resumeAuto()` answers imports from, as in
    *  [`FeedOptions.externalModules`]. */
-  externalModules?: Record<string, unknown>
+  externalModules?: ExternalModules
   /** Handler for OS calls, consulted by `resumeAuto()` as in `feedStart`. */
   os?: OsCallback
 }
@@ -528,12 +531,15 @@ class TurnAnswerer {
   /** Module values built by this feed's imports, so importing a module twice
    *  yields one wrapper (the instance store keeps each wrapper sent). */
   private readonly moduleValues = new Map<string, unknown>()
+  /** What each factory entry of `externalModules` returned, by module name: a
+   *  factory runs once per feed, at the first import or call that needs it. */
+  private readonly resolvedModules = new Map<string, unknown>()
 
   constructor(
     private readonly native: NativeSession,
     private readonly instances: InstanceStore,
     readonly externalLookup: Record<string, unknown> | undefined,
-    readonly externalModules: Record<string, unknown> | undefined,
+    readonly externalModules: ExternalModules | undefined,
     readonly os: OsCallback | undefined,
   ) {}
 
@@ -591,7 +597,7 @@ class TurnAnswerer {
 
   /** Calls the matching external function and resumes with its result; an
    *  `import` (the `__import__` call) is answered from `externalModules`. */
-  private answerFunctionCall(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
+  private async answerFunctionCall(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
     if (call.objectId !== undefined && call.objectId !== null) {
       return this.answerMethodCall(call, call.objectId, onPrint)
     }
@@ -600,7 +606,7 @@ class TurnAnswerer {
     }
     let entry: unknown
     try {
-      entry = this.hostEntry(call.functionName)
+      entry = await this.hostEntry(call.functionName)
     } catch (err) {
       // a getter that throws while the entry is read raises at the call
       const { excType, message } = jsErrorParts(err)
@@ -636,12 +642,12 @@ class TurnAnswerer {
    * longest prefix `externalModules` has. Own keys only: an inherited callable
    * (e.g. `Object.prototype.toString`) must never be dispatched as a host function.
    */
-  private hostEntry(functionName: string): unknown {
+  private async hostEntry(functionName: string): Promise<unknown> {
     if (!functionName.includes('.')) {
       return ownEntry(this.externalLookup, functionName)
     }
     for (let dot = functionName.lastIndexOf('.'); dot > 0; dot = functionName.lastIndexOf('.', dot - 1)) {
-      const module = ownEntry(this.externalModules, functionName.slice(0, dot))
+      const module = await this.module(functionName.slice(0, dot))
       if (module !== undefined) {
         const attr = functionName.slice(dot + 1)
         // the rule `moduleValue` sends by: a `ClassInstance` module routes by uuid
@@ -659,22 +665,47 @@ class TurnAnswerer {
   }
 
   /**
+   * The `externalModules` entry for `name`, if any. A factory entry is called
+   * the first time the feed needs the module and its result kept in
+   * `resolvedModules`, so an import, a re-import and the calls of the module's
+   * functions all see one module. A promise it returns is awaited; a result
+   * that is not an object is a `TypeError`, raised wherever the module was needed.
+   */
+  private async module(name: string): Promise<unknown> {
+    const entry = ownEntry(this.externalModules, name)
+    if (typeof entry !== 'function') {
+      return entry
+    }
+    if (!this.resolvedModules.has(name)) {
+      const module = await (entry as () => unknown)()
+      if (module === null || typeof module !== 'object') {
+        throw new TypeError(`externalModules.${name}() returned ${typeof module}, not an object or ClassInstance`)
+      }
+      this.resolvedModules.set(name, module)
+    }
+    return this.resolvedModules.get(name)
+  }
+
+  /**
    * Answers `import <module>`: the `externalModules` entry of that name as a
    * host object, or not found, which the sandbox raises as `ModuleNotFoundError`.
    */
-  private answerImport(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
+  private async answerImport(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
     const [args] = restoreCallArgs(call, this.instances)
     const name = args[0]
-    const module = typeof name === 'string' ? ownEntry(this.externalModules, name) : undefined
-    if (typeof name !== 'string' || module === undefined) {
+    if (typeof name !== 'string') {
       return this.native.resumeNotFound(onPrint)
     }
     let value: unknown
     try {
+      // a factory or getter that throws while the module is read raises at the import
+      const module = await this.module(name)
+      if (module === undefined) {
+        return this.native.resumeNotFound(onPrint)
+      }
       value = this.moduleValues.get(name) ?? moduleValue(name, module)
       this.moduleValues.set(name, value)
     } catch (err) {
-      // a getter that throws while the module is read raises at the import
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
@@ -1336,6 +1367,14 @@ export class MontyComplete {
 
 /** The host function name the sandbox calls for an `import` it cannot resolve itself. */
 const IMPORT_FUNCTION = '__import__'
+
+/** What an `externalModules` entry resolves to: a plain object whose own public
+ *  properties become the sandbox module's, or a [`ClassInstance`] as the module itself. */
+export type ExternalModule = Record<string, unknown> | ClassInstance
+
+/** The `externalModules` option: modules by name, each given directly or by a
+ *  zero-argument factory, sync or async, run at the module's first import in the feed. */
+export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
 
 /** `record[key]` when it is an own key, else `undefined`. */
 function ownEntry(record: unknown, key: string): unknown {

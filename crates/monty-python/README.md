@@ -42,8 +42,10 @@ if __name__ == '__main__':
 
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.
-`external_modules` on `feed_run` names the modules a snippet may `import`: each a dict, module or object whose public
-attributes are sent with it (callables as host functions, other values converted), or a `ClassInstance` sent as itself.
+`external_modules` on `feed_run` names the modules a snippet may `import`: each a dict or module whose public
+attributes are sent with it (callables as host functions, other values converted), a `ClassInstance` sent as itself, or
+a zero-argument callable (a coroutine function under `AsyncMonty`) returning one of those, run at the module's first
+import in the feed.
 `type_check_module_stubs` on `checkout` gives the type checker their stubs.
 
 This requires the `pydantic-monty-runtime` package, which is generally

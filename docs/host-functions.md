@@ -343,12 +343,18 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
     console.log(await session.feedRun(code, { externalModules: { tools } })) // 10
     ```
 
-A dict (a plain object in JavaScript), a module or a namespace becomes a host object named after the module, with its
-public attributes (names not starting with `_`) sent along.
+A dict (a plain object in JavaScript) or a Python module becomes a host object named after the module, with its public
+attributes (names not starting with `_`) sent along; any other object is refused with `TypeError` when the feed starts.
 A callable attribute becomes a host function named `<module>.<attr>`, dispatched like an `external_lookup` entry: a
 JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
 Any other attribute is converted when the module is imported.
 A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
+A zero-argument callable (`Callable[[], ExternalModule]`, `() => ExternalModule`) returning one of those is a lazy
+module: it runs at the module's first import in the feed, and its result serves every import and call of the module
+for the rest of the feed, so a module the snippet never imports costs nothing to offer.
+Under `AsyncMonty` it may be a coroutine function, and in JavaScript it may return a promise; the sync `Monty` raises
+`RuntimeError` at the import for a coroutine.
+An exception it raises, or a return value that is not a module shape, raises at the `import` statement.
 `from tools import add` reads the attribute of that object and raises `ImportError` for a name it does not have.
 An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
 or `math`, are never looked up here.
@@ -362,8 +368,7 @@ The bound value is a host object, so `type(tools)` is its host class, not `modul
 
 On the wire the import is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the module name
 as its argument, answered with the module value, so a host driving suspensions itself answers it like any other call.
-The name is reserved: an `external_lookup` entry called `__import__` is never called, and `__import__(...)` in the
-sandbox raises `NameError`.
+The name is reserved: `__import__(...)` in the sandbox raises `NameError`.
 To type-check code that imports a host module, give the checker its stub with `type_check_module_stubs`; see
 [type checking](type-checking.md#declaring-what-the-host-provides).
 

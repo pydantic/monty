@@ -19,9 +19,9 @@ use monty_types::{
     unstable::{self, MontyNode},
 };
 use pyo3::{
-    exceptions::{PyAttributeError, PyTypeError},
+    exceptions::{PyAttributeError, PyRuntimeError, PyTypeError},
     prelude::*,
-    types::{PyDict, PyTuple},
+    types::{PyDict, PyModule, PyString, PyTuple, PyType},
 };
 
 use crate::{callback_context, exceptions::MontyConversionError};
@@ -128,15 +128,28 @@ pub(crate) struct HostNames {
     /// `external_modules=`: module-like host values by the name the snippet
     /// imports.
     pub(crate) modules: Option<Py<PyDict>>,
+    /// What each factory entry of `modules` returned, by module name: a
+    /// factory runs once per feed, at the first import or call that needs it.
+    pub(crate) resolved_modules: Option<Py<PyDict>>,
 }
 
 impl HostNames {
-    /// Captures the dicts a feed was called with.
-    pub(crate) fn capture(lookup: Option<&Bound<'_, PyDict>>, modules: Option<&Bound<'_, PyDict>>) -> Self {
-        Self {
+    /// Captures the dicts a feed was called with. Every `external_modules`
+    /// entry must be a dict, a module, a `ClassInstance` or a zero-argument
+    /// callable returning one: those are the shapes whose public attributes
+    /// are deliberately a module's, where `dir()` of an arbitrary object would
+    /// expose whatever it happens to carry.
+    pub(crate) fn capture(lookup: Option<&Bound<'_, PyDict>>, modules: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        if let Some(modules) = modules {
+            for (name, module) in modules.iter() {
+                check_module_entry(&name, &module)?;
+            }
+        }
+        Ok(Self {
             lookup: lookup.map(|d| d.clone().unbind()),
             modules: modules.map(|d| d.clone().unbind()),
-        }
+            resolved_modules: modules.map(|d| PyDict::new(d.py()).unbind()),
+        })
     }
 
     /// A second owner of the same dicts, for a snapshot's drive context.
@@ -144,6 +157,7 @@ impl HostNames {
         Self {
             lookup: self.lookup.as_ref().map(|d| d.clone_ref(py)),
             modules: self.modules.as_ref().map(|d| d.clone_ref(py)),
+            resolved_modules: self.resolved_modules.as_ref().map(|d| d.clone_ref(py)),
         }
     }
 }
@@ -163,6 +177,7 @@ pub struct ExternalLookup<'a, 'py> {
     py: Python<'py>,
     lookup: Option<&'py Bound<'py, PyDict>>,
     modules: Option<&'py Bound<'py, PyDict>>,
+    resolved_modules: Option<&'py Bound<'py, PyDict>>,
     instances: &'a InstanceStore,
 }
 
@@ -175,6 +190,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             py,
             lookup: names.lookup.as_ref().map(|d| d.bind(py)),
             modules: names.modules.as_ref().map(|d| d.bind(py)),
+            resolved_modules: names.resolved_modules.as_ref().map(|d| d.bind(py)),
             instances,
         }
     }
@@ -238,7 +254,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// async loop to spawn) when the callable returns a coroutine.
     pub fn call_or_coroutine(&self, function_name: &str, args: &CallArgs) -> CallResult {
         if function_name == IMPORT_FUNCTION {
-            return CallResult::Sync(self.import_module(args));
+            return self.import_module_or_coroutine(args);
         }
         match self.call_inner_raw(function_name, args) {
             Ok(Some(result)) => result_to_call_result(self.py, &result, self.instances),
@@ -288,11 +304,89 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// The `external_modules` entry for `name`, if any.
+    /// The `external_modules` entry for `name`, if any, with a factory's
+    /// result installed; a factory that returned a coroutine is an error here,
+    /// since only [`import_module_or_coroutine`](Self::import_module_or_coroutine)
+    /// can have it awaited.
     fn module(&self, name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
-        match self.modules {
-            Some(modules) => modules.get_item(name),
+        match self.resolve_module(name)? {
+            Some(Resolved::Module(module)) => Ok(Some(module)),
+            Some(Resolved::Coroutine(coro)) => Err(sync_module_coroutine_error(name, &coro)),
             None => Ok(None),
+        }
+    }
+
+    /// The `external_modules` entry for `name`, if any. A factory entry is
+    /// called the first time the feed needs the module and its result kept
+    /// in `resolved_modules`, so an import, a re-import and the calls of the
+    /// module's functions all see one module; a coroutine it returns is handed
+    /// back for the async loop to await and [`install_module`](Self::install_module).
+    fn resolve_module(&self, name: &str) -> PyResult<Option<Resolved<'py>>> {
+        let (Some(modules), Some(resolved)) = (self.modules, self.resolved_modules) else {
+            return Ok(None);
+        };
+        let Some(entry) = modules.get_item(name)? else {
+            return Ok(None);
+        };
+        if !entry.is_callable() {
+            return Ok(Some(Resolved::Module(entry)));
+        }
+        if let Some(module) = resolved.get_item(name)? {
+            return Ok(Some(Resolved::Module(module)));
+        }
+        let result = callback_context::call(self.py, || entry.call0())?;
+        if is_coroutine(self.py, &result) {
+            Ok(Some(Resolved::Coroutine(result)))
+        } else {
+            self.install_module(name, result).map(Resolved::Module).map(Some)
+        }
+    }
+
+    /// Keeps what module `name`'s factory produced for the rest of the feed,
+    /// refusing anything that is not a module shape.
+    fn install_module(&self, name: &str, module: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        if !is_module_shape(&module)? {
+            return Err(PyTypeError::new_err(format!(
+                "external_modules['{name}']() returned {}, not a dict, a module or a ClassInstance",
+                module.get_type().name()?
+            )));
+        }
+        self.resolved_modules
+            .expect("a module was resolved, so the cache exists")
+            .set_item(name, &module)?;
+        Ok(module)
+    }
+
+    /// Finishes an import whose factory returned a coroutine, once the async
+    /// loop has awaited it to `result`: the module is installed and sent as
+    /// [`import_module`](Self::import_module) would have sent it.
+    pub(crate) fn finish_import(&self, name: &str, result: PyResult<Bound<'py, PyAny>>) -> ExtFunctionResult {
+        match result.and_then(|module| self.install_module(name, module)) {
+            Ok(module) => match self.module_value(name, &module) {
+                Ok(value) => ExtFunctionResult::Return(value),
+                Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+            },
+            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+        }
+    }
+
+    /// [`import_module`](Self::import_module) for the async loop: a factory's
+    /// coroutine comes back as [`CallResult::ModuleCoroutine`] to await.
+    fn import_module_or_coroutine(&self, args: &CallArgs) -> CallResult {
+        let Some(name) = args.args().next().and_then(|arg| arg.as_str()) else {
+            return CallResult::Sync(ExtFunctionResult::NotFound(IMPORT_FUNCTION.to_owned()));
+        };
+        match self.resolve_module(name) {
+            Ok(Some(Resolved::Coroutine(coro))) => CallResult::ModuleCoroutine {
+                name: name.to_owned(),
+                coro: coro.unbind(),
+            },
+            Ok(Some(Resolved::Module(module))) => CallResult::Sync(match self.module_value(name, &module) {
+                Ok(value) => ExtFunctionResult::Return(value),
+                Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+            }),
+            Ok(None) => CallResult::Sync(ExtFunctionResult::NotFound(IMPORT_FUNCTION.to_owned())),
+            Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
         }
     }
 
@@ -314,10 +408,10 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// The sandbox value of an `external_modules` entry. A `ClassInstance`
-    /// wrapper crosses as itself, its methods routing back by uuid; anything
-    /// else — a dict, a module, a namespace — becomes a host object named
-    /// after the module whose public attributes are sent eagerly: callables as
-    /// host functions named `<module>.<attr>`, other values converted.
+    /// wrapper crosses as itself, its methods routing back by uuid; a dict or
+    /// a module becomes a host object named after the module whose public
+    /// attributes are sent eagerly: callables as host functions named
+    /// `<module>.<attr>`, other values converted.
     fn module_value(&self, name: &str, module: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
         if is_class_instance_wrapper(module)? {
             return py_to_monty_value(module, self.instances)
@@ -338,8 +432,57 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 }
 
+/// An `external_modules` entry after its factory (if any) ran.
+enum Resolved<'py> {
+    /// A module shape, installed in the feed's cache when a factory made it.
+    Module(Bound<'py, PyAny>),
+    /// A factory's coroutine, still to be awaited by the async loop.
+    Coroutine(Bound<'py, PyAny>),
+}
+
+/// The error for a factory coroutine met where nothing can await it: the sync
+/// pool, or a module function called before the module was imported. The
+/// coroutine is closed so it does not warn that it was never awaited.
+pub(crate) fn sync_module_coroutine_error(name: &str, coro: &Bound<'_, PyAny>) -> PyErr {
+    let _ = coro.call_method0("close");
+    PyRuntimeError::new_err(format!(
+        "external_modules['{name}']() returned a coroutine; async module factories require AsyncMonty"
+    ))
+}
+
+/// `TypeError` unless `name` is a `str` and `entry` a module shape (see
+/// [`is_module_shape`]) or a callable returning one; see [`HostNames::capture`].
+/// A class is callable but constructs an instance, never a module shape, so
+/// it is refused here with a message naming it rather than at the import.
+fn check_module_entry(name: &Bound<'_, PyAny>, entry: &Bound<'_, PyAny>) -> PyResult<()> {
+    const SHAPES: &str = "must be a dict, a module, a ClassInstance or a callable returning one";
+    if !name.is_instance_of::<PyString>() {
+        Err(PyTypeError::new_err("external_modules keys must be str"))
+    } else if let Ok(class) = entry.cast::<PyType>() {
+        Err(PyTypeError::new_err(format!(
+            "external_modules[{}] {SHAPES}, not the class {}",
+            name.repr()?,
+            class.name()?
+        )))
+    } else if is_module_shape(entry)? || entry.is_callable() {
+        Ok(())
+    } else {
+        Err(PyTypeError::new_err(format!(
+            "external_modules[{}] {SHAPES}, not {}",
+            name.repr()?,
+            entry.get_type().name()?
+        )))
+    }
+}
+
+/// Whether `value` can stand for a module: a dict, a module or a
+/// `ClassInstance` wrapper.
+fn is_module_shape(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    Ok(value.is_instance_of::<PyDict>() || value.is_instance_of::<PyModule>() || is_class_instance_wrapper(value)?)
+}
+
 /// The public attribute `attr` of an `external_modules` entry: a dict's item,
-/// or any other object's attribute; `None` when absent.
+/// or a module's attribute; `None` when absent.
 fn module_attr<'py>(module: &Bound<'py, PyAny>, attr: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
     if attr.starts_with('_') {
         Ok(None)
@@ -355,7 +498,7 @@ fn module_attr<'py>(module: &Bound<'py, PyAny>, attr: &str) -> PyResult<Option<B
 }
 
 /// The public attributes of an `external_modules` entry, in order: a dict's
-/// items (which must have `str` keys), or `dir()` of any other object.
+/// items (which must have `str` keys), or `dir()` of a module.
 fn module_attrs<'py>(module: &Bound<'py, PyAny>) -> PyResult<Vec<(String, Bound<'py, PyAny>)>> {
     let mut attrs = Vec::new();
     if let Ok(dict) = module.cast::<PyDict>() {
@@ -402,6 +545,10 @@ pub enum CallResult {
     /// Python coroutine to convert via `pyo3_async_runtimes::into_future()` and
     /// spawn as a task.
     Coroutine(Py<PyAny>),
+    /// A module factory's coroutine answering `import <name>`: awaited as a
+    /// value (an import cannot take a future) and finished with
+    /// [`ExternalLookup::finish_import`].
+    ModuleCoroutine { name: String, coro: Py<PyAny> },
 }
 
 /// Like [`dispatch_object_call`] but returns `CallResult::Coroutine` when

@@ -90,6 +90,25 @@ pub(crate) fn dispatch_coroutine(
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
 }
 
+/// Awaits a module factory's coroutine as a value answer (an import cannot
+/// take a future), installing its result as the module via
+/// [`ExternalLookup::finish_import`] once it settles.
+pub(crate) fn dispatch_module_coroutine(
+    name: String,
+    coro: Py<PyAny>,
+    names: &HostNames,
+    instances: &InstanceStore,
+) -> PyResult<Dispatched<AnswerFuture>> {
+    let (names, instances) = Python::attach(|py| (names.clone_ref(py), instances.clone_ref(py)));
+    let future = python_future(coro)?;
+    Ok(Dispatched::AsValue(Box::pin(async move {
+        let result = future.await;
+        Python::attach(|py| {
+            ExternalLookup::new(py, &names, &instances).finish_import(&name, result.map(|module| module.into_bound(py)))
+        })
+    })))
+}
+
 /// Schedules a system sleep like a coroutine answer, allowing gathered sleeps to overlap.
 pub(crate) fn dispatch_system_sleep(
     delay: Duration,

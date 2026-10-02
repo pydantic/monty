@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
@@ -8,6 +8,7 @@ from typing_extensions import Self
 
 from . import (
     AsyncSnapshot,
+    ExternalModule,
     ExternalResult,
     ExternalSettledResult,
     OsHandler,
@@ -679,7 +680,7 @@ class MontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: dict[str, Any] | None = None,
+        external_modules: dict[str, ExternalModule | Callable[[], ExternalModule]] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -710,18 +711,15 @@ class MontySession:
                 function the sandbox can call, any other value is converted and
                 returned directly when the name is read, and an absent name
                 raises `NameError`. The lazy counterpart to `inputs`; a name
-                present in both is served by the eager `inputs` binding. An
-                entry named `__import__` is never called: that name is the
-                import hook, answered from `external_modules`.
+                present in both is served by the eager `inputs` binding.
             external_modules: Host modules the snippet may `import`, keyed by
-                the module name: a dict, a module or any object whose public
-                attributes become the module's — callables as host functions
-                (a coroutine raises `RuntimeError`, as in `external_lookup`;
-                `AsyncMonty` awaits it), other values converted when imported
-                — or a `ClassInstance` sent as itself. `from <module> import
-                name` works for those attributes. An import of an absent
-                module raises `ModuleNotFoundError`; the sandbox's own modules
-                are never looked up here.
+                module name. A dict's items or a module's public attributes
+                become the module's: callables as host functions, other values
+                converted when imported. A `ClassInstance` is the module itself.
+                A zero-argument callable returning one of those runs at the
+                module's first import in the feed. `from <module> import name`
+                works for those attributes; importing an absent module raises
+                `ModuleNotFoundError`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -755,7 +753,7 @@ class MontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: dict[str, Any] | None = None,
+        external_modules: dict[str, ExternalModule | Callable[[], ExternalModule]] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
@@ -845,7 +843,7 @@ class MontySession:
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: dict[str, Any] | None = None,
+        external_modules: dict[str, ExternalModule | Callable[[], ExternalModule]] | None = None,
         os: OsHandler | None = None,
     ) -> SyncSnapshot:
         """
@@ -1122,7 +1120,8 @@ class AsyncMontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: dict[str, Any] | None = None,
+        external_modules: dict[str, ExternalModule | Callable[[], ExternalModule | Awaitable[ExternalModule]]]
+        | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -1158,17 +1157,16 @@ class AsyncMontySession:
                 any other value is converted and returned directly when the name
                 is read, and an absent name raises `NameError`. The lazy
                 counterpart to `inputs`; a name present in both is served by the
-                eager `inputs` binding. An entry named `__import__` is never
-                called: that name is the import hook, answered from
-                `external_modules`.
+                eager `inputs` binding.
             external_modules: Host modules the snippet may `import`, keyed by
-                the module name: a dict, a module or any object whose public
-                attributes become the module's — callables as host functions
-                (coroutine functions awaited, as in `external_lookup`), other
-                values converted when imported — or a `ClassInstance` sent as
-                itself. `from <module> import name` works for those attributes.
-                An import of an absent module raises `ModuleNotFoundError`; the
-                sandbox's own modules are never looked up here.
+                module name. A dict's items or a module's public attributes
+                become the module's: callables (sync or coroutine functions) as
+                host functions, other values converted when imported. A
+                `ClassInstance` is the module itself. A zero-argument callable
+                (sync or a coroutine function) returning one of those runs at
+                the module's first import in the feed. `from <module> import
+                name` works for those attributes; importing an absent module
+                raises `ModuleNotFoundError`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -1196,7 +1194,8 @@ class AsyncMontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: dict[str, Any] | None = None,
+        external_modules: dict[str, ExternalModule | Callable[[], ExternalModule | Awaitable[ExternalModule]]]
+        | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
@@ -1270,7 +1269,8 @@ class AsyncMontySession:
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: dict[str, Any] | None = None,
+        external_modules: dict[str, ExternalModule | Callable[[], ExternalModule | Awaitable[ExternalModule]]]
+        | None = None,
         os: OsHandler | None = None,
     ) -> AsyncSnapshot:
         """

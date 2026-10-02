@@ -178,6 +178,49 @@ test('a dotted key of a plain-object module', async () => {
   t.is(await run(code, { externalModules: { tools: { 'a.b': (a: number, b: number) => a + b } } }), 3)
 })
 
+test('a module factory runs at the first import', async () => {
+  let calls = 0
+  const factory = () => {
+    calls += 1
+    return tools
+  }
+  t.is(await run('1', { externalModules: { tools: factory } }), 1)
+  t.is(calls, 0)
+  const code = 'import tools\nimport tools as t\n[tools.add(1, 2), t.VERSION]'
+  t.deepEqual(await run(code, { externalModules: { tools: factory } }), [3, 3])
+  t.is(calls, 1)
+})
+
+test('an async module factory is awaited', async () => {
+  let calls = 0
+  const factory = async () => {
+    calls += 1
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    return tools
+  }
+  const code = 'import tools\nimport tools as t\n[tools.add(1, 2), t.VERSION]'
+  t.deepEqual(await run(code, { externalModules: { tools: factory } }), [3, 3])
+  t.is(calls, 1)
+})
+
+test('a module factory failure raises at the import', async () => {
+  await using session = await pool().checkout()
+  const boom = () => {
+    throw new Error('no tools today')
+  }
+  await t.throwsAsync(session.feedRun('import tools', { externalModules: { tools: boom } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'RuntimeError: no tools today',
+  })
+  const notAModule = () => 3 as unknown as Record<string, unknown>
+  await t.throwsAsync(session.feedRun('import tools', { externalModules: { tools: notAModule } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'TypeError: externalModules.tools() returned number, not an object or ClassInstance',
+  })
+  // the session is still usable
+  t.is(await session.feedRun('1 + 1'), 2)
+})
+
 test('a module that fails to materialize raises at the import', async () => {
   const broken = {
     get boom(): number {

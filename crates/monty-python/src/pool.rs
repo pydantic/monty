@@ -66,7 +66,8 @@ use tokio::{
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_system_sleep, wait_for_futures,
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_coroutine,
+        dispatch_system_sleep, wait_for_futures,
     },
     build::{
         extract_connect_headers, extract_module_stubs, extract_repl_inputs, extract_source_code,
@@ -321,7 +322,7 @@ impl PyMontySession {
             os,
             skip_type_check,
         )?;
-        drive_sync(py, args, &HostNames::capture(external_lookup, external_modules))
+        drive_sync(py, args, &HostNames::capture(external_lookup, external_modules)?)
     }
 
     /// Starts a snippet but, instead of driving it to completion, returns a
@@ -365,7 +366,7 @@ impl PyMontySession {
             os,
             skip_type_check,
         )?;
-        let names = HostNames::capture(external_lookup, external_modules);
+        let names = HostNames::capture(external_lookup, external_modules)?;
         feed_start_sync(py, args, names, self.repl_config.script_name.clone())
     }
 
@@ -425,7 +426,7 @@ impl PyMontySession {
         check_callable(py, os.as_ref())?;
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
-        let names = HostNames::capture(external_lookup, external_modules);
+        let names = HostNames::capture(external_lookup, external_modules)?;
         let trace_context = capture_otel_context(py);
         let (event, script_name) = self.restore_turn(py, state, mounts)?;
         let Some(event) = event else {
@@ -927,7 +928,7 @@ impl PyAsyncMontySession {
             os,
             skip_type_check,
         )?;
-        let names = HostNames::capture(external_lookup, external_modules);
+        let names = HostNames::capture(external_lookup, external_modules)?;
         let abandoned = Arc::clone(&self.drive_abandoned);
         future_into_py(py, async move { drive_async(args, names, abandoned).await })
     }
@@ -965,7 +966,7 @@ impl PyAsyncMontySession {
             os,
             skip_type_check,
         )?;
-        let names = HostNames::capture(external_lookup, external_modules);
+        let names = HostNames::capture(external_lookup, external_modules)?;
         feed_start_async(py, args, names, self.repl_config.script_name.clone())
     }
 
@@ -1019,7 +1020,7 @@ impl PyAsyncMontySession {
         check_callable(py, os.as_ref())?;
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
-        let names = HostNames::capture(external_lookup, external_modules);
+        let names = HostNames::capture(external_lookup, external_modules)?;
         if self.used.swap(true, Ordering::Relaxed) {
             return Err(session_used_err());
         }
@@ -1930,6 +1931,9 @@ async fn async_turn_answer(
                     CallResult::Coroutine(coro) => {
                         let mode = CoroutineMode::for_function_call(allow_eager_await);
                         dispatch_coroutine(coro, call_id, mode, join_set, instances)
+                    }
+                    CallResult::ModuleCoroutine { name, coro } => {
+                        dispatch_module_coroutine(name, coro, names, instances)
                     }
                 }
             })?;

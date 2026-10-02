@@ -32,10 +32,110 @@ def tools_module() -> types.ModuleType:
     return module
 
 
-@pytest.mark.parametrize('tools', [TOOLS, types.SimpleNamespace(**TOOLS), tools_module()])
+class _Tools:
+    def reveal(self) -> str:
+        return 'hidden'
+
+
+@pytest.mark.parametrize('tools', [TOOLS, tools_module()])
 def test_import_binds_the_host_module(pool: Monty, tools: Any):
     with pool.checkout() as session:
         assert session.feed_run(CODE, external_modules={'tools': tools}) == snapshot([3, 'ab', 3])
+
+
+@pytest.mark.parametrize(
+    ('tools', 'message'),
+    [
+        pytest.param(
+            types.SimpleNamespace(**TOOLS),
+            snapshot(
+                "external_modules['tools'] must be a dict, a module, a ClassInstance or a callable returning one, not SimpleNamespace"
+            ),
+            id='namespace',
+        ),
+        pytest.param(
+            _Tools,
+            snapshot(
+                "external_modules['tools'] must be a dict, a module, a ClassInstance or a callable returning one, not the class _Tools"
+            ),
+            id='class',
+        ),
+    ],
+)
+def test_other_module_shapes_are_rejected(pool: Monty, tools: Any, message: str):
+    # `dir()` of an arbitrary object would expose whatever it carries, so only the
+    # shapes whose public attributes are deliberately a module's are accepted; a
+    # class is callable but would construct an instance, never a module shape
+    with pool.checkout() as session:
+        with pytest.raises(TypeError) as exc_info:
+            session.feed_run(CODE, external_modules={'tools': tools})
+        assert str(exc_info.value) == message
+
+
+def test_a_module_factory_runs_at_the_first_import(pool: Monty):
+    calls = 0
+
+    def factory() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return TOOLS
+
+    with pool.checkout() as session:
+        assert session.feed_run('1', external_modules={'tools': factory}) == snapshot(1)
+        assert calls == 0
+        code = 'import tools\nimport tools as t\n[tools.add(1, 2), t.VERSION]'
+        assert session.feed_run(code, external_modules={'tools': factory}) == snapshot([3, 3])
+        assert calls == 1
+        # the next feed resolves the module afresh
+        assert session.feed_run('import tools\ntools.VERSION', external_modules={'tools': factory}) == snapshot(3)
+        assert calls == 2
+
+
+async def _async_tools() -> dict[str, Any]:
+    await asyncio.sleep(0)
+    return TOOLS
+
+
+async def test_an_async_module_factory_is_awaited():
+    calls = 0
+
+    async def factory() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return await _async_tools()
+
+    code = 'import tools\nimport tools as t\n[tools.add(1, 2), t.VERSION]'
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run(code, external_modules={'tools': factory}) == snapshot([3, 3])
+            assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ('factory', 'message'),
+    [
+        pytest.param(lambda: 1 / 0, snapshot('ZeroDivisionError: division by zero'), id='raises'),
+        pytest.param(
+            _async_tools,
+            snapshot(
+                "RuntimeError: external_modules['tools']() returned a coroutine; async module factories require AsyncMonty"
+            ),
+            id='coroutine-on-sync-pool',
+        ),
+        pytest.param(
+            lambda: 3,
+            snapshot("TypeError: external_modules['tools']() returned int, not a dict, a module or a ClassInstance"),
+            id='not-a-module',
+        ),
+    ],
+)
+def test_a_module_factory_failure_raises_at_the_import(pool: Monty, factory: Any, message: str):
+    with pool.checkout() as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import tools', external_modules={'tools': factory})
+        assert str(exc_info.value) == message
+        # the session is still usable
+        assert session.feed_run('1 + 1') == snapshot(2)
 
 
 def test_a_dotted_module_name(pool: Monty):
@@ -50,11 +150,6 @@ def test_a_dotted_dict_key(pool: Monty):
     with pool.checkout() as session:
         code = "import tools\ngetattr(tools, 'a.b')(1, 2)"
         assert session.feed_run(code, external_modules={'tools': {'a.b': add}}) == snapshot(3)
-
-
-class _Tools:
-    def reveal(self) -> str:
-        return 'hidden'
 
 
 @pytest.mark.parametrize(
