@@ -2867,6 +2867,9 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
             for handler in handlers {
+                if let Some(exc_type) = &handler.exc_type {
+                    collect_cell_vars_from_expr(exc_type, our_locals, cell_vars, interner);
+                }
                 for n in &handler.body {
                     collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
                 }
@@ -2890,10 +2893,15 @@ fn collect_cell_vars_from_node(
             }
         }
         // Handle expressions that may contain lambdas
-        Node::Expr(expr) | Node::Return(Some(expr)) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
             collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
         }
-        Node::Return(None) => {}
+        Node::Assert { test, msg } => {
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
+            if let Some(msg) = msg {
+                collect_cell_vars_from_expr(msg, our_locals, cell_vars, interner);
+            }
+        }
         Node::Assign { object, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
@@ -2934,8 +2942,17 @@ fn collect_cell_vars_from_node(
             }
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
-        // Other nodes don't contain nested function definitions or lambdas
-        _ => {}
+        // Listed rather than matched by `_`: a missed capture compiles a local's
+        // stores as plain stores and its later loads as cell loads.
+        Node::Pass
+        | Node::Return(None)
+        | Node::Raise(None)
+        | Node::Break { .. }
+        | Node::Continue { .. }
+        | Node::Global { .. }
+        | Node::Nonlocal { .. }
+        | Node::Import { .. }
+        | Node::ImportFrom { .. } => {}
     }
 }
 
