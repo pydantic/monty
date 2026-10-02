@@ -27,13 +27,13 @@ match CPython's, with these divergences:
     `decoding to str: need a bytes-like object, int found`-style errors for non-callable non-strings.
     Like CPython, the check runs even when a negative `count` means zero
     substitutions.
-- `re.sub` replacement templates are not validated: CPython parses the
-    template eagerly (even with zero matches or a negative `count`) and
+- `re.sub` replacement templates are not generally validated: CPython parses
+    the template eagerly (even with zero matches or a negative `count`) and
     raises `PatternError` for an invalid group reference (`\2` with one
     group: `invalid group reference 2 at position 1`) or an unknown escape
-    (`\q`: `bad escape \q at position 0`). Monty expands references to
-    missing groups as the empty string and passes unknown escapes through
-    literally.
+    (`\q`: `bad escape \q at position 0`). Monty rejects three-digit octal
+    escapes above `0o377`, expands references to missing groups as the empty
+    string and passes unknown escapes through literally.
 - A negative or `> 0xFFFF` integer `flags` value raises
     `TypeError: flags must be a non-negative integer`; CPython accepts larger
     int-sized values and handles negative values according to the resulting flag
