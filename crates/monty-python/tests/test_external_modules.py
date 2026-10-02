@@ -281,6 +281,24 @@ def test_module_stubs_type_check_and_get_stubs(pool: Monty):
         assert session.feed_run('tools.add(3, 4)', external_modules={'tools': TOOLS}) == snapshot(7)
 
 
+def test_module_stubs_ride_in_a_dump(pool: Monty):
+    stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
+    with pool.checkout(type_check=True, type_check_format='concise', type_check_module_stubs=stubs) as session:
+        assert session.feed_run('import tools\ntools.add(1, 2)', external_modules={'tools': TOOLS}) == snapshot(3)
+        blob = session.dump()
+
+    # the dump brings its own type checking, stubs and committed import to a plain session
+    with pool.checkout() as session:
+        assert session.load_session(blob) is None
+        assert session.get_stubs() == snapshot({'tools': 'def add(a: int, b: int) -> int: ...\n'})
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run("tools.add('x', 2)", external_modules={'tools': TOOLS})
+        assert str(exc_info.value) == snapshot(
+            'main.py:1:11: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`\n'
+        )
+        assert session.feed_run('tools.add(3, 4)', external_modules={'tools': TOOLS}) == snapshot(7)
+
+
 @pytest.mark.parametrize(
     ('module', 'message'),
     [

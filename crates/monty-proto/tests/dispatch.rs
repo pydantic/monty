@@ -11,7 +11,9 @@ use monty_proto::{
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, NamedValues, PrintWriter, ResourceTracker, unstable};
+use monty_types::{
+    CompileOptions, MONTY_VERSION, MontyObject, MontyUuid, NamedValues, PrintWriter, ResourceTracker, unstable,
+};
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
 fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
@@ -730,6 +732,55 @@ fn load_state(child: &mut Child, state: Vec<u8>) {
     let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
     let (bytes, _) = dispatch_frame(child, &request);
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+}
+
+/// A session dumped while suspended at an import is restored with that
+/// import re-announced, and the host's answer binds the module as it would
+/// have in the original worker.
+#[test]
+fn load_restores_a_suspended_import() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let (_, event) = feed(&mut child, "import tools\ntools.x");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected the import to suspend, got {event:?}");
+    };
+    assert_eq!(call.function_name, "__import__");
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: result.state }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::FunctionCall(call) = split_turn(&bytes).1 else {
+        panic!("expected the re-announced import");
+    };
+    assert_eq!(call.function_name, "__import__");
+    let call_id = call.call_id;
+    let args = call.into_call_args().expect("the import's arguments decode");
+    let module: Vec<_> = args.args().map(|arg| arg.to_owned()).collect();
+    assert_eq!(module, vec![MontyObject::string("tools")]);
+
+    let tools = MontyObject::class_instance(
+        MontyObject::class_type("tools", MontyUuid::from_u128(1), true, true, []),
+        MontyUuid::from_u128(2),
+        [(MontyObject::string("x"), MontyObject::int(41))],
+    );
+    // post-order: the root is the last node, not index 0
+    let (graph, root) = unstable::into_graph_parts(tools);
+    let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        call_id,
+        result: Some(pb::ExtFunctionResult {
+            kind: Some(pb::ext_function_result::Kind::ReturnValue(root.0)),
+        }),
+        values: Some(WireArena::new(graph)),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(41));
 }
 
 /// A dump carries the module stubs whether or not the session type-checked,

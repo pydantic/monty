@@ -2961,3 +2961,48 @@ async fn module_stubs_type_check_and_are_reported() {
     assert!(matches!(err, PoolError::Typing(_)), "expected Typing, got {err:?}");
     session.finish().await.unwrap();
 }
+
+/// A worker serves one session after another, so the type checker's files
+/// from a finished session (its module stubs) must be gone before the next
+/// session checks anything: a stub left behind would let a later tenant
+/// resolve, and so learn the shape of, a module it was never given.
+#[tokio::test]
+async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
+    let pool = Pool::new(config()).await.unwrap();
+    let checked = |type_check_module_stubs| ReplConfig {
+        type_check: true,
+        type_check_config: TypeCheckingConfig {
+            format: TypeCheckingFormat::Concise,
+            color: false,
+        },
+        type_check_module_stubs,
+        ..ReplConfig::default()
+    };
+    let stub = ModuleStub::new("tools", "def add(a: int, b: int) -> int: ...\n").unwrap();
+    let mut session = pool.checkout(&checked(vec![stub])).await.unwrap();
+    let first_id = session.worker_id().unwrap();
+    // the stub resolves the import, so the feed reaches the host
+    let event = session
+        .feed("import tools", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }), "{event:?}");
+    let tools = host_module("tools", vec![]);
+    let event = session.resume(ResumeValue::Return(tools), &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::none());
+    session.finish().await.unwrap();
+
+    // the same worker, a session with no stubs: the import must not resolve
+    let mut session = pool.checkout(&checked(vec![])).await.unwrap();
+    assert_eq!(session.worker_id(), Some(first_id));
+    assert_eq!(session.get_stubs().await.unwrap(), vec![]);
+    let err = session
+        .feed("import tools", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Typing(diagnostics) = err else {
+        panic!("expected Typing, got {err:?}");
+    };
+    assert_snapshot!(diagnostics, @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
+    session.finish().await.unwrap();
+}

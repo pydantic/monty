@@ -134,6 +134,34 @@ test('module stubs type-check imports and come back from getStubs', async () => 
   }
 })
 
+test('module stubs ride in a dump', async () => {
+  const typeCheckModuleStubs = { tools: 'def add(a: int, b: int) -> int: ...\n' }
+  let blob: Buffer
+  {
+    const session = await pool().checkout({ typeCheck: true, typeCheckFormat: 'concise', typeCheckModuleStubs })
+    try {
+      t.is(await session.feedRun('import tools\ntools.add(1, 2)', { externalModules: { tools } }), 3)
+      blob = await session.dump()
+    } finally {
+      await session.close()
+    }
+  }
+  // the dump brings its own type checking, stubs and committed import to a plain session
+  const session = await pool().checkout()
+  try {
+    await session.loadSession(blob)
+    t.deepEqual(await session.getStubs(), typeCheckModuleStubs)
+    await t.throwsAsync(session.feedRun("tools.add('x', 2)", { externalModules: { tools } }), {
+      instanceOf: MontyTypingError,
+      message:
+        'TypeError: main.py:1:11: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`',
+    })
+    t.is(await session.feedRun('tools.add(3, 4)', { externalModules: { tools } }), 7)
+  } finally {
+    await session.close()
+  }
+})
+
 test('invalid module names are rejected', async () => {
   // the native binding refuses before dialing; the wasm child on `Configure`
   await t.throwsAsync(pool().checkout({ typeCheckModuleStubs: { json: '' } }), {

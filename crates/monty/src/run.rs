@@ -800,18 +800,15 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     };
     let error: RunError = match &exit {
         FrameExit::Return(_) => unreachable!("returns are handled above"),
-        // an import nobody serves is a missing module, as in `run_to_completion`
-        FrameExit::ExternalCall { .. } if vm.suspended_import().is_some() => {
-            let module_id = vm.suspended_import().expect("checked by the guard");
-            ExcType::module_not_found_error(vm.interns.get_str(module_id), None)
-        }
-        FrameExit::ExternalCall { function_name, .. } => {
-            let function_name = function_name.as_str(vm.interns);
-            ExcType::not_implemented(format!(
-                "External function '{function_name}' not implemented with standard execution"
+        FrameExit::ExternalCall { function_name, .. } => match vm.suspended_import() {
+            // an import nobody serves is a missing module, as in `run_to_completion`
+            Some(module_id) => ExcType::module_not_found_error(vm.interns.get_str(module_id), None),
+            None => ExcType::not_implemented(format!(
+                "External function '{}' not implemented with standard execution",
+                function_name.as_str(vm.interns)
             ))
-            .into()
-        }
+            .into(),
+        },
         FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
             "OS function '{}' not implemented with standard execution",
             function_call.name()
