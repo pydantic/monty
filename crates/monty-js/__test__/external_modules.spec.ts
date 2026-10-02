@@ -3,7 +3,14 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { ClassInstance, FunctionSnapshot, MontyComplete, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
+import {
+  ClassInstance,
+  type ExternalModules,
+  FunctionSnapshot,
+  MontyComplete,
+  MontyRuntimeError,
+  MontyTypingError,
+} from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -203,6 +210,35 @@ test('an async module factory is awaited', async () => {
   t.is(calls, 1)
 })
 
+test('a module factory result outlives a swapped entry', async () => {
+  const modules: ExternalModules = { tools: () => tools }
+  const swap = () => {
+    modules.tools = { VERSION: 99 }
+  }
+  // the host swaps the entry mid-feed; the factory's result still stands for the module
+  await using session = await pool().checkout()
+  const code = 'import tools\nswap()\nimport tools as t\n[tools.VERSION, t.VERSION]'
+  t.deepEqual(await session.feedRun(code, { externalLookup: { swap }, externalModules: modules }), [3, 3])
+  t.is(await session.feedRun('import tools\ntools.VERSION', { externalModules: modules }), 99)
+})
+
+test('a module may carry its own then attribute', async () => {
+  // only a real Promise from a factory is awaited, so `then` stays a module function
+  const withThen = { add: tools.add, then: () => 'nope' }
+  t.is(await run('import tools\ntools.add(1, 2)', { externalModules: { tools: () => withThen } }), 3)
+  t.is(await run('import tools\ntools.then()', { externalModules: { tools: () => withThen } }), 'nope')
+})
+
+test('a private getter is never read by an import', async () => {
+  const module = {
+    add: tools.add,
+    get _secret(): never {
+      throw new Error('read')
+    },
+  }
+  t.is(await run('import tools\ntools.add(1, 2)', { externalModules: { tools: module } }), 3)
+})
+
 test('a module factory failure raises at the import', async () => {
   await using session = await pool().checkout()
   const boom = () => {
@@ -216,6 +252,11 @@ test('a module factory failure raises at the import', async () => {
   await t.throwsAsync(session.feedRun('import tools', { externalModules: { tools: notAModule } }), {
     instanceOf: MontyRuntimeError,
     message: 'TypeError: externalModules.tools() returned number, not an object or ClassInstance',
+  })
+  const nullModule = () => null as unknown as Record<string, unknown>
+  await t.throwsAsync(session.feedRun('import tools', { externalModules: { tools: nullModule } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'TypeError: externalModules.tools() returned null, not an object or ClassInstance',
   })
   // the session is still usable
   t.is(await session.feedRun('1 + 1'), 2)

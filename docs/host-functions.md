@@ -344,17 +344,19 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
     ```
 
 A dict (a plain object in JavaScript) or a Python module becomes a host object named after the module, with its public
-attributes (names not starting with `_`) sent along; any other object is refused with `TypeError` when the feed starts.
+attributes (names not starting with `_`) sent along.
 A callable attribute becomes a host function named `<module>.<attr>`, dispatched like an `external_lookup` entry: a
 JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
 Any other attribute is converted when the module is imported.
 A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
+The Python binding refuses any other object with `TypeError` when the feed starts.
 A zero-argument callable (`Callable[[], ExternalModule]`, `() => ExternalModule`) returning one of those is a lazy
-module: it runs at the module's first import in the feed, and its result serves every import and call of the module
-for the rest of the feed, so a module the snippet never imports costs nothing to offer.
-Under `AsyncMonty` it may be a coroutine function, and in JavaScript it may return a promise; the sync `Monty` raises
-`RuntimeError` at the import for a coroutine.
-An exception it raises, or a return value that is not a module shape, raises at the `import` statement.
+module: it runs when the feed first needs the module, at its `import` or at a call of one of its functions through a
+module bound by an earlier feed, and its result stands for the module for the rest of the feed, so a module the snippet
+never imports costs nothing to offer.
+Under `AsyncMonty` it may return an awaitable, and in JavaScript a promise; the sync `Monty` raises `RuntimeError` for
+an awaitable.
+An exception it raises, or a return value that is not a module shape, raises at that first point of need.
 `from tools import add` reads the attribute of that object and raises `ImportError` for a name it does not have.
 An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
 or `math`, are never looked up here.

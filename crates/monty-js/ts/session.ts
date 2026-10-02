@@ -93,8 +93,8 @@ export interface FeedOptions {
    * object's own public properties become the module's attributes: functions
    * as host functions (a returned promise is awaited, as in `externalLookup`),
    * other values converted at import; a [`ClassInstance`] is sent as itself.
-   * A zero-argument function returning one of those, or a promise of one,
-   * runs at the module's first import in the feed. `from <module> import name`
+   * A zero-argument function returning one of those, or a `Promise` of one,
+   * runs when the feed first needs the module. `from <module> import name`
    * works too. Importing an
    * absent module raises `ModuleNotFoundError`; the sandbox's own modules never
    * consult this.
@@ -532,7 +532,8 @@ class TurnAnswerer {
    *  yields one wrapper (the instance store keeps each wrapper sent). */
   private readonly moduleValues = new Map<string, unknown>()
   /** What each factory entry of `externalModules` returned, by module name: a
-   *  factory runs once per feed, at the first import or call that needs it. */
+   *  factory runs once per feed, at the first import or call that needs it, and
+   *  its result stands for the module however `externalModules` changes after. */
   private readonly resolvedModules = new Map<string, unknown>()
 
   constructor(
@@ -647,8 +648,9 @@ class TurnAnswerer {
       return ownEntry(this.externalLookup, functionName)
     }
     for (let dot = functionName.lastIndexOf('.'); dot > 0; dot = functionName.lastIndexOf('.', dot - 1)) {
-      const module = await this.module(functionName.slice(0, dot))
-      if (module !== undefined) {
+      const resolved = await this.module(functionName.slice(0, dot))
+      if (resolved !== undefined) {
+        const module = resolved.value
         const attr = functionName.slice(dot + 1)
         // the rule `moduleValue` sends by: a `ClassInstance` module routes by uuid
         // under its own policy, and a private name is never a module function, so a
@@ -667,23 +669,32 @@ class TurnAnswerer {
   /**
    * The `externalModules` entry for `name`, if any. A factory entry is called
    * the first time the feed needs the module and its result kept in
-   * `resolvedModules`, so an import, a re-import and the calls of the module's
-   * functions all see one module. A promise it returns is awaited; a result
-   * that is not an object is a `TypeError`, raised wherever the module was needed.
+   * `resolvedModules`, consulted first so an import, a re-import and the calls
+   * of the module's functions all see one module even if the host swaps the
+   * entry mid-feed. Only a real `Promise` it returns is awaited, and the module
+   * comes back boxed: it may carry a `then` attribute of its own, which a bare
+   * async return would await. A result that is not an object is a `TypeError`,
+   * raised wherever the module was needed.
    */
-  private async module(name: string): Promise<unknown> {
+  private async module(name: string): Promise<{ value: unknown } | undefined> {
+    if (this.resolvedModules.has(name)) {
+      return { value: this.resolvedModules.get(name) }
+    }
     const entry = ownEntry(this.externalModules, name)
+    if (entry === undefined) {
+      return undefined
+    }
     if (typeof entry !== 'function') {
-      return entry
+      return { value: entry }
     }
-    if (!this.resolvedModules.has(name)) {
-      const module = await (entry as () => unknown)()
-      if (module === null || typeof module !== 'object') {
-        throw new TypeError(`externalModules.${name}() returned ${typeof module}, not an object or ClassInstance`)
-      }
-      this.resolvedModules.set(name, module)
+    const returned = (entry as () => unknown)()
+    const module = returned instanceof Promise ? await returned : returned
+    if (module === null || typeof module !== 'object') {
+      const kind = module === null ? 'null' : typeof module
+      throw new TypeError(`externalModules.${name}() returned ${kind}, not an object or ClassInstance`)
     }
-    return this.resolvedModules.get(name)
+    this.resolvedModules.set(name, module)
+    return { value: module }
   }
 
   /**
@@ -699,11 +710,11 @@ class TurnAnswerer {
     let value: unknown
     try {
       // a factory or getter that throws while the module is read raises at the import
-      const module = await this.module(name)
-      if (module === undefined) {
+      const resolved = await this.module(name)
+      if (resolved === undefined) {
         return this.native.resumeNotFound(onPrint)
       }
-      value = this.moduleValues.get(name) ?? moduleValue(name, module)
+      value = this.moduleValues.get(name) ?? moduleValue(name, resolved.value)
       this.moduleValues.set(name, value)
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
@@ -1373,7 +1384,7 @@ const IMPORT_FUNCTION = '__import__'
 export type ExternalModule = Record<string, unknown> | ClassInstance
 
 /** The `externalModules` option: modules by name, each given directly or by a
- *  zero-argument factory, sync or async, run at the module's first import in the feed. */
+ *  zero-argument factory, sync or async, run when the feed first needs the module. */
 export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
 
 /** `record[key]` when it is an own key, else `undefined`. */
@@ -1396,8 +1407,9 @@ function moduleValue(name: string, module: unknown): unknown {
     return module
   }
   const attrs: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(module)) {
-    if (key.startsWith('_')) continue
+  // names are filtered before any value is read, so a private getter never runs
+  for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
+    const value = (module as Record<string, unknown>)[key]
     attrs[key] = typeof value === 'function' ? namedHostFunction(`${name}.${key}`, value as ExternalFunction) : value
   }
   const classType = new ClassType(Object, { name, id: moduleUuid('class', name) })

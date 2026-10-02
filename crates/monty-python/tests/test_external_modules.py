@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import types
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -96,19 +97,40 @@ async def _async_tools() -> dict[str, Any]:
     return TOOLS
 
 
-async def test_an_async_module_factory_is_awaited():
+class _AwaitableTools:
+    """An awaitable that is not a coroutine, as a factory may return."""
+
+    def __await__(self) -> Any:
+        return _async_tools().__await__()
+
+
+@pytest.mark.parametrize('awaitable', [_async_tools, _AwaitableTools], ids=['coroutine', 'awaitable'])
+async def test_an_async_module_factory_is_awaited(awaitable: Callable[[], Awaitable[dict[str, Any]]]):
     calls = 0
 
-    async def factory() -> dict[str, Any]:
+    def factory() -> Awaitable[dict[str, Any]]:
         nonlocal calls
         calls += 1
-        return await _async_tools()
+        return awaitable()
 
     code = 'import tools\nimport tools as t\n[tools.add(1, 2), t.VERSION]'
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
             assert await session.feed_run(code, external_modules={'tools': factory}) == snapshot([3, 3])
             assert calls == 1
+
+
+def test_a_module_factory_result_outlives_a_swapped_entry(pool: Monty):
+    modules: dict[str, Any] = {'tools': lambda: TOOLS}
+
+    def swap() -> None:
+        modules['tools'] = {'VERSION': 99}
+
+    # the host swaps the entry mid-feed; the factory's result still stands for the module
+    code = 'import tools\nswap()\nimport tools as t\n[tools.VERSION, t.VERSION]'
+    with pool.checkout() as session:
+        assert session.feed_run(code, external_lookup={'swap': swap}, external_modules=modules) == snapshot([3, 3])
+        assert session.feed_run('import tools\ntools.VERSION', external_modules=modules) == snapshot(99)
 
 
 @pytest.mark.parametrize(
@@ -118,7 +140,7 @@ async def test_an_async_module_factory_is_awaited():
         pytest.param(
             _async_tools,
             snapshot(
-                "RuntimeError: external_modules['tools']() returned a coroutine; async module factories require AsyncMonty"
+                "RuntimeError: external_modules['tools']() returned an awaitable; async module factories require AsyncMonty"
             ),
             id='coroutine-on-sync-pool',
         ),

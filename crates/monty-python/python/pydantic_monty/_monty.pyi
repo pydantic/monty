@@ -716,9 +716,9 @@ class MontySession:
                 module name. A dict's items or a module's public attributes
                 become the module's: callables as host functions, other values
                 converted when imported. A `ClassInstance` is the module itself.
-                A zero-argument callable returning one of those runs at the
-                module's first import in the feed. `from <module> import name`
-                works for those attributes; importing an absent module raises
+                A zero-argument callable returning one of those runs when the
+                feed first needs the module. `from <module> import name` works
+                for those attributes; importing an absent module raises
                 `ModuleNotFoundError`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
@@ -1163,10 +1163,10 @@ class AsyncMontySession:
                 become the module's: callables (sync or coroutine functions) as
                 host functions, other values converted when imported. A
                 `ClassInstance` is the module itself. A zero-argument callable
-                (sync or a coroutine function) returning one of those runs at
-                the module's first import in the feed. `from <module> import
-                name` works for those attributes; importing an absent module
-                raises `ModuleNotFoundError`.
+                (sync or async) returning one of those runs when the feed first
+                needs the module. `from <module> import name` works for those
+                attributes; importing an absent module raises
+                `ModuleNotFoundError`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.

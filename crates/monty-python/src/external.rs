@@ -129,7 +129,8 @@ pub(crate) struct HostNames {
     /// imports.
     pub(crate) modules: Option<Py<PyDict>>,
     /// What each factory entry of `modules` returned, by module name: a
-    /// factory runs once per feed, at the first import or call that needs it.
+    /// factory runs once per feed, at the first import or call that needs it,
+    /// and its result stands for the module however `modules` changes after.
     pub(crate) resolved_modules: Option<Py<PyDict>>,
 }
 
@@ -305,38 +306,39 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// The `external_modules` entry for `name`, if any, with a factory's
-    /// result installed; a factory that returned a coroutine is an error here,
+    /// result installed; a factory that returned an awaitable is an error here,
     /// since only [`import_module_or_coroutine`](Self::import_module_or_coroutine)
     /// can have it awaited.
     fn module(&self, name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
         match self.resolve_module(name)? {
             Some(Resolved::Module(module)) => Ok(Some(module)),
-            Some(Resolved::Coroutine(coro)) => Err(sync_module_coroutine_error(name, &coro)),
+            Some(Resolved::Awaitable(awaitable)) => Err(sync_module_coroutine_error(name, &awaitable)),
             None => Ok(None),
         }
     }
 
     /// The `external_modules` entry for `name`, if any. A factory entry is
     /// called the first time the feed needs the module and its result kept
-    /// in `resolved_modules`, so an import, a re-import and the calls of the
-    /// module's functions all see one module; a coroutine it returns is handed
-    /// back for the async loop to await and [`install_module`](Self::install_module).
+    /// in `resolved_modules`, which is consulted first so an import, a
+    /// re-import and the calls of the module's functions all see one module
+    /// even if the host swaps the entry mid-feed; an awaitable it returns is
+    /// handed back for the async loop to await and [`install_module`](Self::install_module).
     fn resolve_module(&self, name: &str) -> PyResult<Option<Resolved<'py>>> {
         let (Some(modules), Some(resolved)) = (self.modules, self.resolved_modules) else {
             return Ok(None);
         };
+        if let Some(module) = resolved.get_item(name)? {
+            return Ok(Some(Resolved::Module(module)));
+        }
         let Some(entry) = modules.get_item(name)? else {
             return Ok(None);
         };
         if !entry.is_callable() {
             return Ok(Some(Resolved::Module(entry)));
         }
-        if let Some(module) = resolved.get_item(name)? {
-            return Ok(Some(Resolved::Module(module)));
-        }
         let result = callback_context::call(self.py, || entry.call0())?;
-        if is_coroutine(self.py, &result) {
-            Ok(Some(Resolved::Coroutine(result)))
+        if is_awaitable(self.py, &result) {
+            Ok(Some(Resolved::Awaitable(result)))
         } else {
             self.install_module(name, result).map(Resolved::Module).map(Some)
         }
@@ -357,7 +359,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         Ok(module)
     }
 
-    /// Finishes an import whose factory returned a coroutine, once the async
+    /// Finishes an import whose factory returned an awaitable, once the async
     /// loop has awaited it to `result`: the module is installed and sent as
     /// [`import_module`](Self::import_module) would have sent it.
     pub(crate) fn finish_import(&self, name: &str, result: PyResult<Bound<'py, PyAny>>) -> ExtFunctionResult {
@@ -371,15 +373,15 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// [`import_module`](Self::import_module) for the async loop: a factory's
-    /// coroutine comes back as [`CallResult::ModuleCoroutine`] to await.
+    /// awaitable comes back as [`CallResult::ModuleCoroutine`] to await.
     fn import_module_or_coroutine(&self, args: &CallArgs) -> CallResult {
         let Some(name) = args.args().next().and_then(|arg| arg.as_str()) else {
             return CallResult::Sync(ExtFunctionResult::NotFound(IMPORT_FUNCTION.to_owned()));
         };
         match self.resolve_module(name) {
-            Ok(Some(Resolved::Coroutine(coro))) => CallResult::ModuleCoroutine {
+            Ok(Some(Resolved::Awaitable(awaitable))) => CallResult::ModuleCoroutine {
                 name: name.to_owned(),
-                coro: coro.unbind(),
+                coro: awaitable.unbind(),
             },
             Ok(Some(Resolved::Module(module))) => CallResult::Sync(match self.module_value(name, &module) {
                 Ok(value) => ExtFunctionResult::Return(value),
@@ -436,17 +438,17 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 enum Resolved<'py> {
     /// A module shape, installed in the feed's cache when a factory made it.
     Module(Bound<'py, PyAny>),
-    /// A factory's coroutine, still to be awaited by the async loop.
-    Coroutine(Bound<'py, PyAny>),
+    /// A factory's awaitable (a coroutine, a future, ...), still to be awaited
+    /// by the async loop.
+    Awaitable(Bound<'py, PyAny>),
 }
 
-/// The error for a factory coroutine met where nothing can await it: the sync
-/// pool, or a module function called before the module was imported. The
-/// coroutine is closed so it does not warn that it was never awaited.
-pub(crate) fn sync_module_coroutine_error(name: &str, coro: &Bound<'_, PyAny>) -> PyErr {
-    let _ = coro.call_method0("close");
+/// The error for a factory awaitable met where nothing can await it: the sync
+/// pool. A coroutine is closed so it does not warn that it was never awaited.
+pub(crate) fn sync_module_coroutine_error(name: &str, awaitable: &Bound<'_, PyAny>) -> PyErr {
+    let _ = awaitable.call_method0("close");
     PyRuntimeError::new_err(format!(
-        "external_modules['{name}']() returned a coroutine; async module factories require AsyncMonty"
+        "external_modules['{name}']() returned an awaitable; async module factories require AsyncMonty"
     ))
 }
 
@@ -545,7 +547,7 @@ pub enum CallResult {
     /// Python coroutine to convert via `pyo3_async_runtimes::into_future()` and
     /// spawn as a task.
     Coroutine(Py<PyAny>),
-    /// A module factory's coroutine answering `import <name>`: awaited as a
+    /// A module factory's awaitable answering `import <name>`: awaited as a
     /// value (an import cannot take a future) and finished with
     /// [`ExternalLookup::finish_import`].
     ModuleCoroutine { name: String, coro: Py<PyAny> },
@@ -597,9 +599,20 @@ fn result_to_call_result(py: Python<'_>, result: &Bound<'_, PyAny>, instances: &
 
 /// Checks whether a Python object is a coroutine via `inspect.iscoroutine()`.
 pub(crate) fn is_coroutine(py: Python<'_>, obj: &Bound<'_, PyAny>) -> bool {
+    inspect_predicate(py, "iscoroutine", obj)
+}
+
+/// Checks whether a Python object can be awaited via `inspect.isawaitable()`:
+/// a coroutine, a future or anything with `__await__`.
+fn is_awaitable(py: Python<'_>, obj: &Bound<'_, PyAny>) -> bool {
+    inspect_predicate(py, "isawaitable", obj)
+}
+
+/// Calls the `inspect` predicate `name` on `obj`, `false` on any failure.
+fn inspect_predicate(py: Python<'_>, name: &str, obj: &Bound<'_, PyAny>) -> bool {
     py.import("inspect")
-        .and_then(|inspect| inspect.getattr("iscoroutine"))
-        .and_then(|is_coro| is_coro.call1((obj,)))
+        .and_then(|inspect| inspect.getattr(name))
+        .and_then(|predicate| predicate.call1((obj,)))
         .and_then(|result| result.is_truthy())
         .unwrap_or(false)
 }
