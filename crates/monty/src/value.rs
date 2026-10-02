@@ -672,20 +672,18 @@ impl<'h> PyTrait<'h> for Value {
 
     /// One-sided implementation of Python `+`.
     fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Some(a), Some(b)) = (immediate_int(self), immediate_int(other)) {
+            let result = match a.checked_add(b) {
+                Some(result) => Self::Int(result),
+                None => wide_i128_into_value(i128::from(a) + i128::from(b), vm.heap),
+            };
+            return Ok(Some(result));
+        }
+        if let (Some(a), Some(b)) = (immediate_float(self), immediate_float(other)) {
+            return Ok(Some(Self::Float(a + b)));
+        }
         let interns = vm.interns;
         match (self, other) {
-            // Int + Int with overflow detection
-            (Self::Int(a), Self::Int(b)) => {
-                if let Some(result) = a.checked_add(*b) {
-                    Ok(Some(Self::Int(result)))
-                } else {
-                    Ok(Some(wide_i128_into_value(i128::from(*a) + i128::from(*b), vm.heap)))
-                }
-            }
-            (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
-            // Int + Float and Float + Int
-            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
-            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
             (Self::InternString(s1), Self::InternString(s2)) => Ok(Some(concat_allocate_str(
                 interns.get_str(*s1),
                 interns.get_str(*s2),
@@ -720,20 +718,17 @@ impl<'h> PyTrait<'h> for Value {
 
     /// One-sided implementation of Python `-`.
     fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Some(a), Some(b)) = (immediate_int(self), immediate_int(other)) {
+            let result = match a.checked_sub(b) {
+                Some(result) => Self::Int(result),
+                None => wide_i128_into_value(i128::from(a) - i128::from(b), vm.heap),
+            };
+            return Ok(Some(result));
+        }
+        if let (Some(a), Some(b)) = (immediate_float(self), immediate_float(other)) {
+            return Ok(Some(Self::Float(a - b)));
+        }
         match (self, other) {
-            // Int - Int with overflow detection
-            (Self::Int(a), Self::Int(b)) => {
-                if let Some(result) = a.checked_sub(*b) {
-                    Ok(Some(Self::Int(result)))
-                } else {
-                    Ok(Some(wide_i128_into_value(i128::from(*a) - i128::from(*b), vm.heap)))
-                }
-            }
-            // Float - Float
-            (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
-            // Int - Float and Float - Int
-            (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 - b))),
-            (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a - *b as f64))),
             (Self::Ref(id), _) => vm.heap.read(*id).py_sub_impl(other, vm),
             _ => Ok(None),
         }
@@ -944,12 +939,12 @@ impl<'h> PyTrait<'h> for Value {
                 if *b == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float((f64::from(*a) / b).floor())))
+                    Ok(Some(Self::Float(py_float_divmod(f64::from(*a), *b).0)))
                 }
             }
             (Self::Float(a), Self::Bool(b)) => {
                 if *b {
-                    Ok(Some(Self::Float(a.floor()))) // a // 1.0 = floor(a)
+                    Ok(Some(Self::Float(py_float_divmod(*a, 1.0).0)))
                 } else {
                     Err(ExcType::zero_division().into())
                 }
@@ -977,40 +972,25 @@ impl<'h> PyTrait<'h> for Value {
 
     /// One-sided implementation of Python `%`.
     fn py_mod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let (Some(a), Some(b)) = (immediate_int(self), immediate_int(other)) {
+            if b == 0 {
+                return Err(ExcType::zero_division().into());
+            }
+            let result = match a.checked_rem(b) {
+                Some(r) if r != 0 && (a < 0) != (b < 0) => r + b,
+                Some(r) => r,
+                // i64::MIN % -1 overflows, but its remainder is zero.
+                None => 0,
+            };
+            return Ok(Some(Self::Int(result)));
+        }
+        if let (Some(a), Some(b)) = (immediate_float(self), immediate_float(other)) {
+            if b == 0.0 {
+                return Err(ExcType::zero_division().into());
+            }
+            return Ok(Some(Self::Float(py_float_mod(a, b))));
+        }
         match (self, other) {
-            (Self::Int(a), Self::Int(b)) => {
-                if *b == 0 {
-                    Err(ExcType::zero_division().into())
-                } else if let Some(r) = a.checked_rem(*b) {
-                    // Python modulo: result has the same sign as divisor (b)
-                    let result = if r != 0 && (*a < 0) != (*b < 0) { r + *b } else { r };
-                    Ok(Some(Self::Int(result)))
-                } else {
-                    // Overflow - i64::MIN % -1 is 0
-                    Ok(Some(Self::Int(0)))
-                }
-            }
-            (Self::Float(v1), Self::Float(v2)) => {
-                if *v2 == 0.0 {
-                    Err(ExcType::zero_division().into())
-                } else {
-                    Ok(Some(Self::Float(py_float_mod(*v1, *v2))))
-                }
-            }
-            (Self::Float(v1), Self::Int(v2)) => {
-                if *v2 == 0 {
-                    Err(ExcType::zero_division().into())
-                } else {
-                    Ok(Some(Self::Float(py_float_mod(*v1, *v2 as f64))))
-                }
-            }
-            (Self::Int(v1), Self::Float(v2)) => {
-                if *v2 == 0.0 {
-                    Err(ExcType::zero_division().into())
-                } else {
-                    Ok(Some(Self::Float(py_float_mod(*v1 as f64, *v2))))
-                }
-            }
             // `str % args` and `bytes % args` are printf-style formatting; heap values reach it via `HeapRead`.
             (Self::InternString(id), _) => {
                 let template = copy_format_template(vm.interns.get_str(*id), &vm.heap.tracker)?;
@@ -1102,15 +1082,7 @@ impl<'h> PyTrait<'h> for Value {
                 (Self::Bool(base), Self::Int(exp)) => {
                     let base_int = i64::from(*base);
                     if *exp >= 0 {
-                        // Positive exponent: 1**n=1, 0**n=0 (for n>0), 0**0=1
-                        if let Ok(exp_u32) = u32::try_from(*exp) {
-                            match base_int.checked_pow(exp_u32) {
-                                Some(result) => Ok(Some(Self::Int(result))),
-                                None => Ok(Some(Self::Float((base_int as f64).powf(*exp as f64)))),
-                            }
-                        } else {
-                            Ok(Some(Self::Float((base_int as f64).powf(*exp as f64))))
-                        }
+                        Ok(Some(Self::Int(i64::from(*base || *exp == 0))))
                     } else {
                         // Negative exponent: CPython hands off to `float_pow`
                         Ok(Some(float_pow_value(base_int as f64, *exp as f64, vm.heap)?))
