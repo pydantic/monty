@@ -1,0 +1,32 @@
+crates/monty-python/src/external.rs
+  s_5f0f63c3ca2d00::t_415367fb834f40 132-133,309,315,322-325,330-332,340-341,362,376,382,384,441-443,446-449,451,550,602-612,614-615
+crates/monty-js/__test__/external_modules.spec.ts
+  s_5f0f63c3ca2d00::t_56f3fc40a56d3a 6-13,213-241,256-259
+docs/host-functions.md
+  s_5f0f63c3ca2d00::t_56f3fc40a56d3a 347,352,354-359
+crates/monty-python/README.md
+  s_5f0f63c3ca2d00::t_56f3fc40a56d3a 47
+crates/monty-python/tests/test_external_modules.py
+  s_5f0f63c3ca2d00::t_56f3fc40a56d3a 8,100-108,111,114,123-135,143
+crates/monty-js/ts/session.ts
+  s_5f0f63c3ca2d00::t_56f3fc40a56d3a 96-97,535-536,672-673,680,682,690-694,696,1387,1410-1412
+  s_5f0f63c3ca2d00::t_e5654068c6977d 651-653,674-677,679,681,684-686,688,697,713-714,717
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_5f0f63c3ca2d00::t_56f3fc40a56d3a 719-721,1166-1169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9bc53bc49f8729cdfda46eed9cf0c0dc6a59c66f",
+  "prompts": {},
+  "sessions": {
+    "s_5f0f63c3ca2d00": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2a92e99-9dd9-4389-a144-529abbe98eb7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
