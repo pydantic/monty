@@ -23,7 +23,7 @@ use crate::{
     percent_format::percent_format,
     resource_checks::{check_repeat_size, check_replace_size},
     str_format::str_format,
-    string_builder::StringBuilder,
+    string_builder::{StringBuilder, approve_growth},
     types::{
         LazyHeapSet, Type,
         long_int::repeat_count,
@@ -573,24 +573,24 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
-    // Build result string, tracking index for error messages
+    // Build result string, tracking index for error messages.
+    // `approved_capacity` mirrors `StringBuilder::approve_growth`: we pre-flight
+    // each capacity doubling against the resource tracker before the push_str
+    // triggers an internal realloc that would hit the allocator's hard ceiling.
     let mut result = String::new();
+    let mut approved_capacity = 0usize;
     let mut index = 0usize;
 
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
-        if index > 0 {
-            result.push_str(separator.get(vm.heap));
-        }
+        let sep = if index > 0 { separator.get(vm.heap) } else { "" };
 
         // Check item is a string and extract its content
-        match item {
-            Value::InternString(id) => {
-                result.push_str(vm.interns.get_str(*id));
-            }
+        let item_str = match item {
+            Value::InternString(id) => vm.interns.get_str(*id),
             Value::Ref(heap_id) => {
                 if let HeapData::Str(s) = vm.heap.get(*heap_id) {
-                    result.push_str(s.as_str());
+                    s.as_str()
                 } else {
                     let t = item.py_type_name(vm);
                     return Err(ExcType::type_error_join_item(index, &t));
@@ -600,7 +600,24 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
                 let t = item.py_type_name(vm);
                 return Err(ExcType::type_error_join_item(index, &t));
             }
-        }
+        };
+
+        // Pre-flight each push independently, matching StringBuilder::push_str
+        // → ensure → approve_growth. A combined estimate covers only one realloc;
+        // each push can independently trigger its own capacity doubling, so we
+        // must check against the actual running len before each one.
+        approve_growth(
+            &mut approved_capacity,
+            result.len().saturating_add(sep.len()),
+            &vm.heap.tracker,
+        )?;
+        result.push_str(sep);
+        approve_growth(
+            &mut approved_capacity,
+            result.len().saturating_add(item_str.len()),
+            &vm.heap.tracker,
+        )?;
+        result.push_str(item_str);
         index += 1;
     }
 

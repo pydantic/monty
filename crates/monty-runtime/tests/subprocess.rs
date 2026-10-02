@@ -1219,6 +1219,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
             24_044_628,
         ),
+        // `str.join` pre-flights each push_str independently so either the sep
+        // or item push can raise before its realloc hits the allocator ceiling.
+        ("sep = 'a' * 400_000\nsep.join(['x'] * 4)", 1_243_006),
+        // `json.dumps` pre-flights string encoding via approve_growth so only
+        // incremental capacity deltas are charged, not the full worst-case each time.
+        ("import json\njson.dumps(['x' * 100] * 10_000)", 1_656_429),
     ];
 
     for (code, expected) in cases {
