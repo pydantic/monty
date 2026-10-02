@@ -33,20 +33,29 @@ impl VM<'_> {
     }
 
     /// Builds a dict from the top 2n stack values (key/value pairs).
+    ///
+    /// An insertion can raise — the key may be unhashable, or a colliding
+    /// `__eq__` may raise — so both the pairs still on the way in and the
+    /// half-built dict ride in guards until the dict reaches the heap.
     pub(super) fn build_dict(&mut self, count: usize) -> Result<(), RunError> {
-        let items = self.pop_n(count * 2);
-        let mut dict = Dict::new();
-        // Use into_iter to consume items by value, avoiding clone and proper ownership transfer
-        let mut iter = items.into_iter();
-        while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
+        let this = self;
+        let items = this.pop_n(count * 2).into_iter();
+        defer_drop_mut!(items, this);
+        let mut dict_guard = DropGuard::new(Dict::new(), this);
+        loop {
+            let (dict, this) = dict_guard.as_parts_mut();
+            let (Some(key), Some(value)) = (items.next(), items.next()) else {
+                break;
+            };
             // A duplicate literal key (`{k: 1, k: 2}`) replaces the earlier
             // value, which must be dropped or its refcount leaks.
-            if let Some(old_value) = dict.set(key, value, self)? {
-                old_value.drop_with(self);
+            if let Some(old_value) = dict.set(key, value, this)? {
+                old_value.drop_with(this);
             }
         }
-        let heap_id = self.heap.allocate(HeapData::Dict(dict));
-        self.push(Value::Ref(heap_id));
+        let (dict, this) = dict_guard.into_parts();
+        let heap_id = this.heap.allocate(HeapData::Dict(dict));
+        this.push(Value::Ref(heap_id));
         Ok(())
     }
 
