@@ -1932,11 +1932,22 @@ async fn async_turn_answer(
                         let mode = CoroutineMode::for_function_call(allow_eager_await);
                         dispatch_coroutine(coro, call_id, mode, join_set, instances)
                     }
-                    CallResult::ModuleCoroutine { name, coro } => {
-                        dispatch_module_coroutine(name, coro, names, instances)
-                    }
+                    CallResult::ModuleCoroutine { name, coro, then } => dispatch_module_coroutine(name, coro, then),
                 }
             })?;
+            // a module factory settles outside the callback context; the answer
+            // it unblocks is made back inside it
+            let dispatched = match dispatched {
+                Dispatched::Module(pending) => {
+                    let settled = pending.settle().await;
+                    Python::attach(|py| {
+                        let _guard = callback_context.enter(py, native)?;
+                        let mode = CoroutineMode::for_function_call(allow_eager_await);
+                        settled.dispatch(py, call_id, mode, join_set, names, instances)
+                    })?
+                }
+                other => other,
+            };
             dispatched_answer(dispatched, call_id).await
         }
         TurnEvent::NameLookup {
@@ -1975,6 +1986,7 @@ async fn dispatched_answer(
         Dispatched::Done(value) => TurnAnswer::Call(value),
         Dispatched::Eager(future) => TurnAnswer::Eager(call_id, ext_to_resume(future.await)?),
         Dispatched::AsValue(future) => TurnAnswer::Call(ext_to_resume(future.await)?),
+        Dispatched::Module(_) => unreachable!("a pending module is settled by the caller before it is answered"),
     })
 }
 

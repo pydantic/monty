@@ -777,7 +777,7 @@ impl PyFunctionSnapshot {
                     return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
                 }
                 // raised at the import, as the sync `feed_run` raises it
-                CallResult::ModuleCoroutine { name, coro } => ext_result_to_resume(ExtFunctionResult::Error(
+                CallResult::ModuleCoroutine { name, coro, .. } => ext_result_to_resume(ExtFunctionResult::Error(
                     exc_py_to_monty(py, &sync_module_coroutine_error(&name, coro.bind(py))),
                 )),
             }
@@ -938,14 +938,27 @@ impl PyAsyncFunctionSnapshot {
                             let mode = CoroutineMode::for_function_call(call.allow_eager_await);
                             dispatch_coroutine(coro, call.call_id, mode, &mut join_set, &ctx.instances)
                         }
-                        CallResult::ModuleCoroutine { name, coro } => {
-                            dispatch_module_coroutine(name, coro, &ctx.names, &ctx.instances)
-                        }
+                        CallResult::ModuleCoroutine { name, coro, then } => dispatch_module_coroutine(name, coro, then),
                     }
                 })
             };
+            // a module factory settles outside the callback context; the answer
+            // it unblocks is made back inside it
+            let dispatched = match dispatched {
+                Ok(Dispatched::Module(pending)) => {
+                    let settled = pending.settle().await;
+                    let mut join_set = ctx.pending_futures.lock().await;
+                    Python::attach(|py| {
+                        let _guard = context.enter(py, &native)?;
+                        let mode = CoroutineMode::for_function_call(call.allow_eager_await);
+                        settled.dispatch(py, call.call_id, mode, &mut join_set, &ctx.names, &ctx.instances)
+                    })
+                }
+                other => other,
+            };
             let answer = match dispatched {
                 Ok(Dispatched::Done(value)) => Ok(value),
+                Ok(Dispatched::Module(_)) => unreachable!("a pending module is settled above"),
                 Ok(Dispatched::Eager(future)) => {
                     eager = true;
                     Ok(ext_result_to_resume(future.await))

@@ -257,6 +257,22 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         if function_name == IMPORT_FUNCTION {
             return self.import_module_or_coroutine(args);
         }
+        // a module first needed by a call through a binding from an earlier
+        // feed, whose factory returned an awaitable: await it, then call
+        match self.module_of(function_name) {
+            Ok(Some((dot, Resolved::Awaitable(awaitable)))) => {
+                return CallResult::ModuleCoroutine {
+                    name: function_name[..dot].to_owned(),
+                    coro: awaitable.unbind(),
+                    then: AfterModule::Call {
+                        function_name: function_name.to_owned(),
+                        args: args.clone(),
+                    },
+                };
+            }
+            Err(err) => return CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
+            Ok(_) => {}
+        }
         match self.call_inner_raw(function_name, args) {
             Ok(Some(result)) => result_to_call_result(self.py, &result, self.instances),
             Ok(None) => CallResult::Sync(ExtFunctionResult::NotFound(function_name.to_owned())),
@@ -284,19 +300,17 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// prefix `external_modules` has. `None` when neither has it.
     fn callable(&self, function_name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
         if function_name.contains('.') {
-            for (dot, _) in function_name.rmatch_indices('.') {
-                if let Some(module) = self.module(&function_name[..dot])? {
-                    // a `ClassInstance` module routes its calls by uuid under the wrapper's
-                    // policy, so a name-based call into it (which only a non-conforming
-                    // worker sends) finds nothing
-                    return if is_class_instance_wrapper(&module)? {
-                        Ok(None)
-                    } else {
-                        module_attr(&module, &function_name[dot + 1..])
-                    };
+            match self.module_of(function_name)? {
+                // a `ClassInstance` module routes its calls by uuid under the wrapper's
+                // policy, so a name-based call into it (which only a non-conforming
+                // worker sends) finds nothing
+                Some((_, Resolved::Module(module))) if is_class_instance_wrapper(&module)? => Ok(None),
+                Some((dot, Resolved::Module(module))) => module_attr(&module, &function_name[dot + 1..]),
+                Some((dot, Resolved::Awaitable(awaitable))) => {
+                    Err(sync_module_coroutine_error(&function_name[..dot], &awaitable))
                 }
+                None => Ok(None),
             }
-            Ok(None)
         } else {
             match self.lookup {
                 Some(lookup) => lookup.get_item(function_name),
@@ -359,16 +373,46 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         Ok(module)
     }
 
-    /// Finishes an import whose factory returned an awaitable, once the async
-    /// loop has awaited it to `result`: the module is installed and sent as
-    /// [`import_module`](Self::import_module) would have sent it.
-    pub(crate) fn finish_import(&self, name: &str, result: PyResult<Bound<'py, PyAny>>) -> ExtFunctionResult {
-        match result.and_then(|module| self.install_module(name, module)) {
-            Ok(module) => match self.module_value(name, &module) {
+    /// The `external_modules` entry a dotted `function_name` calls into, with
+    /// the index of the dot that separates module from attribute. Module names
+    /// and dict keys may both contain dots, so the module is the longest prefix
+    /// `external_modules` has.
+    fn module_of(&self, function_name: &str) -> PyResult<Option<(usize, Resolved<'py>)>> {
+        for (dot, _) in function_name.rmatch_indices('.') {
+            if let Some(module) = self.resolve_module(&function_name[..dot])? {
+                return Ok(Some((dot, module)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Finishes a request whose module factory returned an awaitable, once the
+    /// async loop has awaited it to `result`: the module is installed, then the
+    /// import is answered with it or the call it was needed for is made.
+    pub(crate) fn finish_after_module(
+        &self,
+        name: &str,
+        result: PyResult<Bound<'py, PyAny>>,
+        then: &AfterModule,
+    ) -> Staged {
+        let module = match result.and_then(|module| self.install_module(name, module)) {
+            Ok(module) => module,
+            Err(err) => return Staged::Done(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
+        };
+        match then {
+            AfterModule::Import => Staged::Done(match self.module_value(name, &module) {
                 Ok(value) => ExtFunctionResult::Return(value),
                 Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+            }),
+            AfterModule::Call { function_name, args } => match self.call_or_coroutine(function_name, args) {
+                CallResult::Sync(result) => Staged::Done(result),
+                CallResult::Coroutine(coro) => Staged::Coroutine(coro),
+                // the module is installed, so its factory cannot be pending again
+                CallResult::ModuleCoroutine { .. } => Staged::Done(ExtFunctionResult::Error(exc_py_to_monty(
+                    self.py,
+                    &PyRuntimeError::new_err(format!("module factory for {name:?} pending after it was installed")),
+                ))),
             },
-            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
         }
     }
 
@@ -382,6 +426,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             Ok(Some(Resolved::Awaitable(awaitable))) => CallResult::ModuleCoroutine {
                 name: name.to_owned(),
                 coro: awaitable.unbind(),
+                then: AfterModule::Import,
             },
             Ok(Some(Resolved::Module(module))) => CallResult::Sync(match self.module_value(name, &module) {
                 Ok(value) => ExtFunctionResult::Return(value),
@@ -444,9 +489,12 @@ enum Resolved<'py> {
 }
 
 /// The error for a factory awaitable met where nothing can await it: the sync
-/// pool. A coroutine is closed so it does not warn that it was never awaited.
+/// pool. A coroutine is closed so it does not warn that it was never awaited;
+/// other awaitables have no close protocol and are left alone.
 pub(crate) fn sync_module_coroutine_error(name: &str, awaitable: &Bound<'_, PyAny>) -> PyErr {
-    let _ = awaitable.call_method0("close");
+    if is_coroutine(awaitable.py(), awaitable) {
+        let _ = awaitable.call_method0("close");
+    }
     PyRuntimeError::new_err(format!(
         "external_modules['{name}']() returned an awaitable; async module factories require AsyncMonty"
     ))
@@ -547,10 +595,30 @@ pub enum CallResult {
     /// Python coroutine to convert via `pyo3_async_runtimes::into_future()` and
     /// spawn as a task.
     Coroutine(Py<PyAny>),
-    /// A module factory's awaitable answering `import <name>`: awaited as a
-    /// value (an import cannot take a future) and finished with
-    /// [`ExternalLookup::finish_import`].
-    ModuleCoroutine { name: String, coro: Py<PyAny> },
+    /// A module factory's awaitable, needed before `then` can be answered:
+    /// awaited as a value (an import cannot take a future) and finished with
+    /// [`ExternalLookup::finish_after_module`].
+    ModuleCoroutine {
+        name: String,
+        coro: Py<PyAny>,
+        then: AfterModule,
+    },
+}
+
+/// What a factory's awaited module is for, once installed.
+pub enum AfterModule {
+    /// `import <module>`: the module value is the answer.
+    Import,
+    /// A call of one of the module's functions, through a binding an earlier
+    /// feed made; the module is needed to find the function.
+    Call { function_name: String, args: CallArgs },
+}
+
+/// The second stage of a request that waited for a module factory: an answer,
+/// or the called function's own coroutine, still to be awaited.
+pub(crate) enum Staged {
+    Done(ExtFunctionResult),
+    Coroutine(Py<PyAny>),
 }
 
 /// Like [`dispatch_object_call`] but returns `CallResult::Coroutine` when

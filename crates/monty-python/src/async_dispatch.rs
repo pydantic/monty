@@ -4,7 +4,11 @@
 //! are spawned as tokio tasks and resolved in batches when the sandbox blocks.
 //! System sleeps use the same scheduling with tokio timers.
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{
+    future::{Future, ready},
+    pin::Pin,
+    time::Duration,
+};
 
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
@@ -17,8 +21,8 @@ use tokio::{
 };
 
 use crate::external::{
-    CallResult, ExternalLookup, HostNames, dispatch_object_call_or_coroutine, py_err_to_ext_result,
-    py_obj_to_ext_result,
+    AfterModule, CallResult, ExternalLookup, HostNames, Staged, dispatch_object_call_or_coroutine,
+    py_err_to_ext_result, py_obj_to_ext_result,
 };
 
 /// Dispatches a function call to a host-routed method (when `object_id` is
@@ -90,23 +94,69 @@ pub(crate) fn dispatch_coroutine(
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
 }
 
-/// Awaits a module factory's coroutine as a value answer (an import cannot
-/// take a future), installing its result as the module via
-/// [`ExternalLookup::finish_import`] once it settles.
+/// Hands a module factory's awaitable to the caller as [`Dispatched::Module`]:
+/// the caller awaits it, then installs the module and answers under its own
+/// callback context (see [`PendingModule`]).
 pub(crate) fn dispatch_module_coroutine(
     name: String,
     coro: Py<PyAny>,
-    names: &HostNames,
-    instances: &InstanceStore,
+    then: AfterModule,
 ) -> PyResult<Dispatched<AnswerFuture>> {
-    let (names, instances) = Python::attach(|py| (names.clone_ref(py), instances.clone_ref(py)));
     let future = python_future(coro)?;
-    Ok(Dispatched::AsValue(Box::pin(async move {
-        let result = future.await;
-        Python::attach(|py| {
-            ExternalLookup::new(py, &names, &instances).finish_import(&name, result.map(|module| module.into_bound(py)))
-        })
-    })))
+    Ok(Dispatched::Module(PendingModule {
+        name,
+        then,
+        future: Box::pin(future),
+    }))
+}
+
+/// A module factory's awaitable in flight. The caller awaits
+/// [`settle`](Self::settle) outside the GIL, then finishes the request with
+/// [`SettledModule::dispatch`] inside its callback context, so installing the
+/// module and making the call it was needed for run where host callbacks do.
+pub(crate) struct PendingModule {
+    name: String,
+    then: AfterModule,
+    future: Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send>>,
+}
+
+impl PendingModule {
+    /// Awaits the factory.
+    pub(crate) async fn settle(self) -> SettledModule {
+        SettledModule {
+            name: self.name,
+            then: self.then,
+            result: self.future.await,
+        }
+    }
+}
+
+/// A settled module factory, ready to install its module and answer.
+pub(crate) struct SettledModule {
+    name: String,
+    then: AfterModule,
+    result: PyResult<Py<PyAny>>,
+}
+
+impl SettledModule {
+    /// Installs the module and answers: an import, or a sync function, as a
+    /// value; an async function's coroutine dispatched under `mode` like any
+    /// other host coroutine, since the sandbox awaits the call.
+    pub(crate) fn dispatch(
+        self,
+        py: Python<'_>,
+        call_id: u32,
+        mode: CoroutineMode,
+        join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+        names: &HostNames,
+        instances: &InstanceStore,
+    ) -> PyResult<Dispatched<AnswerFuture>> {
+        let result = self.result.map(|module| module.into_bound(py));
+        match ExternalLookup::new(py, names, instances).finish_after_module(&self.name, result, &self.then) {
+            Staged::Done(result) => Ok(Dispatched::AsValue(Box::pin(ready(result)))),
+            Staged::Coroutine(coro) => dispatch_coroutine(coro, call_id, mode, join_set, instances),
+        }
+    }
 }
 
 /// Schedules a system sleep like a coroutine answer, allowing gathered sleeps to overlap.
@@ -175,6 +225,9 @@ pub(crate) enum Dispatched<F> {
     Eager(F),
     /// Settles into a plain `resume` answer; see [`CoroutineMode::AsValue`].
     AsValue(F),
+    /// A module factory still to await before the answer can be made; the
+    /// caller settles it and dispatches again.
+    Module(PendingModule),
 }
 
 /// Waits for at least one `JoinSet` task to complete, then drains any other

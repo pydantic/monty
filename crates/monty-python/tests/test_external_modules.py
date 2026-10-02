@@ -100,8 +100,40 @@ async def _async_tools() -> dict[str, Any]:
 class _AwaitableTools:
     """An awaitable that is not a coroutine, as a factory may return."""
 
+    closed = 0
+
     def __await__(self) -> Any:
         return _async_tools().__await__()
+
+    def close(self) -> None:
+        # not a coroutine's `close`: the binding must not call it when it refuses the awaitable
+        type(self).closed += 1
+
+
+async def _async_add(a: int, b: int) -> int:
+    await asyncio.sleep(0)
+    return a + b
+
+
+def _sub(a: int, b: int) -> int:
+    return a - b
+
+
+async def _async_tools_with_async_add() -> dict[str, Any]:
+    await asyncio.sleep(0)
+    return {'add': _async_add, 'sub': _sub}
+
+
+async def test_an_awaitable_factory_serves_a_call_through_an_earlier_binding():
+    # `tools` is bound by the first feed; the second feed's call is the first
+    # thing to need the module, so the factory is awaited on the call path, and
+    # then the async function it names
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            modules: dict[str, Any] = {'tools': _async_tools_with_async_add}
+            await session.feed_run('import tools', external_modules=modules)
+            code = '[await tools.add(1, 2), tools.sub(5, 3), await tools.add(3, 4)]'
+            assert await session.feed_run(code, external_modules=modules) == snapshot([3, 2, 7])
 
 
 @pytest.mark.parametrize('awaitable', [_async_tools, _AwaitableTools], ids=['coroutine', 'awaitable'])
@@ -145,6 +177,13 @@ def test_a_module_factory_result_outlives_a_swapped_entry(pool: Monty):
             id='coroutine-on-sync-pool',
         ),
         pytest.param(
+            lambda: _AwaitableTools(),
+            snapshot(
+                "RuntimeError: external_modules['tools']() returned an awaitable; async module factories require AsyncMonty"
+            ),
+            id='awaitable-on-sync-pool',
+        ),
+        pytest.param(
             lambda: 3,
             snapshot("TypeError: external_modules['tools']() returned int, not a dict, a module or a ClassInstance"),
             id='not-a-module',
@@ -156,6 +195,7 @@ def test_a_module_factory_failure_raises_at_the_import(pool: Monty, factory: Any
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('import tools', external_modules={'tools': factory})
         assert str(exc_info.value) == message
+        assert _AwaitableTools.closed == 0
         # the session is still usable
         assert session.feed_run('1 + 1') == snapshot(2)
 
