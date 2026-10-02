@@ -23,7 +23,7 @@ use crate::{
     percent_format::percent_format,
     resource_checks::{check_repeat_size, check_replace_size},
     str_format::str_format,
-    string_builder::StringBuilder,
+    string_builder::{StringBuilder, approve_growth},
     types::{
         LazyHeapSet, Type,
         long_int::repeat_count,
@@ -602,18 +602,21 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
             }
         };
 
-        // Pre-flight: if the push would exceed the approved capacity, request
-        // the next doubling from the tracker before the realloc happens.
-        let needed = result.len().saturating_add(sep.len()).saturating_add(item_str.len());
-        if needed > approved_capacity {
-            let new_capacity = approved_capacity.saturating_mul(2).max(needed);
-            vm.heap
-                .tracker
-                .check_allocation(new_capacity.saturating_sub(approved_capacity))?;
-            approved_capacity = new_capacity;
-        }
-
+        // Pre-flight each push independently, matching StringBuilder::push_str
+        // → ensure → approve_growth. A combined estimate covers only one realloc;
+        // each push can independently trigger its own capacity doubling, so we
+        // must check against the actual running len before each one.
+        approve_growth(
+            &mut approved_capacity,
+            result.len().saturating_add(sep.len()),
+            &vm.heap.tracker,
+        )?;
         result.push_str(sep);
+        approve_growth(
+            &mut approved_capacity,
+            result.len().saturating_add(item_str.len()),
+            &vm.heap.tracker,
+        )?;
         result.push_str(item_str);
         index += 1;
     }
