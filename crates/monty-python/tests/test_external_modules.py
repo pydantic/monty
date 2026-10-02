@@ -133,7 +133,7 @@ async def test_an_awaitable_factory_serves_a_call_through_an_earlier_binding():
             modules: dict[str, Any] = {'tools': _async_tools_with_async_add}
             await session.feed_run('import tools', external_modules=modules)
             code = '[await tools.add(1, 2), tools.sub(5, 3), await tools.add(3, 4)]'
-            assert await session.feed_run(code, external_modules=modules) == snapshot([3, 2, 7])
+            assert await asyncio.wait_for(session.feed_run(code, external_modules=modules), 5) == snapshot([3, 2, 7])
 
 
 @pytest.mark.parametrize('awaitable', [_async_tools, _AwaitableTools], ids=['coroutine', 'awaitable'])
@@ -329,6 +329,8 @@ def test_module_stubs_ride_in_a_dump(pool: Monty):
 
     # the dump brings its own type checking, stubs and committed import to a plain session
     with pool.checkout() as session:
+        # nothing leaked from the worker's previous session: the stubs come from the dump
+        assert session.get_stubs() == snapshot({})
         assert session.load_session(blob) is None
         assert session.get_stubs() == snapshot({'tools': 'def add(a: int, b: int) -> int: ...\n'})
         with pytest.raises(MontyTypingError) as exc_info:

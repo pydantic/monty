@@ -605,17 +605,18 @@ class TurnAnswerer {
     if (call.functionName === IMPORT_FUNCTION) {
       return this.answerImport(call, onPrint)
     }
-    let entry: unknown
+    let resolved: { value: unknown } | undefined
     try {
-      entry = await this.hostEntry(call.functionName)
+      resolved = await this.hostEntry(call.functionName)
     } catch (err) {
       // a getter that throws while the entry is read raises at the call
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
-    if (entry === undefined) {
+    if (resolved === undefined) {
       return this.native.resumeNotFound(onPrint)
     }
+    const entry = resolved.value
     if (typeof entry !== 'function') {
       // A cached function proxy whose entry was later replaced by a plain
       // value: raise what CPython would for calling that value, matching the
@@ -642,10 +643,13 @@ class TurnAnswerer {
    * `externalModules` entry. Both parts may hold dots, so the module is the
    * longest prefix `externalModules` has. Own keys only: an inherited callable
    * (e.g. `Object.prototype.toString`) must never be dispatched as a host function.
+   * The entry comes back boxed: a plain value with a `then` of its own would
+   * otherwise be awaited by this async return, running a host method the
+   * sandbox only tried to call.
    */
-  private async hostEntry(functionName: string): Promise<unknown> {
+  private async hostEntry(functionName: string): Promise<{ value: unknown } | undefined> {
     if (!functionName.includes('.')) {
-      return ownEntry(this.externalLookup, functionName)
+      return boxed(ownEntry(this.externalLookup, functionName))
     }
     for (let dot = functionName.lastIndexOf('.'); dot > 0; dot = functionName.lastIndexOf('.', dot - 1)) {
       const resolved = await this.module(functionName.slice(0, dot))
@@ -660,7 +664,7 @@ class TurnAnswerer {
         }
         const entry = ownEntry(module, attr)
         // called with the module as its receiver, as `module.attr(...)` would be
-        return typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry
+        return boxed(typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry)
       }
     }
     return undefined
@@ -1388,6 +1392,11 @@ export type ExternalModule = Record<string, unknown> | ClassInstance
 export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
 
 /** `record[key]` when it is an own key, else `undefined`. */
+/** `value` wrapped so an async return cannot await it; `undefined` stays absent. */
+function boxed(value: unknown): { value: unknown } | undefined {
+  return value === undefined ? undefined : { value }
+}
+
 function ownEntry(record: unknown, key: string): unknown {
   return record !== null && typeof record === 'object' && Object.prototype.hasOwnProperty.call(record, key)
     ? (record as Record<string, unknown>)[key]

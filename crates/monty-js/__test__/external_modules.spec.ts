@@ -149,6 +149,8 @@ test('module stubs ride in a dump', async () => {
   // the dump brings its own type checking, stubs and committed import to a plain session
   const session = await pool().checkout()
   try {
+    // nothing leaked from the worker's previous session: the stubs come from the dump
+    t.deepEqual(await session.getStubs(), {})
     await session.loadSession(blob)
     t.deepEqual(await session.getStubs(), typeCheckModuleStubs)
     await t.throwsAsync(session.feedRun("tools.add('x', 2)", { externalModules: { tools } }), {
