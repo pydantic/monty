@@ -1,8 +1,8 @@
 # This file contains intentional type errors to test the type checker.
 # Each section demonstrates a different category of type error.
-# ===
 
 import sys
+from pathlib import Path
 from typing import TypedDict, assert_type
 
 
@@ -134,3 +134,21 @@ def loop_over_dict_items(mapping: dict[str, int]) -> None:
 
 
 print(sys.missing)
+
+
+# === Invalid open calls ===
+# Non-default `buffering`, `errors` and the like are left to the runtime to reject,
+# since a variable holding the default must still type-check.
+
+open()
+open('/work/example.txt', 1)
+open('/work/example.txt', encoding=1)
+open('/work/example.txt', 'w').write(b'hello')
+open('/work/example.bin', 'wb').write('hello')
+open('/work/example.txt').closed = False
+
+path = Path('/work/example.txt')
+path.open(1)
+path.open(encoding=1)
+path.open(closefd=False)
+path.open(opener=lambda file, flags: 0)
