@@ -1,0 +1,21 @@
+crates/monty-server-datatest/src/main.rs
+  s_d4b43a7368adce::t_3a103a1d4d93da 229-233
+crates/monty-worker/README.md
+  s_d4b43a7368adce::t_3a103a1d4d93da 238
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f31d8929d7ec50e5b18ae3921849d9ee285941c0",
+  "prompts": {},
+  "sessions": {
+    "s_d4b43a7368adce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "461e298c-13f8-4336-ab50-9555cc5bb88a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
