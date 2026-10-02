@@ -68,8 +68,8 @@ class _Tools:
         ),
         pytest.param(
             ClassInstance(_Tools()),
-            'tools.get_attr',
-            snapshot("NameError: name 'tools.get_attr' is not defined"),
+            'tools.reveal',
+            snapshot("NameError: name 'tools.reveal' is not defined"),
             id='class-instance',
         ),
     ],
@@ -77,7 +77,8 @@ class _Tools:
 def test_name_based_calls_respect_module_exposure(pool: Monty, tools: Any, name: str, message: str):
     """A name-based `tools.<attr>` call reaches only what `import tools` exposed: never a private name,
     and nothing on a `ClassInstance` module, whose methods route by uuid under the wrapper's policy.
-    A host function input carrying such a name, as a forged frame would, finds nothing."""
+    With the module imported, a host function input carrying such a name, as a forged frame would,
+    still finds nothing."""
 
     def probe() -> str:
         return 'hidden'
@@ -85,7 +86,7 @@ def test_name_based_calls_respect_module_exposure(pool: Monty, tools: Any, name:
     probe.__name__ = name
     with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('probe()', inputs={'probe': probe}, external_modules={'tools': tools})
+            session.feed_run('import tools\nprobe()', inputs={'probe': probe}, external_modules={'tools': tools})
         assert str(exc_info.value) == message
 
 

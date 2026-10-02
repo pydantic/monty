@@ -52,11 +52,12 @@ test('a ClassInstance module', async () => {
 test('name-based calls respect module exposure', async () => {
   // A `tools.<attr>` call reaches only what `import tools` exposed: never a private
   // name, and nothing on a ClassInstance module, whose methods route by uuid under
-  // its policy. A host function input carrying such a name (as a forged frame would) finds nothing.
+  // its policy. With the module imported, a host function input carrying such a
+  // name (as a forged frame would) still finds nothing.
   const privateProbe = () => 'hidden'
   Object.defineProperty(privateProbe, 'name', { value: 'tools._secret' })
   await t.throwsAsync(
-    run('probe()', {
+    run('import tools\nprobe()', {
       inputs: { probe: privateProbe },
       externalModules: { tools: { _secret: () => 'hidden' } },
     }),
@@ -68,13 +69,13 @@ test('name-based calls respect module exposure', async () => {
     }
   }
   const instanceProbe = () => 'hidden'
-  Object.defineProperty(instanceProbe, 'name', { value: 'tools.callMethod' })
+  Object.defineProperty(instanceProbe, 'name', { value: 'tools.reveal' })
   await t.throwsAsync(
-    run('probe()', {
+    run('import tools\nassert tools.reveal() == "hidden"\nprobe()', {
       inputs: { probe: instanceProbe },
-      externalModules: { tools: new ClassInstance(new Tools()) },
+      externalModules: { tools: new ClassInstance(new Tools(), { allowedMethods: ['reveal'] }) },
     }),
-    { instanceOf: MontyRuntimeError, message: "NameError: name 'tools.callMethod' is not defined" },
+    { instanceOf: MontyRuntimeError, message: "NameError: name 'tools.reveal' is not defined" },
   )
 })
 

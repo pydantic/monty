@@ -171,6 +171,8 @@ fn a_restored_from_import_still_names_its_module() {
     };
     assert_eq!(lookup.name, "a");
     let bytes = dump("test.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    // release the in-flight state of the dumped original; the restored copy carries on
+    drop(progress.into_name_lookup().unwrap().into_repl());
     let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
         panic!("dumped while suspended");
     };
@@ -236,42 +238,42 @@ fn a_host_exception_hides_its_caret_only_at_an_import() {
     "#);
 }
 
-/// `__import__` is not a builtin: calling it directly is an undefined-name call that
-/// reaches the host under the same name an `import` uses, but is not an import, so
-/// `NotFound` stays a `NameError`.
+/// `__import__` is reserved for the import protocol: a direct call or a bare reference
+/// is a `NameError` raised by the sandbox itself, never a host call, so code cannot
+/// reach the host's modules (or an `__import__` host function) by spelling the name.
 #[test]
-fn a_direct_dunder_import_call_is_an_undefined_name() {
+fn a_direct_dunder_import_is_a_name_error_without_a_host_call() {
     let err = MontyRun::new(
-        "__import__('nope')".to_owned(),
+        "__import__('tools')".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
     )
     .unwrap()
-    .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+    .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
     .unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
       File "test.py", line 1, in <module>
-        __import__('nope')
+        __import__('tools')
         ~~~~~~~~~~
     NameError: name '__import__' is not defined
     "#);
 
-    let call = start("__import__('nope')").into_function_call().unwrap();
-    assert_eq!(call.function_name, IMPORT_FUNCTION);
-    let err = call
-        .resume(
-            ExtFunctionResult::NotFound(IMPORT_FUNCTION.to_owned()),
+    // a REPL would otherwise ask the host to look the name up
+    let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    let err = repl
+        .feed_start(
+            "f = __import__",
+            Vec::<(String, MontyObject)>::new(),
             PrintWriter::Stdout,
         )
         .unwrap_err();
-    // a host-answered call underlines the whole call, as any undefined name's does
-    assert_snapshot!(err.to_string(), @r#"
+    assert_snapshot!(err.error.to_string(), @r#"
     Traceback (most recent call last):
-      File "test.py", line 1, in <module>
-        __import__('nope')
-        ~~~~~~~~~~~~~~~~~~
+      File "<python-input-0>", line 1, in <module>
+        f = __import__
+            ~~~~~~~~~~
     NameError: name '__import__' is not defined
     "#);
 }

@@ -1884,11 +1884,13 @@ impl Checkout {
                     };
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
-                    // only a feed is type-checked: a child answering anything else this
-                    // way has lost sync, and keeping it would leave the parent believing
-                    // a suspended feed ended
-                    if !matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
-                        return Err(self.protocol_violation("TypingError reply to a request that is not a Feed"));
+                    // only a feed that did not skip type checking is type-checked: a
+                    // child answering anything else this way has lost sync, and keeping
+                    // it would leave the parent believing a suspended feed ended
+                    if !matches!(&request.kind, Some(pb::parent_request::Kind::Feed(feed)) if !feed.skip_type_check) {
+                        return Err(
+                            self.protocol_violation("TypingError reply to a request that is not a type-checked Feed")
+                        );
                     }
                     self.pending = None;
                     self.feed_mounts = None;

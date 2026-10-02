@@ -354,8 +354,9 @@ An import of a module absent from `external_modules` raises `ModuleNotFoundError
 or `math`, are never looked up here.
 Every `import` statement asks again: the sandbox has no module cache, and a module bound by an earlier feed is a
 plain global.
-The Python binding reads the host object on each import; the JavaScript binding reuses the value it built for the
-first import within a feed, so a change the host makes to the module object mid-feed is seen from the next feed on.
+The Python binding reads the host object on each import; the JavaScript binding reuses the module value it built for
+the first import within a feed, so a plain attribute the host changes mid-feed is seen from the next feed on, while a
+call of a module function always reads the current attribute.
 The bound value is a host object, so `type(tools)` is its host class, not `module`; see
 [modules](limitations/modules.md#host-modules).
 

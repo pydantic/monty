@@ -3037,7 +3037,44 @@ async fn a_typing_error_reply_to_get_stubs_is_a_protocol_violation() {
     assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
     assert_eq!(
         err.to_string(),
-        "monty worker protocol error: TypingError reply to a request that is not a Feed"
+        "monty worker protocol error: TypingError reply to a request that is not a type-checked Feed"
+    );
+    assert!(checkout.worker_id().is_none(), "the worker must be discarded");
+    join_server(server).await;
+}
+
+/// A feed that skips type checking cannot produce a `TypingError`, so one
+/// answering it is out of sync too, and the worker is discarded.
+#[tokio::test]
+async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_kind(&mut socket, ok_event());
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Feed(feed) if feed.skip_type_check
+        ));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::TypingError(pb::TypingError {
+                diagnostics: "main.py:1:1: error[unresolved-import]".to_owned(),
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("import nope", vec![], vec![], true, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "monty worker protocol error: TypingError reply to a request that is not a type-checked Feed"
     );
     assert!(checkout.worker_id().is_none(), "the worker must be discarded");
     join_server(server).await;

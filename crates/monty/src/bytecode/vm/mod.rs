@@ -1419,7 +1419,7 @@ impl<'h> VM<'h> {
                 Opcode::LoadGlobalCallable => {
                     let (slot, name_idx) = self.current_frame.fetch_u16_u16();
                     let name_id = StringId::from_index(name_idx);
-                    self.load_global_callable(slot, name_id);
+                    try_catch!(self, self.load_global_callable(slot, name_id));
                 }
                 Opcode::StoreGlobal => {
                     let slot = self.current_frame.fetch_u16();
@@ -2528,20 +2528,24 @@ impl<'h> VM<'h> {
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
-    fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
+    /// The one undefined name that never reaches the host is [`IMPORT_FUNCTION`].
+    fn load_global_callable(&mut self, slot: u16, name_id: StringId) -> RunResult<()> {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
             if let Some(builtin) = self.builtin_for_name(name_id) {
                 self.push(builtin);
-                return;
+                return Ok(());
             }
             // A reserved module dunder (e.g. `__name__`) in call position resolves
             // to its fixed value; the subsequent call then fails with the usual
             // "object is not callable" error, matching CPython.
             if let Some(value) = self.module_dunder(name_id) {
                 self.push(value);
-                return;
+                return Ok(());
+            }
+            if self.is_import_function(name_id) {
+                return Err(self.name_error(slot, Some(name_id)));
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
@@ -2550,6 +2554,14 @@ impl<'h> VM<'h> {
         } else {
             self.push(value);
         }
+        Ok(())
+    }
+
+    /// Whether an undefined global is the reserved [`IMPORT_FUNCTION`]: an `import`
+    /// suspends under that name, so a host answering it from its modules must never
+    /// be reached by sandbox code spelling the name itself, which stays a `NameError`.
+    fn is_import_function(&self, name_id: StringId) -> bool {
+        self.interns.get_str(name_id) == IMPORT_FUNCTION
     }
 
     /// Creates an UnboundLocalError for a local variable accessed before assignment.
@@ -2656,6 +2668,9 @@ impl<'h> VM<'h> {
             if let Some(value) = self.module_dunder(name_id) {
                 self.push(value);
                 return Ok(None);
+            }
+            if self.is_import_function(name_id) {
+                return Err(self.name_error(slot, Some(name_id)));
             }
             Ok(Some(FrameExit::NameLookup {
                 name_id,
