@@ -1219,6 +1219,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
             24_044_628,
         ),
+        // `str.join` builds its result in a plain String; the pre-flight mirrors
+        // `StringBuilder::approve_growth` so it raises before the hard ceiling.
+        ("sep = 'a' * 400_000\nsep.join(['x'] * 4)", 1_642_026),
+        // `json.dumps` writes its output into a plain String; both the per-item
+        // capacity pre-flight and `check_memory_time_every` catch the overshoot.
+        ("import json\njson.dumps(['x' * 100] * 10_000)", 1_873_522),
     ];
 
     for (code, expected) in cases {

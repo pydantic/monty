@@ -573,24 +573,24 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
-    // Build result string, tracking index for error messages
+    // Build result string, tracking index for error messages.
+    // `approved_capacity` mirrors `StringBuilder::approve_growth`: we pre-flight
+    // each capacity doubling against the resource tracker before the push_str
+    // triggers an internal realloc that would hit the allocator's hard ceiling.
     let mut result = String::new();
+    let mut approved_capacity = 0usize;
     let mut index = 0usize;
 
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
-        if index > 0 {
-            result.push_str(separator.get(vm.heap));
-        }
+        let sep = if index > 0 { separator.get(vm.heap) } else { "" };
 
         // Check item is a string and extract its content
-        match item {
-            Value::InternString(id) => {
-                result.push_str(vm.interns.get_str(*id));
-            }
+        let item_str = match item {
+            Value::InternString(id) => vm.interns.get_str(*id),
             Value::Ref(heap_id) => {
                 if let HeapData::Str(s) = vm.heap.get(*heap_id) {
-                    result.push_str(s.as_str());
+                    s.as_str()
                 } else {
                     let t = item.py_type_name(vm);
                     return Err(ExcType::type_error_join_item(index, &t));
@@ -600,7 +600,21 @@ fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>)
                 let t = item.py_type_name(vm);
                 return Err(ExcType::type_error_join_item(index, &t));
             }
+        };
+
+        // Pre-flight: if the push would exceed the approved capacity, request
+        // the next doubling from the tracker before the realloc happens.
+        let needed = result.len().saturating_add(sep.len()).saturating_add(item_str.len());
+        if needed > approved_capacity {
+            let new_capacity = approved_capacity.saturating_mul(2).max(needed);
+            vm.heap
+                .tracker
+                .check_allocation(new_capacity.saturating_sub(approved_capacity))?;
+            approved_capacity = new_capacity;
         }
+
+        result.push_str(sep);
+        result.push_str(item_str);
         index += 1;
     }
 

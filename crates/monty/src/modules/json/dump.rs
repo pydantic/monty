@@ -391,11 +391,14 @@ impl<'h> Encoder<'_, 'h> {
             }
             Value::Float(value) => serialize_float(*value, self.out, self.config),
             Value::InternString(string_id) => {
-                write_json_string(
-                    self.vm.interns.get_str(*string_id),
-                    self.out,
-                    self.config.ensure_ascii(),
-                );
+                // Pre-flight worst-case JSON encoding size: each byte can expand
+                // to a 6-char `\uXXXX` escape, plus 2 surrounding quote chars.
+                let s = self.vm.interns.get_str(*string_id);
+                self.vm
+                    .heap
+                    .tracker
+                    .check_allocation(s.len().saturating_mul(6).saturating_add(2))?;
+                write_json_string(s, self.out, self.config.ensure_ascii());
                 Ok(())
             }
             Value::InternLongInt(long_int_id) => {
@@ -406,7 +409,13 @@ impl<'h> Encoder<'_, 'h> {
             }
             Value::Ref(heap_id) => match self.vm.heap.read(*heap_id) {
                 HeapReadOutput::Str(string) => {
-                    write_json_string(string.get(self.vm.heap).as_str(), self.out, self.config.ensure_ascii());
+                    // Pre-flight worst-case JSON encoding size (same as InternString branch above).
+                    let s = string.get(self.vm.heap).as_str();
+                    self.vm
+                        .heap
+                        .tracker
+                        .check_allocation(s.len().saturating_mul(6).saturating_add(2))?;
+                    write_json_string(s, self.out, self.config.ensure_ascii());
                     Ok(())
                 }
                 HeapReadOutput::LongInt(long_int) => {
@@ -479,7 +488,20 @@ impl<'h> Encoder<'_, 'h> {
         self.out.push('[');
         let pretty = self.config.indent.is_some();
         let mut wrote_any = false;
+        let mut item_count = 0usize;
         loop {
+            // Two complementary memory checks before each item write:
+            // 1. Capacity pre-flight: if the String is at capacity, the next
+            //    push triggers a 2× realloc — check_pending_allocation fires
+            //    when capacity > 0, pre-flighting that exact increment.
+            // 2. check_memory_time_every fallback: polls allocator-backed usage
+            //    every 64 items to catch any overshoot the pre-flight missed.
+            self.vm
+                .heap
+                .tracker
+                .check_pending_allocation(self.out.capacity().max(8))?;
+            self.vm.heap.tracker.check_memory_time_every(item_count)?;
+
             // Reserve the separator + indent BEFORE we know whether the next
             // item exists; if `write_next` reports exhaustion we roll the
             // cursor back.
@@ -500,6 +522,7 @@ impl<'h> Encoder<'_, 'h> {
                 self.out.len() > body_start,
                 "write_next reported true but wrote nothing"
             );
+            item_count += 1;
             wrote_any = true;
         }
         if pretty && wrote_any {
@@ -543,6 +566,14 @@ impl<'h> Encoder<'_, 'h> {
 
         let pretty = self.config.indent.is_some();
         for (index, (key, value)) in entries.iter().enumerate() {
+            // Same two-layer memory check as serialize_array: capacity pre-flight
+            // + periodic allocator poll every 64 entries.
+            self.vm
+                .heap
+                .tracker
+                .check_pending_allocation(self.out.capacity().max(8))?;
+            self.vm.heap.tracker.check_memory_time_every(index)?;
+
             if index != 0 {
                 self.out.push_str(&self.config.item_separator);
             }
