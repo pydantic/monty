@@ -1488,7 +1488,7 @@ pub(crate) trait ExcTypeExt: Sized {
     /// Sets `hide_caret: true` because CPython doesn't show carets for module not found errors.
     #[must_use]
     fn module_not_found_error(module_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, format!("No module named '{module_name}'"));
+        let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, no_module_named(module_name));
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
@@ -2814,6 +2814,11 @@ impl RunError {
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
     }
+}
+
+/// CPython's `ModuleNotFoundError` message for `module_name`.
+fn no_module_named(module_name: &str) -> String {
+    format!("No module named '{module_name}'")
 }
 
 /// Formats a list of parameter names for error messages, matching CPython's

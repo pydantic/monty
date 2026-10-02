@@ -16,11 +16,11 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
-    os_call_from_proto, pb, validate_requirement,
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, module_stubs_from_proto,
+    module_stubs_to_proto, named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION, ModuleStub,
     MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
     ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
@@ -80,6 +80,10 @@ pub struct ReplConfig {
     /// The serving relay's profile to run the session under; `None` takes the
     /// relay's default. Subprocess workers ignore it.
     pub profile: Option<String>,
+    /// One `.pyi` per host-provided module, so `import <module>` type-checks.
+    /// Stored and reported by [`Checkout::get_stubs`] even when `type_check`
+    /// is off; only a type-checked session reads them.
+    pub type_check_module_stubs: Vec<ModuleStub>,
 }
 
 /// How a serving relay (`monty-server`) treats a session's state.
@@ -122,6 +126,7 @@ impl Default for ReplConfig {
             os_policy: OsPolicy::default(),
             persistence: Persistence::default(),
             profile: None,
+            type_check_module_stubs: Vec::new(),
         }
     }
 }
@@ -265,6 +270,12 @@ pub enum TurnEvent {
     /// a host-backed object, routed by uuid — a class instance, or a class
     /// type (a classmethod call, or construction of a host class, which is
     /// spelled `__call__`); the receiver is NOT included in `args`.
+    ///
+    /// An `import` of a module the sandbox does not have arrives here too:
+    /// `function_name` is [`IMPORT_FUNCTION`](monty_types::IMPORT_FUNCTION)
+    /// with the module name as its one argument, and the returned value is
+    /// bound as the module (usually a host-backed instance whose attributes
+    /// are the tools); [`ResumeValue::NotFound`] raises `ModuleNotFoundError`.
     FunctionCall {
         function_name: String,
         /// One arena holding every positional and keyword argument.
@@ -334,7 +345,7 @@ pub enum ResumeValue {
     /// other tasks; resolve later via [`Checkout::resume_futures`].
     Future,
     /// No handler exists for the called name — the sandbox raises
-    /// `NameError`.
+    /// `NameError` (`ModuleNotFoundError` for an `import`).
     NotFound,
     /// No handler accepted this OS call — the sandbox raises the call's own
     /// no-handler default (`PermissionError` naming the path for filesystem
@@ -841,7 +852,7 @@ impl Checkout {
         let event = match outcome? {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
-            other @ ControlEvent::Dump(_) => {
+            other @ (ControlEvent::Dump(_) | ControlEvent::TypeStubs(_)) => {
                 return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
             }
         };
@@ -1158,6 +1169,24 @@ impl Checkout {
         match self.request_turn(&request, deadline, &mut no_print).await? {
             ControlEvent::Ok => Ok(()),
             other => Err(self.protocol_violation(format!("unexpected reply to InstallDependencies: {other:?}"))),
+        }
+    }
+
+    /// The type stubs of the session's host-provided modules: what it was
+    /// configured with, or restored from a dump. Valid while idle or suspended.
+    /// A peer that predates `GetStubs` refuses it with [`PoolError::Runtime`]
+    /// (`RuntimeError: protocol violation: request has no kind`) and the
+    /// session carries on, a suspended feed still resumable.
+    pub async fn get_stubs(&mut self) -> Result<Vec<ModuleStub>, PoolError> {
+        let request = request(pb::parent_request::Kind::GetStubs(pb::GetStubs {}));
+        let mut no_print = on_print_sync(|_, _| {});
+        let deadline = self.pool.config.request_timeout;
+        match self.request_turn(&request, deadline, &mut no_print).await? {
+            ControlEvent::TypeStubs(stubs) => match module_stubs_from_proto(&stubs) {
+                Ok(stubs) => Ok(stubs),
+                Err(err) => Err(self.protocol_violation(format!("invalid TypeStubs: {err}"))),
+            },
+            other => Err(self.protocol_violation(format!("unexpected reply to GetStubs: {other:?}"))),
         }
     }
 
@@ -1493,7 +1522,7 @@ impl Checkout {
         let matches = match reply? {
             ControlEvent::Ok => expected.is_none(),
             ControlEvent::Turn(_) => expected.is_some() && expected == self.pending.as_ref().map(PendingKey::of),
-            ControlEvent::Dump(_) => false,
+            ControlEvent::Dump(_) | ControlEvent::TypeStubs(_) => false,
         };
         self.budget.suspensions_seen = suspensions_seen;
         self.budget.sleep_used = sleep_used;
@@ -1836,10 +1865,13 @@ impl Checkout {
                     return self.convert_turn(|| Ok(TurnEvent::Complete(MontyObject::try_from(complete)?)));
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
-                    // an error reply to `Dump` (e.g. an oversize dump) does not
-                    // end the in-flight feed — the child stays suspended and
-                    // resumable, so keep the pending call and mounts
-                    if !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_))) {
+                    // an error reply to `Dump` (e.g. an oversize dump) or `GetStubs` (a peer
+                    // that predates it) does not end the in-flight feed — the child stays
+                    // suspended and resumable, so keep the pending call and mounts
+                    if !matches!(
+                        request.kind,
+                        Some(pb::parent_request::Kind::Dump(_) | pb::parent_request::Kind::GetStubs(_))
+                    ) {
                         self.pending = None;
                         self.feed_mounts = None;
                     }
@@ -1852,6 +1884,14 @@ impl Checkout {
                     };
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
+                    // only a feed that did not skip type checking is type-checked: a
+                    // child answering anything else this way has lost sync, and keeping
+                    // it would leave the parent believing a suspended feed ended
+                    if !matches!(&request.kind, Some(pb::parent_request::Kind::Feed(feed)) if !feed.skip_type_check) {
+                        return Err(
+                            self.protocol_violation("TypingError reply to a request that is not a type-checked Feed")
+                        );
+                    }
                     self.pending = None;
                     self.feed_mounts = None;
                     return Err(PoolError::Typing(typing.diagnostics));
@@ -1859,6 +1899,9 @@ impl Checkout {
                 Some(pb::child_event::Kind::Ok(_)) => return Ok(ControlEvent::Ok),
                 Some(pb::child_event::Kind::DumpResult(dump)) => {
                     return Ok(ControlEvent::Dump(dump.state.into_inner()));
+                }
+                Some(pb::child_event::Kind::TypeStubs(stubs)) => {
+                    return Ok(ControlEvent::TypeStubs(stubs.modules.into_inner()));
                 }
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
                     return Err(self.fatal_error(&fatal.message).await);
@@ -2142,6 +2185,7 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
+        type_check_module_stubs: module_stubs_to_proto(&repl.type_check_module_stubs).into(),
     }))
 }
 
@@ -2184,6 +2228,8 @@ enum ControlEvent {
     Turn(TurnEvent),
     Ok,
     Dump(Vec<u8>),
+    /// The module stubs `GetStubs` asked for.
+    TypeStubs(Vec<pb::ModuleStub>),
 }
 
 /// How long a child that announced a `FatalError` is given to exit on its own

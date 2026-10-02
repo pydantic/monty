@@ -5,7 +5,7 @@ use pyo3::{exceptions::PyMemoryError, prelude::*};
 use tokio::sync::Mutex;
 
 use super::{DriveContext, SnapshotState};
-use crate::print_target::PrintTarget;
+use crate::{external::HostNames, print_target::PrintTarget};
 
 fn snapshot(py: Python<'_>) -> SnapshotState {
     let callback = py.eval(c"lambda stream, text: None", None, None).unwrap();
@@ -14,7 +14,7 @@ fn snapshot(py: Python<'_>) -> SnapshotState {
         InstanceStore::new(py),
         PrintTarget::from_py(Some(&callback)).unwrap(),
         "test.py".to_owned(),
-        None,
+        HostNames::default(),
         None,
         None,
     ))

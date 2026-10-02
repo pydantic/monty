@@ -366,11 +366,16 @@ export type TypeCheckFormat =
   | 'pylint'
   | 'gitlab'
   | 'github'
+export interface ModuleStub {
+  module: string
+  source: string
+}
 export interface ConfigureRequest {
   scriptName: string
   limits?: ResourceLimits
   typeCheck: boolean
   typeCheckStubs?: string
+  typeCheckModuleStubs: Array<ModuleStub>
   assertMessageAnnotations?: number
   typeCheckFormat: TypeCheckFormat
   typeCheckColor: boolean
@@ -452,6 +457,7 @@ export type Request =
   | RequestDump
   | RequestLoad
   | RequestReset
+  | RequestGetStubs
 export interface RequestConfigure {
   tag: 'configure'
   val: ConfigureRequest
@@ -485,6 +491,9 @@ export interface RequestLoad {
 }
 export interface RequestReset {
   tag: 'reset'
+}
+export interface RequestGetStubs {
+  tag: 'get-stubs'
 }
 export interface StackFrame {
   filename: string
@@ -558,6 +567,7 @@ export type Event =
   | EventOk
   | EventFatalError
   | EventShutdown
+  | EventTypeStubs
 export interface EventPrint {
   tag: 'print'
   val: PrintEvent
@@ -604,6 +614,10 @@ export interface EventFatalError {
 export interface EventShutdown {
   tag: 'shutdown'
   val: Uint8Array | undefined
+}
+export interface EventTypeStubs {
+  tag: 'type-stubs'
+  val: Array<ModuleStub>
 }
 export interface DispatchResult {
   status: Status

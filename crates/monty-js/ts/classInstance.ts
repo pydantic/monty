@@ -127,13 +127,16 @@ export abstract class BaseWrapper {
    * take named options. The return value passes through `convertValue`
    * (after settling, for a promise-returning method).
    *
-   * `__call__` is always rejected on instances — only [`ClassType`] accepts
-   * it (as construction) — so even `allowedMethods: 'all'` cannot invoke the
-   * instance itself.
+   * `__call__` (the sandbox calling the instance itself) throws `TypeError`
+   * as for any non-callable value: only [`ClassType`] accepts it, as
+   * construction, so even `allowedMethods: 'all'` cannot invoke the instance.
    */
   callMethod(name: string, args: unknown[], kwargs: Record<string, unknown>): unknown {
+    if (name === '__call__') {
+      throw new TypeError(`'${this.getName()}' object is not callable`)
+    }
     const policy = this.options.allowedMethods
-    if (name === '__call__' || !policyAllows(policy, name)) {
+    if (!policyAllows(policy, name)) {
       throw this.attrError(name)
     }
     const owner = findMemberOwner(this.instance, name)

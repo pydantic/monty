@@ -3,6 +3,12 @@
 /// The monty version this build was compiled as.
 pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Name of the external function called for an `import` of a module the sandbox
+/// lacks, with the module name as its one positional argument. Hosts answer with
+/// the module value, `not_found` (a `ModuleNotFoundError`) or an exception;
+/// `from m import a` is the same call followed by attribute loads.
+pub const IMPORT_FUNCTION: &str = "__import__";
+
 pub mod args;
 mod builtins;
 mod exceptions;
@@ -53,7 +59,10 @@ pub use crate::{
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions, SOURCE_SCAN_THRESHOLD},
-    type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
+    type_checking::{
+        ModuleStub, ModuleStubError, RESERVED_MODULE_NAMES, TypeCheckState, TypeCheckingConfig, TypeCheckingFormat,
+        validate_module_name,
+    },
     uuid::MontyUuid,
     virtual_path::{normalize_virtual_path, validate_cwd},
 };

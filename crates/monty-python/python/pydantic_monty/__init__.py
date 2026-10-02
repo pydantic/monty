@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from types import EllipsisType
+from types import EllipsisType, ModuleType
 from typing import Any, Callable, Literal, Protocol
 
 from typing_extensions import NotRequired, TypeAlias, TypedDict
@@ -66,6 +66,7 @@ __all__ = (
     'ExternalFuture',
     'ExcType',
     'PrintCallback',
+    'ExternalModule',
     'TypeCheckFormat',
     'OsHandler',
     'SyncSnapshot',
@@ -325,6 +326,10 @@ instance or by type name), or a pending `future`."""
 
 PrintCallback: TypeAlias = Callable[[Literal['stdout', 'stderr'], str], None] | CollectStreams | CollectString
 """Print sink accepted by `feed_run` / `feed_start` / `load_snapshot`."""
+
+ExternalModule: TypeAlias = dict[str, Any] | ModuleType | ClassInstance
+"""What an `external_modules` entry resolves to: a dict's items or a module's public
+attributes become the sandbox module's, a `ClassInstance` is the module itself."""
 
 TypeCheckFormat: TypeAlias = Literal[
     'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'

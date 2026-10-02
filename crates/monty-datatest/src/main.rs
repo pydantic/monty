@@ -29,8 +29,8 @@ use monty::{Dump, MontyRepl, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
-    MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, IMPORT_FUNCTION, MontyException, MontyFileHandle,
+    MontyObject, MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
     SandboxTimeZone, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -575,6 +575,17 @@ fn dispatch_external_call(name: &str, call: &CallArgs, registry: &mut FixtureReg
             };
             DispatchResult::AsyncFail(MontyException::new(exc_type, Some(message)))
         }
+        IMPORT_FUNCTION => {
+            // `import tools` binds a host object carrying the fixture functions;
+            // any other module is not found, which the sandbox raises as `ModuleNotFoundError`.
+            assert!(args.len() == 1, "__import__ requires 1 argument");
+            let module = String::try_from(&args[0]).expect("__import__: module name must be str");
+            if module == "tools" {
+                DispatchResult::Sync(registry.make_tools_module().into())
+            } else {
+                DispatchResult::Sync(ExtFunctionResult::NotFound(name.to_owned()))
+            }
+        }
         _ => panic!("Unknown external function: {name}"),
     }
 }
@@ -632,6 +643,28 @@ impl FixtureRegistry {
         value
     }
 
+    /// Registers and returns the host object `import tools` binds: its eager attrs are
+    /// the fixture functions, so `tools.add_ints(1, 2)` dispatches like a bare `add_ints(1, 2)`.
+    fn make_tools_module(&mut self) -> MontyObject {
+        let functions = [
+            "add_ints",
+            "concat_strings",
+            "return_value",
+            "get_list",
+            "raise_error",
+            "async_call",
+            "async_fail",
+        ];
+        self.register(Fixture {
+            class_name: "tools",
+            type_id: 5, // distinct per fixture class (real hosts pass the Python type id)
+            attrs: functions
+                .iter()
+                .map(|name| (*name, MontyObject::function(*name, None)))
+                .collect(),
+        })
+    }
+
     /// Registers and returns a `Point(x, y)` (type_id 1).
     fn make_point(&mut self, x: i64, y: i64) -> MontyObject {
         self.register(Fixture {
@@ -680,6 +713,12 @@ fn dispatch_method_call(
     let class_name = fixture.class_name;
 
     match (class_name, method_name) {
+        // Calling an instance suspends `__call__` to the host, which decides whether the
+        // object is callable; no fixture is, so answer CPython's TypeError for `point()`.
+        (_, "__call__") => {
+            let message = format!("'{class_name}' object is not callable");
+            MontyException::new(ExcType::TypeError, Some(message)).into()
+        }
         // Point.sum(self) -> int
         ("Point" | "MutablePoint", "sum") => MontyObject::int(fixture.int_attr("x") + fixture.int_attr("y")).into(),
         // Point.add(self, dx, dy) -> Point
@@ -1921,7 +1960,7 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
 /// the real dump format rather than only the underlying serde impls.
 #[cfg(not(feature = "memory-model-checks"))]
 fn dump_load_round_trip(progress: &RunProgress) -> RunProgress {
-    let bytes = dump("test.py", None, SessionRef::Running(progress)).expect("failed to dump RunProgress");
+    let bytes = dump("test.py", None, &[], SessionRef::Running(progress)).expect("failed to dump RunProgress");
     match Dump::load(&bytes).expect("failed to load RunProgress").state {
         Session::Running(progress) => *progress,
         _ => panic!("dumped a running session, loaded something else"),
@@ -1955,12 +1994,13 @@ fn idle_dump_round_trip(path: &Path, code: &str, config: &TestConfig) -> Result<
     // the case's own outcome was checked by the main run; a raising case still leaves its globals
     let _ = repl.feed_run(code, vec![], PrintWriter::Disabled);
 
-    let first = dump(&test_name, None, SessionRef::Idle(&repl)).map_err(|err| failure(format!("dump: {err}")))?;
+    let first = dump(&test_name, None, &[], SessionRef::Idle(&repl)).map_err(|err| failure(format!("dump: {err}")))?;
     let loaded = Dump::load(&first).map_err(|err| failure(format!("load: {err}")))?;
     let Session::Idle(loaded) = loaded.state else {
         return Err(failure("dumped an idle session, loaded something else".to_string()));
     };
-    let second = dump(&test_name, None, SessionRef::Idle(&loaded)).map_err(|err| failure(format!("re-dump: {err}")))?;
+    let second =
+        dump(&test_name, None, &[], SessionRef::Idle(&loaded)).map_err(|err| failure(format!("re-dump: {err}")))?;
     if first == second {
         Ok(())
     } else {

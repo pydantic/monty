@@ -546,6 +546,7 @@ message ParentRequest {
     Reset reset = 9;
     Shutdown shutdown = 10;
     AbortFeed abort_feed = 11;
+    GetStubs get_stubs = 12;
   }
 
   // W3C `traceparent` identifying the caller's span, so a child that exports
@@ -612,6 +613,18 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
+  // One `.pyi` per host-provided module, so `import <module>` resolves during
+  // type checking. Checked only when `type_check` is true; `GetStubs` reports
+  // them either way.
+  repeated ModuleStub type_check_module_stubs = 14;
+}
+
+// The `.pyi` source of one host-provided module. `module` must be an
+// identifier and not a module the sandbox provides itself, or the runtime and
+// the checker would disagree about the import.
+message ModuleStub {
+  string module = 1;
+  string source = 2;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -737,6 +750,14 @@ message InstallDependencies {
   repeated string requirements = 1;
 }
 
+// Asks for the session's `type_check_module_stubs`, answered with `TypeStubs`.
+// Valid whenever no turn is in flight, including before the first `Feed`.
+//
+// A peer that predates this request answers an `Error` (a `RuntimeError`,
+// "protocol violation: request has no kind") and the session carries on; there
+// is no in-band negotiation, so only send it to a peer known to serve it.
+message GetStubs {}
+
 // ============================================================================
 // Events (child -> parent)
 // ============================================================================
@@ -763,6 +784,7 @@ message ChildEvent {
     Ok ok = 10;
     FatalError fatal_error = 11;
     ShutdownDump shutdown = 12;
+    TypeStubs type_stubs = 13;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -834,9 +856,16 @@ message Print {
 // Suspension: the sandbox called an external function, or — when `object_id`
 // is set — a method on a host-backed object (the receiver is NOT included in
 // `args`; the host routes by uuid). The receiver may be a class instance or a
-// class type: calling a host class arrives as a `__call__` method call on the
-// class's uuid, and the host's own policy decides whether construction is
-// allowed. Answer with `ResumeCall`.
+// class type: calling either arrives as a `__call__` method call on its uuid,
+// and the host's own policy decides whether the call (for a class, its
+// construction) is allowed. Answer with `ResumeCall`.
+//
+// An `import` of a module the sandbox does not have is this suspension too:
+// `function_name` is `__import__` with the module name as its one positional
+// argument, and the answer's `return_value` is bound as the module, usually a
+// host-backed class instance. `not_found` raises `ModuleNotFoundError`;
+// `from m import a` then loads `a` off that value (an eager attr, else a
+// `NameLookup` with `object_id`).
 message FunctionCall {
   string function_name = 1;
   // Positional arguments, as indexes into `values`.
@@ -1067,4 +1096,10 @@ message ShutdownDump {
   // to load: no session yet, an ephemeral session, a relay without storage, or
   // a park that failed.
   optional bytes dump = 1;
+}
+
+// Answers `GetStubs` with the session's module stubs, as the type checker sees
+// them.
+message TypeStubs {
+  repeated ModuleStub modules = 1;
 }

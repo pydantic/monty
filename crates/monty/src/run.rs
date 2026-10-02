@@ -736,16 +736,20 @@ impl Program {
                     name_load_ip,
                     ..
                 }) => {
-                    // In non-iterative execution, an ExtFunction from LoadGlobalCallable
-                    // means the name was undefined — raise NameError.
+                    // In non-iterative execution no host answers: an ExtFunction from
+                    // LoadGlobalCallable means the name was undefined (NameError), one
+                    // from LoadModule means the module is missing (ModuleNotFoundError).
                     // Restore the frame IP to the load instruction so the traceback
                     // points to the name reference, not the call expression.
                     if let Some(load_ip) = name_load_ip {
                         vm.set_instruction_ip(load_ip);
                     }
-                    let err = ExcType::name_error(function_name.as_str(vm.interns));
+                    let err = match vm.suspended_import() {
+                        Some(module_id) => ExcType::module_not_found_error(vm.interns.get_str(module_id)),
+                        None => ExcType::name_error(function_name.as_str(vm.interns)).into(),
+                    };
                     args.drop_with(vm);
-                    frame_exit_result = vm.resume_with_exception(err.into());
+                    frame_exit_result = vm.resume_with_exception(err);
                 }
                 // Standard execution waits inline, excluding sleep from execution time.
                 Ok(FrameExit::OsCall {
@@ -796,13 +800,15 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     };
     let error: RunError = match &exit {
         FrameExit::Return(_) => unreachable!("returns are handled above"),
-        FrameExit::ExternalCall { function_name, .. } => {
-            let function_name = function_name.as_str(vm.interns);
-            ExcType::not_implemented(format!(
-                "External function '{function_name}' not implemented with standard execution"
+        FrameExit::ExternalCall { function_name, .. } => match vm.suspended_import() {
+            // an import nobody serves is a missing module, as in `run_to_completion`
+            Some(module_id) => ExcType::module_not_found_error(vm.interns.get_str(module_id)),
+            None => ExcType::not_implemented(format!(
+                "External function '{}' not implemented with standard execution",
+                function_name.as_str(vm.interns)
             ))
-            .into()
-        }
+            .into(),
+        },
         FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
             "OS function '{}' not implemented with standard execution",
             function_call.name()

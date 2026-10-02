@@ -78,6 +78,13 @@ export interface CheckoutOptions {
   /** Stub file contents used by type checking. */
   typeCheckStubs?: string
   /**
+   * A `.pyi` source per host-provided module, keyed by module name, so
+   * `import <module>` type-checks; unlike `typeCheckStubs`, its names are in
+   * scope only once imported. A name that is not an identifier, or that the
+   * sandbox provides itself, throws. [`MontySession.getStubs`] reports them.
+   */
+  typeCheckModuleStubs?: Record<string, string>
+  /**
    * How `MontyTypingError` diagnostics are rendered (default `'full'`).
    * Chosen here rather than on the thrown error because the checker's
    * structured diagnostics never leave the worker.
@@ -200,6 +207,7 @@ export class Monty {
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       typeCheck: options.typeCheck ?? false,
       ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+      ...(options.typeCheckModuleStubs !== undefined ? { typeCheckModuleStubs: options.typeCheckModuleStubs } : {}),
       ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
       ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),

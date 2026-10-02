@@ -45,7 +45,7 @@ fn init_repl(code: &str) -> (MontyRepl, MontyObject) {
 /// Round-trips an idle session through the dump format, asserting it comes back
 /// on the same [`Session`] arm it went out on.
 fn round_trip_repl(repl: &MontyRepl) -> MontyRepl {
-    let bytes = dump("repl.py", None, SessionRef::Idle(repl)).unwrap();
+    let bytes = dump("repl.py", None, &[], SessionRef::Idle(repl)).unwrap();
     match Dump::load(&bytes).unwrap().state {
         Session::Idle(repl) => *repl,
         _ => panic!("dumped an idle session, loaded something else"),
@@ -54,7 +54,7 @@ fn round_trip_repl(repl: &MontyRepl) -> MontyRepl {
 
 /// Round-trips a suspended session through the dump format.
 fn round_trip_progress(progress: &ReplProgress) -> ReplProgress {
-    let bytes = dump("repl.py", None, SessionRef::Suspended(progress)).unwrap();
+    let bytes = dump("repl.py", None, &[], SessionRef::Suspended(progress)).unwrap();
     match Dump::load(&bytes).unwrap().state {
         Session::Suspended(progress) => *progress,
         _ => panic!("dumped a suspended session, loaded something else"),
@@ -106,7 +106,7 @@ fn dump_error_messages_are_stable() {
 #[test]
 fn dump_header_rejects_incompatible_data() {
     let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
-    let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+    let bytes = dump("repl.py", None, &[], SessionRef::Idle(&repl)).unwrap();
     // pins the header layout (magic then little-endian version), not the version itself
     let mut expected_header = b"MONTY\0".to_vec();
     expected_header.extend_from_slice(&DUMP_VERSION.to_le_bytes());
@@ -183,7 +183,7 @@ fn dump_rejects_transient_gc_colors() {
 /// Dumps an idle session after running `code`.
 fn dump_repl(code: &str) -> Vec<u8> {
     let (repl, _) = init_repl(code);
-    dump("repl.py", None, SessionRef::Idle(&repl)).unwrap()
+    dump("repl.py", None, &[], SessionRef::Idle(&repl)).unwrap()
 }
 
 /// The offset of the first occurrence of `marker` in `bytes`, so a forged dump

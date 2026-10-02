@@ -111,7 +111,11 @@ name, or the `await` the main task is blocked on.
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 
-[`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options.
+[`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options,
+including `type_check_module_stubs`, one [`ModuleStub`](../api/rust/monty-types.md#modulestub) per host-provided
+module so that `import <module>` type-checks.
+[`Checkout::get_stubs`](../api/rust/monty-pool.md#checkout) returns the module stubs in effect.
+`ModuleStub::new` refuses a name that is not an identifier or that the sandbox or its type checker already provides.
 `Checkout::worker_id()` identifies the worker within its pool, independent of PID reuse and transport;
 it returns `None` after the worker is released or discarded.
 `Checkout::pid()` is the subprocess-only OS diagnostic.
@@ -304,6 +308,15 @@ code can `await`, and when every task is blocked the run yields [`RunProgress::R
 When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
 result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
+An `import` of a module the sandbox does not have is a `FunctionCall` too, named
+[`IMPORT_FUNCTION`](../api/rust/monty-types.md#import_function) (`__import__`) with the module name as its one argument.
+The value the host resumes with is bound as the module, usually a host-backed class instance whose attributes are the
+tools.
+[`ResumeValue::NotFound`](../api/rust/monty-pool.md#resumevalue) raises `ModuleNotFoundError`; in-process,
+[`FunctionCall::resume`](../api/rust/monty.md#functioncall) with
+[`ExtFunctionResult::NotFound`](../api/rust/monty-types.md#extfunctionresult) does the same.
+A future answer raises `RuntimeError` at the `import`.
+
 [`FunctionCall`](../api/rust/monty.md#functioncall), [`OsCall`](../api/rust/monty.md#oscall), [`NameLookup`](../api/rust/monty.md#namelookup) and [`ResolveFutures`](../api/rust/monty.md#resolvefutures) expose `abort`, which raises a host-supplied
 [`MontyException`](../api/rust/monty-types.md#montyexception) uncatchably at the suspension point and unwinds the run with a traceback.
 A host driving the interpreter directly must count suspensions and call `abort` to enforce `max_suspensions`;
@@ -326,7 +339,7 @@ let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOpti
 repl.feed_run("x = 40", vec![], PrintWriter::Stdout).unwrap();
 
 // dumping is read-only: the live session can keep feeding
-let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+let bytes = dump("repl.py", None, &[], SessionRef::Idle(&repl)).unwrap();
 
 // later, restore and keep going
 let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else { panic!() };

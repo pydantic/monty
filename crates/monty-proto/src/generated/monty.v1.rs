@@ -703,7 +703,10 @@ pub struct ParentRequest {
     pub trace_parent: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
     >,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(
+        oneof = "parent_request::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+    )]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -733,6 +736,8 @@ pub mod parent_request {
         Shutdown(super::Shutdown),
         #[prost(message, tag = "11")]
         AbortFeed(super::AbortFeed),
+        #[prost(message, tag = "12")]
+        GetStubs(super::GetStubs),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -809,6 +814,22 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
+    /// One `.pyi` per host-provided module, so `import <module>` resolves during
+    /// type checking. Checked only when `type_check` is true; `GetStubs` reports
+    /// them either way.
+    #[prost(message, repeated, tag = "14")]
+    pub type_check_module_stubs: crate::budgeted_prost::alloc::vec::Vec<ModuleStub>,
+}
+/// The `.pyi` source of one host-provided module. `module` must be an
+/// identifier and not a module the sandbox provides itself, or the runtime and
+/// the checker would disagree about the import.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct ModuleStub {
+    #[prost(string, tag = "1")]
+    pub module: crate::budgeted_prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source: crate::budgeted_prost::alloc::string::String,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -943,6 +964,15 @@ pub struct InstallDependencies {
         crate::budgeted_prost::alloc::string::String,
     >,
 }
+/// Asks for the session's `type_check_module_stubs`, answered with `TypeStubs`.
+/// Valid whenever no turn is in flight, including before the first `Feed`.
+///
+/// A peer that predates this request answers an `Error` (a `RuntimeError`,
+/// "protocol violation: request has no kind") and the session carries on; there
+/// is no in-band negotiation, so only send it to a peer known to serve it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct GetStubs {}
 /// A oneof shares its field-number space with the enclosing message, so tags
 /// 1-19 are reserved by convention for `kind` arms and the message-level
 /// fields start at 20 — a new arm then never has to jump the numbering. Note
@@ -999,7 +1029,10 @@ pub struct ChildEvent {
     /// support persistence.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(
+        oneof = "child_event::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+    )]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -1031,6 +1064,8 @@ pub mod child_event {
         FatalError(super::FatalError),
         #[prost(message, tag = "12")]
         Shutdown(super::ShutdownDump),
+        #[prost(message, tag = "13")]
+        TypeStubs(super::TypeStubs),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1388,6 +1423,14 @@ pub struct ShutdownDump {
     /// a park that failed.
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
+}
+/// Answers `GetStubs` with the session's module stubs, as the type checker sees
+/// them.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct TypeStubs {
+    #[prost(message, repeated, tag = "1")]
+    pub modules: crate::budgeted_prost::alloc::vec::Vec<ModuleStub>,
 }
 /// Where a `Type` comes from — drives id presence and input validation.
 #[derive(

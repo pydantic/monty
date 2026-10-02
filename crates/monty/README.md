@@ -93,7 +93,7 @@ let RunProgress::Complete(result) = progress else { panic!("expected completion"
 assert_eq!(result, MontyObject::int(42));
 ```
 
-A REPL session is a self-contained snapshot of the interpreter: serialize it with `dump()`, store it in a file or database, and `Dump::load()` + keep feeding it later — in a different process or on a different machine. The dump carries the session metadata (script name, type-check stubs) alongside the state, behind a version this build checks on load:
+A REPL session is a self-contained snapshot of the interpreter: serialize it with `dump()`, store it in a file or database, and `Dump::load()` + keep feeding it later — in a different process or on a different machine. The dump carries the session metadata (the `dump()` arguments: script name, type-check state, module stubs) alongside the state, behind a version this build checks on load:
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
@@ -101,7 +101,7 @@ use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
 let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
 repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
-let bytes = dump("main.py", None, SessionRef::Idle(&repl)).unwrap();
+let bytes = dump("main.py", None, &[], SessionRef::Idle(&repl)).unwrap();
 
 // later, restore and carry on feeding
 let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
@@ -119,6 +119,8 @@ Invalid snapshots have no correctness or availability guarantees: loading or usi
 Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
+
+An `import` of a module the sandbox does not have is a `FunctionCall` too, named `monty_types::IMPORT_FUNCTION` (`__import__`) with the module name as its one argument. The value the host resumes with is bound as the module, usually a host-backed class instance whose attributes are the tools; `ExtFunctionResult::NotFound` raises `ModuleNotFoundError`, as does a run with no host to ask.
 
 ## Other pieces
 

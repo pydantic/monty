@@ -552,7 +552,7 @@ fn session_with_state() -> MontyRepl {
 fn session_dump(bench: &mut Bencher) {
     let repl = session_with_state();
     bench.iter(|| {
-        let bytes = monty::dump("bench.py", None, SessionRef::Idle(black_box(&repl))).unwrap();
+        let bytes = monty::dump("bench.py", None, &[], SessionRef::Idle(black_box(&repl))).unwrap();
         black_box(bytes);
     });
 }
@@ -562,7 +562,7 @@ fn session_dump(bench: &mut Bencher) {
 /// side of the dump wire format — the cost hosts pay to resume a session.
 fn session_load(bench: &mut Bencher) {
     let repl = session_with_state();
-    let bytes = monty::dump("bench.py", None, SessionRef::Idle(&repl)).unwrap();
+    let bytes = monty::dump("bench.py", None, &[], SessionRef::Idle(&repl)).unwrap();
     bench.iter(|| {
         let dump = Dump::load(black_box(&bytes)).unwrap();
         black_box(dump);

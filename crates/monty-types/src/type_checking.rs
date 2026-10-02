@@ -1,5 +1,10 @@
-use std::str::FromStr;
+use std::{
+    error::Error,
+    fmt::{self, Display},
+    str::FromStr,
+};
 
+use ruff_python_stdlib::identifiers::is_identifier;
 use serde::{Deserialize, Serialize};
 use strum::VariantNames;
 
@@ -86,4 +91,115 @@ pub struct TypeCheckState {
     pub pending_snippet: Option<String>,
     /// How diagnostics are rendered by whoever runs the type checker.
     pub config: TypeCheckingConfig,
+    /// The import statements of every committed snippet, re-injected ahead of
+    /// the stubs' star import, which does not re-export a `.pyi`'s imports.
+    #[serde(default)]
+    pub committed_imports: String,
 }
+
+/// A `.pyi` for one host-provided module, written as `/<module>.pyi` for the
+/// type checker so `import <module>` resolves. The name is validated on
+/// construction: an identifier the sandbox's own stdlib does not use, or the
+/// runtime and the checker would disagree about what the import gives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleStub {
+    module: String,
+    source: String,
+}
+
+impl ModuleStub {
+    /// A stub for `module`, refusing a name [`validate_module_name`] refuses.
+    pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
+        let module = module.into();
+        validate_module_name(&module)?;
+        Ok(Self {
+            module,
+            source: source.into(),
+        })
+    }
+
+    /// The module the stub describes.
+    #[must_use]
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    /// The `.pyi` source.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
+/// Refuses a name a host-provided module may not have: not an identifier, or one
+/// of [`RESERVED_MODULE_NAMES`]. What [`ModuleStub::new`] checks, exported so a
+/// host can refuse a module name before building anything on it.
+pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
+    if !is_identifier(name) {
+        Err(ModuleStubError::InvalidName(name.to_owned()))
+    } else if RESERVED_MODULE_NAMES.contains(&name) {
+        Err(ModuleStubError::ReservedName(name.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+/// Why a host-provided module's name was refused (see [`validate_module_name`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleStubError {
+    /// Not a Python identifier, or a keyword.
+    InvalidName(String),
+    /// A module the sandbox provides itself, or one its type stubs rely on.
+    ReservedName(String),
+}
+
+impl Display for ModuleStubError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidName(name) => write!(f, "module name {name:?} is not a valid identifier"),
+            Self::ReservedName(name) => write!(
+                f,
+                "module {name:?} is provided by the sandbox or its type checker and cannot be replaced"
+            ),
+        }
+    }
+}
+
+impl Error for ModuleStubError {}
+
+/// Module names a [`ModuleStub`] may not use: every module of the vendored
+/// typeshed (the sandbox's stdlib and the private modules its stubs import), plus
+/// those the runtime or ty provide without a typeshed entry (`gc`, `ty_extensions`).
+/// A stub under one of these would shadow that module for the checker alone.
+pub const RESERVED_MODULE_NAMES: &[&str] = &[
+    "__future__",
+    "__main__",
+    "_collections_abc",
+    "_typeshed",
+    "abc",
+    "asyncio",
+    "base64",
+    "binascii",
+    "builtins",
+    "collections",
+    "copy",
+    "dataclasses",
+    "datetime",
+    "enum",
+    "functools",
+    "gc",
+    "itertools",
+    "json",
+    "math",
+    "os",
+    "pathlib",
+    "random",
+    "re",
+    "sys",
+    "time",
+    "ty_extensions",
+    "types",
+    "typing",
+    "typing_extensions",
+    "unicodedata",
+];

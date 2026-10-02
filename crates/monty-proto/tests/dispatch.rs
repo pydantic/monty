@@ -11,7 +11,9 @@ use monty_proto::{
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, NamedValues, PrintWriter, ResourceTracker, unstable};
+use monty_types::{
+    CompileOptions, MONTY_VERSION, MontyObject, MontyUuid, NamedValues, PrintWriter, ResourceTracker, unstable,
+};
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
 fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
@@ -420,7 +422,7 @@ fn shutdown_request_reports_shutdown() {
 fn load_rejects_old_dump_version() {
     // a real dump rewound to the previous version, so only the version is wrong
     let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
-    let mut state = dump("main.py", None, SessionRef::Idle(&repl)).expect("dumping an idle repl succeeds");
+    let mut state = dump("main.py", None, &[], SessionRef::Idle(&repl)).expect("dumping an idle repl succeeds");
     state[6..8].copy_from_slice(&(MIN_SUPPORTED_DUMP_VERSION - 1).to_le_bytes());
 
     let mut child = Child::default();
@@ -456,7 +458,7 @@ fn load_re_announces_deep_suspension_args() {
         matches!(progress, ReplProgress::FunctionCall(_)),
         "expected a FunctionCall suspension"
     );
-    let state = dump("main.py", None, SessionRef::Suspended(&progress)).expect("suspended dump");
+    let state = dump("main.py", None, &[], SessionRef::Suspended(&progress)).expect("suspended dump");
 
     let mut child = Child::default();
     create_repl(&mut child);
@@ -576,4 +578,269 @@ fn turn_events_carry_the_suspension_budget() {
     let events = decode_full_events(&bytes);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].max_suspensions, Some(3));
+}
+
+// ---------------------------------------------------------------------------
+// Module stubs and GetStubs
+// ---------------------------------------------------------------------------
+
+fn module_stub(module: &str, source: &str) -> pb::ModuleStub {
+    pb::ModuleStub {
+        module: module.to_owned(),
+        source: source.to_owned(),
+    }
+}
+
+/// Configures a session with `stubs` as its module stubs, returning the reply.
+fn configure_with_module_stubs(
+    child: &mut Child,
+    type_check: bool,
+    stubs: Vec<pb::ModuleStub>,
+) -> pb::child_event::Kind {
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: "main.py".to_owned(),
+        type_check,
+        type_check_format: pb::TypeCheckFormat::Concise.into(),
+        monty_version: MONTY_VERSION.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        type_check_module_stubs: stubs.into(),
+        ..Default::default()
+    }));
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    split_turn(&bytes).1
+}
+
+fn get_stubs(child: &mut Child) -> pb::child_event::Kind {
+    let request = frame_request(pb::parent_request::Kind::GetStubs(pb::GetStubs {}));
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    split_turn(&bytes).1
+}
+
+/// The `(module, source)` pairs a `TypeStubs` reply carries.
+fn expect_type_stubs(event: pb::child_event::Kind) -> Vec<(String, String)> {
+    let pb::child_event::Kind::TypeStubs(stubs) = event else {
+        panic!("expected TypeStubs, got {event:?}");
+    };
+    stubs
+        .modules
+        .iter()
+        .map(|stub| (stub.module.clone(), stub.source.clone()))
+        .collect()
+}
+
+/// The message of the `Error` a request was refused with.
+fn expect_error_message(event: pb::child_event::Kind) -> String {
+    let pb::child_event::Kind::Error(error) = event else {
+        panic!("expected an Error event, got {event:?}");
+    };
+    error.exception.unwrap().message.unwrap()
+}
+
+/// `GetStubs` reports the configured stubs whether or not the session
+/// type-checks or has run, until `Reset` clears them.
+#[test]
+fn get_stubs_reports_the_configured_module_stubs() {
+    let mut child = Child::default();
+    assert_eq!(
+        expect_error_message(get_stubs(&mut child)),
+        "protocol violation: GetStubs before Configure"
+    );
+
+    let tools = ("tools".to_owned(), "def add(a: int, b: int) -> int: ...\n".to_owned());
+    let stubs = vec![module_stub(&tools.0, &tools.1)];
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, false, stubs),
+        pb::child_event::Kind::Ok(_)
+    ));
+    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![tools.clone()]);
+    let (_, event) = feed(&mut child, "1 + 1");
+    assert_eq!(expect_complete(event), MontyObject::int(2));
+    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![tools]);
+
+    let request = frame_request(pb::parent_request::Kind::Reset(pb::Reset {}));
+    let (bytes, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+    // the stubs went with the session: nothing is left to report
+    assert_eq!(
+        expect_error_message(get_stubs(&mut child)),
+        "protocol violation: GetStubs before Configure"
+    );
+    create_repl(&mut child);
+    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![]);
+}
+
+/// A module named twice is refused on `Configure`.
+#[test]
+fn configure_refuses_a_duplicate_module_stub() {
+    let mut child = Child::default();
+    let stubs = vec![module_stub("tools", "x: int\n"), module_stub("tools", "y: int\n")];
+    let event = configure_with_module_stubs(&mut child, false, stubs);
+    insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: invalid type_check_module_stubs: invalid value for ModuleStub.module: module "tools" has more than one stub"#);
+}
+
+/// A refused `Configure` keeps none of its stubs: a session loaded afterwards
+/// reports the dump's, not the refused configuration's.
+#[test]
+fn a_refused_configure_keeps_no_stubs() {
+    let state = dump_configured(false, vec![]);
+    let mut child = Child::default();
+    // longer than the scan threshold and nested past the parser's bound
+    let nested = format!("x = {}1{}\n", "(".repeat(1 << 17), ")".repeat(1 << 17));
+    let event = configure_with_module_stubs(&mut child, false, vec![module_stub("tools", &nested)]);
+    assert_eq!(
+        expect_error_message(event),
+        "protocol violation: invalid type_check_module_stubs: tools stub source is too deeply nested"
+    );
+    load_state(&mut child, state);
+    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![]);
+}
+
+/// A stub for a module the sandbox provides is refused, and no session is created.
+#[test]
+fn configure_refuses_a_reserved_module_stub() {
+    let mut child = Child::default();
+    let event = configure_with_module_stubs(&mut child, false, vec![module_stub("json", "")]);
+    insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: invalid type_check_module_stubs: invalid value for ModuleStub.module: module "json" is provided by the sandbox or its type checker and cannot be replaced"#);
+    assert_eq!(
+        expect_error_message(get_stubs(&mut child)),
+        "protocol violation: GetStubs before Configure"
+    );
+}
+
+/// The dump of a session configured with `stubs`, after one feed.
+fn dump_configured(type_check: bool, stubs: Vec<pb::ModuleStub>) -> Vec<u8> {
+    let mut child = Child::default();
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, type_check, stubs),
+        pb::child_event::Kind::Ok(_)
+    ));
+    let (_, event) = feed(&mut child, "y = 1");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+    result.state.into_inner()
+}
+
+/// Loads `state` into `child`, expecting the idle `Ok`.
+fn load_state(child: &mut Child, state: Vec<u8>) {
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
+    let (bytes, _) = dispatch_frame(child, &request);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+}
+
+/// A session dumped while suspended at an import is restored with that
+/// import re-announced, and the host's answer binds the module as it would
+/// have in the original worker.
+#[test]
+fn load_restores_a_suspended_import() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let (_, event) = feed(&mut child, "import tools\ntools.x");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected the import to suspend, got {event:?}");
+    };
+    assert_eq!(call.function_name, "__import__");
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: result.state }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::FunctionCall(call) = split_turn(&bytes).1 else {
+        panic!("expected the re-announced import");
+    };
+    assert_eq!(call.function_name, "__import__");
+    let call_id = call.call_id;
+    let args = call.into_call_args().expect("the import's arguments decode");
+    let module: Vec<_> = args.args().map(|arg| arg.to_owned()).collect();
+    assert_eq!(module, vec![MontyObject::string("tools")]);
+
+    let tools = MontyObject::class_instance(
+        MontyObject::class_type("tools", MontyUuid::from_u128(1), true, true, []),
+        MontyUuid::from_u128(2),
+        [(MontyObject::string("x"), MontyObject::int(41))],
+    );
+    // post-order: the root is the last node, not index 0
+    let (graph, root) = unstable::into_graph_parts(tools);
+    let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        call_id,
+        result: Some(pb::ExtFunctionResult {
+            kind: Some(pb::ext_function_result::Kind::ReturnValue(root.0)),
+        }),
+        values: Some(WireArena::new(graph)),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(41));
+}
+
+/// A dump carries the module stubs whether or not the session type-checked,
+/// and `Load` restores them over the new worker's own.
+#[test]
+fn load_restores_the_dumped_module_stubs() {
+    for type_check in [true, false] {
+        let state = dump_configured(type_check, vec![module_stub("tools", "x: int\n")]);
+        let mut child = Child::default();
+        let configured = vec![module_stub("other", "z: str\n")];
+        assert!(matches!(
+            configure_with_module_stubs(&mut child, type_check, configured),
+            pb::child_event::Kind::Ok(_)
+        ));
+        load_state(&mut child, state);
+        assert_eq!(
+            expect_type_stubs(get_stubs(&mut child)),
+            vec![("tools".to_owned(), "x: int\n".to_owned())],
+            "type_check={type_check}"
+        );
+    }
+}
+
+/// The rendered diagnostics of a `TypingError` reply.
+fn expect_typing_error(event: pb::child_event::Kind) -> String {
+    let pb::child_event::Kind::TypingError(typing) = event else {
+        panic!("expected a TypingError event, got {event:?}");
+    };
+    typing.diagnostics
+}
+
+/// A type-checked feed resolves `import tools` against its stub: a bad call
+/// is rejected before the host is asked, a good one suspends on `__import__`.
+#[test]
+fn a_type_checked_feed_resolves_the_module_stubs() {
+    let mut child = Child::default();
+    let stubs = vec![module_stub("tools", "def add(a: int, b: int) -> int: ...\n")];
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, stubs),
+        pb::child_event::Kind::Ok(_)
+    ));
+    let (_, event) = feed(&mut child, "from tools import add\nadd('x', 2)");
+    insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+    let (_, event) = feed(&mut child, "import tools\ntools.add(1, 2)");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected the import to suspend, got {event:?}");
+    };
+    assert_eq!(call.function_name, "__import__");
+}
+
+/// An import committed by one feed is still bound for the next feed's check.
+#[test]
+fn a_committed_import_carries_into_the_next_feed() {
+    let mut child = Child::default();
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, vec![]),
+        pb::child_event::Kind::Ok(_)
+    ));
+    let (_, event) = feed(&mut child, "import math as m");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    let (_, event) = feed(&mut child, "m.sqrt('4')");
+    insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:1:8: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
 }

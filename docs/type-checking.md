@@ -109,6 +109,60 @@ back to the original snippet — so an error points at the line the model wrote,
 Stubs are scoped to the checkout.
 A later session does not see them.
 
+A stub declares names at the top level of the snippet.
+A host-provided module the code imports needs its own stub: `type_check_module_stubs` (`typeCheckModuleStubs`) maps a
+module name to its `.pyi` source.
+The checker writes each one as `<module>.pyi` beside the snippet, so `import tools` resolves and `from tools import add`
+sees its declarations; module stubs are not star-imported:
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import Monty, MontyTypingError
+
+    stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
+
+    with Monty() as pool:
+        with pool.checkout(type_check=True, type_check_module_stubs=stubs) as session:
+            print(session.get_stubs() == stubs)
+            #> True
+            try:
+                session.feed_run("from tools import add\nadd('x', 2)")
+            except MontyTypingError as exc:
+                print('invalid-argument-type' in exc.display())
+                #> True
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty, MontyTypingError } from '@pydantic/monty'
+
+    const typeCheckModuleStubs = { tools: 'def add(a: int, b: int) -> int: ...\n' }
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout({ typeCheck: true, typeCheckModuleStubs })
+    console.log(await session.getStubs()) // { tools: 'def add(a: int, b: int) -> int: ...\n' }
+    try {
+      await session.feedRun("from tools import add\nadd('x', 2)")
+    } catch (err) {
+      if (!(err instanceof MontyTypingError)) throw err
+      console.log(err.display().includes('invalid-argument-type')) // true
+    }
+    ```
+
+A module name that is not an identifier, or that the sandbox or its type checker already provides, raises `ValueError`
+(throws in JavaScript).
+The reserved names are the sandbox's own modules, the rest of the vendored typeshed (`__future__` and `__main__`
+included), and the few names the runtime or the checker provide without a typeshed entry, such as `gc` and
+`ty_extensions`.
+Typeshed includes modules the checker resolves but the runtime does not, such as `abc` and `enum`: a host can serve
+those through `external_modules`, but the checker keeps typeshed's stub for them; see
+[modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
+[`get_stubs()`][pydantic_monty.MontySession.get_stubs] returns the stubs in effect.
+The runtime side of a host module is `external_modules`; see
+[importing host modules](host-functions.md#importing-host-modules).
+
 Passing the same declarations to the model in its prompt, and to `type_check_stubs` here, is the pattern the
 [`examples/`](https://github.com/pydantic/monty/tree/main/examples) directory uses: the model sees the tool signatures,
 the checker enforces them.
@@ -150,6 +204,12 @@ checks as one growing program:
     ```
 
 A snippet that fails the check never runs, so it never enters the accumulated context.
+A committed snippet's module-level `import` statements (outside any function or class body, a module-level `if` or
+`try` included) are carried too, so `import math` in one feed binds `math` for the next feed's check.
+They are re-emitted ahead of the committed definitions, so a later rebinding of the name wins for the checker as at
+runtime, while a name deleted after being imported stays bound for the checker.
+An import under an `if` or `try` is carried whether or not its branch ran: a later use of a name bound only in the
+branch that did not run checks clean and raises `NameError` at runtime.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.

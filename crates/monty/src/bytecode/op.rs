@@ -293,8 +293,10 @@ pub enum Opcode {
     LoadAttr = 77,
     /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
     ///
-    /// Like `LoadAttr` but raises `ImportError` instead of `AttributeError`
-    /// when the attribute is not found. Used for `from module import name`.
+    /// Like `LoadAttr` but raises `ImportError` instead of `AttributeError` when the
+    /// attribute is missing. That message names the module from the frame's
+    /// `import_from_module`, which the statement's `LoadModule` set: a host-provided
+    /// module is whatever value the host returned, not necessarily a `Module`.
     LoadAttrImport = 78,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr = 79,

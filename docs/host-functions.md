@@ -297,6 +297,83 @@ In JavaScript every host function may be async, and there is no separate pool cl
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
+## Importing host modules
+
+`import` of a module the sandbox does not have asks the host for it.
+`external_modules` names the modules a feed may import, keyed by module name (`externalModules` in JavaScript):
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import Monty
+
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+
+    code = """
+    import tools
+    from tools import add
+
+    tools.add(1, 2) + add(3, 4)
+    """
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            print(session.feed_run(code, external_modules={'tools': {'add': add}}))
+            #> 10
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty } from '@pydantic/monty'
+
+    const code = `
+    import tools
+    from tools import add
+
+    tools.add(1, 2) + add(3, 4)
+    `
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const tools = { add: (a: number, b: number) => a + b }
+    console.log(await session.feedRun(code, { externalModules: { tools } })) // 10
+    ```
+
+A dict (a plain object in JavaScript) or a Python module becomes a host object named after the module, with its public
+attributes (names not starting with `_`) sent along.
+A callable attribute becomes a host function named `<module>.<attr>`, dispatched like an `external_lookup` entry: a
+JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
+Any other attribute is converted when the module is imported.
+A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
+The Python binding refuses any other object with `TypeError` when the feed starts.
+A zero-argument callable (`Callable[[], ExternalModule]`, `() => ExternalModule`) returning one of those is a lazy
+module: it runs when the feed first needs the module, at its `import` or at a call of one of its functions through a
+module bound by an earlier feed, and its result stands for the module for the rest of the feed, so a module the snippet
+never imports costs nothing to offer.
+Under `AsyncMonty` it may return an awaitable, and in JavaScript a promise; the sync `Monty` raises `RuntimeError` for
+an awaitable.
+An exception it raises, or a return value that is not a module shape, raises at that first point of need.
+`from tools import add` reads the attribute of that object and raises `ImportError` for a name it does not have.
+An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
+or `math`, are never looked up here.
+Every `import` statement asks again: the sandbox has no module cache, and a module bound by an earlier feed is a
+plain global.
+The Python binding reads the host object on each import; the JavaScript binding reuses the module value it built for
+the first import within a feed, so a plain attribute the host changes mid-feed is seen from the next feed on, while a
+call of a module function always reads the current attribute.
+The bound value is a host object, so `type(tools)` is its host class, not `module`; see
+[modules](limitations/modules.md#host-modules).
+
+On the wire the import is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the module name
+as its argument, answered with the module value, so a host driving suspensions itself answers it like any other call.
+The name is reserved: `__import__(...)` in the sandbox raises `NameError`.
+To type-check code that imports a host module, give the checker its stub with `type_check_module_stubs`; see
+[type checking](type-checking.md#declaring-what-the-host-provides).
+
 ## Driving suspensions yourself
 
 `feed_run` answers every suspension for you and returns only the final value.

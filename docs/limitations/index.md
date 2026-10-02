@@ -34,7 +34,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
 - `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
-- `import x`, `import x.y`, `from x import y, z as w`
+- `import x`, `import x.y`, `from x import y, z as w`; a module the sandbox does not have is requested from the host,
+    see [modules.md](modules.md#host-modules)
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 

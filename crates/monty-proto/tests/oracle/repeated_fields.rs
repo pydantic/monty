@@ -46,6 +46,13 @@ fn every_schema_repeated_field_is_budgeted() {
         |message: &pb::RaisedException| &message.traceback,
     );
     check_repeated(
+        "monty.v1.Configure.type_check_module_stubs",
+        14,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::Configure| &message.type_check_module_stubs,
+    );
+    check_repeated(
         "monty.v1.Feed.inputs",
         2,
         WireType::LengthDelimited,
@@ -93,5 +100,12 @@ fn every_schema_repeated_field_is_budgeted() {
         WireType::Varint,
         &[0],
         |message: &pb::ResolveFutures| &message.pending_call_ids,
+    );
+    check_repeated(
+        "monty.v1.TypeStubs.modules",
+        1,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::TypeStubs| &message.modules,
     );
 }
