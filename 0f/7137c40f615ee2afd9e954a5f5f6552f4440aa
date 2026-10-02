@@ -1,0 +1,25 @@
+crates/monty-js/__test__/external.spec.ts
+  s_5f0f63c3ca2d00::t_c5fb1cbae9f470 552-567
+crates/monty-js/ts/session.ts
+  s_5f0f63c3ca2d00::t_c5fb1cbae9f470 608,610,616,619,646-648,650,652,667,1395-1399
+crates/monty-python/tests/test_external_modules.py
+  s_5f0f63c3ca2d00::t_c5fb1cbae9f470 136,332-333
+crates/monty-js/__test__/external_modules.spec.ts
+  s_5f0f63c3ca2d00::t_c5fb1cbae9f470 152-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0f7137c40f615ee2afd9e954a5f5f6552f4440aa",
+  "prompts": {},
+  "sessions": {
+    "s_5f0f63c3ca2d00": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a2a92e99-9dd9-4389-a144-529abbe98eb7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
