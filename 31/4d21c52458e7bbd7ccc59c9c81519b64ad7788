@@ -1,0 +1,35 @@
+render.yaml
+  s_b6aaa15a0880b7::t_52ce3de13f8019 36-38,133-135
+.github/workflows/ci.yml
+  s_b6aaa15a0880b7::t_00788b9e59a772 119,128
+  s_b6aaa15a0880b7::t_da92a27bae1820 7-9,11-16,239-243,258,260-281,284-285,336-338,341-342,380-382,387-388
+  s_b6aaa15a0880b7::t_525da48ac03ee3 248-251,259,298,300,349-350,383-384
+RELEASING.md
+  s_b6aaa15a0880b7::t_da92a27bae1820 1-50
+CLAUDE.md
+  s_b6aaa15a0880b7::t_da92a27bae1820 54-60,64-65,67-70
+  s_b6aaa15a0880b7::t_525da48ac03ee3 71-78,134
+Makefile
+  s_b6aaa15a0880b7::t_da92a27bae1820 204-205,208-209
+  s_b6aaa15a0880b7::t_525da48ac03ee3 210-211,253
+crates/monty-server/Makefile
+  s_b6aaa15a0880b7::t_b3dd9c4de2b43a 12
+crates/monty-worker/Makefile
+  s_b6aaa15a0880b7::t_b3dd9c4de2b43a 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "314d21c52458e7bbd7ccc59c9c81519b64ad7788",
+  "prompts": {},
+  "sessions": {
+    "s_b6aaa15a0880b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5d4e6d56-379e-45a2-b938-5d5940e45149",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": null
+    }
+  }
+}
