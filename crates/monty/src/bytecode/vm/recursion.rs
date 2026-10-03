@@ -137,6 +137,13 @@ impl VM<'_> {
         }
     }
 
+    /// Whether a builtin is running Python on a nested `run()` (see
+    /// `evaluate_function`), whose native frame task switching cannot save.
+    #[inline]
+    pub(crate) fn in_run_reentry(&self) -> bool {
+        self.run_reentry_depth < MAX_RUN_REENTRY_DEPTH
+    }
+
     /// Releases one native re-entry level. Paired with
     /// [`enter_run_reentry`](Self::enter_run_reentry); called only by
     /// [`RunReentryGuard`]'s `Drop` impl.
