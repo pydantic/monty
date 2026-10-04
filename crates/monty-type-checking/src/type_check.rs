@@ -51,7 +51,8 @@ impl TypeChecker {
     /// # Returns
     /// * `Ok(None)` - If there are no typing errors.
     /// * `Ok(Some(string))` - If there are typing errors.
-    /// * `Err(String)` - If there was an unexpected/internal error during type checking.
+    /// * `Err(String)` - If there was an unexpected/internal error during type checking, or the
+    ///   script path names the stubs file.
     pub fn run<'a>(
         &'a mut self,
         python_source: &SourceFile<'_>,
@@ -64,7 +65,15 @@ impl TypeChecker {
 
         let (main_file, code_offset): (File, u32) = if let Some(stubs_file) = stubs_file {
             let stubs_path = src_root.join(stubs_file.path);
-            self.write_root_file(&stubs_path, stubs_file.source_code)?;
+            let stubs = self.write_root_file(&stubs_path, stubs_file.source_code)?;
+            // Writing the script over its own stubs would drop them and make it import
+            // itself; compare interned files, not strings, since the db normalises paths.
+            if system_path_to_file(&self.db, &main_path).is_ok_and(|file| file == stubs) {
+                return Err(format!(
+                    "script `{}` collides with the type stubs file `{}`",
+                    python_source.path, stubs_file.path
+                ));
+            }
 
             // prepend the stub import to the main source code
             let stub_stem = stubs_file

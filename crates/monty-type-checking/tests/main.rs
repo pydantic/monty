@@ -457,3 +457,25 @@ fn collections_unimplemented_names_are_unresolved() {
       |                                                                    ^^^^^^^^^^
     ");
 }
+
+/// A script named like the stubs file would overwrite them and import itself, so
+/// stub names vanish and spans inside the injected import underflowed (#717).
+/// The db normalises paths, hence the `./` and `..` spellings.
+#[test]
+fn script_colliding_with_stubs_is_rejected() {
+    for script_name in ["type_stubs.pyi", "./type_stubs.pyi", "sub/../type_stubs.pyi"] {
+        let mut checker = TypeChecker::default();
+        let error = checker
+            .run(
+                &SourceFile::new("from typing import TypeVar\nT = TypeVar('T\n", script_name),
+                Some(&SourceFile::new("x: int\n", "type_stubs.pyi")),
+                concise(),
+            )
+            .map(|diagnostics| diagnostics.map(|d| d.to_string()))
+            .expect_err("a script colliding with the stubs file must be rejected");
+        assert_eq!(
+            error,
+            format!("script `{script_name}` collides with the type stubs file `type_stubs.pyi`"),
+        );
+    }
+}

@@ -2099,6 +2099,29 @@ fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
     child.shutdown();
 }
 
+/// A script named like the worker's stubs file used to overwrite them and crash
+/// the worker on a span underflow (#717); the feed now ends in an error instead.
+#[test]
+fn type_checked_script_named_like_stubs_file_is_rejected() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "repl_type_stubs.pyi".to_owned(),
+        type_check: true,
+        type_check_stubs: Some("x: int\n".to_owned()),
+        ..configure()
+    });
+    let (_, event) = child.feed("from typing import TypeVar\nT = TypeVar('T");
+    let error = expect_error(event);
+    assert_eq!(
+        error.message.as_deref(),
+        Some(
+            "protocol violation: type checker failed: \
+             script `repl_type_stubs.pyi` collides with the type stubs file `repl_type_stubs.pyi`"
+        )
+    );
+    child.shutdown();
+}
+
 /// The type checker parses with no nesting limit, so a source the compiler
 /// will reject as too deeply nested must bypass it: the feed ends in the
 /// compiler's SyntaxError, not a crash, and the session survives.
