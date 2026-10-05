@@ -542,6 +542,53 @@ try:
 except RuntimeError as e:
     assert str(e) == 'dictionary changed size during iteration'
 
+# === most_common() while a count comparison mutates the Counter ===
+# Tuple counts compare element-wise, so ordering them runs `Evil.__eq__`.
+mc_target = Counter()
+
+
+class MostCommonEvil:
+    def __eq__(self, other):
+        mc_target.clear()
+        return True
+
+
+def evil_counter():
+    return Counter({'a': (MostCommonEvil(),), 'b': (MostCommonEvil(),), 'c': (MostCommonEvil(),)})
+
+
+# with no `n` (or one covering every entry) CPython orders a snapshot of the items
+mc_target = evil_counter()
+assert [key for key, _ in mc_target.most_common()] == ['a', 'b', 'c']
+assert mc_target == Counter()
+mc_target = evil_counter()
+assert [key for key, _ in mc_target.most_common(5)] == ['a', 'b', 'c']
+# below the length it compares while iterating the live dict
+for n in (1, 2):
+    mc_target = evil_counter()
+    try:
+        mc_target.most_common(n)
+        assert False, 'expected most_common(n) to see the resize'
+    except RuntimeError as e:
+        assert str(e) == 'dictionary changed size during iteration'
+# `n=0` compares nothing, so the Counter is untouched
+mc_target = evil_counter()
+assert mc_target.most_common(0) == []
+assert len(mc_target) == 3
+
+
+# replacing a count without resizing orders by the snapshot's counts
+class MostCommonRebind:
+    def __eq__(self, other):
+        mc_target['a'] = (0,)
+        return True
+
+
+mc_target = Counter({'a': (MostCommonRebind(),), 'b': (MostCommonRebind(),)})
+assert [key for key, _ in mc_target.most_common()] == ['a', 'b']
+assert [key for key, _ in mc_target.most_common(1)] == ['a']
+assert mc_target['a'] == (0,)
+
 # === `|` with a plain dict merges into a plain dict, as dict.__or__ does ===
 merged = Counter(a=1) | {'a': 2, 'b': 3}
 assert type(merged) is dict
