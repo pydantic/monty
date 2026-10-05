@@ -36,6 +36,7 @@ ALLOWED_FUNCTIONS = {
     'min',
     'next',
     'oct',
+    'open',
     'ord',
     'pow',
     'print',
@@ -93,6 +94,12 @@ ALLOWED_CLASSES = {
     'NameError',
     'SyntaxError',
     'OSError',
+    # OSError subclasses raised by `open()` and the other filesystem calls
+    'FileExistsError',
+    'FileNotFoundError',
+    'IsADirectoryError',
+    'NotADirectoryError',
+    'PermissionError',
     'TimeoutError',
     'TypeError',
     'ValueError',
@@ -142,6 +149,9 @@ COPY_FILES = [
     'datetime.pyi',
     # Monty implements every `itertools` callable
     'itertools.pyi',
+    # the file classes `open()` returns; `io` re-exports them from `_io`
+    'io.pyi',
+    '_io.pyi',
     # narrowed to Monty's surface by custom/random.pyi
     'random.pyi',
 ]
@@ -153,6 +163,7 @@ VERSIONS = """\
 # which monty's minimimal typeshed includes
 
 _collections_abc: 3.3-
+_io: 3.0-  # not importable at runtime, only for type checking
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
 asyncio: 3.4-
@@ -164,6 +175,7 @@ copy: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
 functools: 3.0-
+io: 3.0-  # not importable at runtime, only for type checking
 itertools: 3.0-
 json: 3.0-
 math: 3.0-

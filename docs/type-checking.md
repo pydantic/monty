@@ -197,6 +197,6 @@ the flag is `--type-check-format`.
     See [`limitations/eval_exec.md`](limitations/eval_exec.md).
 - **Passing the type check does not mean the code runs.** Parser-rejected constructs (`match`, `yield`) are not
     modelled.
-    Five stub-only modules (`abc`, `types`, `typing_extensions`, `_collections_abc`, `_typeshed`) resolve during checking
-    because the stubs need them, then raise `ModuleNotFoundError` at runtime.
+    Modules the stubs need, such as `abc`, `io` and `collections.abc`, resolve during checking, then raise
+    `ModuleNotFoundError` at runtime.
     See [`limitations/modules.md`](limitations/modules.md).

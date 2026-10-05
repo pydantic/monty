@@ -27,3 +27,13 @@ bad_types.py:127:19: error[invalid-argument-type] Argument to function `takes_st
 bad_types.py:132:19: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `str`
 bad_types.py:133:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
 bad_types.py:136:7: error[unresolved-attribute] Module `sys` has no member `missing`
+bad_types.py:143:1: error[no-matching-overload] No overload of function `open` matches arguments
+bad_types.py:144:1: error[no-matching-overload] No overload of function `open` matches arguments
+bad_types.py:145:27: error[invalid-argument-type] Argument to function `open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:146:38: error[invalid-argument-type] Argument to bound method `_TextIOBase.write` is incorrect: Expected `str`, found `Literal[b"hello"]`
+bad_types.py:147:39: error[invalid-argument-type] Argument to bound method `BufferedWriter.write` is incorrect: Expected `Buffer`, found `Literal["hello"]`
+bad_types.py:148:1: error[invalid-assignment] Cannot assign to read-only property `closed` on object of type `TextIOWrapper[_WrappedBuffer]`: Attempted assignment to `TextIOWrapper[_WrappedBuffer].closed` here
+bad_types.py:151:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:152:11: error[invalid-argument-type] Argument to bound method `Path.open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:153:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:154:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments

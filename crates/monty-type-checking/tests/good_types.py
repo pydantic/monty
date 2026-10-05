@@ -9,8 +9,9 @@ import re
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
+from io import BufferedReader, BufferedWriter, TextIOWrapper
 from pathlib import Path
-from typing import Any, assert_type
+from typing import Any, TextIO, assert_type
 
 # === Type checking helper functions ===
 
@@ -657,3 +658,37 @@ assert_type(random.choices('abc', k=2), list[str])
 assert_type(random.Random(42).uniform(1, 2), float)
 assert_type(random.Random().getrandbits(8), int)
 assert_type(os.urandom(4), bytes)
+
+# === open ===
+# Upstream typeshed's signatures accept any argument value the runtime might accept.
+
+
+def write_line(stream: TextIO, line: str) -> None:
+    stream.write(line)
+
+
+def open_with(file: str, mode: str, encoding: str, buffering: int) -> None:
+    open(file, mode, buffering, encoding).write('hello')
+    Path(file).open(mode, buffering, encoding).write('hello')
+
+
+try:
+    with open('/work/example.txt', 'w') as text_output:
+        assert_type(text_output, TextIOWrapper)
+        text_output.write('hello')
+        write_line(text_output, 'world')
+    with open('/work/example.bin', 'rb') as binary_input:
+        assert_type(binary_input, BufferedReader)
+        assert_type(binary_input.read(), bytes)
+    with open('/work/example.bin', 'wb') as binary_output:
+        assert_type(binary_output, BufferedWriter)
+        binary_output.write(b'hello')
+    with open('/work/example.txt', encoding='UTF-8') as encoded_input:
+        assert_type(encoded_input.readlines(), list[str])
+    with Path('/work/example.txt').open('w') as path_output:
+        assert_type(path_output, TextIOWrapper)
+        path_output.write('hello')
+except FileNotFoundError:
+    pass
+except (FileExistsError, IsADirectoryError, NotADirectoryError, PermissionError):
+    pass

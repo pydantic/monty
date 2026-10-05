@@ -71,7 +71,8 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 
-`abc`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` back
-the vendored stubs (e.g. `@abstractmethod` on protocol members), so they have
-to resolve during type checking. Importing them therefore type-checks clean but
-still raises `ModuleNotFoundError` at runtime.
+Some modules back the vendored stubs, e.g. `abc` for `@abstractmethod` on protocol members and `io` for the file
+objects `open()` returns, so they have to resolve during type checking.
+Importing them therefore type-checks clean but still raises `ModuleNotFoundError` at runtime.
+They are `abc`, `builtins`, `collections.abc`, `io`, `_io`, `json.decoder`, `json.encoder`, `pathlib.types`, `types`,
+`typing_extensions`, `_collections_abc` and `_typeshed`.
