@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Intended Audience :: System Administrators",
@@ -33,10 +34,10 @@ classifiers = [
 ]
 # version and both pins are rewritten from the Cargo workspace version by
 # `crates/monty-python/build.rs` — don't edit them by hand
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
-    "pydantic-monty-client==1.0.0",
-    "pydantic-monty-runtime==1.0.0",
+    "pydantic-monty-client==1.1.0",
+    "pydantic-monty-runtime==1.1.0",
 ]
 
 [project.optional-dependencies]

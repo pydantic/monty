@@ -66,6 +66,12 @@ interface worker {
         microseconds: s32,
     }
 
+    /// A Python complex as its two float parts.
+    record complex-node {
+        real: f64,
+        imag: f64,
+    }
+
     /// A fixed-offset Python timezone.
     record timezone-node {
         offset-seconds: s32,
@@ -127,6 +133,7 @@ interface worker {
         integer(s64),
         bigint(string),
         float(f64),
+        complex(complex-node),
         text(string),
         bytes(list<u8>),
         list-value(list<u32>),

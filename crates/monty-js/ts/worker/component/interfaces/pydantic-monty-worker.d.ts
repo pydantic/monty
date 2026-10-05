@@ -49,6 +49,10 @@ export interface TimedeltaNode {
   seconds: number
   microseconds: number
 }
+export interface ComplexNode {
+  real: number
+  imag: number
+}
 export interface TimezoneNode {
   offsetSeconds: number
   name?: string
@@ -86,6 +90,7 @@ export type ValueNode =
   | ValueNodeInteger
   | ValueNodeBigint
   | ValueNodeFloat
+  | ValueNodeComplex
   | ValueNodeText
   | ValueNodeBytes
   | ValueNodeListValue
@@ -133,6 +138,10 @@ export interface ValueNodeBigint {
 export interface ValueNodeFloat {
   tag: 'float'
   val: number
+}
+export interface ValueNodeComplex {
+  tag: 'complex'
+  val: ComplexNode
 }
 export interface ValueNodeText {
   tag: 'text'

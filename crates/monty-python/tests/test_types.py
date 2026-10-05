@@ -159,7 +159,7 @@ import datetime, re
 from pathlib import Path
 from collections import deque
 [
-    int, str, type, object, type(None), type(...), type(NotImplemented),
+    int, str, complex, type, object, type(None), type(...), type(NotImplemented),
     type(Path('/x')), Path,
     datetime.datetime, datetime.date, datetime.time, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
@@ -170,6 +170,7 @@ from collections import deque
     assert monty_run(code) == [
         int,
         str,
+        complex,
         type,
         object,
         type(None),
@@ -327,6 +328,23 @@ def test_spoofed_builtin_type_not_recognized(monty_run: RunMonty):
     FakeInt.__module__ = 'builtins'
 
     assert monty_run('type(x).__name__', inputs={'x': FakeInt}) == snapshot('function')
+
+
+def test_complex_output(monty_run: RunMonty):
+    result = monty_run('[1j, (1.5 - 2j) * 2, complex(float("nan"), float("-inf"))]')
+    assert [(type(z).__name__, repr(z)) for z in result] == snapshot(
+        [('complex', '1j'), ('complex', '(3-4j)'), ('complex', '(nan-infj)')]
+    )
+
+
+def test_complex_input_roundtrip(monty_run: RunMonty):
+    result = monty_run('x * 2', inputs={'x': complex(1.5, -2)})
+    assert (type(result).__name__, repr(result)) == snapshot(('complex', '(3-4j)'))
+
+
+def test_complex_negative_zero_roundtrip(monty_run: RunMonty):
+    result = monty_run('[x, complex(-0.0, -0.0)]', inputs={'x': complex(-0.0, -0.0)})
+    assert [repr(z) for z in result] == snapshot(['(-0-0j)', '(-0-0j)'])
 
 
 def test_date_input_roundtrip(monty_run: RunMonty):

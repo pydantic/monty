@@ -418,6 +418,32 @@ test.each([
   })
 })
 
+test('complex output from sandbox', async () => {
+  t.deepEqual(await run('(1.5 - 2j) * 2'), { __monty_type__: 'Complex', real: 3, imag: -4 })
+})
+
+test('complex input round-trips', async () => {
+  const z = { __monty_type__: 'Complex', real: 1.5, imag: -2 }
+  t.deepEqual(await run('x', { inputs: { x: z } }), z)
+  t.deepEqual(await run('x.conjugate()', { inputs: { x: z } }), { __monty_type__: 'Complex', real: 1.5, imag: 2 })
+  // Negative zero is preserved in both directions.
+  const negativeZero = { __monty_type__: 'Complex', real: -0, imag: -0 }
+  t.deepEqual(await run('repr(x)', { inputs: { x: negativeZero } }), '(-0-0j)')
+  const back = (await run('complex(-0.0, -0.0)')) as { real: number; imag: number }
+  t.is(Object.is(back.real, -0) && Object.is(back.imag, -0), true)
+})
+
+test('malformed complex marker is rejected by the wasm encoder', () => {
+  t.deepEqual(encodeValue({ __monty_type__: 'Complex', real: 1.5, imag: -2 }), {
+    root: 0,
+    nodes: [{ tag: 'complex', val: { real: 1.5, imag: -2 } }],
+  })
+  t.throws(() => encodeValue({ __monty_type__: 'Complex', real: '1', imag: 2 }), {
+    instanceOf: TypeError,
+    message: 'Complex marker requires numeric real and imag',
+  })
+})
+
 test.each([
   { fields: { hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }, iso: '10:20:30.000040' },
   {

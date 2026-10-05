@@ -30,7 +30,7 @@ use std::{
 };
 
 use num_bigint::BigInt;
-use num_traits::ToPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::heap::HeapId;
 
@@ -118,6 +118,22 @@ impl<'de> serde::Deserialize<'de> for HashValue {
     /// sentinel-collision path as fresh hashes.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::new(u64::deserialize(deserializer)?))
+    }
+}
+
+/// Hashes a float so that an integral value hashes like the equal `int`
+/// (`hash(1.0) == hash(1)`, `2.0**100` like `2**100`), which dict lookup
+/// across the numeric tower relies on; anything else hashes its bits.
+pub(crate) fn hash_f64(f: f64) -> HashValue {
+    // 2^63, the first power of two past i64::MAX (exactly representable).
+    const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+    if f.fract() != 0.0 || !f.is_finite() {
+        HashValue::new(f.to_bits())
+    } else if (-TWO_POW_63..TWO_POW_63).contains(&f) {
+        #[expect(clippy::cast_possible_truncation)]
+        HashValue::new((f as i64).cast_unsigned())
+    } else {
+        hash_python_long_int(&BigInt::from_f64(f).expect("finite f64 converts to BigInt"))
     }
 }
 
