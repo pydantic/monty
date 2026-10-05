@@ -229,7 +229,11 @@ impl<'t> BytesBuilder<'t> {
 
 /// Approves growth to `needed` bytes against the tracker, doubling the
 /// approved capacity like `Vec` so an n-byte build incurs O(log n) checks.
-fn approve_growth(approved: &mut usize, needed: usize, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+pub(crate) fn approve_growth(
+    approved: &mut usize,
+    needed: usize,
+    tracker: &ResourceTracker,
+) -> Result<(), ResourceError> {
     if needed > *approved {
         let new_capacity = approved.saturating_mul(2).max(needed);
         tracker.check_allocation(new_capacity - *approved)?;

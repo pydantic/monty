@@ -15,6 +15,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     sorting::{apply_permutation, sort_indices},
+    string_builder::approve_growth,
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
 };
@@ -150,6 +151,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         config: &config,
         active_containers: &mut active_containers,
         vm,
+        approved_capacity: 0,
     };
     encoder.serialize_value(obj, 0)?;
     Ok(allocate_string(output, vm.heap))
@@ -341,6 +343,10 @@ struct Encoder<'a, 'h> {
     config: &'a JsonDumpsConfig,
     active_containers: &'a mut Vec<HeapId>,
     vm: &'a mut VM<'h>,
+    /// Capacity already approved by the tracker; mirrors `StringBuilder::approved_capacity`.
+    /// All string writes pre-flight via `approve_growth` against this field so only
+    /// incremental capacity growth is charged, never the full encoded size each time.
+    approved_capacity: usize,
 }
 
 /// Lets the encoder participate in the [`DropGuard`] / [`defer_drop_mut!`]
@@ -391,11 +397,17 @@ impl<'h> Encoder<'_, 'h> {
             }
             Value::Float(value) => serialize_float(*value, self.out, self.config),
             Value::InternString(string_id) => {
-                write_json_string(
-                    self.vm.interns.get_str(*string_id),
-                    self.out,
-                    self.config.ensure_ascii(),
-                );
+                // Pre-flight the output buffer growth for the worst-case encoded
+                // size (each byte → `\uXXXX` = 6 chars, plus 2 quote chars).
+                // approve_growth charges only the incremental capacity delta so
+                // strings that fit in already-approved spare capacity are free.
+                let s = self.vm.interns.get_str(*string_id);
+                let needed = self
+                    .out
+                    .len()
+                    .saturating_add(s.len().saturating_mul(6).saturating_add(2));
+                approve_growth(&mut self.approved_capacity, needed, &self.vm.heap.tracker)?;
+                write_json_string(s, self.out, self.config.ensure_ascii());
                 Ok(())
             }
             Value::InternLongInt(long_int_id) => {
@@ -406,7 +418,14 @@ impl<'h> Encoder<'_, 'h> {
             }
             Value::Ref(heap_id) => match self.vm.heap.read(*heap_id) {
                 HeapReadOutput::Str(string) => {
-                    write_json_string(string.get(self.vm.heap).as_str(), self.out, self.config.ensure_ascii());
+                    // Same approve_growth pre-flight as the InternString branch above.
+                    let s = string.get(self.vm.heap).as_str();
+                    let needed = self
+                        .out
+                        .len()
+                        .saturating_add(s.len().saturating_mul(6).saturating_add(2));
+                    approve_growth(&mut self.approved_capacity, needed, &self.vm.heap.tracker)?;
+                    write_json_string(s, self.out, self.config.ensure_ascii());
                     Ok(())
                 }
                 HeapReadOutput::LongInt(long_int) => {
@@ -479,7 +498,20 @@ impl<'h> Encoder<'_, 'h> {
         self.out.push('[');
         let pretty = self.config.indent.is_some();
         let mut wrote_any = false;
+        let mut item_count = 0usize;
         loop {
+            // Two complementary memory checks before each item write:
+            // 1. check_growth fires only when len >= capacity (i.e. Rust is about
+            //    to realloc), charging exactly the doubling increment. Avoids false
+            //    positives when the buffer still has spare capacity.
+            // 2. check_memory_time_every fallback: polls allocator-backed usage
+            //    every 64 items to catch overshoots the pre-flight missed.
+            self.vm
+                .heap
+                .tracker
+                .check_growth(self.out.len(), self.out.capacity(), 1)?;
+            self.vm.heap.tracker.check_memory_time_every(item_count)?;
+
             // Reserve the separator + indent BEFORE we know whether the next
             // item exists; if `write_next` reports exhaustion we roll the
             // cursor back.
@@ -500,6 +532,7 @@ impl<'h> Encoder<'_, 'h> {
                 self.out.len() > body_start,
                 "write_next reported true but wrote nothing"
             );
+            item_count += 1;
             wrote_any = true;
         }
         if pretty && wrote_any {
@@ -543,6 +576,15 @@ impl<'h> Encoder<'_, 'h> {
 
         let pretty = self.config.indent.is_some();
         for (index, (key, value)) in entries.iter().enumerate() {
+            // check_growth fires only at the realloc boundary (len >= capacity),
+            // charging the exact doubling increment — no spurious charges when
+            // spare capacity exists. Fallback poll every 64 entries as a backstop.
+            self.vm
+                .heap
+                .tracker
+                .check_growth(self.out.len(), self.out.capacity(), 1)?;
+            self.vm.heap.tracker.check_memory_time_every(index)?;
+
             if index != 0 {
                 self.out.push_str(&self.config.item_separator);
             }
@@ -550,6 +592,16 @@ impl<'h> Encoder<'_, 'h> {
                 self.out.push('\n');
                 write_indent(self.out, self.config, depth + 1);
             }
+            // Pre-flight the key write: a large string key can span multiple
+            // capacity doublings, so approve_growth handles the full delta.
+            // Non-string keys (int, float, etc.) return "" from to_str and get
+            // len 0 — their short writes are covered by check_growth above.
+            let key_str_len = key.to_str(self.vm).map_or(0, str::len);
+            let needed = self
+                .out
+                .len()
+                .saturating_add(key_str_len.saturating_mul(6).saturating_add(2));
+            approve_growth(&mut self.approved_capacity, needed, &self.vm.heap.tracker)?;
             write_json_key(key, self.out, self.config, self.vm)?;
             self.out.push_str(&self.config.key_separator);
             self.serialize_value(value, depth + 1)?;
