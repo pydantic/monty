@@ -123,6 +123,8 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 ## Other pieces
 
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.
+  Unresolved external futures remain awaitable in later feeds, including after a failed or aborted feed.
+  The host owns the work that produces their results; dumping and restoring the REPL does not restore that work.
 - `monty-fs` crate — mount real host directories into the sandbox at virtual paths (read-write, read-only, or copy-on-write in-memory overlay), with path resolution hardened against escapes.
 - `RunProgress::OsCall` — filesystem and other `os`-level operations the host can intercept or delegate.
 - `FunctionCall::object_id` and `NameLookup::object_id` identify the host receiver for routed calls and lookups,

@@ -4,14 +4,16 @@
 //! are spawned as tokio tasks and resolved in batches when the sandbox blocks.
 //! System sleeps use the same scheduling with tokio timers.
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
+use ahash::AHashSet;
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::{
+    sync::Mutex,
     task::{JoinError, JoinSet},
     time::sleep,
 };
@@ -19,6 +21,34 @@ use tokio::{
 use crate::external::{
     CallResult, ExternalLookup, dispatch_object_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
 };
+
+/// Session-owned host callbacks and their pending results, shared by both drive modes.
+pub(crate) struct AsyncTasks {
+    pub pending: Arc<Mutex<JoinSet<(u32, ExtFunctionResult)>>>,
+    pub callbacks: Py<PyAny>,
+}
+
+impl AsyncTasks {
+    /// Creates an owner without starting callbacks or binding an event loop.
+    pub(crate) fn new(py: Python<'_>) -> PyResult<Self> {
+        Ok(Self {
+            pending: Arc::new(Mutex::new(JoinSet::new())),
+            callbacks: py
+                .import("pydantic_monty._async")?
+                .getattr("CallbackTasks")?
+                .call0()?
+                .unbind(),
+        })
+    }
+
+    /// Shares the same callback lifetime and result queue with another drive.
+    pub(crate) fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self {
+            pending: Arc::clone(&self.pending),
+            callbacks: self.callbacks.clone_ref(py),
+        }
+    }
+}
 
 /// Dispatches a function call to a host-routed method (when `object_id` is
 /// set — an instance method, a classmethod, or `__call__` construction) or an
@@ -84,7 +114,9 @@ pub(crate) fn dispatch_coroutine(
     mode: CoroutineMode,
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     instances: &InstanceStore,
+    callbacks: &Py<PyAny>,
 ) -> PyResult<Dispatched<AnswerFuture>> {
+    let coro = Python::attach(|py| callbacks.call_method1(py, "wrap", (coro,)))?;
     let future = coroutine_future(coro, instances)?;
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
 }
@@ -157,29 +189,33 @@ pub(crate) enum Dispatched<F> {
     AsValue(F),
 }
 
-/// Waits for at least one `JoinSet` task to complete, then drains any other
-/// immediately-ready results to batch them into one worker resume. Delivering
-/// any completed task is sound: the sandbox resolves futures by `call_id` and
-/// re-emits `ResolveFutures` if it still needs a different one.
+/// Waits for results the worker still needs, batching other ready results.
+/// A callback can finish after its future was resolved manually; that result
+/// must not be delivered a second time.
 pub(crate) async fn wait_for_futures(
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    pending_call_ids: &[u32],
 ) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
+    let pending: AHashSet<_> = pending_call_ids.iter().copied().collect();
     let mut results = Vec::new();
 
-    // Wait for at least one task to complete
-    let first = join_set
-        .join_next()
-        .await
-        .ok_or_else(|| PyRuntimeError::new_err("No pending async tasks but ResolveFutures requested"))?
-        .map_err(join_error_to_py)?;
-    results.push(first);
+    loop {
+        let first = join_set
+            .join_next()
+            .await
+            .ok_or_else(|| PyRuntimeError::new_err("No pending async tasks but ResolveFutures requested"))?
+            .map_err(join_error_to_py)?;
+        results.push(first);
 
-    // Drain any other immediately-ready results
-    while let Some(result) = join_set.try_join_next() {
-        results.push(result.map_err(join_error_to_py)?);
+        while let Some(result) = join_set.try_join_next() {
+            results.push(result.map_err(join_error_to_py)?);
+        }
+
+        results.retain(|(call_id, _)| pending.contains(call_id));
+        if !results.is_empty() {
+            return Ok(results);
+        }
     }
-
-    Ok(results)
 }
 
 /// Converts a `tokio::task::JoinError` to a `PyErr`.
@@ -187,3 +223,6 @@ pub(crate) async fn wait_for_futures(
 pub(crate) fn join_error_to_py(err: JoinError) -> PyErr {
     PyRuntimeError::new_err(format!("Async task failed: {err}"))
 }
+
+#[cfg(test)]
+mod tests;

@@ -22,6 +22,7 @@ use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErr
 
 use crate::{
     args::{ArgValues, KwargsValues},
+    asyncio::ExternalFutures,
     bytecode::{FrameExit, VM, VMSnapshot},
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
@@ -89,13 +90,15 @@ pub struct MontyRepl {
     /// The session's `random` state, carried between snippets like the
     /// globals so a `random.seed()` in one feed governs the draws of the next.
     random: SessionRandom,
+    /// Host futures remain resolvable after the feed that created them ends.
+    #[serde(default)]
+    external_futures: ExternalFutures,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
     ///
-    /// Indexed by `NamespaceId` slots from `global_names`. Between snippet
-    /// executions these are the only VM values that persist — stack and frames
-    /// are transient.
+    /// Indexed by `NamespaceId` slots from `global_names`. The stack, frames
+    /// and guest tasks are transient; unresolved host futures persist separately.
     globals: Vec<Value>,
 }
 
@@ -119,6 +122,7 @@ impl MontyRepl {
             os_policy: Arc::new(OsPolicy::default()),
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
+            external_futures: ExternalFutures::default(),
             heap,
             globals: Vec::new(),
         }
@@ -283,10 +287,17 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut this.random);
+                vm.set_external_futures(mem::take(&mut this.external_futures));
 
                 // Inject inputs with VM alive
                 if let Err(error) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
-                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut this.globals,
+                        &mut this.cwd,
+                        &mut this.random,
+                        &mut this.external_futures,
+                        &mut vm,
+                    );
                     return Err(error);
                 }
 
@@ -297,7 +308,13 @@ impl MontyRepl {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut this.globals,
+                        &mut this.cwd,
+                        &mut this.random,
+                        &mut this.external_futures,
+                        &mut vm,
+                    );
                     None
                 };
                 Ok((converted, vm_state))
@@ -375,16 +392,29 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+                vm.set_external_futures(mem::take(&mut self.external_futures));
 
                 if let Err(e) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
-                    reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut self.globals,
+                        &mut self.cwd,
+                        &mut self.random,
+                        &mut self.external_futures,
+                        &mut vm,
+                    );
                     return Err(e);
                 }
 
                 let result = Program::run_to_completion(&mut vm);
 
                 // Reclaim globals (and any directory change or seed) before cleanup.
-                reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
+                reclaim_vm_state(
+                    &mut self.globals,
+                    &mut self.cwd,
+                    &mut self.random,
+                    &mut self.external_futures,
+                    &mut vm,
+                );
                 Ok(result)
             },
         );
@@ -471,6 +501,7 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+                vm.set_external_futures(mem::take(&mut self.external_futures));
                 let result = match convert_args(args, vm) {
                     Ok(args) => {
                         let (args, kwargs) = args.into_parts();
@@ -516,6 +547,7 @@ impl MontyRepl {
                 let args_slot = executor.program.input_slots[0].index();
                 mem::replace(&mut globals[args_slot], Value::Undefined).drop_with(vm);
                 self.random = mem::take(&mut vm.random);
+                self.external_futures = vm.take_external_futures();
                 self.globals = globals;
                 if let Some(cwd) = vm.take_changed_cwd() {
                     self.cwd = Arc::from(cwd);
@@ -606,6 +638,7 @@ pub struct CheckedSource<'a>(&'a str);
 impl Drop for MontyRepl {
     fn drop(&mut self) {
         self.globals.drain(..).drop_with(&mut self.heap);
+        mem::take(&mut self.external_futures).drop_with(&mut self.heap);
     }
 }
 
@@ -958,7 +991,13 @@ impl ReplNameLookup {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.external_futures,
+                        &mut vm,
+                    );
                     None
                 };
                 (converted, vm_state)
@@ -1007,10 +1046,11 @@ impl ReplResolveFutures {
             vm_state,
             ..
         } = self;
-        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
+        let (globals, cwd, random, external_futures) = vm_state.abandon(&mut repl.heap);
         repl.globals = globals;
         repl.cwd = Arc::from(cwd);
         repl.random = random;
+        repl.external_futures = external_futures;
         repl.commit_executor(executor);
         repl
     }
@@ -1027,7 +1067,7 @@ impl ReplResolveFutures {
         &self.position
     }
 
-    /// Aborts with an uncatchable exception and abandons pending futures.
+    /// Aborts with an uncatchable exception, retaining host futures for later feeds.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             repl,
@@ -1078,7 +1118,13 @@ impl ReplResolveFutures {
                 );
 
                 if let Some(call_id) = invalid_call_id {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.external_futures,
+                        &mut vm,
+                    );
                     return Err(MontyException::runtime_error(format!(
                         "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                     )));
@@ -1091,7 +1137,13 @@ impl ReplResolveFutures {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.external_futures,
+                        &mut vm,
+                    );
                     None
                 };
                 Ok((converted, vm_state))
@@ -1222,7 +1274,13 @@ fn abort_restored(
             let vm_result = vm.abort(exc);
             let converted = convert_frame_exit(vm_result, &mut vm);
             // Uncatchable exceptions cannot suspend, so no snapshot is needed.
-            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+            reclaim_vm_state(
+                &mut repl.globals,
+                &mut repl.cwd,
+                &mut repl.random,
+                &mut repl.external_futures,
+                &mut vm,
+            );
             converted
         },
     );
@@ -1266,10 +1324,11 @@ impl ReplSnapshot {
             executor,
             vm_state,
         } = self;
-        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
+        let (globals, cwd, random, external_futures) = vm_state.abandon(&mut repl.heap);
         repl.globals = globals;
         repl.cwd = Arc::from(cwd);
         repl.random = random;
+        repl.external_futures = external_futures;
         repl.commit_executor(executor);
         repl
     }
@@ -1317,7 +1376,13 @@ impl ReplSnapshot {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.external_futures,
+                        &mut vm,
+                    );
                     None
                 };
                 (converted, vm_state)
@@ -1332,15 +1397,21 @@ impl ReplSnapshot {
 // ---------------------------------------------------------------------------
 
 /// Reclaims what outlives a snippet from its finished VM: the globals, the
-/// `random` generator, and the working directory when the snippet (or the
-/// snapshot it resumed from) owns one, so an `os.chdir` or a `random.seed()`
-/// persists into later feeds like the globals do.
-fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, random: &mut SessionRandom, vm: &mut VM<'_>) {
+/// `random` generator, unresolved host futures, and the working directory when
+/// the snippet (or the snapshot it resumed from) owns one.
+fn reclaim_vm_state(
+    globals: &mut Vec<Value>,
+    cwd: &mut Arc<str>,
+    random: &mut SessionRandom,
+    external_futures: &mut ExternalFutures,
+    vm: &mut VM<'_>,
+) {
     *globals = vm.take_globals();
     if let Some(changed) = vm.take_changed_cwd() {
         *cwd = Arc::from(changed);
     }
     *random = mem::take(&mut vm.random);
+    *external_futures = vm.take_external_futures();
 }
 
 /// Injects input values into the VM's global namespace slots.

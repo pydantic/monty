@@ -54,7 +54,7 @@ use pyo3::{
     Borrowed,
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
     prelude::*,
-    types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
+    types::{PyBool, PyBytes, PyCFunction, PyDict, PyInt, PyList, PyString, PyTuple},
 };
 use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
 use tokio::{
@@ -66,7 +66,8 @@ use tokio::{
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_system_sleep, wait_for_futures,
+        AsyncTasks, CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_system_sleep,
+        wait_for_futures,
     },
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
@@ -627,6 +628,7 @@ impl PyAsyncMonty {
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
+            tasks: AsyncTasks::new(py)?,
         })
     }
 }
@@ -789,6 +791,7 @@ impl PyAsyncMontyWebsocket {
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
+            tasks: AsyncTasks::new(py)?,
         })
     }
 }
@@ -811,6 +814,8 @@ pub struct PyAsyncMontySession {
     /// Set by [`AbandonGuard`] when a `feed_run` future is cancelled mid-drive
     /// but the discard had to be deferred; the next drive finishes it.
     drive_abandoned: Arc<AtomicBool>,
+    /// Host callbacks outlive individual feeds, but not this session's context.
+    tasks: AsyncTasks,
     /// The checkout's session ID, copied after `__aenter__` and each load so the
     /// getter never waits on the checkout lock a running turn holds.
     session_id: Arc<Mutex<Option<Vec<u8>>>>,
@@ -858,13 +863,21 @@ impl PyAsyncMontySession {
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let slot = Arc::clone(&self.checkout);
         let session_id = Arc::clone(&self.session_id);
-        future_into_py(py, async move {
-            // the getter reads the cache once the checkout is gone: keep the ID
-            // an auto-resume adopted during a turn
-            refresh_session_id(&slot, &session_id).await;
-            finish_checkout(&slot).await;
-            Ok(())
-        })
+        let pending = Arc::clone(&self.tasks.pending);
+        let finish = PyCFunction::new_closure(py, None, None, move |py_args: &Bound<'_, PyTuple>, _kwargs| {
+            let slot = Arc::clone(&slot);
+            let session_id = Arc::clone(&session_id);
+            let pending = Arc::clone(&pending);
+            future_into_py(py_args.py(), async move {
+                // Keep the ID an auto-resume adopted during a turn.
+                refresh_session_id(&slot, &session_id).await;
+                finish_checkout(&slot).await;
+                pending.lock().await.shutdown().await;
+                Ok(())
+            })
+            .map(Bound::unbind)
+        })?;
+        self.tasks.callbacks.bind(py).call_method1("finish", (finish,))
     }
 
     /// Executes one snippet in the worker, driving external function calls
@@ -901,7 +914,18 @@ impl PyAsyncMontySession {
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         let abandoned = Arc::clone(&self.drive_abandoned);
-        future_into_py(py, async move { drive_async(args, ext, abandoned).await })
+        let drive_args = Mutex::new(Some((args, ext, abandoned, self.tasks.clone_ref(py))));
+        let start = PyCFunction::new_closure(py, None, None, move |py_args: &Bound<'_, PyTuple>, _kwargs| {
+            let (args, ext, abandoned, tasks) = lock(&drive_args)
+                .take()
+                .ok_or_else(|| PyRuntimeError::new_err("feed_run has already started"))?;
+            future_into_py(
+                py_args.py(),
+                async move { drive_async(args, ext, abandoned, tasks).await },
+            )
+            .map(Bound::unbind)
+        })?;
+        self.tasks.callbacks.bind(py).call_method1("run", (start,))
     }
 
     /// Async counterpart of [`PyMontySession::feed_start`]: the returned
@@ -937,7 +961,13 @@ impl PyAsyncMontySession {
             skip_type_check,
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
-        feed_start_async(py, args, ext, self.repl_config.script_name.clone())
+        feed_start_async(
+            py,
+            args,
+            ext,
+            self.repl_config.script_name.clone(),
+            self.tasks.clone_ref(py),
+        )
     }
 
     /// Async counterpart of [`PyMontySession::load_session`]: the coroutine
@@ -997,6 +1027,7 @@ impl PyAsyncMontySession {
         let config_script_name = self.repl_config.script_name.clone();
         let trace_context = capture_otel_context(py);
         let session_id = Arc::clone(&self.session_id);
+        let tasks = self.tasks.clone_ref(py);
         future_into_py(py, async move {
             let restored = restore_turn(&checkout, state, mounts).await;
             refresh_session_id(&checkout, &session_id).await;
@@ -1011,7 +1042,8 @@ impl PyAsyncMontySession {
             // only if the worker did not report one (e.g. an older child)
             let script_name = restored_script_name.unwrap_or(config_script_name);
             Python::attach(|py| {
-                let ctx = DriveContext::new(checkout, instances, print_target, script_name, ext, os, trace_context);
+                let mut ctx = DriveContext::new(checkout, instances, print_target, script_name, ext, os, trace_context);
+                ctx.async_tasks = Some(tasks);
                 build_snapshot(py, ctx, event, true)
             })
         })
@@ -1535,7 +1567,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                         "internal error: pending future {id} is not one of the pool's own sleeps"
                     )));
                 }
-                let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps)))??;
+                let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps, &pending_call_ids)))??;
                 TurnAnswer::Futures(
                     results
                         .into_iter()
@@ -1648,6 +1680,7 @@ async fn drive_async(
     args: FeedArgs,
     external_lookup: Option<Py<PyDict>>,
     abandoned: Arc<AtomicBool>,
+    tasks: AsyncTasks,
 ) -> PyResult<Py<PyAny>> {
     if abandoned.load(Ordering::Acquire) {
         discard_checkout(&args.checkout).await;
@@ -1662,7 +1695,7 @@ async fn drive_async(
         started: Arc::clone(&started),
         armed: true,
     };
-    let result = drive_async_inner(args, external_lookup, started).await;
+    let result = drive_async_inner(args, external_lookup, started, tasks).await;
     guard.armed = false;
     result
 }
@@ -1708,6 +1741,7 @@ async fn drive_async_inner(
     args: FeedArgs,
     external_lookup: Option<Py<PyDict>>,
     started: Arc<AtomicBool>,
+    tasks: AsyncTasks,
 ) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         callback_context,
@@ -1721,8 +1755,6 @@ async fn drive_async_inner(
         checkout,
         instances,
     } = args;
-    let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
-
     let mut event = run_turn_async(
         &checkout,
         &print_target,
@@ -1754,8 +1786,12 @@ async fn drive_async_inner(
             TurnEvent::Complete(value) => {
                 return Python::attach(|py| monty_to_py(py, &value, &instances));
             }
-            TurnEvent::ResolveFutures { .. } => {
-                let resolved = wait_for_futures(&mut join_set).await.and_then(|results| {
+            TurnEvent::ResolveFutures { pending_call_ids, .. } => {
+                let resolved = {
+                    let mut join_set = tasks.pending.lock().await;
+                    wait_for_futures(&mut join_set, &pending_call_ids).await
+                }
+                .and_then(|results| {
                     results
                         .into_iter()
                         .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
@@ -1784,7 +1820,11 @@ async fn drive_async_inner(
                 ..
             } => {
                 let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
-                dispatched_answer(dispatch_system_sleep(delay, call_id, mode, &mut join_set), call_id).await?
+                let dispatched = {
+                    let mut join_set = tasks.pending.lock().await;
+                    dispatch_system_sleep(delay, call_id, mode, &mut join_set)
+                };
+                dispatched_answer(dispatched, call_id).await?
             }
             // Mounts get first refusal, as in `drive_sync`.
             TurnEvent::OsCall {
@@ -1804,23 +1844,26 @@ async fn drive_async_inner(
                     event = next;
                     continue;
                 }
-                let dispatched = Python::attach(|py| {
-                    let _guard = callback_context.enter(py, &native)?;
-                    match dispatch_os_parts(py, &function_name, &args, os.as_ref(), &instances, true) {
-                        OsDispatch::Answer(value) => Ok(Dispatched::Done(value)),
-                        OsDispatch::Coroutine(coro) => {
-                            let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
-                            dispatch_coroutine(coro, call_id, mode, &mut join_set, &instances)
+                let dispatched = {
+                    let mut join_set = tasks.pending.lock().await;
+                    Python::attach(|py| {
+                        let _guard = callback_context.enter(py, &native)?;
+                        match dispatch_os_parts(py, &function_name, &args, os.as_ref(), &instances, true) {
+                            OsDispatch::Answer(value) => Ok(Dispatched::Done(value)),
+                            OsDispatch::Coroutine(coro) => {
+                                let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
+                                dispatch_coroutine(coro, call_id, mode, &mut join_set, &instances, &tasks.callbacks)
+                            }
                         }
-                    }
-                })?;
+                    })?
+                };
                 dispatched_answer(dispatched, call_id).await?
             }
             event => match async_turn_answer(
                 event,
                 external_lookup.as_ref(),
                 &instances,
-                &mut join_set,
+                &tasks,
                 &callback_context,
                 &native,
             )
@@ -1861,7 +1904,7 @@ async fn async_turn_answer(
     event: TurnEvent,
     external_lookup: Option<&Py<PyDict>>,
     instances: &InstanceStore,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    tasks: &AsyncTasks,
     callback_context: &CallbackContext,
     native: &opentelemetry::Context,
 ) -> PyResult<TurnAnswer> {
@@ -1874,16 +1917,19 @@ async fn async_turn_answer(
             allow_eager_await,
             ..
         } => {
-            let dispatched = Python::attach(|py| {
-                let _guard = callback_context.enter(py, native)?;
-                match dispatch_function_call(&function_name, object_id, &args, external_lookup, instances) {
-                    CallResult::Sync(result) => Ok(Dispatched::Done(ext_to_resume(result)?)),
-                    CallResult::Coroutine(coro) => {
-                        let mode = CoroutineMode::for_function_call(allow_eager_await);
-                        dispatch_coroutine(coro, call_id, mode, join_set, instances)
+            let dispatched = {
+                let mut join_set = tasks.pending.lock().await;
+                Python::attach(|py| {
+                    let _guard = callback_context.enter(py, native)?;
+                    match dispatch_function_call(&function_name, object_id, &args, external_lookup, instances) {
+                        CallResult::Sync(result) => Ok(Dispatched::Done(ext_to_resume(result)?)),
+                        CallResult::Coroutine(coro) => {
+                            let mode = CoroutineMode::for_function_call(allow_eager_await);
+                            dispatch_coroutine(coro, call_id, mode, &mut join_set, instances, &tasks.callbacks)
+                        }
                     }
-                }
-            })?;
+                })?
+            };
             dispatched_answer(dispatched, call_id).await
         }
         TurnEvent::NameLookup {

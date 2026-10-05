@@ -36,6 +36,22 @@ impl CallId {
     }
 }
 
+/// Pending host answers and their IDs, moved between a REPL and its active VM.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExternalFutures {
+    pub next_call_id: u32,
+    /// Owns one reference per unresolved future, independently of guest awaiters.
+    pub pending_externals: AHashMap<CallId, HeapId>,
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for ExternalFutures {
+    fn drop_with(self, heap: &mut C) {
+        for future_id in self.pending_externals.into_values() {
+            heap.heap_mut().dec_ref(future_id);
+        }
+    }
+}
+
 /// Unique identifier for an async task.
 ///
 /// Sequential integers allocated by the scheduler. Task 0 is always the main task
