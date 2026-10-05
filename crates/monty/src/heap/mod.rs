@@ -20,11 +20,9 @@ use std::{
 use monty_types::{MontyUuid, ResourceTracker};
 use serde::{de::Error as _, ser::SerializeStruct};
 
-#[cfg(feature = "ref-count-return")]
-use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
-    types::{ExtFunction, HostClassType, TimeZone, Tuple},
+    types::{ExtFunction, HostClassType, TimeZone, Tuple, Type},
     value::Value,
 };
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -1957,6 +1955,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         }
         HeapData::Class(class) => {
             // The class namespace holds method/class-variable values.
+            for base in class.bases() {
+                if let Type::Instance(id) = base {
+                    on_child(*id);
+                }
+            }
             for (k, v) in class.namespace() {
                 if let Value::Ref(id) = k {
                     on_child(*id);
@@ -1969,6 +1972,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Instance(instance) => {
             // An instance references its class plus its attribute dict's entries.
             on_child(instance.class());
+            if let Some(Value::Ref(id)) = instance.native() {
+                on_child(*id);
+            }
             for (k, v) in instance.attrs() {
                 if let Value::Ref(id) = k {
                     on_child(*id);
@@ -2276,13 +2282,41 @@ mod tests {
 
     use super::*;
     use crate::{
-        types::{List, callable_iterator::CallableIterator},
-        value::Value,
+        types::{Class, Dict, List, Type, callable_iterator::CallableIterator},
+        value::{EitherStr, Value},
     };
 
     /// Returns whether a heap entry is still allocated at `id`.
     fn is_alive(heap: &Heap, id: HeapId) -> bool {
         heap.entries.iter().any(|(other, _)| other == id)
+    }
+
+    #[test]
+    fn class_parent_is_traced_and_released() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let parent = heap.allocate(HeapData::Class(Box::new(Class::new(
+            EitherStr::Heap("Parent".to_owned()),
+            Dict::new(),
+            vec![],
+        ))));
+        heap.inc_ref(parent);
+        let child = heap.allocate(HeapData::Class(Box::new(Class::new(
+            EitherStr::Heap("Child".to_owned()),
+            Dict::new(),
+            vec![Type::Instance(parent)],
+        ))));
+        let mut children = Vec::new();
+        for_each_child_id(heap.get(child), |id| children.push(id));
+        assert_eq!(children, [parent]);
+
+        heap.dec_ref(parent);
+        heap.collect_cycles();
+        assert!(is_alive(&heap, parent));
+        assert_eq!(heap.entries.get(parent).refcount.get(), 1);
+
+        heap.dec_ref(child);
+        assert!(!is_alive(&heap, child));
+        assert!(!is_alive(&heap, parent));
     }
 
     /// Allocates a self-referencing one-element list and returns its id.

@@ -1759,6 +1759,16 @@ impl Value {
             // Type objects (`list`, `date`, `chain`) answer for themselves:
             // `__name__`, class constants and the members handed out as values
             // all live with the type, including the `AttributeError`.
+            Self::Builtin(Builtins::ExcType(exc)) => {
+                if let Some(value) = Type::Exception(*exc).class_getattr(attr, vm) {
+                    return Ok(CallResult::Value(value));
+                }
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                if let Some(value) = Type::Type.class_getattr(attr, vm) {
+                    return Ok(CallResult::Value(value));
+                }
+            }
             Self::Builtin(Builtins::Type(t)) => {
                 return match t.class_getattr(attr, vm) {
                     Some(value) => Ok(CallResult::Value(value)),

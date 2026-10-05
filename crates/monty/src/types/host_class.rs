@@ -519,6 +519,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
     /// host lookup for public names.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
+        if matches!(attr_name, "__class__" | "__bases__") {
+            return Ok(Type::Type.class_getattr(attr, vm).map(CallResult::Value));
+        }
         if attr_name == "__name__" {
             let name = self.get(vm.heap).name(vm.interns).to_owned();
             return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));

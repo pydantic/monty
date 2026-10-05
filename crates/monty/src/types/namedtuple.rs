@@ -906,6 +906,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        if matches!(attr.as_str(vm.interns), "__class__" | "__bases__") {
+            return Ok(Type::NamedTuple.class_getattr(attr, vm).map(CallResult::Value));
+        }
         let value = match attr.static_string(vm.interns) {
             // `namedtuple` assigns `__qualname__ = typename` outright, so it always
             // equals `__name__` and never picks up a dotted path from an enclosing scope.

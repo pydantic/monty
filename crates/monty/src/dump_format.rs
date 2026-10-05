@@ -49,7 +49,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 13;
+pub const DUMP_VERSION: u16 = 15;
 
 /// Set to [`DUMP_VERSION`], the current dump version, until this crate can load older dumps.
 pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
@@ -376,7 +376,7 @@ mod tests {
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0xcdd8_09b1_2adc_3852,
+            0x2415_c846_5ca5_e2f9,
             "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
         );

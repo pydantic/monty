@@ -11,6 +11,7 @@ use crate::{
     exception_private::RunResult,
     heap::HeapId,
     intern::StaticStrings,
+    types::native_class::NativeMethod,
 };
 
 pub(crate) mod asyncio;
@@ -167,6 +168,7 @@ pub(crate) enum ModuleFunctions {
     Random(random::RandomFunctions),
     Copy(copy::CopyFunctions),
     Time(time::TimeFunctions),
+    NativeClass(NativeMethod),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -198,6 +200,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Random(func) => write!(f, "{func}"),
             Self::Copy(func) => write!(f, "{func}"),
             Self::Time(func) => write!(f, "{func}"),
+            Self::NativeClass(method) => write!(f, "{method}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -228,6 +231,7 @@ impl ModuleFunctions {
             Self::Random(functions) => random::call(vm, functions, args),
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
             Self::Time(functions) => time::call(vm, functions, args),
+            Self::NativeClass(method) => method.call(vm, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

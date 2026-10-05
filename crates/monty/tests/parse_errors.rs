@@ -38,13 +38,35 @@ fn simple_classes_compile_successfully() {
 }
 
 #[test]
-fn class_inheritance_returns_not_implemented_error() {
-    let err = get_parse_err("class Foo(Bar): pass");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(
-        err.message().unwrap(),
-        @"The monty syntax parser does not yet support class inheritance and metaclasses"
+fn single_inheritance_compiles_successfully() {
+    let result = MontyRun::new(
+        "class Parent: pass\nclass Child(Parent): pass".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
     );
+    assert!(result.is_ok(), "single inheritance should compile");
+}
+
+#[test]
+fn multiple_inheritance_returns_not_implemented_error() {
+    let err = get_parse_err("class Foo(Bar, Baz): pass");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support multiple inheritance");
+}
+
+#[test]
+fn class_metaclass_returns_not_implemented_error() {
+    let err = get_parse_err("class Foo(Bar, metaclass=Meta): pass");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support class metaclasses and keyword arguments");
+}
+
+#[test]
+fn unpacking_class_bases_returns_not_implemented_error() {
+    let err = get_parse_err("class Foo(*bases): pass");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support unpacking class bases");
 }
 
 #[test]

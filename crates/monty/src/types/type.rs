@@ -13,7 +13,7 @@ use crate::{
     modules::{ModuleFunctions, collections, itertools, itertools::ItertoolsFunctions},
     types::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
-        Str, TimeZone, Tuple,
+        Str, TimeZone, Tuple, allocate_tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -102,7 +102,7 @@ pub enum Type {
     /// for internal dispatch only: `type(x)` materializes a `HostClassType`
     /// instead, so it never reaches Python code or the host boundary.
     ///
-    /// [`HeapData::HostClass`]: crate::heap::HeapData::HostClass
+    /// [`HeapData::HostClass`]: HeapData::HostClass
     #[strum(serialize = "HostClass")]
     HostClass,
     /// An instance of a user-defined class (`class Foo: ...`), carrying the
@@ -112,10 +112,10 @@ pub enum Type {
     ///
     /// **SAFETY/LIFETIME INVARIANT**: the id is a NON-OWNING, transient
     /// reference — `Type` is `Copy`, untracked by refcounting, and has no
-    /// `Drop`. A `Type::Instance` is only valid while the value it was derived
-    /// from is alive (an instance holds a counted ref to its class, taken in
-    /// `VM::instantiate_class`). It must NEVER be stored long-lived,
-    /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
+    /// `Drop`. An instance keeps its class alive with a counted reference.
+    /// A class's `bases` may also store this variant: the class owns and traces
+    /// that reference explicitly. Other uses must remain transient; never
+    /// place it in const pools or `Builtins::Type` (the
     /// `type()` builtin returns the class object itself for instances), or
     /// converted to `MontyType`, which has no class variant (a sandbox class
     /// crosses the boundary as its own `ClassType` arena node).
@@ -484,8 +484,7 @@ impl Type {
         if self == other {
             true
         } else if other == Self::Object {
-            // `object` is the universal base: every value is an instance of it,
-            // even though Monty stores it in no MRO (see `types/class.rs`).
+            // Every Python type ultimately derives from object.
             true
         } else if self == Self::Bool && other == Self::Int {
             // bool is a subtype of int in Python
@@ -641,6 +640,33 @@ impl Type {
             || attr.as_str(vm.interns) == "__name__",
             |ss| ss == StaticStrings::DunderName,
         );
+        if let Some(value) = super::native_class::member(self, attr.as_str(vm.interns)) {
+            return Some(value);
+        }
+        if attr.as_str(vm.interns) == "__bases__" {
+            let bases = match self {
+                Self::Object => vec![],
+                Self::Bool => vec![Self::Int],
+                Self::DateTime => vec![Self::Date],
+                Self::DefaultDict | Self::Counter => vec![Self::Dict],
+                Self::NamedTuple => vec![Self::Tuple],
+                Self::Exception(exc) => super::native_class::exception_bases(exc),
+                _ => vec![Self::Object],
+            };
+            return Some(allocate_tuple(
+                bases
+                    .into_iter()
+                    .map(|base| match base {
+                        Self::Exception(exc) => Value::Builtin(Builtins::ExcType(exc)),
+                        _ => Value::Builtin(Builtins::Type(base)),
+                    })
+                    .collect(),
+                vm.heap,
+            ));
+        }
+        if attr.as_str(vm.interns) == "__class__" {
+            return Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)));
+        }
         if is_dunder_name {
             Some(allocate_string(self.dunder_name(vm.heap, vm.interns), vm.heap))
         } else if let Some(constant) = self.class_constant(attr, vm) {

@@ -6,12 +6,13 @@ use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::ArgValues,
     boundary_uuid::create_uuid,
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         heap_read_ref_as_field_mut,
     },
     types::{Union, str::allocate_string},
@@ -51,9 +52,7 @@ impl Default for DataclassOptions {
 /// work via reference identity, so there is no separate type-id counter.
 ///
 /// Calling a class (`Foo(...)`) constructs an [`Instance`](super::Instance); see
-/// `instantiate_class` in the VM's call module. Inheritance is not yet supported,
-/// but a future `bases: Vec<HeapId>` field would slot in here without disturbing
-/// the rest of the design.
+/// `instantiate_class` in the VM's call module. Member lookup walks the parent chain.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Class {
     /// Class name (e.g. `Foo`), used for `repr` and `__name__`. Interned for
@@ -63,6 +62,9 @@ pub(crate) struct Class {
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
+    /// Direct bases; sandbox class IDs are owned references.
+    #[serde(default)]
+    bases: Vec<Type>,
     /// The `@dataclass(...)` options this class was decorated with, left at
     /// CPython's defaults for a class that was not. Stands in for the dunders
     /// CPython generates and Monty cannot yet install: baked in at decoration
@@ -75,15 +77,16 @@ pub(crate) struct Class {
 }
 
 impl Class {
-    /// Creates a new class object from its name and member namespace.
+    /// Takes ownership of the namespace and base references.
     ///
     /// Dataclass options start at their defaults; `@dataclass` sets them with
     /// [`HeapRead::set_dataclass_options`] once it has built the class.
     #[must_use]
-    pub fn new(name: EitherStr, namespace: Dict) -> Self {
+    pub fn new(name: EitherStr, namespace: Dict, bases: Vec<Type>) -> Self {
         Self {
             name,
             namespace,
+            bases,
             options: DataclassOptions::default(),
             uuid: None,
         }
@@ -123,6 +126,65 @@ impl Class {
     pub fn namespace(&self) -> &Dict {
         &self.namespace
     }
+
+    pub fn bases(&self) -> &[Type] {
+        &self.bases
+    }
+
+    fn parent(&self) -> Option<HeapId> {
+        match self.bases.first()? {
+            Type::Instance(id) => Some(*id),
+            _ => None,
+        }
+    }
+}
+
+/// Searches the class and its ancestors, stopping at the first matching member.
+pub(crate) fn lookup_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
+    lookup_member_ref(class_id, name, vm)
+        .map(|value| value.clone_with_heap(vm.heap))
+        .or_else(|| super::native_class::member(native_base(class_id, vm).unwrap_or(Type::Object), name))
+}
+
+/// Borrows the first matching member without acquiring a heap reference.
+pub(crate) fn lookup_member_ref<'v>(mut class_id: HeapId, name: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
+    loop {
+        let HeapData::Class(class) = vm.heap.get(class_id) else {
+            return None;
+        };
+        if let Some(value) = class.namespace().get_by_str(name, vm.heap, vm.interns) {
+            return Some(value);
+        }
+        class_id = class.parent()?;
+    }
+}
+
+/// Whether a sandbox class is the parent itself or one of its descendants.
+pub(crate) fn class_is_subclass(mut class_id: HeapId, parent: HeapId, vm: &VM<'_>) -> bool {
+    loop {
+        if class_id == parent {
+            return true;
+        }
+        let HeapData::Class(class) = vm.heap.get(class_id) else {
+            return false;
+        };
+        let Some(base) = class.parent() else {
+            return false;
+        };
+        class_id = base;
+    }
+}
+
+pub(crate) fn native_base(mut class: HeapId, vm: &VM<'_>) -> Option<Type> {
+    loop {
+        let HeapData::Class(data) = vm.heap.get(class) else {
+            return None;
+        };
+        match data.bases().first()? {
+            Type::Instance(parent) => class = *parent,
+            native => return Some(*native),
+        }
+    }
 }
 
 impl<'h> HeapRead<'h, Class> {
@@ -136,6 +198,12 @@ impl<'h> HeapRead<'h, Class> {
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if let Some(name_str) = name.as_either_str(vm.heap)
+            && matches!(name_str.as_str(vm.interns), "__class__" | "__bases__")
+        {
+            [name, value].drop_with(vm);
+            return Err(ExcType::type_error("type controls __class__ and __bases__"));
+        }
         self.namespace_mut().set(name, value, vm)
     }
 
@@ -211,13 +279,33 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         // because in CPython `type.__name__` is a metaclass data descriptor that
         // shadows a same-named class-dict member (`class Foo: __name__ = 'bar'`
         // still reads `'Foo'`; only instances see the member).
+        if attr_str == "__class__" {
+            return Ok(Some(CallResult::Value(Value::Builtin(Builtins::Function(
+                BuiltinsFunctions::Type,
+            )))));
+        }
+        if attr_str == "__bases__" {
+            let values = self
+                .get(vm.heap)
+                .bases()
+                .iter()
+                .map(|base| match base {
+                    Type::Instance(id) => {
+                        vm.heap.inc_ref(*id);
+                        Value::Ref(*id)
+                    }
+                    Type::Exception(exc) => Value::Builtin(Builtins::ExcType(*exc)),
+                    other => Value::Builtin(Builtins::Type(*other)),
+                })
+                .collect();
+            return Ok(Some(CallResult::Value(super::allocate_tuple(values, vm.heap))));
+        }
         if attr_str == "__name__" {
             let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
             return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
         }
-        // Otherwise look up a member (method or class variable) in the namespace.
-        match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
-            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
+        match lookup_member(self.id(), attr_str, vm) {
+            Some(value) => Ok(Some(CallResult::Value(value))),
             None => Err(ExcType::attribute_error_type(
                 self.get(vm.heap).name.as_str(vm.interns),
                 attr_str,
@@ -239,11 +327,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         }
         // `Foo.method(args)` calls the raw (unbound) member with the given args —
         // no `self` is inserted, the caller passes the instance explicitly.
-        let member = self
-            .get(vm.heap)
-            .namespace
-            .get_by_str(attr_str, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap));
+        let member = lookup_member(self.id(), attr_str, vm);
         if let Some(member) = member {
             defer_drop!(member, vm);
             vm.call_function(member, args)
@@ -259,6 +343,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
 
 impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        for base in &self.bases {
+            if let Type::Instance(id) = base {
+                stack.push(*id);
+            }
+        }
         self.namespace.py_dec_ref_ids(stack);
     }
 }

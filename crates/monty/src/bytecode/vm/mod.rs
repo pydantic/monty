@@ -34,7 +34,7 @@ use crate::{
         code::{Code, LocationEntry},
         op::{Opcode, decode_assert_flags},
     },
-    defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
@@ -50,8 +50,10 @@ use crate::{
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
     types::{
-        Dict, LongInt, PyTrait, SessionRandom,
+        Dict, LongInt, PyTrait, SessionRandom, Type,
+        class::native_base,
         file::{apply_buffer_store, apply_open_name, apply_write_position},
+        native_class,
         random::SEED_BYTES,
         str::allocate_string,
     },
@@ -1866,12 +1868,34 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
+                    let exc = if matches!(&exc,Value::Ref(id) if matches!(self.heap.get(*id),HeapData::Class(_)) && matches!(native_base(*id,self),Some(Type::Exception(_))))
+                    {
+                        let result = {
+                            let this = &mut *self;
+                            defer_drop!(exc, this);
+                            this.evaluate_function("raise", exc, ArgValues::Empty)
+                        };
+                        match result {
+                            Ok(v) => v,
+                            Err(error) => {
+                                catch!(self, error);
+                                continue;
+                            }
+                        }
+                    } else {
+                        exc
+                    };
                     let error = self.make_exception(&exc, true); // is_raise=true, hide caret
                     // Re-raise an instance as-is so `raise e` preserves `e`'s
                     // identity, like CPython. A bare type or non-exception has
                     // nothing to reuse and rebuilds from the error.
                     let raised = match &exc {
-                        Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => Some(exc),
+                        Value::Ref(id)
+                            if matches!(self.heap.get(*id), HeapData::Exception(_))
+                                || native_class::exception_type(*id, self).is_some() =>
+                        {
+                            Some(exc)
+                        }
                         _ => {
                             exc.drop_with(self);
                             None

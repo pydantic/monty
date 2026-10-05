@@ -20,10 +20,17 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
-    modules::dataclasses,
+    modules::{ModuleFunctions, dataclasses},
     os_dispatch::{PendingEffect, release_pending_effect},
     resource_checks::check_estimated_size,
-    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
+    types::{
+        Dict, PyTrait, Type,
+        bytes::call_bytes_method,
+        class::{class_is_subclass, lookup_member, lookup_member_ref},
+        instance::class_name,
+        native_class,
+        str::call_str_method,
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -379,6 +386,15 @@ impl<'h> VM<'h> {
                 // Call bytes method on interned bytes literal using the unified dispatcher
                 let b = this.interns.get_bytes(bytes_id);
                 call_bytes_method(b, name_id, args, this).map(CallResult::Value)
+            }
+            Value::Builtin(Builtins::ExcType(exc)) => {
+                let name = this.interns.get_str(name_id);
+                if let Some(member) = native_class::member(Type::Exception(exc), name) {
+                    this.call_function(&member, args)
+                } else {
+                    args.drop_with(this);
+                    Err(ExcType::attribute_error_type("exception", name))
+                }
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
@@ -1056,20 +1072,38 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        let instance_id = self
-            .heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
-        // The instance now owns a reference to its class object.
-        self.heap.inc_ref(class_id);
-
-        // Look up `__init__` in the class namespace (cloned out to release the borrow).
-        let init = match self.heap.get(class_id) {
-            HeapData::Class(class) => class
-                .namespace()
-                .get_by_str("__init__", self.heap, self.interns)
-                .map(|v| v.clone_with_heap(self)),
+        let mut guard = DropGuard::new(args, self);
+        let (args, vm) = guard.as_parts_mut();
+        let new = lookup_member(class_id, "__new__", vm).expect("object supplies __new__");
+        let instance = {
+            defer_drop!(new, vm);
+            let copied = native_class::clone_args(args, vm);
+            vm.heap.inc_ref(class_id);
+            vm.evaluate_function("__new__", new, copied.prepend(Value::Ref(class_id)))?
+        };
+        let (args, vm) = guard.into_parts();
+        let actual_class = match &instance {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Instance(i) => Some(i.class()),
+                _ => None,
+            },
             _ => None,
         };
+        if !actual_class.is_some_and(|actual| class_is_subclass(actual, class_id, vm)) {
+            args.drop_with(vm);
+            return Ok(CallResult::Value(instance));
+        }
+        let instance_id = instance.into_ref_id().expect("instance checked above");
+        vm.initialize_class_instance(actual_class.unwrap(), instance_id, args)
+    }
+
+    fn initialize_class_instance(
+        &mut self,
+        class_id: HeapId,
+        instance_id: HeapId,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
+        let init = lookup_member(class_id, "__init__", self);
 
         match init {
             // A dataclass with no user-defined `__init__` binds its fields
@@ -1082,7 +1116,9 @@ impl<'h> VM<'h> {
                 };
                 dataclasses::dataclass_init(self, &class, Value::Ref(instance_id), args)
             }
-            None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
+            None if matches!(args, ArgValues::Empty) || lookup_member_ref(class_id, "__new__", self).is_some() => {
+                Ok(CallResult::Value(Value::Ref(instance_id)))
+            }
             None => {
                 args.drop_with(self);
                 let name = class_name(class_id, self.heap, self.interns);
@@ -1097,7 +1133,9 @@ impl<'h> VM<'h> {
                 // Bound methods already carry their own receiver, and builtins,
                 // classes and other values are called with the constructor
                 // arguments unchanged.
-                let init_args = if this.is_function_value(init_func) {
+                let init_args = if this.is_function_value(init_func)
+                    || matches!(init_func,Value::ModuleFunction(ModuleFunctions::NativeClass(method)) if method.binds_instance())
+                {
                     this.heap.inc_ref(instance_id);
                     args.prepend(Value::Ref(instance_id))
                 } else {

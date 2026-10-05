@@ -847,7 +847,7 @@ impl<'a, 'i> Parser<'a, 'i> {
 
     /// Parses a `class Foo: ...` definition into a [`Node::ClassDef`].
     ///
-    /// The class body is modelled as a synthetic zero-argument function (like
+    /// The class body is modelled as a synthetic function (like
     /// CPython's class-body code object): the class statements are collected in
     /// source order into a [`RawFunctionDef`] that, when prepared and compiled,
     /// runs in its own scope and returns the assembled `Class`. Methods become
@@ -858,22 +858,34 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
     /// member, and annotated names a stringized `__annotations__`. Class
     /// decorators are supported (enclosing scope, applied bottom-up);
-    /// inheritance, function/method decorators, and anything else in the body
-    /// are rejected as not-implemented, reserving the syntax for later.
+    /// one base expression is preserved for preparation. Multiple inheritance,
+    /// metaclasses and method decorators are rejected as not-implemented.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
         let position = self.class_keyword_range(&class);
         let decorators = self.parse_decorators(class.decorator_list)?;
         // `class.arguments` carries base classes and metaclass keywords.
-        if let Some(arguments) = &class.arguments {
+        let base = if let Some(arguments) = class.arguments {
             // CPython rejects the repeat before it would consider the metaclass.
             self.check_repeated_keywords(&arguments.keywords)?;
-            if !arguments.args.is_empty() || !arguments.keywords.is_empty() {
+            if !arguments.keywords.is_empty() {
                 return Err(ParseError::not_implemented(
-                    "class inheritance and metaclasses",
+                    "class metaclasses and keyword arguments",
                     position,
                 ));
             }
-        }
+            if arguments.args.len() > 1 {
+                return Err(ParseError::not_implemented("multiple inheritance", position));
+            }
+            match arguments.args.into_iter().next() {
+                Some(AstExpr::Starred(_)) => {
+                    return Err(ParseError::not_implemented("unpacking class bases", position));
+                }
+                Some(base) => Some(self.parse_expression(base)?),
+                None => None,
+            }
+        } else {
+            None
+        };
 
         let name = self.identifier(&class.name.id, class.name.range);
         // The class-body statements (in source order) and the member names they
@@ -1030,19 +1042,27 @@ impl<'a, 'i> Parser<'a, 'i> {
             });
         }
 
-        // Wrap the body statements in a synthetic zero-arg function. The class
+        // A hidden parameter carries the bases tuple into the class body. The class
         // name's `name_id` is reused for nicer tracebacks; this function is never
         // registered in any scope (`prepare_class_def` prepares it directly,
         // without binding a function name).
+        let mut signature = ParsedSignature::default();
+        if base.is_some() {
+            signature.pos_args.push(ParsedParam {
+                name: self.interner.intern("<class bases>"),
+                default: None,
+            });
+        }
         let body = RawFunctionDef {
             name,
-            signature: ParsedSignature::default(),
+            signature,
             body,
             is_async: false,
         };
 
         Ok(Node::ClassDef {
             name,
+            base,
             body,
             members,
             decorators,
@@ -2649,5 +2669,39 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
         cleaned
             .parse::<BigInt>()
             .map_err(|e| ParseError::syntax(format!("invalid integer literal {s:?}, error: {e}"), position))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_with_interner;
+    use crate::{
+        expressions::Node,
+        intern::{CompileInterns, Interns},
+    };
+
+    #[test]
+    fn single_inheritance_preserves_base_expression() {
+        for parent in ["Parent", "module.Parent", "make_parent()"] {
+            let code = format!("class Child({parent}): pass");
+            let mut interns = Interns::new(&code);
+            let mut overlay = CompileInterns::direct(&mut interns);
+            let nodes = parse_with_interner(&code, "test.py", &mut overlay).unwrap();
+            let [Node::ClassDef { base: Some(base), .. }] = nodes.as_slice() else {
+                panic!("expected a class with a base expression");
+            };
+            let position = base.position;
+            assert_eq!(&code[position.start_byte as usize..position.end_byte as usize], parent);
+        }
+    }
+
+    #[test]
+    fn classes_without_inheritance_have_no_base() {
+        for code in ["class Child: pass", "class Child(): pass"] {
+            let mut interns = Interns::new(code);
+            let mut overlay = CompileInterns::direct(&mut interns);
+            let nodes = parse_with_interner(code, "test.py", &mut overlay).unwrap();
+            assert!(matches!(nodes.as_slice(), [Node::ClassDef { base: None, .. }]));
+        }
     }
 }

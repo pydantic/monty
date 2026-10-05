@@ -78,3 +78,5 @@ pub(crate) use timezone::TimeZone;
 pub(crate) use tuple::{Tuple, TupleIterator, TupleVec, allocate_tuple};
 pub(crate) use r#type::Type;
 pub(crate) use union::Union;
+
+pub(crate) mod native_class;

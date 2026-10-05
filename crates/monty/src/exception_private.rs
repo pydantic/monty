@@ -1290,6 +1290,21 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Invalid first argument to `issubclass()`.
+    fn issubclass_arg1_error() -> RunError {
+        Self::type_error("issubclass() arg 1 must be a class")
+    }
+
+    /// Invalid classinfo entry in `issubclass()`.
+    fn issubclass_arg2_error() -> RunError {
+        Self::type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")
+    }
+
+    /// Parameterized generic used as `issubclass()` classinfo.
+    fn issubclass_parameterized_generic() -> RunError {
+        Self::type_error("issubclass() argument 2 cannot be a parameterized generic")
+    }
+
     /// Creates a TypeError for invalid exception type in except clause.
     ///
     /// Matches CPython's format: `TypeError: catching classes that do not inherit from BaseException is not allowed`

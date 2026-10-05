@@ -65,7 +65,7 @@ pub enum BuiltinsFunctions {
     // Input,
     // int - handled by Type enum
     Isinstance,
-    // Issubclass,
+    // Issubclass - appended below
     // Iter - handled by Type enum
     Len,
     // list - handled by Type enum
@@ -118,4 +118,6 @@ pub enum BuiltinsFunctions {
     Exec,
     /// `locals()`, appended after [`Self::Exec`].
     Locals,
+    /// `issubclass(cls, classinfo, /)`.
+    Issubclass,
 }

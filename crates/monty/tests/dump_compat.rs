@@ -64,7 +64,11 @@ class Counter:
         return self.value
 
 
-c = Counter(10)
+class ChildCounter(Counter):
+    pass
+
+
+c = ChildCounter(10)
 c.bump()
 
 

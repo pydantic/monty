@@ -693,18 +693,22 @@ pub enum Node<F> {
     /// Class definition (e.g. `class Foo: ...`).
     ///
     /// Modelled on CPython's class-body code object: the class body is a
-    /// synthetic zero-argument function ([`body`](Self::ClassDef::body), riding
+    /// synthetic function ([`body`](Self::ClassDef::body), riding
     /// the same `F` = Raw→Prepared pipeline as [`Node::FunctionDef`]) that
     /// executes the class statements top-to-bottom into its own scope, then
     /// assembles the namespace and returns a `Class`. Methods are ordinary
     /// `FunctionDef`s in that body (with `self` as the first parameter); class
     /// variables are `Assign`s. Class decorators are supported (see
-    /// [`decorators`](Self::ClassDef::decorators)); inheritance, metaclasses and
+    /// [`decorators`](Self::ClassDef::decorators)); a single sandbox-defined parent
+    /// supports inherited member lookup. Multiple inheritance, metaclasses and
     /// decorators on a `def` — including `classmethod`/`staticmethod`/`property`
     /// — are rejected at parse time. See `limitations/classes.md`.
     ClassDef {
         /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
         name: Identifier,
+        /// Optional parent expression from the enclosing scope.
+        #[serde(default)]
+        base: Option<ExprLoc>,
         /// The synthetic class-body function: its body is the class statements
         /// in source order. Prepared and compiled exactly like a function; its
         /// emitted code ends by building the namespace `Dict` and returning the

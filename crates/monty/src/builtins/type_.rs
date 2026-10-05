@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait},
+    types::{Class, Dict, PyTrait, Type, str::allocate_string},
     value::Value,
 };
 
@@ -16,8 +16,8 @@ use crate::{
 ///
 /// The 1-arg form returns the type of an object; the 3-arg form
 /// `type(name, bases, dict)` dynamically creates a new class, mirroring
-/// CPython (except that `bases` must be empty — Monty classes cannot
-/// inherit). Any other positional count is a `TypeError`.
+/// CPython (except that `bases` may contain only one sandbox-defined class).
+/// Any other positional count is a `TypeError`.
 ///
 /// This hand-rolls `args.into_parts()` rather than using `#[derive(FromArgs)]`
 /// because the "exactly 1 *or* 3 positionals, same name" overload isn't
@@ -112,20 +112,23 @@ fn create_class(
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 1, "str", got));
     };
 
-    match bases {
-        Value::Ref(id) if let HeapData::Tuple(t) = vm.heap.get(*id) => {
-            // Monty divergence: classes cannot inherit, so even `(object,)` is
-            // rejected — the parse-time equivalent (`class Foo(Bar)`) is a
-            // syntax error, and this is its runtime counterpart.
-            if !t.as_slice().is_empty() {
-                return Err(ExcType::type_error("type() bases are not supported"));
+    let class_bases = match bases {
+        Value::Ref(id) if let HeapData::Tuple(t) = vm.heap.get(*id) => match t.as_slice() {
+            [] => vec![Type::Object],
+            [Value::Ref(id)] if matches!(vm.heap.get(*id), HeapData::Class(_)) => {
+                vec![Type::Instance(*id)]
             }
-        }
+            [Value::Builtin(Builtins::Type(Type::List))] => vec![Type::List],
+            [Value::Builtin(Builtins::Type(Type::Object))] => vec![Type::Object],
+            [Value::Builtin(Builtins::ExcType(exc))] => vec![Type::Exception(*exc)],
+            [_] => return Err(ExcType::type_error("type() bases are not supported")),
+            _ => return Err(ExcType::type_error("type() supports at most one base class")),
+        },
         _ => {
             let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
             return Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got));
         }
-    }
+    };
 
     let Value::Ref(ns_id) = namespace else {
         let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -168,10 +171,23 @@ fn create_class(
             Value::None,
         ));
     }
+    // Defining equality disables an inherited hash unless the body supplies one.
+    if source.get_by_str("__eq__", vm.heap, vm.interns).is_some()
+        && source.get_by_str("__hash__", vm.heap, vm.interns).is_none()
+    {
+        pairs.push((allocate_string("__hash__", vm.heap), Value::None));
+    }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
-    let class_id = vm
-        .heap
-        .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict))));
+    for base in &class_bases {
+        if let Type::Instance(id) = base {
+            vm.heap.inc_ref(*id);
+        }
+    }
+    let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
+        class_name,
+        namespace_dict,
+        class_bases,
+    ))));
     Ok(Value::Ref(class_id))
 }

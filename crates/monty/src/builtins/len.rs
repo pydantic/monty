@@ -5,7 +5,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    types::PyTrait,
+    heap::HeapData,
+    types::{PyTrait, Type, instance::instance_call_dunder_sync},
     value::Value,
 };
 
@@ -15,6 +16,17 @@ use crate::{
 pub fn builtin_len(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("len", vm.heap)?;
     defer_drop!(value, vm);
+    if let Value::Ref(id) = value
+        && matches!(vm.heap.get(*id), HeapData::Instance(_))
+        && let Some(result) = instance_call_dunder_sync(*id, "__len__", None, vm)?
+    {
+        defer_drop!(result, vm);
+        let size = result.as_index(vm, Type::Int)?;
+        if size < 0 {
+            return Err(ExcType::value_error("__len__() should return >= 0"));
+        }
+        return Ok(Value::Int(size));
+    }
     if let Some(len) = value.py_len(vm) {
         Ok(Value::Int(
             i64::try_from(len).map_err(|_| ExcType::overflow_c_ssize_t())?,

@@ -867,12 +867,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
                 Node::ClassDef {
                     name,
+                    base,
                     body,
                     members,
                     decorators,
                     position,
                 } => {
-                    new_nodes.push(self.prepare_class_def(name, body, members, decorators, position)?);
+                    new_nodes.push(self.prepare_class_def(name, base, body, members, decorators, position)?);
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -1737,12 +1738,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
     /// Prepares a `class Foo: ...` definition.
     ///
-    /// The class body is a synthetic zero-argument function (see
+    /// The class body is a synthetic function with an optional bases parameter (see
     /// [`Node::ClassDef`]); this mirrors [`Self::prepare_function_def`] but:
     /// - the inner preparer is flagged `is_class_scope = true`, so methods skip
     ///   the class scope for free-var resolution (see
     ///   [`Self::child_enclosing_locals`]);
-    /// - it carries no params/defaults;
+    /// - its hidden bases parameter is excluded from the class namespace;
     /// - `cell_var_names` is forced empty: skip-class-scope guarantees no nested
     ///   scope captures a class-body local, so every member stays a plain local
     ///   (the compiler loads members with `LoadLocal`);
@@ -1753,6 +1754,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     fn prepare_class_def(
         &mut self,
         name: Identifier,
+        base: Option<ExprLoc>,
         body: RawFunctionDef,
         members: Vec<Identifier>,
         decorators: Vec<ExprLoc>,
@@ -1768,13 +1770,17 @@ impl<'i, 'g> Prepare<'i, 'g> {
             .map(|d| self.prepare_expression(d))
             .collect::<Result<Vec<_>, ParseError>>()?;
 
-        // The class body is a synthetic zero-arg function: no params, no defaults.
+        // The parent belongs to the enclosing scope, not the class body.
+        let base = base.map(|expr| self.prepare_expression(expr)).transpose()?;
+
+        // The hidden bases parameter occupies slot zero when inheritance is present.
         let RawFunctionDef {
             name: body_name,
+            signature: parsed_signature,
             body: body_nodes,
             ..
         } = body;
-        let param_names: Vec<StringId> = Vec::new();
+        let param_names: Vec<StringId> = parsed_signature.param_names().collect();
 
         // Pass 1: collect scope info over the class-body statements. The class
         // body's own locals are never cells (no nested scope may capture them —
@@ -1863,7 +1869,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
         } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, position)?;
 
-        // The class body is a synthetic, never-registered zero-arg function. Its
+        // The class body is a synthetic, never-registered function. Its
         // name reuses the class `name_id` (for tracebacks) with a placeholder slot.
         let body_name = Identifier::new_with_scope(
             body_name.name_id,
@@ -1873,7 +1879,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         );
         let body_def = PreparedFunctionDef {
             name: body_name,
-            signature: Signature::default(),
+            signature: Signature::new(param_names, 0, vec![], 0, None, vec![], vec![], None),
             body: prepared_body,
             namespace_size,
             free_var_names: free_var_slots
@@ -1890,6 +1896,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         Ok(Node::ClassDef {
             name,
+            base,
             body: body_def,
             members,
             decorators,
@@ -2520,13 +2527,15 @@ fn collect_scope_info_from_node(
                 collect_assigned_names_from_expr(decorator, assigned_names, interner);
             }
         }
-        Node::ClassDef { name, decorators, .. } => {
+        Node::ClassDef {
+            name, base, decorators, ..
+        } => {
             // A class definition binds the class name in this scope, just like a `def`.
             // The class body is a separate scope (handled by the cell-var pass).
             assigned_names.insert(name.name_id);
-            // Decorators evaluate in *this* scope, so a walrus in one binds here.
-            for decorator in decorators {
-                collect_assigned_names_from_expr(decorator, assigned_names, interner);
+            // Decorators and the parent evaluate here, including walrus bindings.
+            for expr in decorators.iter().chain(base.iter()) {
+                collect_assigned_names_from_expr(expr, assigned_names, interner);
             }
         }
         Node::Try(Try {
@@ -2810,16 +2819,17 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
             }
         }
-        Node::ClassDef { body, decorators, .. } => {
+        Node::ClassDef {
+            body, base, decorators, ..
+        } => {
             // The class body is a nested scope of *this* scope, like a `def`: any
             // of our locals referenced from the class-var values or (transitively)
             // the method bodies becomes a cell var. `collect_cell_vars_from_function`
             // recurses into the nested method bodies for us.
             collect_cell_vars_from_function(&body.signature, &body.body, our_locals, cell_vars, interner);
-            // A nested scope inside a decorator expression (a lambda in decorator
-            // position, or one passed to a factory) can capture our locals too.
-            for decorator in decorators {
-                collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
+            // Lambdas in decorators or the parent expression can capture our locals.
+            for expr in decorators.iter().chain(base.iter()) {
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
             }
         }
         // Recurse into control flow structures
@@ -3399,12 +3409,12 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_expr(decorator, referenced, interner);
             }
         }
-        Node::ClassDef { decorators, .. } => {
+        Node::ClassDef { base, decorators, .. } => {
             // The class body is a separate scope and the name is a binding, so
             // neither is a reference here — but decorators evaluate in *our*
-            // scope, so their names are ours to collect.
-            for decorator in decorators {
-                collect_referenced_names_from_expr(decorator, referenced, interner);
+            // scope, as does the parent expression.
+            for expr in decorators.iter().chain(base.iter()) {
+                collect_referenced_names_from_expr(expr, referenced, interner);
             }
         }
         Node::Try(Try {
@@ -3935,5 +3945,64 @@ fn collect_referenced_names_from_assign_target(
                 collect_referenced_names_from_unpack_target(t, referenced, interner);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_with_existing_names;
+    use crate::{
+        expressions::{Expr, NameScope, Node, PreparedNode},
+        intern::{CompileInterns, Interns},
+        name_map::NameMap,
+        parse::parse_with_interner,
+    };
+
+    fn prepare(code: &str) -> Vec<PreparedNode> {
+        let mut interns = Interns::new(code);
+        let mut overlay = CompileInterns::direct(&mut interns);
+        let nodes = parse_with_interner(code, "test.py", &mut overlay).unwrap();
+        prepare_with_existing_names(nodes, &overlay, &mut NameMap::new()).unwrap()
+    }
+
+    fn base_scope(node: &PreparedNode) -> NameScope {
+        let Node::ClassDef { base: Some(base), .. } = node else {
+            panic!("expected a class with a parent");
+        };
+        let Expr::Name(name) = &base.expr else {
+            panic!("expected a parent name");
+        };
+        name.scope
+    }
+
+    #[test]
+    fn class_base_resolves_in_module_scope() {
+        let nodes = prepare("class Child(Parent):\n    Parent = 1");
+        assert_eq!(base_scope(&nodes[0]), NameScope::Global);
+    }
+
+    #[test]
+    fn class_base_resolves_in_function_scope() {
+        let nodes = prepare("def make(Parent):\n    class Child(Parent):\n        Parent = 1\n    return Child");
+        let Node::FunctionDef { def, .. } = &nodes[0] else {
+            panic!("expected a function");
+        };
+        assert_eq!(base_scope(&def.body[0]), NameScope::Local);
+    }
+
+    #[test]
+    fn class_base_captures_an_enclosing_function_parameter() {
+        let nodes = prepare(
+            "def outer(Parent):\n    def inner():\n        class Child(Parent): pass\n        return Child\n    return inner",
+        );
+        let Node::FunctionDef { def: outer, .. } = &nodes[0] else {
+            panic!("expected the outer function");
+        };
+        let Node::FunctionDef { def: inner, .. } = &outer.body[0] else {
+            panic!("expected the inner function");
+        };
+        assert_eq!(outer.cell_var_slots.len(), 1);
+        assert_eq!(inner.free_var_slots.len(), 1);
+        assert_eq!(base_scope(&inner.body[0]), NameScope::Cell);
     }
 }

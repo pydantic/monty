@@ -362,10 +362,7 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
     }
 }
 
-/// The 3-arg `type()` form rejects non-empty bases because Monty classes
-/// cannot inherit (documented in `limitations/classes.md`). Kept as a
-/// Rust-side test because CPython accepts bases, so the comparative
-/// test-case suite cannot cover the divergence.
+/// Native bases other than the supported list and exception classes are rejected.
 #[test]
 fn dynamic_type_with_bases_raises_type_error() {
     let code = "type('A', (int,), {})";

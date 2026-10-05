@@ -70,6 +70,11 @@ pub(crate) struct List {
 }
 
 impl List {
+    pub(crate) fn replace_items(&mut self, items: Vec<Value>) -> Vec<Value> {
+        self.contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        mem::replace(&mut self.items, items)
+    }
+
     /// Creates a new list from a vector of values.
     ///
     /// Automatically computes the `contains_refs` flag by checking if any value
@@ -301,7 +306,7 @@ impl<'h> HeapRead<'h, List> {
     ///
     /// Preflights the slot bytes so an over-budget clone raises a graceful
     /// `MemoryError` instead of bursting past the allocator's hard limit.
-    fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
+    pub(crate) fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).items.len();
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut result = Vec::with_capacity(len);

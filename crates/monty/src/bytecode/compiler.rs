@@ -777,11 +777,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
+                base,
                 body,
                 members,
                 decorators,
                 position,
-            } => self.compile_class_def(name, body, members, decorators, *position)?,
+            } => self.compile_class_def(name, base.as_ref(), body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::With {
                 context, target, body, ..
@@ -956,14 +957,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Compiles a `class Foo: ...` definition.
     ///
     /// Modelled on CPython's class-body code object: the class body is compiled
-    /// to a synthetic zero-arg function (via
+    /// to a synthetic function (via
     /// [`emit_make_class_body`](Self::emit_make_class_body)) that runs the class
     /// statements in its own scope and returns the assembled `Class`. We emit
-    /// that function value, call it with zero args, and bind the result to the
-    /// class name.
+    /// that function value, pass an optional bases tuple, and bind the result.
     fn compile_class_def(
         &mut self,
         name: &Identifier,
+        base: Option<&ExprLoc>,
         body: &PreparedFunctionDef,
         members: &[Identifier],
         decorators: &[ExprLoc],
@@ -976,12 +977,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
         // Build the class-body function/closure value on the stack...
         self.emit_make_class_body(body, members, name, position)?;
-        // ...call it with zero args — it runs the body and returns the `Class`.
+        // Evaluate the parent before running any class-body statements.
+        if let Some(base) = base {
+            self.compile_expr(base)?;
+            self.code.emit_u16(Opcode::BuildTuple, 1)?;
+        }
         // Record the class statement as the call site so a traceback from inside
         // the class body attributes this frame to the `class` statement (like
         // CPython) rather than falling back to `CodeRange::default()`.
         self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::CallFunction, 0)?;
+        self.code.emit_u8(Opcode::CallFunction, u8::from(base.is_some()))?;
         // Each call consumes the callable below the current value: `deco(value)`.
         // Reversed so the bottom-most (last pushed) applies first, and located at
         // its own decorator so a traceback pins the one that raised, like CPython.
@@ -1010,22 +1015,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ) -> Result<(), CompileError> {
         let flags = self.flags;
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
-            Self::compile_class_body(
-                &body.body,
-                members,
-                class_name,
-                position,
-                interns,
-                namespace_size,
-                flags,
-            )
+            Self::compile_class_body(body, members, class_name, position, interns, namespace_size, flags)
         })
     }
 
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
-    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
-    /// call: push the class name and an empty bases tuple, then for each
+    /// implicit `LoadNone; ReturnValue` tail with a `type(name, bases, {...})`
+    /// call: push the class name and bases tuple, then for each
     /// member (in source order) push `LoadConst <name>` and the member's value
     /// from its class-body slot, build the namespace dict, and call the 3-arg
     /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
@@ -1035,7 +1032,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
     fn compile_class_body(
-        body: &[PreparedNode],
+        body: &PreparedFunctionDef,
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
@@ -1044,16 +1041,20 @@ impl<'a, 'i> Compiler<'a, 'i> {
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
-        compiler.compile_block(body)?;
+        compiler.compile_block(&body.body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
         // should point at the class statement, not the last member's line.
         compiler.code.set_location(position, None);
 
-        // type(name, (), {members...}): push the name and empty bases tuple...
+        // The hidden bases parameter is slot zero; classes without parents use ().
         let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
         compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
-        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
+        if body.signature.param_count() == 0 {
+            compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
+        } else {
+            compiler.code.emit_load_local(0)?;
+        }
 
         // ...then the namespace dict: (name, value) for each member in order.
         for member in members {
