@@ -5,6 +5,7 @@ use monty_types::{
     ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone, MontyUuid,
     unstable::{self, MontyGraph, MontyNode},
 };
+use num_bigint::BigInt;
 
 // === is_truthy ===
 
@@ -676,6 +677,7 @@ fn accessors_read_leaves_and_containers() {
     let items = items.items().unwrap();
     assert_eq!(items[0].as_int(), Some(1));
     assert_eq!(items[0].as_float(), Some(1.0));
+    assert_eq!(items[0].as_complex().map(|c| (c.real, c.imag)), Some((1.0, 0.0)));
     assert_eq!(items[1].as_bool(), Some(true));
     assert_eq!(items[1].as_int(), None);
     assert!(value.as_ref().items().is_none());
@@ -684,6 +686,26 @@ fn accessors_read_leaves_and_containers() {
         String::try_from(items[0]).unwrap_err().to_string(),
         "expected str, got int"
     );
+}
+
+#[test]
+fn numeric_accessors_widen_big_ints() {
+    let wide = MontyObject::bigint(BigInt::from(1u8) << 100);
+    assert_eq!(wide.as_ref().as_float(), Some(2f64.powi(100)));
+    assert_eq!(
+        wide.as_ref().as_complex().map(|c| (c.real, c.imag)),
+        Some((2f64.powi(100), 0.0))
+    );
+    let huge = MontyObject::bigint(BigInt::from(1u8) << 2000);
+    assert_eq!(huge.as_ref().as_float(), None);
+    assert_eq!(huge.as_ref().as_complex().map(|c| c.real), None);
+    // `f64 ==` cannot tell `-0.0` from `0.0`, so the sign is pinned by its bits.
+    let z = MontyObject::complex(-0.0, 2.5);
+    assert_eq!(
+        z.as_ref().as_complex().map(|c| (c.real.to_bits(), c.imag)),
+        Some(((-0.0f64).to_bits(), 2.5))
+    );
+    assert_eq!(z.as_ref().as_float(), None);
 }
 
 #[test]

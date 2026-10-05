@@ -707,7 +707,7 @@ impl ResolveFutures {
             position,
         } = self;
 
-        let vm_state = HeapReader::with(&mut heap, &mut &mut executor, |reader, executor| {
+        let vm_state = HeapReader::with(&mut heap, &mut executor, |reader, executor| {
             let mut vm = VM::restore(
                 vm_state,
                 &mut executor.tables,

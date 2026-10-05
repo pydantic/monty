@@ -200,9 +200,12 @@ fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Whether `value` satisfies CPython's `PyNumber_Check` for `count()`.
 ///
 /// Monty's numeric types are exactly `int` (immediate, interned big, or heap
-/// `LongInt` — all reported as [`Type::Int`]), `float`, and `bool`.
+/// `LongInt` — all reported as [`Type::Int`]), `float`, `complex` and `bool`.
 fn is_number(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value.py_type_heap(vm.heap), Type::Int | Type::Float | Type::Bool)
+    matches!(
+        value.py_type_heap(vm.heap),
+        Type::Int | Type::Float | Type::Complex | Type::Bool
+    )
 }
 
 /// Widens a `bool` start/step to the `int` it stands for.

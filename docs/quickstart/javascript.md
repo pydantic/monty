@@ -85,6 +85,7 @@ matches a Python exception type and `RuntimeError` otherwise.
 | `bool`              | `boolean`                                       |
 | `int`               | `number` within ±2^53, otherwise `BigInt`       |
 | `float`             | `number`                                        |
+| `complex`           | `{ __monty_type__: 'Complex', real, imag }`     |
 | `str`               | `string`                                        |
 | `bytes`             | `Buffer`                                        |
 | `list`              | `Array`                                         |

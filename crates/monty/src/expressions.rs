@@ -8,7 +8,7 @@ use crate::{
     intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
-    value::{EitherStr, Marker, Value},
+    value::{EitherStr, Marker},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -504,6 +504,10 @@ pub enum Literal {
     Bool(bool),
     Int(i64),
     Float(f64),
+    /// An imaginary literal such as `2j`, holding its imaginary part (the real
+    /// part is always zero). It has no constant-pool form: the compiler emits a
+    /// `complex()` constructor call, since a complex value lives on the heap.
+    Complex(f64),
     /// An interned string literal. The StringId references the string in the Interns table.
     Str(StringId),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
@@ -513,26 +517,6 @@ pub enum Literal {
     LongInt(LongIntId),
     /// A marker value (e.g., typing constructs like Any, Optional, etc.).
     Marker(Marker),
-}
-
-impl From<Literal> for Value {
-    /// Converts the literal into its runtime `Value` counterpart.
-    ///
-    /// This is the only place parse-time data crosses the boundary into runtime
-    /// semantics, ensuring every literal follows the same conversion path.
-    fn from(literal: Literal) -> Self {
-        match literal {
-            Literal::Ellipsis => Self::Ellipsis,
-            Literal::None => Self::None,
-            Literal::Bool(b) => Self::Bool(b),
-            Literal::Int(v) => Self::Int(v),
-            Literal::Float(v) => Self::Float(v),
-            Literal::Str(string_id) => Self::InternString(string_id),
-            Literal::Bytes(bytes_id) => Self::InternBytes(bytes_id),
-            Literal::LongInt(long_int_id) => Self::InternLongInt(long_int_id),
-            Literal::Marker(marker) => Self::Marker(marker),
-        }
-    }
 }
 
 /// An expression with its source location.

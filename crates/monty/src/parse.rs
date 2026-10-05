@@ -1631,7 +1631,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                         }
                     }
                     Number::Float(f) => Literal::Float(f),
-                    Number::Complex { .. } => return Err(ParseError::not_implemented("complex constants", position)),
+                    // An imaginary literal has no real part; `1+2j` is a `BinOp`.
+                    Number::Complex { imag, .. } => Literal::Complex(imag),
                 };
                 Ok(ExprLoc::new(position, Expr::Literal(const_value)))
             }

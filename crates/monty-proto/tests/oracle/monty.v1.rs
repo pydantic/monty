@@ -38,7 +38,7 @@ pub struct Arena {
 pub struct MontyNode {
     #[prost(
         oneof = "monty_node::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub kind: ::core::option::Option<monty_node::Kind>,
 }
@@ -120,6 +120,8 @@ pub mod monty_node {
         /// the placeholder its repr shows ("\[...\]", "(...)", "{...}" or "...").
         #[prost(string, tag = "30")]
         Cycle(::prost::alloc::string::String),
+        #[prost(message, tag = "31")]
+        Complex(super::Complex),
     }
 }
 /// Indexes of a container's children (list, tuple, set, frozenset items).
@@ -151,6 +153,15 @@ pub struct BigInt {
     pub negative: bool,
     #[prost(bytes = "vec", tag = "2")]
     pub magnitude: ::prost::alloc::vec::Vec<u8>,
+}
+/// A Python complex as its two float parts. Both are always present: a plain
+/// `double` omits its default on the wire, which would turn `-0.0` into `0.0`.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct Complex {
+    #[prost(double, optional, tag = "1")]
+    pub real: ::core::option::Option<f64>,
+    #[prost(double, optional, tag = "2")]
+    pub imag: ::core::option::Option<f64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedTupleNode {

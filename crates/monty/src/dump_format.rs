@@ -361,14 +361,14 @@ mod tests {
         );
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x9901_dcf3_9e42_3098,
+            0xe58f_b60f_0485_8b7d,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
         let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
         assert_eq!(
             variant_name_fingerprint(&monty_type_names),
-            0x8af8_54dc_0bfe_1e6d,
+            0x628c_e5c5_6b25_e2c2,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&monty_type_names))
         );

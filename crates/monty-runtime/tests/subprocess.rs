@@ -1004,7 +1004,12 @@ fn large_unnested_format_spec_preserves_the_worker() {
 
 #[test]
 fn numeric_formatting_peak_memory_preserves_the_worker() {
-    for code in ["'{:08000000d}'.format(1)", "'{:.8000000f}'.format(1.0)"] {
+    for code in [
+        "'{:08000000d}'.format(1)",
+        "'{:.8000000f}'.format(1.0)",
+        // Both parts of a complex expand to the precision.
+        "'{:.4000000f}'.format(1 + 1j)",
+    ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(10_000_000));
         let (_, event) = child.feed(code);
@@ -1012,6 +1017,30 @@ fn numeric_formatting_peak_memory_preserves_the_worker() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// A complex spec that CPython rejects outright must raise its `ValueError`
+/// however large its precision, not the `MemoryError` the precision would cost.
+#[test]
+fn invalid_complex_spec_is_rejected_before_its_precision_is_charged() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(10_000_000));
+    for (code, message) in [
+        (
+            "'{:=.4000000f}'.format(1 + 1j)",
+            "'=' alignment flag is not allowed in complex format specifier",
+        ),
+        (
+            "'{:0.4000000f}'.format(1 + 1j)",
+            "Zero padding is not allowed in complex format specifier",
+        ),
+    ] {
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "ValueError", "{code}");
+        assert_eq!(error.message.as_deref(), Some(message), "{code}");
+    }
+    child.shutdown();
 }
 
 /// Gathers nested as *items* of one another (`g = asyncio.gather(g)`) cost no

@@ -601,7 +601,7 @@ impl Executor {
         let mut heap = Heap::new(self.namespace_size(), resource_tracker);
         let globals = self.empty_globals();
 
-        HeapReader::with(&mut heap, &mut &mut *self, |reader, executor| {
+        HeapReader::with(&mut heap, self, |reader, executor| {
             // Create VM, populate inputs, and run
             let mut vm = VM::new(
                 globals,

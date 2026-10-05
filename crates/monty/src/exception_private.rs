@@ -100,6 +100,12 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// The `AttributeError` for assigning to a read-only data attribute such as `complex.real`.
+    #[must_use]
+    fn attribute_error_readonly() -> RunError {
+        SimpleException::new_msg(ExcType::AttributeError, "readonly attribute").into()
+    }
+
     /// Creates an AttributeError for a missing module attribute.
     ///
     /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
@@ -1745,6 +1751,24 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn zero_negative_power() -> RunError {
         SimpleException::new_msg(ExcType::ZeroDivisionError, "zero to a negative power").into()
+    }
+
+    /// The `ZeroDivisionError` for `0j ** w` with a negative or non-real `w`.
+    #[must_use]
+    fn zero_division_complex_power() -> RunError {
+        SimpleException::new_msg(ExcType::ZeroDivisionError, "zero to a negative or complex power").into()
+    }
+
+    /// The `ValueError` for three-argument `pow()` with a complex operand.
+    #[must_use]
+    fn value_error_complex_modulo() -> RunError {
+        Self::value_error("complex modulo")
+    }
+
+    /// Creates a generic `OverflowError` with a custom message.
+    #[must_use]
+    fn overflow_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, msg).into()
     }
 
     /// Creates an OverflowError for exponents that are too large.

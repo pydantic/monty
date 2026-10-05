@@ -29,7 +29,7 @@ use crate::{
     heap::{Heap, HeapData, HeapObjectRead, HeapRead},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
     types::{LazyHeapSet, PyTrait, Type, str::allocate_string, tuple::allocate_tuple},
-    value::{Value, eq_bigint, float_divmod_tuple, float_pow, py_float_divmod, py_float_mod},
+    value::{Value, eq_bigint, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
 
 /// Maximum number of decimal digits allowed for integer-string conversion.
@@ -671,7 +671,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         if modulus.is_some() {
             Ok(None)
         } else if let Value::Float(base) = other {
-            Ok(Some(Value::Float(float_pow(*base, exponent.to_f64_checked()?)?)))
+            Ok(Some(float_pow_value(*base, exponent.to_f64_checked()?, vm.heap)?))
         } else {
             let Some(base) = integer_value(other, vm.heap) else {
                 return Ok(None);
@@ -849,7 +849,7 @@ fn polled_modpow(
 /// Raises a long integer to another integer value.
 fn long_int_pow(base: &LongInt, exponent: &Value, heap: &Heap) -> RunResult<Option<Value>> {
     if let Value::Float(exponent) = exponent {
-        return Ok(Some(Value::Float(float_pow(base.to_f64_checked()?, *exponent)?)));
+        return Ok(Some(float_pow_value(base.to_f64_checked()?, *exponent, heap)?));
     }
     let Some(exponent) = integer_value(exponent, heap) else {
         return Ok(None);
@@ -861,10 +861,11 @@ fn long_int_pow(base: &LongInt, exponent: &Value, heap: &Heap) -> RunResult<Opti
 fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResult<Option<Value>> {
     if exponent.is_negative() {
         // CPython hands off to `float_pow`, converting both operands before its zero-base check.
-        Ok(Some(Value::Float(float_pow(
+        Ok(Some(float_pow_value(
             bigint_to_f64_checked(base)?,
             bigint_to_f64_checked(exponent)?,
-        )?)))
+            heap,
+        )?))
     } else if exponent.is_zero() || base.is_one() {
         Ok(Some(Value::Int(1)))
     } else if base.is_zero() {

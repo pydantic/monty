@@ -91,7 +91,7 @@ A name present in both is served by the eager `inputs` binding.
 
 ### Which values cross the boundary
 
-`None`, `bool`, `int` (arbitrary precision), `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
+`None`, `bool`, `int` (arbitrary precision), `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
 `Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named
 tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
 all convert in both directions.
