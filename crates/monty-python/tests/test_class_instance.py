@@ -819,11 +819,78 @@ def test_sandbox_dataclass_returns_proxy(monty_run: RunMonty):
     assert result.attributes == snapshot({'x': 1, 'y': 2})
 
 
-def test_proxy_equality(monty_run: RunMonty):
-    code = 'class Foo:\n    def __init__(self, a: int):\n        self.a = a\n[Foo(1), Foo(1), Foo(2)]'
-    a, b, c = monty_run(code)
-    assert a == b
-    assert a != c
+def test_proxy_equality_plain_class_is_identity(session: MontySession):
+    """Plain-class proxies compare by instance id, as `==` does in the sandbox."""
+    session.feed_run('class Foo:\n    def __init__(self, a):\n        self.a = a\nfoo = Foo(1)')
+    foo, other_foo = session.feed_run('[foo, Foo(1)]')
+    foo_again = session.feed_run('foo')
+    assert foo == foo_again
+    assert hash(foo) == hash(foo_again)
+    assert foo != other_foo
+
+
+def test_proxy_equality_dataclass_compares_attributes(monty_run: RunMonty):
+    """Dataclass proxies compare by class name and attributes, as the generated `__eq__` does."""
+    code = """
+from dataclasses import dataclass
+@dataclass
+class P:
+    a: object
+@dataclass
+class Q:
+    a: object
+[P(1), P(1), P(2), Q(1), P([1]), P([1])]
+"""
+    p_1, other_p_1, p_2, q_1, p_list, other_p_list = monty_run(code)
+    assert p_1.id != other_p_1.id
+    assert p_1 == other_p_1
+    assert hash(p_1) == hash(other_p_1)
+    assert p_1 != p_2
+    assert p_1 != q_1
+    assert p_list == other_p_list
+    assert hash(p_list) == hash(other_p_list)
+
+
+@pytest.mark.parametrize(
+    'code,expected_len',
+    [
+        pytest.param('{K(1), K(2)}', 2, id='set'),
+        pytest.param('frozenset([K(1), K(2)])', 2, id='frozenset'),
+        pytest.param("{K(1): 'a', K(2): 'b'}", 2, id='dict_keys'),
+        pytest.param('{K([1]), K([2])}', 2, id='unhashable_attributes'),
+        pytest.param('k = K(1)\n{k, k}', 1, id='set_same_object'),
+        pytest.param('{K(1), K(1)}', 2, id='set_equal_attributes'),
+    ],
+)
+def test_proxies_as_set_members_and_dict_keys(monty_run: RunMonty, code: str, expected_len: int):
+    """Sandbox instances are hashable on the host, whatever their attribute values."""
+    prelude = """
+class K:
+    def __init__(self, v):
+        self.v = v
+    def __hash__(self):
+        return 1
+    def __eq__(self, other):
+        return False
+"""
+    result = monty_run(prelude + code)
+    assert len(result) == expected_len
+    assert all(isinstance(item, MontyClassProxy) for item in result)
+
+
+def test_point_keyed_dict_round_trips(session: MontySession):
+    code = """
+class Point:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+points = {Point(0, 0): 'origin', Point(1, 1): 'corner'}
+points
+"""
+    result = session.feed_run(code)
+    assert sorted((key.attributes['x'], value) for key, value in result.items()) == snapshot(
+        [(0, 'origin'), (1, 'corner')]
+    )
+    assert session.feed_run('back == points', inputs={'back': result}) is True
 
 
 # === Async method calls ===
@@ -941,6 +1008,7 @@ def test_type_after_restore_is_class_type_proxy(pool: Monty):
         assert proxy.attributes == snapshot({})
         assert repr(proxy) == snapshot("MontyClassTypeProxy(name='Person', attributes={})")
         assert proxy == session.feed_run('type(x)')
+        assert {proxy, session.feed_run('type(x)')} == {proxy}
         assert proxy != session.feed_run('class Other:\n    pass\nOther')
         code = '(t is type(x), isinstance(x, t), t.__name__)'
         assert session.feed_run(code, inputs={'t': proxy}) == snapshot((True, True, 'Person'))
