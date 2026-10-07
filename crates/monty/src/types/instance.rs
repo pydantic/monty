@@ -80,16 +80,15 @@ impl Instance {
     }
 }
 
-/// A method bound to an instance, produced by `obj.method` (without calling it).
+/// A callable bound to an instance, including prepared native method calls.
 ///
 /// Calling a `BoundMethod` prepends `instance` to the argument list and invokes
-/// `func`. The common `obj.method()` path skips this allocation by binding and
-/// calling directly in [`Instance::py_call_attr`].
+/// `func`. Attribute calls prepare this binding before evaluating arguments.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BoundMethod {
-    /// The bound `self` (a `Value::Ref` to the instance).
+    /// The bound instance.
     pub instance: Value,
-    /// The underlying function (`DefFunction`/`Closure`/...).
+    /// The underlying callable.
     pub func: Value,
 }
 

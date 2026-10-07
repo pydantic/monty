@@ -1602,6 +1602,10 @@ impl<'h> VM<'h> {
                         catch!(self, e);
                     }
                 }
+                Opcode::PrepareCallAttr => {
+                    let name_idx = self.current_frame.fetch_u16();
+                    try_catch!(self, self.prepare_call_attr(StringId::from_index(name_idx)));
+                }
                 Opcode::LoadAttr => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
@@ -1745,19 +1749,13 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.exec_call_function_kw(pos_count, kwname_ids));
                 }
                 Opcode::CallAttr => {
-                    // CallAttr: u16 name_id, u8 arg_count
-                    // Stack: [obj, arg1, arg2, ..., argN] -> [result]
-                    let (name_idx, arg_count) = self.current_frame.fetch_u16_u8();
-                    let name_id = StringId::from_index(name_idx);
-                    let arg_count = arg_count as usize;
-
-                    handle_call_result!(self, self.exec_call_attr(name_id, arg_count));
+                    let arg_count = self.current_frame.fetch_u8() as usize;
+                    handle_call_result!(self, self.exec_call_attr(arg_count));
                 }
                 Opcode::CallAttrKw => {
-                    // CallAttrKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
-                    // Stack: [obj, pos_args..., kw_values...] -> [result]
-                    let (name_idx, pos_count, kw_count) = self.current_frame.fetch_u16_u8_u8();
-                    let name_id = StringId::from_index(name_idx);
+                    // CallAttrKw: u8 pos_count, u8 kw_count, then kw_count u16 name indices
+                    // Stack: [obj, prepared_callable, pos_args..., kw_values...] -> [result]
+                    let (pos_count, kw_count) = self.current_frame.fetch_u8_u8();
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
                     // Read keyword name StringIds
@@ -1766,7 +1764,7 @@ impl<'h> VM<'h> {
                         kwname_ids.push(StringId::from_index(self.current_frame.fetch_u16()));
                     }
 
-                    handle_call_result!(self, self.exec_call_attr_kw(name_id, pos_count, kwname_ids));
+                    handle_call_result!(self, self.exec_call_attr_kw(pos_count, kwname_ids));
                 }
                 Opcode::CallFunctionExtended => {
                     let flags = self.current_frame.fetch_u8();
@@ -1775,11 +1773,10 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.exec_call_function_extended(has_kwargs));
                 }
                 Opcode::CallAttrExtended => {
-                    let (name_idx, flags) = self.current_frame.fetch_u16_u8();
-                    let name_id = StringId::from_index(name_idx);
+                    let flags = self.current_frame.fetch_u8();
                     let has_kwargs = (flags & 0x01) != 0;
 
-                    handle_call_result!(self, self.exec_call_attr_extended(name_id, has_kwargs));
+                    handle_call_result!(self, self.exec_call_attr_extended(has_kwargs));
                 }
                 // Function Definition
                 Opcode::MakeFunction => {

@@ -20,10 +20,13 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
-    modules::dataclasses,
+    modules::{ModuleFunctions, dataclasses},
     os_dispatch::{PendingEffect, release_pending_effect},
     resource_checks::check_estimated_size,
-    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
+    types::{
+        Dict, Instance, PyTrait, Type, builtin_method::BuiltinMethod, bytes::call_bytes_method, instance::class_name,
+        str::call_str_method,
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -222,12 +225,13 @@ impl<'h> VM<'h> {
 
     /// Executes `CallAttr` opcode.
     ///
-    /// Pops the object and arguments from the stack, calls the attribute,
+    /// Pops the receiver, prepared target and arguments, then calls the attribute,
     /// and returns a `CallResult` which may indicate an OS or external call.
-    pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<CallResult, RunError> {
+    pub(super) fn exec_call_attr(&mut self, arg_count: usize) -> Result<CallResult, RunError> {
         let args = self.pop_n_args(arg_count);
+        let callable = self.pop();
         let obj = self.pop();
-        self.call_attr(obj, name_id, args)
+        self.call_prepared_attr(obj, callable, args)
     }
 
     /// Executes `CallAttrKw` opcode.
@@ -237,7 +241,6 @@ impl<'h> VM<'h> {
     /// Returns a `CallResult` which may indicate an OS or external call.
     pub(super) fn exec_call_attr_kw(
         &mut self,
-        name_id: StringId,
         pos_count: usize,
         kwname_ids: Vec<StringId>,
     ) -> Result<CallResult, RunError> {
@@ -250,6 +253,7 @@ impl<'h> VM<'h> {
         let pos_args = self.pop_n(pos_count);
 
         // Pop the object
+        let callable = self.pop();
         let obj = self.pop();
 
         // Build kwargs as Vec<(StringId, Value)>
@@ -267,7 +271,7 @@ impl<'h> VM<'h> {
             }
         };
 
-        self.call_attr(obj, name_id, args)
+        self.call_prepared_attr(obj, callable, args)
     }
 
     /// Executes `CallFunctionExtended` opcode.
@@ -290,22 +294,58 @@ impl<'h> VM<'h> {
     /// Executes `CallAttrExtended` opcode.
     ///
     /// Handles method calls with `*args` and/or `**kwargs` unpacking.
-    pub(super) fn exec_call_attr_extended(
-        &mut self,
-        name_id: StringId,
-        has_kwargs: bool,
-    ) -> Result<CallResult, RunError> {
+    pub(super) fn exec_call_attr_extended(&mut self, has_kwargs: bool) -> Result<CallResult, RunError> {
         // Pop kwargs dict if present
         let kwargs = if has_kwargs { Some(self.pop()) } else { None };
 
         // Pop args tuple
         let args_tuple = self.pop();
 
-        // Pop the receiver object
+        // Pop the prepared target and receiver.
+        let callable = self.pop();
         let obj = self.pop();
 
         // Unpack and call
-        self.call_attr_extended(obj, name_id, args_tuple, kwargs)
+        self.call_attr_extended(obj, callable, args_tuple, kwargs)
+    }
+
+    fn is_user_class_or_instance(&self, value: &Value) -> bool {
+        matches!(value, Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Instance(_) | HeapData::Class(_)))
+    }
+
+    /// Resolve the callable before evaluating call arguments.
+    pub(super) fn prepare_call_attr(&mut self, name_id: StringId) -> RunResult<()> {
+        let this = self;
+
+        let receiver = this.stack.last().expect("attribute call has a receiver");
+
+        let callable = if this.is_user_class_or_instance(receiver) {
+            let receiver = receiver.clone_with_heap(this);
+            defer_drop!(receiver, this);
+
+            let attr = EitherStr::Interned(name_id);
+            let CallResult::Value(callable) = receiver.py_getattr(&attr, this)? else {
+                unreachable!("user class and instance attribute lookup completes synchronously")
+            };
+            callable
+        } else {
+            // CallAttr keeps the receiver on the stack for builtin dispatch.
+            Value::ModuleFunction(ModuleFunctions::BuiltinMethod(BuiltinMethod::new(name_id)))
+        };
+
+        this.push(callable);
+        Ok(())
+    }
+
+    fn call_prepared_attr(&mut self, receiver: Value, callable: Value, args: ArgValues) -> RunResult<CallResult> {
+        if let Value::ModuleFunction(ModuleFunctions::BuiltinMethod(method)) = &callable {
+            return self.call_builtin_method(receiver, method.name_id(), args);
+        }
+
+        let this = self;
+        let owned = (receiver, callable);
+        defer_drop!(owned, this);
+        this.call_function(&owned.1, args)
     }
 
     // ========================================================================
@@ -348,7 +388,12 @@ impl<'h> VM<'h> {
     /// override only need a single trait impl, not parallel `StaticStrings::Foo`
     /// arms in their `py_call_attr` body. New dunder methods plug into the
     /// dispatch table here without touching individual types.
-    fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
+    pub(crate) fn call_builtin_method(
+        &mut self,
+        obj: Value,
+        name_id: StringId,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
         let this = self;
         let attr = EitherStr::Interned(name_id);
 
@@ -630,7 +675,7 @@ impl<'h> VM<'h> {
     fn call_attr_extended(
         &mut self,
         obj: Value,
-        name_id: StringId,
+        callable: Value,
         args_tuple: Value,
         kwargs: Option<Value>,
     ) -> Result<CallResult, RunError> {
@@ -639,7 +684,7 @@ impl<'h> VM<'h> {
         // Building the argument pack is fallible (a refused `*args` clone, a kwargs
         // dict that cannot grow) and the receiver and kwargs are handed on only once
         // it succeeds, so the guard releases them on the error paths in between.
-        let mut pending = DropGuard::new((obj, kwargs), this);
+        let mut pending = DropGuard::new(((obj, callable), kwargs), this);
         let (pending_values, this) = pending.as_parts_mut();
 
         // Extract positional args from tuple
@@ -653,8 +698,8 @@ impl<'h> VM<'h> {
         };
 
         // Call the method (args_tuple guard drops at scope exit)
-        let ((obj, _), this) = pending.into_parts();
-        this.call_attr(obj, name_id, args)
+        let (((obj, callable), _), this) = pending.into_parts();
+        this.call_prepared_attr(obj, callable, args)
     }
 
     /// Extracts arguments from a tuple for `CallFunctionExtended`.

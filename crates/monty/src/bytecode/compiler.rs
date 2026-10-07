@@ -2274,7 +2274,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Compiles an attribute call on an object.
     ///
     /// The object should already be on the stack. This compiles the arguments
-    /// and emits a CallAttr opcode with the attribute name and arg count.
+    /// and emits a CallAttr opcode with the argument count.
     fn compile_method_call(
         &mut self,
         attr: &EitherStr,
@@ -2283,25 +2283,29 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ) -> Result<(), CompileError> {
         // Get the interned attribute name, converted up-front so the limit check
         // happens once per method call rather than at every emit-site below.
-        let name_id = attr.string_id().expect("CallAttr requires interned attr name");
+        let name_id = attr.string_id().expect("PrepareCallAttr requires interned attr name");
         let name_idx = check_name_index_u16(name_id, call_pos)?;
+
+        // Attribute lookup precedes argument evaluation.
+        self.code.set_location(call_pos, None);
+        self.code.emit_u16(Opcode::PrepareCallAttr, name_idx)?;
 
         // Compile arguments based on the argument type
         match args {
             ArgExprs::Empty => {
                 self.code.set_location(call_pos, None);
-                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, 0)?;
+                self.code.emit_u8(Opcode::CallAttr, 0)?;
             }
             ArgExprs::One(arg) => {
                 self.compile_expr(arg)?;
                 self.code.set_location(call_pos, None);
-                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, 1)?;
+                self.code.emit_u8(Opcode::CallAttr, 1)?;
             }
             ArgExprs::Two(arg1, arg2) => {
                 self.compile_expr(arg1)?;
                 self.compile_expr(arg2)?;
                 self.code.set_location(call_pos, None);
-                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, 2)?;
+                self.code.emit_u8(Opcode::CallAttr, 2)?;
             }
             ArgExprs::Args(args) => {
                 // Check argument count limit
@@ -2316,7 +2320,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 }
                 let arg_count = u8::try_from(args.len()).expect("argument count exceeds u8");
                 self.code.set_location(call_pos, None);
-                self.code.emit_u16_u8(Opcode::CallAttr, name_idx, arg_count)?;
+                self.code.emit_u8(Opcode::CallAttr, arg_count)?;
             }
             ArgExprs::Kwargs(kwargs) => {
                 // Keyword-only method call
@@ -2333,7 +2337,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                     kwname_ids.push(check_name_index_u16(kwarg.key.name_id, call_pos)?);
                 }
                 self.code.set_location(call_pos, None);
-                self.code.emit_call_attr_kw(name_idx, 0, &kwname_ids)?;
+                self.code.emit_call_attr_kw(0, &kwname_ids)?;
             }
             ArgExprs::ArgsKargs {
                 args,
@@ -2388,7 +2392,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
                 self.code.set_location(call_pos, None);
                 self.code.emit_call_attr_kw(
-                    name_idx,
                     u8::try_from(pos_count).expect("positional arg count exceeds u8"),
                     &kwname_ids,
                 )?;
@@ -2439,7 +2442,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 // 3. Emit CallAttrExtended
                 self.code.set_location(call_pos, None);
                 let flags = u8::from(has_kwargs);
-                self.code.emit_u16_u8(Opcode::CallAttrExtended, func_name_id, flags)?;
+                self.code.emit_u8(Opcode::CallAttrExtended, flags)?;
             }
         }
         Ok(())
@@ -2458,9 +2461,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         var_kwargs: Option<&ExprLoc>,
         call_pos: CodeRange,
     ) -> Result<(), CompileError> {
-        // Convert the attribute name id up front so the overflow check happens
-        // once and both `DictMerge` (for error messages) and `CallAttrExtended`
-        // can reuse the converted value.
+        // Keyword merge errors still use the attribute name.
         let name_idx = check_name_index_u16(name_id, call_pos)?;
         // 1. Build args tuple
         // Push regular positional args and build list
@@ -2511,7 +2512,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // 3. Call the method with CallAttrExtended
         self.code.set_location(call_pos, None);
         let flags = u8::from(has_kwargs);
-        self.code.emit_u16_u8(Opcode::CallAttrExtended, name_idx, flags)?;
+        self.code.emit_u8(Opcode::CallAttrExtended, flags)?;
         Ok(())
     }
 

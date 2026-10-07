@@ -96,7 +96,7 @@ impl CodeBuilder {
 
     /// Emits an instruction with a u16 operand followed by a u8 operand.
     ///
-    /// Used for `MakeFunction`, `CallAttr`, `CallAttrExtended`.
+    /// Used for `MakeFunction`.
     pub fn emit_u16_u8(&mut self, op: Opcode, operand1: u16, operand2: u8) -> Result<(), CompileError> {
         self.emit_with_operand(op, Operand::U16U8(operand1, operand2))
     }
@@ -144,26 +144,9 @@ impl CodeBuilder {
         self.emit_with_operand(Opcode::CallFunctionKw, Operand::CallKw { pos_count, kwname_ids })
     }
 
-    /// Emits CallAttrKw with inline keyword names.
-    ///
-    /// Operands: attr_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
-    ///
-    /// The kwname_ids slice contains StringId indices for each keyword argument
-    /// name, in order matching how the values were pushed to the stack.
-    pub fn emit_call_attr_kw(
-        &mut self,
-        attr_name_id: u16,
-        pos_count: u8,
-        kwname_ids: &[u16],
-    ) -> Result<(), CompileError> {
-        self.emit_with_operand(
-            Opcode::CallAttrKw,
-            Operand::CallAttrKw {
-                attr_name_id,
-                pos_count,
-                kwname_ids,
-            },
-        )
+    /// Emits CallAttrKw with positional count and inline keyword names.
+    pub fn emit_call_attr_kw(&mut self, pos_count: u8, kwname_ids: &[u16]) -> Result<(), CompileError> {
+        self.emit_with_operand(Opcode::CallAttrKw, Operand::CallKw { pos_count, kwname_ids })
     }
 
     /// Emits a forward jump instruction, returning a label to patch later.
@@ -542,19 +525,6 @@ impl CodeBuilder {
             }
             Operand::CallKw { pos_count, kwname_ids } => {
                 let kw_count = u8::try_from(kwname_ids.len()).map_err(|_| self.kw_count_too_large())?;
-                self.bytecode.push(pos_count);
-                self.bytecode.push(kw_count);
-                for &name_id in kwname_ids {
-                    self.bytecode.extend(name_id.to_le_bytes());
-                }
-            }
-            Operand::CallAttrKw {
-                attr_name_id,
-                pos_count,
-                kwname_ids,
-            } => {
-                let kw_count = u8::try_from(kwname_ids.len()).map_err(|_| self.kw_count_too_large())?;
-                self.bytecode.extend(attr_name_id.to_le_bytes());
                 self.bytecode.push(pos_count);
                 self.bytecode.push(kw_count);
                 for &name_id in kwname_ids {

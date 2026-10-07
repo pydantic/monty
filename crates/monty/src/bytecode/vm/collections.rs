@@ -196,7 +196,7 @@ impl VM<'_> {
 
     /// Method-call variant of [`Self::dict_merge`]. Qualifies the error wording
     /// with the receiver's Python type by peeking the stack — when this op
-    /// runs the receiver sits 4 slots below TOS (`[receiver, args_tuple,
+    /// runs the receiver sits 5 slots below TOS (`[receiver, prepared_callable, args_tuple,
     /// kwargs_dict, mapping]`), since the call body hasn't issued any pops
     /// yet. Produces e.g. `list.sort() got multiple values for keyword
     /// argument 'key'` to match CPython.
@@ -205,7 +205,7 @@ impl VM<'_> {
             "<unknown>".to_string()
         } else {
             let method = self.interns.get_str(StringId::from_index(func_name_id)).to_string();
-            let recv_type = self.stack[self.stack.len() - 4].py_type_name(self);
+            let recv_type = self.stack[self.stack.len() - 5].py_type_name(self);
             format!("{recv_type}.{method}")
         };
         self.dict_merge_inner(&func_name)

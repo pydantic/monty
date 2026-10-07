@@ -324,15 +324,14 @@ pub enum Opcode {
     /// After the two count bytes, there are kw_count little-endian u16 values,
     /// each being a StringId index for the corresponding keyword argument name.
     CallFunctionKw = 83,
-    /// Call attribute on object. Operands: u16 name_id, u8 arg_count.
+    /// Call prepared attribute on object. Operand: u8 arg_count.
     ///
-    /// This is used for both method calls (`obj.method(args)`) and module
-    /// attribute calls (`module.func(args)`). The attribute is looked up
-    /// on the object and called with the given arguments.
+    /// Consumes the receiver and callable produced by `PrepareCallAttr`, plus
+    /// the arguments. Native receivers dispatch through their type implementation.
     CallAttr = 84,
-    /// Call attribute with keyword args. Operands: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices.
+    /// Call prepared attribute with keyword args. Operands: u8 pos_count, u8 kw_count, then kw_count u16 name indices.
     ///
-    /// Stack: [obj, pos_args..., kw_values...]
+    /// Stack: [obj, prepared_callable, pos_args..., kw_values...]
     /// After the operands, there are kw_count little-endian u16 values,
     /// each being a StringId index for the corresponding keyword argument name.
     CallAttrKw = 85,
@@ -348,13 +347,14 @@ pub enum Opcode {
     ///
     /// Used for calls with `*args` and/or `**kwargs` unpacking.
     CallFunctionExtended = 86,
-    /// Call attribute with *args tuple and **kwargs dict. Operands: u16 name_id, u8 flags.
+    /// Call prepared attribute with *args tuple and **kwargs dict. Operand: u8 flags.
     ///
     /// Flags:
     /// - bit 0: has kwargs dict on stack
     ///
     /// Stack layout (bottom to top):
     /// - receiver object
+    /// - prepared callable
     /// - args tuple
     /// - kwargs dict (if flag bit 0 set)
     ///
@@ -521,8 +521,8 @@ pub enum Opcode {
     /// receiver's Python type — e.g. `list.sort()` instead of bare `sort()`.
     ///
     /// Emitted by the compiler for `CallAttrExtended` paths where the receiver
-    /// is at known stack depth 4 below TOS at the time the op runs
-    /// (`[receiver, args_tuple, kwargs_dict, mapping]`). Matches CPython's
+    /// is at known stack depth 5 below TOS at the time the op runs
+    /// (`[receiver, prepared_callable, args_tuple, kwargs_dict, mapping]`). Matches CPython's
     /// `obj.method() got multiple values for keyword argument 'X'` form,
     /// which CPython produces because it has the bound method's `__qualname__`
     /// available — we synthesise the equivalent by peeking the receiver.
@@ -559,6 +559,9 @@ pub enum Opcode {
     /// Unbind a name through the frame's namespace; `NameError` if absent.
     /// Operands as `LoadName`.
     DeleteName = 124,
+    /// Prepare an attribute callable before call arguments run.
+    /// Stack: receiver -> receiver, callable. Operand: u16 name_id.
+    PrepareCallAttr = 125,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -590,8 +593,7 @@ enum OperandShape {
     U16U16 = 7,
     U16U8U8 = 8,
     CallKw = 9,
-    CallAttrKw = 10,
-    U16U16U8 = 11,
+    U16U16U8 = 10,
 }
 
 impl Opcode {
@@ -680,7 +682,9 @@ impl Opcode {
             | Self::SetExtend
             | Self::LiftToTop
             | Self::Assert
-            | Self::AssertFailed => OperandShape::U8,
+            | Self::AssertFailed
+            | Self::CallAttr
+            | Self::CallAttrExtended => OperandShape::U8,
             Self::LoadSmallInt => OperandShape::I8,
             Self::LoadModule
             | Self::LoadConst
@@ -698,6 +702,7 @@ impl Opcode {
             | Self::BuildFString
             | Self::DictMerge
             | Self::LoadAttr
+            | Self::PrepareCallAttr
             | Self::LoadAttrImport
             | Self::StoreAttr
             | Self::DeleteGlobal
@@ -710,12 +715,11 @@ impl Opcode {
             | Self::JumpIfFalseOrPop
             | Self::ForIter => OperandShape::Offset,
             Self::CallBuiltinFunction | Self::CallBuiltinType | Self::UnpackEx => OperandShape::U8U8,
-            Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction => OperandShape::U16U8,
+            Self::MakeFunction => OperandShape::U16U8,
             Self::LoadGlobalCallable => OperandShape::U16U16,
             Self::MakeClosure => OperandShape::U16U8U8,
             Self::LoadName | Self::StoreName | Self::DeleteName => OperandShape::U16U16U8,
-            Self::CallFunctionKw => OperandShape::CallKw,
-            Self::CallAttrKw => OperandShape::CallAttrKw,
+            Self::CallFunctionKw | Self::CallAttrKw => OperandShape::CallKw,
         }
     }
 }
@@ -752,7 +756,7 @@ pub enum Operand<'a> {
     Offset(RelativeOffset),
     /// Two u8 operands (e.g. `UnpackEx`, `CallBuiltinFunction`).
     U8U8(u8, u8),
-    /// u16 little-endian then u8 (e.g. `MakeFunction`, `CallAttr`).
+    /// u16 little-endian then u8 (e.g. `MakeFunction`).
     U16U8(u16, u8),
     /// Two u16 little-endian (e.g. `LoadGlobalCallable`).
     U16U16(u16, u16),
@@ -760,14 +764,8 @@ pub enum Operand<'a> {
     U16U16U8(u16, u16, u8),
     /// u16 then two u8s (e.g. `MakeClosure`).
     U16U8U8(u16, u8, u8),
-    /// `CallFunctionKw` shape: pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
+    /// `CallFunctionKw` / `CallAttrKw` shape: pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
     CallKw { pos_count: u8, kwname_ids: &'a [u16] },
-    /// `CallAttrKw` shape: attr_name_id (u16), pos_count (u8), kw_count (u8), kw_count * name_id (u16 each).
-    CallAttrKw {
-        attr_name_id: u16,
-        pos_count: u8,
-        kwname_ids: &'a [u16],
-    },
 }
 
 impl Operand<'_> {
@@ -785,7 +783,6 @@ impl Operand<'_> {
             Self::U16U16U8(..) => OperandShape::U16U16U8,
             Self::U16U8U8(..) => OperandShape::U16U8U8,
             Self::CallKw { .. } => OperandShape::CallKw,
-            Self::CallAttrKw { .. } => OperandShape::CallAttrKw,
         }
     }
 }
@@ -863,8 +860,10 @@ impl Opcode {
 
             // === Variable-effect: U16U8 operand ===
             (MakeFunction, Operand::U16U8(_, defaults)) => 1 - i32::from(defaults),
-            (CallAttr, Operand::U16U8(_, arg_count)) => -i32::from(arg_count),
-            (CallAttrExtended, Operand::U16U8(_, flags)) => -(1 + i32::from(flags & 0x01)),
+
+            // === Prepared attribute calls: U8 operand ===
+            (CallAttr, Operand::U8(arg_count)) => -(1 + i32::from(arg_count)),
+            (CallAttrExtended, Operand::U8(flags)) => -(2 + i32::from(flags & 0x01)),
 
             // === Variable-effect: U16U8U8 operand ===
             // MakeClosure: pops `cell_count` cells AND `defaults_count` defaults,
@@ -877,14 +876,9 @@ impl Opcode {
                 let kw_count = i32::try_from(kwname_ids.len()).expect("keyword count exceeds i32");
                 -(i32::from(pos_count) + kw_count)
             }
-            (
-                CallAttrKw,
-                Operand::CallAttrKw {
-                    pos_count, kwname_ids, ..
-                },
-            ) => {
+            (CallAttrKw, Operand::CallKw { pos_count, kwname_ids }) => {
                 let kw_count = i32::try_from(kwname_ids.len()).expect("keyword count exceeds i32");
-                -(i32::from(pos_count) + kw_count)
+                -(1 + i32::from(pos_count) + kw_count)
             }
 
             // === Fixed-effect, no operand ===
@@ -954,6 +948,7 @@ impl Opcode {
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
             (DeleteGlobal | DeleteCell, Operand::U16(_)) => 0,
             (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
+            (PrepareCallAttr, Operand::U16(_)) => 1,
             (StoreAttr, Operand::U16(_)) => -2,
             // `DictMerge` takes a u16 operand carrying the func_name_id for
             // the duplicate-key TypeError message. `MethodDictMerge` shares

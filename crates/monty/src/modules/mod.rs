@@ -11,6 +11,7 @@ use crate::{
     exception_private::RunResult,
     heap::HeapId,
     intern::StaticStrings,
+    types::builtin_method::BuiltinMethod,
 };
 
 pub(crate) mod asyncio;
@@ -146,12 +147,14 @@ impl StandardLib {
     }
 }
 
-/// All stdlib module function (but not builtins).
+/// Standard-library functions and prepared builtin method handles.
 ///
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
+    #[serde(rename = "NativeMethod")]
+    BuiltinMethod(BuiltinMethod),
     Asyncio(asyncio::AsyncioFunctions),
     Collections(collections::CollectionsFunctions),
     Json(json::JsonFunctions),
@@ -183,6 +186,7 @@ pub(crate) enum ModuleFunctions {
 impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BuiltinMethod(method) => write!(f, "{method}"),
             Self::Asyncio(func) => write!(f, "{func}"),
             Self::Collections(func) => write!(f, "{func}"),
             Self::Json(func) => write!(f, "{func}"),
@@ -213,6 +217,7 @@ impl ModuleFunctions {
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
     pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         match self {
+            Self::BuiltinMethod(method) => method.call(vm, args),
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
             Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),
             Self::Json(functions) => json::call(vm, functions, args).map(CallResult::Value),

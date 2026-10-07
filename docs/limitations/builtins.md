@@ -200,3 +200,10 @@ These raise `NameError`:
         `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
         class) is not preserved as a type; it degrades to a callable, appearing inside
         the sandbox as a `function` rather than a `type`.
+
+## Builtin method lookup
+
+Builtin method calls check whether the method exists after evaluating their arguments.
+For example, `list.missing(print(42))` prints `42` before raising `AttributeError`.
+CPython raises before evaluating `print(42)`.
+This also applies to builtin instances, such as `[].missing(print(42))`.
