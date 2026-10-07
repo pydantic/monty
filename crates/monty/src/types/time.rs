@@ -558,15 +558,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Isoformat) => time_isoformat(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Strftime) => time_strftime(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Replace) => time_replace(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Utcoffset) => time_utcoffset(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Tzname) => time_tzname(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Dst) => time_dst(self, args, vm).map(CallResult::Value),
-            _ => Err(ExcType::attribute_error_method(Type::Time, attr, args, vm)),
-        }
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(time_lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::Time, attr, args, vm));
+        };
+        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -726,7 +721,7 @@ fn time_resolution(vm: &mut VM<'_>) -> Value {
 
 builtin_attrs! {
     for Time: mut heap(Time);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const TIME_ATTRS: &[(StaticStrings, AttrDef)] = &[
         Isoformat => method(time_isoformat),
         Strftime => method(time_strftime),
         Replace => method(time_replace),
@@ -738,5 +733,5 @@ builtin_attrs! {
         Max => value(time_max),
         Resolution => value(time_resolution),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn time_lookup_attr;
 }

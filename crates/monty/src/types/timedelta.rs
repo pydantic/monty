@@ -538,10 +538,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::TotalSeconds) {
-            return timedelta_total_seconds(self, args, vm).map(CallResult::Value);
-        }
-        Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm))
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(timedelta_lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm));
+        };
+        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -579,11 +579,11 @@ fn timedelta_resolution(vm: &mut VM<'_>) -> Value {
 
 builtin_attrs! {
     for TimeDelta: mut heap(TimeDelta);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const TIMEDELTA_ATTRS: &[(StaticStrings, AttrDef)] = &[
         TotalSeconds => method(timedelta_total_seconds),
         Min => value(timedelta_min),
         Max => value(timedelta_max),
         Resolution => value(timedelta_resolution),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn timedelta_lookup_attr;
 }

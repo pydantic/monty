@@ -121,30 +121,30 @@ pub(crate) use builtin_attrs;
 
 pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     match owner {
-        Type::List => list::ATTRS,
-        Type::Tuple => tuple::ATTRS,
-        Type::Complex => complex::ATTRS,
-        Type::Date => date::ATTRS,
-        Type::Time => time::ATTRS,
-        Type::TimeDelta => timedelta::ATTRS,
-        Type::TimeZone => timezone::ATTRS,
-        Type::RePattern => re_pattern::ATTRS,
-        Type::ReMatch => re_match::ATTRS,
+        Type::List => list::LIST_ATTRS,
+        Type::Tuple => tuple::TUPLE_ATTRS,
+        Type::Complex => complex::COMPLEX_ATTRS,
+        Type::Date => date::DATE_ATTRS,
+        Type::Time => time::TIME_ATTRS,
+        Type::TimeDelta => timedelta::TIMEDELTA_ATTRS,
+        Type::TimeZone => timezone::TIMEZONE_ATTRS,
+        Type::RePattern => re_pattern::RE_PATTERN_ATTRS,
+        Type::ReMatch => re_match::RE_MATCH_ATTRS,
         _ => &[],
     }
 }
 
 pub(crate) const fn lookup_attr(owner: Type, name: StaticStrings) -> Option<AttrDef> {
     match owner {
-        Type::List => list::lookup_attr(name),
-        Type::Tuple => tuple::lookup_attr(name),
-        Type::Complex => complex::lookup_attr(name),
-        Type::Date => date::lookup_attr(name),
-        Type::Time => time::lookup_attr(name),
-        Type::TimeDelta => timedelta::lookup_attr(name),
-        Type::TimeZone => timezone::lookup_attr(name),
-        Type::RePattern => re_pattern::lookup_attr(name),
-        Type::ReMatch => re_match::lookup_attr(name),
+        Type::List => list::list_lookup_attr(name),
+        Type::Tuple => tuple::tuple_lookup_attr(name),
+        Type::Complex => complex::complex_lookup_attr(name),
+        Type::Date => date::date_lookup_attr(name),
+        Type::Time => time::time_lookup_attr(name),
+        Type::TimeDelta => timedelta::timedelta_lookup_attr(name),
+        Type::TimeZone => timezone::timezone_lookup_attr(name),
+        Type::RePattern => re_pattern::re_pattern_lookup_attr(name),
+        Type::ReMatch => re_match::re_match_lookup_attr(name),
         _ => None,
     }
 }
