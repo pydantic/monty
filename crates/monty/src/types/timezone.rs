@@ -341,14 +341,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        // Each method takes the `dt` it would need to resolve a DST rule. A fixed
-        // offset has no such rule, so `take_dt_arg` validates and discards it.
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Utcoffset) => timezone_utcoffset(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Tzname) => timezone_tzname(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Dst) => timezone_dst(self, args, vm).map(CallResult::Value),
-            _ => Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm)),
-        }
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm));
+        };
+        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
     }
 }
 

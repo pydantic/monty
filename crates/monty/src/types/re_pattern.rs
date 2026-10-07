@@ -513,17 +513,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let result = match attr.static_string(vm.interns) {
-            Some(StaticStrings::Search) => pattern_search(self, args, vm),
-            Some(StaticStrings::Match) => pattern_match(self, args, vm),
-            Some(StaticStrings::Fullmatch) => pattern_fullmatch(self, args, vm),
-            Some(StaticStrings::Findall) => pattern_findall(self, args, vm),
-            Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
-            Some(StaticStrings::Split) => call_pattern_split(self, args, vm),
-            Some(StaticStrings::Finditer) => pattern_finditer(self, args, vm),
-            _ => return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm)),
-        }?;
-        Ok(CallResult::Value(result))
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
+        };
+        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
     }
 }
 
@@ -904,14 +897,6 @@ fn pattern_finditer<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm
     value.get(vm.heap).finditer(arg, text, vm.heap)
 }
 
-fn pattern_sub<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    call_pattern_sub(value, args, vm)
-}
-
-fn pattern_split<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    call_pattern_split(value, args, vm)
-}
-
 builtin_attrs! {
     for RePattern: mut heap(RePattern);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
@@ -919,8 +904,8 @@ builtin_attrs! {
         Match => method(pattern_match),
         Fullmatch => method(pattern_fullmatch),
         Findall => method(pattern_findall),
-        Sub => method(pattern_sub),
-        Split => method(pattern_split),
+        Sub => method(call_pattern_sub),
+        Split => method(call_pattern_split),
         Finditer => method(pattern_finditer),
     ];
     pub(crate) const fn lookup_attr;

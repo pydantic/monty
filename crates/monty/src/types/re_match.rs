@@ -350,16 +350,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let result = match attr.static_string(vm.interns) {
-            Some(StaticStrings::Group) => call_group(self, args, vm)?,
-            Some(StaticStrings::Groups) => match_groups(self, args, vm)?,
-            Some(StaticStrings::Groupdict) => match_groupdict(self, args, vm)?,
-            Some(StaticStrings::Start) => match_start(self, args, vm)?,
-            Some(StaticStrings::End) => match_end(self, args, vm)?,
-            Some(StaticStrings::Span) => match_span(self, args, vm)?,
-            _ => return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm)),
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm));
         };
-        Ok(CallResult::Value(result))
+        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -420,10 +414,6 @@ fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -
             Ok(allocate_tuple(elements, vm.heap))
         }
     }
-}
-
-fn match_group<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    call_group(m, args, vm)
 }
 
 fn match_groups<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -534,7 +524,7 @@ struct GroupdictArgs {
 builtin_attrs! {
     for ReMatch: mut heap(ReMatch);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
-        Group => method(match_group),
+        Group => method(call_group),
         Groups => method(match_groups),
         Groupdict => method(match_groupdict),
         Start => method(match_start),
