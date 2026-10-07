@@ -1,0 +1,24 @@
+crates/monty/test_cases/hashlib__errors.py
+  s_85e79992fe406b::t_bbe8474bf3eb88 10-11,15,20-22,316
+  s_85e79992fe406b::t_74457f3330556b 238,279,414-420
+  s_85e79992fe406b::t_c9ec634f8c855e 239-244,317-322,340-345,406-409
+docs/limitations/hashlib.md
+  s_85e79992fe406b::t_bbe8474bf3eb88 45-54
+  s_85e79992fe406b::t_74457f3330556b 33-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "493370e0c8bae4aa7edaac517f6e6e4dd8fbc2e6",
+  "prompts": {},
+  "sessions": {
+    "s_85e79992fe406b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4374c46d-a07d-4026-87ee-46a9d9dded27",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
