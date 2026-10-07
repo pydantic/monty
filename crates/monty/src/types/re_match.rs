@@ -353,9 +353,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(re_match_lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm));
         };
-        let receiver = self.clone_value(vm.heap);
-        crate::defer_drop!(receiver, vm);
-        call(receiver, args, vm).map(CallResult::Value)
+        super::builtin_attr::call_method(self, call, args, vm)
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {

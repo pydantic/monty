@@ -541,9 +541,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(timedelta_lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm));
         };
-        let receiver = self.clone_value(vm.heap);
-        crate::defer_drop!(receiver, vm);
-        call(receiver, args, vm).map(CallResult::Value)
+        super::builtin_attr::call_method(self, call, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

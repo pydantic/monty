@@ -623,6 +623,12 @@ impl Type {
         args: ArgValues,
         vm: &mut VM<'_>,
     ) -> RunResult<CallResult> {
+        if let Some(name) = vm.interns.static_string(method_id)
+            && let Some(AttrDef::ClassMethod(call)) = builtin_attr::lookup_attr(self, name)
+        {
+            return call(name, self, Value::Builtin(Builtins::Type(self)), args, vm);
+        }
+
         match (self, vm.interns.static_string(method_id)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, Some(StaticStrings::Fromkeys)) => {
@@ -643,14 +649,7 @@ impl Type {
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Complex, Some(StaticStrings::FromNumber)) => {
-                complex::class_from_number(vm, args).map(CallResult::Value)
-            }
-            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
-                date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
             (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
             (Self::DateTime, Some(StaticStrings::Strptime)) => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
@@ -665,9 +664,6 @@ impl Type {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
             (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
-            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
-                time::class_fromisoformat(vm, args).map(CallResult::Value)
-            }
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
             (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
