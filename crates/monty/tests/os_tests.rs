@@ -1905,3 +1905,32 @@ fn scan_rejects_malformed_replies() {
         "RuntimeError: invalid return type: os.scandir: scan entry path \"../escape\" is not relative to the scan root"
     );
 }
+
+/// Bottom-up walks queue their steps on the heap, so tree depth costs no Rust stack.
+#[test]
+fn deep_bottom_up_walk_does_not_recurse() {
+    let mut tree = vec![entry("", 'd')];
+    let mut path = String::new();
+    for _ in 0..8_000 {
+        path = if path.is_empty() {
+            "d".to_owned()
+        } else {
+            format!("{path}/d")
+        };
+        tree.push(entry(&path, 'd'));
+    }
+    let code = "import os\nlen(list(os.walk('r', topdown=False)))";
+    assert_eq!(run_with_scan_reply(code, tree), MontyObject::int(8_001));
+}
+
+/// A literal glob only matches when the reply actually described the root.
+#[test]
+fn literal_glob_needs_a_described_root() {
+    let code = "from pathlib import Path\nlist(Path('r').glob('a.txt'))";
+    assert_eq!(run_with_scan_reply(code, vec![]), MontyObject::list([]));
+    let code = "from pathlib import Path\n[str(p) for p in Path('r').glob('a.txt')]";
+    assert_eq!(
+        run_with_scan_reply(code, vec![entry("", 'f')]),
+        MontyObject::list([MontyObject::string("r/a.txt".to_owned())])
+    );
+}

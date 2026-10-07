@@ -184,3 +184,28 @@ fn repeated_pattern_states_are_visited_once() {
     assert_eq!(matches, ["a/b/c", "a/b/"]);
     assert!(source.1 < 20, "listed {} times", source.1);
 }
+
+/// A host prunes with normalized states, so routes through `..` collapse.
+#[test]
+fn pruning_collapses_dot_dot_routes() {
+    let names: Vec<String> = (0..3).map(|i| format!("{i:032}")).collect();
+    let mut entries = vec![(String::new(), 'd')];
+    entries.extend(names.iter().map(|name| (name.clone(), 'd')));
+    let entries: Vec<(&str, char)> = entries.iter().map(|(path, kind)| (path.as_str(), *kind)).collect();
+    let mut source = Counting(tree(&entries), 0);
+    let pattern = "*/../".repeat(13) + "*";
+    let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
+    GlobSelector::new(&parts, None, false).prune(&mut source).unwrap();
+    assert!(source.1 < 100, "listed {} times", source.1);
+    // the sandbox side still spells every route, as CPython does
+    let Ok(matches) = GlobSelector::new(&parts[..parts.len() - 6], None, false).select(&mut source);
+    assert_eq!(matches.len(), 3usize.pow(11));
+}
+
+/// Following symlinks, a merged trailing `**` needs a segment, as CPython's `.*` after `/` does.
+#[test]
+fn followed_recursive_tail_matches_like_cpython() {
+    let mut tree = tree(&[("", 'd'), ("a", 'd'), ("a/b", 'd'), ("a/b/f", 'f')]);
+    assert_eq!(select(&mut tree, "**/a/**", true), ["a/b", "a/b/f"]);
+    assert_eq!(select(&mut tree, "**/a/**", false), ["a/", "a/b", "a/b/f"]);
+}

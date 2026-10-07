@@ -1061,10 +1061,29 @@ except FileNotFoundError as e:
     assert monty_run(code, os=scan_tree()) == snapshot(("[Errno 2] No such file or directory: '/missing'", [], []))
 
 
+class UnreadableOS(OSAccess):
+    """Refuses to list one directory, as a permissions error would."""
+
+    def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
+        if path == P('/test/pkg'):
+            raise PermissionError(f'[Errno 13] Permission denied: {str(path)!r}')
+        return super().path_iterdir(path)
+
+
+def test_path_scan_unreadable_descendant(monty_run: RunMonty):
+    """A directory below the root that cannot be listed reads as empty; the root itself raises."""
+    fs = UnreadableOS([MemoryFile('/test/a.py', content='a'), MemoryFile('/test/pkg/b.py', content='b')])
+    result = monty_run("from pathlib import Path; sorted(str(p) for p in Path('/test').glob('**/*.py'))", os=fs)
+    assert result == snapshot(['/test/a.py'])
+    with pytest.raises(PermissionError) as exc_info:
+        fs.path_scan(P('/test/pkg'), max_depth=None, follow_symlinks=False)
+    assert str(exc_info.value) == snapshot("[Errno 13] Permission denied: '/test/pkg'")
+
+
 def test_path_scan_direct():
     """`path_scan` returns the root and its descendants down to `max_depth`."""
     fs = scan_tree()
-    assert fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False) == snapshot(
+    assert sorted(fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False)) == snapshot(
         [
             ScanEntry(path='', is_dir=True, is_file=False, is_symlink=False),
             ScanEntry(path='a.txt', is_dir=False, is_file=True, is_symlink=False),

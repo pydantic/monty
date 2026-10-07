@@ -17,6 +17,7 @@ use super::{
     dispatch::{self, FsRequest},
     error::MountError,
     mount_mode::MountMode,
+    overlay::available_memory,
     path_security::reject_overlong_path,
 };
 
@@ -34,9 +35,13 @@ pub(super) fn execute(
     mode: &mut MountMode,
 ) -> Result<MontyObject, MountError> {
     if let Some(parts) = &args.pattern {
-        reject_overlong_path(&parts.join("/"))?;
+        reject_overlong_pattern(parts)?;
     }
-    let budget = MemoryBudget::full(ctx.memory_usage_limit);
+    // Overlay data retained against the same limit leaves less for the reply.
+    let budget = match &*mode {
+        MountMode::OverlayMemory(state) => available_memory(state, ctx)?,
+        MountMode::ReadWrite | MountMode::ReadOnly => MemoryBudget::full(ctx.memory_usage_limit),
+    };
     let mut source = MountSource {
         root: args.path.trim_end_matches('/'),
         ctx,
@@ -49,6 +54,26 @@ pub(super) fn execute(
         Some(entries) => Ok(scan_reply(entries)),
         None => Err(MountError::not_found(&args.path)),
     }
+}
+
+/// Applies the path length limits to a pattern without copying more of it
+/// than it takes to exceed them, since a sandbox can send one of any size.
+fn reject_overlong_pattern(parts: &[String]) -> Result<(), MountError> {
+    /// One more component than paths may have, and one more byte than a name.
+    const COMPONENTS: usize = 65;
+    const NAME_BYTES: usize = 256;
+    let mut joined = String::new();
+    for part in parts.iter().take(COMPONENTS) {
+        let mut end = part.len().min(NAME_BYTES);
+        while !part.is_char_boundary(end) {
+            end -= 1;
+        }
+        if !joined.is_empty() {
+            joined.push('/');
+        }
+        joined.push_str(&part[..end]);
+    }
+    reject_overlong_path(&joined)
 }
 
 /// Reads one mount for [`collect_scan`] through its request handlers.
@@ -105,11 +130,11 @@ impl MountSource<'_, '_> {
         })
     }
 
-    /// Charges one recorded entry named `name` to the mount's memory limit.
-    fn charge(&mut self, name: &str) -> Result<(), MountError> {
+    /// Charges one recorded entry whose relative path is `path_len` bytes.
+    fn charge(&mut self, path_len: usize) -> Result<(), MountError> {
         self.used = self
             .used
-            .saturating_add(as_u64(name.len()))
+            .saturating_add(as_u64(path_len))
             .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
         self.budget.check(self.used)
     }
@@ -136,7 +161,8 @@ impl ScanSource for MountSource<'_, '_> {
                 continue;
             };
             let name = child.rsplit_once('/').map_or(child.as_str(), |(_, name)| name);
-            self.charge(name)?;
+            // The reply keeps the whole relative path, so that is what costs memory.
+            self.charge(dir.len() + 1 + name.len())?;
             let info = self.info(&format!("{dir_path}/{name}"))?;
             children.push((name.to_owned(), info));
         }
@@ -151,7 +177,7 @@ impl ScanSource for MountSource<'_, '_> {
                 path: virtual_path.as_str().into(),
             })?;
         if exists {
-            self.charge(path)?;
+            self.charge(path.len())?;
         }
         Ok(exists.then_some(info))
     }

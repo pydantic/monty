@@ -1,4 +1,5 @@
 # mount-fs
+# skip-cpython-windows
 import os
 from pathlib import Path
 
@@ -179,6 +180,18 @@ try:
 except TypeError as e:
     assert str(e) == "join() argument must be str, bytes, or os.PathLike object, not 'int'"
 
+# an exception escaping `onerror` ends the walk, as it would end CPython's generator
+walk = os.walk(root, onerror=fail)
+dirpath, dirnames, filenames = next(walk)
+dirnames.clear()
+dirnames.extend(['missing', 'subdir'])
+try:
+    next(walk)
+    assert False, 'expected RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'stop'
+assert list(walk) == []
+
 # an abandoned walk holds its last `dirnames`; one whose `onerror` refers back to it is a cycle
 walk = os.walk(root)
 dirpath, dirnames, filenames = next(walk)
@@ -241,6 +254,18 @@ assert entries['subdir'].is_dir()
 assert not entries['subdir'].is_file()
 assert repr(hello) == "<DirEntry 'hello.txt'>"
 assert type(hello).__name__ == 'DirEntry'
+assert {hello: 1}[hello] == 1
+assert len({hello, entries['subdir'], hello}) == 2
+try:
+    (root / 'new.txt').write_text(hello)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'data must be str, not DirEntry'
+try:
+    (root / 'new.txt').write_text(root)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'data must be str, not PosixPath'
 assert hello.stat().st_size == 12
 assert os.fspath(hello) == hello.path
 assert hello.__fspath__() == hello.path

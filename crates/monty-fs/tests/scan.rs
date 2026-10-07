@@ -309,3 +309,39 @@ fn a_reply_round_trips_through_its_encoding() {
     assert_eq!(parse_scan_reply(&reply).unwrap().len(), 3);
     assert_eq!(parse_scan_reply(&MontyObject::list([first])).unwrap()[0].path, "");
 }
+
+#[test]
+fn overlay_data_shares_the_scan_budget() {
+    let dir = create_tree();
+    let mount = Mount::new("/mnt", dir.path(), MountMode::OverlayMemory(OverlayState::new()), None)
+        .unwrap()
+        .with_memory_usage_limit(4_000);
+    let mut table = MountTable::new();
+    table.push_mount(mount).unwrap();
+    // a listing that fits the whole limit no longer fits beside retained overlay data
+    assert!(scan(&mut table, ScanArgs::listing("/mnt".into(), None, false)).is_ok());
+    let write = OsFunctionCall::WriteText(PathStringDataArgs {
+        path: "/mnt/big.txt".into(),
+        data: "x".repeat(3_500),
+    });
+    assert!(matches!(table.handle_os_call(write), MountCallOutcome::Handled(Ok(_))));
+    let err = scan(&mut table, ScanArgs::listing("/mnt".into(), None, false)).unwrap_err();
+    assert_eq!(err.into_exception().exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn huge_pattern_parts_are_refused_without_copying_them() {
+    let dir = create_tree();
+    let mut table = mount(&dir, MountMode::ReadOnly);
+    let part = "x".repeat(10_000_000);
+    let err = scan(&mut table, glob("/mnt", &[&part, "*"])).unwrap_err();
+    assert_eq!(err.into_exception().exc_type(), ExcType::OSError);
+}
+
+/// The visit cap is a `RuntimeError`: an `OSError` would be swallowed by glob as an empty match.
+#[test]
+fn scan_limit_is_a_runtime_error() {
+    let exc = MountError::ScanLimitExceeded(10).into_exception();
+    assert_eq!(exc.exc_type(), ExcType::RuntimeError);
+    assert_eq!(exc.message(), Some("directory scan examined more than 10 entries"));
+}

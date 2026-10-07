@@ -599,9 +599,11 @@ fn extract_str_data(
     interns: &Interns,
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
-    let data_str = value_to_owned_string(&data, heap, interns);
+    // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
+    let data_str = data.as_either_str(heap).map(|data| data.as_str(interns).to_owned());
 
-    let py_type = data.py_type_name_heap(heap, interns);
+    // CPython names the type by its bare `__name__` here (`DirEntry`, not `posix.DirEntry`).
+    let py_type = data.py_type_heap(heap).dunder_name(heap, interns).into_owned();
     data.drop_with(heap);
 
     match data_str {

@@ -665,3 +665,66 @@ def test_abstract_os_path_scan_override(monty_run: RunMonty):
             )
         ]
     )
+
+
+@pytest.mark.parametrize(
+    'code,expected',
+    [
+        (
+            "import os; os.walk('/data', followlinks=True)",
+            snapshot(
+                [
+                    (
+                        '/data',
+                        {
+                            'max_depth': None,
+                            'follow_symlinks': True,
+                            'pattern': None,
+                            'case_sensitive': None,
+                            'recurse_symlinks': False,
+                        },
+                    )
+                ]
+            ),
+        ),
+        (
+            "import os; os.scandir('/data')",
+            snapshot(
+                [
+                    (
+                        '/data',
+                        {
+                            'max_depth': 1,
+                            'follow_symlinks': False,
+                            'pattern': None,
+                            'case_sensitive': None,
+                            'recurse_symlinks': False,
+                        },
+                    )
+                ]
+            ),
+        ),
+        (
+            "from pathlib import Path; Path('/data').glob('*.py', case_sensitive=False, recurse_symlinks=True)",
+            snapshot(
+                [
+                    (
+                        '/data',
+                        {
+                            'max_depth': 1,
+                            'follow_symlinks': True,
+                            'pattern': ['*.py'],
+                            'case_sensitive': False,
+                            'recurse_symlinks': True,
+                        },
+                    )
+                ]
+            ),
+        ),
+    ],
+)
+def test_abstract_os_path_scan_arguments(monty_run: RunMonty, code: str, expected: Any):
+    """Each scan forwards its own depth, symlink and pattern arguments."""
+    fs = ScanOS()
+    monty_run(code, os=fs)
+    assert fs.scans == expected

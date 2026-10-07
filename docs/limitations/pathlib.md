@@ -76,8 +76,9 @@ Pattern semantics follow CPython 3.14's: hidden files match `*`, `**` descends o
     `generator`; both are built from the snapshot, so files created or removed while iterating are not seen.
     Iterating a huge tree still reads all of it up front, charged to the mount's memory limit
     (see [filesystem.md](filesystem.md#directory-scans)).
-- **Pruning `dirnames` in `walk()` works** (`dirnames[:] = ...`, `dirnames.remove(...)`), but only saves sandbox
+- **Pruning `dirnames` in `walk()` works** (`dirnames.remove(...)`, `dirnames.clear()`), but only saves sandbox
     work: the host has already read the pruned directories.
+    Monty has no list slice assignment, so the common `dirnames[:] = [...]` raises `TypeError`.
 - **Order is sorted by name within each directory.** CPython yields directory entries in filesystem order.
 - **`..` after a wildcard is collapsed lexically** (`'*/../a.txt'`), and one that climbs above the directory being
     globbed matches nothing; CPython resolves it through the filesystem. Leading `..` parts work as in CPython.

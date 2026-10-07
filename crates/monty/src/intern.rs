@@ -696,10 +696,10 @@ pub enum StaticStrings {
     Callable,
     /// `capitalize()` method, shared by `str` and `bytes`.
     Capitalize,
-    /// `str.casefold()` method.
-    Casefold,
     /// Kwarg name `case_sensitive` — `Path.glob(case_sensitive=...)`.
     CaseSensitive,
+    /// `str.casefold()` method.
+    Casefold,
     /// `unicodedata.category()` function.
     Category,
     /// `math.cbrt()` function.
@@ -1057,10 +1057,10 @@ pub enum StaticStrings {
     /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "foldspaces")]
     Foldspaces,
-    /// Kwarg name `followlinks` — `os.walk(followlinks=...)`.
-    Followlinks,
     /// Kwarg name `follow_symlinks` — `os.stat(follow_symlinks=...)`.
     FollowSymlinks,
+    /// Kwarg name `followlinks` — `os.walk(followlinks=...)`.
+    Followlinks,
     /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
     Format,
     /// `math.frexp()` function.

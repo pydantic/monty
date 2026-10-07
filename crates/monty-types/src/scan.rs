@@ -153,6 +153,34 @@ pub fn parse_scan_reply(reply: &MontyObject) -> Result<Vec<ScanEntry>, String> {
     ids.iter().map(|&id| parse_entry(graph, id)).collect()
 }
 
+/// Bytes [`parse_scan_reply`] and [`ScanTree::new`] allocate for `reply`, roughly:
+/// each path is held three times (parsed, keyed, listed) plus per-entry overhead.
+///
+/// Lets the sandbox charge its memory limit before indexing a reply, without allocating.
+#[must_use]
+pub fn indexed_size(reply: &MontyObject) -> usize {
+    /// Map slots, list slots and flags per entry, generously.
+    const ENTRY_OVERHEAD: usize = 160;
+    let MontyNode::List(ids) = unstable::root_node(reply) else {
+        return 0;
+    };
+    let (graph, _) = unstable::graph_parts(reply);
+    ids.iter()
+        .map(|&id| {
+            let path_len = match graph.node(id) {
+                MontyNode::Tuple(items) | MontyNode::List(items) | MontyNode::NamedTuple { values: items, .. } => {
+                    match items.first().map(|&path| graph.node(path)) {
+                        Some(MontyNode::String(path) | MontyNode::Path(path)) => path.len(),
+                        _ => 0,
+                    }
+                }
+                _ => 0,
+            };
+            path_len.saturating_mul(3).saturating_add(ENTRY_OVERHEAD)
+        })
+        .fold(0, usize::saturating_add)
+}
+
 /// Decodes one `(path, is_dir, is_file, is_symlink)` tuple.
 fn parse_entry(graph: &MontyGraph, id: NodeId) -> Result<ScanEntry, String> {
     let invalid = || {
@@ -220,8 +248,8 @@ pub trait ScanSource {
     /// `None` when it does not exist.
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Self::Error>;
 
-    /// Charged once per entry the selector examines, so a host can cap the work
-    /// a pathological pattern (`*/**/*/**/...`) costs.
+    /// Charged once per entry a scan examines, so a host can cap the work a
+    /// pathological pattern (`*/**/*/**/...`) or a symlink cycle costs.
     fn visit(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -245,7 +273,7 @@ pub fn collect_scan<E>(args: &ScanArgs, source: &mut impl ScanSource<Error = E>)
     if root.is_dir {
         match &args.pattern {
             Some(parts) => {
-                GlobSelector::new(parts, args.case_sensitive, args.recurse_symlinks).select(&mut recorder)?;
+                GlobSelector::new(parts, args.case_sensitive, args.recurse_symlinks).prune(&mut recorder)?;
             }
             None => walk_to_depth(&mut recorder, args.max_depth, args.follow_symlinks)?,
         }
@@ -272,6 +300,7 @@ fn walk_to_depth<E>(
             continue;
         }
         for (name, info) in source.list(&dir)?.unwrap_or_default() {
+            source.visit()?;
             if info.is_dir && (follow_symlinks || !info.is_symlink) {
                 stack.push((join(&dir, &name), depth + 1));
             }
@@ -371,6 +400,12 @@ impl ScanTree {
             is_file: false,
             is_symlink: false,
         })
+    }
+
+    /// The root entry if the reply described it, unlike [`Self::root`].
+    #[must_use]
+    pub fn described_root(&self) -> Option<EntryInfo> {
+        self.entries.get("").copied()
     }
 
     /// The sorted children of the normalized directory `dir`.
@@ -489,10 +524,34 @@ impl<'p> GlobSelector<'p> {
     /// directory matched with more parts to come keeps a trailing `/`, which
     /// the caller strips as `pathlib` does.
     pub fn select<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<Vec<String>, E> {
-        let mut out = Vec::new();
+        let mut run = Run {
+            stack: Vec::new(),
+            out: Some(Vec::new()),
+            normalize: false,
+        };
+        self.run(source, &mut run)?;
+        Ok(run.out.unwrap_or_default())
+    }
+
+    /// Reads everything [`Self::select`] would read, without collecting matches.
+    ///
+    /// For hosts pruning a scan: states are normalized, so a pattern like
+    /// `*/../*/../*` revisits one directory rather than spelling out every route
+    /// to it, and nothing grows with the number of matches.
+    pub fn prune<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<(), E> {
+        let mut run = Run {
+            stack: Vec::new(),
+            out: None,
+            normalize: true,
+        };
+        self.run(source, &mut run)
+    }
+
+    /// The selection loop behind [`Self::select`] and [`Self::prune`].
+    fn run<E>(&self, source: &mut impl ScanSource<Error = E>, run: &mut Run) -> Result<(), E> {
         let mut seen = HashSet::new();
-        let mut stack = vec![(0, String::new(), false)];
-        while let Some(state) = stack.pop() {
+        run.push(0, String::new(), false);
+        while let Some(state) = run.stack.pop() {
             if !seen.insert(state.clone()) {
                 continue;
             }
@@ -500,7 +559,7 @@ impl<'p> GlobSelector<'p> {
             match &self.steps[index] {
                 Step::Exists => {
                     if exists || lexists(&path, source)? {
-                        out.push(path);
+                        run.emit(path);
                     }
                 }
                 Step::Special => {
@@ -508,9 +567,9 @@ impl<'p> GlobSelector<'p> {
                     if index + 1 < self.parts.len() {
                         path.push('/');
                     }
-                    stack.push((index + 1, path, exists));
+                    run.push(index + 1, path, exists);
                 }
-                Step::Literal { joined, next } => stack.push((*next, path + joined, false)),
+                Step::Literal { joined, next } => run.push(*next, path + joined, false),
                 Step::Wildcard { matcher, next } => {
                     let dir_only = *next < self.parts.len();
                     for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default() {
@@ -518,23 +577,22 @@ impl<'p> GlobSelector<'p> {
                         if matcher.as_ref().is_none_or(|matcher| matcher.matches(&name)) {
                             let entry = join(&path, &name);
                             if !dir_only {
-                                out.push(entry);
+                                run.emit(entry);
                             } else if info.is_dir {
-                                stack.push((*next, entry + "/", true));
+                                run.push(*next, entry + "/", true);
                             }
                         }
                     }
                 }
                 Step::Recursive { matcher, next } => {
-                    self.select_recursive(matcher.as_ref(), *next, path, exists, source, &mut stack, &mut out)?;
+                    self.select_recursive(matcher.as_ref(), *next, path, exists, source, run)?;
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Runs a `**` step: the path itself, then each descendant, depth first.
-    #[expect(clippy::too_many_arguments)]
     fn select_recursive<E>(
         &self,
         matcher: Option<&MultiPattern>,
@@ -542,13 +600,12 @@ impl<'p> GlobSelector<'p> {
         path: String,
         exists: bool,
         source: &mut impl ScanSource<Error = E>,
-        stack: &mut Vec<(usize, String, bool)>,
-        out: &mut Vec<String>,
+        run: &mut Run,
     ) -> Result<(), E> {
         let dir_only = next < self.parts.len();
         let match_pos = path.len();
         if matcher.is_none_or(|matcher| matcher.matches("")) {
-            stack.push((next, path.clone(), exists));
+            run.push(next, path.clone(), exists);
         }
         let mut dirs = vec![path];
         while let Some(dir) = dirs.pop() {
@@ -561,9 +618,9 @@ impl<'p> GlobSelector<'p> {
                     let entry = if dir_only { entry + "/" } else { entry };
                     if matched {
                         if dir_only {
-                            stack.push((next, entry.clone(), true));
+                            run.push(next, entry.clone(), true);
                         } else {
-                            out.push(entry.clone());
+                            run.emit(entry.clone());
                         }
                     }
                     if is_dir {
@@ -573,6 +630,38 @@ impl<'p> GlobSelector<'p> {
             }
         }
         Ok(())
+    }
+}
+
+/// The pending states and results of one [`GlobSelector`] run.
+struct Run {
+    /// States still to process: part index, path so far, known to exist.
+    stack: Vec<(usize, String, bool)>,
+    /// Matches, when collecting them.
+    out: Option<Vec<String>>,
+    /// Whether to normalize paths (keeping a trailing `/`) before queueing them.
+    normalize: bool,
+}
+
+impl Run {
+    /// Queues a state; a normalized path climbing above the root is dropped.
+    fn push(&mut self, index: usize, path: String, exists: bool) {
+        if !self.normalize {
+            self.stack.push((index, path, exists));
+        } else if let Some(normalized) = normalize_relative(path.trim_end_matches('/')) {
+            let mut normalized = normalized.into_owned();
+            if path.ends_with('/') && !normalized.is_empty() {
+                normalized.push('/');
+            }
+            self.stack.push((index, normalized, exists));
+        }
+    }
+
+    /// Records a match.
+    fn emit(&mut self, path: String) {
+        if let Some(out) = &mut self.out {
+            out.push(path);
+        }
     }
 }
 

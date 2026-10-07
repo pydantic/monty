@@ -13,7 +13,7 @@ use std::fmt::Write;
 
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, ScanArgs, StringRepr,
-    scan::{EntryInfo, GlobSelector, ScanTree, parse_scan_reply, split_literal_prefix},
+    scan::{EntryInfo, GlobSelector, ScanTree, indexed_size, parse_scan_reply, split_literal_prefix},
 };
 use serde::{Deserialize, Serialize};
 use smallvec::smallvec;
@@ -23,6 +23,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    hash::{HashValue, identity_hash},
     heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     types::{
@@ -176,6 +177,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
 
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
+    }
+
+    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        Ok(Some(identity_hash(self.id())))
     }
 
     fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
@@ -381,6 +386,22 @@ struct StatArgs {
 ///
 /// No heap borrow is held across the `onerror` call, which re-enters Python.
 fn walk_next<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    let result = walk_step(this, vm);
+    if result.is_err() {
+        // An exception escaping a generator ends it, so a caught one must not
+        // leave the remaining directories for a later `next()`.
+        let walk = walk_mut(this, vm);
+        walk.stack.clear();
+        let pending = walk.pending.take();
+        if let Some(pending) = pending {
+            Value::Ref(pending.dirnames).drop_with(vm);
+        }
+    }
+    result
+}
+
+/// The body of [`walk_next`], which ends the walk if this raises.
+fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     loop {
         if let Some(pending) = walk_mut(this, vm).pending.take() {
             descend_into_dirnames(this, pending, vm)?;
@@ -516,48 +537,50 @@ impl WalkIterator {
         if let Some(exc) = self.root_error.take() {
             return WalkAction::Error(exc.into());
         }
-        let Some(step) = self.stack.pop() else {
-            return WalkAction::Done;
-        };
-        let (relative, spelled) = match step {
-            WalkStep::Yield { spelled, dirs, files } => {
+        loop {
+            let Some(step) = self.stack.pop() else {
+                return WalkAction::Done;
+            };
+            let (relative, spelled) = match step {
+                WalkStep::Yield { spelled, dirs, files } => {
+                    return WalkAction::Yield {
+                        relative: None,
+                        spelled,
+                        dirs,
+                        files,
+                    };
+                }
+                WalkStep::Visit { relative, spelled } => (relative, spelled),
+            };
+            match self.tree.get(&relative) {
+                None => return WalkAction::Error(ExcType::file_not_found_error(&spelled)),
+                Some(info) if !info.is_dir => return WalkAction::Error(ExcType::not_a_directory_error(&spelled)),
+                Some(_) => {}
+            }
+            let mut dirs = Vec::new();
+            let mut files = Vec::new();
+            let mut walk_into = Vec::new();
+            for (name, info) in self.tree.children(&relative) {
+                // `Path.walk` without `follow_symlinks` lists links to directories as files.
+                let is_dir = info.is_dir && !(self.path_flavor && !self.followlinks && info.is_symlink);
+                if is_dir {
+                    dirs.push(name.clone());
+                    if !self.topdown && (self.followlinks || !info.is_symlink) {
+                        walk_into.push(name.clone());
+                    }
+                } else {
+                    files.push(name.clone());
+                }
+            }
+            if self.topdown {
                 return WalkAction::Yield {
-                    relative: None,
+                    relative: Some(relative),
                     spelled,
                     dirs,
                     files,
                 };
             }
-            WalkStep::Visit { relative, spelled } => (relative, spelled),
-        };
-        match self.tree.get(&relative) {
-            None => return WalkAction::Error(ExcType::file_not_found_error(&spelled)),
-            Some(info) if !info.is_dir => return WalkAction::Error(ExcType::not_a_directory_error(&spelled)),
-            Some(_) => {}
-        }
-        let mut dirs = Vec::new();
-        let mut files = Vec::new();
-        let mut walk_into = Vec::new();
-        for (name, info) in self.tree.children(&relative) {
-            // `Path.walk` without `follow_symlinks` lists links to directories as files.
-            let is_dir = info.is_dir && !(self.path_flavor && !self.followlinks && info.is_symlink);
-            if is_dir {
-                dirs.push(name.clone());
-                if !self.topdown && (self.followlinks || !info.is_symlink) {
-                    walk_into.push(name.clone());
-                }
-            } else {
-                files.push(name.clone());
-            }
-        }
-        if self.topdown {
-            WalkAction::Yield {
-                relative: Some(relative),
-                spelled,
-                dirs,
-                files,
-            }
-        } else {
+            // Bottom-up: yield this directory once its subdirectories are done.
             let children: Vec<WalkStep> = walk_into
                 .iter()
                 .rev()
@@ -568,7 +591,6 @@ impl WalkIterator {
                 .collect();
             self.stack.push(WalkStep::Yield { spelled, dirs, files });
             self.stack.extend(children);
-            self.step()
         }
     }
 
@@ -669,6 +691,15 @@ impl ScanEffect {
 
     /// Builds the result from the host's reply, or from an error [`Self::absorbs`] accepted.
     pub(crate) fn apply(self, reply: Result<MontyObject, RunError>, vm: &mut VM<'_>) -> RunResult<Value> {
+        // The reply bypasses `to_value`, so charge the indexed copy here. A host's
+        // reply is bounded by its own budget; this keeps a large one from
+        // overrunning the sandbox's limits before the next instruction checkpoint.
+        if let Ok(reply) = &reply
+            && let Err(err) = vm.heap.tracker.check_allocation(indexed_size(reply))
+        {
+            self.release(vm.heap);
+            return Err(err.into());
+        }
         let tree = match reply {
             Ok(reply) => match parse_scan_reply(&reply) {
                 Ok(entries) => Ok(ScanTree::new(entries)),
@@ -684,6 +715,10 @@ impl ScanEffect {
                 return Err(other);
             }
         };
+        if let Err(err) = vm.heap.tracker.check_time() {
+            self.release(vm.heap);
+            return Err(err.into());
+        }
         match self {
             Self::Scandir { spelled } => {
                 let tree = tree.map_err(RunError::from)?;
@@ -725,6 +760,7 @@ impl ScanEffect {
             }
             Self::Glob(setup) => {
                 let matches = tree.map_or_else(|_| Vec::new(), |tree| setup.select(tree));
+                vm.heap.tracker.check_time()?;
                 let total: usize = matches.iter().map(|path| path.len() + size_of::<Value>()).sum();
                 vm.heap.tracker.check_allocation(total)?;
                 let paths = matches
@@ -751,7 +787,8 @@ impl GlobSetup {
     /// Runs the selector over the reply and spells each match as `pathlib` does.
     fn select(&self, mut tree: ScanTree) -> Vec<String> {
         if self.parts.is_empty() {
-            let root = tree.get("");
+            // A host that omitted the root has not shown that it exists.
+            let root = tree.described_root();
             let exists = root.is_some_and(|info| info.is_dir || !self.require_dir);
             return if exists { vec![self.base.clone()] } else { Vec::new() };
         }

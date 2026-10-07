@@ -924,7 +924,13 @@ impl VirtualScanSource<'_> {
     /// Absolute virtual path of a path relative to the scan root.
     fn absolute(&self, relative: &str) -> String {
         if relative.is_empty() {
-            self.0.to_owned()
+            // The virtual filesystem names directories without a trailing slash.
+            let root = self.0.trim_end_matches('/');
+            if root.is_empty() {
+                "/".to_owned()
+            } else {
+                root.to_owned()
+            }
         } else {
             format!("{}/{relative}", self.0.trim_end_matches('/'))
         }

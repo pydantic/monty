@@ -125,7 +125,7 @@ fn checked_ref_path<'r>(
 }
 
 /// Returns budget available for a transient result alongside retained state.
-fn available_memory(state: &OverlayState, ctx: &MountContext<'_>) -> Result<MemoryBudget, MountError> {
+pub(super) fn available_memory(state: &OverlayState, ctx: &MountContext<'_>) -> Result<MemoryBudget, MountError> {
     let available = ctx
         .memory_usage_limit
         .checked_sub(state.memory_usage())

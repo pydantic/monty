@@ -546,6 +546,7 @@ class AbstractOS(ABC):
         (`None` for the whole tree), descending into symlinked directories only when `follow_symlinks`.
         `pattern`, `case_sensitive` and `recurse_symlinks` describe a glob and are only a hint:
         returning entries the pattern cannot match is allowed, since Monty filters the reply itself.
+        A directory below `path` that cannot be listed reads as empty, as it does for a mount.
 
         The default walks the tree with `path_iterdir()`, `path_is_dir()`, `path_is_file()` and
         `path_is_symlink()`; override it to answer in fewer host calls.
@@ -568,9 +569,16 @@ class AbstractOS(ABC):
         stack = [(path, '', 0)] if root.is_dir else []
         while stack:
             directory, relative, depth = stack.pop()
-            if max_depth is not None and depth >= max_depth:
+            # 64 levels bounds a symlink cycle when following links, as mounts do.
+            if depth >= (64 if max_depth is None else max_depth):
                 continue
-            for child in self.path_iterdir(directory):
+            try:
+                children = self.path_iterdir(directory)
+            except OSError:
+                if depth == 0:
+                    raise
+                continue
+            for child in children:
                 name = PurePosixPath(child).name
                 entry = self._scan_entry(f'{relative}/{name}' if relative else name, directory / name)
                 entries.append(entry)

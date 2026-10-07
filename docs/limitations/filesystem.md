@@ -98,9 +98,9 @@ Consequences of the shared budget that have no CPython analogue:
 
 - The reply counts against the mount's memory limit, so walking or globbing a tree with millions of entries raises
     `MemoryError` where CPython would stream it.
-- A glob may examine at most 10,000,000 entries, counting each time a pattern revisits a directory, then raises
+- A scan may examine at most 10,000,000 entries, counting each time a glob pattern revisits a directory, then raises
     `RuntimeError: directory scan examined more than 10000000 entries`. CPython has no such cap; it bounds patterns
-    like `*/**/*/**/*` whose cost multiplies with every recursive part.
+    like `*/**/*/**/*` whose cost multiplies with every recursive part, and walks through symlink cycles.
 - Paths deeper than [64 components](#at-most-64-path-components) are not listed, so a walk stops there.
 - `OverlayMemory` never follows symlinks, so a scan there reports them as neither files nor directories.
 
