@@ -80,8 +80,10 @@ Pattern semantics follow CPython 3.14's: hidden files match `*`, `**` descends o
     work: the host has already read the pruned directories.
     Monty has no list slice assignment, so the common `dirnames[:] = [...]` raises `TypeError`.
 - **Order is sorted by name within each directory.** CPython yields directory entries in filesystem order.
-- **`..` after a wildcard is collapsed lexically** (`'*/../a.txt'`), and one that climbs above the directory being
-    globbed matches nothing; CPython resolves it through the filesystem. Leading `..` parts work as in CPython.
+- **`..` after a wildcard is collapsed lexically**: `'*/../a.txt'` yields `a.txt` once, spelled without the
+    `..`, where CPython yields `sub/../a.txt` once per subdirectory and resolves each through the filesystem.
+    One that climbs above the directory being globbed matches nothing.
+    Leading `..` parts work as in CPython, including their spelling.
 - **Duplicates** that CPython yields for overlapping recursive patterns (`'**/*/**'`) may not be repeated.
 - **Unreadable subdirectories read as empty**, so `walk(on_error=...)` is only called for the top directory, or for
     a name added to `dirnames` that is not a directory.

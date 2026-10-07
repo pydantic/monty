@@ -1923,6 +1923,34 @@ fn deep_bottom_up_walk_does_not_recurse() {
     assert_eq!(run_with_scan_reply(code, tree), MontyObject::int(8_001));
 }
 
+/// `..` after a wildcard is collapsed in the result and its target matched once,
+/// where CPython spells out `sub/deep/../c.txt`.
+#[test]
+fn glob_collapses_dot_dot_after_a_wildcard() {
+    let tree = vec![
+        entry("", 'd'),
+        entry("a", 'd'),
+        entry("b", 'd'),
+        entry("c.txt", 'f'),
+        entry("a/x", 'd'),
+        entry("a/y", 'd'),
+        entry("a/c.txt", 'f'),
+    ];
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('*/../c.txt'))";
+    let expected = [MontyObject::string("r/c.txt".to_owned())];
+    assert_eq!(run_with_scan_reply(code, tree.clone()), MontyObject::list(expected));
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('*/*/../c.txt'))";
+    let expected = [MontyObject::string("r/a/c.txt".to_owned())];
+    assert_eq!(run_with_scan_reply(code, tree), MontyObject::list(expected));
+    // the receiver's own `..` keeps its spelling: it is hoisted into the scan root
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r/a/..').glob('c.txt'))";
+    let expected = [MontyObject::string("r/a/../c.txt".to_owned())];
+    assert_eq!(
+        run_with_scan_reply(code, vec![entry("", 'd')]),
+        MontyObject::list(expected)
+    );
+}
+
 /// A literal glob only matches when the reply actually described the root.
 #[test]
 fn literal_glob_needs_a_described_root() {

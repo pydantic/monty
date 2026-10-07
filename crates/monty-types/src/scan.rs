@@ -473,8 +473,9 @@ pub fn split_literal_prefix(parts: &[String], case_sensitive: Option<bool>) -> (
 /// rather than listed, `**` descends only real directories unless
 /// `recurse_symlinks`, other wildcards descend symlinked ones — so running it
 /// over a host's reply gives what CPython gives over the real tree. Unlike
-/// CPython it works through an explicit stack and visits each pattern state
-/// once, so neither recursion depth nor repeated states grow with the pattern.
+/// CPython it works through an explicit stack over normalized paths and visits
+/// each pattern state once, so the work is bounded by pattern parts × entries
+/// × depth however the pattern is shaped (see [`Self::select`] for the cost).
 #[derive(Debug)]
 pub struct GlobSelector<'p> {
     /// Parsed pattern parts.
@@ -518,31 +519,28 @@ impl<'p> GlobSelector<'p> {
         }
     }
 
-    /// Selects every match, as paths relative to the scan root.
+    /// Selects every match, as normalized paths relative to the scan root.
     ///
-    /// A path keeps the spelling the pattern built (`sub/../a.txt`), and a
-    /// directory matched with more parts to come keeps a trailing `/`, which
-    /// the caller strips as `pathlib` does.
+    /// A `..` after a wildcard is collapsed and its target matched once, where
+    /// CPython spells out every route (`a/../b/../x`): keyed by spelling, the
+    /// states would multiply by the fan-out per `..`. A directory matched with
+    /// more parts to come keeps a trailing `/`, which the caller strips as
+    /// `pathlib` does.
     pub fn select<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<Vec<String>, E> {
         let mut run = Run {
             stack: Vec::new(),
             out: Some(Vec::new()),
-            normalize: false,
         };
         self.run(source, &mut run)?;
         Ok(run.out.unwrap_or_default())
     }
 
-    /// Reads everything [`Self::select`] would read, without collecting matches.
-    ///
-    /// For hosts pruning a scan: states are normalized, so a pattern like
-    /// `*/../*/../*` revisits one directory rather than spelling out every route
-    /// to it, and nothing grows with the number of matches.
+    /// Reads everything [`Self::select`] would read, without collecting
+    /// matches, so a host pruning a scan does no work that grows with their number.
     pub fn prune<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<(), E> {
         let mut run = Run {
             stack: Vec::new(),
             out: None,
-            normalize: true,
         };
         self.run(source, &mut run)
     }
@@ -550,7 +548,7 @@ impl<'p> GlobSelector<'p> {
     /// The selection loop behind [`Self::select`] and [`Self::prune`].
     fn run<E>(&self, source: &mut impl ScanSource<Error = E>, run: &mut Run) -> Result<(), E> {
         let mut seen = HashSet::new();
-        run.push(0, String::new(), false);
+        run.push(0, "", false);
         while let Some(state) = run.stack.pop() {
             if !seen.insert(state.clone()) {
                 continue;
@@ -567,9 +565,9 @@ impl<'p> GlobSelector<'p> {
                     if index + 1 < self.parts.len() {
                         path.push('/');
                     }
-                    run.push(index + 1, path, exists);
+                    run.push(index + 1, &path, exists);
                 }
-                Step::Literal { joined, next } => run.push(*next, path + joined, false),
+                Step::Literal { joined, next } => run.push(*next, &(path + joined), false),
                 Step::Wildcard { matcher, next } => {
                     let dir_only = *next < self.parts.len();
                     for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default() {
@@ -579,7 +577,7 @@ impl<'p> GlobSelector<'p> {
                             if !dir_only {
                                 run.emit(entry);
                             } else if info.is_dir {
-                                run.push(*next, entry + "/", true);
+                                run.push(*next, &(entry + "/"), true);
                             }
                         }
                     }
@@ -605,7 +603,7 @@ impl<'p> GlobSelector<'p> {
         let dir_only = next < self.parts.len();
         let match_pos = path.len();
         if matcher.is_none_or(|matcher| matcher.matches("")) {
-            run.push(next, path.clone(), exists);
+            run.push(next, &path, exists);
         }
         let mut dirs = vec![path];
         while let Some(dir) = dirs.pop() {
@@ -618,7 +616,7 @@ impl<'p> GlobSelector<'p> {
                     let entry = if dir_only { entry + "/" } else { entry };
                     if matched {
                         if dir_only {
-                            run.push(next, entry.clone(), true);
+                            run.push(next, &entry, true);
                         } else {
                             run.emit(entry.clone());
                         }
@@ -635,20 +633,17 @@ impl<'p> GlobSelector<'p> {
 
 /// The pending states and results of one [`GlobSelector`] run.
 struct Run {
-    /// States still to process: part index, path so far, known to exist.
+    /// States still to process: part index, normalized path so far, known to exist.
     stack: Vec<(usize, String, bool)>,
     /// Matches, when collecting them.
     out: Option<Vec<String>>,
-    /// Whether to normalize paths (keeping a trailing `/`) before queueing them.
-    normalize: bool,
 }
 
 impl Run {
-    /// Queues a state; a normalized path climbing above the root is dropped.
-    fn push(&mut self, index: usize, path: String, exists: bool) {
-        if !self.normalize {
-            self.stack.push((index, path, exists));
-        } else if let Some(normalized) = normalize_relative(path.trim_end_matches('/')) {
+    /// Queues a state with its path normalized (keeping a trailing `/`); one
+    /// climbing above the root is dropped.
+    fn push(&mut self, index: usize, path: &str, exists: bool) {
+        if let Some(normalized) = normalize_relative(path.trim_end_matches('/')) {
             let mut normalized = normalized.into_owned();
             if path.ends_with('/') && !normalized.is_empty() {
                 normalized.push('/');

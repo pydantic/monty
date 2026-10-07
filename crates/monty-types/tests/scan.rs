@@ -156,7 +156,10 @@ fn selector_follows_cpython_semantics() {
     assert_eq!(select(&mut tree, "**/", true), ["", "link/", "pkg/", "pkg/sub/"]);
     assert_eq!(select(&mut tree, "**/b.py", true), ["link/b.py", "pkg/b.py"]);
     assert_eq!(select(&mut tree, "pkg/**/*.py", true), ["pkg/b.py", "pkg/sub/c.py"]);
-    assert_eq!(select(&mut tree, "pkg/../a.py", false), ["pkg/../a.py"]);
+    assert_eq!(select(&mut tree, "pkg/../a.py", false), ["a.py"]);
+    assert_eq!(select(&mut tree, "*/../a.py", false), ["a.py"]);
+    assert_eq!(select(&mut tree, "*/..", false), [""]);
+    assert_eq!(select(&mut tree, "*/../..", false), Vec::<String>::new());
     assert_eq!(select(&mut tree, "a.py/", false), Vec::<String>::new());
 }
 
@@ -185,9 +188,10 @@ fn repeated_pattern_states_are_visited_once() {
     assert!(source.1 < 20, "listed {} times", source.1);
 }
 
-/// A host prunes with normalized states, so routes through `..` collapse.
+/// States are normalized, so routes through `..` collapse into one directory
+/// whether a host prunes or the sandbox selects.
 #[test]
-fn pruning_collapses_dot_dot_routes() {
+fn dot_dot_routes_collapse() {
     let names: Vec<String> = (0..3).map(|i| format!("{i:032}")).collect();
     let mut entries = vec![(String::new(), 'd')];
     entries.extend(names.iter().map(|name| (name.clone(), 'd')));
@@ -197,9 +201,12 @@ fn pruning_collapses_dot_dot_routes() {
     let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
     GlobSelector::new(&parts, None, false).prune(&mut source).unwrap();
     assert!(source.1 < 100, "listed {} times", source.1);
-    // the sandbox side still spells every route, as CPython does
-    let Ok(matches) = GlobSelector::new(&parts[..parts.len() - 6], None, false).select(&mut source);
-    assert_eq!(matches.len(), 3usize.pow(11));
+    // CPython would spell out every route and yield 3^13 matches
+    source.1 = 0;
+    let Ok(mut matches) = GlobSelector::new(&parts, None, false).select(&mut source);
+    matches.sort();
+    assert_eq!(matches, names);
+    assert!(source.1 < 100, "listed {} times", source.1);
 }
 
 /// Following symlinks, a merged trailing `**` needs a segment, as CPython's `.*` after `/` does.
