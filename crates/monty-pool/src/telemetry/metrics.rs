@@ -833,6 +833,7 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::AsyncSleep(_)) => "async_sleep",
         Some(Call::SystemSleep(_)) => "system_sleep",
         Some(Call::AsyncSystemSleep(_)) => "async_system_sleep",
+        Some(Call::Scan(_)) => "scan",
         None => "unknown",
     }
 }
