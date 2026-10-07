@@ -700,7 +700,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
 
-        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
+        let receiver = self.clone_value(vm.heap);
+        crate::defer_drop!(receiver, vm);
+        call(receiver, args, vm).map(CallResult::Value)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {

@@ -473,7 +473,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)));
         };
-        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
+        let receiver = self.clone_value(vm.heap);
+        crate::defer_drop!(receiver, vm);
+        call(receiver, args, vm).map(CallResult::Value)
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

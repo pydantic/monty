@@ -516,7 +516,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(re_pattern_lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
         };
-        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
+        let receiver = self.clone_value(vm.heap);
+        crate::defer_drop!(receiver, vm);
+        call(receiver, args, vm).map(CallResult::Value)
     }
 }
 
