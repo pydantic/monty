@@ -16,6 +16,7 @@ mod os_policy;
 mod resource;
 mod results;
 mod run_options;
+pub mod scan;
 mod type_checking;
 mod uuid;
 mod virtual_path;
@@ -53,6 +54,7 @@ pub use crate::{
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions, SOURCE_SCAN_THRESHOLD},
+    scan::ScanArgs,
     type_checking::{TypeCheckState, TypeCheckingConfig, TypeCheckingFormat},
     uuid::MontyUuid,
     virtual_path::{normalize_virtual_path, validate_cwd},
