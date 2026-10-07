@@ -581,10 +581,6 @@ fn timedelta_total_seconds<'h>(
     Ok(Value::Float(total_seconds(&td)))
 }
 
-const fn attr_method(handler: crate::types::builtin_attr::ObjectMethod<TimeDelta>) -> AttrDef {
-    AttrDef::method(crate::types::builtin_attr::MethodDef::TimeDelta(handler))
-}
-
 fn timedelta_min(vm: &mut VM<'_>) -> Value {
     allocate_micros((MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS, vm.heap)
 }
@@ -598,6 +594,7 @@ fn timedelta_resolution(vm: &mut VM<'_>) -> Value {
 }
 
 builtin_attrs! {
+    for TimeDelta: mut heap(TimeDelta);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
         TotalSeconds => method(timedelta_total_seconds),
         Min => value(timedelta_min),
