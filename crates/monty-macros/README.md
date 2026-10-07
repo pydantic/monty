@@ -75,8 +75,8 @@ Since CPython's `def` binding never type-checks, `style = def` structs
 should declare fields as raw `Value` (or `StrArg`-in-body) and coerce in the
 function body, so type errors carry the message the CPython function body
 would produce. `bad_arg` is rejected under `style = def` for the same
-reason, and so is `varargs` (a `*args` signature can never raise
-too-many-positional, so the style would have no effect).
+reason. `varargs` is allowed: a `*args` signature never overflows, but a
+missing required parameter still wants the `def` wording.
 
 `style = unpack` models `PyArg_UnpackTuple`'s fixed positional `min..max`
 range, so the derive rejects anything outside that shape: every positional

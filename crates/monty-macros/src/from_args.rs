@@ -223,10 +223,6 @@ impl Signature {
                          — CPython `def` binding never type-checks while binding; declare \
                          fields as raw `Value` and coerce in the function body");
                 }
-                if self.varargs_idx.is_some() {
-                    return err("`style = def` cannot be combined with `varargs` — a `*args` \
-                         signature can never raise too-many-positional, so the style has no effect");
-                }
             }
             Style::Unpack | Style::ParseTuple => {
                 let style = if self.style == Style::Unpack {
@@ -1024,18 +1020,6 @@ mod tests {
             struct S { a: Value }
         });
         assert_snapshot!(err, @"`bad_arg`/`bad_arg_named` cannot be combined with `style = def` — CPython `def` binding never type-checks while binding; declare fields as raw `Value` and coerce in the function body");
-    }
-
-    #[test]
-    fn def_rejects_varargs() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", style = def)]
-            struct S {
-                #[from_args(varargs)]
-                args: Vec<Value>,
-            }
-        });
-        assert_snapshot!(err, @"`style = def` cannot be combined with `varargs` — a `*args` signature can never raise too-many-positional, so the style has no effect");
     }
 
     #[test]
