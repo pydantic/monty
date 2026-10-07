@@ -207,8 +207,8 @@ pub(crate) struct Sha512 {
     /// The trailing block not yet compressed, at most [`BLOCK_SIZE_512`] bytes.
     #[serde(with = "serde_bytes")]
     pending: Vec<u8>,
-    /// Bytes absorbed so far, for the length suffix.
-    length: u64,
+    /// Bytes absorbed so far, for the 128-bit length suffix.
+    length: u128,
 }
 
 impl Sha512 {
@@ -221,7 +221,7 @@ impl Sha512 {
     }
 
     pub(crate) fn update(&mut self, data: &[u8]) {
-        self.length = self.length.wrapping_add(data.len() as u64);
+        self.length += data.len() as u128;
         let state = &mut self.state;
         absorb(&mut self.pending, BLOCK_SIZE_512, data, |block| {
             compress_512(state, block);
@@ -231,7 +231,7 @@ impl Sha512 {
     /// The first `digest_size` bytes of the final state; the state stays usable.
     pub(crate) fn digest(&self, digest_size: usize) -> Vec<u8> {
         let mut state = self.state;
-        let bits = u128::from(self.length) * 8;
+        let bits = self.length.wrapping_mul(8);
         let padded = md_pad(&self.pending, BLOCK_SIZE_512, 16, |slot| {
             slot.copy_from_slice(&bits.to_be_bytes());
         });

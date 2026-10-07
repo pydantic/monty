@@ -460,7 +460,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
             }
             Some(StaticStrings::Hexdigest) if algorithm.is_xof() => {
                 let XofHexdigestArgs { length } = XofHexdigestArgs::from_args(args, vm)?;
-                let length = xof_length(length, 2, vm)?;
+                // The raw digest stays live while its hex is built.
+                let length = xof_length(length, 3, vm)?;
                 let digest = self.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
                 Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
             }

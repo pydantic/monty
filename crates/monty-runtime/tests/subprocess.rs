@@ -1219,6 +1219,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
             24_044_628,
         ),
+        // A SHAKE digest preflights its output; `hexdigest` also counts the raw
+        // digest it keeps live while encoding, so a length whose hex alone
+        // would fit is still refused.
+        ("import hashlib\nhashlib.shake_128().digest(2_000_000)", 2_045_903),
+        ("import hashlib\nhashlib.shake_128().hexdigest(400_000)", 1_245_904),
     ];
 
     for (code, expected) in cases {
