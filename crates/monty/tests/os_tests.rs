@@ -1138,6 +1138,11 @@ fn os_unsupported_path_kinds() {
             "import os\nos.mkdir(b'/x')",
             "TypeError: mkdir: path should be string or os.PathLike, not bytes",
         ),
+        // `os.walk` converts with `fspath`, whose phrase narrows the same way.
+        (
+            "import os\nos.walk(b'/x')",
+            "TypeError: expected str or os.PathLike object, not bytes",
+        ),
         (
             "import os\nos.rename('/a', b'/b')",
             "TypeError: rename: dst should be string or os.PathLike, not bytes",

@@ -815,12 +815,20 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
     /// functions that call `fspath` internally (e.g. `os.makedirs`):
-    /// `expected str, bytes or os.PathLike object, not {type}`
+    /// `expected str, bytes or os.PathLike object, not {type}`.
+    ///
+    /// `bytes`, which CPython accepts and Monty refuses, gets the phrase
+    /// narrowed to what Monty takes, as the `os` path converter does.
     #[must_use]
     fn type_error_fspath(type_name: &str) -> RunError {
+        let accepted = if type_name == "bytes" {
+            "str or os.PathLike"
+        } else {
+            "str, bytes or os.PathLike"
+        };
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("expected str, bytes or os.PathLike object, not {type_name}"),
+            format!("expected {accepted} object, not {type_name}"),
         )
         .into()
     }

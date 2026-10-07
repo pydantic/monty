@@ -17,7 +17,7 @@ use cap_std::{
     fs::{Dir, File, Metadata, OpenOptions},
     time::SystemTime as CapSystemTime,
 };
-use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
+use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, scan::EntryInfo, utf8_error_reason};
 #[cfg(unix)]
 use rustix::fs::OFlags;
 
@@ -468,6 +468,45 @@ pub(super) fn join_mount_relative(rel: &str, child: &str) -> String {
         child.to_owned()
     } else {
         format!("{rel}/{child}")
+    }
+}
+
+/// What the four path predicates (`exists`, `is_dir`, `is_file`, `is_symlink`)
+/// say about one path, answered together for directory scans.
+///
+/// `exists`, `is_dir` and `is_file` follow a final symlink; `is_symlink` does
+/// not, so a dangling or escaping link is `is_symlink` alone with `exists` false.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PathInfo {
+    /// The entry as a scan reports it.
+    pub(super) info: EntryInfo,
+    /// Whether the path resolves to something inside the mount.
+    pub(super) exists: bool,
+}
+
+impl PathInfo {
+    /// A path that is not there, or not visible.
+    pub(super) const ABSENT: Self = Self {
+        info: EntryInfo {
+            is_dir: false,
+            is_file: false,
+            is_symlink: false,
+        },
+        exists: false,
+    };
+}
+
+/// Answers [`PathInfo`] for `rel` with one `metadata` and one `symlink_metadata`
+/// call, where the separate predicates would cost four.
+pub(super) fn host_path_info(dir: &Dir, rel: &str) -> PathInfo {
+    let followed = dir.metadata(rel).ok();
+    PathInfo {
+        info: EntryInfo {
+            is_dir: followed.as_ref().is_some_and(Metadata::is_dir),
+            is_file: followed.as_ref().is_some_and(Metadata::is_file),
+            is_symlink: dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink()),
+        },
+        exists: followed.is_some(),
     }
 }
 

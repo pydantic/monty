@@ -1203,8 +1203,6 @@ pub enum StaticStrings {
     Initial,
     /// `inner_size` parameter of `hashlib.blake2b()`.
     InnerSize,
-    /// `DirEntry.inode()` method.
-    Inode,
     /// `list.insert()` method.
     Insert,
     /// `sys.flags.inspect` field.

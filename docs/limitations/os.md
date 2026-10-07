@@ -42,7 +42,8 @@ whether each call is permitted.
 
 - **No `bytes` paths.** Paths must be `str` or `pathlib.Path`. `bytes` paths
     raise the path-converter `TypeError` with `bytes` dropped from the
-    accepted-types phrase, e.g. `stat: path should be string, os.PathLike or integer, not bytes`.
+    accepted-types phrase, e.g. `stat: path should be string, os.PathLike or integer, not bytes`,
+    and `os.walk`'s `fspath` wording narrows the same way (`expected str or os.PathLike object, not bytes`).
     For every other rejected type the phrase is CPython's verbatim, so `os.stat(1.5)` still
     says `should be string, bytes, os.PathLike or integer`. Note `open()`
     *does* accept `bytes` paths, decoding them as UTF-8; the `os` functions do

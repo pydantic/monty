@@ -136,6 +136,14 @@ for dirpath, dirnames, filenames in os.walk(root):
     if 'deep' in dirnames:
         dirnames.remove('deep')
 assert seen == ['', '/subdir']
+# names added to `dirnames` may be path-like, as `os.path.join` takes them
+seen = []
+for dirpath, dirnames, filenames in os.walk(root):
+    seen.append(rel(dirpath))
+    if 'subdir' in dirnames:
+        dirnames.clear()
+        dirnames.append(Path('subdir'))
+assert seen == ['', '/subdir', '/subdir/deep']
 
 # errors go to `onerror`, and are otherwise ignored
 errors = []

@@ -1,6 +1,8 @@
 //! Tests for `Path.scan` against mounts: what each mode returns, what a glob
 //! pattern prunes, and that symlinks and `..` never reach outside the mount.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{fs, iter::repeat_n};
 
 use monty_fs::{Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
@@ -263,6 +265,31 @@ fn symlinks_are_described_and_followed_only_on_request() {
         let reply = scan(&mut table, glob("/mnt", &["*", "..", name])).unwrap();
         assert!(!reply.iter().any(|(path, _)| path == name), "{name} leaked: {reply:?}");
     }
+}
+
+/// A root the mount cannot list fails the scan, as CPython's `scandir` would;
+/// one below the root reads as empty, so a walk skips it.
+#[test]
+#[cfg(unix)]
+fn unreadable_root_raises_and_unreadable_subdirectory_reads_as_empty() {
+    let dir = create_tree();
+    let locked = dir.path().join("sub/deep");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    // Running as root, permissions are not enforced and there is nothing to test.
+    let enforced = fs::read_dir(&locked).is_err();
+    let outcome = enforced.then(|| {
+        let mut table = mount(&dir, MountMode::ReadOnly);
+        let root = scan(&mut table, ScanArgs::listing("/mnt/sub/deep".into(), None, false));
+        let below = scan(&mut table, ScanArgs::listing("/mnt/sub".into(), None, false));
+        (root, below)
+    });
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    let Some((root, below)) = outcome else {
+        return;
+    };
+    let exc = root.unwrap_err().into_exception();
+    assert_eq!(exc.exc_type(), ExcType::PermissionError);
+    assert_eq!(below.unwrap(), entries(&[("", 'd'), ("c.txt", 'f'), ("deep", 'd')]));
 }
 
 #[test]

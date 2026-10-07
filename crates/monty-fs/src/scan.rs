@@ -13,7 +13,7 @@ use monty_types::{
 };
 
 use super::{
-    common::{LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, as_u64},
+    common::{LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64},
     dispatch::{self, FsRequest},
     error::MountError,
     mount_mode::MountMode,
@@ -27,8 +27,8 @@ const MAX_SCAN_VISITS: u64 = 10_000_000;
 
 /// Runs a scan against one mount, replying with the entries it read.
 ///
-/// The reply is charged to the mount's memory limit as it grows. A missing root
-/// raises `FileNotFoundError`; unreadable directories below it read as empty.
+/// The reply is charged to the mount's memory limit as it grows. A missing or
+/// unreadable root raises; unreadable directories below it read as empty.
 pub(super) fn execute(
     args: &ScanArgs,
     ctx: &mut MountContext<'_>,
@@ -102,6 +102,19 @@ impl MountSource<'_, '_> {
         }
     }
 
+    /// Lists a directory, `None` when the mount cannot: the root's failure is
+    /// the scan's (CPython's `scandir` would raise it), one below reads as empty.
+    fn listing(&mut self, dir: &str) -> Result<Option<MontyObject>, MountError> {
+        let request = FsRequest::Iterdir {
+            path: self.virtual_path(dir).into(),
+        };
+        if dir.is_empty() {
+            dispatch::execute(request, self.ctx, self.mode).map(Some)
+        } else {
+            self.request(request)
+        }
+    }
+
     /// Runs one request, `None` for anything but a memory-limit failure: a
     /// lookup the mount refuses reads as absent, as it would to `Path.exists()`.
     fn request(&mut self, request: FsRequest) -> Result<Option<MontyObject>, MountError> {
@@ -115,20 +128,17 @@ impl MountSource<'_, '_> {
         }
     }
 
-    /// Answers a boolean predicate request, `false` when it fails.
-    fn predicate(&mut self, request: FsRequest) -> Result<bool, MountError> {
-        Ok(self
-            .request(request)?
-            .is_some_and(|value| matches!(unstable::root_node(&value), MontyNode::Bool(true))))
-    }
-
-    /// Describes the entry at virtual path `path`.
-    fn info(&mut self, path: &str) -> Result<EntryInfo, MountError> {
-        Ok(EntryInfo {
-            is_dir: self.predicate(FsRequest::IsDir { path: path.into() })?,
-            is_file: self.predicate(FsRequest::IsFile { path: path.into() })?,
-            is_symlink: self.predicate(FsRequest::IsSymlink { path: path.into() })?,
-        })
+    /// Describes the entry at virtual path `path` as the four predicates would,
+    /// in one lookup; a path the mount refuses is absent, as to `Path.exists()`.
+    fn path_info(&mut self, path: &str) -> Result<PathInfo, MountError> {
+        if reject_overlong_path(path).is_err() {
+            return Ok(PathInfo::ABSENT);
+        }
+        match dispatch::path_info(path, self.ctx, self.mode) {
+            Ok(info) => Ok(info),
+            Err(err @ MountError::MemoryUsageLimitExceeded(_)) => Err(err),
+            Err(_) => Ok(PathInfo::ABSENT),
+        }
     }
 
     /// Charges one recorded entry whose relative path is `path_len` bytes.
@@ -145,13 +155,10 @@ impl ScanSource for MountSource<'_, '_> {
     type Error = MountError;
 
     fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, MountError> {
-        let dir_path = self.virtual_path(dir);
-        let Some(listing) = self.request(FsRequest::Iterdir {
-            path: dir_path.as_str().into(),
-        })?
-        else {
+        let Some(listing) = self.listing(dir)? else {
             return Ok(None);
         };
+        let dir_path = self.virtual_path(dir);
         let MontyNode::List(ids) = unstable::root_node(&listing) else {
             return Ok(None);
         };
@@ -164,19 +171,15 @@ impl ScanSource for MountSource<'_, '_> {
             let name = child.rsplit_once('/').map_or(child.as_str(), |(_, name)| name);
             // The reply keeps the whole relative path, so that is what costs memory.
             self.charge(dir.len() + 1 + name.len())?;
-            let info = self.info(&format!("{dir_path}/{name}"))?;
+            let info = self.path_info(&format!("{dir_path}/{name}"))?.info;
             children.push((name.to_owned(), info));
         }
         Ok(Some(children))
     }
 
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, MountError> {
-        let virtual_path = self.virtual_path(path);
-        let info = self.info(&virtual_path)?;
         // Followed, so a link leaving the mount or dangling stays hidden, as it is from listings.
-        let exists = self.predicate(FsRequest::Exists {
-            path: virtual_path.as_str().into(),
-        })?;
+        let PathInfo { info, exists } = self.path_info(&self.virtual_path(path))?;
         if exists {
             self.charge(path.len())?;
         }

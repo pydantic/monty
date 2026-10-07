@@ -26,6 +26,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    os_dispatch::value_to_owned_string,
     types::{
         LazyHeapSet, List, Path, PyTrait, Type, allocate_tuple,
         list::ListIterator,
@@ -454,8 +455,9 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
 
 /// Queues the subdirectories still named in a top-down walk's yielded `dirnames`.
 ///
-/// Like CPython, a name that is not a directory is still visited (and reported
-/// to `onerror`); a symlink is skipped unless the walk follows links.
+/// Names may be `str` or path-like, as `os.path.join` takes them. Like CPython,
+/// a name that is not a directory is still visited (and reported to `onerror`);
+/// a symlink is skipped unless the walk follows links.
 fn descend_into_dirnames<'h>(
     this: &mut HeapObjectRead<'h, DirScan>,
     pending: PendingDirnames,
@@ -476,8 +478,8 @@ fn descend_into_dirnames<'h>(
     };
     let mut names = Vec::with_capacity(list.as_slice().len());
     for item in list.as_slice() {
-        match item.as_either_str(vm.heap) {
-            Some(name) => names.push(name.as_str(vm.interns).to_owned()),
+        match value_to_owned_string(item, vm.heap, vm.interns) {
+            Some(name) => names.push(name),
             None => {
                 return Err(ExcType::type_error(format!(
                     "join() argument must be str, bytes, or os.PathLike object, not '{}'",

@@ -8,14 +8,14 @@ use std::io::ErrorKind;
 
 use ahash::AHashSet;
 use cap_std::fs::Dir;
-use monty_types::{FileMode, MontyObject, dir_stat, file_stat, normalize_virtual_path};
+use monty_types::{FileMode, MontyObject, dir_stat, file_stat, normalize_virtual_path, scan::EntryInfo};
 
 use super::{
     common::{
-        LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, as_u64, bytes_to_utf8, check_write_limit,
+        LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8, check_write_limit,
         commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir, host_is_file,
-        host_list_visible_dir_entry_names, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
-        read_file_limited,
+        host_list_visible_dir_entry_names, host_path_info, host_read_bytes, host_read_text, host_stat,
+        join_mount_relative, map_io, read_file_limited,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -340,18 +340,52 @@ fn is_dir(
 fn is_symlink(state: &OverlayState, relative: &str, ctx: &MountContext<'_>, vpath: &str) -> MontyObject {
     let is_symlink = match state.get(relative) {
         Some(_) => false,
-        // The one question a symlink may answer, since it reports only that
-        // the name is a link and nothing about the target — CPython answers
-        // the same. The parent chain must still be link-free, or the name is
-        // not the one the sandbox thinks it is.
-        None => resolve_virtual_path(vpath, ctx.mount_virtual).is_ok_and(|target| {
-            let rel = target.for_dir_op();
-            let parent = rel.rsplit_once('/').map_or("", |(parent, _)| parent);
-            reject_symlink_chain(ctx.mount_dir, parent, vpath).is_ok()
-                && ctx.mount_dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink())
-        }),
+        None => real_is_symlink(ctx, vpath),
     };
     MontyObject::bool(is_symlink)
+}
+
+/// Whether the real entry at `vpath` is a symlink. The one question a symlink
+/// may answer, since it reports only that the name is a link and nothing about
+/// the target — CPython answers the same. The parent chain must still be
+/// link-free, or the name is not the one the sandbox thinks it is.
+fn real_is_symlink(ctx: &MountContext<'_>, vpath: &str) -> bool {
+    resolve_virtual_path(vpath, ctx.mount_virtual).is_ok_and(|target| {
+        let rel = target.for_dir_op();
+        let parent = rel.rsplit_once('/').map_or("", |(parent, _)| parent);
+        reject_symlink_chain(ctx.mount_dir, parent, vpath).is_ok()
+            && ctx.mount_dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink())
+    })
+}
+
+/// Answers the four path predicates for a directory scan in one lookup, as
+/// [`exists`], [`is_dir`], [`is_file`] and [`is_symlink`] would answer each:
+/// overlay entries are never symlinks, and a real path the mode refuses
+/// (through a symlink, say) is absent but may still be a symlink itself.
+pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, state: &OverlayState) -> Result<PathInfo, MountError> {
+    let relative = relative_path(path, ctx)?;
+    let described = |is_dir: bool, is_file: bool| PathInfo {
+        info: EntryInfo {
+            is_dir,
+            is_file,
+            is_symlink: false,
+        },
+        exists: true,
+    };
+    Ok(match state.get(&relative) {
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => described(false, true),
+        Some(OverlayEntry::Directory { .. }) => described(true, false),
+        Some(OverlayEntry::Deleted) => PathInfo::ABSENT,
+        None => {
+            let is_symlink = real_is_symlink(ctx, path);
+            let mut info = match resolve_real_path_state(path, ctx, OnLookupFailure::Missing)? {
+                RealPathState::Present(rel) => host_path_info(ctx.mount_dir, &rel),
+                RealPathState::Missing => PathInfo::ABSENT,
+            };
+            info.info.is_symlink = is_symlink;
+            info
+        }
+    })
 }
 
 /// Reads text from the overlay or from the real filesystem on fallback.
