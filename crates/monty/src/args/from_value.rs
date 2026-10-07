@@ -21,7 +21,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
-    types::PyTrait,
+    types::{PyTrait, Type},
     value::Value,
 };
 
@@ -145,8 +145,10 @@ pub(crate) trait FromValue: Sized {
     fn extract_into(value: Value, slot: &mut Option<Self>, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<()> {
         // Capture the name before conversion can free the instance's class.
         // The result borrows only the interner, never the heap.
-        let got_name =
-            Self::EXPECTED_TYPE_NAME.map(|_| value.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns));
+        let got = Self::EXPECTED_TYPE_NAME.map(|_| {
+            let got_type = value.py_type_heap(vm.heap);
+            (got_type == Type::NoneType, got_type.name(vm.heap, vm.interns))
+        });
         match Self::from_value(value, vm) {
             Ok(extracted) => {
                 *slot = Some(extracted);
@@ -157,14 +159,20 @@ pub(crate) trait FromValue: Sized {
                 // `WrongType` is only reported by impls with an
                 // `EXPECTED_TYPE_NAME`, so the snapshot is always present;
                 // "object" keeps that unreachable arm honest without a panic.
-                let got = got_name.unwrap_or(Cow::Borrowed("object"));
+                let (is_none, got) = got.unwrap_or((false, Cow::Borrowed("object")));
+                // `_PyArg_BadArgument` names `None` by value, not by type.
+                let arg_name = || if is_none { Cow::Borrowed("None") } else { got.clone() };
                 Err(match (ctx, Self::EXPECTED_TYPE_NAME) {
                     (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
-                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, got)
+                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, arg_name())
                     }
-                    (ArgErrCtx::BadArgNamed { func_name, arg_name }, Some(expected)) => {
-                        ExcType::type_error_bad_arg_named(func_name, arg_name, expected, got)
-                    }
+                    (
+                        ArgErrCtx::BadArgNamed {
+                            func_name,
+                            arg_name: name,
+                        },
+                        Some(expected),
+                    ) => ExcType::type_error_bad_arg_named(func_name, name, expected, arg_name()),
                     _ => Self::type_error(&got),
                 })
             }
