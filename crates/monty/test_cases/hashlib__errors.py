@@ -7,13 +7,17 @@ DATA_STRING = (
 )
 
 
-def raises(exc_type, func, message):
+def raises(exc_type, func, *messages):
+    # more than one message only where CPython's own wording depends on the platform's C `long` width
     try:
         func()
     except exc_type as exc:
-        assert str(exc) == message
+        assert str(exc) in messages
     else:
         assert False, 'expected ' + exc_type.__name__
+
+
+C_LONG_OVERFLOW = 'Python int too large to convert to C long'
 
 
 # === constructor input ===
@@ -231,7 +235,13 @@ raises(OverflowError, lambda: hashlib.blake2b(fanout=2**70), 'Python int too lar
 raises(TypeError, lambda: hashlib.blake2b(fanout='x'), "'str' object cannot be interpreted as an integer")
 raises(ValueError, lambda: hashlib.blake2b(depth=0), 'depth must be between 1 and 255')
 raises(ValueError, lambda: hashlib.blake2b(depth=256), 'depth must be between 1 and 255')
-raises(OverflowError, lambda: hashlib.blake2b(leaf_size=2**32), 'leaf_size is too large')
+# `leaf_size` is a C `unsigned long`, so on Windows CPython the conversion itself overflows
+raises(
+    OverflowError,
+    lambda: hashlib.blake2b(leaf_size=2**32),
+    'leaf_size is too large',
+    'Python int too large for C unsigned long',
+)
 raises(OverflowError, lambda: hashlib.blake2b(leaf_size=2**64), 'Python int too large for C unsigned long')
 raises(ValueError, lambda: hashlib.blake2b(leaf_size=-1), 'Cannot convert negative int')
 raises(TypeError, lambda: hashlib.blake2b(leaf_size='x'), "'str' object cannot be interpreted as an integer")
@@ -266,7 +276,7 @@ raises(
     'maximum salt length is 16 bytes',
 )
 raises(ValueError, lambda: hashlib.blake2b(person=b'x' * 17, fanout=0), 'maximum person length is 16 bytes')
-raises(ValueError, lambda: hashlib.blake2b(fanout=-1, leaf_size=2**32), 'fanout must be between 0 and 255')
+raises(ValueError, lambda: hashlib.blake2b(fanout=-1, inner_size=65), 'fanout must be between 0 and 255')
 raises(OverflowError, lambda: hashlib.blake2s(node_offset=2**48, inner_size=-1), 'node_offset is too large')
 raises(ValueError, lambda: hashlib.blake2b(inner_size=-1, key=b'x' * 65), 'inner_size must be between 0 and is 64')
 raises(ValueError, lambda: hashlib.blake2b(key=b'x' * 65, data='x'), 'maximum key length is 64 bytes')
@@ -303,7 +313,13 @@ raises(
 # === pbkdf2_hmac ===
 raises(ValueError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 0), 'iteration value must be greater than 0.')
 raises(ValueError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', -1), 'iteration value must be greater than 0.')
-raises(OverflowError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 2**31), 'iteration value is too great.')
+# `iterations` and `dklen` are C `long`s, 32 bits on Windows, where the conversion itself overflows
+raises(
+    OverflowError,
+    lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 2**31),
+    'iteration value is too great.',
+    C_LONG_OVERFLOW,
+)
 raises(
     OverflowError,
     lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 2**63),
@@ -321,7 +337,12 @@ raises(
 )
 raises(ValueError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, 0), 'key length must be greater than 0.')
 raises(ValueError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, -1), 'key length must be greater than 0.')
-raises(OverflowError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, 2**31), 'key length is too great.')
+raises(
+    OverflowError,
+    lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, 2**31),
+    'key length is too great.',
+    C_LONG_OVERFLOW,
+)
 raises(
     OverflowError,
     lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, 2**64),
@@ -382,14 +403,18 @@ raises(
     ValueError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 0, 'x'), 'iteration value must be greater than 0.'
 )
 raises(
-    OverflowError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 2**31, 'x'), 'iteration value is too great.'
+    OverflowError,
+    lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 2**31, 'x'),
+    'iteration value is too great.',
+    C_LONG_OVERFLOW,
 )
 raises(
     ValueError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 0, 0), 'iteration value must be greater than 0.'
 )
-raises(ValueError, lambda: hashlib.pbkdf2_hmac('shake_128', b'pw', b'salt', 2), 'key length must be greater than 0.')
-raises(
-    ValueError,
-    lambda: hashlib.pbkdf2_hmac('shake_128', b'pw', b'salt', 3, 40),
-    '[Provider routines] xof digests not allowed',
-)
+# CPython's wording for a SHAKE here comes from OpenSSL and differs between builds, so only the type is checked
+for args in ((b'pw', b'salt', 2), (b'pw', b'salt', 3, 40)):
+    try:
+        hashlib.pbkdf2_hmac('shake_128', *args)
+        assert False, 'expected ValueError'
+    except ValueError:
+        pass

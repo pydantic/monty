@@ -30,6 +30,9 @@ and `new()` accepts those names; Monty raises `ValueError: unsupported hash type
 `new()` with an unsupported name raises `ValueError` with CPython's message, but `pbkdf2_hmac()` raises the same
 `ValueError: unsupported hash type <name>` where CPython raises its `ValueError` subclass
 `_hashlib.UnsupportedDigestmodError` with the OpenSSL message `[digital envelope routines] unsupported`.
+`pbkdf2_hmac()` with a SHAKE raises `ValueError: key length must be greater than 0.` when `dklen` is omitted and
+`ValueError: [Provider routines] xof digests not allowed` otherwise; CPython's messages for these come from OpenSSL
+and vary between builds.
 
 ## SHAKE digest lengths
 
@@ -38,6 +41,17 @@ A length of `2**29` bytes or more raises `ValueError: digest length is too large
 `_sha3` module applies, where its OpenSSL-backed objects attempt the allocation and raise `MemoryError`.
 Smaller lengths beyond the session's memory limit raise `MemoryError` (see
 [resource_limits.md](resource_limits.md)).
+
+## Windows integer widths
+
+Monty's messages for out-of-range integers are the same on every platform; CPython's depend on the width of a
+C `long`, which is 32 bits on Windows:
+
+- BLAKE2 `leaf_size` above `2**32 - 1` raises `OverflowError: leaf_size is too large`; on Windows CPython the
+    conversion overflows first with `Python int too large for C unsigned long`.
+- `pbkdf2_hmac()` `iterations` or `dklen` above `2**31 - 1` raises `OverflowError: iteration value is too great.`
+    or `key length is too great.`; on Windows CPython the conversion overflows first with
+    `Python int too large to convert to C long`.
 
 ## Input types
 
