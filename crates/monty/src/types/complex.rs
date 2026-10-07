@@ -728,10 +728,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Conjugate) {
-            return complex_conjugate(self, args, vm).map(CallResult::Value);
-        }
-        Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm))
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(complex_lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm));
+        };
+        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -770,9 +770,9 @@ fn complex_from_number(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm:
 
 builtin_attrs! {
     for Complex: mut heap(Complex);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const COMPLEX_ATTRS: &[(StaticStrings, AttrDef)] = &[
         Conjugate => method(complex_conjugate),
         FromNumber => class_method(complex_from_number),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn complex_lookup_attr;
 }

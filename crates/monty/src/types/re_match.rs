@@ -350,7 +350,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(re_match_lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm));
         };
         call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
@@ -523,7 +523,7 @@ struct GroupdictArgs {
 
 builtin_attrs! {
     for ReMatch: mut heap(ReMatch);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const RE_MATCH_ATTRS: &[(StaticStrings, AttrDef)] = &[
         Group => method(call_group),
         Groups => method(match_groups),
         Groupdict => method(match_groupdict),
@@ -531,5 +531,5 @@ builtin_attrs! {
         End => method(match_end),
         Span => method(match_span),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn re_match_lookup_attr;
 }

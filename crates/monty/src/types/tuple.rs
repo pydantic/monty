@@ -469,14 +469,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
-            }
-        }
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(tuple_lookup_attr) else {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)));
+        };
+        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -725,9 +722,9 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
 
 builtin_attrs! {
     for Tuple: heap(Tuple);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const TUPLE_ATTRS: &[(StaticStrings, AttrDef)] = &[
         Index => method(tuple_index),
         Count => method(tuple_count),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn tuple_lookup_attr;
 }

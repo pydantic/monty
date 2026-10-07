@@ -513,7 +513,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(re_pattern_lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
         };
         call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
@@ -899,7 +899,7 @@ fn pattern_finditer<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm
 
 builtin_attrs! {
     for RePattern: mut heap(RePattern);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const RE_PATTERN_ATTRS: &[(StaticStrings, AttrDef)] = &[
         Search => method(pattern_search),
         Match => method(pattern_match),
         Fullmatch => method(pattern_fullmatch),
@@ -908,5 +908,5 @@ builtin_attrs! {
         Split => method(call_pattern_split),
         Finditer => method(pattern_finditer),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn re_pattern_lookup_attr;
 }

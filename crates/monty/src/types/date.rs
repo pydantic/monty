@@ -265,14 +265,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Isoformat) => date_isoformat(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Strftime) => date_strftime(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Replace) => date_replace(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Weekday) => date_weekday(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Isoweekday) => date_isoweekday(self, args, vm).map(CallResult::Value),
-            _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
-        }
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(date_lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::Date, attr, args, vm));
+        };
+        call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -548,7 +544,7 @@ fn date_resolution(vm: &mut VM<'_>) -> Value {
 
 builtin_attrs! {
     for Date: mut heap(Date);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const DATE_ATTRS: &[(StaticStrings, AttrDef)] = &[
         Isoformat => method(date_isoformat),
         Strftime => method(date_strftime),
         Replace => method(date_replace),
@@ -560,5 +556,5 @@ builtin_attrs! {
         Max => value(date_max),
         Resolution => value(date_resolution),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn date_lookup_attr;
 }

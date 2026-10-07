@@ -341,7 +341,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(timezone_lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm));
         };
         call(&Value::Ref(self.id()), args, vm).map(CallResult::Value)
@@ -398,7 +398,7 @@ fn timezone_max(vm: &mut VM<'_>) -> Value {
 
 builtin_attrs! {
     for TimeZone: mut heap(TimeZone);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const TIMEZONE_ATTRS: &[(StaticStrings, AttrDef)] = &[
         Utcoffset => method(timezone_utcoffset),
         Tzname => method(timezone_tzname),
         Dst => method(timezone_dst),
@@ -406,5 +406,5 @@ builtin_attrs! {
         Min => value(timezone_min),
         Max => value(timezone_max),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn timezone_lookup_attr;
 }
