@@ -1,9 +1,12 @@
 //! Static attribute definitions for builtin types.
 
+use std::mem::ManuallyDrop;
+
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
+    heap::HeapObjectRead,
     intern::StaticStrings,
     types::{Type, complex, date, list, re_match, re_pattern, time, timedelta, timezone, tuple},
     value::Value,
@@ -11,6 +14,18 @@ use crate::{
 
 pub(crate) type BuiltinCall = for<'h> fn(StaticStrings, Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 pub(crate) type MethodCall = for<'h> fn(&Value, ArgValues, &mut VM<'h>) -> RunResult<Value>;
+
+pub(crate) fn call_method<'h, T>(
+    receiver: &HeapObjectRead<'h, T>,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    // The read handle keeps the receiver alive. This Value only lends its identity
+    // to the adapter, so it must neither acquire nor release an owned reference.
+    let receiver = ManuallyDrop::new(Value::Ref(receiver.id()));
+    call(&receiver, args, vm).map(CallResult::Value)
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum AttrDef {
