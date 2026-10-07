@@ -78,6 +78,7 @@ The following modules are present:
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
 | `functools`   | [functools.md](functools.md)     |
+| `hashlib`     | [hashlib.md](hashlib.md)         |
 | `itertools`   | [itertools.md](itertools.md)     |
 | `json`        | [json.md](json.md)               |
 | `math`        | [math.md](math.md)               |
@@ -91,12 +92,13 @@ The following modules are present:
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
 Each covers only part of its CPython surface — often a small part. `itertools`
-is the exception: every name it exports is implemented.
+and `hashlib` are the exceptions: `itertools` implements every name it exports, and `hashlib` every guaranteed
+algorithm.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
 Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
-`inspect`, `logging`, `traceback`, `hashlib`, `uuid`, `urllib`.
+`inspect`, `logging`, `traceback`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
 

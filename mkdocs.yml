@@ -65,6 +65,7 @@ nav:
       - copy: 'limitations/copy.md'
       - datetime: 'limitations/datetime.md'
       - functools: 'limitations/functools.md'
+      - hashlib: 'limitations/hashlib.md'
       - itertools: 'limitations/itertools.md'
       - json: 'limitations/json.md'
       - math: 'limitations/math.md'
