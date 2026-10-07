@@ -641,6 +641,11 @@ impl Type {
     /// call plumbing. Any other name is looked up as a plain attribute and the
     /// result called, so `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        if let Some(name) = attr.static_string(vm.interns)
+            && let Some(AttrDef::ClassMethod(call)) = builtin_attr::lookup_attr(self, name)
+        {
+            return call(name, self, Value::Builtin(Builtins::Type(super::BuiltinType::try_from(self).expect("registered builtin type"))), args, vm);
+        }
         match (self, attr.static_string(vm.interns)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, Some(StaticStrings::Fromkeys)) => {
@@ -661,20 +666,13 @@ impl Type {
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Complex, Some(StaticStrings::FromNumber)) => {
-                complex::class_from_number(vm, args).map(CallResult::Value)
-            }
             (Self::Decimal, Some(StaticStrings::FromNumber)) => {
                 decimal::py::class_from_number(vm, args).map(CallResult::Value)
             }
             (Self::Decimal, _) if attr.as_str(vm.interns) == "from_float" => {
                 decimal::py::class_from_float(vm, args).map(CallResult::Value)
             }
-            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
-                date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
             (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
                 date::class_fromtimestamp(vm, args).map(CallResult::Value)
             }
@@ -695,9 +693,6 @@ impl Type {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
             (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
-            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
-                time::class_fromisoformat(vm, args).map(CallResult::Value)
-            }
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
             (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
