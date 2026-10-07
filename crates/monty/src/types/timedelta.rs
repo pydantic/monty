@@ -14,6 +14,7 @@ use std::{
 use chrono::TimeDelta as ChronoTimeDelta;
 use smallvec::smallvec;
 
+use super::builtin_attr::{AttrDef, builtin_attrs};
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
@@ -537,13 +538,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::TotalSeconds) {
-            // Copy the TimeDelta to release the HeapRead borrow before checking args
-            let td = *self.get(vm.heap);
-            args.check_zero_args("timedelta.total_seconds", vm.heap)?;
-            return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
-        }
-        Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm))
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(timedelta_lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm));
+        };
+        super::builtin_attr::call_method(self, call, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -555,4 +553,37 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
             _ => Ok(None),
         }
     }
+}
+
+fn timedelta_total_seconds<'h>(
+    value: &mut HeapObjectRead<'h, TimeDelta>,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let td = *value.get(vm.heap);
+    args.check_zero_args("timedelta.total_seconds", vm.heap)?;
+    Ok(Value::Float(total_seconds(&td)))
+}
+
+fn timedelta_min(vm: &mut VM<'_>) -> Value {
+    allocate_micros((MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS, vm.heap)
+}
+
+fn timedelta_max(vm: &mut VM<'_>) -> Value {
+    allocate_micros(((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1, vm.heap)
+}
+
+fn timedelta_resolution(vm: &mut VM<'_>) -> Value {
+    allocate_micros(1, vm.heap)
+}
+
+builtin_attrs! {
+    for TimeDelta: mut heap(TimeDelta);
+    pub(crate) const TIMEDELTA_ATTRS: &[(StaticStrings, AttrDef)] = &[
+        TotalSeconds => method(timedelta_total_seconds),
+        Min => value(timedelta_min),
+        Max => value(timedelta_max),
+        Resolution => value(timedelta_resolution),
+    ];
+    pub(crate) const fn timedelta_lookup_attr;
 }

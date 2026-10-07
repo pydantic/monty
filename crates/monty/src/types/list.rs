@@ -3,12 +3,16 @@ use std::{cmp::Ordering, fmt::Write, mem};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
+use super::{
+    CmpOrder, PyTrait,
+    builtin_attr::{AttrDef, builtin_attrs},
+    iter::collect_owned_iterable,
+};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
         HeapReader,
@@ -624,19 +628,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Ok(true)
     }
 
-    /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Sort) {
-            do_list_sort(self, args, vm)?;
-            return Ok(CallResult::Value(Value::None));
-        }
-
-        let Some(method) = attr.static_string(vm.interns) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(list_lookup_attr) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
 
-        call_list_method(self, method, args, vm).map(CallResult::Value)
+        super::builtin_attr::call_method(self, call, args, vm)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -663,54 +661,16 @@ impl HeapItem for List {
     }
 }
 
-/// Dispatches a method call on a list value.
-///
-/// This is the unified entry point for list method calls.
-///
-/// # Arguments
-/// * `list` - The list to call the method on
-/// * `method` - The method to call (e.g., `StaticStrings::Append`)
-/// * `args` - The method arguments
-/// * `heap` - The heap for allocation and reference counting
-fn call_list_method<'h>(
-    list: &mut HeapRead<'h, List>,
-    method: StaticStrings,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
-    let heap = &mut *vm.heap;
-    match method {
-        StaticStrings::Append => {
-            let item = args.get_one_arg("list.append", heap)?;
-            list.append(vm, item)?;
-            Ok(Value::None)
-        }
-        StaticStrings::Insert => list_insert(list, args, vm),
-        StaticStrings::Pop => list_pop(list, args, vm),
-        StaticStrings::Remove => list_remove(list, args, vm),
-        StaticStrings::Clear => {
-            args.check_zero_args("list.clear", heap)?;
-            list_clear(list, vm);
-            Ok(Value::None)
-        }
-        StaticStrings::Copy => {
-            args.check_zero_args("list.copy", heap)?;
-            list_copy(list.get(heap), heap)
-        }
-        StaticStrings::Extend => list_extend(list, args, vm),
-        StaticStrings::Index => list_index(list, args, vm),
-        StaticStrings::Count => list_count(list, args, vm),
-        StaticStrings::Reverse => {
-            args.check_zero_args("list.reverse", heap)?;
-            list.get_mut(vm.heap).items.reverse();
-            Ok(Value::None)
-        }
-        // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
-        _ => {
-            args.drop_with(heap);
-            Err(ExcType::attribute_error(Type::List, method.into()))
-        }
-    }
+fn list_append<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let item = args.get_one_arg("list.append", vm.heap)?;
+    list.append(vm, item)?;
+    Ok(Value::None)
+}
+
+fn list_reverse<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("list.reverse", vm.heap)?;
+    list.get_mut(vm.heap).items.reverse();
+    Ok(Value::None)
 }
 
 /// Implements Python's `list.insert(index, item)` method.
@@ -813,16 +773,21 @@ fn list_remove<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
 /// Implements Python's `list.clear()` method.
 ///
 /// Removes all items from the list.
-fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h>) {
+fn list_clear<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("list.clear", vm.heap)?;
     mem::take(&mut list.get_mut(vm.heap).items).drop_with(vm);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
+    Ok(Value::None)
 }
 
 /// Implements Python's `list.copy()` method.
 ///
 /// Returns a shallow copy of the list, preflighting the slot bytes like
 /// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
-fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
+fn list_copy<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("list.copy", vm.heap)?;
+    let heap = &*vm.heap;
+    let list = list.get(heap);
     heap.tracker
         .check_allocation(list.items.len().saturating_mul(VALUE_SIZE))?;
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
@@ -920,7 +885,7 @@ fn list_count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
 /// list afterwards. If the user mutated the live (empty) list during the
 /// sort, we additionally raise `ValueError: list modified during sort`,
 /// matching CPython exactly.
-fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> Result<(), RunError> {
+fn list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     // Detach the list's items so reentrant access via the list's heap id sees
     // an empty list. The detached buffer is always swapped back into the list
     // when we're done. Done *before* parsing args so the reentrancy guard is
@@ -941,7 +906,7 @@ fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<
     // Surface any sort error first; otherwise the modification error (if any).
     sort_result?;
     if items.is_empty() {
-        Ok(())
+        Ok(Value::None)
     } else {
         Err(SimpleException::new_msg(ExcType::ValueError, "list modified during sort").into())
     }
@@ -1149,6 +1114,24 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
         let (copy, _) = guard.into_parts();
         Ok(copy)
     }
+}
+
+builtin_attrs! {
+    for List: mut heap(List);
+    pub(crate) const LIST_ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Append => method(list_append),
+        Insert => method(list_insert),
+        Pop => method(list_pop),
+        Remove => method(list_remove),
+        Clear => method(list_clear),
+        Copy => method(list_copy),
+        Extend => method(list_extend),
+        Index => method(list_index),
+        Count => method(list_count),
+        Reverse => method(list_reverse),
+        Sort => method(list_sort),
+    ];
+    pub(crate) const fn list_lookup_attr;
 }
 
 #[cfg(test)]

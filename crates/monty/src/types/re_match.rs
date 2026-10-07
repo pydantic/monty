@@ -13,6 +13,7 @@ use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
 use smallvec::smallvec;
 
+use super::builtin_attr::{AttrDef, builtin_attrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -349,34 +350,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let result = match attr.static_string(vm.interns) {
-            Some(StaticStrings::Group) => call_group(self, args, vm)?,
-            Some(StaticStrings::Groups) => {
-                args.check_zero_args("re.Match.groups", vm.heap)?;
-                self.get(vm.heap).get_groups(vm.heap)
-            }
-            Some(StaticStrings::Groupdict) => {
-                let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
-                let default = default.unwrap_or(Value::None);
-                let result = self.get_groupdict(&default, vm)?;
-                default.drop_with(vm);
-                result
-            }
-            Some(StaticStrings::Start) => {
-                let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
-                self.get(vm.heap).get_start(n, vm)?
-            }
-            Some(StaticStrings::End) => {
-                let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
-                self.get(vm.heap).get_end(n, vm)?
-            }
-            Some(StaticStrings::Span) => {
-                let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
-                self.get(vm.heap).get_span(n, vm)?
-            }
-            _ => return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm)),
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(re_match_lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm));
         };
-        Ok(CallResult::Value(result))
+        super::builtin_attr::call_method(self, call, args, vm)
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -437,6 +414,34 @@ fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -
             Ok(allocate_tuple(elements, vm.heap))
         }
     }
+}
+
+fn match_groups<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("re.Match.groups", vm.heap)?;
+    Ok(m.get(vm.heap).get_groups(vm.heap))
+}
+
+fn match_groupdict<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
+    let default = default.unwrap_or(Value::None);
+    let result = m.get_groupdict(&default, vm)?;
+    default.drop_with(vm);
+    Ok(result)
+}
+
+fn match_start<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
+    m.get(vm.heap).get_start(n, vm)
+}
+
+fn match_end<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
+    m.get(vm.heap).get_end(n, vm)
+}
+
+fn match_span<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
+    m.get(vm.heap).get_span(n, vm)
 }
 
 /// Resolves a single group argument — integer, bool, or string (named group).
@@ -514,4 +519,17 @@ fn group_index(n: i64) -> usize {
 struct GroupdictArgs {
     #[from_args(default)]
     default: Option<Value>,
+}
+
+builtin_attrs! {
+    for ReMatch: mut heap(ReMatch);
+    pub(crate) const RE_MATCH_ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Group => method(call_group),
+        Groups => method(match_groups),
+        Groupdict => method(match_groupdict),
+        Start => method(match_start),
+        End => method(match_end),
+        Span => method(match_span),
+    ];
+    pub(crate) const fn re_match_lookup_attr;
 }

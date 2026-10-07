@@ -25,7 +25,11 @@ use std::{
 /// All tuple methods from Python's builtins are implemented.
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
+use super::{
+    CmpOrder, PyTrait,
+    builtin_attr::{AttrDef, builtin_attrs},
+    iter::collect_owned_iterable,
+};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -468,14 +472,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
-            Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
-            }
-        }
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(tuple_lookup_attr) else {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)));
+        };
+        super::builtin_attr::call_method(self, call, args, vm)
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -720,4 +721,13 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
             }
         }
     }
+}
+
+builtin_attrs! {
+    for Tuple: heap(Tuple);
+    pub(crate) const TUPLE_ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Index => method(tuple_index),
+        Count => method(tuple_count),
+    ];
+    pub(crate) const fn tuple_lookup_attr;
 }

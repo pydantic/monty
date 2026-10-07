@@ -14,6 +14,7 @@ use crate::{
     types::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
         Str, TimeZone, Tuple,
+        builtin_attr::{self, AttrDef},
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -21,9 +22,7 @@ use crate::{
         long_int::{INT_MAX_STR_DIGITS, bigint_to_f64_checked},
         path,
         str::{StringRepr, allocate_string},
-        time,
-        timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
-        timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
+        time, timedelta,
     },
     value::{EitherStr, Value},
 };
@@ -566,6 +565,12 @@ impl Type {
         args: ArgValues,
         vm: &mut VM<'_>,
     ) -> RunResult<CallResult> {
+        if let Some(name) = vm.interns.static_string(method_id)
+            && let Some(AttrDef::ClassMethod(call)) = builtin_attr::lookup_attr(self, name)
+        {
+            return call(name, self, Value::Builtin(Builtins::Type(self)), args, vm);
+        }
+
         match (self, vm.interns.static_string(method_id)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, Some(StaticStrings::Fromkeys)) => {
@@ -586,14 +591,7 @@ impl Type {
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Complex, Some(StaticStrings::FromNumber)) => {
-                complex::class_from_number(vm, args).map(CallResult::Value)
-            }
-            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
-                date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
             (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
             (Self::DateTime, Some(StaticStrings::Strptime)) => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
@@ -608,9 +606,6 @@ impl Type {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
             (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
-            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
-                time::class_fromisoformat(vm, args).map(CallResult::Value)
-            }
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
             (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
@@ -677,31 +672,17 @@ impl Type {
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which
-        // normalizes to CPython's `timedelta(days=999999999, seconds=86399,
-        // microseconds=999999)`.
-        const MAX_TIMEDELTA_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
-        const MIN_TIMEDELTA_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
+        let name = attr.static_string(vm.interns)?;
+        if let Some(AttrDef::Value(get)) = builtin_attr::lookup_attr(self, name) {
+            return Some(get(vm));
+        }
 
-        Some(match (self, attr.static_string(vm.interns)?) {
-            (Self::Date, StaticStrings::Min) => date::allocate_ymd(1, 1, 1, vm.heap),
-            (Self::Date, StaticStrings::Max) => date::allocate_ymd(9999, 12, 31, vm.heap),
-            (Self::Date, StaticStrings::Resolution) => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
+        Some(match (self, name) {
             (Self::DateTime, StaticStrings::Min) => datetime::allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
             (Self::DateTime, StaticStrings::Max) => {
                 datetime::allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap)
             }
-            (Self::Time, StaticStrings::Min) => time::allocate_naive(0, 0, 0, 0, vm.heap),
-            (Self::Time, StaticStrings::Max) => time::allocate_naive(23, 59, 59, 999_999, vm.heap),
-            (Self::TimeDelta, StaticStrings::Min) => timedelta::allocate_micros(MIN_TIMEDELTA_MICROS, vm.heap),
-            (Self::TimeDelta, StaticStrings::Max) => timedelta::allocate_micros(MAX_TIMEDELTA_MICROS, vm.heap),
-            // The three microsecond-resolution classes share one constant.
-            (Self::DateTime | Self::Time | Self::TimeDelta, StaticStrings::Resolution) => {
-                timedelta::allocate_micros(1, vm.heap)
-            }
-            (Self::TimeZone, StaticStrings::Utc) => vm.heap.get_timezone_utc(),
-            (Self::TimeZone, StaticStrings::Min) => timezone::allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
-            (Self::TimeZone, StaticStrings::Max) => timezone::allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            (Self::DateTime, StaticStrings::Resolution) => timedelta::allocate_micros(1, vm.heap),
             _ => return None,
         })
     }

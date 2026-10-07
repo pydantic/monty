@@ -11,6 +11,7 @@ use std::fmt::Write;
 
 use monty_types::FormatComplex;
 
+use super::builtin_attr::{AttrDef, builtin_attrs};
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
@@ -748,12 +749,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Conjugate) {
-            let c = *self.get(vm.heap);
-            args.check_zero_args("complex.conjugate", vm.heap)?;
-            return Ok(CallResult::Value(c.conjugate().into_value(vm.heap)));
-        }
-        Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm))
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(complex_lookup_attr) else {
+            return Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm));
+        };
+        super::builtin_attr::call_method(self, call, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -774,4 +773,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
             _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.interns)),
         })
     }
+}
+
+fn complex_conjugate<'h>(
+    value: &mut HeapObjectRead<'h, Complex>,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let c = *value.get(vm.heap);
+    args.check_zero_args("complex.conjugate", vm.heap)?;
+    Ok(c.conjugate().into_value(vm.heap))
+}
+
+fn complex_from_number(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    class_from_number(vm, args).map(CallResult::Value)
+}
+
+builtin_attrs! {
+    for Complex: mut heap(Complex);
+    pub(crate) const COMPLEX_ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Conjugate => method(complex_conjugate),
+        FromNumber => class_method(complex_from_number),
+    ];
+    pub(crate) const fn complex_lookup_attr;
 }
