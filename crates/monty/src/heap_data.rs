@@ -166,6 +166,8 @@ macro_rules! heap_payloads {
             Random(boxed $crate::types::Random),
             /// A `hashlib` hash object mid-stream.
             HashObject(boxed $crate::types::HashObject),
+            /// An `os.DirEntry`, `os.scandir()` iterator or `os.walk()` iterator.
+            DirScan(boxed $crate::types::DirScan),
         }
     };
 }
@@ -209,6 +211,7 @@ impl HeapData {
     pub(crate) fn is_gc_tracked(&self) -> bool {
         match self {
             Self::Itertools(iter) => iter.is_gc_tracked(),
+            Self::DirScan(scan) => scan.is_gc_tracked(),
             Self::List(_)
             | Self::Deque(_)
             | Self::Tuple(_)
@@ -356,6 +359,7 @@ impl HeapData {
             Self::SetIterator(_) => Type::SetIterator,
             Self::CallableIterator(_) => Type::CallableIterator,
             Self::Itertools(i) => i.py_type(),
+            Self::DirScan(scan) => scan.py_type(),
         }
     }
 }
@@ -647,6 +651,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
             Self::Itertools($value) => $body,
+            Self::DirScan($value) => $body,
             Self::Partial($value) => $body,
             Self::Random($value) => $body,
             Self::HashObject($value) => $body,
@@ -1122,6 +1127,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::SetIterator(value) => value.py_iter(vm),
             Self::CallableIterator(value) => value.py_iter(vm),
             Self::Itertools(value) => value.py_iter(vm),
+            Self::DirScan(value) => value.py_iter(vm),
             Self::Tuple(value) => value.py_iter(vm),
             Self::NamedTuple(value) => value.py_iter(vm),
             Self::Dict(value) => value.py_iter(vm),
@@ -1185,6 +1191,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::SetIterator(value) => value.py_next(vm),
             Self::CallableIterator(value) => value.py_next(vm),
             Self::Itertools(value) => value.py_next(vm),
+            Self::DirScan(value) => value.py_next(vm),
             Self::Tuple(value) => value.py_next(vm),
             Self::NamedTuple(value) => value.py_next(vm),
             Self::Dict(value) => value.py_next(vm),

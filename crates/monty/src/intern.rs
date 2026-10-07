@@ -698,6 +698,8 @@ pub enum StaticStrings {
     Capitalize,
     /// `str.casefold()` method.
     Casefold,
+    /// Kwarg name `case_sensitive` — `Path.glob(case_sensitive=...)`.
+    CaseSensitive,
     /// `unicodedata.category()` function.
     Category,
     /// `math.cbrt()` function.
@@ -1055,6 +1057,8 @@ pub enum StaticStrings {
     /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "foldspaces")]
     Foldspaces,
+    /// Kwarg name `followlinks` — `os.walk(followlinks=...)`.
+    Followlinks,
     /// Kwarg name `follow_symlinks` — `os.stat(follow_symlinks=...)`.
     FollowSymlinks,
     /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
@@ -1129,6 +1133,8 @@ pub enum StaticStrings {
     Getsize,
     /// `random.getstate()` function.
     Getstate,
+    /// `Path.glob()` method — yields a host scan.
+    Glob,
     /// `globals` parameter of eval/exec.
     Globals,
     /// `time.gmtime()` function.
@@ -1197,6 +1203,8 @@ pub enum StaticStrings {
     Initial,
     /// `inner_size` parameter of `hashlib.blake2b()`.
     InnerSize,
+    /// `DirEntry.inode()` method.
+    Inode,
     /// `list.insert()` method.
     Insert,
     /// `sys.flags.inspect` field.
@@ -1215,6 +1223,8 @@ pub enum StaticStrings {
     IsDir,
     /// `Path.is_file()` method — yields a host call.
     IsFile,
+    /// `DirEntry.is_junction()` method.
+    IsJunction,
     /// `unicodedata.is_normalized()` function.
     #[strum(serialize = "is_normalized")]
     IsNormalized,
@@ -1554,6 +1564,10 @@ pub enum StaticStrings {
     Offset,
     /// Kwarg name `old` — `str.replace(old=...)`, `bytes.replace(old=...)`.
     Old,
+    /// Kwarg name `on_error` — `Path.walk(on_error=...)`.
+    OnError,
+    /// Kwarg name `onerror` — `os.walk(onerror=...)`.
+    Onerror,
     /// `Path.open()` and the `open()` builtin, which share the `OsFunctionCall::Open`
     /// round-trip. `Path::py_call_attr` delegates to `builtin_open` for mode/kwarg
     /// validation rather than taking the generic `is_path_os_method` pre-flight.
@@ -1713,6 +1727,8 @@ pub enum StaticStrings {
     Real,
     /// `os.path.realpath()` function.
     Realpath,
+    /// Kwarg name `recurse_symlinks` — `Path.glob(recurse_symlinks=...)`.
+    RecurseSymlinks,
     /// `functools.reduce()` function.
     Reduce,
     /// Kwarg name `rel_tol` — `math.isclose(rel_tol=...)`.
@@ -1752,6 +1768,8 @@ pub enum StaticStrings {
     Reverse,
     /// `rfind()` method, shared by `str` and `bytes`.
     Rfind,
+    /// `Path.rglob()` method — yields a host scan.
+    Rglob,
     /// `rindex()` method, shared by `str` and `bytes`.
     Rindex,
     /// `rjust()` method, shared by `str` and `bytes`.
@@ -1787,6 +1805,8 @@ pub enum StaticStrings {
     Samestat,
     /// `random.sample()` function.
     Sample,
+    /// `os.scandir()` function — yields a host scan.
+    Scandir,
     /// `re.search()` / `pattern.search()` method
     Search,
     /// `datetime` / `time` `second` attribute and constructor kwarg.
@@ -2052,6 +2072,12 @@ pub enum StaticStrings {
     TmZone,
     /// `date.today()` / `datetime.today()` classmethod.
     Today,
+    /// Kwarg name `top` — `os.walk(top=...)`.
+    Top,
+    /// Kwarg name `top_down` — `Path.walk(top_down=...)`.
+    TopDown,
+    /// Kwarg name `topdown` — `os.walk(topdown=...)`.
+    Topdown,
     /// `Counter.total()` method.
     Total,
     /// `timedelta.total_seconds()` method.
@@ -2156,6 +2182,8 @@ pub enum StaticStrings {
     VersionInfo,
     /// `random.vonmisesvariate()` function.
     Vonmisesvariate,
+    /// `os.walk()` / `Path.walk()` — yields a host scan.
+    Walk,
     /// `sys.flags.warn_default_encoding` field.
     WarnDefaultEncoding,
     /// `@dataclass(weakref_slot=...)`.

@@ -2083,6 +2083,16 @@ impl<'h> VM<'h> {
                 Ok(Reshaped::Call { call, effect }) => return self.suspend_again(call, effect),
                 Err(err) => return self.resume_with_exception(err),
             },
+            // Builds its result straight from the raw reply, never converting it.
+            Some(PendingEffect::Scan(effect)) => {
+                return match effect.apply(Ok(obj), self) {
+                    Ok(value) => {
+                        self.push(value);
+                        self.run_external()
+                    }
+                    Err(err) => self.resume_with_exception(err),
+                };
+            }
             post => {
                 self.pending_effect = post;
                 obj
@@ -2147,7 +2157,8 @@ impl<'h> VM<'h> {
             // The sleeps were answered above; any pre-conversion effect was consumed.
             Some(
                 PendingEffect::Post(PostConversionEffect::DiscardResult | PostConversionEffect::SleepResult { .. })
-                | PendingEffect::Pre(_),
+                | PendingEffect::Pre(_)
+                | PendingEffect::Scan(_),
             )
             | None => Ok(value),
         };
@@ -2216,6 +2227,18 @@ impl<'h> VM<'h> {
                     PostConversionEffect::SeedRandom { target, retry }.release(self.heap);
                 }
                 PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
+                // A walk or glob turns an `OSError` into its result, as CPython's
+                // do for a failed `scandir`; anything else still raises.
+                PendingEffect::Scan(effect) if effect.absorbs(&error) => {
+                    return match effect.apply(Err(error), self) {
+                        Ok(value) => {
+                            self.push(value);
+                            self.run_external()
+                        }
+                        Err(err) => self.resume_with_exception(err),
+                    };
+                }
+                PendingEffect::Scan(effect) => effect.release(self.heap),
                 // Hold no state or heap references — nothing to roll back.
                 PendingEffect::Pre(_)
                 | PendingEffect::Post(

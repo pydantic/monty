@@ -43,7 +43,7 @@ use crate::{
         random::RandomRetry,
         time::ClockReading,
     },
-    types::{Path, file::FileName, random::RandomTarget},
+    types::{Path, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -73,6 +73,9 @@ pub(crate) enum PendingEffect {
     Pre(PreConversionEffect),
     /// Applies the converted value to VM state, possibly pinning a file.
     Post(PostConversionEffect),
+    /// Builds a walk, scandir or glob result from a `Path.scan` reply — or
+    /// from the `OSError` it answered with (see [`ScanEffect::absorbs`]).
+    Scan(ScanEffect),
 }
 
 impl PendingEffect {
@@ -82,6 +85,7 @@ impl PendingEffect {
     pub(crate) fn immediate_result_name(&self) -> Option<&'static str> {
         match self {
             Self::Pre(effect) => Some(effect.operation_name()),
+            Self::Scan(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
             Self::Post(PostConversionEffect::SeedRandom { .. }) => Some("os.urandom"),
             // `time.sleep` blocks by definition, so a future would leave the
@@ -104,6 +108,7 @@ impl PendingEffect {
         match self {
             Self::Pre(_) => {}
             Self::Post(effect) => effect.release(heap),
+            Self::Scan(effect) => effect.release(heap),
         }
     }
 }
@@ -117,6 +122,12 @@ impl From<PreConversionEffect> for PendingEffect {
 impl From<PostConversionEffect> for PendingEffect {
     fn from(effect: PostConversionEffect) -> Self {
         Self::Post(effect)
+    }
+}
+
+impl From<ScanEffect> for PendingEffect {
+    fn from(effect: ScanEffect) -> Self {
+        Self::Scan(effect)
     }
 }
 
@@ -692,7 +703,7 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
     args.get_one_arg(method, heap)
 }
 
-/// Owned `String` if `value` is a `str` or `Path`, else `None`. Caller drops
+/// Owned `String` if `value` is a `str`, `Path` or `DirEntry`, else `None`. Caller drops
 /// the source value afterwards. Also used by the `os` module's path-taking
 /// functions (`modules/os.rs`).
 pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
@@ -701,6 +712,7 @@ pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Intern
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str().to_owned()),
             HeapData::Path(p) => Some(p.as_str().to_owned()),
+            HeapData::DirScan(scan) => scan.fspath().map(str::to_owned),
             _ => None,
         },
         _ => None,

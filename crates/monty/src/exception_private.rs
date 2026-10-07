@@ -746,16 +746,19 @@ pub(crate) trait ExcTypeExt: Sized {
     /// Named positional-overflow wording used by clinic functions with
     /// keyword-only slots (e.g. `os.stat`/`os.mkdir`): `{name}() takes
     /// {exactly|at most} {max} positional argument{s} ({actual} given)` —
-    /// "exactly" when every positional param is required.
+    /// "exactly" when every positional param is required, and `takes no
+    /// positional arguments` when there are none (`DirEntry.is_dir`).
     #[must_use]
     fn type_error_named_positional(name: &str, max: usize, actual: usize, exact: bool) -> RunError {
-        let qualifier = if exact { "exactly" } else { "at most" };
-        let plural = if max == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() takes {qualifier} {max} positional argument{plural} ({actual} given)"),
-        )
-        .into()
+        let message = if max == 0 {
+            // `_PyArg_UnpackKeywords` drops the count for keyword-only signatures.
+            format!("{name}() takes no positional arguments")
+        } else {
+            let qualifier = if exact { "exactly" } else { "at most" };
+            let plural = if max == 1 { "" } else { "s" };
+            format!("{name}() takes {qualifier} {max} positional argument{plural} ({actual} given)")
+        };
+        SimpleException::new_msg(ExcType::TypeError, message).into()
     }
 
     /// Creates a TypeError matching the `os` module's `path_t` converter:
