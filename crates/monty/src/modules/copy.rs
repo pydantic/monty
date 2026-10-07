@@ -327,6 +327,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         // to be detached from. See `limitations/copy.md` for the cases where
         // CPython manages to copy one of these and Monty does not.
         HeapReadOutput::HostClass(_)
+        | HeapReadOutput::HashObject(_)
         | HeapReadOutput::DictKeysView(_)
         | HeapReadOutput::DictItemsView(_)
         | HeapReadOutput::DictValuesView(_)

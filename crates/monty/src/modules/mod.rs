@@ -23,6 +23,7 @@ pub(crate) mod datetime;
 pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
+pub(crate) mod hashlib;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod math;
@@ -81,6 +82,8 @@ pub(crate) enum StandardLib {
     /// The `time` module providing `time()` and `sleep()`, both of which the
     /// host serves.
     Time,
+    /// The `hashlib` module: the guaranteed algorithms, `new()` and `pbkdf2_hmac()`.
+    Hashlib,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -111,6 +114,7 @@ impl StandardLib {
             StaticStrings::Random => Some(Self::Random),
             StaticStrings::Copy => Some(Self::Copy),
             StaticStrings::Time => Some(Self::Time),
+            StaticStrings::Hashlib => Some(Self::Hashlib),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -140,6 +144,7 @@ impl StandardLib {
             Self::Random => random::create_module(vm),
             Self::Copy => copy::create_module(vm),
             Self::Time => time::create_module(vm),
+            Self::Hashlib => hashlib::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -167,6 +172,7 @@ pub(crate) enum ModuleFunctions {
     Random(random::RandomFunctions),
     Copy(copy::CopyFunctions),
     Time(time::TimeFunctions),
+    Hashlib(hashlib::HashlibFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -198,6 +204,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Random(func) => write!(f, "{func}"),
             Self::Copy(func) => write!(f, "{func}"),
             Self::Time(func) => write!(f, "{func}"),
+            Self::Hashlib(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -228,6 +235,7 @@ impl ModuleFunctions {
             Self::Random(functions) => random::call(vm, functions, args),
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
             Self::Time(functions) => time::call(vm, functions, args),
+            Self::Hashlib(functions) => hashlib::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

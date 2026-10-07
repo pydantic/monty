@@ -548,6 +548,10 @@ pub enum StaticStrings {
     /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "adobe")]
     Adobe,
+    /// `hashlib.algorithms_available`, equal to `algorithms_guaranteed`.
+    AlgorithmsAvailable,
+    /// `hashlib.algorithms_guaranteed`.
+    AlgorithmsGuaranteed,
     /// `json.dumps(allow_nan=...)` keyword.
     #[strum(serialize = "allow_nan")]
     AllowNan,
@@ -666,6 +670,12 @@ pub enum StaticStrings {
     Binascii,
     /// `random.binomialvariate()` function.
     Binomialvariate,
+    /// `hashlib.blake2b` type and hash name.
+    Blake2b,
+    /// `hashlib.blake2s` type and hash name.
+    Blake2s,
+    /// `block_size` attribute of a hash object.
+    BlockSize,
     /// Kwarg name `buffering` — `open(buffering=...)`.
     Buffering,
     /// `sys.builtin_module_names` attribute.
@@ -824,6 +834,8 @@ pub enum StaticStrings {
     Degrees,
     /// `delay` parameter of `asyncio.sleep()`.
     Delay,
+    /// `depth` parameter of `hashlib.blake2b()`.
+    Depth,
     /// The `collections.deque` type.
     Deque,
     /// `sys.flags.dev_mode` field.
@@ -840,6 +852,10 @@ pub enum StaticStrings {
     Difference,
     /// `sys.float_info.dig` field.
     Dig,
+    /// `digest()` method of a hash object.
+    Digest,
+    /// `digest_size` attribute of a hash object, and the `blake2b()` parameter.
+    DigestSize,
     /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
     DirFd,
     /// `gc.disable()` function.
@@ -848,6 +864,8 @@ pub enum StaticStrings {
     Discard,
     /// `math.dist()` function.
     Dist,
+    /// `dklen` parameter of `hashlib.pbkdf2_hmac()`.
+    Dklen,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
     /// `re.DOTALL` flag
@@ -971,6 +989,8 @@ pub enum StaticStrings {
     /// `repr()`/`str()` text of `False`, interned so rendering allocates nothing.
     #[strum(serialize = "False")]
     FalseRepr,
+    /// `fanout` parameter of `hashlib.blake2b()`.
+    Fanout,
     /// `namedtuple(field_names=...)` keyword argument.
     #[strum(serialize = "field_names")]
     FieldNames,
@@ -1091,13 +1111,19 @@ pub enum StaticStrings {
     Grouper,
     /// `match.groups()` method
     Groups,
+    /// `hash_name` parameter of `hashlib.pbkdf2_hmac()`.
+    HashName,
     /// `sys.flags.hash_randomization` field.
     HashRandomization,
+    /// Module name for `import hashlib`.
+    Hashlib,
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
     /// `bytes.hex()` method.
     Hex,
+    /// `hexdigest()` method of a hash object.
+    Hexdigest,
     /// `binascii.hexlify()` function.
     #[strum(serialize = "hexlify")]
     Hexlify,
@@ -1136,6 +1162,8 @@ pub enum StaticStrings {
     /// `initial` keyword argument of `functools.reduce()` and
     /// `itertools.accumulate()`.
     Initial,
+    /// `inner_size` parameter of `hashlib.blake2b()`.
+    InnerSize,
     /// `list.insert()` method.
     Insert,
     /// `sys.flags.inspect` field.
@@ -1220,6 +1248,8 @@ pub enum StaticStrings {
     /// capitalized `typing.Iterable`.
     #[strum(serialize = "iterable")]
     IterableArg,
+    /// `iterations` parameter of `hashlib.pbkdf2_hmac()`.
+    Iterations,
     /// `typing.Iterator` marker.
     #[strum(serialize = "Iterator")]
     IteratorType,
@@ -1250,10 +1280,16 @@ pub enum StaticStrings {
     KwOnly,
     /// `lambd` parameter of `random.expovariate()`.
     Lambd,
+    /// `last_node` parameter of `hashlib.blake2b()`.
+    LastNode,
     /// `math.lcm()` function.
     Lcm,
     /// `math.ldexp()` function.
     Ldexp,
+    /// `leaf_size` parameter of `hashlib.blake2b()`.
+    LeafSize,
+    /// `length` parameter of a SHAKE `digest()`.
+    Length,
     /// `math.lgamma()` function.
     Lgamma,
     /// The value of `sys.platlibdir`.
@@ -1331,8 +1367,14 @@ pub enum StaticStrings {
     /// `base64.MAXBINSIZE` module constant.
     #[strum(serialize = "MAXBINSIZE")]
     MaxBinSize,
+    /// `blake2b.MAX_DIGEST_SIZE` class constant.
+    #[strum(serialize = "MAX_DIGEST_SIZE")]
+    MaxDigestSize,
     /// `sys.float_info.max_exp` field.
     MaxExp,
+    /// `blake2b.MAX_KEY_SIZE` class constant.
+    #[strum(serialize = "MAX_KEY_SIZE")]
+    MaxKeySize,
     /// `base64.MAXLINESIZE` module constant.
     #[strum(serialize = "MAXLINESIZE")]
     MaxLineSize,
@@ -1344,6 +1386,8 @@ pub enum StaticStrings {
     Maxsplit,
     /// `sys.maxunicode` attribute.
     Maxunicode,
+    /// `hashlib.md5()` function and hash name.
+    Md5,
     /// `memo` parameter of `copy.deepcopy()`.
     Memo,
     /// `sys.version_info.micro` field.
@@ -1431,6 +1475,10 @@ pub enum StaticStrings {
     NoSite,
     /// `sys.flags.no_user_site` field.
     NoUserSite,
+    /// `node_depth` parameter of `hashlib.blake2b()`.
+    NodeDepth,
+    /// `node_offset` parameter of `hashlib.blake2b()`.
+    NodeOffset,
     /// `repr()`/`str()` text of `None`, interned so rendering allocates nothing.
     #[strum(serialize = "None")]
     NoneRepr,
@@ -1496,6 +1544,8 @@ pub enum StaticStrings {
     Partition,
     /// `Path.parts` property.
     Parts,
+    /// `password` parameter of `hashlib.pbkdf2_hmac()`.
+    Password,
     /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
     Path,
     /// The `pathlib.Path` type.
@@ -1512,6 +1562,8 @@ pub enum StaticStrings {
     /// `re.PatternError` exception
     #[strum(serialize = "PatternError")]
     PatternError,
+    /// `hashlib.pbkdf2_hmac()` function.
+    Pbkdf2Hmac,
     /// `time.perf_counter()` function.
     PerfCounter,
     /// `time.perf_counter_ns()` function.
@@ -1520,6 +1572,11 @@ pub enum StaticStrings {
     Perm,
     /// `itertools.permutations()` function.
     Permutations,
+    /// `person` parameter of `hashlib.blake2b()`.
+    Person,
+    /// `blake2b.PERSON_SIZE` class constant.
+    #[strum(serialize = "PERSON_SIZE")]
+    PersonSize,
     /// `math.pi` constant
     Pi,
     /// `sys.platform` attribute.
@@ -1649,6 +1706,11 @@ pub enum StaticStrings {
     Run,
     /// `sys.flags.safe_path` field.
     SafePath,
+    /// `salt` parameter of `hashlib.blake2b()` and `pbkdf2_hmac()`.
+    Salt,
+    /// `blake2b.SALT_SIZE` class constant.
+    #[strum(serialize = "SALT_SIZE")]
+    SaltSize,
     /// `random.sample()` function.
     Sample,
     /// `re.search()` / `pattern.search()` method
@@ -1688,6 +1750,34 @@ pub enum StaticStrings {
     Setrecursionlimit,
     /// `random.setstate()` function.
     Setstate,
+    /// `hashlib.sha1()` function and hash name.
+    Sha1,
+    /// `hashlib.sha224()` function and hash name.
+    Sha224,
+    /// `hashlib.sha256()` function and hash name.
+    Sha256,
+    /// `hashlib.sha384()` function and hash name.
+    Sha384,
+    /// `hashlib.sha3_224()` function and hash name.
+    #[strum(serialize = "sha3_224")]
+    Sha3_224,
+    /// `hashlib.sha3_256()` function and hash name.
+    #[strum(serialize = "sha3_256")]
+    Sha3_256,
+    /// `hashlib.sha3_384()` function and hash name.
+    #[strum(serialize = "sha3_384")]
+    Sha3_384,
+    /// `hashlib.sha3_512()` function and hash name.
+    #[strum(serialize = "sha3_512")]
+    Sha3_512,
+    /// `hashlib.sha512()` function and hash name.
+    Sha512,
+    /// `hashlib.shake_128()` function and hash name.
+    #[strum(serialize = "shake_128")]
+    Shake128,
+    /// `hashlib.shake_256()` function and hash name.
+    #[strum(serialize = "shake_256")]
+    Shake256,
     /// The value of `sys.float_repr_style`.
     Short,
     /// `random.shuffle()` function.
@@ -1962,6 +2052,8 @@ pub enum StaticStrings {
     /// `base64.urlsafe_b64encode()` function.
     #[strum(serialize = "urlsafe_b64encode")]
     UrlsafeB64Encode,
+    /// `usedforsecurity` keyword of the `hashlib` constructors.
+    Usedforsecurity,
     /// `timezone.utc` class constant.
     Utc,
     /// `utcoffset()` method of `time`, `datetime` and `timezone`.

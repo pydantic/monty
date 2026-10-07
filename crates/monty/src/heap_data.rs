@@ -164,6 +164,8 @@ macro_rules! heap_payloads {
             Union(inline $crate::types::Union),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
+            /// A `hashlib` hash object mid-stream.
+            HashObject(boxed $crate::types::HashObject),
         }
     };
 }
@@ -265,7 +267,8 @@ impl HeapData {
             | Self::Time(_)
             | Self::TimeDelta(_)
             | Self::TimeZone(_)
-            | Self::Random(_) => false,
+            | Self::Random(_)
+            | Self::HashObject(_) => false,
         }
     }
 
@@ -307,6 +310,7 @@ impl HeapData {
             Self::Dict(_) => Type::Dict,
             Self::Partial(_) => Type::Partial,
             Self::Random(_) => Type::Random,
+            Self::HashObject(hash) => hash.algorithm().py_type(),
             Self::GenericAlias(_) => Type::GenericAlias,
             Self::Union(_) => Type::Union,
             Self::DictKeysView(_) => Type::DictKeys,
@@ -645,6 +649,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Itertools($value) => $body,
             Self::Partial($value) => $body,
             Self::Random($value) => $body,
+            Self::HashObject($value) => $body,
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
             Self::Tuple($value) => $body,
@@ -1149,6 +1154,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::ExtFunction(_)
             | Self::Partial(_)
             | Self::Random(_)
+            | Self::HashObject(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
             | Self::Cell(_)

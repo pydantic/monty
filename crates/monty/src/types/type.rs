@@ -10,7 +10,12 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    modules::{ModuleFunctions, collections, itertools, itertools::ItertoolsFunctions},
+    modules::{
+        ModuleFunctions, collections,
+        hashlib::{self, Blake2Kind},
+        itertools,
+        itertools::ItertoolsFunctions,
+    },
     types::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
         Str, TimeZone, Tuple,
@@ -276,6 +281,18 @@ pub enum Type {
     /// reads `<class 'random.Random'>`.
     #[strum(serialize = "random.Random")]
     Random,
+    /// The OpenSSL-backed `hashlib` hash object, `_hashlib.HASH`.
+    #[strum(serialize = "_hashlib.HASH")]
+    HashlibHash,
+    /// The `shake_128` / `shake_256` hash object, `_hashlib.HASHXOF`.
+    #[strum(serialize = "_hashlib.HASHXOF")]
+    HashlibHashXof,
+    /// `hashlib.blake2b`, a type in CPython and so callable here.
+    #[strum(serialize = "_blake2.blake2b")]
+    Blake2b,
+    /// `hashlib.blake2s`, a type in CPython and so callable here.
+    #[strum(serialize = "_blake2.blake2s")]
+    Blake2s,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -700,6 +717,11 @@ impl Type {
                 timedelta::allocate_micros(1, vm.heap)
             }
             (Self::TimeZone, StaticStrings::Utc) => vm.heap.get_timezone_utc(),
+            // The `_blake2` size limits, on the class and so on its instances.
+            (Self::Blake2b, StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize) => Value::Int(64),
+            (Self::Blake2b, StaticStrings::SaltSize | StaticStrings::PersonSize) => Value::Int(16),
+            (Self::Blake2s, StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize) => Value::Int(32),
+            (Self::Blake2s, StaticStrings::SaltSize | StaticStrings::PersonSize) => Value::Int(8),
             (Self::TimeZone, StaticStrings::Min) => timezone::allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
             (Self::TimeZone, StaticStrings::Max) => timezone::allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
             _ => return None,
@@ -734,6 +756,8 @@ impl Type {
             Self::Path => Path::init(vm, args),
             Self::Partial => Partial::init(vm, args),
             Self::Random => Random::init(vm, args),
+            Self::Blake2b => hashlib::blake2_init(Blake2Kind::Blake2b, vm, args),
+            Self::Blake2s => hashlib::blake2_init(Blake2Kind::Blake2s, vm, args),
 
             // Every `itertools` name but `tee` is a type, as in CPython, so
             // `isinstance(x, itertools.count)` and `type(x) is count` hold.
