@@ -38,35 +38,42 @@ class _Tools:
         return 'hidden'
 
 
-@pytest.mark.parametrize('tools', [TOOLS, tools_module()])
-def test_import_binds_the_host_module(pool: Monty, tools: Any):
+def test_import_binds_the_host_module(pool: Monty):
     with pool.checkout() as session:
-        assert session.feed_run(CODE, external_modules={'tools': tools}) == snapshot([3, 'ab', 3])
+        assert session.feed_run(CODE, external_modules={'tools': TOOLS}) == snapshot([3, 'ab', 3])
 
 
 @pytest.mark.parametrize(
     ('tools', 'message'),
     [
         pytest.param(
+            tools_module(),
+            snapshot(
+                "external_modules['tools'] must be a dict, a ClassInstance or a callable returning one, not module"
+            ),
+            id='module',
+        ),
+        pytest.param(
             types.SimpleNamespace(**TOOLS),
             snapshot(
-                "external_modules['tools'] must be a dict, a module, a ClassInstance or a callable returning one, not SimpleNamespace"
+                "external_modules['tools'] must be a dict, a ClassInstance or a callable returning one, not SimpleNamespace"
             ),
             id='namespace',
         ),
         pytest.param(
             _Tools,
             snapshot(
-                "external_modules['tools'] must be a dict, a module, a ClassInstance or a callable returning one, not the class _Tools"
+                "external_modules['tools'] must be a dict, a ClassInstance or a callable returning one, not the class _Tools"
             ),
             id='class',
         ),
     ],
 )
 def test_other_module_shapes_are_rejected(pool: Monty, tools: Any, message: str):
-    # `dir()` of an arbitrary object would expose whatever it carries, so only the
-    # shapes whose public attributes are deliberately a module's are accepted; a
-    # class is callable but would construct an instance, never a module shape
+    # a dict names exactly what crosses; a module would also expose its imports
+    # (`from os import getcwd` makes `getcwd` a module attribute), `dir()` of an
+    # arbitrary object whatever it carries, and a class is callable but would
+    # construct an instance, never a module shape
     with pool.checkout() as session:
         with pytest.raises(TypeError) as exc_info:
             session.feed_run(CODE, external_modules={'tools': tools})
@@ -185,7 +192,7 @@ def test_a_module_factory_result_outlives_a_swapped_entry(pool: Monty):
         ),
         pytest.param(
             lambda: 3,
-            snapshot("TypeError: external_modules['tools']() returned int, not a dict, a module or a ClassInstance"),
+            snapshot("TypeError: external_modules['tools']() returned int, not a dict or a ClassInstance"),
             id='not-a-module',
         ),
     ],

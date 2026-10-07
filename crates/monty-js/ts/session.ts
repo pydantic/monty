@@ -534,7 +534,7 @@ class TurnAnswerer {
   /** What each factory entry of `externalModules` returned, by module name: a
    *  factory runs once per feed, at the first import or call that needs it, and
    *  its result stands for the module however `externalModules` changes after. */
-  private readonly resolvedModules = new Map<string, unknown>()
+  private readonly resolvedModules = new Map<string, ExternalModule>()
 
   constructor(
     private readonly native: NativeSession,
@@ -677,26 +677,26 @@ class TurnAnswerer {
    * of the module's functions all see one module even if the host swaps the
    * entry mid-feed. Only a real `Promise` it returns is awaited, and the module
    * comes back boxed: it may carry a `then` attribute of its own, which a bare
-   * async return would await. A result that is not an object is a `TypeError`,
-   * raised wherever the module was needed.
+   * async return would await. An entry or result that is not a module shape
+   * (see [`checkedModule`]) is a `TypeError`, raised wherever the module was needed.
    */
-  private async module(name: string): Promise<{ value: unknown } | undefined> {
-    if (this.resolvedModules.has(name)) {
-      return { value: this.resolvedModules.get(name) }
+  private async module(name: string): Promise<{ value: ExternalModule } | undefined> {
+    const resolved = this.resolvedModules.get(name)
+    if (resolved !== undefined) {
+      return { value: resolved }
     }
     const entry = ownEntry(this.externalModules, name)
     if (entry === undefined) {
       return undefined
     }
     if (typeof entry !== 'function') {
-      return { value: entry }
+      return { value: checkedModule(entry, `externalModules.${name} is`) }
     }
     const returned = (entry as () => unknown)()
-    const module = returned instanceof Promise ? await returned : returned
-    if (module === null || typeof module !== 'object') {
-      const kind = module === null ? 'null' : typeof module
-      throw new TypeError(`externalModules.${name}() returned ${kind}, not an object or ClassInstance`)
-    }
+    const module = checkedModule(
+      returned instanceof Promise ? await returned : returned,
+      `externalModules.${name}() returned`,
+    )
     this.resolvedModules.set(name, module)
     return { value: module }
   }
@@ -1391,12 +1391,12 @@ export type ExternalModule = Record<string, unknown> | ClassInstance
  *  zero-argument factory, sync or async, run when the feed first needs the module. */
 export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
 
-/** `record[key]` when it is an own key, else `undefined`. */
 /** `value` wrapped so an async return cannot await it; `undefined` stays absent. */
 function boxed(value: unknown): { value: unknown } | undefined {
   return value === undefined ? undefined : { value }
 }
 
+/** `record[key]` when it is an own key, else `undefined`. */
 function ownEntry(record: unknown, key: string): unknown {
   return record !== null && typeof record === 'object' && Object.prototype.hasOwnProperty.call(record, key)
     ? (record as Record<string, unknown>)[key]
@@ -1404,21 +1404,44 @@ function ownEntry(record: unknown, key: string): unknown {
 }
 
 /**
+ * `value` when it can stand for a module: a [`ClassInstance`], or a plain
+ * object (prototype `Object.prototype` or null, so a module namespace counts)
+ * whose own keys name exactly what the sandbox may reach. Anything else, an
+ * instance of some other class included, is a `TypeError` opening with `source`.
+ */
+function checkedModule(value: unknown, source: string): ExternalModule {
+  if (value instanceof ClassInstance) {
+    return value
+  }
+  const proto = value !== null && typeof value === 'object' ? Object.getPrototypeOf(value) : undefined
+  if (proto === Object.prototype || proto === null) {
+    return value as Record<string, unknown>
+  }
+  const kind =
+    value === null
+      ? 'null'
+      : typeof value !== 'object'
+        ? typeof value
+        : `a ${(value as { constructor?: { name?: string } }).constructor?.name ?? 'object'}`
+  throw new TypeError(`${source} ${kind}, not a plain object or ClassInstance`)
+}
+
+/**
  * The sandbox value of an `externalModules` entry: a [`ClassInstance`] as
- * itself, anything else as a host object whose own public properties are sent
+ * itself, a plain object as a host object whose own public properties are sent
  * eagerly, functions as host functions named `<module>.<attr>` so calls route
  * back through [`TurnAnswerer.hostEntry`]. The class id derives from the module
  * name, so each module is its own class, the same on every import and in every
  * process; the instance is host state, so it is new per feed.
  */
-function moduleValue(name: string, module: unknown): unknown {
-  if (module instanceof ClassInstance || module === null || typeof module !== 'object') {
+function moduleValue(name: string, module: ExternalModule): unknown {
+  if (module instanceof ClassInstance) {
     return module
   }
   const attrs: Record<string, unknown> = {}
   // names are filtered before any value is read, so a private getter never runs
   for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
-    const value = (module as Record<string, unknown>)[key]
+    const value = module[key]
     attrs[key] = typeof value === 'function' ? namedHostFunction(`${name}.${key}`, value as ExternalFunction) : value
   }
   const classType = new ClassType(Object, { name, id: moduleUuid('class', name) })

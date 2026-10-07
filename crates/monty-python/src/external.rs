@@ -21,7 +21,7 @@ use monty_types::{
 use pyo3::{
     exceptions::{PyAttributeError, PyRuntimeError, PyTypeError},
     prelude::*,
-    types::{PyDict, PyModule, PyString, PyTuple, PyType},
+    types::{PyDict, PyString, PyTuple, PyType},
 };
 
 use crate::{callback_context, exceptions::MontyConversionError};
@@ -136,10 +136,10 @@ pub(crate) struct HostNames {
 
 impl HostNames {
     /// Captures the dicts a feed was called with. Every `external_modules`
-    /// entry must be a dict, a module, a `ClassInstance` or a zero-argument
-    /// callable returning one: those are the shapes whose public attributes
-    /// are deliberately a module's, where `dir()` of an arbitrary object would
-    /// expose whatever it happens to carry.
+    /// entry must be a dict, a `ClassInstance` or a zero-argument callable
+    /// returning one: a dict names exactly what crosses, where a module or
+    /// `dir()` of an arbitrary object would also expose its imports and
+    /// whatever else it happens to carry.
     pub(crate) fn capture(lookup: Option<&Bound<'_, PyDict>>, modules: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
         if let Some(modules) = modules {
             for (name, module) in modules.iter() {
@@ -363,7 +363,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     fn install_module(&self, name: &str, module: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         if !is_module_shape(&module)? {
             return Err(PyTypeError::new_err(format!(
-                "external_modules['{name}']() returned {}, not a dict, a module or a ClassInstance",
+                "external_modules['{name}']() returned {}, not a dict or a ClassInstance",
                 module.get_type().name()?
             )));
         }
@@ -455,10 +455,10 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// The sandbox value of an `external_modules` entry. A `ClassInstance`
-    /// wrapper crosses as itself, its methods routing back by uuid; a dict or
-    /// a module becomes a host object named after the module whose public
-    /// attributes are sent eagerly: callables as host functions named
-    /// `<module>.<attr>`, other values converted.
+    /// wrapper crosses as itself, its methods routing back by uuid; a dict
+    /// becomes a host object named after the module whose public items are
+    /// sent eagerly: callables as host functions named `<module>.<attr>`,
+    /// other values converted.
     fn module_value(&self, name: &str, module: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
         if is_class_instance_wrapper(module)? {
             return py_to_monty_value(module, self.instances)
@@ -505,7 +505,7 @@ pub(crate) fn sync_module_coroutine_error(name: &str, awaitable: &Bound<'_, PyAn
 /// A class is callable but constructs an instance, never a module shape, so
 /// it is refused here with a message naming it rather than at the import.
 fn check_module_entry(name: &Bound<'_, PyAny>, entry: &Bound<'_, PyAny>) -> PyResult<()> {
-    const SHAPES: &str = "must be a dict, a module, a ClassInstance or a callable returning one";
+    const SHAPES: &str = "must be a dict, a ClassInstance or a callable returning one";
     if !name.is_instance_of::<PyString>() {
         Err(PyTypeError::new_err("external_modules keys must be str"))
     } else if let Ok(class) = entry.cast::<PyType>() {
@@ -525,48 +525,31 @@ fn check_module_entry(name: &Bound<'_, PyAny>, entry: &Bound<'_, PyAny>) -> PyRe
     }
 }
 
-/// Whether `value` can stand for a module: a dict, a module or a
-/// `ClassInstance` wrapper.
+/// Whether `value` can stand for a module: a dict or a `ClassInstance` wrapper.
 fn is_module_shape(value: &Bound<'_, PyAny>) -> PyResult<bool> {
-    Ok(value.is_instance_of::<PyDict>() || value.is_instance_of::<PyModule>() || is_class_instance_wrapper(value)?)
+    Ok(value.is_instance_of::<PyDict>() || is_class_instance_wrapper(value)?)
 }
 
-/// The public attribute `attr` of an `external_modules` entry: a dict's item,
-/// or a module's attribute; `None` when absent.
+/// The public item `attr` of a dict `external_modules` entry; `None` when
+/// absent or private.
 fn module_attr<'py>(module: &Bound<'py, PyAny>, attr: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
     if attr.starts_with('_') {
         Ok(None)
-    } else if let Ok(dict) = module.cast::<PyDict>() {
-        dict.get_item(attr)
     } else {
-        match module.getattr(attr) {
-            Ok(value) => Ok(Some(value)),
-            Err(err) if err.is_instance_of::<PyAttributeError>(module.py()) => Ok(None),
-            Err(err) => Err(err),
-        }
+        module.cast::<PyDict>()?.get_item(attr)
     }
 }
 
-/// The public attributes of an `external_modules` entry, in order: a dict's
-/// items (which must have `str` keys), or `dir()` of a module.
+/// The public items of a dict `external_modules` entry, in order; keys must
+/// be `str`.
 fn module_attrs<'py>(module: &Bound<'py, PyAny>) -> PyResult<Vec<(String, Bound<'py, PyAny>)>> {
     let mut attrs = Vec::new();
-    if let Ok(dict) = module.cast::<PyDict>() {
-        for (key, value) in dict.iter() {
-            let Ok(key) = key.extract::<String>() else {
-                return Err(PyTypeError::new_err("external_modules entries must have str keys"));
-            };
-            if !key.starts_with('_') {
-                attrs.push((key, value));
-            }
-        }
-    } else {
-        for name in module.dir()?.iter() {
-            let name: String = name.extract()?;
-            if !name.starts_with('_') {
-                let value = module.getattr(name.as_str())?;
-                attrs.push((name, value));
-            }
+    for (key, value) in module.cast::<PyDict>()?.iter() {
+        let Ok(key) = key.extract::<String>() else {
+            return Err(PyTypeError::new_err("external_modules entries must have str keys"));
+        };
+        if !key.starts_with('_') {
+            attrs.push((key, value));
         }
     }
     Ok(attrs)

@@ -713,9 +713,9 @@ class MontySession:
                 raises `NameError`. The lazy counterpart to `inputs`; a name
                 present in both is served by the eager `inputs` binding.
             external_modules: Host modules the snippet may `import`, keyed by
-                module name. A dict's items or a module's public attributes
-                become the module's: callables as host functions, other values
-                converted when imported. A `ClassInstance` is the module itself.
+                module name. A dict's public items (keys not starting with
+                `_`) become the module's: callables as host functions, other
+                values converted when imported. A `ClassInstance` is the module itself.
                 A zero-argument callable returning one of those runs when the
                 feed first needs the module. `from <module> import name` works
                 for those attributes; importing an absent module raises
@@ -1159,9 +1159,10 @@ class AsyncMontySession:
                 counterpart to `inputs`; a name present in both is served by the
                 eager `inputs` binding.
             external_modules: Host modules the snippet may `import`, keyed by
-                module name. A dict's items or a module's public attributes
-                become the module's: callables (sync or coroutine functions) as
-                host functions, other values converted when imported. A
+                module name. A dict's public items (keys not starting with
+                `_`) become the module's: callables (sync or coroutine
+                functions) as host functions, other values converted when
+                imported. A
                 `ClassInstance` is the module itself. A zero-argument callable
                 (sync or async) returning one of those runs when the feed first
                 needs the module. `from <module> import name` works for those

@@ -281,15 +281,41 @@ test('a module factory failure raises at the import', async () => {
   const notAModule = () => 3 as unknown as Record<string, unknown>
   await t.throwsAsync(session.feedRun('import tools', { externalModules: { tools: notAModule } }), {
     instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.tools() returned number, not an object or ClassInstance',
+    message: 'TypeError: externalModules.tools() returned number, not a plain object or ClassInstance',
   })
   const nullModule = () => null as unknown as Record<string, unknown>
   await t.throwsAsync(session.feedRun('import tools', { externalModules: { tools: nullModule } }), {
     instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.tools() returned null, not an object or ClassInstance',
+    message: 'TypeError: externalModules.tools() returned null, not a plain object or ClassInstance',
   })
   // the session is still usable
   t.is(await session.feedRun('1 + 1'), 2)
+})
+
+test('a module must be a plain object or ClassInstance', async () => {
+  // a plain object's own keys name exactly what the sandbox may reach; an instance
+  // of another class would expose whatever its prototype chain carries
+  class Tools {
+    add(a: number, b: number): number {
+      return a + b
+    }
+  }
+  const asModule = (value: unknown) => value as Record<string, unknown>
+  await t.throwsAsync(run('import tools', { externalModules: { tools: asModule(new Tools()) } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'TypeError: externalModules.tools is a Tools, not a plain object or ClassInstance',
+  })
+  await t.throwsAsync(run('import tools', { externalModules: { tools: asModule(new Map()) } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'TypeError: externalModules.tools is a Map, not a plain object or ClassInstance',
+  })
+  await t.throwsAsync(run('import tools', { externalModules: { tools: () => asModule(new Tools()) } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'TypeError: externalModules.tools() returned a Tools, not a plain object or ClassInstance',
+  })
+  // a null-prototype object, as a module namespace is, counts as plain
+  const bare = Object.assign(Object.create(null) as Record<string, unknown>, tools)
+  t.deepEqual(await run(code, { externalModules: { tools: bare } }), [3, 'ab', 3])
 })
 
 test('a module that fails to materialize raises at the import', async () => {

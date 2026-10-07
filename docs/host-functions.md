@@ -343,13 +343,18 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
     console.log(await session.feedRun(code, { externalModules: { tools } })) // 10
     ```
 
-A dict (a plain object in JavaScript) or a Python module becomes a host object named after the module, with its public
-attributes (names not starting with `_`) sent along.
+A dict (a plain object in JavaScript) becomes a host object named after the module, with its public items (keys not
+starting with `_`) sent along.
+A Python module is not accepted: a dict names exactly what the sandbox may reach, where a module would also expose
+everything it imports.
+In JavaScript a plain object is one whose prototype is `Object.prototype` or null, so a module namespace
+(`import * as tools`) qualifies while an instance of another class does not.
 A callable attribute becomes a host function named `<module>.<attr>`, dispatched like an `external_lookup` entry: a
 JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
 Any other attribute is converted when the module is imported.
 A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
-The Python binding refuses any other object with `TypeError` when the feed starts.
+Any other value is refused with `TypeError`: by the Python binding when the feed starts, by the JavaScript binding
+when the module is first needed.
 A zero-argument callable (`Callable[[], ExternalModule]`, `() => ExternalModule`) returning one of those is a lazy
 module: it runs when the feed first needs the module, at its `import` or at a call of one of its functions through a
 module bound by an earlier feed, and its result stands for the module for the rest of the feed, so a module the snippet
