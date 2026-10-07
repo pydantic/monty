@@ -7,9 +7,11 @@
 //! Ownership matters: write payloads are *moved* through here so overlay
 //! storage can retain them without a copy.
 
-use monty_types::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path};
+use monty_types::{
+    FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, ScanArgs, normalize_virtual_path,
+};
 
-use super::{common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay};
+use super::{common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay, scan};
 
 /// Parsed filesystem request passed to the direct or overlay backend.
 #[derive(Debug)]
@@ -51,6 +53,8 @@ pub(super) enum FsRequest {
     Iterdir { path: MontyPath },
     /// `Path.stat()`
     Stat { path: MontyPath },
+    /// `Path.scan`: a subtree for `os.walk`, `os.scandir` and `Path.glob`.
+    Scan { args: ScanArgs },
     /// `Path.rename(dst)`
     Rename { src: MontyPath, dst: MontyPath },
     /// `Path.resolve()`
@@ -92,6 +96,7 @@ impl FsRequest {
             | Self::Absolute { path }
             | Self::Open { path, .. }
             | Self::Rename { src: path, .. } => path,
+            Self::Scan { args } => &args.path,
         }
     }
 
@@ -158,6 +163,7 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         OsFunctionCall::Rmdir(path) => FsRequest::Rmdir { path },
         OsFunctionCall::Iterdir(path) => FsRequest::Iterdir { path },
         OsFunctionCall::Stat(path) => FsRequest::Stat { path },
+        OsFunctionCall::Scan(args) => FsRequest::Scan { args },
         OsFunctionCall::Rename(a) => FsRequest::Rename { src: a.src, dst: a.dst },
         OsFunctionCall::Resolve(path) => FsRequest::Resolve { path },
         OsFunctionCall::Absolute(path) => FsRequest::Absolute { path },
@@ -179,6 +185,9 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
 }
 
 /// Routes a parsed request to the correct backend for the mount mode.
+///
+/// A scan is mode-agnostic: it is built from the other requests, which this
+/// routes in turn.
 pub(super) fn execute(
     request: FsRequest,
     ctx: &mut MountContext<'_>,
@@ -186,6 +195,8 @@ pub(super) fn execute(
 ) -> Result<MontyObject, MountError> {
     if request.is_write() && matches!(mode, MountMode::ReadOnly) {
         Err(MountError::ReadOnly(request.primary_path().to_owned()))
+    } else if let FsRequest::Scan { args } = &request {
+        scan::execute(args, ctx, mode)
     } else {
         match mode {
             MountMode::ReadWrite | MountMode::ReadOnly => direct::execute(request, ctx),

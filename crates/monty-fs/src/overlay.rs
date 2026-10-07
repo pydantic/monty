@@ -170,6 +170,7 @@ pub(super) fn execute(
             Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
         }
         FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
+        FsRequest::Scan { .. } => unreachable!("dispatch::execute routes scans before the backends"),
     }
 }
 
