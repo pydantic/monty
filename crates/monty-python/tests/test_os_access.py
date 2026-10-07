@@ -1080,6 +1080,21 @@ def test_path_scan_unreadable_descendant(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot("[Errno 13] Permission denied: '/test/pkg'")
 
 
+def test_path_scan_deep_tree_without_links():
+    """Without following links, the default `path_scan` has no depth cap."""
+    deep = '/'.join(['d'] * 70)
+    fs = OSAccess([MemoryFile(f'/test/{deep}/f.txt', content='f')])
+    entries = fs.path_scan(P('/test'), max_depth=None, follow_symlinks=False)
+    assert entries[-1] == snapshot(
+        ScanEntry(
+            path='d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/f.txt',
+            is_dir=False,
+            is_file=True,
+            is_symlink=False,
+        )
+    )
+
+
 def test_path_scan_direct():
     """`path_scan` returns the root and its descendants down to `max_depth`."""
     fs = scan_tree()

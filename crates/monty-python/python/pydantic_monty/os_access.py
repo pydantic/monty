@@ -547,6 +547,7 @@ class AbstractOS(ABC):
         `pattern`, `case_sensitive` and `recurse_symlinks` describe a glob and are only a hint:
         returning entries the pattern cannot match is allowed, since Monty filters the reply itself.
         A directory below `path` that cannot be listed reads as empty, as it does for a mount.
+        When following symlinks without a `max_depth`, the default stops 64 levels down so a link cycle ends.
 
         The default walks the tree with `path_iterdir()`, `path_is_dir()`, `path_is_file()` and
         `path_is_symlink()`; override it to answer in fewer host calls.
@@ -569,8 +570,9 @@ class AbstractOS(ABC):
         stack = [(path, '', 0)] if root.is_dir else []
         while stack:
             directory, relative, depth = stack.pop()
-            # 64 levels bounds a symlink cycle when following links, as mounts do.
-            if depth >= (64 if max_depth is None else max_depth):
+            # Following links, 64 levels bounds a symlink cycle, as a mount's path limit does.
+            limit = 64 if max_depth is None and follow_symlinks else max_depth
+            if limit is not None and depth >= limit:
                 continue
             try:
                 children = self.path_iterdir(directory)

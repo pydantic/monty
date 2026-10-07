@@ -1,6 +1,7 @@
 # mount-fs
 # skip-cpython-windows
 import os
+from collections import namedtuple
 from pathlib import Path
 
 # `root` is Path('/mnt') in Monty and a real temp directory in CPython; compare
@@ -261,6 +262,12 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'data must be str, not DirEntry'
+Point = namedtuple('Point', 'x y')
+try:
+    (root / 'new.txt').write_text(Point(1, 2))
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'data must be str, not Point'
 try:
     (root / 'new.txt').write_text(root)
     assert False, 'expected TypeError'

@@ -257,6 +257,12 @@ fn symlinks_are_described_and_followed_only_on_request() {
     )
     .unwrap();
     assert!(followed_glob.contains(&("linkdir/deep/d.py".to_owned(), 'f')));
+
+    // a literal pattern looks the name up, and finds hidden links as hidden as a listing does
+    for name in ["escape", "dangling"] {
+        let reply = scan(&mut table, glob("/mnt", &["*", "..", name])).unwrap();
+        assert!(!reply.iter().any(|(path, _)| path == name), "{name} leaked: {reply:?}");
+    }
 }
 
 #[test]
@@ -334,6 +340,10 @@ fn huge_pattern_parts_are_refused_without_copying_them() {
     let dir = create_tree();
     let mut table = mount(&dir, MountMode::ReadOnly);
     let part = "x".repeat(10_000_000);
+    let err = scan(&mut table, glob("/mnt", &[&part, "*"])).unwrap_err();
+    assert_eq!(err.into_exception().exc_type(), ExcType::OSError);
+    // a part one character past the name limit is refused however its last character is encoded
+    let part = "x".repeat(255) + "é";
     let err = scan(&mut table, glob("/mnt", &[&part, "*"])).unwrap_err();
     assert_eq!(err.into_exception().exc_type(), ExcType::OSError);
 }

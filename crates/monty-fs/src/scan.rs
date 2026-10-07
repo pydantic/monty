@@ -64,9 +64,10 @@ fn reject_overlong_pattern(parts: &[String]) -> Result<(), MountError> {
     const NAME_BYTES: usize = 256;
     let mut joined = String::new();
     for part in parts.iter().take(COMPONENTS) {
+        // Rounded up to a character boundary, so an over-long part stays over-long.
         let mut end = part.len().min(NAME_BYTES);
         while !part.is_char_boundary(end) {
-            end -= 1;
+            end += 1;
         }
         if !joined.is_empty() {
             joined.push('/');
@@ -172,10 +173,10 @@ impl ScanSource for MountSource<'_, '_> {
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, MountError> {
         let virtual_path = self.virtual_path(path);
         let info = self.info(&virtual_path)?;
-        let exists = info.is_symlink
-            || self.predicate(FsRequest::Exists {
-                path: virtual_path.as_str().into(),
-            })?;
+        // Followed, so a link leaving the mount or dangling stays hidden, as it is from listings.
+        let exists = self.predicate(FsRequest::Exists {
+            path: virtual_path.as_str().into(),
+        })?;
         if exists {
             self.charge(path.len())?;
         }
