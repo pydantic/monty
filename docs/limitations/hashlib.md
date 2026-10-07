@@ -41,8 +41,8 @@ Smaller lengths beyond the session's memory limit raise `MemoryError` (see
 
 ## Input types
 
-Hash constructors, `update()` and the `key` / `salt` / `person` / `password` / `salt` parameters take `bytes`
-only.
+Hash constructors, `update()`, the BLAKE2 `key` / `salt` / `person` parameters and `pbkdf2_hmac()`'s `password` /
+`salt` take `bytes` only.
 Monty has no `bytearray`, `memoryview` or `array`, so the "bytes-like object" the CPython docs describe is always
 `bytes` here.
 The `int` parameters (`digest_size` and the other BLAKE2 fields, a SHAKE `length`, `iterations` and `dklen`) take

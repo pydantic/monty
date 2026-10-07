@@ -653,6 +653,10 @@ for key_fn, group_fn in itertools.groupby([1, 1, 2], key=lambda i: i > 1):
 assert_type(hashlib.sha256(b'abc').hexdigest(), str)
 assert_type(hashlib.md5(b'abc').digest(), bytes)
 assert_type(hashlib.new('sha1', b'abc').digest_size, int)
+# Monty's stub overloads `new()` by name; upstream typeshed (which basedpyright uses) returns `HASH` for every name
+assert_type(hashlib.new('shake_256', b'abc').hexdigest(8), str)  # pyright: ignore
+assert_type(hashlib.new('blake2b', b'abc', digest_size=16).hexdigest(), str)  # pyright: ignore
+check_int(hashlib.new('blake2s').MAX_KEY_SIZE)  # pyright: ignore
 assert_type(hashlib.shake_128(b'abc').hexdigest(8), str)
 assert_type(hashlib.blake2b(b'abc', digest_size=16, key=b'k').hexdigest(), str)
 assert_type(hashlib.blake2s().copy().name, str)

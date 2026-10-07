@@ -42,7 +42,7 @@ assert hashlib.shake_128(b'abc').hexdigest(length=3) == '588109'
 long_shake = hashlib.shake_128(b'abc').hexdigest(200)
 assert len(long_shake) == 400
 assert long_shake[:32] == '5881092dd818bf5cf8a3ddb793fbcba7'
-assert long_shake[-16:] == hashlib.shake_128(b'abc').hexdigest(200)[-16:]
+assert long_shake[-16:] == '4818cb006aa5b4cd'
 assert hashlib.shake_128(b'abc').digest(200)[:5] == hashlib.shake_128(b'abc').digest(5)
 assert (
     hashlib.blake2b(b'abc').hexdigest()
@@ -201,7 +201,7 @@ assert hashlib.blake2s().SALT_SIZE == 8
 
 # === blake2 parameters ===
 assert hashlib.blake2b(b'abc', digest_size=16).hexdigest() == 'cf4ab791c62b8d2b2109c90275287816'
-assert hashlib.blake2b(b'abc', digest_size=1).hexdigest() == hashlib.blake2b(b'abc', digest_size=1).hexdigest()
+assert hashlib.blake2b(b'abc', digest_size=1).hexdigest() == '6b'
 assert hashlib.blake2b(b'abc', digest_size=1).hexdigest() != hashlib.blake2b(b'abc').hexdigest()[:2]
 assert hashlib.blake2s(b'abc', digest_size=16).hexdigest() == 'aa4938119b1dc7b87cbad0ffd200d0ae'
 assert (

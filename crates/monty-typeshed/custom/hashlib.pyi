@@ -7,7 +7,7 @@
 # Parameters typed `ReadableBuffer` upstream are `bytes` here: Monty has no
 # `bytearray` or `memoryview`.
 
-from typing import Final, final
+from typing import Final, Literal, final, overload
 
 @final
 class HASH:
@@ -101,6 +101,53 @@ class blake2s:
     def hexdigest(self) -> str: ...
     def update(self, data: bytes, /) -> None: ...
 
+@overload
+def new(
+    name: Literal['shake_128', 'shake_256'],
+    data: bytes = b'',
+    *,
+    usedforsecurity: bool = True,
+    string: bytes | None = None,
+) -> HASHXOF: ...
+@overload
+def new(
+    name: Literal['blake2b'],
+    data: bytes = b'',
+    *,
+    digest_size: int = 64,
+    key: bytes = b'',
+    salt: bytes = b'',
+    person: bytes = b'',
+    fanout: int = 1,
+    depth: int = 1,
+    leaf_size: int = 0,
+    node_offset: int = 0,
+    node_depth: int = 0,
+    inner_size: int = 0,
+    last_node: bool = False,
+    usedforsecurity: bool = True,
+    string: bytes | None = None,
+) -> blake2b: ...
+@overload
+def new(
+    name: Literal['blake2s'],
+    data: bytes = b'',
+    *,
+    digest_size: int = 32,
+    key: bytes = b'',
+    salt: bytes = b'',
+    person: bytes = b'',
+    fanout: int = 1,
+    depth: int = 1,
+    leaf_size: int = 0,
+    node_offset: int = 0,
+    node_depth: int = 0,
+    inner_size: int = 0,
+    last_node: bool = False,
+    usedforsecurity: bool = True,
+    string: bytes | None = None,
+) -> blake2s: ...
+@overload
 def new(name: str, data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
 def md5(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
 def sha1(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
