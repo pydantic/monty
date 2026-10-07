@@ -2,6 +2,7 @@
 # Each section demonstrates a different category of type error.
 # ===
 
+import hashlib
 import sys
 from typing import TypedDict, assert_type
 
@@ -134,3 +135,5 @@ def loop_over_dict_items(mapping: dict[str, int]) -> None:
 
 
 print(sys.missing)
+hashlib.file_digest
+hashlib.sha256('text')

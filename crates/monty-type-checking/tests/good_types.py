@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import functools
+import hashlib
 import itertools
 import json
 import os
@@ -647,6 +648,19 @@ for key, group in itertools.groupby([1, 1, 2]):
 for key_fn, group_fn in itertools.groupby([1, 1, 2], key=lambda i: i > 1):
     assert_type(key_fn, bool)
     assert_type(list(group_fn), list[int])
+
+# === hashlib ===
+assert_type(hashlib.sha256(b'abc').hexdigest(), str)
+assert_type(hashlib.md5(b'abc').digest(), bytes)
+assert_type(hashlib.new('sha1', b'abc').digest_size, int)
+assert_type(hashlib.shake_128(b'abc').hexdigest(8), str)
+assert_type(hashlib.blake2b(b'abc', digest_size=16, key=b'k').hexdigest(), str)
+assert_type(hashlib.blake2s().copy().name, str)
+check_int(hashlib.blake2b.MAX_DIGEST_SIZE)
+assert_type(hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1000), bytes)
+for algorithm in hashlib.algorithms_guaranteed:
+    check_str(algorithm)
+hashlib.sha256().update(b'more')
 
 # === random ===
 assert_type(random.random(), float)
