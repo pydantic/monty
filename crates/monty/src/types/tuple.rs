@@ -723,11 +723,8 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
     }
 }
 
-const fn attr_method(handler: crate::types::builtin_attr::ReadMethod<Tuple>) -> AttrDef {
-    AttrDef::method(crate::types::builtin_attr::MethodDef::Tuple(handler))
-}
-
 builtin_attrs! {
+    for Tuple: heap(Tuple);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
         Index => method(tuple_index),
         Count => method(tuple_count),

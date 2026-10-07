@@ -531,11 +531,8 @@ struct GroupdictArgs {
     default: Option<Value>,
 }
 
-const fn attr_method(handler: crate::types::builtin_attr::Method<ReMatch>) -> AttrDef {
-    AttrDef::method(crate::types::builtin_attr::MethodDef::ReMatch(handler))
-}
-
 builtin_attrs! {
+    for ReMatch: mut heap(ReMatch);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
         Group => method(match_group),
         Groups => method(match_groups),

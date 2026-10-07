@@ -534,10 +534,6 @@ fn date_fromisoformat(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: 
     class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
 }
 
-const fn attr_method(handler: crate::types::builtin_attr::ObjectMethod<Date>) -> AttrDef {
-    AttrDef::method(crate::types::builtin_attr::MethodDef::Date(handler))
-}
-
 fn date_min(vm: &mut VM<'_>) -> Value {
     allocate_ymd(1, 1, 1, vm.heap)
 }
@@ -551,6 +547,7 @@ fn date_resolution(vm: &mut VM<'_>) -> Value {
 }
 
 builtin_attrs! {
+    for Date: mut heap(Date);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
         Isoformat => method(date_isoformat),
         Strftime => method(date_strftime),

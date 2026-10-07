@@ -912,11 +912,8 @@ fn pattern_split<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &
     call_pattern_split(value, args, vm)
 }
 
-const fn attr_method(handler: crate::types::builtin_attr::Method<RePattern>) -> AttrDef {
-    AttrDef::method(crate::types::builtin_attr::MethodDef::RePattern(handler))
-}
-
 builtin_attrs! {
+    for RePattern: mut heap(RePattern);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
         Search => method(pattern_search),
         Match => method(pattern_match),

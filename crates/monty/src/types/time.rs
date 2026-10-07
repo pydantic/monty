@@ -712,10 +712,6 @@ fn time_fromisoformat(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: 
     class_fromisoformat(vm, args).map(CallResult::Value)
 }
 
-const fn attr_method(handler: crate::types::builtin_attr::ObjectMethod<Time>) -> AttrDef {
-    AttrDef::method(crate::types::builtin_attr::MethodDef::Time(handler))
-}
-
 fn time_min(vm: &mut VM<'_>) -> Value {
     allocate_naive(0, 0, 0, 0, vm.heap)
 }
@@ -729,6 +725,7 @@ fn time_resolution(vm: &mut VM<'_>) -> Value {
 }
 
 builtin_attrs! {
+    for Time: mut heap(Time);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
         Isoformat => method(time_isoformat),
         Strftime => method(time_strftime),

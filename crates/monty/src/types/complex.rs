@@ -768,11 +768,8 @@ fn complex_from_number(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm:
     class_from_number(vm, args).map(CallResult::Value)
 }
 
-const fn attr_method(handler: crate::types::builtin_attr::ObjectMethod<Complex>) -> AttrDef {
-    AttrDef::method(crate::types::builtin_attr::MethodDef::Complex(handler))
-}
-
 builtin_attrs! {
+    for Complex: mut heap(Complex);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
         Conjugate => method(complex_conjugate),
         FromNumber => class_method(complex_from_number),

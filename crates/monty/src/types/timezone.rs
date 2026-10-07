@@ -388,10 +388,6 @@ fn timezone_dst<'h>(_: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &
     Ok(Value::None)
 }
 
-const fn attr_method(handler: crate::types::builtin_attr::ObjectMethod<TimeZone>) -> AttrDef {
-    AttrDef::method(crate::types::builtin_attr::MethodDef::TimeZone(handler))
-}
-
 fn timezone_utc(vm: &mut VM<'_>) -> Value {
     vm.heap.get_timezone_utc()
 }
@@ -405,6 +401,7 @@ fn timezone_max(vm: &mut VM<'_>) -> Value {
 }
 
 builtin_attrs! {
+    for TimeZone: mut heap(TimeZone);
     pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
         Utcoffset => method(timezone_utcoffset),
         Tzname => method(timezone_tzname),
