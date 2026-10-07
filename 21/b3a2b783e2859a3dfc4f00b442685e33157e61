@@ -1,0 +1,34 @@
+CLAUDE.md
+  s_85e79992fe406b::t_b28fedf2d72a17 247-248
+docs/limitations/hashlib.md
+  s_85e79992fe406b::t_b28fedf2d72a17 3-4
+Cargo.toml
+  s_85e79992fe406b::t_cc868a9ec26dbe 129
+crates/monty/src/modules/hashlib.rs
+  s_85e79992fe406b::t_cc868a9ec26dbe 32,730,735,750,794
+crates/monty/src/types/hashlib/blake2.rs
+  s_85e79992fe406b::t_61202e4de5e381 11-18,22-29
+  s_85e79992fe406b::t_cc868a9ec26dbe 9-10,19-21,30
+crates/monty/src/types/hashlib/rustcrypto.rs
+  s_85e79992fe406b::t_cc868a9ec26dbe 1-69
+crates/monty/src/types/hashlib/mod.rs
+  s_85e79992fe406b::t_cc868a9ec26dbe 4-10,16,18-21,30,51-86,187,199-200,237-238,243,245,267-271,330,332,342,344,346-352,529-530
+crates/monty/Cargo.toml
+  s_85e79992fe406b::t_cc868a9ec26dbe 51-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "21b3a2b783e2859a3dfc4f00b442685e33157e61",
+  "prompts": {},
+  "sessions": {
+    "s_85e79992fe406b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4374c46d-a07d-4026-87ee-46a9d9dded27",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
