@@ -5,6 +5,7 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
+    builtin_attr::{AttrDef, builtin_attrs},
     iter::{collect_owned_iterable, collect_python_iterator},
 };
 use crate::{
@@ -696,8 +697,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if attr.static_string(vm.interns) == Some(StaticStrings::Sort) {
-            do_list_sort(self, args, vm)?;
-            return Ok(CallResult::Value(Value::None));
+            return list_sort(self, args, vm).map(CallResult::Value);
         }
 
         let Some(method) = attr.static_string(vm.interns) else {
@@ -747,39 +747,51 @@ fn call_list_method<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let heap = &mut *vm.heap;
     match method {
-        StaticStrings::Append => {
-            let item = args.get_one_arg("list.append", heap)?;
-            list.append(vm, item)?;
-            Ok(Value::None)
-        }
+        StaticStrings::Append => list_append(list, args, vm),
         StaticStrings::Insert => list_insert(list, args, vm),
         StaticStrings::Pop => list_pop(list, args, vm),
         StaticStrings::Remove => list_remove(list, args, vm),
-        StaticStrings::Clear => {
-            args.check_zero_args("list.clear", heap)?;
-            list_clear(list, vm);
-            Ok(Value::None)
-        }
-        StaticStrings::Copy => {
-            args.check_zero_args("list.copy", heap)?;
-            list_copy(list.get(heap), heap)
-        }
+        StaticStrings::Clear => list_clear_method(list, args, vm),
+        StaticStrings::Copy => list_copy_method(list, args, vm),
         StaticStrings::Extend => list_extend(list, args, vm),
         StaticStrings::Index => list_index(list, args, vm),
         StaticStrings::Count => list_count(list, args, vm),
-        StaticStrings::Reverse => {
-            args.check_zero_args("list.reverse", heap)?;
-            list.get_mut(vm.heap).items.reverse();
-            Ok(Value::None)
-        }
+        StaticStrings::Reverse => list_reverse(list, args, vm),
         // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
         _ => {
-            args.drop_with(heap);
+            args.drop_with(vm.heap);
             Err(ExcType::attribute_error(Type::List, method.into()))
         }
     }
+}
+
+fn list_append<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let item = args.get_one_arg("list.append", vm.heap)?;
+    list.append(vm, item)?;
+    Ok(Value::None)
+}
+
+fn list_clear_method<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("list.clear", vm.heap)?;
+    list_clear(list, vm);
+    Ok(Value::None)
+}
+
+fn list_copy_method<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("list.copy", vm.heap)?;
+    list_copy(list.get(vm.heap), vm.heap)
+}
+
+fn list_reverse<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("list.reverse", vm.heap)?;
+    list.get_mut(vm.heap).items.reverse();
+    Ok(Value::None)
+}
+
+fn list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    do_list_sort(list, args, vm)?;
+    Ok(Value::None)
 }
 
 /// Implements Python's `list.insert(index, item)` method.
@@ -1218,6 +1230,35 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
         let (copy, _) = guard.into_parts();
         Ok(copy)
     }
+}
+
+fn list_index_method<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    list_index(list, args, vm)
+}
+
+fn list_count_method<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    list_count(list, args, vm)
+}
+
+const fn attr_method(handler: crate::types::builtin_attr::Method<List>) -> AttrDef {
+    AttrDef::method(crate::types::builtin_attr::MethodDef::List(handler))
+}
+
+builtin_attrs! {
+    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Append => method(list_append),
+        Insert => method(list_insert),
+        Pop => method(list_pop),
+        Remove => method(list_remove),
+        Clear => method(list_clear_method),
+        Copy => method(list_copy_method),
+        Extend => method(list_extend),
+        Index => method(list_index_method),
+        Count => method(list_count_method),
+        Reverse => method(list_reverse),
+        Sort => method(list_sort),
+    ];
+    pub(crate) const fn lookup_attr;
 }
 
 #[cfg(test)]

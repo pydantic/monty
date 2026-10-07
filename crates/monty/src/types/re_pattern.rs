@@ -14,6 +14,7 @@ use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
+use super::builtin_attr::{AttrDef, builtin_attrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -513,38 +514,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let result = match attr.static_string(vm.interns) {
-            Some(StaticStrings::Search) => {
-                let arg = args.get_one_arg("Pattern.search", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).search(arg, text, vm.heap)
-            }
-            Some(StaticStrings::Match) => {
-                let arg = args.get_one_arg("Pattern.match", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).match_start(arg, text, vm.heap)
-            }
-            Some(StaticStrings::Fullmatch) => {
-                let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).fullmatch(arg, text, vm.heap)
-            }
-            Some(StaticStrings::Findall) => {
-                let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).findall(text, vm.heap)
-            }
+            Some(StaticStrings::Search) => pattern_search(self, args, vm),
+            Some(StaticStrings::Match) => pattern_match(self, args, vm),
+            Some(StaticStrings::Fullmatch) => pattern_fullmatch(self, args, vm),
+            Some(StaticStrings::Findall) => pattern_findall(self, args, vm),
             Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
             Some(StaticStrings::Split) => call_pattern_split(self, args, vm),
-            Some(StaticStrings::Finditer) => {
-                let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).finditer(arg, text, vm.heap)
-            }
+            Some(StaticStrings::Finditer) => pattern_finditer(self, args, vm),
             _ => return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm)),
         }?;
         Ok(CallResult::Value(result))
@@ -891,4 +867,64 @@ impl<'de> Deserialize<'de> for RePattern {
         let (pattern, flags): (String, u16) = Deserialize::deserialize(deserializer)?;
         Self::compile(pattern, flags).map_err(|e| de::Error::custom(format!("{e:?}")))
     }
+}
+
+fn pattern_search<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let arg = args.get_one_arg("Pattern.search", vm.heap)?;
+    defer_drop!(arg, vm);
+    let text = arg.to_str(vm)?;
+    value.get(vm.heap).search(arg, text, vm.heap)
+}
+
+fn pattern_match<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let arg = args.get_one_arg("Pattern.match", vm.heap)?;
+    defer_drop!(arg, vm);
+    let text = arg.to_str(vm)?;
+    value.get(vm.heap).match_start(arg, text, vm.heap)
+}
+
+fn pattern_fullmatch<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
+    defer_drop!(arg, vm);
+    let text = arg.to_str(vm)?;
+    value.get(vm.heap).fullmatch(arg, text, vm.heap)
+}
+
+fn pattern_findall<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
+    defer_drop!(arg, vm);
+    let text = arg.to_str(vm)?;
+    value.get(vm.heap).findall(text, vm.heap)
+}
+
+fn pattern_finditer<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
+    defer_drop!(arg, vm);
+    let text = arg.to_str(vm)?;
+    value.get(vm.heap).finditer(arg, text, vm.heap)
+}
+
+fn pattern_sub<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    call_pattern_sub(value, args, vm)
+}
+
+fn pattern_split<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    call_pattern_split(value, args, vm)
+}
+
+const fn attr_method(handler: crate::types::builtin_attr::Method<RePattern>) -> AttrDef {
+    AttrDef::method(crate::types::builtin_attr::MethodDef::RePattern(handler))
+}
+
+builtin_attrs! {
+    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Search => method(pattern_search),
+        Match => method(pattern_match),
+        Fullmatch => method(pattern_fullmatch),
+        Findall => method(pattern_findall),
+        Sub => method(pattern_sub),
+        Split => method(pattern_split),
+        Finditer => method(pattern_finditer),
+    ];
+    pub(crate) const fn lookup_attr;
 }

@@ -13,6 +13,7 @@ use std::{
 use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
 use monty_types::{OsFunctionCall, ResourceTracker};
 
+use super::builtin_attr::{AttrDef, builtin_attrs};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -264,50 +265,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let date = *self.get(vm.heap);
         match attr.static_string(vm.interns) {
-            Some(StaticStrings::Isoformat) => {
-                args.check_zero_args("date.isoformat", vm.heap)?;
-                let (year, month, day) = to_ymd(date);
-                Ok(CallResult::Value(allocate_string_no_interning(
-                    format!("{year:04}-{month:02}-{day:02}"),
-                    vm.heap,
-                )))
-            }
-            Some(StaticStrings::Strftime) => {
-                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                defer_drop!(format, vm);
-                let formatted = format_date_strftime(date, format.as_str(vm), &vm.heap.tracker)?;
-                Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
-            }
-            Some(StaticStrings::Replace) => {
-                let (year, month, day) = to_ymd(date);
-                let DateReplaceArgs {
-                    year: new_year,
-                    month: new_month,
-                    day: new_day,
-                } = DateReplaceArgs::from_args(args, vm)?;
-                let new_date = from_ymd(
-                    new_year.unwrap_or(year),
-                    new_month.unwrap_or(i32::try_from(month).expect("month in 1..=12")),
-                    new_day.unwrap_or(i32::try_from(day).expect("day in 1..=31")),
-                )?;
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::Date(new_date)),
-                )))
-            }
-            Some(StaticStrings::Weekday) => {
-                args.check_zero_args("date.weekday", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(i64::from(
-                    date.0.weekday().num_days_from_monday(),
-                ))))
-            }
-            Some(StaticStrings::Isoweekday) => {
-                args.check_zero_args("date.isoweekday", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(i64::from(
-                    date.0.weekday().number_from_monday(),
-                ))))
-            }
+            Some(StaticStrings::Isoformat) => date_isoformat(self, args, vm).map(CallResult::Value),
+            Some(StaticStrings::Strftime) => date_strftime(self, args, vm).map(CallResult::Value),
+            Some(StaticStrings::Replace) => date_replace(self, args, vm).map(CallResult::Value),
+            Some(StaticStrings::Weekday) => date_weekday(self, args, vm).map(CallResult::Value),
+            Some(StaticStrings::Isoweekday) => date_isoweekday(self, args, vm).map(CallResult::Value),
             _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
         }
     }
@@ -515,4 +478,90 @@ struct DateReplaceArgs {
     month: Option<i32>,
     #[from_args(kw_only, default)]
     day: Option<i32>,
+}
+
+fn date_isoformat<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("date.isoformat", vm.heap)?;
+    let (year, month, day) = to_ymd(*value.get(vm.heap));
+    Ok(allocate_string_no_interning(
+        format!("{year:04}-{month:02}-{day:02}"),
+        vm.heap,
+    ))
+}
+
+fn date_strftime<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let date = *value.get(vm.heap);
+    let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
+    defer_drop!(format, vm);
+    let formatted = format_date_strftime(date, format.as_str(vm), &vm.heap.tracker)?;
+    Ok(allocate_string(formatted, vm.heap))
+}
+
+fn date_replace<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let (year, month, day) = to_ymd(*value.get(vm.heap));
+    let DateReplaceArgs {
+        year: new_year,
+        month: new_month,
+        day: new_day,
+    } = DateReplaceArgs::from_args(args, vm)?;
+    let new_date = from_ymd(
+        new_year.unwrap_or(year),
+        new_month.unwrap_or(i32::try_from(month).expect("month in 1..=12")),
+        new_day.unwrap_or(i32::try_from(day).expect("day in 1..=31")),
+    )?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(new_date))))
+}
+
+fn date_weekday<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("date.weekday", vm.heap)?;
+    Ok(Value::Int(i64::from(
+        value.get(vm.heap).0.weekday().num_days_from_monday(),
+    )))
+}
+
+fn date_isoweekday<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("date.isoweekday", vm.heap)?;
+    Ok(Value::Int(i64::from(
+        value.get(vm.heap).0.weekday().number_from_monday(),
+    )))
+}
+
+fn date_today(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    class_today(vm, args)
+}
+
+fn date_fromisoformat(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
+}
+
+const fn attr_method(handler: crate::types::builtin_attr::ObjectMethod<Date>) -> AttrDef {
+    AttrDef::method(crate::types::builtin_attr::MethodDef::Date(handler))
+}
+
+fn date_min(vm: &mut VM<'_>) -> Value {
+    allocate_ymd(1, 1, 1, vm.heap)
+}
+
+fn date_max(vm: &mut VM<'_>) -> Value {
+    allocate_ymd(9999, 12, 31, vm.heap)
+}
+
+fn date_resolution(vm: &mut VM<'_>) -> Value {
+    timedelta::allocate_micros(timedelta::DAY_MICROSECONDS, vm.heap)
+}
+
+builtin_attrs! {
+    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Isoformat => method(date_isoformat),
+        Strftime => method(date_strftime),
+        Replace => method(date_replace),
+        Weekday => method(date_weekday),
+        Isoweekday => method(date_isoweekday),
+        Today => class_method(date_today),
+        Fromisoformat => class_method(date_fromisoformat),
+        Min => value(date_min),
+        Max => value(date_max),
+        Resolution => value(date_resolution),
+    ];
+    pub(crate) const fn lookup_attr;
 }

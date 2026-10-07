@@ -13,6 +13,7 @@ use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
 use smallvec::smallvec;
 
+use super::builtin_attr::{AttrDef, builtin_attrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -351,29 +352,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let result = match attr.static_string(vm.interns) {
             Some(StaticStrings::Group) => call_group(self, args, vm)?,
-            Some(StaticStrings::Groups) => {
-                args.check_zero_args("re.Match.groups", vm.heap)?;
-                self.get(vm.heap).get_groups(vm.heap)
-            }
-            Some(StaticStrings::Groupdict) => {
-                let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
-                let default = default.unwrap_or(Value::None);
-                let result = self.get_groupdict(&default, vm)?;
-                default.drop_with(vm);
-                result
-            }
-            Some(StaticStrings::Start) => {
-                let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
-                self.get(vm.heap).get_start(n, vm)?
-            }
-            Some(StaticStrings::End) => {
-                let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
-                self.get(vm.heap).get_end(n, vm)?
-            }
-            Some(StaticStrings::Span) => {
-                let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
-                self.get(vm.heap).get_span(n, vm)?
-            }
+            Some(StaticStrings::Groups) => match_groups(self, args, vm)?,
+            Some(StaticStrings::Groupdict) => match_groupdict(self, args, vm)?,
+            Some(StaticStrings::Start) => match_start(self, args, vm)?,
+            Some(StaticStrings::End) => match_end(self, args, vm)?,
+            Some(StaticStrings::Span) => match_span(self, args, vm)?,
             _ => return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm)),
         };
         Ok(CallResult::Value(result))
@@ -437,6 +420,38 @@ fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -
             Ok(allocate_tuple(elements, vm.heap))
         }
     }
+}
+
+fn match_group<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    call_group(m, args, vm)
+}
+
+fn match_groups<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    args.check_zero_args("re.Match.groups", vm.heap)?;
+    Ok(m.get(vm.heap).get_groups(vm.heap))
+}
+
+fn match_groupdict<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
+    let default = default.unwrap_or(Value::None);
+    let result = m.get_groupdict(&default, vm)?;
+    default.drop_with(vm);
+    Ok(result)
+}
+
+fn match_start<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
+    m.get(vm.heap).get_start(n, vm)
+}
+
+fn match_end<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
+    m.get(vm.heap).get_end(n, vm)
+}
+
+fn match_span<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
+    m.get(vm.heap).get_span(n, vm)
 }
 
 /// Resolves a single group argument — integer, bool, or string (named group).
@@ -514,4 +529,20 @@ fn group_index(n: i64) -> usize {
 struct GroupdictArgs {
     #[from_args(default)]
     default: Option<Value>,
+}
+
+const fn attr_method(handler: crate::types::builtin_attr::Method<ReMatch>) -> AttrDef {
+    AttrDef::method(crate::types::builtin_attr::MethodDef::ReMatch(handler))
+}
+
+builtin_attrs! {
+    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Group => method(match_group),
+        Groups => method(match_groups),
+        Groupdict => method(match_groupdict),
+        Start => method(match_start),
+        End => method(match_end),
+        Span => method(match_span),
+    ];
+    pub(crate) const fn lookup_attr;
 }

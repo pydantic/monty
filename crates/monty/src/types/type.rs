@@ -20,6 +20,7 @@ use crate::{
     types::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
         Str, TimeZone, Tuple,
+        builtin_attr::{self, AttrDef},
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -27,9 +28,7 @@ use crate::{
         long_int::{INT_MAX_STR_DIGITS, bigint_to_f64_checked},
         path,
         str::{StringRepr, allocate_string},
-        time,
-        timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
-        timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
+        time, timedelta,
     },
     value::{EitherStr, Value},
 };
@@ -735,36 +734,22 @@ impl Type {
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which
-        // normalizes to CPython's `timedelta(days=999999999, seconds=86399,
-        // microseconds=999999)`.
-        const MAX_TIMEDELTA_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
-        const MIN_TIMEDELTA_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
+        let name = attr.static_string(vm.interns)?;
+        if let Some(AttrDef::Value(get)) = builtin_attr::lookup_attr(self, name) {
+            return Some(get(vm));
+        }
 
-        Some(match (self, attr.static_string(vm.interns)?) {
-            (Self::Date, StaticStrings::Min) => date::allocate_ymd(1, 1, 1, vm.heap),
-            (Self::Date, StaticStrings::Max) => date::allocate_ymd(9999, 12, 31, vm.heap),
-            (Self::Date, StaticStrings::Resolution) => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
+        Some(match (self, name) {
             (Self::DateTime, StaticStrings::Min) => datetime::allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
             (Self::DateTime, StaticStrings::Max) => {
                 datetime::allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap)
             }
-            (Self::Time, StaticStrings::Min) => time::allocate_naive(0, 0, 0, 0, vm.heap),
-            (Self::Time, StaticStrings::Max) => time::allocate_naive(23, 59, 59, 999_999, vm.heap),
-            (Self::TimeDelta, StaticStrings::Min) => timedelta::allocate_micros(MIN_TIMEDELTA_MICROS, vm.heap),
-            (Self::TimeDelta, StaticStrings::Max) => timedelta::allocate_micros(MAX_TIMEDELTA_MICROS, vm.heap),
-            // The three microsecond-resolution classes share one constant.
-            (Self::DateTime | Self::Time | Self::TimeDelta, StaticStrings::Resolution) => {
-                timedelta::allocate_micros(1, vm.heap)
-            }
-            (Self::TimeZone, StaticStrings::Utc) => vm.heap.get_timezone_utc(),
+            (Self::DateTime, StaticStrings::Resolution) => timedelta::allocate_micros(1, vm.heap),
             // The `_blake2` size limits, on the class and so on its instances.
             (Self::Blake2b, StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize) => Value::Int(64),
             (Self::Blake2b, StaticStrings::SaltSize | StaticStrings::PersonSize) => Value::Int(16),
             (Self::Blake2s, StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize) => Value::Int(32),
             (Self::Blake2s, StaticStrings::SaltSize | StaticStrings::PersonSize) => Value::Int(8),
-            (Self::TimeZone, StaticStrings::Min) => timezone::allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
-            (Self::TimeZone, StaticStrings::Max) => timezone::allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
             _ => return None,
         })
     }

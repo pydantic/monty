@@ -12,6 +12,7 @@ use std::{
 // here because this is where the sandbox-side constructor enforces them.
 pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
 
+use super::builtin_attr::{AttrDef, builtin_attrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -343,22 +344,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         // Each method takes the `dt` it would need to resolve a DST rule. A fixed
         // offset has no such rule, so `take_dt_arg` validates and discards it.
         match attr.static_string(vm.interns) {
-            Some(StaticStrings::Utcoffset) => {
-                take_dt_arg("timezone.utcoffset", args, vm)?;
-                let offset_seconds = self.get(vm.heap).offset_seconds;
-                Ok(CallResult::Value(utcoffset_value(Some(offset_seconds), vm.heap)))
-            }
-            Some(StaticStrings::Tzname) => {
-                take_dt_arg("timezone.tzname", args, vm)?;
-                let tz = self.get(vm.heap);
-                let name = tzname_string(tz.offset_seconds, tz.name.as_deref());
-                Ok(CallResult::Value(allocate_string(name, vm.heap)))
-            }
-            Some(StaticStrings::Dst) => {
-                take_dt_arg("timezone.dst", args, vm)?;
-                // A fixed offset never observes daylight saving.
-                Ok(CallResult::Value(Value::None))
-            }
+            Some(StaticStrings::Utcoffset) => timezone_utcoffset(self, args, vm).map(CallResult::Value),
+            Some(StaticStrings::Tzname) => timezone_tzname(self, args, vm).map(CallResult::Value),
+            Some(StaticStrings::Dst) => timezone_dst(self, args, vm).map(CallResult::Value),
             _ => Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm)),
         }
     }
@@ -376,4 +364,54 @@ fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -
         .split_once('.')
         .expect("tzinfo method names are qualified as `timezone.<method>`");
     check_tzinfo_dt_arg(method, dt, vm.heap, vm.interns)
+}
+
+fn timezone_utcoffset<'h>(
+    value: &mut HeapObjectRead<'h, TimeZone>,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    take_dt_arg("timezone.utcoffset", args, vm)?;
+    let offset_seconds = value.get(vm.heap).offset_seconds;
+    Ok(utcoffset_value(Some(offset_seconds), vm.heap))
+}
+
+fn timezone_tzname<'h>(value: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    take_dt_arg("timezone.tzname", args, vm)?;
+    let tz = value.get(vm.heap);
+    let name = tzname_string(tz.offset_seconds, tz.name.as_deref());
+    Ok(allocate_string(name, vm.heap))
+}
+
+fn timezone_dst<'h>(_: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    take_dt_arg("timezone.dst", args, vm)?;
+    Ok(Value::None)
+}
+
+const fn attr_method(handler: crate::types::builtin_attr::ObjectMethod<TimeZone>) -> AttrDef {
+    AttrDef::method(crate::types::builtin_attr::MethodDef::TimeZone(handler))
+}
+
+fn timezone_utc(vm: &mut VM<'_>) -> Value {
+    vm.heap.get_timezone_utc()
+}
+
+fn timezone_min(vm: &mut VM<'_>) -> Value {
+    allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap)
+}
+
+fn timezone_max(vm: &mut VM<'_>) -> Value {
+    allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap)
+}
+
+builtin_attrs! {
+    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+        Utcoffset => method(timezone_utcoffset),
+        Tzname => method(timezone_tzname),
+        Dst => method(timezone_dst),
+        Utc => value(timezone_utc),
+        Min => value(timezone_min),
+        Max => value(timezone_max),
+    ];
+    pub(crate) const fn lookup_attr;
 }
