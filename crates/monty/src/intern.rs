@@ -4,18 +4,18 @@
 //! and return indices (`StringId`, `BytesId`, `LongIntId`) for efficient storage and comparison.
 //! This avoids the overhead of cloning strings or using atomic reference counting.
 //!
-//! One table serves parsing, preparation, compilation and execution. Runtime paths
-//! can append static strings without invalidating existing borrows.
+//! Static strings use their enum discriminants as IDs and share text across executors.
+//! Other strings are appended to executor-local tables without invalidating existing borrows.
 //!
 //! StringIds are laid out as follows:
 //! * 0 to 127 - single character strings for all 128 ASCII characters
 //! * 128 - the empty string
-//! * 129 to 2³¹-1 - strings interned per executor
+//! * 129 to the last `StaticStrings` discriminant - other static strings
+//! * remaining IDs below 2³¹ - strings interned per executor
 //! * 2³¹ and above - snippet filename identities, never Python string values
 //!
-//! Other static strings occupy ordinary executor-local slots. Their interner entries
-//! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
-//! their text so another build can load an unknown static string as owned text.
+//! Snapshots store only executor-local text. Static string IDs and the start of
+//! executor-local IDs are part of the dump version's contract.
 
 mod compile;
 mod storage;
@@ -32,7 +32,7 @@ use ahash::{AHashMap, AHashSet};
 pub(crate) use compile::CompileInterns;
 use num_bigint::BigInt;
 use storage::Entries;
-use strum::{EnumString, FromRepr, IntoStaticStr};
+use strum::{EnumString, FromRepr, IntoStaticStr, VariantArray};
 
 use crate::{
     function::Function,
@@ -72,20 +72,25 @@ impl StringId {
     }
 }
 
-/// Executor-local intern IDs follow ASCII and the empty string.
-const INTERN_STRING_ID_OFFSET: usize = RESERVED_STRS.len();
+impl From<StaticStrings> for StringId {
+    #[inline]
+    fn from(value: StaticStrings) -> Self {
+        Self(value as u32)
+    }
+}
 
-/// Strings runtime paths can materialize without a corresponding source name.
-const CORE_STATIC_STRINGS: &[StaticStrings] = &[
-    StaticStrings::Module,
-    StaticStrings::NoneRepr,
-    StaticStrings::TrueRepr,
-    StaticStrings::FalseRepr,
-    StaticStrings::EllipsisRepr,
-    StaticStrings::NotImplementedRepr,
-    StaticStrings::DunderMain,
-    StaticStrings::DunderDoc,
-];
+impl TryFrom<StringId> for StaticStrings {
+    type Error = ();
+
+    #[inline]
+    fn try_from(value: StringId) -> Result<Self, ()> {
+        let index = value.0.try_into().map_err(|_| ())?;
+        Self::from_repr(index).ok_or(())
+    }
+}
+
+/// Executor-local IDs follow the contiguous static string range.
+const INTERN_STRING_ID_OFFSET: usize = StaticStrings::VARIANTS.len();
 
 /// Executor-independent text for ASCII IDs 0–127 and the empty-string ID 128.
 /// Hashes in [`crate::hash::RESERVED_STRING_HASHES`] use the same indices.
@@ -115,15 +120,11 @@ pub(crate) static RESERVED_STRS: [&str; 129] = const {
 
 /// Static string values known at compile time.
 ///
-/// The `Ascii*` variants and [`Self::EmptyString`] pin the discriminants
-/// [`get_static_string`] reverses with [`FromRepr`](strum::FromRepr), so they
-/// stay in code-point order. Every variant after them is in alphabetical
-/// order by variant name, purely so that two branches adding a string rarely
-/// touch the same line; nothing reads those discriminants. Interner entries
-/// serialize as text and recover a tag only when the loading build recognizes
-/// that text, so reordering them does not invalidate a dump.
+/// Discriminants are `StringId`s stored in bytecode and snapshots. Keep ASCII
+/// and the empty string first; the remaining variants are alphabetical.
+/// Adding, removing, reordering or changing a string requires a dump version bump.
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, VariantArray, PartialEq, Eq, Hash)]
 #[strum(serialize_all = "snake_case")]
 pub enum StaticStrings {
     /// ASCII character 0x00.
@@ -2025,48 +2026,18 @@ pub enum StaticStrings {
     ZipLongest,
 }
 
-/// One immutable interned string with directly accessible dispatch metadata.
-/// Snapshots store only text; loading reconstructs the tag and cached hash.
+/// Executor-local text with a cached Python hash; snapshots store only the text.
 #[derive(Debug, Clone)]
 struct InternedString {
-    /// Runtime classification, independent of the string's executor-local ID.
-    static_tag: Option<StaticStrings>,
     /// Text and its eagerly computed Python hash.
-    text: WithHash<InternedText>,
-}
-
-/// Ownership of interned text, independent of its dispatch metadata.
-#[derive(Debug, Clone)]
-enum InternedText {
-    /// Text recognized by this build, requiring no owned allocation.
-    Static(&'static str),
-    /// Source or snapshot text unknown to the static registry.
-    Owned(Box<str>),
-}
-
-impl AsRef<str> for InternedText {
-    fn as_ref(&self) -> &str {
-        match self {
-            Self::Static(text) => text,
-            Self::Owned(text) => text,
-        }
-    }
+    text: WithHash<Box<str>>,
 }
 
 impl InternedString {
-    /// Creates an entry for compile-time-known text.
-    fn static_string(value: StaticStrings) -> Self {
-        Self {
-            static_tag: Some(value),
-            text: WithHash::for_str(InternedText::Static(value.into())),
-        }
-    }
-
     /// Creates an entry owning text not present in the static registry.
     fn owned(value: String) -> Self {
         Self {
-            static_tag: None,
-            text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
+            text: WithHash::for_str(value.into_boxed_str()),
         }
     }
 
@@ -2079,11 +2050,6 @@ impl InternedString {
     fn hash(&self) -> HashValue {
         self.text.hash()
     }
-
-    /// Returns the static tag when this build recognizes the text.
-    fn static_value(&self) -> Option<StaticStrings> {
-        self.static_tag
-    }
 }
 
 impl serde::Serialize for InternedString {
@@ -2095,10 +2061,7 @@ impl serde::Serialize for InternedString {
 impl<'de> serde::Deserialize<'de> for InternedString {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(match StaticStrings::from_str(&value) {
-            Ok(static_string) => Self::static_string(static_string),
-            Err(_) => Self::owned(value),
-        })
+        Ok(Self::owned(value))
     }
 }
 
@@ -2152,38 +2115,14 @@ impl FunctionId {
     }
 }
 
-/// Prehashed core strings reused when constructing independent interners.
-static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
-    CORE_STATIC_STRINGS
+/// Shared static text and hashes in discriminant order, after ASCII and the empty string.
+static STATIC_ENTRIES: LazyLock<Vec<WithHash<&'static str>>> = LazyLock::new(|| {
+    StaticStrings::VARIANTS[RESERVED_STRS.len()..]
         .iter()
         .copied()
-        .map(InternedString::static_string)
+        .map(|value| WithHash::for_str(value.into()))
         .collect()
 });
-
-/// Interns a static tag into an append-only executor-local table.
-fn intern_static(
-    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
-    strings: &Entries<InternedString>,
-    value: StaticStrings,
-) -> StringId {
-    let text: &'static str = value.into();
-    if text.is_empty() {
-        StringId::EMPTY
-    } else if text.len() == 1 {
-        StringId::from_ascii(text.as_bytes()[0])
-    } else {
-        let existing = static_string_ids.borrow().get(&value).copied();
-        if let Some(id) = existing {
-            id
-        } else {
-            let id = next_string_id(strings.len());
-            strings.push(InternedString::static_string(value));
-            static_string_ids.borrow_mut().insert(value, id);
-            id
-        }
-    }
-}
 
 /// Returns the next dense executor-local string ID.
 fn next_string_id(strings_len: usize) -> StringId {
@@ -2193,17 +2132,13 @@ fn next_string_id(strings_len: usize) -> StringId {
 }
 
 /// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
-fn get_string_id_by_name(
-    string_map: &AHashMap<String, StringId>,
-    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
-    s: &str,
-) -> Option<StringId> {
+fn get_string_id_by_name(string_map: &AHashMap<String, StringId>, s: &str) -> Option<StringId> {
     if s.is_empty() {
         Some(StringId::EMPTY)
     } else if s.len() == 1 {
         Some(StringId::from_ascii(s.as_bytes()[0]))
     } else if let Ok(value) = StaticStrings::from_str(s) {
-        static_string_ids.borrow().get(&value).copied()
+        Some(value.into())
     } else {
         string_map.get(s).copied()
     }
@@ -2217,20 +2152,10 @@ fn get_string_id_by_name(
 fn get_str(strings: &Entries<InternedString>, id: StringId) -> &str {
     if let Some(text) = RESERVED_STRS.get(id.index()) {
         text
+    } else if id.index() < INTERN_STRING_ID_OFFSET {
+        STATIC_ENTRIES[id.index() - RESERVED_STRS.len()].value()
     } else {
         strings[id.index() - INTERN_STRING_ID_OFFSET].as_str()
-    }
-}
-
-/// Returns the static tag stored at `id`, if any.
-#[inline]
-fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<StaticStrings> {
-    if id == StringId::EMPTY {
-        Some(StaticStrings::EmptyString)
-    } else if id.index() < INTERN_STRING_ID_OFFSET {
-        StaticStrings::from_repr(u16::try_from(id.index()).expect("ASCII ID fits u16"))
-    } else {
-        strings[id.index() - INTERN_STRING_ID_OFFSET].static_tag
     }
 }
 
@@ -2247,8 +2172,6 @@ pub(crate) struct Interns {
     eval_sources: Entries<Arc<str>>,
     #[serde(skip)]
     string_id_by_name: RefCell<AHashMap<String, StringId>>,
-    #[serde(skip)]
-    static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
     /// Prevents runtime insertion or a second compiler from consuming provisional IDs.
     #[serde(skip)]
     compiling: Cell<bool>,
@@ -2275,7 +2198,6 @@ impl TryFrom<InternsWire> for Interns {
 
     fn try_from(wire: InternsWire) -> Result<Self, Self::Error> {
         let mut string_id_by_name = AHashMap::new();
-        let mut static_string_ids = AHashMap::new();
         let mut seen = AHashSet::new();
         for (index, entry) in wire.strings.iter().enumerate() {
             let text = entry.as_str();
@@ -2283,11 +2205,7 @@ impl TryFrom<InternsWire> for Interns {
                 return Err(format!("duplicate or reserved interned string {text:?}"));
             }
             let id = next_string_id(index);
-            if let Some(value) = entry.static_value() {
-                static_string_ids.insert(value, id);
-            } else {
-                string_id_by_name.insert(text.to_owned(), id);
-            }
+            string_id_by_name.insert(text.to_owned(), id);
         }
         Ok(Self {
             strings: wire.strings,
@@ -2296,7 +2214,6 @@ impl TryFrom<InternsWire> for Interns {
             functions: wire.functions,
             eval_sources: wire.eval_sources,
             string_id_by_name: RefCell::new(string_id_by_name),
-            static_string_ids: RefCell::new(static_string_ids),
             compiling: Cell::new(false),
         })
     }
@@ -2321,37 +2238,32 @@ impl Interns {
             functions: Entries::default(),
             eval_sources: Entries::default(),
             string_id_by_name: RefCell::default(),
-            static_string_ids: RefCell::default(),
             compiling: Cell::new(false),
         }
     }
 
-    /// Initializes the core static strings; other entries are appended on demand.
+    /// Reserves executor-local storage based on the source's string literal count.
     pub fn new(code: &str) -> Self {
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
-        let interns = Self {
-            strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
+        Self {
+            strings: Entries::with_capacity(capacity),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
             eval_sources: Entries::default(),
             string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
-            static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
             compiling: Cell::new(false),
-        };
-        for entry in CORE_ENTRIES.iter() {
-            let value = entry.static_value().expect("core entries are static");
-            let id = next_string_id(interns.strings.len());
-            interns.strings.push(entry.clone());
-            interns.static_string_ids.borrow_mut().insert(value, id);
         }
-        interns
     }
 
-    /// Interns runtime static text without invalidating existing string borrows.
+    /// Static IDs require no executor-local storage or lookup.
+    #[inline]
+    #[expect(
+        clippy::unused_self,
+        reason = "Keeps static and dynamic interning behind the same interface"
+    )]
     pub(crate) fn intern_static(&self, value: StaticStrings) -> StringId {
-        assert!(!self.compiling.get(), "runtime interning during compilation");
-        intern_static(&self.static_string_ids, &self.strings, value)
+        value.into()
     }
 
     /// Looks up a Python string; filename identities use `get_filename` instead.
@@ -2373,9 +2285,11 @@ impl Interns {
         }
     }
 
-    /// Returns dispatch metadata independent of the executor-local ID.
+    /// Recovers a static variant directly from its string ID.
+    #[inline]
+    #[expect(clippy::unused_self, reason = "Keeps string lookups behind the same interface")]
     pub(crate) fn static_string(&self, id: StringId) -> Option<StaticStrings> {
-        get_static_string(&self.strings, id)
+        id.try_into().ok()
     }
 
     /// Borrows a committed bytes literal.
@@ -2410,6 +2324,8 @@ impl Interns {
     pub fn str_hash(&self, id: StringId) -> HashValue {
         if id.index() < RESERVED_STRS.len() {
             RESERVED_STRING_HASHES.get_or_compute(id.index(), || hash_python_str(RESERVED_STRS[id.index()]))
+        } else if id.index() < INTERN_STRING_ID_OFFSET {
+            STATIC_ENTRIES[id.index() - RESERVED_STRS.len()].hash()
         } else {
             self.strings[id.index() - INTERN_STRING_ID_OFFSET].hash()
         }
@@ -2429,6 +2345,58 @@ impl Interns {
 
     /// Finds canonical text already interned, excluding snippet filename IDs.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_id_by_name.borrow(), &self.static_string_ids, s)
+        get_string_id_by_name(&self.string_id_by_name.borrow(), s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use strum::VariantArray;
+
+    use super::{CompileInterns, INTERN_STRING_ID_OFFSET, Interns, SOURCE_ID_BASE, StaticStrings, StringId};
+    use crate::hash::hash_python_str;
+
+    #[test]
+    fn static_ids_match_discriminants_across_compilation_and_snapshots() {
+        let mut interns = Interns::default();
+        let mut compiler = CompileInterns::direct(&mut interns);
+        let dynamic = compiler.intern("executor-local text");
+        assert_eq!(dynamic.index(), INTERN_STRING_ID_OFFSET);
+        compiler.commit();
+
+        let mut overlay = CompileInterns::new(&interns);
+        for (index, &tag) in StaticStrings::VARIANTS.iter().enumerate() {
+            let text: &'static str = tag.into();
+            let id = StringId::from(tag);
+            assert_eq!(id.index(), index);
+            assert_eq!(id.index(), tag as usize);
+            assert_eq!(StaticStrings::try_from(id), Ok(tag));
+            assert_eq!(interns.intern_static(tag), id);
+            assert_eq!(overlay.intern_static(tag), id);
+            assert_eq!(overlay.intern(text), id);
+            assert_eq!(overlay.get_str(id), text);
+            assert_eq!(interns.get_string_id_by_name(text), Some(id));
+            assert_eq!(interns.get_str(id), text);
+            assert_eq!(interns.str_hash(id), hash_python_str(text));
+        }
+        overlay.commit();
+        assert_eq!(interns.strings.len(), 1);
+
+        let bytes = minicbor_serde::to_vec(&interns).unwrap();
+        let loaded: Interns = minicbor_serde::from_slice(&bytes).unwrap();
+        assert_eq!(loaded.strings.len(), 1);
+        assert_eq!(loaded.get_str(dynamic), "executor-local text");
+        assert_eq!(loaded.static_string(dynamic), None);
+        assert_eq!(StaticStrings::try_from(dynamic), Err(()));
+        assert_eq!(
+            StaticStrings::try_from(StringId(SOURCE_ID_BASE.try_into().unwrap())),
+            Err(())
+        );
+        for &tag in StaticStrings::VARIANTS {
+            let id = loaded.intern_static(tag);
+            assert_eq!(id.index(), tag as usize);
+            assert_eq!(loaded.static_string(id), Some(tag));
+            assert_eq!(loaded.get_str(id), <&'static str>::from(tag));
+        }
     }
 }

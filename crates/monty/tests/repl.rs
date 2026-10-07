@@ -673,10 +673,10 @@ fn repl_interns_deduplicate_static_and_owned_strings() {
         assert_eq!(feed_run_print(&mut repl, code).unwrap(), expected);
         let state = to_value(&repl).unwrap();
         let strings = state["interns"]["strings"].as_array().unwrap();
-        for text in ["keepends", "custom_parameter", "owned-name", "κ"] {
+        for text in ["custom_parameter", "owned-name", "κ"] {
             assert_eq!(strings.iter().filter(|value| value.as_str() == Some(text)).count(), 1);
         }
-        for text in ["", "x"] {
+        for text in ["", "x", "keepends"] {
             assert_eq!(strings.iter().filter(|value| value.as_str() == Some(text)).count(), 0);
         }
         repl = round_trip_repl(&repl);

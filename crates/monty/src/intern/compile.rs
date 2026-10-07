@@ -22,7 +22,6 @@ pub(crate) struct CompileInterns<'i> {
 struct PendingInterns {
     strings: Vec<InternedString>,
     string_ids: AHashMap<String, StringId>,
-    static_string_ids: AHashMap<StaticStrings, StringId>,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
@@ -56,10 +55,6 @@ impl<'i> CompileInterns<'i> {
                 .string_id_by_name
                 .borrow_mut()
                 .extend(pending.string_ids.drain());
-            self.base
-                .static_string_ids
-                .borrow_mut()
-                .extend(pending.static_string_ids.drain());
             for entry in pending.bytes.drain(..) {
                 self.base.bytes.push(entry);
             }
@@ -96,20 +91,13 @@ impl<'i> CompileInterns<'i> {
     }
 
     /// Interns a compiler-generated name without parsing its known static tag again.
+    #[inline]
+    #[expect(
+        clippy::unused_self,
+        reason = "Keeps static and dynamic interning behind the same interface"
+    )]
     pub(crate) fn intern_static(&mut self, value: StaticStrings) -> StringId {
-        let text: &'static str = value.into();
-        if text.is_empty() {
-            StringId::EMPTY
-        } else if text.len() == 1 {
-            StringId::from_ascii(text.as_bytes()[0])
-        } else {
-            let existing = self.get_static_id(value);
-            if let Some(id) = existing {
-                id
-            } else {
-                self.push_string(InternedString::static_string(value))
-            }
-        }
+        value.into()
     }
 
     /// Appends a bytes literal; these are not deduplicated.
@@ -167,7 +155,7 @@ impl<'i> CompileInterns<'i> {
         } else if let Some(id) = self.pending.as_ref().and_then(|pending| pending.string_ids.get(text)) {
             Some(*id)
         } else if let Ok(tag) = text.parse::<StaticStrings>() {
-            self.get_static_id(tag)
+            Some(tag.into())
         } else {
             self.base.string_id_by_name.borrow().get(text).copied()
         }
@@ -202,35 +190,19 @@ impl<'i> CompileInterns<'i> {
         self.base.functions.len() + self.pending.as_ref().map_or(0, |pending| pending.functions.len())
     }
 
-    /// Finds a known static tag without converting it back to text.
-    fn get_static_id(&self, value: StaticStrings) -> Option<StringId> {
-        self.pending
-            .as_ref()
-            .and_then(|pending| pending.static_string_ids.get(&value).copied())
-            .or_else(|| self.base.static_string_ids.borrow().get(&value).copied())
-    }
-
     /// Assigns an ID to new text and records its reverse lookup in the same compilation mode.
     fn push_string(&mut self, entry: InternedString) -> StringId {
         if let Some(pending) = &mut self.pending {
             let id = next_string_id(self.base.strings.len() + pending.strings.len());
-            if let Some(tag) = entry.static_value() {
-                pending.static_string_ids.insert(tag, id);
-            } else {
-                pending.string_ids.insert(entry.as_str().to_owned(), id);
-            }
+            pending.string_ids.insert(entry.as_str().to_owned(), id);
             pending.strings.push(entry);
             id
         } else {
             let id = next_string_id(self.base.strings.len());
-            if let Some(tag) = entry.static_value() {
-                self.base.static_string_ids.borrow_mut().insert(tag, id);
-            } else {
-                self.base
-                    .string_id_by_name
-                    .borrow_mut()
-                    .insert(entry.as_str().to_owned(), id);
-            }
+            self.base
+                .string_id_by_name
+                .borrow_mut()
+                .insert(entry.as_str().to_owned(), id);
             self.base.strings.push(entry);
             id
         }

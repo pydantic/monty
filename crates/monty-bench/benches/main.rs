@@ -234,6 +234,16 @@ for _ in range(10_000):
 r
 ";
 
+/// Converts `None` to a static string and dispatches a string method by interned ID.
+/// Includes VM loop and call overhead; compilation is excluded.
+const STATIC_STRING_CONVERSION: &str = "
+r = 0
+for _ in range(10_000):
+    if str(None).startswith('N'):
+        r += 1
+r
+";
+
 const LIST_APPEND_STR: &str = "
 a = []
 for i in range(100_000):
@@ -631,6 +641,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     #[cfg(not(codspeed))]
     c.bench_function("attr_dispatch_minimal__cpython", |b| {
         run_cpython(b, ATTR_DISPATCH_MINIMAL, 30_000);
+    });
+
+    c.bench_function("static_string_conversion__monty", |b| {
+        run_monty(b, STATIC_STRING_CONVERSION, 10_000);
     });
 
     c.bench_function("list_append_str__monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));

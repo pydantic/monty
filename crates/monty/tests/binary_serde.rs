@@ -156,24 +156,19 @@ fn monty_run_round_trip_comprehension_closure() {
     );
 }
 
-/// A static tag is not part of the wire identity: text unknown to the loading
-/// build remains a usable owned interner entry at the same `StringId`.
+/// Static text uses the reserved ID range and needs no executor-local snapshot entry.
 #[test]
-fn static_interns_deserialize_as_unknown_text() {
+fn static_strings_round_trip_without_local_entries() {
     let runner = MontyRun::new("'partial'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let mut bytes = minicbor_serde::to_vec(&runner).unwrap();
-    let positions: Vec<_> = bytes
-        .windows(b"partial".len())
-        .enumerate()
-        .filter_map(|(index, value)| (value == b"partial").then_some(index))
-        .collect();
-    assert_eq!(positions.len(), 2, "expected interner text and source text");
-    bytes[positions[0]..positions[0] + b"mystery".len()].copy_from_slice(b"mystery");
-
-    let mut loaded: MontyRun = minicbor_serde::from_slice(&bytes).unwrap();
+    let serialized = to_value(&runner).unwrap();
+    let strings = serialized["executor"]["tables"]["interns"]["strings"]
+        .as_array()
+        .unwrap();
+    assert!(!strings.iter().any(|entry| entry.as_str() == Some("partial")));
+    let mut loaded = round_trip(&runner);
     assert_eq!(
         loaded.run_no_limits(vec![]).unwrap(),
-        MontyObject::string("mystery".to_owned()),
+        MontyObject::string("partial".to_owned()),
     );
 }
 
@@ -226,8 +221,7 @@ assert len({value: 1 for value in values}) == 1
     );
 }
 
-/// Module attributes are absent from compiled snapshots and interned lazily
-/// during execution, including when running the same loaded program twice.
+/// Module attributes use static IDs when running the same loaded program twice.
 #[test]
 fn execution_interns_module_static_strings() {
     let runner = MontyRun::new(

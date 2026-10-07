@@ -43,13 +43,14 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// Bump for every release where
 /// the *meaning* of serialized data changes: opcodes or their operand shapes,
 /// `BuiltinsFunctions` order (its discriminants are bytecode operands),
+/// `StaticStrings` order or text (its discriminants are interned string IDs),
 /// `CmpOperator` values, the compiler's constant layout, how a dict or set key
 /// hashes (entries persist their hash), or a semantic change to a stored value.
 /// Older dumps are then rejected instead of misexecuting.
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 13;
+pub const DUMP_VERSION: u16 = 14;
 
 /// Set to [`DUMP_VERSION`], the current dump version, until this crate can load older dumps.
 pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
@@ -319,11 +320,12 @@ mod tests {
 
     use monty_types::{BuiltinsFunctions, ExcType, MontyType, TypeCheckingFormat};
     use serde::Serialize;
-    use strum::VariantNames;
+    use strum::{VariantArray, VariantNames};
 
     use super::DUMP_VERSION;
     use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, heap::HeapId, types::Type,
+        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, heap::HeapId,
+        intern::StaticStrings, types::Type,
     };
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
@@ -344,6 +346,13 @@ mod tests {
             0x8ecc_d26b_160d_9c0b,
             "comparison operators changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(comparison_operators_fingerprint())
+        );
+        let static_strings: Vec<&'static str> = StaticStrings::VARIANTS.iter().copied().map(Into::into).collect();
+        assert_eq!(
+            variant_order_fingerprint(&static_strings),
+            0x04b9_b63c_009e_26d6,
+            "static string IDs changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_order_fingerprint(&static_strings))
         );
         // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
         // drops, so the counts below cover every serialized variant once the
