@@ -4,45 +4,23 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
-    heap::{HeapObjectRead, HeapRead},
     intern::StaticStrings,
-    types::{
-        Complex, List, ReMatch, RePattern, TimeDelta, TimeZone, Tuple, Type, complex, date, list, re_match, re_pattern,
-        time, timedelta, timezone, tuple,
-    },
+    types::{Type, complex, date, list, re_match, re_pattern, time, timedelta, timezone, tuple},
     value::Value,
 };
 
 pub(crate) type BuiltinCall = for<'h> fn(StaticStrings, Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+pub(crate) type MethodCall = for<'h> fn(&Value, ArgValues, &mut VM<'h>) -> RunResult<Value>;
 
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum AttrDef {
-    Method(MethodDef),
+    Method(MethodCall),
     ClassMethod(BuiltinCall),
     Value(fn(&mut VM<'_>) -> Value),
 }
 
-pub(crate) type Method<T> = for<'h> fn(&mut HeapRead<'h, T>, ArgValues, &mut VM<'h>) -> RunResult<Value>;
-pub(crate) type ReadMethod<T> = for<'h> fn(&HeapRead<'h, T>, ArgValues, &mut VM<'h>) -> RunResult<Value>;
-pub(crate) type ObjectMethod<T> = for<'h> fn(&mut HeapObjectRead<'h, T>, ArgValues, &mut VM<'h>) -> RunResult<Value>;
-
-#[allow(dead_code)]
-#[derive(Clone, Copy)]
-pub(crate) enum MethodDef {
-    List(Method<List>),
-    Tuple(ReadMethod<Tuple>),
-    Complex(ObjectMethod<Complex>),
-    Date(ObjectMethod<date::Date>),
-    Time(ObjectMethod<time::Time>),
-    TimeDelta(ObjectMethod<TimeDelta>),
-    TimeZone(ObjectMethod<TimeZone>),
-    RePattern(Method<RePattern>),
-    ReMatch(Method<ReMatch>),
-}
-
 impl AttrDef {
-    pub(crate) const fn method(call: MethodDef) -> Self {
+    pub(crate) const fn method(call: MethodCall) -> Self {
         Self::Method(call)
     }
 
@@ -56,30 +34,83 @@ impl AttrDef {
 }
 
 macro_rules! builtin_attrs {
-    (@def method($handler:path)) => {
-        attr_method($handler)
+    (@def immediate $variant:ident, method($handler:path)) => {
+        $crate::types::builtin_attr::AttrDef::method({
+            fn call(receiver: &$crate::value::Value, args: $crate::args::ArgValues, vm: &mut $crate::bytecode::VM<'_>) -> $crate::exception_private::RunResult<$crate::value::Value> {
+                let $crate::value::Value::$variant(value) = receiver else {
+                    unreachable!("builtin method receiver must match its attribute table")
+                };
+                $handler(*value, args, vm)
+            }
+            call
+        })
     };
-    (@def class_method($handler:path)) => {
+    (@def mut_heap $variant:ident, method($handler:path)) => {
+        $crate::types::builtin_attr::AttrDef::method({
+            fn call(receiver: &$crate::value::Value, args: $crate::args::ArgValues, vm: &mut $crate::bytecode::VM<'_>) -> $crate::exception_private::RunResult<$crate::value::Value> {
+                let $crate::value::Value::Ref(id) = receiver else {
+                    unreachable!("builtin method receiver must be a heap value")
+                };
+                let $crate::heap::HeapReadOutput::$variant(mut value) = vm.heap.read(*id) else {
+                    unreachable!("builtin method receiver must match its attribute table")
+                };
+                $handler(&mut value, args, vm)
+            }
+            call
+        })
+    };
+    (@def heap $variant:ident, method($handler:path)) => {
+        $crate::types::builtin_attr::AttrDef::method({
+            fn call(receiver: &$crate::value::Value, args: $crate::args::ArgValues, vm: &mut $crate::bytecode::VM<'_>) -> $crate::exception_private::RunResult<$crate::value::Value> {
+                let $crate::value::Value::Ref(id) = receiver else {
+                    unreachable!("builtin method receiver must be a heap value")
+                };
+                let $crate::heap::HeapReadOutput::$variant(value) = vm.heap.read(*id) else {
+                    unreachable!("builtin method receiver must match its attribute table")
+                };
+                $handler(&value, args, vm)
+            }
+            call
+        })
+    };
+    (@def $mode:ident $variant:ident, class_method($handler:path)) => {
         $crate::types::builtin_attr::AttrDef::class_method($handler)
     };
-    (@def value($handler:path)) => {
+    (@def $mode:ident $variant:ident, value($handler:path)) => {
         $crate::types::builtin_attr::AttrDef::value($handler)
     };
     (
+        for $owner:ident: mut heap($variant:ident);
+        $($rest:tt)*
+    ) => {
+        $crate::types::builtin_attr::builtin_attrs!(@table mut_heap $variant; $($rest)*);
+    };
+    (
+        for $owner:ident: heap($variant:ident);
+        $($rest:tt)*
+    ) => {
+        $crate::types::builtin_attr::builtin_attrs!(@table heap $variant; $($rest)*);
+    };
+    (
+        for $owner:ident: immediate($variant:ident);
+        $($rest:tt)*
+    ) => {
+        $crate::types::builtin_attr::builtin_attrs!(@table immediate $variant; $($rest)*);
+    };
+    (
+        @table $mode:ident $variant:ident;
         $vis:vis const $table:ident: &[(StaticStrings, AttrDef)] = &[
             $($name:ident => $kind:ident($handler:path)),* $(,)?
         ];
         $lookup_vis:vis const fn $lookup:ident;
     ) => {
-        #[allow(dead_code)]
         $vis const $table: &[(StaticStrings, AttrDef)] = &[
-            $((StaticStrings::$name, $crate::types::builtin_attr::builtin_attrs!(@def $kind($handler))),)*
+            $((StaticStrings::$name, $crate::types::builtin_attr::builtin_attrs!(@def $mode $variant, $kind($handler))),)*
         ];
 
-        #[allow(dead_code)]
         $lookup_vis const fn $lookup(name: StaticStrings) -> Option<AttrDef> {
             match name {
-                $(StaticStrings::$name => Some($crate::types::builtin_attr::builtin_attrs!(@def $kind($handler))),)*
+                $(StaticStrings::$name => Some($crate::types::builtin_attr::builtin_attrs!(@def $mode $variant, $kind($handler))),)*
                 _ => None,
             }
         }
@@ -88,7 +119,6 @@ macro_rules! builtin_attrs {
 
 pub(crate) use builtin_attrs;
 
-#[allow(dead_code)]
 pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     match owner {
         Type::List => list::ATTRS,
@@ -104,7 +134,6 @@ pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) const fn lookup_attr(owner: Type, name: StaticStrings) -> Option<AttrDef> {
     match owner {
         Type::List => list::lookup_attr(name),
