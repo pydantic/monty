@@ -1,0 +1,65 @@
+crates/monty-types/src/scan.rs
+  s_70198791b6f006::t_dcee265587911b 276,303,527-551,553-554,562,570,572,580,582,588,592,603,608,621,623,636-664
+  s_70198791b6f006::t_2e32bdc40eb495 156-183,405-408
+  s_70198791b6f006::t_e7c3d24640a0b5 251-252
+crates/monty/src/types/dir_scan.rs
+  s_70198791b6f006::t_900c89d5bf000c 182-185,389-404,540-575,577,583
+  s_70198791b6f006::t_2e32bdc40eb495 16,26,694-702,718-721,763,790-791
+crates/monty-types/tests/scan.rs
+  s_70198791b6f006::t_3bce4326592501 187-191,193-209,211
+  s_70198791b6f006::t_5811b05d8bb441 210
+  s_70198791b6f006::t_1c7fef8b1eed4a 192
+crates/monty-python/tests/test_os_access.py
+  s_70198791b6f006::t_3c81b7f9cca83d 1064-1076,1078-1082
+  s_70198791b6f006::t_7a25abbf8f3620 1086
+  s_70198791b6f006::t_e06dcf854fbe3a 1077
+docs/limitations/filesystem.md
+  s_70198791b6f006::t_e7c3d24640a0b5 101,103
+crates/monty/test_cases/mount_fs__walk_glob.py
+  s_70198791b6f006::t_5f020d31758668 181-182,258,263
+  s_70198791b6f006::t_7a25abbf8f3620 2
+  s_70198791b6f006::t_d5d0dcb46410f9 178-180,183-189,252-257,259-262
+crates/monty-fs/tests/scan.rs
+  s_70198791b6f006::t_3bce4326592501 312-347
+crates/monty/src/os_dispatch.rs
+  s_70198791b6f006::t_5f020d31758668 506-507
+  s_70198791b6f006::t_bc904a73c0ce65 503-504
+docs/limitations/pathlib.md
+  s_70198791b6f006::t_5f020d31758668 79,81
+crates/monty-python/python/pydantic_monty/os_access.py
+  s_70198791b6f006::t_7a25abbf8f3620 549,572-573,575-581
+crates/monty-fs/src/scan.rs
+  s_70198791b6f006::t_e07a315df90a54 20,133-134,137,165,180
+  s_70198791b6f006::t_7338db2c1d3ecd 38,40-44,59-76,164
+crates/monty/src/intern.rs
+  s_70198791b6f006::t_7a25abbf8f3620 687-688,1017-1018
+crates/monty-python/tests/test_os_access_raw.py
+  s_70198791b6f006::t_3c81b7f9cca83d 668-670,672
+  s_70198791b6f006::t_4be51e49f847d9 671,673,708,723-730
+  s_70198791b6f006::t_e06dcf854fbe3a 674-707,709-722
+crates/monty-fs/src/overlay.rs
+  s_70198791b6f006::t_e07a315df90a54 128
+crates/monty-datatest/src/main.rs
+  s_70198791b6f006::t_e06dcf854fbe3a 912-916
+  s_70198791b6f006::t_7a25abbf8f3620 910-911
+crates/monty/tests/os_tests.rs
+  s_70198791b6f006::t_5811b05d8bb441 1810,1819
+  s_70198791b6f006::t_e06dcf854fbe3a 1811-1815
+  s_70198791b6f006::t_3bce4326592501 1804-1809,1816-1818,1820-1832
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8287c9194c1ad23ac0928ae0f054d803aa90187f",
+  "prompts": {},
+  "sessions": {
+    "s_70198791b6f006": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba5e312c-9ce6-4851-bdd9-36c86bbf967e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
