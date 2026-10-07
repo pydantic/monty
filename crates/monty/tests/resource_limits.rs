@@ -664,6 +664,55 @@ fn bytes_search_is_not_quadratic() {
     }
 }
 
+/// Runs `code` over one `data` argument of `size` bytes under `limits`.
+fn run_over_bytes(code: &str, size: usize, limits: ResourceLimits) -> (Duration, Result<MontyObject, MontyException>) {
+    let mut run = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["data".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let start = Instant::now();
+    let result = run.run(
+        vec![MontyObject::bytes(vec![b'a'; size])],
+        ResourceTracker::new(limits),
+        PrintWriter::Stdout,
+    );
+    (start.elapsed(), result)
+}
+
+/// Hashing polls the deadline once per input chunk, so a large `update()` is
+/// interrupted instead of running to completion.
+#[test]
+fn timeout_in_hashing() {
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(20));
+    let (elapsed, result) = run_over_bytes(
+        "import hashlib\nhashlib.sha3_512(data).hexdigest()",
+        128 * 1024 * 1024,
+        limits,
+    );
+    let exc = result.expect_err("expected the time limit to fire");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "should terminate promptly, took {elapsed:?}"
+    );
+}
+
+/// PBKDF2 absorbs the salt once, so a large salt costs one pass however many
+/// output blocks are derived.
+#[test]
+fn pbkdf2_hashes_the_salt_once() {
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_secs(5));
+    let (_, result) = run_over_bytes(
+        "import hashlib\nlen(hashlib.pbkdf2_hmac('sha256', b'p', data, 1, dklen=4096))",
+        8 * 1024 * 1024,
+        limits,
+    );
+    assert_eq!(result.unwrap(), MontyObject::int(4096));
+}
+
 /// Bytes searches must remain interruptible by the time limit.
 ///
 /// The haystack is large enough that even a linear scan outlives the budget.

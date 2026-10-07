@@ -13,6 +13,7 @@
 
 use std::fmt::Display;
 
+use monty_types::ResourceTracker;
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 
@@ -208,7 +209,7 @@ fn construct(algorithm: HashAlgorithm, args: ConstructorArgs, vm: &mut VM<'_>) -
     defer_drop!(args, vm);
     let mut hash = HashObject::new(algorithm);
     if let Some(input) = initial_data(args.data.as_ref(), args.string.as_ref())? {
-        hash.update(hash_input(input, vm)?);
+        hash.update(hash_input(input, vm)?, &vm.heap.tracker)?;
     }
     Ok(hash.allocate(vm.heap))
 }
@@ -286,7 +287,7 @@ fn call_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let algorithm = HashAlgorithm::from_name(name).ok_or_else(|| unsupported_hash_type(name))?;
     let mut hash = HashObject::new(algorithm);
     if let Some(input) = input {
-        hash.update(input);
+        hash.update(input, &vm.heap.tracker)?;
     }
     Ok(hash.allocate(vm.heap))
 }
@@ -560,7 +561,7 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
         Blake2Kind::Blake2s => HashObject::blake2s(params),
     };
     if let Some(input) = input {
-        hash.update(input);
+        hash.update(input, &vm.heap.tracker)?;
     }
     Ok(hash.allocate(vm.heap))
 }
@@ -703,31 +704,34 @@ fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         return Err(ExcType::value_error("[Provider routines] xof digests not allowed"));
     }
     vm.heap.tracker.check_allocation(dklen)?;
-    let key = pbkdf2(algorithm, password, salt, iterations, dklen, vm)?;
+    let key = pbkdf2(algorithm, password, salt, iterations, dklen, &vm.heap.tracker)?;
     Ok(allocate_bytes(key, vm.heap))
 }
 
 /// PBKDF2 with HMAC-`algorithm` as the pseudorandom function.
 ///
-/// `iterations` is caller-chosen, so each HMAC round polls the deadline.
+/// `iterations` is caller-chosen, so each HMAC round polls the deadline; the
+/// salt is absorbed once rather than re-hashed for every output block.
 fn pbkdf2(
     algorithm: HashAlgorithm,
     password: &[u8],
     salt: &[u8],
     iterations: i32,
     dklen: usize,
-    vm: &VM<'_>,
+    tracker: &ResourceTracker,
 ) -> RunResult<Vec<u8>> {
-    let hmac = Hmac::new(algorithm, password);
+    let hmac = Hmac::new(algorithm, password, tracker)?;
+    // Every block's first message is `salt || INT(block_index)`.
+    let salted = hmac.with_prefix(salt, tracker)?;
     let mut key = Vec::with_capacity(dklen);
     let mut round = 0usize;
     for block_index in 1u32.. {
-        let mut u = hmac.sign(&[salt, &block_index.to_be_bytes()].concat());
+        let mut u = salted.sign(&block_index.to_be_bytes(), tracker)?;
         let mut t = u.clone();
         for _ in 1..iterations {
-            vm.heap.tracker.check_time_every(round)?;
+            tracker.check_time_every(round)?;
             round = round.wrapping_add(1);
-            u = hmac.sign(&u);
+            u = hmac.sign(&u, tracker)?;
             for (acc, byte) in t.iter_mut().zip(&u) {
                 *acc ^= byte;
             }
@@ -736,7 +740,7 @@ fn pbkdf2(
         if key.len() == dklen {
             break;
         }
-        vm.heap.tracker.check_time_every(round)?;
+        tracker.check_time_every(round)?;
         round = round.wrapping_add(1);
     }
     Ok(key)
@@ -752,35 +756,46 @@ struct Hmac {
 }
 
 impl Hmac {
-    fn new(algorithm: HashAlgorithm, key: &[u8]) -> Self {
+    fn new(algorithm: HashAlgorithm, key: &[u8], tracker: &ResourceTracker) -> RunResult<Self> {
         let block_size = algorithm.block_size();
         let mut padded = vec![0u8; block_size];
         if key.len() > block_size {
             let mut hashed = HashObject::new(algorithm);
-            hashed.update(key);
+            hashed.update(key, tracker)?;
             let digest = hashed.digest();
             padded[..digest.len()].copy_from_slice(&digest);
         } else {
             padded[..key.len()].copy_from_slice(key);
         }
-        let keyed = |pad: u8| {
+        let keyed = |pad: u8| -> RunResult<HashObject> {
             let mut hash = HashObject::new(algorithm);
             let block: Vec<u8> = padded.iter().map(|byte| byte ^ pad).collect();
-            hash.update(&block);
-            hash
+            hash.update(&block, tracker)?;
+            Ok(hash)
         };
-        Self {
-            inner: keyed(0x36),
-            outer: keyed(0x5c),
-        }
+        Ok(Self {
+            inner: keyed(0x36)?,
+            outer: keyed(0x5c)?,
+        })
+    }
+
+    /// The same MAC with `prefix` already absorbed, for signing many
+    /// messages that share it.
+    fn with_prefix(&self, prefix: &[u8], tracker: &ResourceTracker) -> RunResult<Self> {
+        let mut inner = self.inner.clone();
+        inner.update(prefix, tracker)?;
+        Ok(Self {
+            inner,
+            outer: self.outer.clone(),
+        })
     }
 
     /// The MAC of `message`.
-    fn sign(&self, message: &[u8]) -> Vec<u8> {
+    fn sign(&self, message: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
         let mut inner = self.inner.clone();
-        inner.update(message);
+        inner.update(message, tracker)?;
         let mut outer = self.outer.clone();
-        outer.update(&inner.digest());
-        outer.digest()
+        outer.update(&inner.digest(), tracker)?;
+        Ok(outer.digest())
     }
 }

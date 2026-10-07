@@ -42,6 +42,10 @@ use crate::{
 /// Lowercase hex digits for `hexdigest()`.
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
+/// Input hashed between deadline polls in [`HashObject::update`]: roughly
+/// 100 µs of work, so that is how far a limit-sized input can overshoot.
+const POLL_CHUNK: usize = 64 * 1024;
+
 /// The algorithms `hashlib.algorithms_guaranteed` lists, which is also
 /// everything Monty's `hashlib.new()` accepts.
 ///
@@ -268,7 +272,20 @@ impl HashObject {
         }
     }
 
-    pub(crate) fn update(&mut self, data: &[u8]) {
+    /// Absorbs `data`, polling the deadline once per [`POLL_CHUNK`] so a
+    /// large input cannot run far past the time limit; an input under one
+    /// chunk never polls.
+    pub(crate) fn update(&mut self, data: &[u8], tracker: &ResourceTracker) -> RunResult<()> {
+        for (i, chunk) in data.chunks(POLL_CHUNK).enumerate() {
+            if i > 0 {
+                tracker.check_time()?;
+            }
+            self.absorb(chunk);
+        }
+        Ok(())
+    }
+
+    fn absorb(&mut self, data: &[u8]) {
         match &mut self.core {
             HashCore::Md5(core) => core.update(data),
             HashCore::Sha1(core) => core.update(data),
@@ -448,7 +465,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
                 // The input borrows the heap, so the (small) state is updated
                 // outside it and written back.
                 let mut hash = self.get(vm.heap).clone();
-                hash.update(hash_input(data, vm)?);
+                hash.update(hash_input(data, vm)?, &vm.heap.tracker)?;
                 *self.get_mut(vm.heap) = hash;
                 Ok(CallResult::Value(Value::None))
             }
