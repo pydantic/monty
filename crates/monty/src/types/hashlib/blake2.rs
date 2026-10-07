@@ -6,7 +6,28 @@
 //! [`blake2_impl!`] stamps each out from the word type, its constants and the
 //! parameter-block layout.
 
-use super::sha2::{IV_256, IV_512};
+/// BLAKE2s's IV, which is SHA-256's.
+const IV_256: [u32; 8] = [
+    0x6a09_e667,
+    0xbb67_ae85,
+    0x3c6e_f372,
+    0xa54f_f53a,
+    0x510e_527f,
+    0x9b05_688c,
+    0x1f83_d9ab,
+    0x5be0_cd19,
+];
+/// BLAKE2b's IV, which is SHA-512's.
+const IV_512: [u64; 8] = [
+    0x6a09_e667_f3bc_c908,
+    0xbb67_ae85_84ca_a73b,
+    0x3c6e_f372_fe94_f82b,
+    0xa54f_f53a_5f1d_36f1,
+    0x510e_527f_ade6_82d1,
+    0x9b05_688c_2b3e_6c1f,
+    0x1f83_d9ab_fb41_bd6b,
+    0x5be0_cd19_137e_2179,
+];
 
 /// Message word schedule, one row per round (rounds past 10 wrap).
 const SIGMA: [[usize; 16]; 10] = [

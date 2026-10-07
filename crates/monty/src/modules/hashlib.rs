@@ -29,7 +29,7 @@ use crate::{
     types::{
         Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
-        hashlib::{Blake2Params, Blake2b, Blake2s, HashAlgorithm, HashObject, hash_input},
+        hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
     value::Value,
 };
@@ -727,12 +727,12 @@ fn pbkdf2(
     let mut round = 0usize;
     for block_index in 1u32.. {
         let mut u = salted.sign(&block_index.to_be_bytes(), tracker)?;
-        let mut t = u.clone();
+        let mut t = u;
         for _ in 1..iterations {
             tracker.check_time_every(round)?;
             round = round.wrapping_add(1);
             u = hmac.sign(&u, tracker)?;
-            for (acc, byte) in t.iter_mut().zip(&u) {
+            for (acc, byte) in t.iter_mut().zip(u.iter()) {
                 *acc ^= byte;
             }
         }
@@ -747,7 +747,7 @@ fn pbkdf2(
 }
 
 /// HMAC (RFC 2104) keyed once, so each message costs two cloned states and
-/// no key preparation.
+/// no key preparation; with a stack digest, a SHA-2 round allocates nothing.
 struct Hmac {
     /// The hash with the inner padded key absorbed.
     inner: HashObject,
@@ -791,7 +791,7 @@ impl Hmac {
     }
 
     /// The MAC of `message`.
-    fn sign(&self, message: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    fn sign(&self, message: &[u8], tracker: &ResourceTracker) -> RunResult<DigestBytes> {
         let mut inner = self.inner.clone();
         inner.update(message, tracker)?;
         let mut outer = self.outer.clone();

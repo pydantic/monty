@@ -1,21 +1,24 @@
 //! The hash objects `hashlib` hands out: `_hashlib.HASH`, `_hashlib.HASHXOF`,
 //! `_blake2.blake2b` and `_blake2.blake2s`.
 //!
-//! Every algorithm is implemented here rather than through a crate so a hash
-//! mid-stream is plain serializable state: a dump taken between `update()`
-//! calls restores and finishes to the same digest. [`HashAlgorithm`] names
-//! the algorithm and carries the sizes CPython reports; [`HashCore`] is the
-//! streaming state behind it, shared by the algorithms that differ only in
-//! their initial state or output length.
+//! A hash mid-stream is serializable state, so a dump taken between
+//! `update()` calls restores and finishes to the same digest. SHA-1 and SHA-2
+//! come from the RustCrypto crates for their hardware-accelerated
+//! compression; MD5, SHA-3 and BLAKE2 are implemented here, where a crate
+//! would be no faster (and BLAKE2's has no serializable state).
+//! [`HashAlgorithm`] names the algorithm and carries the sizes CPython
+//! reports; [`HashCore`] is the streaming state behind it.
 
 mod blake2;
 mod block;
 mod keccak;
 mod md5;
-mod sha1;
-mod sha2;
+mod rustcrypto;
 
-use std::fmt::Write;
+use std::{
+    fmt::Write,
+    ops::{Deref, DerefMut},
+};
 
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
@@ -24,8 +27,7 @@ pub(crate) use self::blake2::{Blake2Params, Blake2b, Blake2s};
 use self::{
     keccak::{Keccak, SUFFIX_SHA3, SUFFIX_SHAKE},
     md5::Md5,
-    sha1::Sha1,
-    sha2::{IV_224, IV_256, IV_384, IV_512, Sha256, Sha512},
+    rustcrypto::{Sha1, Sha224, Sha256, Sha384, Sha512},
 };
 use crate::{
     args::{ArgValues, FromArgs},
@@ -45,6 +47,42 @@ const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 /// Input hashed between deadline polls in [`HashObject::update`]: roughly
 /// 100 µs of work, so that is how far a limit-sized input can overshoot.
 const POLL_CHUNK: usize = 64 * 1024;
+
+/// The longest fixed digest here (SHA-512, SHA3-512 and BLAKE2b).
+const MAX_DIGEST_SIZE: usize = 64;
+
+/// A fixed-output digest on the stack, so PBKDF2's HMAC rounds allocate nothing.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DigestBytes {
+    bytes: [u8; MAX_DIGEST_SIZE],
+    len: u8,
+}
+
+impl DigestBytes {
+    /// Copies a digest of at most [`MAX_DIGEST_SIZE`] bytes.
+    pub(crate) fn from_slice(digest: &[u8]) -> Self {
+        let mut bytes = [0; MAX_DIGEST_SIZE];
+        bytes[..digest.len()].copy_from_slice(digest);
+        Self {
+            bytes,
+            len: u8::try_from(digest.len()).expect("digests are at most 64 bytes"),
+        }
+    }
+}
+
+impl Deref for DigestBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+}
+
+impl DerefMut for DigestBytes {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes[..usize::from(self.len)]
+    }
+}
 
 /// The algorithms `hashlib.algorithms_guaranteed` lists, which is also
 /// everything Monty's `hashlib.new()` accepts.
@@ -146,7 +184,7 @@ impl HashAlgorithm {
     pub(crate) fn digest_size(self) -> usize {
         match self {
             Self::Md5 => md5::DIGEST_SIZE,
-            Self::Sha1 => sha1::DIGEST_SIZE,
+            Self::Sha1 => 20,
             Self::Sha224 | Self::Sha3_224 => 28,
             Self::Sha256 | Self::Sha3_256 | Self::Blake2s => 32,
             Self::Sha384 | Self::Sha3_384 => 48,
@@ -158,10 +196,8 @@ impl HashAlgorithm {
     /// The `block_size` attribute: the compression block, or a sponge's rate.
     pub(crate) fn block_size(self) -> usize {
         match self {
-            Self::Md5 => md5::BLOCK_SIZE,
-            Self::Sha1 => sha1::BLOCK_SIZE,
-            Self::Sha224 | Self::Sha256 => sha2::BLOCK_SIZE_256,
-            Self::Sha384 | Self::Sha512 => sha2::BLOCK_SIZE_512,
+            Self::Md5 | Self::Sha1 | Self::Sha224 | Self::Sha256 => 64,
+            Self::Sha384 | Self::Sha512 => 128,
             Self::Sha3_224 => 144,
             Self::Sha3_256 | Self::Shake256 => 136,
             Self::Sha3_384 => 104,
@@ -198,13 +234,15 @@ impl HashAlgorithm {
     }
 }
 
-/// Streaming state of one hash, shared between the algorithms that differ
-/// only by initial state, output length or sponge rate.
+/// Streaming state of one hash; the Keccak variant serves every SHA-3 and
+/// SHAKE, which differ only by sponge rate and output length.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum HashCore {
     Md5(Md5),
     Sha1(Sha1),
+    Sha224(Sha224),
     Sha256(Sha256),
+    Sha384(Sha384),
     Sha512(Sha512),
     Keccak(Keccak),
     Blake2b(Blake2b),
@@ -226,11 +264,11 @@ impl HashObject {
     pub(crate) fn new(algorithm: HashAlgorithm) -> Self {
         let core = match algorithm {
             HashAlgorithm::Md5 => HashCore::Md5(Md5::default()),
-            HashAlgorithm::Sha1 => HashCore::Sha1(Sha1::default()),
-            HashAlgorithm::Sha224 => HashCore::Sha256(Sha256::new(IV_224)),
-            HashAlgorithm::Sha256 => HashCore::Sha256(Sha256::new(IV_256)),
-            HashAlgorithm::Sha384 => HashCore::Sha512(Sha512::new(IV_384)),
-            HashAlgorithm::Sha512 => HashCore::Sha512(Sha512::new(IV_512)),
+            HashAlgorithm::Sha1 => HashCore::Sha1(Sha1::new()),
+            HashAlgorithm::Sha224 => HashCore::Sha224(Sha224::new()),
+            HashAlgorithm::Sha256 => HashCore::Sha256(Sha256::new()),
+            HashAlgorithm::Sha384 => HashCore::Sha384(Sha384::new()),
+            HashAlgorithm::Sha512 => HashCore::Sha512(Sha512::new()),
             HashAlgorithm::Sha3_224 | HashAlgorithm::Sha3_256 | HashAlgorithm::Sha3_384 | HashAlgorithm::Sha3_512 => {
                 HashCore::Keccak(Keccak::new(algorithm.block_size(), SUFFIX_SHA3))
             }
@@ -289,7 +327,9 @@ impl HashObject {
         match &mut self.core {
             HashCore::Md5(core) => core.update(data),
             HashCore::Sha1(core) => core.update(data),
+            HashCore::Sha224(core) => core.update(data),
             HashCore::Sha256(core) => core.update(data),
+            HashCore::Sha384(core) => core.update(data),
             HashCore::Sha512(core) => core.update(data),
             HashCore::Keccak(core) => core.update(data),
             HashCore::Blake2b(core) => core.update(data),
@@ -299,15 +339,17 @@ impl HashObject {
 
     /// The fixed-size digest; a SHAKE yields `digest_size` (zero) bytes, so
     /// callers give those a length through [`Self::digest_xof`].
-    pub(crate) fn digest(&self) -> Vec<u8> {
+    pub(crate) fn digest(&self) -> DigestBytes {
         match &self.core {
-            HashCore::Md5(core) => core.digest(),
+            HashCore::Md5(core) => DigestBytes::from_slice(&core.digest()),
             HashCore::Sha1(core) => core.digest(),
-            HashCore::Sha256(core) => core.digest(self.algorithm.digest_size()),
-            HashCore::Sha512(core) => core.digest(self.algorithm.digest_size()),
-            HashCore::Keccak(core) => core.digest(self.algorithm.digest_size()),
-            HashCore::Blake2b(core) => core.digest(),
-            HashCore::Blake2s(core) => core.digest(),
+            HashCore::Sha224(core) => core.digest(),
+            HashCore::Sha256(core) => core.digest(),
+            HashCore::Sha384(core) => core.digest(),
+            HashCore::Sha512(core) => core.digest(),
+            HashCore::Keccak(core) => DigestBytes::from_slice(&core.digest(self.algorithm.digest_size())),
+            HashCore::Blake2b(core) => DigestBytes::from_slice(&core.digest()),
+            HashCore::Blake2s(core) => DigestBytes::from_slice(&core.digest()),
         }
     }
 
@@ -484,7 +526,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
             }
             Some(StaticStrings::Digest) => {
                 args.check_zero_args(&method("digest"), vm.heap)?;
-                Ok(CallResult::Value(allocate_bytes(self.get(vm.heap).digest(), vm.heap)))
+                let digest = self.get(vm.heap).digest();
+                Ok(CallResult::Value(allocate_bytes(digest.to_vec(), vm.heap)))
             }
             Some(StaticStrings::Hexdigest) => {
                 args.check_zero_args(&method("hexdigest"), vm.heap)?;

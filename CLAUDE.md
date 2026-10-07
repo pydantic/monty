@@ -244,7 +244,8 @@ or variant on them takes an unused letter.
 `DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
 set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
-`FunctionId`, never by discriminant), or a semantic change to a stored value. `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
+`FunctionId`, never by discriminant), a semantic change to a stored value, or a `sha1` / `sha2` crate upgrade that
+changes their `SerializableState` layout (`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim). `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
 change that breaks it decides between an alias, a default, or a bump plus `UPDATE_DUMP_FIXTURE=1` to regenerate.
 
 ### Compilation overlays and stable intern entries

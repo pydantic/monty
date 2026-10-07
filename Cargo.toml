@@ -126,7 +126,7 @@ serde_bytes = "0.11"
 # exact pin: prost-build output must be byte-stable across contributors and CI
 # so `make check-proto` (regenerate + git diff) is reproducible
 prost = "=0.14.4"
-sha2 = "0.10"
+sha2 = "0.11"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
