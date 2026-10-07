@@ -1,0 +1,24 @@
+crates/monty/src/types/hashlib/mod.rs
+  s_85e79992fe406b::t_a69575e93fc1e2 45-48,275-288,468
+crates/monty/tests/resource_limits.rs
+  s_85e79992fe406b::t_9f8cbbf1c2a459 667-715
+crates/monty/src/modules/hashlib.rs
+  s_85e79992fe406b::t_a69575e93fc1e2 16,212,290,564,707,713-714,721,723-725,729,732,734,743,759,764,773-774,776-790,794,796,798-799
+  s_85e79992fe406b::t_fb24d48f4cf981 770
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a3ba25b720abce351bcc4a20dfeb8f6da107c754",
+  "prompts": {},
+  "sessions": {
+    "s_85e79992fe406b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4374c46d-a07d-4026-87ee-46a9d9dded27",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
