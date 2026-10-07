@@ -17,7 +17,7 @@ import pytest
 from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess
+from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess, ScanEntry
 
 # Alias for brevity in tests
 P = PurePosixPath
@@ -1001,6 +1001,91 @@ def test_iterdir_not_found(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("from pathlib import Path; list(Path('/missing').iterdir())", os=fs)
     assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/missing'")
+
+
+# =============================================================================
+# Directory Operations - os.walk / os.scandir / Path.glob (via Path.scan)
+# =============================================================================
+
+
+def scan_tree() -> OSAccess:
+    return OSAccess(
+        [
+            MemoryFile('/test/a.txt', content='a'),
+            MemoryFile('/test/b.py', content='b'),
+            MemoryFile('/test/pkg/c.py', content='c'),
+            MemoryFile('/test/pkg/sub/d.py', content='d'),
+        ]
+    )
+
+
+def test_walk_glob_and_scandir(monty_run: RunMonty):
+    """The default `path_scan` answers walks, globs and scandir from `path_iterdir`."""
+    code = """
+import os
+from pathlib import Path
+walked = [(d, sorted(n), sorted(f)) for d, n, f in os.walk('/test')]
+globbed = sorted(str(p) for p in Path('/test').glob('**/*.py'))
+scanned = sorted((e.name, e.is_dir()) for e in os.scandir('/test'))
+pruned = []
+for d, n, f in Path('/test').walk():
+    pruned.append(str(d))
+    n.clear()
+(walked, globbed, scanned, pruned)
+"""
+    assert monty_run(code, os=scan_tree()) == snapshot(
+        (
+            [
+                ('/test', ['pkg'], ['a.txt', 'b.py']),
+                ('/test/pkg', ['sub'], ['c.py']),
+                ('/test/pkg/sub', [], ['d.py']),
+            ],
+            ['/test/b.py', '/test/pkg/c.py', '/test/pkg/sub/d.py'],
+            [('a.txt', False), ('b.py', False), ('pkg', True)],
+            ['/test'],
+        )
+    )
+
+
+def test_scan_missing_directory(monty_run: RunMonty):
+    """A missing root raises from `os.scandir` and is swallowed by `Path.glob`."""
+    code = """
+import os
+from pathlib import Path
+try:
+    os.scandir('/missing')
+except FileNotFoundError as e:
+    error = str(e)
+(error, list(Path('/missing').glob('*')), list(os.walk('/missing')))
+"""
+    assert monty_run(code, os=scan_tree()) == snapshot(("[Errno 2] No such file or directory: '/missing'", [], []))
+
+
+def test_path_scan_direct():
+    """`path_scan` returns the root and its descendants down to `max_depth`."""
+    fs = scan_tree()
+    assert fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False) == snapshot(
+        [
+            ScanEntry(path='', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='a.txt', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='b.py', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='pkg', is_dir=True, is_file=False, is_symlink=False),
+        ]
+    )
+    assert sorted(fs.path_scan(P('/test/pkg'), max_depth=None, follow_symlinks=False)) == snapshot(
+        [
+            ScanEntry(path='', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='c.py', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='sub', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='sub/d.py', is_dir=False, is_file=True, is_symlink=False),
+        ]
+    )
+    assert fs.path_scan(P('/test/a.txt'), max_depth=None, follow_symlinks=False) == snapshot(
+        [ScanEntry(path='', is_dir=False, is_file=True, is_symlink=False)]
+    )
+    with pytest.raises(FileNotFoundError) as exc_info:
+        fs.path_scan(P('/test/missing'), max_depth=None, follow_symlinks=False)
+    assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/test/missing'")
 
 
 # =============================================================================

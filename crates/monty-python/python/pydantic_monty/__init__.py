@@ -48,6 +48,7 @@ from .os_access import (
     MemoryFile,
     OSAccess,
     OsFunction,
+    ScanEntry,
     StatResult,
 )
 
@@ -108,6 +109,7 @@ __all__ = (
     'AsyncFutureSnapshot',
     # os_access
     'StatResult',
+    'ScanEntry',
     'OsFunction',
     'NOT_HANDLED',
     'AbstractOS',

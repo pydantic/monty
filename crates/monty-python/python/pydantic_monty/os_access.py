@@ -38,6 +38,7 @@ __all__ = (
     'CallbackFile',
     'OSAccess',
     'StatResult',
+    'ScanEntry',
     'path_from_arg',
 )
 
@@ -57,6 +58,7 @@ OsFunction = Literal[
     'Path.unlink',
     'Path.rmdir',
     'Path.iterdir',
+    'Path.scan',
     'Path.stat',
     'Path.rename',
     'Path.resolve',
@@ -146,6 +148,25 @@ class StatResult(NamedTuple):
 
     st_ctime: float
     """time of last change"""
+
+
+class ScanEntry(NamedTuple):
+    """One entry of a `Path.scan` reply: what `os.DirEntry` would report for it.
+
+    `is_dir` and `is_file` follow a symlink; `is_symlink` does not.
+    """
+
+    path: str
+    """Path relative to the scanned directory, `''` for the directory itself."""
+
+    is_dir: bool
+    """The entry is, or links to, a directory."""
+
+    is_file: bool
+    """The entry is, or links to, a regular file."""
+
+    is_symlink: bool
+    """The entry itself is a symbolic link."""
 
 
 class AbstractOS(ABC):
@@ -254,6 +275,8 @@ class AbstractOS(ABC):
                 return self.path_rmdir(*args)
             case 'Path.iterdir':
                 return self.path_iterdir(*args)
+            case 'Path.scan':
+                return self.path_scan(*args, **kwargs)
             case 'Path.stat':
                 return self.path_stat(*args)
             case 'Path.rename':
@@ -506,6 +529,58 @@ class AbstractOS(ABC):
             NotADirectoryError: If the path is not a directory.
         """
         raise NotImplementedError
+
+    def path_scan(
+        self,
+        path: PurePosixPath,
+        *,
+        max_depth: int | None,
+        follow_symlinks: bool,
+        pattern: list[str] | None = None,
+        case_sensitive: bool | None = None,
+        recurse_symlinks: bool = False,
+    ) -> list[ScanEntry]:
+        """Read a subtree in one call, for `os.scandir`, `os.walk`, `Path.walk` and `Path.glob`.
+
+        Return the directory itself (path `''`) and every entry down to `max_depth` levels below it
+        (`None` for the whole tree), descending into symlinked directories only when `follow_symlinks`.
+        `pattern`, `case_sensitive` and `recurse_symlinks` describe a glob and are only a hint:
+        returning entries the pattern cannot match is allowed, since Monty filters the reply itself.
+
+        The default walks the tree with `path_iterdir()`, `path_is_dir()`, `path_is_file()` and
+        `path_is_symlink()`; override it to answer in fewer host calls.
+
+        Args:
+            path: The directory to scan; may also name a file, which is described but not listed.
+            max_depth: The deepest level to return, `None` for no limit.
+            follow_symlinks: Whether to descend into symlinked directories.
+            pattern: Glob pattern parts relative to `path`, or `None`.
+            case_sensitive: The glob's `case_sensitive` argument.
+            recurse_symlinks: Whether the glob's `**` descends into symlinked directories.
+
+        Raises:
+            FileNotFoundError: If `path` does not exist.
+        """
+        if not (self.path_exists(path) or self.path_is_symlink(path)):
+            raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r}')
+        root = self._scan_entry('', path)
+        entries = [root]
+        stack = [(path, '', 0)] if root.is_dir else []
+        while stack:
+            directory, relative, depth = stack.pop()
+            if max_depth is not None and depth >= max_depth:
+                continue
+            for child in self.path_iterdir(directory):
+                name = PurePosixPath(child).name
+                entry = self._scan_entry(f'{relative}/{name}' if relative else name, directory / name)
+                entries.append(entry)
+                if entry.is_dir and (follow_symlinks or not entry.is_symlink):
+                    stack.append((directory / name, entry.path, depth + 1))
+        return entries
+
+    def _scan_entry(self, relative: str, path: PurePosixPath) -> ScanEntry:
+        """Describes `path` for `path_scan()` with the single-path predicates."""
+        return ScanEntry(relative, self.path_is_dir(path), self.path_is_file(path), self.path_is_symlink(path))
 
     @abstractmethod
     def path_stat(self, path: PurePosixPath) -> StatResult:
