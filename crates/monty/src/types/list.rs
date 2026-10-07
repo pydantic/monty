@@ -783,7 +783,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(list_lookup_attr) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
@@ -1272,7 +1272,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
 
 builtin_attrs! {
     for List: mut heap(List);
-    pub(crate) const ATTRS: &[(StaticStrings, AttrDef)] = &[
+    pub(crate) const LIST_ATTRS: &[(StaticStrings, AttrDef)] = &[
         Append => method(list_append),
         Insert => method(list_insert),
         Pop => method(list_pop),
@@ -1285,7 +1285,7 @@ builtin_attrs! {
         Reverse => method(list_reverse),
         Sort => method(list_sort),
     ];
-    pub(crate) const fn lookup_attr;
+    pub(crate) const fn list_lookup_attr;
 }
 
 #[cfg(test)]
