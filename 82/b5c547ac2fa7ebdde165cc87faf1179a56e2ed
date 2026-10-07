@@ -1,0 +1,38 @@
+crates/monty-pool/src/telemetry/tracing.rs
+  s_70198791b6f006::t_b592ea39144ab6 821-828
+crates/monty-proto/proto/monty/v1/monty.proto
+  s_70198791b6f006::t_de190f6622988c 1004-1005
+  s_70198791b6f006::t_658bb1d6189f0e 917-919,995-1003,1006
+crates/monty-pool/src/telemetry/metrics.rs
+  s_70198791b6f006::t_b592ea39144ab6 836
+crates/monty-proto/src/convert/os_call.rs
+  s_70198791b6f006::t_59b14e5265d8fa 10-11
+  s_70198791b6f006::t_b6c1ef02f481df 119-126,190-198
+crates/monty-proto/tests/roundtrip.rs
+  s_70198791b6f006::t_9edb1894bed1a9 14-15
+  s_70198791b6f006::t_1a2d7a5d541154 983-990
+crates/monty-proto/src/generated/monty.v1.rs
+  s_70198791b6f006::t_658bb1d6189f0e 1088,1198-1214,1218-1220,1314-1316
+  s_70198791b6f006::t_59b14e5265d8fa 1215-1217
+crates/monty-proto/tests/oracle/monty.v1.rs
+  s_70198791b6f006::t_59b14e5265d8fa 1206-1208
+  s_70198791b6f006::t_658bb1d6189f0e 1093,1192-1205,1209-1211,1304-1306
+crates/monty-proto/tests/oracle/repeated_fields.rs
+  s_70198791b6f006::t_658bb1d6189f0e 91-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "82b5c547ac2fa7ebdde165cc87faf1179a56e2ed",
+  "prompts": {},
+  "sessions": {
+    "s_70198791b6f006": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba5e312c-9ce6-4851-bdd9-36c86bbf967e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
