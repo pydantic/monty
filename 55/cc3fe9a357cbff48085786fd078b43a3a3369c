@@ -1,0 +1,15 @@
+crates/monty-python/python/pydantic_monty/__init__.py
+  ai_agent 51,112
+crates/monty-python/python/pydantic_monty/os_access.py
+  ai_agent 41,61,153-171,278-279,533-583
+crates/monty-python/tests/test_os_access.py
+  ai_agent 20,1006-1088
+crates/monty-python/tests/test_os_access_raw.py
+  ai_agent 10,18,627-667
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "55cc3fe9a357cbff48085786fd078b43a3a3369c",
+  "prompts": {}
+}
