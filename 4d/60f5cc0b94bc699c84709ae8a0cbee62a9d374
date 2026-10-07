@@ -1,0 +1,41 @@
+crates/monty/src/types/type.rs
+  ai_agent 170-178,462-463
+crates/monty/test_cases/mount_fs__walk_glob.py
+  ai_agent 1-302
+crates/monty/src/modules/os.rs
+  ai_agent 31-36,60-61,91-92,147-148,152-222,601,606-607
+crates/monty/src/heap_data.rs
+  ai_agent 167-168,212,358,650,1125,1188
+crates/monty/src/object_bridge.rs
+  ai_agent 450,768
+crates/monty/src/types/mod.rs
+  ai_agent 17,55
+crates/monty/src/dump_format.rs
+  ai_agent 364
+crates/monty/src/heap/mod.rs
+  ai_agent 2018,2176
+crates/monty/src/os_dispatch.rs
+  ai_agent 38,68-70,80,103,120-125,607,616
+crates/monty/src/types/path.rs
+  ai_agent 18,27-31,334-409,416,423,633-659
+crates/monty/src/builtins/open.rs
+  ai_agent 124-125,135
+crates/monty/src/intern.rs
+  ai_agent 687-688,1015-1016,1083-1084,1145-1146,1165-1166,1466-1469,1609-1610,1648-1649,1672-1673,1903-1908,2011-2012
+crates/monty/src/types/dir_scan.rs
+  ai_agent 1-872
+crates/monty/tests/os_tests.rs
+  ai_agent 10-12,64,706-709,1660-1802
+crates/monty/src/bytecode/vm/mod.rs
+  ai_agent 2084-2093,2158-2159,2216-2227
+crates/monty/src/modules/copy.rs
+  ai_agent 344
+crates/monty/src/exception_private.rs
+  ai_agent 749-750,753-761
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4d60f5cc0b94bc699c84709ae8a0cbee62a9d374",
+  "prompts": {}
+}
