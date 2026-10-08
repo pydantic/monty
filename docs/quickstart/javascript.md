@@ -37,18 +37,22 @@ limits.
 `externalLookup` holds the host functions it can call.
 `await using` closes the session and the pool at the end of scope.
 It needs Node 24 or later at runtime, unless TypeScript or another transpiler downlevels it.
-On Node 20 or 22, declare both handles without `using` and close them yourself:
+On Node 20 or 22, declare both handles without `using` and close them yourself in `finally` blocks, so they are released even if `feedRun` throws:
 
 ```ts
 import { Monty } from '@pydantic/monty'
 
 const pool = await Monty.create()
-const session = await pool.checkout()
-
-console.log(await session.feedRun('1 + 2')) // 3
-
-await session.close()
-await pool.close()
+try {
+  const session = await pool.checkout()
+  try {
+    console.log(await session.feedRun('1 + 2')) // 3
+  } finally {
+    await session.close()
+  }
+} finally {
+  await pool.close()
+}
 ```
 
 `checkout({ scriptName })` names diagnostics and supplies the filename portion of the sandbox's `__file__`.
