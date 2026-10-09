@@ -125,52 +125,29 @@ whether each call is permitted.
 
 ## `os.path`
 
-`os.path` is CPython's `posixpath` on every host, matching the sandbox's POSIX-only path model; `import posixpath`
-yields the same module. `import os.path` binds `os` like CPython, `import os.path as p` binds the module, and
-`from os.path import join` works.
+`os.path` is `posixpath` on every host, including Windows, where CPython's is `ntpath`; `import posixpath` yields
+the same module.
 
-Implemented, pure (no host involvement), accepting `str`, `bytes` and `pathlib.Path` paths like CPython:
-`join`, `split`, `splitext`, `splitdrive`, `splitroot`, `basename`, `dirname`, `normpath`, `normcase`, `isabs`,
-`abspath`, `relpath`, `commonpath`, `commonprefix`, `isjunction`, `isdevdrive`, and the constants
-`sep`, `altsep`, `extsep`, `curdir`, `pardir`, `pathsep`, `defpath`, `devnull` (`os.pathsep` and `os.defpath` too).
-`samestat`, which takes two stat results rather than paths, is pure as well.
-`abspath` and `relpath` use the session's virtual working directory (see above), exactly as CPython's use
-`os.getcwd()`.
+The host-backed functions (`exists`, `isfile`, `isdir`, `islink`, `lexists`, `ismount`, `samefile`, `getsize`,
+`getmtime`, `getatime`, `getctime`, `realpath`) take paths like the `os` functions above: `str` or `pathlib.Path`,
+no `bytes`, and an int is a closed fd. The pure functions, `expanduser` and `expandvars` take `bytes` too, as
+CPython's do.
 
-Implemented through the host. The filesystem-backed ones follow the same `str`/`Path` rule as the other
-`os` functions, ints included where CPython's `os.stat` takes an fd; `expanduser` and `expandvars` take `bytes`
-paths too, since they only consult the environment:
-
-- `exists`, `isfile`, `isdir`, `islink` suspend as `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`.
-    The empty path and a path containing a NUL byte answer `False` without consulting the host.
-- `lexists` suspends as `Path.exists` and, when that answers `False`, as `Path.is_symlink`, so a dangling symlink
-    counts as existing like CPython's `lstat`.
-- `ismount` suspends as `Path.exists`: every existing path is reported as a mount point. The sandbox cannot see
-    where the host's mounts begin, and `True` is what keeps "walk up until a mount point" loops terminating.
-- `samefile` suspends as `Path.stat` on each path in turn (the second path's errors are raised after the first
-    stat succeeds, as CPython orders them) and compares `(st_ino, st_dev)` like `samestat`. When neither reply
-    carries an identity, which is the case for every mount, the two normalized virtual paths decide instead, so
-    hard links are not detected there.
-- `getsize`, `getmtime`, `getatime`, `getctime` suspend as `Path.stat` and return one field of the reply; a host
-    answering with something other than a stat result raises `RuntimeError`.
-- `realpath` suspends as `Path.resolve` and returns the reply as `str`. Mounts resolve lexically (see
-    [filesystem.md](filesystem.md)), so a missing path does not raise unless `strict` is true, which adds a
-    `Path.exists` call on the result and raises `FileNotFoundError` naming the resolved path when it is missing.
-    The `NotADirectoryError` and symlink-loop `OSError` of CPython's strict mode never occur, and `ALLOW_MISSING`
-    does not exist.
-- `expanduser` suspends as `os.getenv('HOME')` only for a path starting with `~` or `~/`. When the host answers
-    `None` the path is returned unchanged: CPython would fall back to the password database, which the sandbox
-    cannot read, and for the same reason `~user` is always returned unchanged.
-- `expandvars` suspends as `os.environ` only for a path containing `$`; entries whose key or value is not `str` are
-    ignored. A `bytes` path is matched against the same `str` environment encoded as UTF-8 (CPython reads
-    `os.environb`).
-
-Divergences:
-
-- `samestat` compares `st_ino` and `st_dev`, which mounts report as `0` for every file, so two mount stat results
-    always compare equal.
+- `ismount` reports every existing path as a mount point. The sandbox cannot see where the host's mounts begin,
+    and `True` is what keeps "walk up until a mount point" loops terminating.
+- `samefile` compares `(st_ino, st_dev)` like CPython, but mounts report both as `0` for every file, so for two
+    mount paths the normalized virtual paths decide instead and hard links are not detected.
+- `samestat` compares the same two fields, so two mount stat results always compare equal.
 - `samestat` reads `st_ino` and `st_dev` synchronously, so on a host-backed object a lazy attribute reads as absent
     and raises `AttributeError` (see [classes.md](classes.md)), where CPython would evaluate the getter.
+- `realpath` resolves lexically on mounts (see [filesystem.md](filesystem.md)), so a missing path does not raise
+    unless `strict` is true, which then raises `FileNotFoundError` naming the resolved path. The
+    `NotADirectoryError` and symlink-loop `OSError` of CPython's strict mode never occur, and `ALLOW_MISSING` does
+    not exist.
+- `expanduser` consults only `$HOME`, through the host: without it the path is returned unchanged, and `~user` is
+    always returned unchanged, since the sandbox has no password database to fall back on.
+- `expandvars` reads `os.environ` through the host, ignoring entries whose key or value is not `str`. A `bytes`
+    path is matched against that same `str` environment encoded as UTF-8, where CPython reads `os.environb`.
 - `commonprefix` on lists whose elements cannot be ordered reports the lists
     (`'<' not supported between instances of 'list' and 'list'`) where CPython names the elements; this is Monty's
     general list-comparison wording.

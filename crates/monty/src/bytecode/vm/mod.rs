@@ -2062,7 +2062,8 @@ impl<'h> VM<'h> {
             self.push(Value::Ref(heap_id));
             Ok(())
         } else {
-            Err(ExcType::module_not_found_error(self.interns.get_str(name_id)))
+            let (missing, parent) = StandardLib::missing_module(self.interns.get_str(name_id));
+            Err(ExcType::module_not_found_error(missing, parent))
         }
     }
 

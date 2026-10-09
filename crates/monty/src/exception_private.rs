@@ -1521,13 +1521,17 @@ pub(crate) trait ExcTypeExt: Sized {
         )
     }
 
-    /// Creates a ModuleNotFoundError for when a module cannot be found.
-    ///
-    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
+    /// Creates `ModuleNotFoundError: No module named 'name'`, with
+    /// `; 'parent' is not a package` when a dotted import failed below a
+    /// module (see `StandardLib::missing_module`).
     /// Sets `hide_caret: true` because CPython doesn't show carets for module not found errors.
     #[must_use]
-    fn module_not_found_error(module_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, format!("No module named '{module_name}'"));
+    fn module_not_found_error(module_name: &str, parent: Option<&str>) -> RunError {
+        let msg = match parent {
+            Some(parent) => format!("No module named '{module_name}'; '{parent}' is not a package"),
+            None => format!("No module named '{module_name}'"),
+        };
+        let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,

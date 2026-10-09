@@ -4,9 +4,7 @@ Monty ships a fixed set of built-in stdlib modules. `import` of anything
 else raises `ModuleNotFoundError`: there is no `sys.path`, no site-packages,
 and no way for sandboxed code to load additional modules.
 
-`os.path` (also importable as `posixpath`) is the only submodule: `import os.path` binds `os`, as in CPython.
-Any other dotted name raises `ModuleNotFoundError: No module named 'a.b'` naming the full dotted path, where CPython
-names the first missing package (`No module named 'a'`) or adds `; 'os' is not a package`.
+`os.path` (also importable as `posixpath`) is the only submodule.
 
 Every `import` builds a fresh module object; there is no `sys.modules` cache.
 So two imports of the same module are not the same object

@@ -15,7 +15,7 @@ copy: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
 functools: 3.0-
-genericpath: 3.0-
+genericpath: 3.0-  # not importable at runtime, only for type checking (posixpath re-exports from it)
 hashlib: 3.0-
 itertools: 3.0-
 json: 3.0-

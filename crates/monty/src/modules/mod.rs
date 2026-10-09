@@ -3,7 +3,10 @@
 //! This module provides implementations for Python built-in modules like `sys`, `typing`,
 //! and `asyncio`. These are created on-demand when import statements are executed.
 
-use std::fmt::{self, Write};
+use std::{
+    fmt::{self, Write},
+    str::FromStr,
+};
 
 use crate::{
     args::ArgValues,
@@ -125,8 +128,28 @@ impl StandardLib {
         }
     }
 
+    /// Whether `name` (dotted for `os.path`) is a built-in module.
+    fn is_module(name: &str) -> bool {
+        StaticStrings::from_str(name).ok().and_then(Self::from_static).is_some()
+    }
+
+    /// Splits an unresolvable import the way CPython reports it: the shortest
+    /// prefix that is not a module, plus the module just before it when there
+    /// is one (`No module named 'os.x'; 'os' is not a package`).
+    pub(crate) fn missing_module(name: &str) -> (&str, Option<&str>) {
+        let mut parent = None;
+        for (end, _) in name.match_indices('.') {
+            let prefix = &name[..end];
+            if Self::is_module(prefix) {
+                parent = Some(prefix);
+            } else {
+                return (prefix, parent);
+            }
+        }
+        (name, parent)
+    }
+
     /// Creates a new instance of this module on the heap.
-    ///
     pub fn create(self, vm: &mut VM<'_>) -> HeapId {
         match self {
             Self::Sys => sys::create_module(vm),
