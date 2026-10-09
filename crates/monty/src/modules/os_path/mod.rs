@@ -11,16 +11,18 @@
 //! `expanduser` / `expandvars` ask the host for `$HOME` / the environment
 //! only when the path actually needs them.
 
+use std::iter;
+
 use monty_types::{GetenvArgs, MontyObject, MontyPath, OsFunctionCall};
 use smallvec::smallvec;
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
-    builtins::candidate_wins,
+    builtins::{Builtins, BuiltinsFunctions, candidate_wins},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap, HeapData, HeapId},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{Heap, HeapData, HeapId},
     intern::{StaticStrings, StringId},
     modules::{
         ModuleFunctions,
@@ -28,7 +30,7 @@ use crate::{
     },
     os_dispatch::{PreConversionEffect, StatField, value_to_owned_bytes, value_to_owned_string},
     types::{Bytes, Module, PyTrait, Slice, Type, allocate_tuple, collect_iterable, str::allocate_string},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 pub(crate) mod posix;
@@ -205,9 +207,9 @@ struct JoinArgs {
 }
 
 /// Implementation of `os.path.join(a, *p)`: one kind of path throughout.
-/// Any failure re-inspects every argument like `genericpath._check_arg_types`,
-/// so the error names the first non-path argument before complaining about
-/// mixed kinds.
+/// Any failure re-inspects the arguments like `genericpath._check_arg_types`
+/// (`a` after `os.fspath`, `*p` as passed), so the error names the first
+/// non-path argument before complaining about mixed kinds.
 fn join(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let JoinArgs { a, p } = JoinArgs::from_args(args, vm)?;
     defer_drop!(a, vm);
@@ -218,7 +220,10 @@ fn join(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     for part in p {
         match PathText::fspath(part, vm) {
             Ok(text) if text.is_bytes == parts[0].is_bytes => parts.push(text),
-            _ => return Err(check_arg_types("join", [a].into_iter().chain(p.iter()), vm)),
+            _ => {
+                let kinds = iter::once(parts[0].py_type()).chain(p.iter().map(|arg| arg.py_type_heap(vm.heap)));
+                return Err(check_arg_types("join", kinds, vm));
+            }
         }
     }
     let joined = posix::join(parts.iter().map(|part| part.bytes.as_slice()));
@@ -422,8 +427,9 @@ fn relpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     } else {
         PathText::fspath(start, vm)?
     };
+    // Both are past `os.fspath`, so CPython's `_check_arg_types` can only report a mix.
     if start_text.is_bytes != path_text.is_bytes {
-        return Err(check_arg_types("relpath", [path, start], vm));
+        return Err(ExcType::type_error_mixed_path_components());
     }
     let relative = posix::relpath(vm.env.cwd.as_bytes(), &path_text.bytes, &start_text.bytes);
     Ok(path_text.allocate(relative, vm.heap))
@@ -614,17 +620,16 @@ fn attributes_equal(a: &Value, b: &Value, attr: StaticStrings, vm: &mut VM<'_>) 
     x.py_eq_operator(y, vm)
 }
 
-/// Reads `value.attr`, accepting only an attribute that resolves to a value
-/// without running code (which is all a stat result ever holds).
+/// `getattr(value, attr)` through the synchronous call path, so any
+/// stat-like object works; a lazy host attribute reads as absent there.
 fn data_attribute(value: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunResult<Value> {
-    let name = EitherStr::Interned(vm.interns.intern_static(attr));
-    match value.py_getattr(&name, vm)? {
-        CallResult::Value(attribute) => Ok(attribute),
-        other => {
-            other.drop_with(vm);
-            Err(SimpleException::new_msg(ExcType::TypeError, "samestat(): attribute is not a simple value").into())
-        }
-    }
+    let name = Value::InternString(vm.interns.intern_static(attr));
+    let getattr = Value::Builtin(Builtins::Function(BuiltinsFunctions::Getattr));
+    vm.evaluate_function(
+        "os.path.samestat",
+        &getattr,
+        ArgValues::Two(value.clone_with_heap(vm), name),
+    )
 }
 
 // ============================================================================
@@ -880,12 +885,8 @@ fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let text = PathText::fspath(filename, vm)?;
     if text.is_bytes {
         // The host boundary takes `str` paths only, like every `os` function.
-        return Err(ExcType::type_error_os_path(
-            "lstat",
-            "path",
-            "string or os.PathLike",
-            "bytes",
-        ));
+        let accepted = PathAccepts::NoFd.phrase_for(filename, vm);
+        return Err(ExcType::type_error_os_path("lstat", "path", accepted, "bytes"));
     }
     if text.bytes.is_empty() {
         Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
@@ -991,6 +992,11 @@ impl PathText {
         Self::extract(value, vm, ExcType::type_error_fspath)
     }
 
+    /// The type `os.fspath` produced, for `check_arg_types`.
+    fn py_type(&self) -> Type {
+        if self.is_bytes { Type::Bytes } else { Type::Str }
+    }
+
     /// Allocates `bytes` as the type this argument arrived with.
     fn allocate(&self, bytes: Vec<u8>, heap: &Heap) -> Value {
         allocate_text(bytes, self.is_bytes, heap)
@@ -1022,12 +1028,13 @@ fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
 }
 
 /// `genericpath._check_arg_types`: the error for a path operation that
-/// failed on its arguments. The first argument that is neither `str` nor
-/// `bytes` is named (a `Path` included — CPython checks the raw arguments,
-/// not their `os.fspath`), else the arguments mixed `str` and `bytes`.
-fn check_arg_types<'a>(func: &str, args: impl IntoIterator<Item = &'a Value>, vm: &VM<'_>) -> RunError {
-    for arg in args {
-        match arg.py_type_heap(vm.heap) {
+/// failed on its arguments, given their types. The first that is neither
+/// `str` nor `bytes` is named, else the arguments mixed `str` and `bytes`.
+/// Callers pass the type `os.fspath` produced for the arguments CPython
+/// rebinds before the check, and the raw type (a `Path` included) otherwise.
+fn check_arg_types(func: &str, kinds: impl IntoIterator<Item = Type>, vm: &VM<'_>) -> RunError {
+    for kind in kinds {
+        match kind {
             Type::Str | Type::Bytes => {}
             other => return ExcType::type_error_path_argument(func, &other.dunder_name(vm.heap, vm.interns)),
         }

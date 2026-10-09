@@ -160,6 +160,8 @@ Divergences:
 
 - `samestat` compares `st_ino` and `st_dev`, which mounts report as `0` for every file, so two mount stat results
     always compare equal.
+- `samestat` reads `st_ino` and `st_dev` synchronously, so on a host-backed object a lazy attribute reads as absent
+    and raises `AttributeError` (see [classes.md](classes.md)), where CPython would evaluate the getter.
 - `commonprefix` on lists whose elements cannot be ordered reports the lists
     (`'<' not supported between instances of 'list' and 'list'`) where CPython names the elements; this is Monty's
     general list-comparison wording.

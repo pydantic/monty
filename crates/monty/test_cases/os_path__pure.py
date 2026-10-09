@@ -86,6 +86,17 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "join() argument must be str, bytes, or os.PathLike object, not 'PosixPath'"
+# but the first argument is checked after os.fspath, so a Path there is a str
+try:
+    os.path.join(Path('a'), b'b')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "Can't mix strings and bytes in path components"
+try:
+    os.path.join(Path('a'), b'b', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "join() argument must be str, bytes, or os.PathLike object, not 'int'"
 # the raw argument's bare class name, as `__class__.__name__` gives it
 try:
     os.path.join('a', date(2000, 1, 1))
@@ -347,6 +358,12 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "Can't mix strings and bytes in path components"
+# both arguments are checked after os.fspath
+try:
+    os.path.relpath(Path('a'), b'b')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "Can't mix strings and bytes in path components"
 try:
     os.path.relpath()
     assert False, 'expected TypeError'
@@ -509,6 +526,31 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "samestat() missing 2 required positional arguments: 's1' and 's2'"
+
+
+# any object with the two attributes will do
+class FakeStat:
+    def __init__(self, ino, dev):
+        self.st_ino = ino
+        self.st_dev = dev
+
+
+assert os.path.samestat(FakeStat(1, 2), FakeStat(1, 2)) == True
+assert os.path.samestat(FakeStat(1, 2), FakeStat(1, 3)) == False
+assert os.path.samestat(FakeStat(1, 2), FakeStat(2, 2)) == False
+# st_dev is only consulted once st_ino matched
+assert os.path.samestat(FakeStat(1, 2), FakeStat(2, None)) == False
+
+
+class NoDev:
+    st_ino = 1
+
+
+try:
+    os.path.samestat(NoDev(), NoDev())
+    assert False, 'expected AttributeError'
+except AttributeError as e:
+    assert str(e) == "'NoDev' object has no attribute 'st_dev'"
 
 # === expanduser ===
 # `~` and `~/...` need $HOME from the host; `~user` would need the password
