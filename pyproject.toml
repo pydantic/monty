@@ -31,6 +31,9 @@ examples = [
     "logfire>=4.25.0",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
 ]
+build = [
+    "twine>=6.1.0",
+]
 docs = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.7",
