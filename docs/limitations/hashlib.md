@@ -16,8 +16,8 @@ ordinary session state: a dump taken between `update()` calls restores it mid-st
 In CPython it also lists what OpenSSL provides (`sha512_256`, `sha512_224`, `ripemd160`, `md5-sha1`, `sm3`, ...),
 and `new()` accepts those names; Monty raises `ValueError: unsupported hash type sha512_256`.
 
-`new('blake2b512')` and the other OpenSSL BLAKE2 aliases return a `_blake2.blake2b` object; in CPython it is an
-OpenSSL-backed `_hashlib.HASH` whose `name` is also `'blake2b'`.
+`new('blake2b512')` returns a `_blake2.blake2b` object and `new('blake2s256')` a `_blake2.blake2s`; in CPython each
+is an OpenSSL-backed `_hashlib.HASH` whose `name` is also `'blake2b'` / `'blake2s'`.
 
 `pbkdf2_hmac()` with an unsupported name raises `ValueError: unsupported hash type <name>` where CPython raises its
 `ValueError` subclass `_hashlib.UnsupportedDigestmodError` with the OpenSSL message

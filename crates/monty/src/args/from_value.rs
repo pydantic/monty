@@ -276,8 +276,8 @@ pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
 }
 
 /// The big integer behind an `int` too wide for `Value::Int`, if that is
-/// what `value` is.
-fn long_int<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a BigInt> {
+/// what `value` is; the one lookup for every C-width converter.
+pub(crate) fn long_int<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a BigInt> {
     match value {
         Value::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
         Value::Ref(id) => match vm.heap.get(*id) {

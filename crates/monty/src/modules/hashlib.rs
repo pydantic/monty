@@ -14,11 +14,11 @@
 use std::fmt::Display;
 
 use monty_types::ResourceTracker;
-use num_bigint::{BigInt, Sign};
+use num_bigint::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg},
+    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg, long_int},
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
@@ -593,7 +593,7 @@ fn c_int(value: &Value, vm: &VM<'_>) -> RunResult<i32> {
     match value {
         Value::Bool(b) => Ok(i32::from(*b)),
         Value::Int(i) => i32::try_from(*i).map_err(|_| overflow_error("Python int too large to convert to C int")),
-        _ if big_int(value, vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
+        _ if long_int(value, vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -604,7 +604,7 @@ fn c_long(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
     match value {
         Value::Bool(b) => Ok(i64::from(*b)),
         Value::Int(i) => Ok(*i),
-        _ if big_int(value, vm).is_some() => Err(ExcType::overflow_c_long()),
+        _ if long_int(value, vm).is_some() => Err(ExcType::overflow_c_long()),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -615,26 +615,13 @@ fn c_unsigned(value: &Value, c_type: &str, vm: &VM<'_>) -> RunResult<u64> {
     match value {
         Value::Bool(b) => Ok(u64::from(*b)),
         Value::Int(i) => u64::try_from(*i).map_err(|_| ExcType::value_error_negative_int()),
-        _ => match big_int(value, vm) {
+        _ => match long_int(value, vm) {
             Some(big) if big.sign() == Sign::Minus => Err(ExcType::value_error_negative_int()),
             Some(big) => big
                 .to_u64()
                 .ok_or_else(|| overflow_error(format!("Python int too large for C {c_type}"))),
             None => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
         },
-    }
-}
-
-/// The big integer behind an `int` too wide for `Value::Int`, if that is what
-/// `value` is.
-fn big_int<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a BigInt> {
-    match value {
-        Value::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::LongInt(big) => Some(big.inner()),
-            _ => None,
-        },
-        _ => None,
     }
 }
 
