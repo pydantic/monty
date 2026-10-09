@@ -1134,8 +1134,9 @@ jobs:
           targets: ${{ matrix.settings.target }}
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release }}
         with:
-          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Cache is disabled on tag and release runs, which produce release artifacts
           cache-on-failure: true
           prefix-key: v1-rust-js-bin
 
@@ -1183,7 +1184,8 @@ jobs:
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 24
-          cache: npm # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          package-manager-cache: false
+          cache: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release && 'npm' || '' }} # zizmor: ignore[cache-poisoning] -- Cache is disabled on tag and release runs, which produce release artifacts
           cache-dependency-path: crates/monty-js/package-lock.json
 
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
@@ -1192,8 +1194,9 @@ jobs:
           targets: wasm32-wasip1
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release }}
         with:
-          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Cache is disabled on tag and release runs, which produce release artifacts
           cache-on-failure: true
           prefix-key: 'v1-wasm32-wasip1'
 
