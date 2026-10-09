@@ -203,7 +203,7 @@ impl PreConversionEffect {
                 second,
             } => samefile_second_reply(&value, &first, &first_identity, &second, &vm.env.cwd),
             Self::ExpandUser { tail, is_bytes } => expand_user_reply(&value, &tail, is_bytes),
-            Self::ExpandVars { path, is_bytes } => expand_vars_reply(&value, &path, is_bytes),
+            Self::ExpandVars { path, is_bytes } => expand_vars_reply(&value, &path, is_bytes, &vm.heap.tracker),
         };
         reply.map(Reshaped::Value)
     }
@@ -438,8 +438,14 @@ fn expand_user_reply(value: &MontyObject, tail: &[u8], is_bytes: bool) -> Result
 /// half of [`PreConversionEffect::ExpandVars`]. Entries whose key or value
 /// is not `str` cannot be named by a path, so they are ignored. The reply is
 /// indexed once, so the work stays linear in the (sandbox-sized) path rather
-/// than one environment scan per `$reference`.
-fn expand_vars_reply(value: &MontyObject, path: &[u8], is_bytes: bool) -> Result<MontyObject, RunError> {
+/// than one environment scan per `$reference`, and the result's growth is
+/// charged to `tracker` since many references to a long value amplify it.
+fn expand_vars_reply(
+    value: &MontyObject,
+    path: &[u8],
+    is_bytes: bool,
+    tracker: &ResourceTracker,
+) -> Result<MontyObject, RunError> {
     let MontyNode::Dict(entries) = unstable::root_node(value) else {
         return Err(invalid_reply("os.path.expandvars", "a dict", value));
     };
@@ -455,8 +461,9 @@ fn expand_vars_reply(value: &MontyObject, path: &[u8], is_bytes: bool) -> Result
             }
         })
         .collect();
-    let lookup = |name: &[u8]| environ.get(name).map(|item| item.to_vec());
-    Ok(text_reply(posix::expandvars(path, lookup), is_bytes))
+    let lookup = |name: &[u8]| environ.get(name).copied();
+    let reserve = |bytes: usize| tracker.check_allocation(bytes).map_err(RunError::from);
+    Ok(text_reply(posix::expandvars(path, lookup, reserve)?, is_bytes))
 }
 
 /// Builds an `os.path` reply of the type the argument had. `str` arguments

@@ -7,8 +7,8 @@
 use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
     CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
-    MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceTracker, SleepMode,
-    dir_stat, file_stat,
+    MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
+    ResourceTracker, SleepMode, dir_stat, file_stat,
 };
 
 /// Expose clock and sleep calls to the mock host.
@@ -1714,4 +1714,25 @@ fn os_path_realpath_strict_rejects_a_nul_in_the_resolved_path() {
         err.to_string().lines().last().unwrap_or_default(),
         "ValueError: lstat: embedded null character in path"
     );
+}
+
+#[test]
+fn os_path_expandvars_charges_its_amplified_result() {
+    // 20k two-byte references to a 1000-byte value amplify the input 500x; the
+    // expansion must stop at the memory limit rather than build the 20 MB result.
+    let runner = MontyRun::new(
+        "import os\nos.path.expandvars('$V' * 20_000)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(1 << 20));
+    let RunProgress::OsCall(call) = runner.start(vec![], tracker, PrintWriter::Stdout).unwrap() else {
+        panic!("expected the os.environ call");
+    };
+    assert_eq!(call.function_call.name(), "os.environ");
+    let environ = MontyObject::dict([(MontyObject::string("V"), MontyObject::string("x".repeat(1000)))]);
+    let err = call.resume(environ, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
 }

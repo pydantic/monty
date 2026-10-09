@@ -201,17 +201,35 @@ pub(crate) fn expand_home(home: &[u8], tail: &[u8]) -> Vec<u8> {
 /// leaving unknown names and malformed references as written. `name` is an
 /// ASCII `\w+` run for the bare form and anything up to the first `}` for
 /// the braced form, which stays unexpanded when that `}` never comes.
-pub(crate) fn expandvars(path: &[u8], mut lookup: impl FnMut(&[u8]) -> Option<Vec<u8>>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(path.len());
+///
+/// Values can be far longer than the references they replace, so the result
+/// is an amplifying allocation: `reserve` is asked to approve each capacity
+/// doubling before it happens (see `ResourceTracker::check_allocation`).
+pub(crate) fn expandvars<'e, E>(
+    path: &[u8],
+    mut lookup: impl FnMut(&[u8]) -> Option<&'e [u8]>,
+    mut reserve: impl FnMut(usize) -> Result<(), E>,
+) -> Result<Vec<u8>, E> {
+    let mut out = Vec::new();
+    let mut push = |out: &mut Vec<u8>, bytes: &[u8]| {
+        let needed = out.len() + bytes.len();
+        if needed > out.capacity() {
+            let capacity = needed.max(out.capacity() * 2).max(path.len());
+            reserve(capacity - out.capacity())?;
+            out.reserve_exact(capacity - out.len());
+        }
+        out.extend_from_slice(bytes);
+        Ok(())
+    };
     let mut rest = path;
     while let Some(dollar) = rest.iter().position(|&c| c == b'$') {
-        out.extend_from_slice(&rest[..dollar]);
+        push(&mut out, &rest[..dollar])?;
         let after = &rest[dollar + 1..];
         let (reference, name) = if after.starts_with(b"{") {
             let Some(close) = after.iter().position(|&c| c == b'}') else {
                 // `${` with no closing brace: the rest of the path is one unexpandable match.
-                out.extend_from_slice(&rest[dollar..]);
-                return out;
+                push(&mut out, &rest[dollar..])?;
+                return Ok(out);
             };
             (&rest[dollar..dollar + close + 2], &after[1..close])
         } else {
@@ -223,16 +241,13 @@ pub(crate) fn expandvars(path: &[u8], mut lookup: impl FnMut(&[u8]) -> Option<Ve
         };
         if name.is_empty() && !reference.starts_with(b"${") {
             // A lone `$` matches nothing and is copied through.
-            out.push(b'$');
+            push(&mut out, b"$")?;
             rest = after;
             continue;
         }
-        match lookup(name) {
-            Some(value) => out.extend_from_slice(&value),
-            None => out.extend_from_slice(reference),
-        }
+        push(&mut out, lookup(name).unwrap_or(reference))?;
         rest = &rest[dollar + reference.len()..];
     }
-    out.extend_from_slice(rest);
-    out
+    push(&mut out, rest)?;
+    Ok(out)
 }
