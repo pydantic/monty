@@ -2,6 +2,7 @@
 # skip-cpython-windows — os.path is ntpath on Windows CPython; Monty's is always posixpath
 # Filesystem-backed os.path functions against the mounted test directory.
 import os
+import sys
 from pathlib import Path
 
 # root is injected by the test runner: Path('/mnt') for Monty (also the
@@ -36,7 +37,18 @@ assert os.path.lexists(str(root) + '/\0') == False
 # Monty reports every existing path as a mount point; a missing one is not
 assert os.path.ismount(root / 'nope') == False
 assert os.path.ismount(str(root) + '/\0') == False
-assert isinstance(os.path.ismount(root), bool)
+if sys.platform == 'monty':
+    assert os.path.ismount(root) == True
+    assert os.path.ismount(hello) == True
+else:
+    assert os.path.ismount(hello) == False
+# a dangling symlink is what tells lexists from exists; the harness creates
+# one where the host allows symlinks
+dangling = root / 'subdir' / 'deep' / 'dangling'
+if os.path.islink(dangling):
+    assert os.path.exists(dangling) == False
+    assert os.path.lexists(dangling) == True
+    assert os.path.isfile(dangling) == False
 
 # === getsize / getmtime / getatime / getctime ===
 assert os.path.getsize(hello) == 12

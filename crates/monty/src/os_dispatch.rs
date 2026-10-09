@@ -153,10 +153,11 @@ pub(crate) enum PreConversionEffect {
         first: String,
         second: Result<String, (String, String)>,
     },
-    /// `os.path.samefile`: both stats are in; compare them.
+    /// `os.path.samefile`: both stats are in; compare them. The identity is
+    /// `(st_ino, st_dev)` as decimal text, an equality key that fits any int.
     SamefileSecond {
         first: String,
-        first_identity: (i64, i64),
+        first_identity: (String, String),
         second: String,
     },
     /// `os.path.expanduser`: splice the `os.getenv('HOME')` reply in front of
@@ -200,7 +201,7 @@ impl PreConversionEffect {
                 first,
                 first_identity,
                 second,
-            } => samefile_second_reply(&value, &first, first_identity, &second, &vm.env.cwd),
+            } => samefile_second_reply(&value, &first, &first_identity, &second, &vm.env.cwd),
             Self::ExpandUser { tail, is_bytes } => expand_user_reply(&value, &tail, is_bytes),
             Self::ExpandVars { path, is_bytes } => expand_vars_reply(&value, &path, is_bytes),
         };
@@ -311,6 +312,12 @@ fn resolved_path_reply(value: &MontyObject, strict: bool) -> Result<Reshaped, Ru
         MontyNode::Path(path) | MontyNode::String(path) => path.clone(),
         _ => return Err(invalid_reply("os.path.realpath", "a path", value)),
     };
+    // The VM answers an existence check on a NUL path with `False`, which
+    // would become `realpath`'s result; CPython's strict `lstat` raises.
+    if strict && resolved.contains('\0') {
+        let call = OsFunctionCall::Resolve(MontyPath::new(resolved));
+        return Err(ExcType::value_error(call.embedded_null_message(false)));
+    }
     Ok(if strict {
         Reshaped::Call {
             call: OsFunctionCall::Exists(MontyPath::new(resolved.clone())),
@@ -381,26 +388,30 @@ fn samefile_first_reply(
 fn samefile_second_reply(
     value: &MontyObject,
     first: &str,
-    first_identity: (i64, i64),
+    first_identity: &(String, String),
     second: &str,
     cwd: &str,
 ) -> Result<MontyObject, RunError> {
     let second_identity =
         stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
-    let same = if first_identity == (0, 0) && second_identity == (0, 0) {
+    let unknown = |identity: &(String, String)| identity.0 == "0" && identity.1 == "0";
+    let same = if unknown(first_identity) && unknown(&second_identity) {
         normalize_virtual_path(&posix_join(cwd, first)) == normalize_virtual_path(&posix_join(cwd, second))
     } else {
-        first_identity == second_identity
+        *first_identity == second_identity
     };
     Ok(MontyObject::bool(same))
 }
 
-/// `(st_ino, st_dev)` of a `Path.stat` reply, `None` unless both are ints.
-fn stat_identity(value: &MontyObject) -> Option<(i64, i64)> {
-    match (stat_result_field(value, "st_ino"), stat_result_field(value, "st_dev")) {
-        (Some(MontyNode::Int(ino)), Some(MontyNode::Int(dev))) => Some((*ino, *dev)),
+/// `(st_ino, st_dev)` of a `Path.stat` reply as decimal text, `None` unless
+/// both are ints (of either width, as the stat getters accept them).
+fn stat_identity(value: &MontyObject) -> Option<(String, String)> {
+    let number = |name: &str| match stat_result_field(value, name)? {
+        MontyNode::Int(int) => Some(int.to_string()),
+        MontyNode::BigInt(int) => Some(int.to_string()),
         _ => None,
-    }
+    };
+    Some((number("st_ino")?, number("st_dev")?))
 }
 
 /// A `Path.exists` / `Path.is_symlink` reply as a bool, refusing anything else.

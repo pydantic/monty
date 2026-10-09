@@ -1651,3 +1651,67 @@ fn asyncio_sleep_answered_with_a_failed_future_raises() {
 fn positional(call: &CallArgs) -> Vec<MontyObject> {
     call.args().map(|arg| arg.to_owned()).collect()
 }
+
+/// A `StatResult` whose identity fields are set, for `os.path.samefile`.
+fn stat_with_identity(ino: i64, dev: i64) -> MontyObject {
+    MontyObject::named_tuple(
+        "StatResult".to_owned(),
+        vec!["st_mode".to_owned(), "st_ino".to_owned(), "st_dev".to_owned()],
+        vec![
+            MontyObject::int(0o100_644),
+            MontyObject::int(ino),
+            MontyObject::int(dev),
+        ],
+    )
+}
+
+/// Drives `os.path.samefile(f1, f2)` through its two `Path.stat` calls.
+fn run_samefile(first: MontyObject, second: MontyObject) -> MontyObject {
+    let call = run_to_oscall_start("import os\nos.path.samefile('a', 'sub/../a')");
+    assert_eq!(call.function_call.name(), "Path.stat");
+    let RunProgress::OsCall(call) = call.resume(first, PrintWriter::Stdout).unwrap() else {
+        panic!("expected the second Path.stat");
+    };
+    assert_eq!(call.function_call.name(), "Path.stat");
+    call.resume(second, PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .expect("expected Complete after the second stat")
+}
+
+#[test]
+fn os_path_samefile_compares_identities_when_the_host_reports_them() {
+    assert_eq!(
+        run_samefile(stat_with_identity(5, 1), stat_with_identity(5, 1)),
+        MontyObject::bool(true)
+    );
+    // Same normalized path, different inode: the host's identity wins.
+    assert_eq!(
+        run_samefile(stat_with_identity(5, 1), stat_with_identity(6, 1)),
+        MontyObject::bool(false)
+    );
+}
+
+#[test]
+fn os_path_samefile_falls_back_to_paths_without_identities() {
+    // Mounts report `st_ino` and `st_dev` as 0, so 'a' and 'sub/../a' compare by normalized path.
+    assert_eq!(
+        run_samefile(file_stat(0o644, 1, 0.0), file_stat(0o644, 2, 0.0)),
+        MontyObject::bool(true)
+    );
+}
+
+#[test]
+fn os_path_realpath_strict_rejects_a_nul_in_the_resolved_path() {
+    // Without this the chained `Path.exists` would answer `False` locally and
+    // strict `realpath` would return a bool.
+    let call = run_to_oscall_start("import os\nos.path.realpath('a', strict=True)");
+    assert_eq!(call.function_call.name(), "Path.resolve");
+    let err = call
+        .resume(MontyObject::path("/mnt/a\0b".to_owned()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "ValueError: lstat: embedded null character in path"
+    );
+}

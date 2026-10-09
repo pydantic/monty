@@ -3,6 +3,10 @@
 //! diffs the results, so any behavioural divergence fails the suite. Run via
 //! `make test-cases`; see CLAUDE.md for the test-case file conventions.
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -397,6 +401,7 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
 ///     nested.txt       -> "nested content"
 ///     deep/
 ///       file.txt       -> "deep file"
+///       dangling       -> symlink to the missing "missing" (where the host allows symlinks)
 ///   readonly.txt       -> "readonly content"
 /// ```
 fn create_mount_fs_tempdir() -> tempfile::TempDir {
@@ -410,8 +415,20 @@ fn create_mount_fs_tempdir() -> tempfile::TempDir {
     fs::write(p.join("subdir/nested.txt"), "nested content").unwrap();
     fs::write(p.join("subdir/deep/file.txt"), "deep file").unwrap();
     fs::write(p.join("readonly.txt"), "readonly content").unwrap();
+    dangling_symlink("missing", &p.join("subdir/deep/dangling"));
 
     dir
+}
+
+/// Creates a file symlink to a target that does not exist, so cases can tell
+/// `lexists` from `exists`. Windows refuses symlinks without Developer Mode
+/// or elevation, so a failure leaves the link absent and the cases skip it by
+/// checking `os.path.islink` first.
+fn dangling_symlink(target: &str, link: &Path) {
+    #[cfg(unix)]
+    let _ = symlink(target, link);
+    #[cfg(windows)]
+    let _ = symlink_file(target, link);
 }
 
 /// Pre-imports Python modules that can cause race conditions during parallel test execution.
