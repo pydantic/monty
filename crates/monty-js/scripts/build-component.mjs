@@ -61,20 +61,26 @@ await Promise.all([
   rm(outputDir, { recursive: true, force: true }),
   rm(sourceTypesDir, { recursive: true, force: true }),
 ])
-await Promise.all([
-  ...Object.entries(files).map(async ([name, contents]) => {
+await Promise.all(
+  Object.entries(files).map(async ([name, contents]) => {
     const destination = join(outputDir, name)
     await mkdir(dirname(destination), { recursive: true })
     await writeFile(destination, contents)
   }),
+)
+await Promise.all([
   writeGeneratedType('monty.component.d.ts', formattedFacadeTypes),
   writeGeneratedType(workerTypesPath, formattedWorkerTypes),
 ])
 console.log(`built WASI 0.2 component bindings -> ${outputDir}`)
 
-/** Writes one formatted declaration into the TypeScript source tree. */
+/** Writes one formatted declaration into the source and packaged component trees. */
 async function writeGeneratedType(path, contents) {
-  const destination = join(sourceTypesDir, path)
-  await mkdir(dirname(destination), { recursive: true })
-  await writeFile(destination, contents)
+  await Promise.all(
+    [sourceTypesDir, outputDir].map(async (directory) => {
+      const destination = join(directory, path)
+      await mkdir(dirname(destination), { recursive: true })
+      await writeFile(destination, contents)
+    }),
+  )
 }
