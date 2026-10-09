@@ -1,0 +1,27 @@
+crates/monty/test_cases/open__fs.py
+  s_112e3f7b875db0::t_8c0636d641db69 798-800
+docs/filesystem.md
+  s_112e3f7b875db0::t_ccbc50eb317c6b 198-199
+docs/limitations/open.md
+  s_112e3f7b875db0::t_ccbc50eb317c6b 142,146-147
+crates/monty/src/os_dispatch.rs
+  s_112e3f7b875db0::t_ccbc50eb317c6b 85-89,91
+crates/monty/tests/file_error_paths.rs
+  s_112e3f7b875db0::t_8c0636d641db69 213-235
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "26b55d24ba70f30e3797885624017bca12c02029",
+  "prompts": {},
+  "sessions": {
+    "s_112e3f7b875db0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7fbac5fb-6edd-4975-92b6-6c198481dedb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
