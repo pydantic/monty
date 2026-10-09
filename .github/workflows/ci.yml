@@ -521,7 +521,7 @@ jobs:
           workspaces: 'crates/fuzz -> target'
 
       - if: steps.cache-rust.outputs.cache-hit != 'true'
-        run: cargo install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
 
       - name: Run ${{ matrix.target }} fuzzer
         run: |
