@@ -1,5 +1,8 @@
 use std::{borrow::Cow, fmt::Write};
 
+#[cfg(not(feature = "baseline-attr-lookup"))]
+use std::cell::Cell;
+
 use monty_types::MontyUuid;
 
 use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
@@ -37,6 +40,11 @@ pub(crate) struct Instance {
     /// Instance attributes (`__dict__`).
     #[serde(rename = "A")]
     attrs: Dict,
+    /// Derived from `attrs`; direct dict writes clear it. Shape ids are local
+    /// to the session registry and are never persisted.
+    #[cfg(not(feature = "baseline-attr-lookup"))]
+    #[serde(skip)]
+    shape: Cell<Option<usize>>,
     /// Boundary identity, generated lazily the first time the instance crosses
     /// to the host; dumped with the heap so it stays stable across restores.
     #[serde(rename = "U")]
@@ -50,6 +58,8 @@ impl Instance {
         Self {
             class,
             attrs,
+            #[cfg(not(feature = "baseline-attr-lookup"))]
+            shape: Cell::new(None),
             uuid: None,
         }
     }
@@ -77,6 +87,16 @@ impl Instance {
     #[must_use]
     pub fn attrs(&self) -> &Dict {
         &self.attrs
+    }
+
+    #[cfg(not(feature = "baseline-attr-lookup"))]
+    pub(crate) fn shape(&self) -> Option<usize> {
+        self.shape.get()
+    }
+
+    #[cfg(not(feature = "baseline-attr-lookup"))]
+    pub(crate) fn set_shape(&self, shape: Option<usize>) {
+        self.shape.set(shape);
     }
 }
 
@@ -106,7 +126,11 @@ impl<'h> HeapRead<'h, Instance> {
             .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))))
     }
 
-    pub(crate) fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+    pub(crate) fn attrs_mut(&mut self, heap: &crate::heap::HeapReader<'h>) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+        #[cfg(not(feature = "baseline-attr-lookup"))]
+        self.get(heap).shape.set(None);
+        #[cfg(feature = "baseline-attr-lookup")]
+        let _ = heap;
         heap_read_ref_as_field_mut!(self, Instance, attrs)
     }
 
@@ -137,7 +161,7 @@ impl<'h> HeapRead<'h, Instance> {
     /// Whatever `set_attr` grows must stay above this line (see
     /// `limitations/classes.md`).
     pub fn set_attr_unchecked(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.attrs_mut().set(name, value, vm)
+        self.attrs_mut(vm.heap).set(name, value, vm)
     }
 }
 

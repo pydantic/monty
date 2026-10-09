@@ -18,6 +18,8 @@ mod scheduler;
 
 use std::{borrow::Cow, mem};
 
+#[cfg(not(feature = "baseline-attr-lookup"))]
+use attr::AttrCache;
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
@@ -810,6 +812,14 @@ pub struct VM<'h> {
     /// [`globals`](Self::globals) when runtime-compiled code binds a new name.
     pub(crate) global_names: &'h mut NameMap,
 
+    /// Shared instance layouts for this session.
+    #[cfg(not(feature = "baseline-attr-lookup"))]
+    pub(crate) shapes: &'h mut crate::shape::ShapeRegistry,
+
+    /// Attribute slots indexed by code identity, then instruction offset.
+    #[cfg(not(feature = "baseline-attr-lookup"))]
+    attr_caches: ahash::AHashMap<usize, Vec<Option<AttrCache>>>,
+
     /// Print output writer, borrowed so callers retain access to collected output.
     pub(crate) print_writer: PrintWriter<'h>,
 
@@ -926,7 +936,13 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         print_writer: PrintWriter<'h>,
     ) -> Self {
-        let SessionTables { global_names, interns } = tables;
+        let SessionTables {
+            global_names,
+            interns,
+            shapes,
+        } = tables;
+        #[cfg(feature = "baseline-attr-lookup")]
+        let _ = shapes;
         Self {
             stack: Vec::with_capacity(64),
             globals,
@@ -935,6 +951,10 @@ impl<'h> VM<'h> {
             heap,
             interns,
             global_names,
+            #[cfg(not(feature = "baseline-attr-lookup"))]
+            shapes,
+            #[cfg(not(feature = "baseline-attr-lookup"))]
+            attr_caches: ahash::AHashMap::new(),
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
@@ -966,7 +986,13 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         print_writer: PrintWriter<'h>,
     ) -> Self {
-        let SessionTables { global_names, interns } = tables;
+        let SessionTables {
+            global_names,
+            interns,
+            shapes,
+        } = tables;
+        #[cfg(feature = "baseline-attr-lookup")]
+        let _ = shapes;
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
             .frames
@@ -1006,6 +1032,10 @@ impl<'h> VM<'h> {
             heap,
             interns,
             global_names,
+            #[cfg(not(feature = "baseline-attr-lookup"))]
+            shapes,
+            #[cfg(not(feature = "baseline-attr-lookup"))]
+            attr_caches: ahash::AHashMap::new(),
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
@@ -1605,7 +1635,10 @@ impl<'h> VM<'h> {
                 Opcode::LoadAttr => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
+                    #[cfg(feature = "baseline-attr-lookup")]
                     handle_call_result!(self, self.load_attr(name_id));
+                    #[cfg(not(feature = "baseline-attr-lookup"))]
+                    handle_call_result!(self, self.load_attr_cached(name_id));
                 }
                 Opcode::LoadAttrImport => {
                     let name_idx = self.current_frame.fetch_u16();

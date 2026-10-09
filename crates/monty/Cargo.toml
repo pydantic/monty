@@ -58,6 +58,9 @@ itertools = "0.14.0"
 jiter = { version = "0.17.0", features = ["num-bigint"] }
 
 [features]
+# Compare the original attribute lookup against the shape cache in benchmarks.
+baseline-attr-lookup = []
+simple-attr-cache = []
 # ref-count-return changes behavior to return information on reference counts to check they're correct
 # should be used for testing only
 ref-count-return = ["test-hooks"]

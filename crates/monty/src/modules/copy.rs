@@ -388,7 +388,7 @@ pub(crate) fn deep_copy_attrs(
         let HeapReadOutput::Instance(mut instance) = vm.heap.read(copy_id) else {
             unreachable!("caller allocated an instance")
         };
-        let replaced = instance.attrs_mut().set(key_copy, value_copy, vm)?;
+        let replaced = instance.attrs_mut(vm.heap).set(key_copy, value_copy, vm)?;
         if let Some(replaced) = replaced {
             replaced.drop_with(vm);
         }
@@ -642,7 +642,7 @@ fn insert_attrs(id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunR
         let HeapReadOutput::Instance(mut instance) = vm.heap.read(id) else {
             unreachable!("caller allocated an instance")
         };
-        let replaced = instance.attrs_mut().set(key, value, vm)?;
+        let replaced = instance.attrs_mut(vm.heap).set(key, value, vm)?;
         if let Some(replaced) = replaced {
             replaced.drop_with(vm);
         }
