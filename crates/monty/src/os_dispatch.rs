@@ -21,7 +21,7 @@
 
 use std::{borrow::Cow, mem};
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashSet;
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, ResourceTracker, normalize_virtual_path,
@@ -34,7 +34,15 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    modules::{os::PathArgError, os_path::posix, random::RandomRetry, time::ClockReading},
+    modules::{
+        os::PathArgError,
+        os_path::{
+            StatField, expand_user_reply, expand_vars_reply, lexists_reply, realpath_strict_reply, resolved_path_reply,
+            samefile_first_reply, samefile_second_reply, stat_field_reply,
+        },
+        random::RandomRetry,
+        time::ClockReading,
+    },
     types::{Path, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
@@ -238,57 +246,9 @@ pub(crate) enum Reshaped {
     },
 }
 
-/// The `os.stat` result field an `os.path` getter returns.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub(crate) enum StatField {
-    /// `os.path.getsize` → `st_size`.
-    Size,
-    /// `os.path.getmtime` → `st_mtime`.
-    Mtime,
-    /// `os.path.getatime` → `st_atime`.
-    Atime,
-    /// `os.path.getctime` → `st_ctime`.
-    Ctime,
-}
-
-impl StatField {
-    /// The stat result field name.
-    fn name(self) -> &'static str {
-        match self {
-            Self::Size => "st_size",
-            Self::Mtime => "st_mtime",
-            Self::Atime => "st_atime",
-            Self::Ctime => "st_ctime",
-        }
-    }
-
-    /// The `os.path` function that asked for the field, for error messages.
-    fn function(self) -> &'static str {
-        match self {
-            Self::Size => "os.path.getsize",
-            Self::Mtime => "os.path.getmtime",
-            Self::Atime => "os.path.getatime",
-            Self::Ctime => "os.path.getctime",
-        }
-    }
-}
-
-/// Picks `field` out of a host `Path.stat` reply — the resume half of
-/// [`PreConversionEffect::StatField`]. Only a number is accepted, so a host
-/// that answered with something other than a stat result gets the same
-/// `RuntimeError` shape as `os.chdir`.
-fn stat_field_reply(value: &MontyObject, field: StatField) -> Result<MontyObject, RunError> {
-    match stat_result_field(value, field.name()) {
-        Some(number @ (MontyNode::Int(_) | MontyNode::BigInt(_) | MontyNode::Float(_))) => {
-            Ok(unstable::object_from_node(number.clone()))
-        }
-        _ => Err(invalid_reply(field.function(), "a stat result", value)),
-    }
-}
-
 /// A `Path.stat` reply's field by name, so a host's stat result is accepted
 /// whatever its field order; `None` for anything but a named tuple with it.
-fn stat_result_field<'a>(value: &'a MontyObject, name: &str) -> Option<&'a MontyNode> {
+pub(crate) fn stat_result_field<'a>(value: &'a MontyObject, name: &str) -> Option<&'a MontyNode> {
     match unstable::root_node(value) {
         MontyNode::NamedTuple {
             field_names, values, ..
@@ -301,183 +261,17 @@ fn stat_result_field<'a>(value: &'a MontyObject, name: &str) -> Option<&'a Monty
     }
 }
 
-/// Turns a `Path.resolve` reply into the `str` that `os.path.realpath`
-/// returns — the resume half of [`PreConversionEffect::ResolvedPath`]. A
-/// host answering the callback itself may already return `str`. Under
-/// `strict`, mounts resolve lexically and never report a missing path, so a
-/// `Path.exists` call on the result follows.
-fn resolved_path_reply(value: &MontyObject, strict: bool) -> Result<Reshaped, RunError> {
-    let resolved = match unstable::root_node(value) {
-        MontyNode::Path(path) | MontyNode::String(path) => path.clone(),
-        _ => return Err(invalid_reply("os.path.realpath", "a path", value)),
-    };
-    // The VM answers an existence check on a NUL path with `False`, which
-    // would become `realpath`'s result; CPython's strict `lstat` raises.
-    if strict && resolved.contains('\0') {
-        let call = OsFunctionCall::Resolve(MontyPath::new(resolved));
-        return Err(ExcType::value_error(call.embedded_null_message(false)));
-    }
-    Ok(if strict {
-        Reshaped::Call {
-            call: OsFunctionCall::Exists(MontyPath::new(resolved.clone())),
-            effect: Some(PreConversionEffect::RealpathStrict { resolved }.into()),
-        }
-    } else {
-        Reshaped::Value(MontyObject::string(resolved))
-    })
-}
-
-/// Completes `os.path.realpath(strict=True)` from the `Path.exists` reply on
-/// the resolved path — the resume half of [`PreConversionEffect::RealpathStrict`].
-fn realpath_strict_reply(value: &MontyObject, resolved: String) -> Result<MontyObject, RunError> {
-    if bool_reply(value, "os.path.realpath")? {
-        Ok(MontyObject::string(resolved))
-    } else {
-        Err(ExcType::file_not_found_error(&resolved))
-    }
-}
-
-/// Completes `os.path.lexists` from the `Path.exists` reply — the resume half
-/// of [`PreConversionEffect::Lexists`]. `False` may still be a dangling
-/// symlink, which `Path.is_symlink` reports.
-fn lexists_reply(value: &MontyObject, path: String) -> Result<Reshaped, RunError> {
-    Ok(if bool_reply(value, "os.path.lexists")? {
-        Reshaped::Value(MontyObject::bool(true))
-    } else {
-        Reshaped::Call {
-            call: OsFunctionCall::IsSymlink(MontyPath::new(path)),
-            effect: None,
-        }
-    })
-}
-
-/// Moves `os.path.samefile` from its first `Path.stat` to its second — the
-/// resume half of [`PreConversionEffect::SamefileFirst`]. The second path's
-/// deferred converter error and `FileNotFoundError` for the empty path raise
-/// here, where CPython's `os.stat(f2)` raises them.
-fn samefile_first_reply(
-    value: &MontyObject,
-    first: String,
-    second: Result<String, PathArgError>,
-) -> Result<Reshaped, RunError> {
-    let first_identity =
-        stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
-    let second = match second {
-        Ok(second) if second.is_empty() => return Err(ExcType::file_not_found_error("")),
-        Ok(second) => second,
-        Err(err) => return Err(err.into_error("stat", "path")),
-    };
-    Ok(Reshaped::Call {
-        call: OsFunctionCall::Stat(MontyPath::new(second.clone())),
-        effect: Some(
-            PreConversionEffect::SamefileSecond {
-                first,
-                first_identity,
-                second,
-            }
-            .into(),
-        ),
-    })
-}
-
-/// Completes `os.path.samefile` from the second `Path.stat` reply — the
-/// resume half of [`PreConversionEffect::SamefileSecond`]. CPython compares
-/// `(st_ino, st_dev)`; mounts report both as zero, so when neither reply
-/// carries an identity the normalized virtual paths decide instead.
-fn samefile_second_reply(
-    value: &MontyObject,
-    first: &str,
-    first_identity: &(String, String),
-    second: &str,
-    cwd: &str,
-) -> Result<MontyObject, RunError> {
-    let second_identity =
-        stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
-    let unknown = |identity: &(String, String)| identity.0 == "0" && identity.1 == "0";
-    let same = if unknown(first_identity) && unknown(&second_identity) {
-        normalize_virtual_path(&posix_join(cwd, first)) == normalize_virtual_path(&posix_join(cwd, second))
-    } else {
-        *first_identity == second_identity
-    };
-    Ok(MontyObject::bool(same))
-}
-
-/// `(st_ino, st_dev)` of a `Path.stat` reply as decimal text, `None` unless
-/// both are ints (of either width, as the stat getters accept them).
-fn stat_identity(value: &MontyObject) -> Option<(String, String)> {
-    let number = |name: &str| match stat_result_field(value, name)? {
-        MontyNode::Int(int) => Some(int.to_string()),
-        MontyNode::BigInt(int) => Some(int.to_string()),
-        _ => None,
-    };
-    Some((number("st_ino")?, number("st_dev")?))
-}
-
 /// A `Path.exists` / `Path.is_symlink` reply as a bool, refusing anything else.
-fn bool_reply(value: &MontyObject, operation: &str) -> Result<bool, RunError> {
+pub(crate) fn bool_reply(value: &MontyObject, operation: &str) -> Result<bool, RunError> {
     match unstable::root_node(value) {
         MontyNode::Bool(answer) => Ok(*answer),
         _ => Err(invalid_reply(operation, "a bool", value)),
     }
 }
 
-/// Completes `os.path.expanduser` from the `os.getenv('HOME')` reply — the
-/// resume half of [`PreConversionEffect::ExpandUser`]. `None` (no `$HOME`)
-/// returns the path as written, since the sandbox has no password database
-/// to fall back on.
-fn expand_user_reply(value: &MontyObject, tail: &[u8], is_bytes: bool) -> Result<MontyObject, RunError> {
-    match unstable::root_node(value) {
-        MontyNode::None => Ok(text_reply([b"~", tail].concat(), is_bytes)),
-        MontyNode::String(home) => Ok(text_reply(posix::expand_home(home.as_bytes(), tail), is_bytes)),
-        _ => Err(invalid_reply("os.path.expanduser", "str or None", value)),
-    }
-}
-
-/// Completes `os.path.expandvars` from the `os.environ` reply — the resume
-/// half of [`PreConversionEffect::ExpandVars`]. Entries whose key or value
-/// is not `str` cannot be named by a path, so they are ignored. The reply is
-/// indexed once, so the work stays linear in the (sandbox-sized) path rather
-/// than one environment scan per `$reference`, and the result's growth is
-/// charged to `tracker` since many references to a long value amplify it.
-fn expand_vars_reply(
-    value: &MontyObject,
-    path: &[u8],
-    is_bytes: bool,
-    tracker: &ResourceTracker,
-) -> Result<MontyObject, RunError> {
-    let MontyNode::Dict(entries) = unstable::root_node(value) else {
-        return Err(invalid_reply("os.path.expandvars", "a dict", value));
-    };
-    let environ: AHashMap<&[u8], &[u8]> = entries
-        .iter()
-        .filter_map(|(key, item)| {
-            match (
-                unstable::node(unstable::child(value.as_ref(), *key)),
-                unstable::node(unstable::child(value.as_ref(), *item)),
-            ) {
-                (MontyNode::String(key), MontyNode::String(item)) => Some((key.as_bytes(), item.as_bytes())),
-                _ => None,
-            }
-        })
-        .collect();
-    let lookup = |name: &[u8]| environ.get(name).copied();
-    let reserve = |bytes: usize| tracker.check_allocation(bytes).map_err(RunError::from);
-    Ok(text_reply(posix::expandvars(path, lookup, reserve)?, is_bytes))
-}
-
-/// Builds an `os.path` reply of the type the argument had. `str` arguments
-/// only ever gain `str` host data at ASCII separators, so the bytes stay UTF-8.
-fn text_reply(bytes: Vec<u8>, is_bytes: bool) -> MontyObject {
-    if is_bytes {
-        MontyObject::bytes(bytes)
-    } else {
-        MontyObject::string(String::from_utf8(bytes).expect("str path data stays UTF-8"))
-    }
-}
-
 /// The `RuntimeError` for a host reply of the wrong shape: `invalid return
 /// type: {operation} requires the host to return {expected}, got {type}`.
-fn invalid_reply(operation: &str, expected: &str, value: &MontyObject) -> RunError {
+pub(crate) fn invalid_reply(operation: &str, expected: &str, value: &MontyObject) -> RunError {
     SimpleException::new_msg(
         ExcType::RuntimeError,
         format!(

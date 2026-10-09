@@ -13,7 +13,11 @@
 
 use std::iter;
 
-use monty_types::{GetenvArgs, MontyObject, MontyPath, OsFunctionCall};
+use ahash::AHashMap;
+use monty_types::{
+    GetenvArgs, MontyObject, MontyPath, OsFunctionCall, ResourceTracker, normalize_virtual_path,
+    unstable::{self, MontyNode},
+};
 use smallvec::smallvec;
 
 use crate::{
@@ -28,9 +32,13 @@ use crate::{
         ModuleFunctions,
         os::{PathAccepts, PathArgError, extract_accepted_path, extract_os_path},
     },
-    os_dispatch::{PreConversionEffect, StatField, value_to_owned_bytes, value_to_owned_string},
+    os_dispatch::{
+        PreConversionEffect, Reshaped, bool_reply, invalid_reply, stat_result_field, value_to_owned_bytes,
+        value_to_owned_string,
+    },
     types::{Bytes, Module, PyTrait, Slice, Type, allocate_tuple, collect_iterable, str::allocate_string},
     value::Value,
+    virtual_path::posix_join,
 };
 
 pub(crate) mod posix;
@@ -183,20 +191,6 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsPathFunctions, args: ArgValues)
 // Pure functions
 // ============================================================================
 
-/// Declares the argument struct of a pure-Python `def f(param)` in
-/// `posixpath` / `genericpath`, so missing-argument and keyword errors carry
-/// CPython's function and parameter names.
-macro_rules! one_path_arg {
-    ($(#[$doc:meta])* $ty:ident, $name:literal, $param:ident) => {
-        $(#[$doc])*
-        #[derive(FromArgs)]
-        #[from_args(name = $name, style = def)]
-        struct $ty {
-            $param: Value,
-        }
-    };
-}
-
 /// `os.path.join(a, *p)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "join")]
@@ -230,12 +224,12 @@ fn join(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(parts[0].allocate(joined, vm.heap))
 }
 
-one_path_arg!(
-    /// `os.path.split(p)` argument shape.
-    SplitArgs,
-    "split",
-    p
-);
+/// `os.path.split(p)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "split", style = def)]
+struct SplitArgs {
+    p: Value,
+}
 
 /// Implementation of `os.path.split(p)`.
 fn split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -246,12 +240,12 @@ fn split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(text.allocate_pair(head, tail, vm.heap))
 }
 
-one_path_arg!(
-    /// `os.path.splitext(p)` argument shape.
-    SplitextArgs,
-    "splitext",
-    p
-);
+/// `os.path.splitext(p)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "splitext", style = def)]
+struct SplitextArgs {
+    p: Value,
+}
 
 /// Implementation of `os.path.splitext(p)`.
 fn splitext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -262,12 +256,12 @@ fn splitext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(text.allocate_pair(root, ext, vm.heap))
 }
 
-one_path_arg!(
-    /// `os.path.splitdrive(p)` argument shape.
-    SplitdriveArgs,
-    "splitdrive",
-    p
-);
+/// `os.path.splitdrive(p)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "splitdrive", style = def)]
+struct SplitdriveArgs {
+    p: Value,
+}
 
 /// Implementation of `os.path.splitdrive(p)`: POSIX paths have no drive.
 fn splitdrive(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -302,12 +296,12 @@ fn splitroot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(allocate_tuple(items, vm.heap))
 }
 
-one_path_arg!(
-    /// `os.path.basename(p)` argument shape.
-    BasenameArgs,
-    "basename",
-    p
-);
+/// `os.path.basename(p)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "basename", style = def)]
+struct BasenameArgs {
+    p: Value,
+}
 
 /// Implementation of `os.path.basename(p)`.
 fn basename(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -317,12 +311,12 @@ fn basename(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(text.allocate(posix::basename(&text.bytes).to_vec(), vm.heap))
 }
 
-one_path_arg!(
-    /// `os.path.dirname(p)` argument shape.
-    DirnameArgs,
-    "dirname",
-    p
-);
+/// `os.path.dirname(p)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "dirname", style = def)]
+struct DirnameArgs {
+    p: Value,
+}
 
 /// Implementation of `os.path.dirname(p)`.
 fn dirname(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -332,12 +326,12 @@ fn dirname(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(text.allocate(posix::dirname(&text.bytes).to_vec(), vm.heap))
 }
 
-one_path_arg!(
-    /// `os.path.isabs(s)` argument shape.
-    IsabsArgs,
-    "isabs",
-    s
-);
+/// `os.path.isabs(s)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "isabs", style = def)]
+struct IsabsArgs {
+    s: Value,
+}
 
 /// Implementation of `os.path.isabs(s)`.
 fn isabs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -347,12 +341,12 @@ fn isabs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Bool(posix::isabs(&text.bytes)))
 }
 
-one_path_arg!(
-    /// `os.path.normcase(s)` argument shape.
-    NormcaseArgs,
-    "normcase",
-    s
-);
+/// `os.path.normcase(s)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "normcase", style = def)]
+struct NormcaseArgs {
+    s: Value,
+}
 
 /// Implementation of `os.path.normcase(s)`: the identity on POSIX, after `os.fspath`.
 fn normcase(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -384,12 +378,12 @@ fn normpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `splitroot`, which take no file descriptor.
 const C_PATH_ACCEPTS: &str = "string, bytes or os.PathLike";
 
-one_path_arg!(
-    /// `os.path.abspath(path)` argument shape.
-    AbspathArgs,
-    "abspath",
-    path
-);
+/// `os.path.abspath(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "abspath", style = def)]
+struct AbspathArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.abspath(path)`: pure, against the sandbox's
 /// virtual working directory.
@@ -435,12 +429,12 @@ fn relpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(path_text.allocate(relative, vm.heap))
 }
 
-one_path_arg!(
-    /// `os.path.commonpath(paths)` argument shape.
-    CommonpathArgs,
-    "commonpath",
-    paths
-);
+/// `os.path.commonpath(paths)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "commonpath", style = def)]
+struct CommonpathArgs {
+    paths: Value,
+}
 
 /// Implementation of `os.path.commonpath(paths)`: `os.fspath` over the
 /// sequence first, so a non-path element fails before an empty sequence or
@@ -465,12 +459,12 @@ fn commonpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(first.allocate(common, vm.heap))
 }
 
-one_path_arg!(
-    /// `os.path.commonprefix(m)` argument shape.
-    CommonprefixArgs,
-    "commonprefix",
-    m
-);
+/// `os.path.commonprefix(m)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "commonprefix", style = def)]
+struct CommonprefixArgs {
+    m: Value,
+}
 
 /// Implementation of `genericpath.commonprefix(m)`: the longest common
 /// leading slice of `min(m)` and `max(m)`. Elements are passed through
@@ -559,12 +553,12 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
     }
 }
 
-one_path_arg!(
-    /// `os.path.isjunction(path)` argument shape.
-    IsjunctionArgs,
-    "isjunction",
-    path
-);
+/// `os.path.isjunction(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "isjunction", style = def)]
+struct IsjunctionArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.isjunction(path)`: junctions are a Windows
 /// concept, so this is `False` once `os.fspath` accepts the argument.
@@ -575,12 +569,12 @@ fn isjunction(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Bool(false))
 }
 
-one_path_arg!(
-    /// `os.path.isdevdrive(path)` argument shape.
-    IsdevdriveArgs,
-    "isdevdrive",
-    path
-);
+/// `os.path.isdevdrive(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "isdevdrive", style = def)]
+struct IsdevdriveArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.isdevdrive(path)`: Dev Drives are a Windows
 /// concept, so this is `False` once `os.fspath` accepts the argument.
@@ -636,12 +630,12 @@ fn data_attribute(value: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunRes
 // Host-backed functions
 // ============================================================================
 
-one_path_arg!(
-    /// `os.path.exists(path)` argument shape.
-    ExistsArgs,
-    "exists",
-    path
-);
+/// `os.path.exists(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "exists", style = def)]
+struct ExistsArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.exists(path)` — the `Path.exists` host call.
 fn exists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -650,12 +644,12 @@ fn exists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     predicate(path, "stat", PathAccepts::Fd, OsFunctionCall::Exists, vm)
 }
 
-one_path_arg!(
-    /// `os.path.isfile(path)` argument shape.
-    IsfileArgs,
-    "isfile",
-    path
-);
+/// `os.path.isfile(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "isfile", style = def)]
+struct IsfileArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.isfile(path)` — the `Path.is_file` host call.
 fn isfile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -664,12 +658,12 @@ fn isfile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     predicate(path, "stat", PathAccepts::Fd, OsFunctionCall::IsFile, vm)
 }
 
-one_path_arg!(
-    /// `os.path.isdir(s)` argument shape.
-    IsdirArgs,
-    "isdir",
-    s
-);
+/// `os.path.isdir(s)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "isdir", style = def)]
+struct IsdirArgs {
+    s: Value,
+}
 
 /// Implementation of `os.path.isdir(s)` — the `Path.is_dir` host call.
 fn isdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -678,12 +672,12 @@ fn isdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     predicate(s, "stat", PathAccepts::Fd, OsFunctionCall::IsDir, vm)
 }
 
-one_path_arg!(
-    /// `os.path.islink(path)` argument shape.
-    IslinkArgs,
-    "islink",
-    path
-);
+/// `os.path.islink(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "islink", style = def)]
+struct IslinkArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.islink(path)` — the `Path.is_symlink` host
 /// call. CPython reaches it through `os.lstat`, whose converter takes no fd.
@@ -693,12 +687,12 @@ fn islink(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     predicate(path, "lstat", PathAccepts::NoFd, OsFunctionCall::IsSymlink, vm)
 }
 
-one_path_arg!(
-    /// `os.path.ismount(path)` argument shape.
-    IsmountArgs,
-    "ismount",
-    path
-);
+/// `os.path.ismount(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "ismount", style = def)]
+struct IsmountArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.ismount(path)`: every existing path counts as a
 /// mount point, so this is the `Path.exists` host call. The sandbox cannot
@@ -710,12 +704,12 @@ fn ismount(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     predicate(path, "lstat", PathAccepts::NoFd, OsFunctionCall::Exists, vm)
 }
 
-one_path_arg!(
-    /// `os.path.lexists(path)` argument shape.
-    LexistsArgs,
-    "lexists",
-    path
-);
+/// `os.path.lexists(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "lexists", style = def)]
+struct LexistsArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.lexists(path)`: `Path.exists`, and when that is
 /// `False`, `Path.is_symlink` (a dangling symlink exists without a target);
@@ -735,6 +729,20 @@ fn lexists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             call: OsFunctionCall::Exists(path),
         })
     }
+}
+
+/// Completes `os.path.lexists` from the `Path.exists` reply — the resume half
+/// of [`PreConversionEffect::Lexists`]. `False` may still be a dangling
+/// symlink, which `Path.is_symlink` reports.
+pub(crate) fn lexists_reply(value: &MontyObject, path: String) -> Result<Reshaped, RunError> {
+    Ok(if bool_reply(value, "os.path.lexists")? {
+        Reshaped::Value(MontyObject::bool(true))
+    } else {
+        Reshaped::Call {
+            call: OsFunctionCall::IsSymlink(MontyPath::new(path)),
+            effect: None,
+        }
+    })
 }
 
 /// `os.path.samefile(f1, f2)` argument shape.
@@ -768,6 +776,68 @@ fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     })
 }
 
+/// Moves `os.path.samefile` from its first `Path.stat` to its second — the
+/// resume half of [`PreConversionEffect::SamefileFirst`]. The second path's
+/// deferred converter error and `FileNotFoundError` for the empty path raise
+/// here, where CPython's `os.stat(f2)` raises them.
+pub(crate) fn samefile_first_reply(
+    value: &MontyObject,
+    first: String,
+    second: Result<String, PathArgError>,
+) -> Result<Reshaped, RunError> {
+    let first_identity =
+        stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
+    let second = match second {
+        Ok(second) if second.is_empty() => return Err(ExcType::file_not_found_error("")),
+        Ok(second) => second,
+        Err(err) => return Err(err.into_error("stat", "path")),
+    };
+    Ok(Reshaped::Call {
+        call: OsFunctionCall::Stat(MontyPath::new(second.clone())),
+        effect: Some(
+            PreConversionEffect::SamefileSecond {
+                first,
+                first_identity,
+                second,
+            }
+            .into(),
+        ),
+    })
+}
+
+/// Completes `os.path.samefile` from the second `Path.stat` reply — the
+/// resume half of [`PreConversionEffect::SamefileSecond`]. CPython compares
+/// `(st_ino, st_dev)`; mounts report both as zero, so when neither reply
+/// carries an identity the normalized virtual paths decide instead.
+pub(crate) fn samefile_second_reply(
+    value: &MontyObject,
+    first: &str,
+    first_identity: &(String, String),
+    second: &str,
+    cwd: &str,
+) -> Result<MontyObject, RunError> {
+    let second_identity =
+        stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
+    let unknown = |identity: &(String, String)| identity.0 == "0" && identity.1 == "0";
+    let same = if unknown(first_identity) && unknown(&second_identity) {
+        normalize_virtual_path(&posix_join(cwd, first)) == normalize_virtual_path(&posix_join(cwd, second))
+    } else {
+        *first_identity == second_identity
+    };
+    Ok(MontyObject::bool(same))
+}
+
+/// `(st_ino, st_dev)` of a `Path.stat` reply as decimal text, `None` unless
+/// both are ints (of either width, as the stat getters accept them).
+fn stat_identity(value: &MontyObject) -> Option<(String, String)> {
+    let number = |name: &str| match stat_result_field(value, name)? {
+        MontyNode::Int(int) => Some(int.to_string()),
+        MontyNode::BigInt(int) => Some(int.to_string()),
+        _ => None,
+    };
+    Some((number("st_ino")?, number("st_dev")?))
+}
+
 /// Shared body of the predicates: the `os.stat` / `os.lstat` converter
 /// error for a bad type, `False` for a closed fd and for the empty path
 /// (which CPython's `stat` fails on without the host's help), else the host
@@ -788,12 +858,12 @@ fn predicate(
     }
 }
 
-one_path_arg!(
-    /// `os.path.getsize(filename)` argument shape.
-    GetsizeArgs,
-    "getsize",
-    filename
-);
+/// `os.path.getsize(filename)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "getsize", style = def)]
+struct GetsizeArgs {
+    filename: Value,
+}
 
 /// Implementation of `os.path.getsize(filename)`: `os.stat(filename).st_size`.
 fn getsize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -802,12 +872,12 @@ fn getsize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     stat_field(filename, StatField::Size, vm)
 }
 
-one_path_arg!(
-    /// `os.path.getmtime(filename)` argument shape.
-    GetmtimeArgs,
-    "getmtime",
-    filename
-);
+/// `os.path.getmtime(filename)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "getmtime", style = def)]
+struct GetmtimeArgs {
+    filename: Value,
+}
 
 /// Implementation of `os.path.getmtime(filename)`: `os.stat(filename).st_mtime`.
 fn getmtime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -816,12 +886,12 @@ fn getmtime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     stat_field(filename, StatField::Mtime, vm)
 }
 
-one_path_arg!(
-    /// `os.path.getatime(filename)` argument shape.
-    GetatimeArgs,
-    "getatime",
-    filename
-);
+/// `os.path.getatime(filename)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "getatime", style = def)]
+struct GetatimeArgs {
+    filename: Value,
+}
 
 /// Implementation of `os.path.getatime(filename)`: `os.stat(filename).st_atime`.
 fn getatime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -830,12 +900,12 @@ fn getatime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     stat_field(filename, StatField::Atime, vm)
 }
 
-one_path_arg!(
-    /// `os.path.getctime(filename)` argument shape.
-    GetctimeArgs,
-    "getctime",
-    filename
-);
+/// `os.path.getctime(filename)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "getctime", style = def)]
+struct GetctimeArgs {
+    filename: Value,
+}
 
 /// Implementation of `os.path.getctime(filename)`: `os.stat(filename).st_ctime`.
 fn getctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -856,6 +926,54 @@ fn stat_field(path: &Value, field: StatField, vm: &VM<'_>) -> RunResult<CallResu
             call: OsFunctionCall::Stat(path),
             effect: PreConversionEffect::StatField(field).into(),
         })
+    }
+}
+
+/// The `os.stat` result field an `os.path` getter returns.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) enum StatField {
+    /// `os.path.getsize` → `st_size`.
+    Size,
+    /// `os.path.getmtime` → `st_mtime`.
+    Mtime,
+    /// `os.path.getatime` → `st_atime`.
+    Atime,
+    /// `os.path.getctime` → `st_ctime`.
+    Ctime,
+}
+
+impl StatField {
+    /// The stat result field name.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Size => "st_size",
+            Self::Mtime => "st_mtime",
+            Self::Atime => "st_atime",
+            Self::Ctime => "st_ctime",
+        }
+    }
+
+    /// The `os.path` function that asked for the field, for error messages.
+    pub(crate) fn function(self) -> &'static str {
+        match self {
+            Self::Size => "os.path.getsize",
+            Self::Mtime => "os.path.getmtime",
+            Self::Atime => "os.path.getatime",
+            Self::Ctime => "os.path.getctime",
+        }
+    }
+}
+
+/// Picks `field` out of a host `Path.stat` reply — the resume half of
+/// [`PreConversionEffect::StatField`]. Only a number is accepted, so a host
+/// that answered with something other than a stat result gets the same
+/// `RuntimeError` shape as `os.chdir`.
+pub(crate) fn stat_field_reply(value: &MontyObject, field: StatField) -> Result<MontyObject, RunError> {
+    match stat_result_field(value, field.name()) {
+        Some(number @ (MontyNode::Int(_) | MontyNode::BigInt(_) | MontyNode::Float(_))) => {
+            Ok(unstable::object_from_node(number.clone()))
+        }
+        _ => Err(invalid_reply(field.function(), "a stat result", value)),
     }
 }
 
@@ -894,12 +1012,48 @@ fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
 }
 
-one_path_arg!(
-    /// `os.path.expanduser(path)` argument shape.
-    ExpanduserArgs,
-    "expanduser",
-    path
-);
+/// Turns a `Path.resolve` reply into the `str` that `os.path.realpath`
+/// returns — the resume half of [`PreConversionEffect::ResolvedPath`]. A
+/// host answering the callback itself may already return `str`. Under
+/// `strict`, mounts resolve lexically and never report a missing path, so a
+/// `Path.exists` call on the result follows.
+pub(crate) fn resolved_path_reply(value: &MontyObject, strict: bool) -> Result<Reshaped, RunError> {
+    let resolved = match unstable::root_node(value) {
+        MontyNode::Path(path) | MontyNode::String(path) => path.clone(),
+        _ => return Err(invalid_reply("os.path.realpath", "a path", value)),
+    };
+    // The VM answers an existence check on a NUL path with `False`, which
+    // would become `realpath`'s result; CPython's strict `lstat` raises.
+    if strict && resolved.contains('\0') {
+        let call = OsFunctionCall::Resolve(MontyPath::new(resolved));
+        return Err(ExcType::value_error(call.embedded_null_message(false)));
+    }
+    Ok(if strict {
+        Reshaped::Call {
+            call: OsFunctionCall::Exists(MontyPath::new(resolved.clone())),
+            effect: Some(PreConversionEffect::RealpathStrict { resolved }.into()),
+        }
+    } else {
+        Reshaped::Value(MontyObject::string(resolved))
+    })
+}
+
+/// Completes `os.path.realpath(strict=True)` from the `Path.exists` reply on
+/// the resolved path — the resume half of [`PreConversionEffect::RealpathStrict`].
+pub(crate) fn realpath_strict_reply(value: &MontyObject, resolved: String) -> Result<MontyObject, RunError> {
+    if bool_reply(value, "os.path.realpath")? {
+        Ok(MontyObject::string(resolved))
+    } else {
+        Err(ExcType::file_not_found_error(&resolved))
+    }
+}
+
+/// `os.path.expanduser(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "expanduser", style = def)]
+struct ExpanduserArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.expanduser(path)`. Only a leading `~` (bare or
 /// followed by `/`) needs the host: it becomes an `os.getenv('HOME')` call
@@ -927,12 +1081,24 @@ fn expanduser(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
 }
 
-one_path_arg!(
-    /// `os.path.expandvars(path)` argument shape.
-    ExpandvarsArgs,
-    "expandvars",
-    path
-);
+/// Completes `os.path.expanduser` from the `os.getenv('HOME')` reply — the
+/// resume half of [`PreConversionEffect::ExpandUser`]. `None` (no `$HOME`)
+/// returns the path as written, since the sandbox has no password database
+/// to fall back on.
+pub(crate) fn expand_user_reply(value: &MontyObject, tail: &[u8], is_bytes: bool) -> Result<MontyObject, RunError> {
+    match unstable::root_node(value) {
+        MontyNode::None => Ok(text_reply([b"~", tail].concat(), is_bytes)),
+        MontyNode::String(home) => Ok(text_reply(posix::expand_home(home.as_bytes(), tail), is_bytes)),
+        _ => Err(invalid_reply("os.path.expanduser", "str or None", value)),
+    }
+}
+
+/// `os.path.expandvars(path)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "expandvars", style = def)]
+struct ExpandvarsArgs {
+    path: Value,
+}
 
 /// Implementation of `os.path.expandvars(path)`. A path without `$` is
 /// returned as is; otherwise the host's `os.environ` is fetched and a
@@ -952,6 +1118,48 @@ fn expandvars(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         })
     } else {
         Ok(CallResult::Value(text.into_value(vm.heap)))
+    }
+}
+
+/// Completes `os.path.expandvars` from the `os.environ` reply — the resume
+/// half of [`PreConversionEffect::ExpandVars`]. Entries whose key or value
+/// is not `str` cannot be named by a path, so they are ignored. The reply is
+/// indexed once, so the work stays linear in the (sandbox-sized) path rather
+/// than one environment scan per `$reference`, and the result's growth is
+/// charged to `tracker` since many references to a long value amplify it.
+pub(crate) fn expand_vars_reply(
+    value: &MontyObject,
+    path: &[u8],
+    is_bytes: bool,
+    tracker: &ResourceTracker,
+) -> Result<MontyObject, RunError> {
+    let MontyNode::Dict(entries) = unstable::root_node(value) else {
+        return Err(invalid_reply("os.path.expandvars", "a dict", value));
+    };
+    let environ: AHashMap<&[u8], &[u8]> = entries
+        .iter()
+        .filter_map(|(key, item)| {
+            match (
+                unstable::node(unstable::child(value.as_ref(), *key)),
+                unstable::node(unstable::child(value.as_ref(), *item)),
+            ) {
+                (MontyNode::String(key), MontyNode::String(item)) => Some((key.as_bytes(), item.as_bytes())),
+                _ => None,
+            }
+        })
+        .collect();
+    let lookup = |name: &[u8]| environ.get(name).copied();
+    let reserve = |bytes: usize| tracker.check_allocation(bytes).map_err(RunError::from);
+    Ok(text_reply(posix::expandvars(path, lookup, reserve)?, is_bytes))
+}
+
+/// Builds an `os.path` reply of the type the argument had. `str` arguments
+/// only ever gain `str` host data at ASCII separators, so the bytes stay UTF-8.
+fn text_reply(bytes: Vec<u8>, is_bytes: bool) -> MontyObject {
+    if is_bytes {
+        MontyObject::bytes(bytes)
+    } else {
+        MontyObject::string(String::from_utf8(bytes).expect("str path data stays UTF-8"))
     }
 }
 
