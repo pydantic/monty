@@ -52,6 +52,10 @@ These raise `NameError`:
     no hash randomisation), but never persist one or compare one against a
     CPython hash. `sys.hash_info` is not exposed, so the parameters CPython
     publishes are unavailable (see [sys.md](sys.md)).
+- **`is` and `id()` on short strings** — equal strings stored inline share
+    identity by content. Separate runtime results such as `bin(4)` can therefore
+    compare identical and return the same `id()`, where CPython gives those
+    results distinct identities.
 - **`repr` of a dict being mutated by its own elements** — Monty iterates the
     live entries like CPython, but deletion compacts Monty's dense entry storage
     where CPython leaves a tombstone in place: a key deleted from inside a user

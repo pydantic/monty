@@ -69,7 +69,7 @@ use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataAr
 use super::{
     LazyHeapSet, List, PyTrait, Type,
     bytes::{Bytes, bytes_repr_fmt},
-    str::{allocate_string, allocate_string_no_interning},
+    str::{allocate_string, allocate_string_on_heap},
 };
 use crate::{
     args::ArgValues,
@@ -806,7 +806,11 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
         // promote interned strings to heap-resident Str
         &mut Value::InternString(string_id) => {
             let s = vm.interns.get_str(string_id).to_owned();
-            *result = allocate_string_no_interning(s, vm.heap);
+            *result = allocate_string_on_heap(s, vm.heap);
+        }
+        &mut Value::InlineString { .. } => {
+            let s = result.inline_str().unwrap().to_owned();
+            *result = allocate_string_on_heap(s, vm.heap);
         }
         // promote interned bytes to heap-resident Bytes
         &mut Value::InternBytes(bytes_id) => {
@@ -1339,6 +1343,7 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_>) -> RunResult<()>
 fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {
     match data {
         Value::InternString(id) => Some(vm.interns.get_str(*id).to_owned()),
+        Value::InlineString { .. } => Some(data.inline_str().unwrap().to_owned()),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str().to_owned()),
             _ => None,

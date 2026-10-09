@@ -375,6 +375,10 @@ impl<'h> VM<'h> {
                 let s = this.interns.get_str(string_id);
                 call_str_method(s, name_id, args, this).map(CallResult::Value)
             }
+            value @ Value::InlineString { .. } => {
+                let s = value.inline_str().unwrap();
+                call_str_method(s, name_id, args, this).map(CallResult::Value)
+            }
             Value::InternBytes(bytes_id) => {
                 // Call bytes method on interned bytes literal using the unified dispatcher
                 let b = this.interns.get_bytes(bytes_id);

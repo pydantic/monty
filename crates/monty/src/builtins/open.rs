@@ -125,9 +125,10 @@ struct OpenArgs {
 /// `PurePosixPath`. The error message mentions `os.PathLike` to match
 /// CPython, even though full PathLike support is limited to the variants
 /// listed above.
-fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
+fn extract_path_string<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     let opt = match value {
         Value::InternString(string_id) => Some(vm.interns.get_str(*string_id)),
+        Value::InlineString { .. } => Some(value.inline_str().unwrap()),
         Value::InternBytes(bytes_id) => decode_utf8_path(vm.interns.get_bytes(*bytes_id))?,
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str()),
@@ -199,6 +200,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result
             } else if value.is_str(vm.heap) {
                 let s = match value {
                     Value::InternString(id) => vm.interns.get_str(*id),
+                    Value::InlineString { .. } => value.inline_str().unwrap(),
                     Value::Ref(id) => match vm.heap.get(*id) {
                         HeapData::Str(s) => s.as_str(),
                         _ => "",

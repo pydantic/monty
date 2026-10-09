@@ -328,15 +328,16 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Extracts a string from a Value for use as a path.
-fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
+fn extract_path_string<'a>(val: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     value_as_path_str(val, vm.heap, vm.interns)
         .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
 }
 
 /// Extracts a path-like operand (`str` or `Path`) as a string slice, `None` otherwise.
-fn value_as_path_str<'a>(val: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
+fn value_as_path_str<'a>(val: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match val {
         Value::InternString(string_id) => Some(interns.get_str(*string_id)),
+        Value::InlineString { .. } => val.inline_str(),
         Value::Ref(heap_id) => match heap.get(*heap_id) {
             HeapData::Str(s) => Some(s.as_str()),
             HeapData::Path(p) => Some(p.as_str()),

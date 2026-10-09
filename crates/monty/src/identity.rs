@@ -42,6 +42,8 @@ pub(crate) enum Identity {
     Float(u64),
     /// Identity of an interned string.
     InternString(usize),
+    /// Content identity of a short string stored inline.
+    InlineString { len: u8, bytes: [u8; 15] },
     /// Identity of an interned bytes value.
     InternBytes(usize),
     /// Identity of an interned long integer literal.
@@ -72,6 +74,10 @@ impl Identity {
             Value::Int(value) => Self::Int(*value),
             Value::Float(value) => Self::Float(value.to_bits()),
             Value::InternString(id) => Self::InternString(id.index()),
+            Value::InlineString { len, bytes } => Self::InlineString {
+                len: u8::try_from(len.get()).expect("inline string length fits in u8"),
+                bytes: *bytes,
+            },
             Value::InternBytes(id) => Self::InternBytes(id.index()),
             Value::InternLongInt(id) => Self::InternLongInt(id.index()),
             Value::Builtin(builtin) => Self::Builtin(*builtin),
@@ -102,6 +108,7 @@ impl Identity {
             | Self::InternLongInt(index)
             | Self::DefFunction(index)
             | Self::Heap(index) => u128::try_from(*index).expect("usize fits in u128"),
+            Self::InlineString { len, bytes } => bytes_payload(&bytes[..usize::from(*len)]),
             Self::Builtin(value) => fixed_serde_payload(value),
             Self::ModuleFunction(value) => fixed_serde_payload(value),
             Self::Marker(value) => fixed_serde_payload(value),
@@ -128,6 +135,7 @@ impl Identity {
             Self::Int(_) => 5,
             Self::Float(_) => 6,
             Self::InternString(_) => 7,
+            Self::InlineString { .. } => 17,
             Self::InternBytes(_) => 8,
             Self::InternLongInt(_) => 9,
             Self::Builtin(_) => 10,

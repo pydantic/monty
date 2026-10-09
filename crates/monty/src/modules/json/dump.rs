@@ -211,6 +211,7 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<String>
         Value::Bool(flag) => Ok(Some(" ".repeat(usize::from(*flag)))),
         Value::Int(count) => spaces_from_indent_count(*count),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
+        Value::InlineString { .. } => Ok(Some(value.inline_str().unwrap().to_owned())),
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
             HeapReadOutput::LongInt(long_int) => {
@@ -310,6 +311,7 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult
     let arg_num = if role == "item_separator" { 6 } else { 5 };
     match value {
         Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned()),
+        Value::InlineString { .. } => Ok(value.inline_str().unwrap().to_owned()),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(string) => Ok(string.as_str().to_owned()),
             _ => Err(ExcType::type_error(format!(
@@ -396,6 +398,10 @@ impl<'h> Encoder<'_, 'h> {
                     self.out,
                     self.config.ensure_ascii(),
                 );
+                Ok(())
+            }
+            Value::InlineString { .. } => {
+                write_json_string(value.inline_str().unwrap(), self.out, self.config.ensure_ascii());
                 Ok(())
             }
             Value::InternLongInt(long_int_id) => {
@@ -622,7 +628,12 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>)
 fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
     matches!(
         value,
-        Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::InternString(_)
+        Value::None
+            | Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::InternString(_)
+            | Value::InlineString { .. }
     ) || matches!(value, Value::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Str(_) | HeapData::LongInt(_)))
 }
 
@@ -641,6 +652,7 @@ fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &
             serialize_float_key(*value, out, config)?;
         }
         Value::InternString(string_id) => write_json_string(vm.interns.get_str(*string_id), out, ensure_ascii),
+        Value::InlineString { .. } => write_json_string(key.inline_str().unwrap(), out, ensure_ascii),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(string) => write_json_string(string.as_str(), out, ensure_ascii),
             HeapData::LongInt(long_int) => {

@@ -245,6 +245,7 @@ pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> R
         Value::Int(i) => key_from_u64(i.unsigned_abs()),
         Value::Float(f) => key_from_u64(cpython_float_hash(*f)),
         Value::InternString(id) => key_from_text(&SeedText::Str(vm.interns.get_str(*id)), version),
+        Value::InlineString { .. } => key_from_text(&SeedText::Str(value.inline_str().unwrap()), version),
         Value::InternBytes(id) => key_from_text(&SeedText::Bytes(vm.interns.get_bytes(*id)), version),
         Value::InternLongInt(id) => key_from_bigint(vm.interns.get_long_int(*id)),
         Value::Ref(id) => match vm.heap.get(*id) {

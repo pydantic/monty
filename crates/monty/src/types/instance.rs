@@ -822,6 +822,7 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
     match heap.get(class_id) {
         HeapData::Class(class) => match class.name() {
             EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+            EitherStr::Inline { .. } => Cow::Owned(class.name().as_str(interns).to_owned()),
             EitherStr::Heap(s) => Cow::Owned(s.clone()),
         },
         _ => unreachable!("class_name called with a non-class heap id"),

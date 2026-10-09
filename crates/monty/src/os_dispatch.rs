@@ -599,6 +599,7 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
 pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
     match value {
         Value::InternString(id) => Some(interns.get_str(*id).to_owned()),
+        Value::InlineString { .. } => Some(value.inline_str().unwrap().to_owned()),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str().to_owned()),
             HeapData::Path(p) => Some(p.as_str().to_owned()),

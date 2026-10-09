@@ -228,9 +228,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         match attr {
             EitherStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm),
             // Classmethod names are all interned, so a heap string never names one.
-            EitherStr::Heap(name) => {
+            EitherStr::Inline { .. } | EitherStr::Heap(_) => {
                 args.drop_with(vm);
-                Err(ExcType::attribute_error_type(&origin.name(vm.heap, vm.interns), name))
+                Err(ExcType::attribute_error_type(
+                    &origin.name(vm.heap, vm.interns),
+                    attr.as_str(vm.interns),
+                ))
             }
         }
     }

@@ -777,6 +777,7 @@ impl Type {
                     Value::InternString(string_id) => {
                         Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
                     }
+                    Value::InlineString { .. } => Ok(Value::Float(parse_f64_from_str(v.inline_str().unwrap())?)),
                     Value::InternLongInt(id) => Ok(Value::Float(bigint_to_f64_checked(interns.get_long_int(*id))?)),
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
@@ -879,6 +880,7 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let interns = vm.interns;
             match x {
                 Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), base, vm.heap),
+                Value::InlineString { .. } => parse_int_from_str(x.inline_str().unwrap(), base, vm.heap),
                 Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), base, vm.heap),
                 Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                     HeapData::Str(s) => parse_int_from_str(s.as_str(), base, vm.heap),
@@ -899,6 +901,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         Value::Float(f) => LongInt::value_from_f64(*f, vm.heap),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), 10, vm.heap),
+        Value::InlineString { .. } => parse_int_from_str(x.inline_str().unwrap(), 10, vm.heap),
         Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), 10, vm.heap),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => parse_int_from_str(s.as_str(), 10, vm.heap),

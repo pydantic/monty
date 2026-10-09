@@ -835,7 +835,7 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
 
     match value {
         Value::InternBytes(id) => Ok(PrefixSuffixArg::Single(vm.interns.get_bytes(*id).to_vec())),
-        Value::InternString(_) => Err(ExcType::type_error(format!(
+        Value::InternString(_) | Value::InlineString { .. } => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not str"
         ))),
         Value::Ref(id) => match vm.heap.get(*id) {
@@ -876,7 +876,7 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
 fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id).to_vec()),
-        Value::InternString(_) => Err(ExcType::type_error("expected bytes, not str")),
+        Value::InternString(_) | Value::InlineString { .. } => Err(ExcType::type_error("expected bytes, not str")),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
             _ => Err(ExcType::type_error("expected bytes")),
@@ -892,7 +892,9 @@ fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResu
 fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::InternString(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
+        Value::InternString(_) | Value::InlineString { .. } => {
+            Err(ExcType::type_error("a bytes-like object is required, not 'str'"))
+        }
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice()),
             HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
@@ -2162,6 +2164,7 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
 
     let sep_bytes = match sep_value {
         Value::InternString(id) => vm.interns.get_str(*id).as_bytes(),
+        Value::InlineString { .. } => sep_value.inline_str().unwrap().as_bytes(),
         Value::InternBytes(id) => vm.interns.get_bytes(*id),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => s.as_bytes(),
@@ -2224,6 +2227,7 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
 
     let hex_str = match hex_value {
         Value::InternString(id) => vm.interns.get_str(*id),
+        Value::InlineString { .. } => hex_value.inline_str().unwrap(),
         Value::Ref(heap_id) => {
             if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                 s.as_str()

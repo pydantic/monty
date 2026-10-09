@@ -705,6 +705,10 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
 pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> Value {
     match name {
         EitherStr::Interned(string_id) => Value::InternString(*string_id),
+        EitherStr::Inline { len, bytes } => Value::InlineString {
+            len: *len,
+            bytes: *bytes,
+        },
         EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap),
     }
 }

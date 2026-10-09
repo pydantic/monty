@@ -2354,6 +2354,9 @@ impl ExcTypeExt for ExcType {
                     self,
                     vm.interns.get_str(*string_id).to_owned(),
                 )),
+                value @ Value::InlineString { .. } => {
+                    Ok(SimpleException::new_msg(self, value.inline_str().unwrap().to_owned()))
+                }
                 Value::Ref(heap_id) => {
                     if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                         Ok(SimpleException::new_msg(self, s.as_str().to_owned()))

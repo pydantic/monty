@@ -118,6 +118,7 @@ fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<Opt
     match value {
         Value::None => Ok(None),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
+        Value::InlineString { .. } => Ok(Some(value.inline_str().unwrap().to_owned())),
         Value::Ref(id) => {
             if let HeapData::Str(s) = vm.heap.get(*id) {
                 return Ok(Some(s.as_str().to_owned()));

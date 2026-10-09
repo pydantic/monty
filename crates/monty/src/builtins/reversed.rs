@@ -55,7 +55,7 @@ pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// dispatched, see `limitations/classes.md`.
 fn is_reversible(value: &Value, vm: &VM<'_>) -> bool {
     match value {
-        Value::InternString(_) | Value::InternBytes(_) => true,
+        Value::InternString(_) | Value::InlineString { .. } | Value::InternBytes(_) => true,
         Value::Ref(id) => matches!(
             vm.heap.get(*id),
             HeapData::List(_)

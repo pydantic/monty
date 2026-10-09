@@ -31,6 +31,22 @@ pub fn builtin_ord(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 .into())
             }
         }
+        Value::InlineString { .. } => {
+            let s = value.inline_str().unwrap();
+            let mut chars = s.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                Ok(Value::Int(c as i64))
+            } else {
+                Err(SimpleException::new_msg(
+                    ExcType::TypeError,
+                    format!(
+                        "ord() expected a character, but string of length {} found",
+                        s.chars().count()
+                    ),
+                )
+                .into())
+            }
+        }
         Value::Ref(id) if let HeapData::Str(s) = vm.heap.get(*id) => {
             let mut chars = s.as_str().chars();
             if let (Some(c), None) = (chars.next(), chars.next()) {
