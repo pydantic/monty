@@ -409,6 +409,7 @@ pool = Monty(
     checkout_timeout=None,  # seconds `checkout()` waits for a free worker
     request_timeout=None,  # hard per-turn deadline; kills the worker
     max_checkouts_per_worker=None,  # recycle a worker after N sessions
+    runtime_threads=None,  # host-side Tokio worker threads; defaults to the CPU count
 )
 ```
 
@@ -416,6 +417,12 @@ pool = Monty(
 [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
 It catches hangs the in-sandbox limits cannot see, because those are only checked at interpreter checkpoints.
 A loop of quick host calls resets it each turn; set [`max_feed_duration_secs`](../resource-limits.md) as well.
+
+`runtime_threads` sizes the Tokio runtime in the host process that drives worker I/O, not the worker pool.
+That runtime is shared by every pool in the process and built once.
+Passing `runtime_threads` builds it immediately, and raises `RuntimeError` if it is already running with a different
+thread count.
+Leaving it `None` keeps Tokio's default, which also honours `TOKIO_WORKER_THREADS`.
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] takes the same arguments.
 

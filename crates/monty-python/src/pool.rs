@@ -56,9 +56,9 @@ use pyo3::{
     prelude::*,
     types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
 };
-use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
+use pyo3_async_runtimes::tokio::{future_into_py, get_runtime, init as init_runtime};
 use tokio::{
-    runtime::{Handle, RuntimeFlavor},
+    runtime::{Builder, Handle, RuntimeFlavor},
     sync::Mutex as AsyncMutex,
     task::{JoinSet, block_in_place},
     time::sleep as tokio_sleep,
@@ -131,6 +131,7 @@ impl PyMonty {
         max_checkouts_per_worker = None,
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
+        runtime_threads = None,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -143,21 +144,24 @@ impl PyMonty {
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
+        runtime_threads: Option<i64>,
     ) -> PyResult<Self> {
+        let config = parse_pool_config(
+            py,
+            binary_path,
+            min_processes,
+            max_processes,
+            checkout_timeout,
+            request_timeout,
+            max_checkouts_per_worker,
+            GraceArgs {
+                feed: feed_duration_limit_grace,
+                turn: turn_duration_limit_grace,
+            },
+        )?;
+        ensure_runtime_threads(runtime_threads)?;
         Ok(Self {
-            config: parse_pool_config(
-                py,
-                binary_path,
-                min_processes,
-                max_processes,
-                checkout_timeout,
-                request_timeout,
-                max_checkouts_per_worker,
-                GraceArgs {
-                    feed: feed_duration_limit_grace,
-                    turn: turn_duration_limit_grace,
-                },
-            )?,
+            config,
             pool: Arc::new(Mutex::new(None)),
         })
     }
@@ -521,6 +525,7 @@ impl PyAsyncMonty {
         max_checkouts_per_worker = None,
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
+        runtime_threads = None,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -533,21 +538,24 @@ impl PyAsyncMonty {
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
+        runtime_threads: Option<i64>,
     ) -> PyResult<Self> {
+        let config = parse_pool_config(
+            py,
+            binary_path,
+            min_processes,
+            max_processes,
+            checkout_timeout,
+            request_timeout,
+            max_checkouts_per_worker,
+            GraceArgs {
+                feed: feed_duration_limit_grace,
+                turn: turn_duration_limit_grace,
+            },
+        )?;
+        ensure_runtime_threads(runtime_threads)?;
         Ok(Self {
-            config: parse_pool_config(
-                py,
-                binary_path,
-                min_processes,
-                max_processes,
-                checkout_timeout,
-                request_timeout,
-                max_checkouts_per_worker,
-                GraceArgs {
-                    feed: feed_duration_limit_grace,
-                    turn: turn_duration_limit_grace,
-                },
-            )?,
+            config,
             pool: Arc::new(Mutex::new(None)),
         })
     }
@@ -675,6 +683,7 @@ impl PyAsyncMontyWebsocket {
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
         auto_resume = true,
+        runtime_threads = None,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -687,20 +696,23 @@ impl PyAsyncMontyWebsocket {
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
         auto_resume: bool,
+        runtime_threads: Option<i64>,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
+        let config = parse_websocket_config(
+            url,
+            max_processes,
+            checkout_timeout,
+            request_timeout,
+            GraceArgs {
+                feed: feed_duration_limit_grace,
+                turn: turn_duration_limit_grace,
+            },
+            auto_resume,
+        )?;
+        ensure_runtime_threads(runtime_threads)?;
         Ok(Self {
-            config: parse_websocket_config(
-                url,
-                max_processes,
-                checkout_timeout,
-                request_timeout,
-                GraceArgs {
-                    feed: feed_duration_limit_grace,
-                    turn: turn_duration_limit_grace,
-                },
-                auto_resume,
-            )?,
+            config,
             pool: Arc::new(Mutex::new(None)),
             connect_headers,
         })
@@ -1122,6 +1134,31 @@ fn parse_pool_config(
     graces.apply(&mut config)?;
     config.metrics = pool_metrics();
     Ok(config)
+}
+
+/// Ensures the shared Tokio runtime has `runtime_threads` workers, starting it now
+/// if it isn't running yet. The runtime is process-wide and built once, so a live
+/// runtime with another worker count is an error. `None` keeps the lazy default.
+fn ensure_runtime_threads(runtime_threads: Option<i64>) -> PyResult<()> {
+    match runtime_threads {
+        None => Ok(()),
+        Some(threads) if threads < 1 => Err(PyValueError::new_err("runtime_threads must be at least 1")),
+        Some(threads) => {
+            let threads = usize::try_from(threads)?;
+            let mut builder = Builder::new_multi_thread();
+            builder.enable_all().worker_threads(threads);
+            // only takes effect if the runtime hasn't been built yet
+            init_runtime(builder);
+            let workers = get_runtime().metrics().num_workers();
+            if workers == threads {
+                Ok(())
+            } else {
+                Err(PyRuntimeError::new_err(format!(
+                    "cannot use runtime_threads={threads}: the shared Tokio runtime was already initialized with {workers} worker threads"
+                )))
+            }
+        }
+    }
 }
 
 /// Rejects a non-callable optional callback with CPython's own `TypeError`

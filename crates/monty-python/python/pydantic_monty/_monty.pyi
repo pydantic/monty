@@ -572,6 +572,7 @@ class Monty:
         max_checkouts_per_worker: int | None = None,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        runtime_threads: int | None = None,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `with`.
@@ -596,6 +597,13 @@ class Monty:
                 sandbox time to raise `TimeoutError` itself rather than the
                 session dying with its worker. `None` disables this backstop.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
+            runtime_threads: Worker threads for the host-side Tokio runtime that
+                drives every pool in the process (not the number of `monty`
+                workers). The runtime is shared and built once, so this starts
+                it immediately and raises `RuntimeError` if it is already
+                running with a different thread count; must be at least 1.
+                `None` uses Tokio's default (the CPU count, or
+                `TOKIO_WORKER_THREADS`).
         """
 
     def __enter__(self) -> Self: ...
@@ -909,6 +917,7 @@ class AsyncMonty:
         max_checkouts_per_worker: int | None = None,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        runtime_threads: int | None = None,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.
@@ -985,6 +994,7 @@ class AsyncMontyWebsocket:
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
         auto_resume: bool = True,
+        runtime_threads: int | None = None,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -1030,6 +1040,8 @@ class AsyncMontyWebsocket:
                 session's suspension and sleep totals carry over. `MontyShutdown`
                 is still raised when the resume fails. A closed connection is
                 never resumed: the request may have run.
+            runtime_threads: Worker threads for the shared host-side Tokio
+                runtime; see `Monty`.
         """
 
     async def __aenter__(self) -> Self: ...
