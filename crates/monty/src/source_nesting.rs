@@ -7,9 +7,13 @@
 //! parser's recursion depth; a source of at most `source_scan_threshold` bytes
 //! skips it, its depth being bounded by its length.
 
-use ruff_python_ast::token::TokenKind;
-use ruff_python_parser::{Mode, lexer::lex};
-use ruff_text_size::{TextLen, TextRange};
+use ruff_python_ast::{
+    Expr, Mod, Stmt, StringLiteral,
+    token::TokenKind,
+    visitor::{Visitor, walk_expr, walk_stmt},
+};
+use ruff_python_parser::{Mode, ParseOptions, lexer::lex, parse_string_annotation, parse_unchecked};
+use ruff_text_size::{Ranged, TextLen, TextRange};
 
 use crate::parse::MAX_NESTING_DEPTH;
 
@@ -347,6 +351,77 @@ impl Level {
             tight: 0,
             loose: 0,
             pending_lambdas: 0,
+        }
+    }
+}
+
+/// Range of the first expression in `source` nested deeper than `limit`,
+/// counting through the contents of string literals as the type checker does.
+///
+/// ruff builds arbitrarily deep ASTs from flat source (`1+1+...`, `a.x.x...`,
+/// `A | B | ...`) without recursing itself, so [`nesting_bound_exceeded`]
+/// passes them; ty then recurses once per level. The caller must already have
+/// bounded ruff's own recursion with that scan.
+pub(crate) fn ast_depth_exceeded(source: &str, limit: u16) -> Option<TextRange> {
+    // Recovered from any syntax error, as ty type-checks the recovered AST too.
+    let parsed = parse_unchecked(source, ParseOptions::from(Mode::Module));
+    let mut check = AstDepth {
+        source,
+        remaining: limit,
+        string_depth: 0,
+        exceeded: None,
+    };
+    if let Mod::Module(module) = parsed.syntax() {
+        check.visit_body(&module.body);
+    }
+    check.exceeded
+}
+
+/// Visitor behind [`ast_depth_exceeded`]; stops descending once over budget,
+/// so its own recursion is bounded by the limit.
+struct AstDepth<'s> {
+    source: &'s str,
+    remaining: u16,
+    /// String literals currently being walked as parsed annotations.
+    string_depth: u8,
+    exceeded: Option<TextRange>,
+}
+
+impl<'a> Visitor<'a> for AstDepth<'_> {
+    fn visit_stmt(&mut self, stmt: &'a Stmt) {
+        if self.exceeded.is_none() {
+            walk_stmt(self, stmt);
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        if self.exceeded.is_some() {
+            return;
+        }
+        if let Some(remaining) = self.remaining.checked_sub(1) {
+            self.remaining = remaining;
+            walk_expr(self, expr);
+            self.remaining += 1;
+        } else {
+            self.exceeded = Some(expr.range());
+        }
+    }
+
+    /// ty parses a string annotation's contents in place, continuing the depth
+    /// of the expression around it. Any string might be one, so every literal
+    /// long enough to exceed the remaining budget is parsed.
+    fn visit_string_literal(&mut self, literal: &'a StringLiteral) {
+        if self.exceeded.is_some() || literal.range().len().to_usize() <= usize::from(self.remaining) {
+            return;
+        }
+        if self.string_depth >= MAX_STRING_LITERAL_DEPTH {
+            self.exceeded = Some(literal.range());
+            return;
+        }
+        if let Ok(parsed) = parse_string_annotation(self.source, literal) {
+            self.string_depth += 1;
+            self.visit_expr(parsed.expr());
+            self.string_depth -= 1;
         }
     }
 }

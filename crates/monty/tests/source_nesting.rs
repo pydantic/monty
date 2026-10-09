@@ -5,7 +5,7 @@
 //! shorter sources rely on the converter's exact check.
 
 use insta::assert_snapshot;
-use monty::{MontyRepl, MontyRun, ReplProgress, source_within_nesting_bound};
+use monty::{MontyRepl, MontyRun, ReplProgress, source_within_nesting_bound, type_check_nesting_exception};
 use monty_types::{
     CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker, SOURCE_SCAN_THRESHOLD,
 };
@@ -240,4 +240,44 @@ fn repl_feeds_scan_unless_given_a_checked_source() {
     let checked = repl.check_source(&flat).unwrap();
     let progress = repl.feed_start_checked(checked, vec![], PrintWriter::Disabled).unwrap();
     assert!(matches!(progress, ReplProgress::Complete { .. }));
+}
+
+// === type checking ===
+
+#[track_caller]
+fn assert_type_check_rejects(code: &str) {
+    let err = type_check_nesting_exception(code, "test.py", SOURCE_SCAN_THRESHOLD).expect_err("expected rejection");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message().unwrap(), "Source is too deeply nested");
+}
+
+#[test]
+fn type_check_rejects_deep_asts_from_flat_source() {
+    assert_type_check_rejects(&format!("x = {}", vec!["1"; 5000].join("+")));
+    assert_type_check_rejects(&format!("y = a{}", ".x".repeat(5000)));
+    // annotations the compiler drops unchecked
+    assert_type_check_rejects(&format!("def f(a: {}): ...", vec!["int"; 1000].join(" | ")));
+    assert_type_check_rejects(&format!("def f() -> {}: ...", vec!["int"; 1000].join(" | ")));
+    // ty parses string annotations, continuing the depth around them
+    assert_type_check_rejects(&format!("x: list['{}']", vec!["int"; 1000].join(" | ")));
+    assert_type_check_rejects(&format!("x: \"list['{}']\"", vec!["int"; 1000].join(" | ")));
+    // ty also type-checks the AST it recovers from a syntax error
+    assert_type_check_rejects(&format!("x = {} +", vec!["1"; 1000].join("+")));
+}
+
+#[test]
+fn type_check_accepts_shallow_sources() {
+    let shallow =
+        "def f(a: int | str, b: 'list[int]') -> dict[str, list[int]]:\n    return {'k': [a.x.y for _ in b]}\n";
+    assert!(type_check_nesting_exception(&shallow.repeat(200), "test.py", SOURCE_SCAN_THRESHOLD).is_ok());
+    // a long string that is not deep as an expression
+    let prose = format!("x = '{}'", "word ".repeat(2000));
+    assert!(type_check_nesting_exception(&prose, "test.py", SOURCE_SCAN_THRESHOLD).is_ok());
+}
+
+#[test]
+fn type_check_rejection_is_located() {
+    let code = format!("x = 1\ny = {}\n", vec!["1"; 1000].join("+"));
+    let err = type_check_nesting_exception(&code, "test.py", SOURCE_SCAN_THRESHOLD).unwrap_err();
+    assert_eq!(err.traceback()[0].start.line, 2);
 }
