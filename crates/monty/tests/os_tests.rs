@@ -522,8 +522,10 @@ fn repl_keeps_the_directory_across_snippets() {
     );
 }
 
+/// CPython would `fchdir` an int; the sandbox has no open fds, so it fails
+/// as a closed one without reaching the host.
 #[test]
-fn os_chdir_rejects_non_path() {
+fn os_chdir_rejects_fd() {
     let err = MontyRun::new(
         "import os\nos.chdir(1)".to_owned(),
         "test.py",
@@ -533,11 +535,8 @@ fn os_chdir_rejects_non_path() {
     .unwrap()
     .run_no_limits(vec![])
     .unwrap_err();
-    assert_eq!(err.exc_type(), ExcType::TypeError);
-    assert_eq!(
-        err.message().unwrap(),
-        "chdir: path should be string or os.PathLike, not int"
-    );
+    assert_eq!(err.exc_type(), ExcType::OSError);
+    assert_eq!(err.message().unwrap(), "[Errno 9] Bad file descriptor: 1");
 }
 
 // =============================================================================
@@ -1114,38 +1113,20 @@ fn os_unsupported_kwargs() {
     }
 }
 
-/// `bytes` paths and integer fds are the kinds CPython accepts and Monty
-/// never will, so the converter drops them from its accepted-types phrase
-/// rather than listing the type it just rejected. CPython accepts these
-/// calls, so they cannot dual-run in test_cases (see limitations/os.md).
+/// `bytes` paths are the kind CPython accepts and Monty never will, so the
+/// converter drops them from its accepted-types phrase rather than listing
+/// the type it just rejected. CPython accepts these calls, so they cannot
+/// dual-run in test_cases (see limitations/os.md).
 #[test]
 fn os_unsupported_path_kinds() {
     let cases = [
         (
             "import os\nos.listdir(b'/x')",
-            "TypeError: listdir: path should be string, os.PathLike or None, not bytes",
-        ),
-        (
-            "import os\nos.listdir(1)",
-            "TypeError: listdir: path should be string, os.PathLike or None, not int",
+            "TypeError: listdir: path should be string, os.PathLike, integer or None, not bytes",
         ),
         (
             "import os\nos.stat(b'/x')",
-            "TypeError: stat: path should be string or os.PathLike, not bytes",
-        ),
-        (
-            "import os\nos.stat(1)",
-            "TypeError: stat: path should be string or os.PathLike, not int",
-        ),
-        // Bools fd-convert in CPython too (with a RuntimeWarning), so they are
-        // narrowed exactly like ints where the converter allows fds.
-        (
-            "import os\nos.stat(True)",
-            "TypeError: stat: path should be string or os.PathLike, not bool",
-        ),
-        (
-            "import os\nos.listdir(True)",
-            "TypeError: listdir: path should be string, os.PathLike or None, not bool",
+            "TypeError: stat: path should be string, os.PathLike or integer, not bytes",
         ),
         (
             "import os\nos.mkdir(b'/x')",
@@ -1160,6 +1141,44 @@ fn os_unsupported_path_kinds() {
         (
             "import os\nos.remove(1)",
             "TypeError: remove: path should be string, bytes or os.PathLike, not int",
+        ),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(run_to_error(code), expected, "code: {code}");
+    }
+}
+
+/// Where CPython's converter takes an fd, the sandbox has none open, so the
+/// stdio fds CPython would stat fail here like any other. Fds no process has
+/// open dual-run in test_cases; these are the ones CPython would accept.
+#[test]
+fn os_open_fds_are_closed_in_the_sandbox() {
+    let cases = [
+        ("import os\nos.stat(0)", "OSError: [Errno 9] Bad file descriptor: 0"),
+        // bools fd-convert in CPython too, with only a RuntimeWarning
+        (
+            "import os\nos.stat(True)",
+            "OSError: [Errno 9] Bad file descriptor: True",
+        ),
+        // `listdir` goes through `fdopendir`, whose error names no file
+        ("import os\nos.listdir(0)", "OSError: [Errno 9] Bad file descriptor"),
+        ("import os\nos.listdir(True)", "OSError: [Errno 9] Bad file descriptor"),
+        (
+            "import os\nos.path.getsize(1)",
+            "OSError: [Errno 9] Bad file descriptor: 1",
+        ),
+        (
+            "import os\nos.path.samefile(1, '/')",
+            "OSError: [Errno 9] Bad file descriptor: 1",
+        ),
+        // the predicates answer the closed fd `False`, as CPython's `os.stat` failure makes them
+        (
+            "import os\nraise ValueError(repr(os.path.exists(1)))",
+            "ValueError: False",
+        ),
+        (
+            "import os\nraise ValueError(repr(os.path.isdir(True)))",
+            "ValueError: False",
         ),
     ];
     for (code, expected) in cases {

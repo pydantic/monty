@@ -26,7 +26,7 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::{
         ModuleFunctions,
-        os::{PathAccepts, extract_os_path},
+        os::{PathAccepts, PathArgError, extract_accepted_path, extract_os_path},
     },
     os_dispatch::{PreConversionEffect, StatField, value_to_owned_bytes, value_to_owned_string},
     types::{Bytes, Module, PyTrait, Slice, Type, allocate_tuple, collect_iterable, str::allocate_string},
@@ -757,13 +757,7 @@ fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     if first.is_empty() {
         return Err(ExcType::file_not_found_error(""));
     }
-    let second = match value_to_owned_string(f2, vm.heap, vm.interns) {
-        Some(second) => Ok(second),
-        None => Err((
-            PathAccepts::Fd.phrase_for(f2, vm).to_owned(),
-            f2.py_type_name_heap(vm.heap, vm.interns).into_owned(),
-        )),
-    };
+    let second = extract_accepted_path(f2, PathAccepts::Fd, vm).map(|path| path.as_str().to_owned());
     Ok(CallResult::OsCallWithEffect {
         effect: PreConversionEffect::SamefileFirst {
             first: first.as_str().to_owned(),
@@ -775,9 +769,10 @@ fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 }
 
 /// Shared body of the predicates: the `os.stat` / `os.lstat` converter
-/// error for a bad type, `False` for the empty path (which CPython's `stat`
-/// fails on without the host's help), else the host call. A NUL byte is
-/// answered `False` by the VM before the call leaves the sandbox.
+/// error for a bad type, `False` for a closed fd and for the empty path
+/// (which CPython's `stat` fails on without the host's help), else the host
+/// call. A NUL byte is answered `False` by the VM before the call leaves the
+/// sandbox.
 fn predicate(
     path: &Value,
     func: &'static str,
@@ -785,11 +780,11 @@ fn predicate(
     make_call: impl FnOnce(MontyPath) -> OsFunctionCall,
     vm: &VM<'_>,
 ) -> RunResult<CallResult> {
-    let path = extract_os_path(path, func, "path", accepts, vm)?;
-    if path.is_empty() {
-        Ok(CallResult::Value(Value::Bool(false)))
-    } else {
-        Ok(CallResult::OsCall(make_call(path)))
+    match extract_accepted_path(path, accepts, vm) {
+        Err(PathArgError::BadFd { .. }) => Ok(CallResult::Value(Value::Bool(false))),
+        Err(err) => Err(err.into_error(func, "path")),
+        Ok(path) if path.is_empty() => Ok(CallResult::Value(Value::Bool(false))),
+        Ok(path) => Ok(CallResult::OsCall(make_call(path))),
     }
 }
 

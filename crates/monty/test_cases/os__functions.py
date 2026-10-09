@@ -66,6 +66,17 @@ except TypeError as e:
         assert str(e) == 'listdir: path should be string, bytes, os.PathLike or None, not float'
     else:
         assert str(e) == 'listdir: path should be string, bytes, os.PathLike, integer or None, not float'
+# an int is an fd, which no process has open at 99999; the sandbox has none open at all
+try:
+    os.listdir(99999)
+    assert False, 'expected OSError'
+except OSError as e:
+    assert str(e) == '[Errno 9] Bad file descriptor'
+try:
+    os.listdir(2**40)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'fd is greater than maximum'
 try:
     os.listdir('.', '.')
     assert False, 'expected TypeError'
@@ -103,6 +114,21 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'stat: path should be string, bytes, os.PathLike or integer, not float'
+try:
+    os.stat(99999)
+    assert False, 'expected OSError'
+except OSError as e:
+    assert str(e) == '[Errno 9] Bad file descriptor: 99999'
+try:
+    os.stat(2**40)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'fd is greater than maximum'
+try:
+    os.stat(-(2**40))
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'fd is less than minimum'
 try:
     os.stat('.', foo=1)
     assert False, 'expected TypeError'

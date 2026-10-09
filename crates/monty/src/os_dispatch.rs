@@ -34,7 +34,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    modules::{os_path::posix, random::RandomRetry, time::ClockReading},
+    modules::{os::PathArgError, os_path::posix, random::RandomRetry, time::ClockReading},
     types::{Path, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
@@ -146,12 +146,11 @@ pub(crate) enum PreConversionEffect {
     /// dangling symlink exists too — so `Path.is_symlink` decides next.
     Lexists { path: String },
     /// `os.path.samefile`: the first `Path.stat` reply is in; stat `second`
-    /// next. `second` is already extracted so its `TypeError` (the phrase and
-    /// type name of the `stat` converter's wording) is raised only now, after
-    /// the first stat succeeded, in CPython's order.
+    /// next. `second` is already extracted so its converter error is raised
+    /// only now, after the first stat succeeded, in CPython's order.
     SamefileFirst {
         first: String,
-        second: Result<String, (String, String)>,
+        second: Result<String, PathArgError>,
     },
     /// `os.path.samefile`: both stats are in; compare them. The identity is
     /// `(st_ino, st_dev)` as decimal text, an equality key that fits any int.
@@ -354,19 +353,19 @@ fn lexists_reply(value: &MontyObject, path: String) -> Result<Reshaped, RunError
 
 /// Moves `os.path.samefile` from its first `Path.stat` to its second — the
 /// resume half of [`PreConversionEffect::SamefileFirst`]. The second path's
-/// deferred `TypeError` and `FileNotFoundError` for the empty path raise here,
-/// where CPython's `os.stat(f2)` raises them.
+/// deferred converter error and `FileNotFoundError` for the empty path raise
+/// here, where CPython's `os.stat(f2)` raises them.
 fn samefile_first_reply(
     value: &MontyObject,
     first: String,
-    second: Result<String, (String, String)>,
+    second: Result<String, PathArgError>,
 ) -> Result<Reshaped, RunError> {
     let first_identity =
         stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
     let second = match second {
         Ok(second) if second.is_empty() => return Err(ExcType::file_not_found_error("")),
         Ok(second) => second,
-        Err((accepted, type_name)) => return Err(ExcType::type_error_os_path("stat", "path", &accepted, &type_name)),
+        Err(err) => return Err(err.into_error("stat", "path")),
     };
     Ok(Reshaped::Call {
         call: OsFunctionCall::Stat(MontyPath::new(second.clone())),

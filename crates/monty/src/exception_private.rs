@@ -847,6 +847,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "fd is less than minimum").into()
     }
 
+    /// Creates `OSError: [Errno 9] Bad file descriptor`, naming the fd when
+    /// the call does (`os.stat(fd)` does, `os.listdir(fd)` does not). Every
+    /// fd is closed in the sandbox, so this is what an int path fails with.
+    #[must_use]
+    fn bad_file_descriptor(fd: Option<&str>) -> RunError {
+        let msg = match fd {
+            Some(fd) => format!("[Errno 9] Bad file descriptor: {fd}"),
+            None => "[Errno 9] Bad file descriptor".to_owned(),
+        };
+        SimpleException::new_msg(ExcType::OSError, msg).into()
+    }
+
     /// Creates the NotImplementedError CPython raises when an `os` argument is
     /// unsupported on the platform (`argument_unavailable_error`):
     /// `{func}: {arg} unavailable on this platform`, or just

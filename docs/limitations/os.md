@@ -37,17 +37,25 @@ whether each call is permitted.
 
 ## Divergences from CPython
 
-- **No file descriptors, no `bytes` paths.** Paths must be `str` or
-    `pathlib.Path`. `bytes` paths and integer fds (bools included, which CPython
-    fd-converts with only a `RuntimeWarning`) raise the path-converter
-    `TypeError` with the accepted-types phrase narrowed to what Monty takes,
-    e.g. `stat: path should be string or os.PathLike, not bytes`. For every other
-    rejected type the phrase is CPython's verbatim, so `os.stat(1.5)` still
+- **No `bytes` paths.** Paths must be `str` or `pathlib.Path`. `bytes` paths
+    raise the path-converter `TypeError` with `bytes` dropped from the
+    accepted-types phrase, e.g. `stat: path should be string, os.PathLike or integer, not bytes`.
+    For every other rejected type the phrase is CPython's verbatim, so `os.stat(1.5)` still
     says `should be string, bytes, os.PathLike or integer`. Note `open()`
     *does* accept `bytes` paths, decoding them as UTF-8; the `os` functions do
     not. The verbatim `os.listdir` phrase is POSIX CPython's, which includes `integer`
-    even though Windows CPython omits it (no fd-based listdir there); the narrowed
-    phrase for `bytes`, `int` and `bool` is `string, os.PathLike or None`.
+    even though Windows CPython omits it (no fd-based listdir there).
+- **Every file descriptor is closed.** Where CPython's converter takes an int as
+    an fd (`os.stat`, `os.listdir`, `os.chdir`, and the `os.path` functions built on
+    `os.stat`), Monty takes it too, but the sandbox has no open fds, so the call fails
+    as it would on a closed one: `OSError: [Errno 9] Bad file descriptor: 3` from
+    `os.stat(3)` (unnamed from `os.listdir`, whose `fdopendir` route names no file),
+    `False` from `os.path.exists(3)`, `isfile` and `isdir`. This holds for the fds
+    CPython would find open, including the stdio fds and bools (`os.stat(True)` is
+    CPython's `os.stat(1)`, with a `RuntimeWarning`), and for negative ints, which
+    CPython reports with a platform errno. Ints outside C `int` raise the converter's
+    `OverflowError` (`fd is greater than maximum`) like CPython. `os.stat(fd, follow_symlinks=False)`
+    fails on the fd before CPython's `ValueError` about combining the two.
 - **No `__fspath__` protocol.** `os.fspath` (and every path-taking function)
     accepts only `str`, `bytes` (fspath only), and `pathlib.Path`: a
     user-defined class implementing `__fspath__` raises `TypeError` instead of
@@ -91,8 +99,8 @@ whether each call is permitted.
     CPython; `FileNotFoundError` comes from the host and names the resolved
     path. `os.chdir('')` raises `FileNotFoundError` without consulting the
     host. Only after the host accepts the target is the stored directory lexically normalized
-    (`..` collapses without consulting symlinks). Integer file descriptors are refused with
-    the `path_t` `TypeError`; CPython would `fchdir`. A Rust host that
+    (`..` collapses without consulting symlinks). An integer is a closed fd (`[Errno 9] Bad file descriptor`);
+    CPython would `fchdir`. A Rust host that
     answers the stat with a future gets `RuntimeError` instead of a silently
     unchanged directory.
 - **`mode` arguments** are type-checked (`'str' object cannot be interpreted as an integer`) but otherwise ignored:
@@ -129,8 +137,9 @@ Implemented, pure (no host involvement), accepting `str`, `bytes` and `pathlib.P
 `abspath` and `relpath` use the session's virtual working directory (see above), exactly as CPython's use
 `os.getcwd()`.
 
-Implemented through the host. The filesystem-backed ones follow the same `str`/`Path`-only rule as the other
-`os` functions; `expanduser` and `expandvars` take `bytes` paths too, since they only consult the environment:
+Implemented through the host. The filesystem-backed ones follow the same `str`/`Path` rule as the other
+`os` functions, ints included where CPython's `os.stat` takes an fd; `expanduser` and `expandvars` take `bytes`
+paths too, since they only consult the environment:
 
 - `exists`, `isfile`, `isdir`, `islink` suspend as `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`.
     The empty path and a path containing a NUL byte answer `False` without consulting the host.

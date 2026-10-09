@@ -28,6 +28,25 @@ assert os.path.islink(root / 'nope') == False
 # a NUL byte makes the predicates answer False without consulting the host
 assert os.path.exists(str(root) + '/\0') == False
 assert os.path.isdir(str(root) + '/\0') == False
+# an int is an fd: one no process has open stats as EBADF, which the predicates answer False
+assert os.path.exists(99999) == False
+assert os.path.isfile(99999) == False
+assert os.path.isdir(99999) == False
+try:
+    os.path.exists(2**40)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'fd is greater than maximum'
+try:
+    os.path.islink(99999)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'lstat: path should be string, bytes or os.PathLike, not int'
+try:
+    os.path.getsize(99999)
+    assert False, 'expected OSError'
+except OSError as e:
+    assert str(e) == '[Errno 9] Bad file descriptor: 99999'
 
 # === lexists / ismount ===
 assert os.path.lexists(hello) == True
@@ -99,6 +118,21 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'stat: path should be string, bytes, os.PathLike or integer, not float'
+try:
+    os.path.samefile(99999, hello)
+    assert False, 'expected OSError'
+except OSError as e:
+    assert str(e) == '[Errno 9] Bad file descriptor: 99999'
+try:
+    os.path.samefile(hello, 99999)
+    assert False, 'expected OSError'
+except OSError as e:
+    assert str(e) == '[Errno 9] Bad file descriptor: 99999'
+try:
+    os.path.samefile(root / 'nope', 99999)
+    assert False, 'expected FileNotFoundError'
+except FileNotFoundError as e:
+    assert str(e) == f"[Errno 2] No such file or directory: '{root / 'nope'}'"
 try:
     os.path.samefile(hello, '')
     assert False, 'expected FileNotFoundError'

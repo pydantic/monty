@@ -1,65 +1,86 @@
-# Monty's `os.path` is always `posixpath`, narrowed to the functions it
-# implements. Host-backed functions take `str` / `PathLike[str]` only: no
-# `bytes` paths and no file descriptors (see docs/limitations/os.md).
-from collections.abc import Iterable, Sequence
-from os import PathLike, stat_result
-from typing import AnyStr, LiteralString, overload
+import sys
+from collections.abc import Iterable
+from genericpath import (
+    ALLOW_MISSING as ALLOW_MISSING,
+    _AllowMissingType,
+    commonprefix as commonprefix,
+    exists as exists,
+    getatime as getatime,
+    getctime as getctime,
+    getmtime as getmtime,
+    getsize as getsize,
+    isdir as isdir,
+    isfile as isfile,
+    samefile as samefile,
+    sameopenfile as sameopenfile,
+    samestat as samestat,
+)
 
-from _typeshed import BytesPath, StrOrBytesPath, StrPath, SupportsRichComparisonT
+from _typeshed import AnyOrLiteralStr, BytesPath, FileDescriptorOrPath, StrOrBytesPath, StrPath
+
+if sys.version_info >= (3, 13):
+    from genericpath import isdevdrive as isdevdrive
+from os import PathLike
+from typing import AnyStr, overload
+
+from typing_extensions import LiteralString
 
 __all__ = [
-    'abspath',
-    'altsep',
+    'normcase',
+    'isabs',
+    'join',
+    'splitdrive',
+    'split',
+    'splitext',
     'basename',
-    'commonpath',
-    'commonprefix',
-    'curdir',
-    'defpath',
-    'devnull',
     'dirname',
-    'exists',
-    'expanduser',
-    'expandvars',
-    'extsep',
+    'commonprefix',
+    'getsize',
+    'getmtime',
     'getatime',
     'getctime',
-    'getmtime',
-    'getsize',
-    'isabs',
-    'isdevdrive',
+    'islink',
+    'exists',
+    'lexists',
     'isdir',
     'isfile',
-    'isjunction',
-    'islink',
     'ismount',
-    'join',
-    'lexists',
-    'normcase',
+    'expanduser',
+    'expandvars',
     'normpath',
-    'pardir',
-    'pathsep',
-    'realpath',
-    'relpath',
+    'abspath',
     'samefile',
+    'sameopenfile',
     'samestat',
+    'curdir',
+    'pardir',
     'sep',
-    'split',
-    'splitdrive',
-    'splitext',
-    'splitroot',
+    'pathsep',
+    'defpath',
+    'altsep',
+    'extsep',
+    'devnull',
+    'realpath',
     'supports_unicode_filenames',
+    'relpath',
+    'commonpath',
 ]
+__all__ += ['ALLOW_MISSING']
+if sys.version_info >= (3, 12):
+    __all__ += ['isjunction', 'splitroot']
+if sys.version_info >= (3, 13):
+    __all__ += ['isdevdrive']
 
 supports_unicode_filenames: bool
 # aliases (also in os)
-curdir: str
-pardir: str
-sep: str
-altsep: str | None
-extsep: str
-pathsep: str
-defpath: str
-devnull: str
+curdir: LiteralString
+pardir: LiteralString
+sep: LiteralString
+altsep: LiteralString | None
+extsep: LiteralString
+pathsep: LiteralString
+defpath: LiteralString
+devnull: LiteralString
 
 # Overloads are necessary to work around python/mypy#17952 & python/mypy#11880
 @overload
@@ -69,11 +90,11 @@ def abspath(path: AnyStr) -> AnyStr: ...
 @overload
 def basename(p: PathLike[AnyStr]) -> AnyStr: ...
 @overload
-def basename(p: AnyStr) -> AnyStr: ...
+def basename(p: AnyOrLiteralStr) -> AnyOrLiteralStr: ...
 @overload
 def dirname(p: PathLike[AnyStr]) -> AnyStr: ...
 @overload
-def dirname(p: AnyStr) -> AnyStr: ...
+def dirname(p: AnyOrLiteralStr) -> AnyOrLiteralStr: ...
 @overload
 def expanduser(path: PathLike[AnyStr]) -> AnyStr: ...
 @overload
@@ -85,33 +106,31 @@ def expandvars(path: AnyStr) -> AnyStr: ...
 @overload
 def normcase(s: PathLike[AnyStr]) -> AnyStr: ...
 @overload
-def normcase(s: AnyStr) -> AnyStr: ...
+def normcase(s: AnyOrLiteralStr) -> AnyOrLiteralStr: ...
 @overload
 def normpath(path: PathLike[AnyStr]) -> AnyStr: ...
 @overload
-def normpath(path: AnyStr) -> AnyStr: ...
+def normpath(path: AnyOrLiteralStr) -> AnyOrLiteralStr: ...
 @overload
 def commonpath(paths: Iterable[LiteralString]) -> LiteralString: ...
 @overload
 def commonpath(paths: Iterable[StrPath]) -> str: ...
 @overload
 def commonpath(paths: Iterable[BytesPath]) -> bytes: ...
-@overload
-def commonprefix(m: Sequence[LiteralString]) -> LiteralString: ...
-@overload
-def commonprefix(m: Sequence[StrPath]) -> str: ...
-@overload
-def commonprefix(m: Sequence[BytesPath]) -> bytes: ...
-@overload
-def commonprefix(m: Sequence[list[SupportsRichComparisonT]]) -> Sequence[SupportsRichComparisonT]: ...
-@overload
-def commonprefix(m: Sequence[tuple[SupportsRichComparisonT, ...]]) -> Sequence[SupportsRichComparisonT]: ...
+
+# First parameter is not actually pos-only,
+# but must be defined as pos-only in the stub or cross-platform code doesn't type-check,
+# as the parameter name is different in ntpath.join()
 @overload
 def join(a: LiteralString, /, *paths: LiteralString) -> LiteralString: ...
 @overload
 def join(a: StrPath, /, *paths: StrPath) -> str: ...
 @overload
 def join(a: BytesPath, /, *paths: BytesPath) -> bytes: ...
+@overload
+def realpath(filename: PathLike[AnyStr], *, strict: bool | _AllowMissingType = False) -> AnyStr: ...
+@overload
+def realpath(filename: AnyStr, *, strict: bool | _AllowMissingType = False) -> AnyStr: ...
 @overload
 def relpath(path: LiteralString, start: LiteralString | None = None) -> LiteralString: ...
 @overload
@@ -121,34 +140,23 @@ def relpath(path: StrPath, start: StrPath | None = None) -> str: ...
 @overload
 def split(p: PathLike[AnyStr]) -> tuple[AnyStr, AnyStr]: ...
 @overload
-def split(p: AnyStr) -> tuple[AnyStr, AnyStr]: ...
+def split(p: AnyOrLiteralStr) -> tuple[AnyOrLiteralStr, AnyOrLiteralStr]: ...
 @overload
 def splitdrive(p: PathLike[AnyStr]) -> tuple[AnyStr, AnyStr]: ...
 @overload
-def splitdrive(p: AnyStr) -> tuple[AnyStr, AnyStr]: ...
+def splitdrive(p: AnyOrLiteralStr) -> tuple[AnyOrLiteralStr, AnyOrLiteralStr]: ...
 @overload
 def splitext(p: PathLike[AnyStr]) -> tuple[AnyStr, AnyStr]: ...
 @overload
-def splitext(p: AnyStr) -> tuple[AnyStr, AnyStr]: ...
-@overload
-def splitroot(p: PathLike[AnyStr]) -> tuple[AnyStr, AnyStr, AnyStr]: ...
-@overload
-def splitroot(p: AnyStr) -> tuple[AnyStr, AnyStr, AnyStr]: ...
+def splitext(p: AnyOrLiteralStr) -> tuple[AnyOrLiteralStr, AnyOrLiteralStr]: ...
 def isabs(s: StrOrBytesPath) -> bool: ...
-def isjunction(path: StrOrBytesPath) -> bool: ...
-def isdevdrive(path: StrOrBytesPath) -> bool: ...
-def samestat(s1: stat_result, s2: stat_result) -> bool: ...
+def islink(path: FileDescriptorOrPath) -> bool: ...
+def ismount(path: FileDescriptorOrPath) -> bool: ...
+def lexists(path: FileDescriptorOrPath) -> bool: ...
 
-# Host-backed: `str` paths only.
-def exists(path: StrPath) -> bool: ...
-def isfile(path: StrPath) -> bool: ...
-def isdir(s: StrPath) -> bool: ...
-def islink(path: StrPath) -> bool: ...
-def lexists(path: StrPath) -> bool: ...
-def ismount(path: StrPath) -> bool: ...
-def samefile(f1: StrPath, f2: StrPath) -> bool: ...
-def getsize(filename: StrPath) -> int: ...
-def getatime(filename: StrPath) -> float: ...
-def getmtime(filename: StrPath) -> float: ...
-def getctime(filename: StrPath) -> float: ...
-def realpath(filename: StrPath, *, strict: bool = False) -> str: ...
+if sys.version_info >= (3, 12):
+    def isjunction(path: StrOrBytesPath) -> bool: ...
+    @overload
+    def splitroot(p: AnyOrLiteralStr) -> tuple[AnyOrLiteralStr, AnyOrLiteralStr, AnyOrLiteralStr]: ...
+    @overload
+    def splitroot(p: PathLike[AnyStr]) -> tuple[AnyStr, AnyStr, AnyStr]: ...
