@@ -792,6 +792,24 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates `genericpath._check_arg_types`'s TypeError for an `os.path`
+    /// argument that is neither `str` nor `bytes`:
+    /// `{func}() argument must be str, bytes, or os.PathLike object, not '{type}'`
+    #[must_use]
+    fn type_error_path_argument(func: &str, type_name: &str) -> RunError {
+        Self::type_error(format!(
+            "{func}() argument must be str, bytes, or os.PathLike object, not '{type_name}'"
+        ))
+    }
+
+    /// Creates `genericpath._check_arg_types`'s TypeError for `os.path`
+    /// arguments mixing `str` and `bytes`:
+    /// `Can't mix strings and bytes in path components`
+    #[must_use]
+    fn type_error_mixed_path_components() -> RunError {
+        Self::type_error("Can't mix strings and bytes in path components")
+    }
+
     /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
     /// functions that call `fspath` internally (e.g. `os.makedirs`):
     /// `expected str, bytes or os.PathLike object, not {type}`

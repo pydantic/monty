@@ -2,9 +2,10 @@
 //!
 //! Environment access (`getenv`, `environ`), filesystem wrappers (`listdir`,
 //! `stat`, `mkdir`, `makedirs`, `remove`, `unlink`, `rmdir`, `rename`,
-//! `replace`), the pure `fspath`, and the POSIX path constants (`sep`,
-//! `linesep`, `name`, ...). The sandbox always presents a POSIX view
-//! regardless of host OS, so the constants are fixed.
+//! `replace`), the pure `fspath`, the `os.path` submodule (see `os_path`)
+//! and the POSIX path constants (`sep`, `linesep`, `name`, ...). The sandbox
+//! always presents a POSIX view regardless of host OS, so the constants are
+//! fixed.
 //!
 //! Filesystem functions never touch the host directly: they yield an
 //! [`OsFunctionCall`] (the same variants `pathlib.Path` methods use) for the
@@ -25,7 +26,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HeapData, HeapId},
     intern::{StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, os_path},
     object_bridge::MontyObjectExt,
     os_dispatch::{PreConversionEffect, value_to_owned_string},
     types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
@@ -87,8 +88,15 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
             StaticStrings::Environ,
             Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
         ),
+        // `os.path` is its own module object, like CPython's `posixpath`.
+        (StaticStrings::Path, Value::Ref(os_path::create_module(vm))),
         // POSIX path constants — the sandbox path model is POSIX on every host.
         (StaticStrings::Sep, Value::InternString(StringId::from_ascii(b'/'))),
+        (StaticStrings::Pathsep, Value::InternString(StringId::from_ascii(b':'))),
+        (
+            StaticStrings::Defpath,
+            Value::InternString(vm.interns.intern_static(StaticStrings::DefpathString)),
+        ),
         (StaticStrings::Altsep, Value::None),
         (StaticStrings::Extsep, Value::InternString(StringId::from_ascii(b'.'))),
         (StaticStrings::Curdir, Value::InternString(StringId::from_ascii(b'.'))),
@@ -537,7 +545,7 @@ fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// Extracts a virtual path from a `str`/`Path` value for an os function,
 /// raising the `path_t` converter TypeError
 /// (`{func}: {arg} should be {accepted}, not {type}`) for anything else.
-fn extract_os_path(
+pub(super) fn extract_os_path(
     value: &Value,
     func: &'static str,
     arg: &'static str,
@@ -557,7 +565,7 @@ fn extract_os_path(
 /// one used when the rejected value is a kind CPython *would* have taken —
 /// otherwise the error would list the very type it just refused.
 #[derive(Clone, Copy)]
-enum PathAccepts {
+pub(super) enum PathAccepts {
     /// `path_t(allow_fd=False)` — `mkdir`, `remove`, `unlink`, `rmdir`, `rename`.
     NoFd,
     /// `path_t(allow_fd=True)` — `stat`.

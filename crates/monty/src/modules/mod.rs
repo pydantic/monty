@@ -28,6 +28,7 @@ pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod math;
 pub(crate) mod os;
+pub(crate) mod os_path;
 pub(crate) mod pathlib;
 pub(crate) mod random;
 pub(crate) mod re;
@@ -47,8 +48,10 @@ pub(crate) enum StandardLib {
     Asyncio,
     /// The `pathlib` module providing object-oriented filesystem paths.
     Pathlib,
-    /// The `os` module providing operating system interface (only `getenv()` implemented).
+    /// The `os` module: environment access, host-mediated filesystem calls and `os.path`.
     Os,
+    /// The `os.path` module (CPython's `posixpath`), also reached as `import posixpath`.
+    OsPath,
     /// The `math` module providing mathematical functions and constants.
     Math,
     /// The `json` module providing JSON parsing and serialization.
@@ -100,6 +103,7 @@ impl StandardLib {
             StaticStrings::Asyncio => Some(Self::Asyncio),
             StaticStrings::Pathlib => Some(Self::Pathlib),
             StaticStrings::Os => Some(Self::Os),
+            StaticStrings::OsPath | StaticStrings::Posixpath => Some(Self::OsPath),
             StaticStrings::Math => Some(Self::Math),
             StaticStrings::Json => Some(Self::Json),
             StaticStrings::Re => Some(Self::Re),
@@ -130,6 +134,7 @@ impl StandardLib {
             Self::Asyncio => asyncio::create_module(vm),
             Self::Pathlib => pathlib::create_module(vm),
             Self::Os => os::create_module(vm),
+            Self::OsPath => os_path::create_module(vm),
             Self::Math => math::create_module(vm),
             Self::Json => json::create_module(vm),
             Self::Re => re::create_module(vm),
@@ -162,6 +167,7 @@ pub(crate) enum ModuleFunctions {
     Json(json::JsonFunctions),
     Math(math::MathFunctions),
     Os(os::OsFunctions),
+    OsPath(os_path::OsPathFunctions),
     Re(re::ReFunctions),
     Unicodedata(unicodedata::UnicodedataFunctions),
     Itertools(itertools::ItertoolsFunctions),
@@ -194,6 +200,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Json(func) => write!(f, "{func}"),
             Self::Math(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
+            Self::OsPath(func) => write!(f, "{func}"),
             Self::Re(func) => write!(f, "{func}"),
             Self::Unicodedata(func) => write!(f, "{func}"),
             Self::Itertools(func) => write!(f, "{func}"),
@@ -225,6 +232,7 @@ impl ModuleFunctions {
             Self::Json(functions) => json::call(vm, functions, args).map(CallResult::Value),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),
             Self::Os(functions) => os::call(vm, functions, args),
+            Self::OsPath(functions) => os_path::call(vm, functions, args),
             Self::Re(functions) => re::call(vm, functions, args),
             Self::Unicodedata(functions) => unicodedata::call(vm, functions, args).map(CallResult::Value),
             Self::Itertools(functions) => itertools::call(vm, functions, args).map(CallResult::Value),

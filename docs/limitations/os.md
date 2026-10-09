@@ -115,10 +115,50 @@ whether each call is permitted.
     `mode` up front, while CPython only fails when it reaches the final
     `mkdir`, after creating parent directories.
 
+## `os.path`
+
+`os.path` is CPython's `posixpath` on every host, matching the sandbox's POSIX-only path model; `import posixpath`
+yields the same module. `import os.path` binds `os` like CPython, `import os.path as p` binds the module, and
+`from os.path import join` works.
+
+Implemented, pure (no host involvement), accepting `str`, `bytes` and `pathlib.Path` like CPython:
+`join`, `split`, `splitext`, `splitdrive`, `splitroot`, `basename`, `dirname`, `normpath`, `normcase`, `isabs`,
+`abspath`, `relpath`, `commonpath`, `commonprefix`, `samestat`, `isjunction`, `isdevdrive`, and the constants
+`sep`, `altsep`, `extsep`, `curdir`, `pardir`, `pathsep`, `defpath`, `devnull` (`os.pathsep` and `os.defpath` too).
+`abspath` and `relpath` use the session's virtual working directory (see above), exactly as CPython's use
+`os.getcwd()`.
+
+Implemented through the host, with the same `str`/`Path`-only rule as the other `os` functions:
+
+- `exists`, `isfile`, `isdir`, `islink` suspend as `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`.
+    The empty path and a path containing a NUL byte answer `False` without consulting the host.
+- `getsize`, `getmtime`, `getatime`, `getctime` suspend as `Path.stat` and return one field of the reply; a host
+    answering with something other than a stat result raises `RuntimeError`.
+- `realpath` suspends as `Path.resolve` and returns the reply as `str`. Mounts resolve lexically (see
+    [filesystem.md](filesystem.md)), so a missing path does not raise. `strict=True` raises
+    `NotImplementedError: realpath: strict unavailable on this platform`, since no host call carries the existence
+    check it promises; `ALLOW_MISSING` does not exist.
+- `expanduser` suspends as `os.getenv('HOME')` only for a path starting with `~` or `~/`. When the host answers
+    `None` the path is returned unchanged: CPython would fall back to the password database, which the sandbox
+    cannot read, and for the same reason `~user` is always returned unchanged.
+- `expandvars` suspends as `os.environ` only for a path containing `$`; entries whose key or value is not `str` are
+    ignored. A `bytes` path is matched against the same `str` environment encoded as UTF-8 (CPython reads
+    `os.environb`).
+
+Divergences:
+
+- `samestat` compares `st_ino` and `st_dev`, which mounts report as `0` for every file, so two mount stat results
+    always compare equal.
+- `commonprefix` on lists whose elements cannot be ordered reports the lists
+    (`'<' not supported between instances of 'list' and 'list'`) where CPython names the elements; this is Monty's
+    general list-comparison wording.
+- `lexists`, `samefile`, `sameopenfile` and `ismount` are not implemented: each needs a second host call (`lstat`,
+    or a stat of the parent) that no single existing OS call provides.
+- `supports_unicode_filenames` is always `False` (CPython sets it on macOS only).
+
 ## Not implemented
 
-Everything else, including but not limited to: `os.path.*` (use
-`pathlib.Path` instead), `os.fchdir`, `os.walk`, `os.scandir`,
+Everything else, including but not limited to: `os.fchdir`, `os.walk`, `os.scandir`,
 `os.removedirs`, `os.renames`, `os.lstat`, `os.access`, `os.symlink`,
 `os.readlink`, `os.link`, `os.chmod`, `os.chown`, `os.umask`, `os.truncate`,
 `os.utime`, `os.system`, `os.popen`, `os.fork`, `os.exec*`, `os.spawn*`,

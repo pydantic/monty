@@ -34,7 +34,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    modules::{random::RandomRetry, time::ClockReading},
+    modules::{os_path::posix, random::RandomRetry, time::ClockReading},
     types::{Path, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
@@ -133,6 +133,27 @@ pub(crate) enum PreConversionEffect {
     /// `os.urandom(size)`: the reply must be `bytes` of exactly `size`, so a
     /// handler cannot hand the sandbox more than it asked (and preflighted) for.
     UrandomLength { size: usize },
+    /// `os.path.getsize` and friends: keep one field of a `Path.stat` reply.
+    StatField(StatField),
+    /// `os.path.realpath`: the `Path.resolve` reply arrives as a path; the
+    /// function returns `str`.
+    ResolvedPath,
+    /// `os.path.expanduser`: splice the `os.getenv('HOME')` reply in front of
+    /// `tail`, the path after its leading `~`; `None` leaves the path as written.
+    ExpandUser {
+        #[serde(with = "serde_bytes")]
+        tail: Vec<u8>,
+        /// Whether the argument was `bytes`, so the result is too.
+        is_bytes: bool,
+    },
+    /// `os.path.expandvars`: substitute `$var` / `${var}` in `path` from the
+    /// `os.environ` reply.
+    ExpandVars {
+        #[serde(with = "serde_bytes")]
+        path: Vec<u8>,
+        /// Whether the argument was `bytes`, so the result is too.
+        is_bytes: bool,
+    },
 }
 
 impl PreConversionEffect {
@@ -148,6 +169,10 @@ impl PreConversionEffect {
                 vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
                 Ok(MontyObject::none())
             }
+            Self::StatField(field) => stat_field_reply(&value, field),
+            Self::ResolvedPath => resolved_path_reply(&value),
+            Self::ExpandUser { tail, is_bytes } => expand_user_reply(&value, &tail, is_bytes),
+            Self::ExpandVars { path, is_bytes } => expand_vars_reply(&value, &path, is_bytes),
         }
     }
 
@@ -158,8 +183,143 @@ impl PreConversionEffect {
             Self::Chdir { .. } => "os.chdir",
             Self::IterdirPaths { .. } => "Path.iterdir",
             Self::UrandomLength { .. } => "os.urandom",
+            Self::StatField(field) => field.function(),
+            Self::ResolvedPath => "os.path.realpath",
+            Self::ExpandUser { .. } => "os.path.expanduser",
+            Self::ExpandVars { .. } => "os.path.expandvars",
         }
     }
+}
+
+/// The `os.stat` result field an `os.path` getter returns.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) enum StatField {
+    /// `os.path.getsize` → `st_size`.
+    Size,
+    /// `os.path.getmtime` → `st_mtime`.
+    Mtime,
+    /// `os.path.getatime` → `st_atime`.
+    Atime,
+    /// `os.path.getctime` → `st_ctime`.
+    Ctime,
+}
+
+impl StatField {
+    /// The stat result field name.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Size => "st_size",
+            Self::Mtime => "st_mtime",
+            Self::Atime => "st_atime",
+            Self::Ctime => "st_ctime",
+        }
+    }
+
+    /// The `os.path` function that asked for the field, for error messages.
+    fn function(self) -> &'static str {
+        match self {
+            Self::Size => "os.path.getsize",
+            Self::Mtime => "os.path.getmtime",
+            Self::Atime => "os.path.getatime",
+            Self::Ctime => "os.path.getctime",
+        }
+    }
+}
+
+/// Picks `field` out of a host `Path.stat` reply — the resume half of
+/// [`PreConversionEffect::StatField`]. Only a number is accepted, so a host
+/// that answered with something other than a stat result gets the same
+/// `RuntimeError` shape as `os.chdir`.
+fn stat_field_reply(value: &MontyObject, field: StatField) -> Result<MontyObject, RunError> {
+    match stat_result_field(value, field.name()) {
+        Some(number @ (MontyNode::Int(_) | MontyNode::BigInt(_) | MontyNode::Float(_))) => {
+            Ok(unstable::object_from_node(number.clone()))
+        }
+        _ => Err(invalid_reply(field.function(), "a stat result", value)),
+    }
+}
+
+/// A `Path.stat` reply's field by name, so a host's stat result is accepted
+/// whatever its field order; `None` for anything but a named tuple with it.
+fn stat_result_field<'a>(value: &'a MontyObject, name: &str) -> Option<&'a MontyNode> {
+    match unstable::root_node(value) {
+        MontyNode::NamedTuple {
+            field_names, values, ..
+        } => field_names
+            .iter()
+            .position(|field| field == name)
+            .and_then(|index| values.get(index))
+            .map(|id| unstable::node(unstable::child(value.as_ref(), *id))),
+        _ => None,
+    }
+}
+
+/// Turns a `Path.resolve` reply into the `str` that `os.path.realpath`
+/// returns — the resume half of [`PreConversionEffect::ResolvedPath`]. A
+/// host answering the callback itself may already return `str`.
+fn resolved_path_reply(value: &MontyObject) -> Result<MontyObject, RunError> {
+    match unstable::root_node(value) {
+        MontyNode::Path(path) | MontyNode::String(path) => Ok(MontyObject::string(path.clone())),
+        _ => Err(invalid_reply("os.path.realpath", "a path", value)),
+    }
+}
+
+/// Completes `os.path.expanduser` from the `os.getenv('HOME')` reply — the
+/// resume half of [`PreConversionEffect::ExpandUser`]. `None` (no `$HOME`)
+/// returns the path as written, since the sandbox has no password database
+/// to fall back on.
+fn expand_user_reply(value: &MontyObject, tail: &[u8], is_bytes: bool) -> Result<MontyObject, RunError> {
+    match unstable::root_node(value) {
+        MontyNode::None => Ok(text_reply([b"~", tail].concat(), is_bytes)),
+        MontyNode::String(home) => Ok(text_reply(posix::expand_home(home.as_bytes(), tail), is_bytes)),
+        _ => Err(invalid_reply("os.path.expanduser", "str or None", value)),
+    }
+}
+
+/// Completes `os.path.expandvars` from the `os.environ` reply — the resume
+/// half of [`PreConversionEffect::ExpandVars`]. Entries whose key or value
+/// is not `str` cannot be named by a path, so they are ignored.
+fn expand_vars_reply(value: &MontyObject, path: &[u8], is_bytes: bool) -> Result<MontyObject, RunError> {
+    let MontyNode::Dict(entries) = unstable::root_node(value) else {
+        return Err(invalid_reply("os.path.expandvars", "a dict", value));
+    };
+    let lookup = |name: &[u8]| {
+        entries.iter().find_map(|(key, item)| {
+            match (
+                unstable::node(unstable::child(value.as_ref(), *key)),
+                unstable::node(unstable::child(value.as_ref(), *item)),
+            ) {
+                (MontyNode::String(key), MontyNode::String(item)) if key.as_bytes() == name => {
+                    Some(item.as_bytes().to_vec())
+                }
+                _ => None,
+            }
+        })
+    };
+    Ok(text_reply(posix::expandvars(path, lookup), is_bytes))
+}
+
+/// Builds an `os.path` reply of the type the argument had. `str` arguments
+/// only ever gain `str` host data at ASCII separators, so the bytes stay UTF-8.
+fn text_reply(bytes: Vec<u8>, is_bytes: bool) -> MontyObject {
+    if is_bytes {
+        MontyObject::bytes(bytes)
+    } else {
+        MontyObject::string(String::from_utf8(bytes).expect("str path data stays UTF-8"))
+    }
+}
+
+/// The `RuntimeError` for a host reply of the wrong shape: `invalid return
+/// type: {operation} requires the host to return {expected}, got {type}`.
+fn invalid_reply(operation: &str, expected: &str, value: &MontyObject) -> RunError {
+    SimpleException::new_msg(
+        ExcType::RuntimeError,
+        format!(
+            "invalid return type: {operation} requires the host to return {expected}, got {}",
+            value.as_ref().type_name()
+        ),
+    )
+    .into()
 }
 
 /// Applies the converted host value to VM state. The file variants and
@@ -261,32 +421,11 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 pub(crate) fn check_chdir_stat(value: &MontyObject, spelled: &str) -> Result<(), RunError> {
     const S_IFMT: i64 = 0o170_000;
     const S_IFDIR: i64 = 0o040_000;
-    // Located by name so a host's stat result is accepted whatever its field
-    // order, and anything without an integer `st_mode` is refused.
-    let st_mode = match unstable::root_node(value) {
-        MontyNode::NamedTuple {
-            field_names, values, ..
-        } => field_names
-            .iter()
-            .position(|name| name == "st_mode")
-            .and_then(|index| values.get(index))
-            .and_then(|mode| match unstable::node(unstable::child(value.as_ref(), *mode)) {
-                MontyNode::Int(mode) => Some(*mode),
-                _ => None,
-            }),
-        _ => None,
-    };
-    match st_mode {
-        Some(mode) if mode & S_IFMT == S_IFDIR => Ok(()),
-        Some(_) => Err(ExcType::not_a_directory_error(spelled)),
-        None => Err(SimpleException::new_msg(
-            ExcType::RuntimeError,
-            format!(
-                "invalid return type: os.chdir requires the host to return a stat result, got {}",
-                value.as_ref().type_name()
-            ),
-        )
-        .into()),
+    // Anything without an integer `st_mode` is refused.
+    match stat_result_field(value, "st_mode") {
+        Some(MontyNode::Int(mode)) if mode & S_IFMT == S_IFDIR => Ok(()),
+        Some(MontyNode::Int(_)) => Err(ExcType::not_a_directory_error(spelled)),
+        _ => Err(invalid_reply("os.chdir", "a stat result", value)),
     }
 }
 
@@ -609,7 +748,7 @@ pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Intern
 }
 
 /// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
+pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
     match value {
         Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
         Value::Ref(id) => match heap.get(*id) {

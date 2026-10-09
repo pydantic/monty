@@ -83,7 +83,9 @@ The following modules are present:
 | `json`        | [json.md](json.md)               |
 | `math`        | [math.md](math.md)               |
 | `os`          | [os.md](os.md)                   |
+| `os.path`     | [os.md](os.md)                   |
 | `pathlib`     | [pathlib.md](pathlib.md)         |
+| `posixpath`   | [os.md](os.md)                   |
 | `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |
 | `sys`         | [sys.md](sys.md)                 |
