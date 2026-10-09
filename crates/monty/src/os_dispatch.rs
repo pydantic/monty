@@ -21,7 +21,7 @@
 
 use std::{borrow::Cow, mem};
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, ResourceTracker, normalize_virtual_path,
@@ -436,24 +436,26 @@ fn expand_user_reply(value: &MontyObject, tail: &[u8], is_bytes: bool) -> Result
 
 /// Completes `os.path.expandvars` from the `os.environ` reply — the resume
 /// half of [`PreConversionEffect::ExpandVars`]. Entries whose key or value
-/// is not `str` cannot be named by a path, so they are ignored.
+/// is not `str` cannot be named by a path, so they are ignored. The reply is
+/// indexed once, so the work stays linear in the (sandbox-sized) path rather
+/// than one environment scan per `$reference`.
 fn expand_vars_reply(value: &MontyObject, path: &[u8], is_bytes: bool) -> Result<MontyObject, RunError> {
     let MontyNode::Dict(entries) = unstable::root_node(value) else {
         return Err(invalid_reply("os.path.expandvars", "a dict", value));
     };
-    let lookup = |name: &[u8]| {
-        entries.iter().find_map(|(key, item)| {
+    let environ: AHashMap<&[u8], &[u8]> = entries
+        .iter()
+        .filter_map(|(key, item)| {
             match (
                 unstable::node(unstable::child(value.as_ref(), *key)),
                 unstable::node(unstable::child(value.as_ref(), *item)),
             ) {
-                (MontyNode::String(key), MontyNode::String(item)) if key.as_bytes() == name => {
-                    Some(item.as_bytes().to_vec())
-                }
+                (MontyNode::String(key), MontyNode::String(item)) => Some((key.as_bytes(), item.as_bytes())),
                 _ => None,
             }
         })
-    };
+        .collect();
+    let lookup = |name: &[u8]| environ.get(name).map(|item| item.to_vec());
     Ok(text_reply(posix::expandvars(path, lookup), is_bytes))
 }
 
