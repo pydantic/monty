@@ -19,28 +19,15 @@ fn expect_error(code: &str) -> String {
     }
 }
 
-#[test]
-fn post_init_is_rejected() {
-    // CPython calls `__post_init__`; Monty would silently skip it, leaving the
-    // instance half-initialised, so the class is refused instead.
-    let err = expect_error(
-        r"
-from dataclasses import dataclass
-
-@dataclass
-class R:
-    x: int
-    def __post_init__(self):
-        self.x = 99
-",
-    );
-    assert_snapshot!(err, @r#"
-    Traceback (most recent call last):
-      File "test.py", line 4, in <module>
-        @dataclass
-         ~~~~~~~~~
-    NotImplementedError: dataclass() does not yet support __post_init__ in a class body, which would be silently skipped
-    "#);
+/// Runs `code` and returns just the exception message, for cases checked in a
+/// loop where a per-case traceback snapshot would say nothing extra.
+fn expect_message(code: &str) -> String {
+    let mut run =
+        MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("code should compile");
+    match run.run_no_limits(vec![]) {
+        Ok(value) => panic!("expected an exception, got {value:?}"),
+        Err(err) => err.message().map_or_else(|| err.to_string(), ToOwned::to_owned),
+    }
 }
 
 #[test]
@@ -86,6 +73,84 @@ class F:
          ~~~~~~~~~~~~~~~~~~~~~
     NotImplementedError: dataclass() does not yet support the order option
     "#);
+}
+
+/// `field()` refuses each argument it cannot honour, by name and at the call
+/// itself. `init`/`repr`/`compare` are among them: nothing consults them when
+/// the dunders are synthesized, so accepting `init=False` would silently give
+/// the field an `__init__` parameter anyway.
+#[test]
+fn unimplemented_field_argument_names_itself() {
+    let err = expect_error(
+        r"
+from dataclasses import dataclass, field
+
+@dataclass
+class F:
+    x: int = field(init=False, default=1)
+",
+    );
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 5, in <module>
+        class F:
+            x: int = field(init=False, default=1)
+      File "test.py", line 6, in F
+        x: int = field(init=False, default=1)
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: field() does not yet support the init argument
+    "#);
+
+    for (arg, value) in [
+        ("repr", "False"),
+        ("hash", "True"),
+        ("compare", "False"),
+        ("metadata", "{}"),
+        ("kw_only", "True"),
+        ("doc", "'what it is'"),
+    ] {
+        let err = expect_message(&format!("from dataclasses import field\nfield({arg}={value})\n"));
+        assert_eq!(err, format!("field() does not yet support the {arg} argument"));
+    }
+}
+
+/// CPython raises `ValueError` before it builds the `Field` at all, so it never
+/// looks at the other arguments. Monty reads the flags to refuse them, and
+/// `NotImplemented` is the one value whose truthiness raises — that must not
+/// preempt the error CPython reports.
+#[test]
+fn both_defaults_outrank_an_unreadable_flag() {
+    let err =
+        expect_message("from dataclasses import field\nfield(default=1, default_factory=int, init=NotImplemented)\n");
+    assert_eq!(err, "cannot specify both default and default_factory");
+}
+
+/// A refusal that fires *after* the default was captured must still release it.
+/// Reading a flag's truthiness raises for `NotImplemented`, which is exactly the
+/// window between capturing the default and allocating the `Field` that owns it.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn an_unreadable_flag_releases_the_captured_default() {
+    let mut run = MontyRun::new(
+        r"
+from dataclasses import field
+
+shared = (1, 2)
+try:
+    field(default=shared, init=NotImplemented)
+except TypeError:
+    pass
+"
+        .to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .expect("code should compile");
+    let output = run.run_ref_counts(vec![]).expect("should not raise");
+    // The global binding is the only reference left; a leaked capture reads 2.
+    assert_eq!(output.counts.get("shared"), Some(&1));
+    assert!(output.unreachable.is_empty(), "leaked {:?}", output.unreachable);
 }
 
 /// A quoted `ClassVar` is excluded from the fields, matching what CPython does

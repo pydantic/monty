@@ -1477,7 +1477,7 @@ impl Value {
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
-            Self::Marker(_) => Type::SpecialForm,
+            Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
             Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
             #[cfg(feature = "memory-model-checks")]
@@ -2484,6 +2484,7 @@ impl EitherStr {
 ///   provide functionality in the sandboxed environment
 /// - Typing constructs from the `typing` module that are imported for type hints but
 ///   don't need runtime functionality
+/// - Stateless sentinels such as `dataclasses.MISSING`, compared only by identity
 ///
 /// Wraps a `StaticStrings` variant to leverage its string conversion capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2506,12 +2507,13 @@ impl<'de> serde::Deserialize<'de> for Marker {
 impl Marker {
     /// Returns the Python type of this marker.
     ///
-    /// System markers (stdout, stderr) are `TextIOWrapper`; the typing
-    /// markers (Any, Optional, etc.) are `_SpecialForm`. (`typing.Union` is
-    /// a real type, `Type::Union`, not a marker.)
+    /// System markers (stdout, stderr) are `TextIOWrapper`, `dataclasses.MISSING`
+    /// is `_MISSING_TYPE`, and the typing markers (Any, Optional, etc.) are
+    /// `_SpecialForm`. (`typing.Union` is a real type, `Type::Union`, not a marker.)
     pub(crate) fn py_type(self) -> Type {
         match self.0 {
             StaticStrings::Stdout | StaticStrings::Stderr => Type::TextIOWrapper,
+            StaticStrings::Missing => Type::MissingType,
             _ => Type::SpecialForm,
         }
     }
@@ -2519,12 +2521,18 @@ impl Marker {
     /// Writes the Python repr for this marker.
     ///
     /// System markers have special repr formats ("<stdout>", "<stderr>");
+    /// `dataclasses.MISSING` is a plain object, so it prints with its `id()`;
     /// typing markers are prefixed with "typing." (e.g., "typing.Any").
     pub(crate) fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
         match self.0 {
             StaticStrings::Stdout => f.write_str("<stdout>")?,
             StaticStrings::Stderr => f.write_str("<stderr>")?,
+            StaticStrings::Missing => write!(
+                f,
+                "<dataclasses._MISSING_TYPE object at 0x{:x}>",
+                Identity::Marker(self).encoded()
+            )?,
             _ => write!(f, "typing.{s}")?,
         }
         Ok(())

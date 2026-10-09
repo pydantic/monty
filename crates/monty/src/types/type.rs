@@ -221,6 +221,9 @@ pub enum Type {
     /// private `dataclasses._DataclassParams` reports itself.
     #[strum(serialize = "_DataclassParams")]
     DataclassParams,
+    /// The type of `dataclasses.MISSING`, CPython's private `_MISSING_TYPE`.
+    #[strum(serialize = "dataclasses._MISSING_TYPE")]
+    MissingType,
     #[strum(serialize = "itertools.takewhile")]
     ItertoolsTakeWhile,
     #[strum(serialize = "itertools.dropwhile")]
