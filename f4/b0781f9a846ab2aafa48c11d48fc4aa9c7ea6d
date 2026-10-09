@@ -1,0 +1,34 @@
+docs/type-checking.md
+  s_f4328045f58601::t_c042c21b4465d5 51-53
+crates/monty/src/bytecode/vm/mod.rs
+  s_f4328045f58601::t_6963cfad2c4739 2065-2066
+crates/monty/src/exception_private.rs
+  s_f4328045f58601::t_6963cfad2c4739 1524-1526,1529-1534
+crates/monty-typeshed/update.py
+  s_f4328045f58601::t_c042c21b4465d5 171
+crates/monty/src/modules/mod.rs
+  s_f4328045f58601::t_6963cfad2c4739 6-9,131-149
+docs/limitations/modules.md
+  s_f4328045f58601::t_6963cfad2c4739 7
+docs/limitations/os.md
+  s_f4328045f58601::t_6963cfad2c4739 128-129,131-134,136-140,143-150
+crates/monty/test_cases/import__dotted_error.py
+  s_f4328045f58601::t_6963cfad2c4739 1-6,8-12,14-18,20-26,28-32,34-38,40-44,46-50,52-54
+  s_f4328045f58601::t_930bbf3b1c4ab4 7,13,19,27,33,39,45,51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f4b0781f9a846ab2aafa48c11d48fc4aa9c7ea6d",
+  "prompts": {},
+  "sessions": {
+    "s_f4328045f58601": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e97e358a-13a4-4763-9759-95dd659e8ef6",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
