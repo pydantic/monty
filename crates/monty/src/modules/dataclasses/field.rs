@@ -71,7 +71,7 @@ impl DataclassField {
         }
     }
 
-    /// The interned field name, as the synthesized `__init__` binds it, or
+    /// The interned field name, as the generated `__init__` binds it, or
     /// `None` for a `field()` result no decorator has adopted.
     #[must_use]
     pub fn name(&self) -> Option<StringId> {
@@ -97,7 +97,7 @@ impl DataclassField {
         self.default_factory.as_ref()
     }
 
-    /// Whether the field is optional in the synthesized `__init__`: it has
+    /// Whether the field is optional in the generated `__init__`: it has
     /// either a captured default or a factory to call.
     #[must_use]
     pub fn has_default(&self) -> bool {
@@ -174,7 +174,7 @@ pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     // Arguments Monty does not implement are refused when set away from their
     // CPython default, as `@dataclass(...)` refuses its own. That includes the
-    // three flags: nothing consults them when the dunders are synthesized, so
+    // three flags: nothing consults them when the dunders are generated, so
     // accepting `init=False` would silently give the field an `__init__`
     // parameter anyway. Listed in signature order, which is the order CPython
     // would hit them.
@@ -243,17 +243,6 @@ pub(super) fn field_at_id<'a>(vm: &'a VM<'_>, field_id: HeapId) -> Option<&'a Da
 pub(super) fn adoptable_field(bound: Option<&Value>, vm: &VM<'_>) -> Option<HeapId> {
     match bound {
         Some(Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::DataclassField(_)) => Some(*id),
-        _ => None,
-    }
-}
-
-/// The `Field` at `idx` in a `__dataclass_fields__` dict, in definition order.
-pub(super) fn field_at<'a>(vm: &'a VM<'_>, fields_id: HeapId, idx: usize) -> Option<&'a DataclassField> {
-    let HeapData::Dict(fields) = vm.heap.get(fields_id) else {
-        return None;
-    };
-    match fields.iter().nth(idx).map(|(_, value)| value) {
-        Some(Value::Ref(id)) => field_at_id(vm, *id),
         _ => None,
     }
 }

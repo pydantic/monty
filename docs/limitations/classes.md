@@ -434,8 +434,10 @@ every construction request. Divergences:
     `__getattribute__`, `__setattr__`, `__delattr__`, and `__del__`. A missing
     attribute always raises the default `AttributeError` even when the class
     defines `__getattr__`, and attribute writes always go straight to the
-    instance `__dict__`. `object.__setattr__` exists (see below) and, since
-    there are no hooks to skip, differs from a plain `obj.x = v` only on a
+    instance `__dict__`. The one exception is the `__setattr__` that
+    `@dataclass(frozen=True)` generates, which assignment honours (see
+    [dataclasses.md](dataclasses.md)).
+    `object.__setattr__` exists (see below) and, since there are no hooks to skip, differs from a plain `obj.x = v` only on a
     `@dataclass(frozen=True)` instance, which it writes to and `obj.x = v`
     refuses — the same escape hatch CPython's generated `__init__` uses. On a
     class object it does not write at all, where `Foo.x = v` sets a class member.
@@ -489,7 +491,8 @@ type: Monty has no inheritance, so there is no base class for it to be.
 ## `FrozenInstanceError`
 
 Raised when assigning to a field of a dataclass declared in the sandbox with
-`@dataclass(frozen=True)` (see [dataclasses.md](dataclasses.md)); host-supplied instances
+`@dataclass(frozen=True)`, or by calling its generated `__delattr__` directly
+(see [dataclasses.md](dataclasses.md)); host-supplied instances
 are never frozen in the sandbox (see "Host class instances" above). Subclass
 of `AttributeError`, so `except AttributeError:` catches it, as in CPython's
 `dataclasses` module. A plain `class` is never frozen, and

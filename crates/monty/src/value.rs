@@ -27,7 +27,7 @@ use crate::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
         bytes::PyBytes,
         host_class_type,
-        instance::{class_defines, instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
+        instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -1000,8 +1000,6 @@ impl Value {
                 Ok(result)
             } else if self.is(other) {
                 Ok(Self::Bool(true))
-            } else if let Some(result) = instance_dataclass_eq(*id, other, vm)? {
-                Ok(Self::Bool(result))
             } else {
                 Ok(Self::NotImplemented)
             }

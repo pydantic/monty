@@ -314,6 +314,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::NamedTupleClass(_)
         | HeapReadOutput::HostClassType(_)
         | HeapReadOutput::Closure(_)
+        | HeapReadOutput::DataclassMethod(_)
         // Type forms: `list[int]` and `int | None`. Nothing can mutate one, so
         // sharing is visible only to `is` — CPython rebuilds them through
         // `operator.getitem`, see `limitations/copy.md`.
