@@ -60,6 +60,9 @@ check-wasm-types: build-wasm ## Verify checked-in component declarations match t
 	git diff --exit-code -- crates/monty-js/ts/worker/component
 	@untracked=$$(git ls-files --others --exclude-standard -- crates/monty-js/ts/worker/component); \
 		test -z "$$untracked" || { echo "Untracked generated component declarations:"; echo "$$untracked"; exit 1; }
+	@# the published `dist` has to type-check for a strict consumer, and the
+	@# build cannot see that because it compiles from `ts`
+	cd crates/monty-js && npm run check:dist-types
 
 .PHONY: test-wasm
 test-wasm: install-js ## Test the wasm worker component from node, with no browser

@@ -58,6 +58,7 @@
     "build:napi:debug": "napi build --platform --esm --js native-addon.js --dts native-addon.generated.d.ts",
     "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && node scripts/build-component.mjs",
     "build:ts": "tsc",
+    "check:dist-types": "tsc -p tsconfig.dist.json",
     "format": "prettier . -w",
     "lint": "run-s lint:oxlint lint:tests",
     "lint:oxlint": "oxlint .",

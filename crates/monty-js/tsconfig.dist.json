@@ -1,0 +1,16 @@
+// Consumer-side check for the built declarations (`npm run build:ts`), run by
+// `make check-wasm-types`. `skipLibCheck` is off on purpose: the shipped `dist`
+// has to type-check for a strict consumer that only imports `Monty`, and the
+// package's own `tsconfig.json` cannot see that because it builds from `ts`.
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ESNext", "DOM"],
+    "strict": true,
+    "skipLibCheck": false,
+    "noEmit": true
+  },
+  "files": ["dist/worker/index.d.ts"]
+}
