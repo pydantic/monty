@@ -1411,6 +1411,8 @@ pub enum StaticStrings {
     Minute,
     /// `timedelta(minutes=...)` constructor kwarg.
     Minutes,
+    /// Path.unlink missing-file option.
+    MissingOk,
     /// `Path.mkdir()` and `os.mkdir()` — yields a host call.
     Mkdir,
     /// `time.mktime()` function.
@@ -1912,6 +1914,8 @@ pub enum StaticStrings {
     Tan,
     /// `math.tanh()` function.
     Tanh,
+    /// Destination keyword for Path.rename and Path.replace.
+    Target,
     /// `math.tau` constant
     Tau,
     /// `itertools.tee()` function.

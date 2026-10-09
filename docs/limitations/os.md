@@ -105,8 +105,8 @@ whether each call is permitted.
 - **Hosts see pathlib-style call names.** `os.listdir` suspends as
     `Path.iterdir` (the interpreter reduces the returned paths to names),
     `os.stat` and `os.chdir` as `Path.stat`, `os.remove`/`os.unlink` as `Path.unlink`,
-    `os.mkdir`/`os.makedirs` as `Path.mkdir`, `os.rename`/`os.replace` as
-    `Path.rename`. A custom `os` callback cannot distinguish e.g. `os.listdir`
+    `os.mkdir`/`os.makedirs` as `Path.mkdir`, `os.rename`/`os.replace` and `Path.replace` as `Path.rename`.
+    A custom `os` callback cannot distinguish e.g. `os.listdir`
     from `Path.iterdir`.
 - **`os.stat` results** print as `StatResult(...)`, not
     `os.stat_result(...)`, and carry only the 10 core fields, same as

@@ -252,3 +252,21 @@ assert (root / 'os_move_b.txt').read_text() == 'move me'
 os.replace(root / 'os_move_b.txt', root / 'os_move_c.txt')
 assert (root / 'os_move_b.txt').exists() == False
 assert (root / 'os_move_c.txt').read_text() == 'move me'
+
+
+# Path mutation return values and options use the same mount calls as os.
+source = root / 'rename_source.txt'
+target = root / 'rename_target.txt'
+source.write_text('renamed')
+assert source.rename(target=target) == target
+assert not source.exists()
+assert target.read_text() == 'renamed'
+replacement = root / 'replace_target.txt'
+replacement.write_text('old')
+assert target.replace(target=replacement) == replacement
+assert replacement.read_text() == 'renamed'
+assert os.rename(replacement, source) is None
+assert os.replace(source, target) is None
+assert target.unlink(missing_ok=False) is None
+assert target.unlink(missing_ok=True) is None
+assert (root / 'readonly.txt').stat(follow_symlinks=True).st_size == 16

@@ -41,24 +41,22 @@ These yield an `OsCall` for the host to resolve:
 - `exists()`, `is_file()`, `is_dir()`, `is_symlink()`
 - `read_text()`, `read_bytes()`
 - `write_text(data)`, `write_bytes(data)`, `append_text(data)`, `append_bytes(data)`
-- `mkdir(mode=0o777, parents=False, exist_ok=False)`, `unlink()`, `rmdir()`
-- `iterdir()`, `stat()`, `rename(target)`
+- `mkdir(mode=0o777, parents=False, exist_ok=False)`, `unlink(missing_ok=False)`, `rmdir()`
+- `iterdir()`, `stat(follow_symlinks=True)`, `rename(target)`, `replace(target)`
 - `resolve()`, `absolute()`
 - `open(...)` — see [open.md](open.md) for the supported file API and divergences
 
-`Path.mkdir()` parses `mode`, `parents`, and `exist_ok`, but `mode` is
-accepted only for signature compatibility: Monty does not model POSIX
-permission bits. The `missing_ok` and `target_is_directory` keyword arguments
-accepted by other CPython methods are not parsed; pass only the positional
-arguments documented above.
-
-`Path.mkdir()`'s too-many-positional error counts only the visible
-parameters (`Path.mkdir() takes from 0 to 3 positional arguments but 4 were given`); CPython counts the bound `self` as
-well (`takes from 1 to 4 … but 5 were given`).
+`Path.mkdir()` validates `mode` as a C integer, but mounts do not model POSIX permission bits.
+`Path.stat()` accepts `follow_symlinks=True`; `False` raises `NotImplementedError`, as with `os.stat()`.
+`Path.unlink(missing_ok=True)` suppresses `FileNotFoundError` from mounts and custom callbacks.
+Other exceptions propagate.
+A relative target remains relative in the returned value; the host receives an absolute path resolved against the cwd.
+Both methods use the same host rename operation, so overwrite behavior depends on the backend
+(see [os.md](os.md)).
 
 Not implemented: `glob`, `rglob`, `touch`, `chmod`, `lchmod`, `owner`,
 `group`, `symlink_to`, `hardlink_to`, `link_to`, `readlink`, `lstat`,
-`samefile`, `walk`, `replace`, `expanduser`.
+`samefile`, `walk`, `expanduser`.
 
 ## Path normalization and the sandbox
 

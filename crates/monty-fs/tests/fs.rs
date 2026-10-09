@@ -553,9 +553,10 @@ fn rw_rename() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    call(&mut mt, &rename("/mnt/hello.txt", "/mnt/renamed.txt"))
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/renamed.txt")),
+        MontyObject::path("/mnt/renamed.txt".to_owned())
+    );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
         MontyObject::bool(false)
@@ -1097,9 +1098,10 @@ fn ovl_mem_rename() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
-    call(&mut mt, &rename("/mnt/hello.txt", "/mnt/moved.txt"))
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/moved.txt")),
+        MontyObject::path("/mnt/moved.txt".to_owned())
+    );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
         MontyObject::bool(false)
@@ -1332,9 +1334,10 @@ fn ovl_mem_rename_to_same_path() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
-    call(&mut mt, &rename("/mnt/hello.txt", "/mnt/hello.txt"))
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/hello.txt")),
+        MontyObject::path("/mnt/hello.txt".to_owned())
+    );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
         MontyObject::bool(true)

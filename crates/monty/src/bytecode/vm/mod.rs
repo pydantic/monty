@@ -45,7 +45,8 @@ use crate::{
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{
-        PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths, urandom_reply_error,
+        PendingEffect, PostConversionEffect, PreConversionEffect, release_pending_effect, resolve_call_paths,
+        urandom_reply_error,
     },
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
@@ -2177,6 +2178,12 @@ impl<'h> VM<'h> {
     pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
         if let Some(effect) = self.pending_effect.take() {
             match effect {
+                // Resume on attempting to unlink missing file with unlink(missing_ok=True)
+                PendingEffect::Pre(PreConversionEffect::Unlink { missing_ok: true }) if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::FileNotFoundError) =>
+                {
+                    self.push(Value::None);
+                    return self.run_external();
+                }
                 PendingEffect::Post(PostConversionEffect::BufferStore { file_id }) => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap).clear_pending_read();

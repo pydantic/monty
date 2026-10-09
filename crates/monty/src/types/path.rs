@@ -23,7 +23,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    os_dispatch::{PreConversionEffect, build_path_os_call, is_path_os_method},
+    os_dispatch::{PreConversionEffect, build_path_os_call, build_path_unlink, is_path_os_method},
     types::{LazyHeapSet, List, PyTrait, Type, allocate_tuple, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -530,6 +530,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
         // an `OsFunctionCall` variant with the typed args struct populated.
         if is_path_os_method(method) {
             let path = MontyPath::new(self.get(vm.heap).as_str().to_owned());
+            if method == StaticStrings::Unlink {
+                return build_path_unlink(path, args, vm);
+            }
             // SAFETY: builder owns `args` and is responsible for dropping it
             // on every error path; `self` is a separate heap entry that
             // we don't transfer here.
@@ -541,6 +544,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                     .into(),
                     call: OsFunctionCall::Iterdir(path),
                 }),
+                Some(OsFunctionCall::Rename(args)) => {
+                    let target = args.dst.as_str().to_owned();
+                    let effect = if method == StaticStrings::Replace {
+                        PreConversionEffect::ReplacePath { target }
+                    } else {
+                        PreConversionEffect::RenamePath { target }
+                    };
+                    Ok(CallResult::OsCallWithEffect {
+                        effect: effect.into(),
+                        call: OsFunctionCall::Rename(args),
+                    })
+                }
                 Some(call) => Ok(CallResult::OsCall(call)),
                 None => unreachable!("is_path_os_method gates the call"),
             };

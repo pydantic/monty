@@ -186,7 +186,7 @@ fn rename(src: &str, dst: &str, ctx: &MountContext<'_>) -> Result<MontyObject, M
     ctx.mount_dir
         .rename(src_target.for_dir_op(), ctx.mount_dir, dst_target.for_dir_op())
         .map_err(|err| map_io(err, src))?;
-    Ok(MontyObject::none())
+    Ok(MontyObject::path(dst.to_owned()))
 }
 
 /// Refuses to rename or remove the mount root itself, which has no name inside

@@ -4,7 +4,7 @@
 //! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
 //! and that return values are correctly used by Python code.
 
-use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
     MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceTracker, SleepMode,
@@ -1650,4 +1650,223 @@ fn asyncio_sleep_answered_with_a_failed_future_raises() {
 /// The positional arguments of a call as owned values.
 fn positional(call: &CallArgs) -> Vec<MontyObject> {
     call.args().map(|arg| arg.to_owned()).collect()
+}
+
+#[test]
+fn path_rename_and_replace_return_the_spelled_target() {
+    for method in ["rename", "replace"] {
+        for target in ["'sub/../after.txt'", "Path('sub/../after.txt')"] {
+            let code = format!("from pathlib import Path\nPath('before.txt').{method}(target={target})");
+            let (name, args, result) = run_oscall_with_result(&code, MontyObject::none());
+            assert_eq!(name, "Path.rename");
+            assert_eq!(args.len(), 2);
+            assert_eq!(result, MontyObject::path("sub/../after.txt".to_owned()));
+        }
+        let code = format!("from pathlib import Path\nPath('/before').{method}('/after')");
+        let (_, _, result) = run_oscall_with_result(&code, MontyObject::string("ignored".to_owned()));
+        assert_eq!(result, MontyObject::path("/after".to_owned()));
+
+        let code = format!("import os\nos.{method}('/before', '/after')");
+        let (_, _, result) = run_oscall_with_result(&code, MontyObject::path("/after".to_owned()));
+        assert_eq!(result, MontyObject::none());
+    }
+}
+
+fn run_with_os_reply(code: &str, reply: impl Into<ExtFunctionResult>) -> Result<MontyObject, MontyException> {
+    let progress = host_runner(code).start(vec![], ResourceTracker::default(), PrintWriter::Stdout)?;
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected OS call")
+    };
+    call.resume(reply, PrintWriter::Stdout)?
+        .into_complete()
+        .ok_or_else(|| MontyException::new(ExcType::RuntimeError, Some("expected completion".to_owned())))
+}
+
+#[test]
+fn path_unlink_suppresses_only_missing_files_when_requested() {
+    for option in ["True", "1", "'yes'", "[1]"] {
+        let code = format!("from pathlib import Path\nPath('/missing').unlink(missing_ok={option})");
+        let error = MontyException::new(ExcType::FileNotFoundError, Some("missing".to_owned()));
+        assert_eq!(run_with_os_reply(&code, error).unwrap(), MontyObject::none());
+    }
+    for args in ["", "False", "missing_ok=False", "missing_ok=[]"] {
+        let code = format!("from pathlib import Path\nPath('/missing').unlink({args})");
+        let error = MontyException::new(ExcType::FileNotFoundError, Some("missing".to_owned()));
+        assert_eq!(
+            run_with_os_reply(&code, error).unwrap_err().exc_type(),
+            ExcType::FileNotFoundError
+        );
+    }
+    for exc in [ExcType::PermissionError, ExcType::IsADirectoryError, ExcType::OSError] {
+        let error = MontyException::new(exc, Some("denied".to_owned()));
+        assert_eq!(
+            run_with_os_reply("from pathlib import Path\nPath('/bad').unlink(True)", error)
+                .unwrap_err()
+                .exc_type(),
+            exc
+        );
+    }
+    assert_eq!(
+        run_with_os_reply(
+            "from pathlib import Path\nPath('/file').unlink(True)",
+            MontyObject::int(7)
+        )
+        .unwrap(),
+        MontyObject::none()
+    );
+}
+
+#[test]
+fn path_rename_host_errors_propagate() {
+    for method in ["rename", "replace"] {
+        let code = format!("from pathlib import Path\nPath('/before').{method}('/after')");
+        let error = MontyException::new(ExcType::PermissionError, Some("denied".to_owned()));
+        assert_eq!(
+            run_with_os_reply(&code, error).unwrap_err().exc_type(),
+            ExcType::PermissionError
+        );
+    }
+}
+
+#[test]
+fn path_stat_accepts_explicit_follow_symlinks() {
+    let (name, _, result) = run_oscall_with_result(
+        "from pathlib import Path\nPath('/file').stat(follow_symlinks=True).st_size",
+        file_stat(0o644, 12, 0.0),
+    );
+    assert_eq!(name, "Path.stat");
+    assert_eq!(result, MontyObject::int(12));
+    let error = host_runner("from pathlib import Path\nPath('/file').stat(follow_symlinks=False)")
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::NotImplementedError);
+}
+
+#[test]
+fn path_mutation_and_stat_arity_errors_count_self() {
+    for (call, message) in [
+        ("stat(True)", "Path.stat() takes 1 positional argument but 2 were given"),
+        (
+            "rename('target', 'extra')",
+            "Path.rename() takes 2 positional arguments but 3 were given",
+        ),
+        (
+            "replace('target', 'extra')",
+            "Path.replace() takes 2 positional arguments but 3 were given",
+        ),
+        (
+            "unlink(True, False)",
+            "Path.unlink() takes from 1 to 2 positional arguments but 3 were given",
+        ),
+    ] {
+        let error = host_runner(&format!("from pathlib import Path\nPath('/file').{call}"))
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::TypeError);
+        assert_eq!(error.message(), Some(message));
+    }
+}
+
+#[test]
+fn path_mkdir_validates_c_int_modes_and_counts_self() {
+    for mode in ["2**40", "-(2**40)", "2**100"] {
+        for code in [
+            format!("from pathlib import Path\nPath('/dir').mkdir(mode={mode})"),
+            format!("import os\nos.mkdir('/dir', mode={mode})"),
+        ] {
+            let error = host_runner(&code)
+                .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+                .unwrap_err();
+            assert_eq!(error.exc_type(), ExcType::OverflowError);
+        }
+    }
+    let error = host_runner("from pathlib import Path\nPath('/dir').mkdir(0o777, False, False, 'extra')")
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        error.message(),
+        Some("Path.mkdir() takes from 1 to 4 positional arguments but 5 were given")
+    );
+}
+
+#[test]
+fn path_result_effects_survive_a_dump() {
+    for (code, reply, expected) in [
+        (
+            "from pathlib import Path\nPath('before').rename(target='after')",
+            ExtFunctionResult::Return(MontyObject::none()),
+            MontyObject::path("after".to_owned()),
+        ),
+        (
+            "from pathlib import Path\nPath('before').replace(target='after')",
+            ExtFunctionResult::Return(MontyObject::none()),
+            MontyObject::path("after".to_owned()),
+        ),
+        (
+            "from pathlib import Path\nPath('missing').unlink(missing_ok=True)",
+            ExtFunctionResult::Error(MontyException::new(ExcType::FileNotFoundError, None)),
+            MontyObject::none(),
+        ),
+    ] {
+        let progress = host_runner(code)
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+        let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+            panic!("expected running session")
+        };
+        let call = restored.into_os_call().unwrap();
+        progress
+            .into_os_call()
+            .unwrap()
+            .resume(
+                match &reply {
+                    ExtFunctionResult::Return(value) => ExtFunctionResult::Return(value.clone()),
+                    ExtFunctionResult::Error(error) => ExtFunctionResult::Error(error.clone()),
+                    _ => unreachable!(),
+                },
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        assert_eq!(
+            call.resume(reply, PrintWriter::Stdout)
+                .unwrap()
+                .into_complete()
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn path_and_os_mkdir_accept_index_modes() {
+    for expression in ["Path('/dir').mkdir(mode=Mode())", "os.mkdir('/dir', mode=Mode())"] {
+        let code = format!(
+            "from pathlib import Path\nimport os\nclass Mode:\n    def __index__(self):\n        return 0o700\n{expression}"
+        );
+        assert_eq!(run_to_oscall(&code).0, "Path.mkdir");
+    }
+}
+
+#[test]
+fn mutation_effects_name_the_python_operation() {
+    for (code, operation) in [
+        ("import os\nos.rename('/before', '/after')", "os.rename"),
+        ("import os\nos.replace('/before', '/after')", "os.replace"),
+        (
+            "from pathlib import Path\nPath('/before').rename('/after')",
+            "Path.rename",
+        ),
+        (
+            "from pathlib import Path\nPath('/before').replace('/after')",
+            "Path.replace",
+        ),
+    ] {
+        let error = run_with_os_reply(code, ExtFunctionResult::Future(1)).unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::RuntimeError);
+        assert_eq!(
+            error.message().unwrap(),
+            format!("{operation} cannot be answered with a future")
+        );
+    }
 }
