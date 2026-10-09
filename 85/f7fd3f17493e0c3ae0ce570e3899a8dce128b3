@@ -1,0 +1,26 @@
+.agents/skills/fix-pr-comments/SKILL.md
+  s_8d8c5492ace1db::t_5437db18d9cc23 29-31
+  s_8d8c5492ace1db::t_3cf227dafd1d8f 3,8,33-34,45
+  s_8d8c5492ace1db::t_05d6033b199ee5 16-19,26-27,35-36,38-39,47-48,73
+.agents/skills/fix-pr-comments/pr-threads.sh
+  s_8d8c5492ace1db::t_6cdd837f842c6c 14-20
+  s_8d8c5492ace1db::t_63a442d5f7e4c2 48
+  s_8d8c5492ace1db::t_fcfe8659fb5c2d 3-4,21,31-38,42,47,51,71-74,80
+  s_8d8c5492ace1db::t_5ecd8a3f316b39 12-13,28-29,57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "85f7fd3f17493e0c3ae0ce570e3899a8dce128b3",
+  "prompts": {},
+  "sessions": {
+    "s_8d8c5492ace1db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9889f2a9-5e07-4068-bbc4-df31c4637d3d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
