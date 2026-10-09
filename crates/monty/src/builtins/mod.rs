@@ -81,7 +81,8 @@ impl Builtins {
     /// `open()` is the exception: it must touch the host filesystem at call
     /// time to perform the open-time effect, so it returns a
     /// [`CallResult::OsCall`] for [`OsFunctionCall::Open`](monty_types::OsFunctionCall) (see
-    /// [`crate::builtins::open`]).
+    /// [`crate::builtins::open`]). `next()` on a file nobody has read yet
+    /// likewise yields the read that loads it.
     pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Function(b) => b.call(vm, args),
@@ -156,7 +157,8 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Map => map::builtin_map(vm, args),
             Self::Max => min_max::builtin_max(vm, args),
             Self::Min => min_max::builtin_min(vm, args),
-            Self::Next => next::builtin_next(vm, args),
+            // `next()` on an unread file yields the read that loads it.
+            Self::Next => return next::builtin_next(vm, args),
             Self::Oct => oct::builtin_oct(vm, args),
             // `open()` yields an OS call rather than a plain value.
             Self::Open => return open::builtin_open(vm, args),

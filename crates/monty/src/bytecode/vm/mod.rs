@@ -51,7 +51,7 @@ use crate::{
     run::{Program, SessionTables, VmEnv},
     types::{
         Dict, LongInt, PyTrait, SessionRandom,
-        file::{apply_buffer_store, apply_open_name, apply_write_position},
+        file::{apply_buffer_load, apply_buffer_store, apply_file_next, apply_open_name, apply_write_position},
         random::SEED_BYTES,
         str::allocate_string,
     },
@@ -1691,6 +1691,18 @@ impl<'h> VM<'h> {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
                     let mut iter = self.heap.read(heap_id);
+                    // A file nobody has read yet has no buffer to slice: load it from
+                    // the host, then re-dispatch this instruction against the buffer.
+                    if let HeapReadOutput::OpenFile(file) = &iter
+                        && file.needs_buffer_load(self)
+                    {
+                        let effect = PostConversionEffect::BufferLoad { file_id: heap_id };
+                        let call = file.buffer_load_call(self, effect);
+                        drop(iter);
+                        self.current_frame.ip = self.instruction_ip;
+                        handle_call_result!(self, Ok(call));
+                        continue;
+                    }
 
                     match iter.py_next(self) {
                         Ok(Some(value)) => self.push(value),
@@ -2132,28 +2144,39 @@ impl<'h> VM<'h> {
         };
         let result = match self.pending_effect.take() {
             Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {
-                apply_buffer_store(file_id, value, self)
+                apply_buffer_store(file_id, value, self).map(Some)
             }
-            Some(PendingEffect::Post(PostConversionEffect::WritePosition { file_id, .. })) => {
-                apply_write_position(file_id, value, self)
+            // Answers nothing: the `ForIter` that asked for the load re-dispatches.
+            Some(PendingEffect::Post(PostConversionEffect::BufferLoad { file_id })) => {
+                apply_buffer_load(file_id, value, self).map(|()| None)
             }
-            Some(PendingEffect::Post(PostConversionEffect::OpenName { name })) => apply_open_name(name, value, self),
+            Some(PendingEffect::Post(PostConversionEffect::FileNext { file_id, default })) => {
+                apply_file_next(file_id, default, value, self).map(Some)
+            }
+            Some(PendingEffect::Post(PostConversionEffect::WritePosition {
+                file_id, text_length, ..
+            })) => apply_write_position(file_id, text_length, value, self).map(Some),
+            Some(PendingEffect::Post(PostConversionEffect::OpenName { name, newline })) => {
+                apply_open_name(name, newline, value, self).map(Some)
+            }
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
-                apply_seed_random(target, retry, value, self)
+                apply_seed_random(target, retry, value, self).map(Some)
             }
             Some(PendingEffect::Post(PostConversionEffect::ClockReading { reading })) => {
-                apply_clock_reading(reading, value, self)
+                apply_clock_reading(reading, value, self).map(Some)
             }
             // The sleeps were answered above; any pre-conversion effect was consumed.
             Some(
                 PendingEffect::Post(PostConversionEffect::DiscardResult | PostConversionEffect::SleepResult { .. })
                 | PendingEffect::Pre(_),
             )
-            | None => Ok(value),
+            | None => Ok(Some(value)),
         };
         match result {
             Ok(value) => {
-                self.push(value);
+                if let Some(value) = value {
+                    self.push(value);
+                }
                 self.run_external()
             }
             Err(err) => self.resume_with_exception(err),
@@ -2202,6 +2225,7 @@ impl<'h> VM<'h> {
                     file_id,
                     previous_position,
                     previous_length,
+                    ..
                 }) => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap)
@@ -2210,11 +2234,13 @@ impl<'h> VM<'h> {
                     }
                     self.heap.dec_ref(file_id);
                 }
-                // The generator was never seeded, so there is nothing to roll
-                // back: dropping the pin and the stashed retry is the whole undo.
-                PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry }) => {
-                    PostConversionEffect::SeedRandom { target, retry }.release(self.heap);
-                }
+                // Nothing was installed or seeded, so there is nothing to roll
+                // back: dropping the pin and any stashed value is the whole undo.
+                PendingEffect::Post(
+                    effect @ (PostConversionEffect::BufferLoad { .. }
+                    | PostConversionEffect::FileNext { .. }
+                    | PostConversionEffect::SeedRandom { .. }),
+                ) => effect.release(self.heap),
                 PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
                 // Hold no state or heap references — nothing to roll back.
                 PendingEffect::Pre(_)

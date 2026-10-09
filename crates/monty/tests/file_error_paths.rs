@@ -111,6 +111,125 @@ f.readline()
 }
 
 // ---------------------------------------------------------------------------
+// Iteration loads the buffer through its own effects (`BufferLoad` for the
+// `ForIter` opcode, `FileNext` for the `next()` builtin). A host failure must
+// surface at the loop / call and leave the file ready to retry, and the
+// empty-file reply (interned `""`) must exhaust the iterator cleanly.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn for_loop_host_error_then_retry() {
+    let code = r"
+f = open('/x.txt')
+try:
+    for line in f:
+        pass
+except OSError as exc:
+    first = str(exc)
+(first, [line for line in f])
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let open_call = progress.into_os_call().expect("expected Open OsCall");
+    let progress = open_call
+        .resume(
+            MontyObject::file_handle(file_handle("/x.txt", "r")),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let read_call = progress
+        .into_os_call()
+        .expect("expected ReadText OsCall from the for loop");
+    assert_eq!(read_call.function_call.name(), "Path.read_text");
+    let host_exc = MontyException::new(ExcType::OSError, Some("transient".to_owned()));
+    let progress = read_call
+        .resume(ExtFunctionResult::Error(host_exc), PrintWriter::Stdout)
+        .unwrap();
+    // The comprehension's loop re-issues the load.
+    let retry_call = progress.into_os_call().expect("expected retry OsCall");
+    assert_eq!(retry_call.function_call.name(), "Path.read_text");
+    let final_progress = retry_call
+        .resume(MontyObject::string("alpha\nbeta".to_owned()), PrintWriter::Stdout)
+        .unwrap();
+    let result = final_progress.into_complete().expect("expected Complete");
+    assert_eq!(
+        result,
+        MontyObject::tuple([
+            MontyObject::string("transient".to_owned()),
+            MontyObject::list([
+                MontyObject::string("alpha\n".to_owned()),
+                MontyObject::string("beta".to_owned()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn next_host_error_then_default_on_empty_file() {
+    let code = r"
+f = open('/x.txt')
+try:
+    next(f, 'fallback')
+    first = 'no-error'
+except OSError as exc:
+    first = str(exc)
+(first, next(f, 'fallback'))
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let open_call = progress.into_os_call().expect("expected Open OsCall");
+    let progress = open_call
+        .resume(
+            MontyObject::file_handle(file_handle("/x.txt", "r")),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let read_call = progress.into_os_call().expect("expected ReadText OsCall from next()");
+    assert_eq!(read_call.function_call.name(), "Path.read_text");
+    let host_exc = MontyException::new(ExcType::OSError, Some("boom".to_owned()));
+    let progress = read_call
+        .resume(ExtFunctionResult::Error(host_exc), PrintWriter::Stdout)
+        .unwrap();
+    let retry_call = progress.into_os_call().expect("expected retry OsCall");
+    assert_eq!(retry_call.function_call.name(), "Path.read_text");
+    // An empty file arrives interned; `next()` answers with the default.
+    let final_progress = retry_call
+        .resume(MontyObject::string(String::new()), PrintWriter::Stdout)
+        .unwrap();
+    let result = final_progress.into_complete().expect("expected Complete");
+    assert_eq!(
+        result,
+        MontyObject::tuple([
+            MontyObject::string("boom".to_owned()),
+            MontyObject::string("fallback".to_owned()),
+        ])
+    );
+}
+
+#[test]
+fn for_loop_over_empty_file_via_intern() {
+    let code = r"
+f = open('/empty.txt')
+count = 0
+for line in f:
+    count += 1
+count
+";
+    let result = run_with_open_then_io(
+        code,
+        "Path.read_text",
+        file_handle("/empty.txt", "r"),
+        MontyObject::string(String::new()).into(),
+    )
+    .expect("script should complete");
+    assert_eq!(result, MontyObject::int(0));
+}
+
+// ---------------------------------------------------------------------------
 // Host-side write failure: VM must roll back `position` / `file_length`,
 // leaving the file's logical `tell()` exactly where it was before the call.
 // ---------------------------------------------------------------------------

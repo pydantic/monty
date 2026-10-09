@@ -91,7 +91,12 @@ impl PendingEffect {
             // a future defers past the point the sandbox needs it.
             Self::Post(PostConversionEffect::ClockReading { .. }) => Some("time.time"),
             // A future strands these instead: the awaited value is the raw host reply.
-            Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
+            Self::Post(
+                PostConversionEffect::BufferStore { .. }
+                | PostConversionEffect::BufferLoad { .. }
+                | PostConversionEffect::FileNext { .. }
+                | PostConversionEffect::WritePosition { .. },
+            ) => None,
             // `asyncio.sleep` wants the future: `resume_with_result` moves the
             // result onto the pending awaitable instead.
             Self::Post(PostConversionEffect::SleepResult { .. }) => None,
@@ -292,6 +297,13 @@ pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
     /// pending read/seek slice (see `types/file.rs`).
     BufferStore { file_id: HeapId },
+    /// Store a full-file read result into the file buffer and push nothing:
+    /// the `ForIter` that found the file unloaded re-dispatches against it.
+    BufferLoad { file_id: HeapId },
+    /// Store a full-file read result into the file buffer, then answer
+    /// `next(file, default)`: the first line, `default` at EOF, or
+    /// `StopIteration`. Owns `default`'s reference across the yield.
+    FileNext { file_id: HeapId, default: Option<Value> },
     /// Advance the file's logical position by the successful write result.
     WritePosition {
         /// File whose position is updated.
@@ -301,9 +313,18 @@ pub(crate) enum PostConversionEffect {
         previous_position: u64,
         /// Known file length before dispatch, restored on host exception.
         previous_length: u64,
+        /// Length of the text as passed to `write()` when newline translation
+        /// lengthened the payload: CPython reports that, not what reached the file.
+        #[serde(default)]
+        text_length: Option<u64>,
     },
-    /// Preserve `open()`'s filename while the returned handle supplies the I/O target.
-    OpenName { name: FileName },
+    /// Preserve `open()`'s filename while the returned handle supplies the I/O target,
+    /// and apply the `newline` argument, whose value CPython validates after the open.
+    OpenName {
+        name: FileName,
+        #[serde(default)]
+        newline: Option<String>,
+    },
     /// Seed a `random` generator from the host's `os.urandom` reply, then
     /// answer `None` (`seed()`) or re-run the draw that found it unseeded
     /// (`retry`, which owns the call's arguments across the yield).
@@ -332,7 +353,13 @@ impl PostConversionEffect {
     /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
-            Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => heap.heap_mut().dec_ref(file_id),
+            Self::BufferStore { file_id } | Self::BufferLoad { file_id } | Self::WritePosition { file_id, .. } => {
+                heap.heap_mut().dec_ref(file_id);
+            }
+            Self::FileNext { file_id, default } => {
+                heap.heap_mut().dec_ref(file_id);
+                default.drop_with(heap);
+            }
             Self::OpenName { .. } | Self::DiscardResult | Self::ClockReading { .. } => {}
             Self::SleepResult { result } => result.drop_with(heap),
             Self::SeedRandom { target, retry } => {
