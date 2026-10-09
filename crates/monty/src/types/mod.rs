@@ -71,7 +71,7 @@ pub(crate) use py_trait::{CmpOrder, LazyHeapSet, PyTrait, attribute_name_value};
 pub(crate) use random::{Random, SessionRandom};
 pub(crate) use range::{Range, RangeIterator};
 pub(crate) use re_match::ReMatch;
-pub(crate) use re_pattern::{BoundedCompileError, RePattern};
+pub(crate) use re_pattern::{BoundedCompileError, ReFinditer, RePattern};
 pub(crate) use set::{FrozenSet, Set, SetIterator};
 pub(crate) use slice::Slice;
 pub(crate) use str::{Str, StringIterator, allocate_string};

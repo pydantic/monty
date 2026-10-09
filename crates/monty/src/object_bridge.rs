@@ -446,7 +446,9 @@ impl GraphExporter {
             HeapReadOutput::DictItemIterator(_) => MontyNode::Repr("<dict_itemiterator object>".to_owned()),
             HeapReadOutput::DictValueIterator(_) => MontyNode::Repr("<dict_valueiterator object>".to_owned()),
             HeapReadOutput::SetIterator(_) => MontyNode::Repr("<set_iterator object>".to_owned()),
-            HeapReadOutput::CallableIterator(_) => MontyNode::Repr("<callable_iterator object>".to_owned()),
+            HeapReadOutput::CallableIterator(_) | HeapReadOutput::ReFinditer(_) => {
+                MontyNode::Repr("<callable_iterator object>".to_owned())
+            }
             // A placeholder despite the real in-sandbox repr (`count(0)`),
             // which would recurse into `repeat`'s arbitrary object.
             HeapReadOutput::Itertools(iter) => {

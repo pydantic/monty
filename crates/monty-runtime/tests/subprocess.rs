@@ -1252,6 +1252,21 @@ fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
     child.shutdown();
 }
 
+/// `finditer` builds one match per `next()`, so reading the first few matches of
+/// a subject with 100,000 stays inside a budget the full match set would exceed.
+#[test]
+fn finditer_builds_matches_lazily() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import re\ntext = 'a ' * 100_000\nit = re.finditer('a', text)\nnext(it).start() + next(it).start() + next(it).start()";
+    assert_eq!(child.feed_complete(code), MontyObject::int(6));
+    assert_eq!(
+        child.feed_complete("next(re.compile('a').finditer(text)).group()"),
+        MontyObject::string("a")
+    );
+    child.shutdown();
+}
+
 /// A rejected `eval()` / `exec()` snippet leaves nothing behind: the filename,
 /// source and anything the failed parse interned are dropped again, so a loop
 /// of failing calls stays inside a budget that all their leftovers would blow.
