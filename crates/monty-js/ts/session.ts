@@ -88,18 +88,6 @@ export interface FeedOptions {
    * served by the eager `inputs` binding.
    */
   externalLookup?: Record<string, unknown>
-  /**
-   * Host modules the snippet may `import`, keyed by module name. A plain
-   * object's own public properties become the module's attributes: functions
-   * as host functions (a returned promise is awaited, as in `externalLookup`),
-   * other values converted at import; a [`ClassInstance`] is sent as itself.
-   * A zero-argument function returning one of those, or a `Promise` of one,
-   * runs when the feed first needs the module. `from <module> import name`
-   * works too. Importing an
-   * absent module raises `ModuleNotFoundError`; the sandbox's own modules never
-   * consult this.
-   */
-  externalModules?: ExternalModules
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -135,9 +123,6 @@ export interface FeedStartOptions {
    * by a plain `snapshot.resume(...)`.
    */
   externalLookup?: Record<string, unknown>
-  /** Host modules `resumeAuto()` answers imports from, as in
-   *  [`FeedOptions.externalModules`]; captured like `externalLookup`. */
-  externalModules?: ExternalModules
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -166,9 +151,6 @@ export interface LoadSnapshotOptions {
    * the previous process; resolve it manually with `resume([...])`.
    */
   externalLookup?: Record<string, unknown>
-  /** Host modules `resumeAuto()` answers imports from, as in
-   *  [`FeedOptions.externalModules`]. */
-  externalModules?: ExternalModules
   /** Handler for OS calls, consulted by `resumeAuto()` as in `feedStart`. */
   os?: OsCallback
 }
@@ -211,7 +193,11 @@ export class MontySession {
   private readonly instances = new InstanceStore()
 
   /** @internal — sessions are created by `Monty.checkout`. */
-  constructor(native: NativeSession) {
+  constructor(
+    native: NativeSession,
+    /** The checkout's `externalModules`, answering every feed's imports. */
+    private readonly modules: HostModules,
+  ) {
     this.native = native
     this.workerId = native.workerId ?? undefined
   }
@@ -231,13 +217,7 @@ export class MontySession {
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // A fresh answerer (and its pending-future map) per feed, so promises the
     // worker never asks about again cannot accumulate across feeds.
-    const answerer = new TurnAnswerer(
-      this.native,
-      this.instances,
-      options.externalLookup,
-      options.externalModules,
-      options.os,
-    )
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -407,16 +387,10 @@ export class MontySession {
   }
 
   /** Builds the per-feed snapshot driver (print target, answerer, poison). The
-   *  captured `externalLookup` / `os` back `snapshot.resumeAuto()`. */
+   *  captured `externalLookup` / `os` and the session's modules back `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const answerer = new TurnAnswerer(
-      this.native,
-      this.instances,
-      options.externalLookup,
-      options.externalModules,
-      options.os,
-    )
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
     return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
@@ -428,17 +402,6 @@ export class MontySession {
   async dump(): Promise<Buffer> {
     this.ensureUsable()
     return bufferFrom(await this.native.dump())
-  }
-
-  /**
-   * The type stubs of the session's host-provided modules, keyed by module
-   * name: what `typeCheckModuleStubs` declared, or a restored dump carried.
-   * Give them to a model writing code for the session, alongside
-   * `typeCheckStubs`.
-   */
-  async getStubs(): Promise<Record<string, string>> {
-    this.ensureUsable()
-    return await this.native.getStubs()
   }
 
   /**
@@ -531,16 +494,12 @@ class TurnAnswerer {
   /** Module values built by this feed's imports, so importing a module twice
    *  yields one wrapper (the instance store keeps each wrapper sent). */
   private readonly moduleValues = new Map<string, unknown>()
-  /** What each factory entry of `externalModules` returned, by module name: a
-   *  factory runs once per feed, at the first import or call that needs it, and
-   *  its result stands for the module however `externalModules` changes after. */
-  private readonly resolvedModules = new Map<string, ExternalModule>()
 
   constructor(
     private readonly native: NativeSession,
     private readonly instances: InstanceStore,
     readonly externalLookup: Record<string, unknown> | undefined,
-    readonly externalModules: ExternalModules | undefined,
+    readonly modules: HostModules,
     readonly os: OsCallback | undefined,
   ) {}
 
@@ -671,33 +630,33 @@ class TurnAnswerer {
   }
 
   /**
-   * The `externalModules` entry for `name`, if any. A factory entry is called
-   * the first time the feed needs the module and its result kept in
-   * `resolvedModules`, consulted first so an import, a re-import and the calls
-   * of the module's functions all see one module even if the host swaps the
-   * entry mid-feed. Only a real `Promise` it returns is awaited, and the module
-   * comes back boxed: it may carry a `then` attribute of its own, which a bare
-   * async return would await. An entry or result that is not a module shape
-   * (see [`checkedModule`]) is a `TypeError`, raised wherever the module was needed.
+   * The value of the `externalModules` entry for `name`, if any. A factory is
+   * called the first time the session needs the module and its result kept in
+   * the session's `resolved` map, consulted first so every import and call of
+   * the module's functions sees one module. Only a real `Promise` it returns is
+   * awaited, and the module comes back boxed: it may carry a `then` attribute of
+   * its own, which a bare async return would await. An entry or result that is
+   * not a module shape (see [`checkedModule`]) is a `TypeError`, raised wherever
+   * the module was needed.
    */
-  private async module(name: string): Promise<{ value: ExternalModule } | undefined> {
-    const resolved = this.resolvedModules.get(name)
+  private async module(name: string): Promise<{ value: ModuleValue } | undefined> {
+    const resolved = this.modules.resolved.get(name)
     if (resolved !== undefined) {
       return { value: resolved }
     }
-    const entry = ownEntry(this.externalModules, name)
+    const entry = this.modules.entry(name)
     if (entry === undefined) {
       return undefined
     }
     if (typeof entry !== 'function') {
-      return { value: checkedModule(entry, `externalModules.${name} is`) }
+      return { value: checkedModule(entry, `externalModules.${name}.module is`) }
     }
     const returned = (entry as () => unknown)()
     const module = checkedModule(
       returned instanceof Promise ? await returned : returned,
-      `externalModules.${name}() returned`,
+      `externalModules.${name}.module() returned`,
     )
-    this.resolvedModules.set(name, module)
+    this.modules.resolved.set(name, module)
     return { value: module }
   }
 
@@ -1383,13 +1342,64 @@ export class MontyComplete {
 /** The host function name the sandbox calls for an `import` it cannot resolve itself. */
 const IMPORT_FUNCTION = '__import__'
 
-/** What an `externalModules` entry resolves to: a plain object whose own public
- *  properties become the sandbox module's, or a [`ClassInstance`] as the module itself. */
-export type ExternalModule = Record<string, unknown> | ClassInstance
+/** What stands for a host module in the sandbox: a plain object whose own public
+ *  properties become the module's, or a [`ClassInstance`] as the module itself. */
+export type ModuleValue = Record<string, unknown> | ClassInstance
 
-/** The `externalModules` option: modules by name, each given directly or by a
- *  zero-argument factory, sync or async, run when the feed first needs the module. */
-export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
+/**
+ * A module the sandbox may `import`, an entry of `CheckoutOptions.externalModules`.
+ * It pairs the module's implementation with the stub type checking sees, so
+ * the two cannot drift apart: `import <name>` binds `module`, and with
+ * `typeCheck` resolves against `stubs`.
+ */
+export interface ExternalModule {
+  /** The module's value, or a zero-argument function returning it (or a
+   *  `Promise` of it), run when the session first needs the module and kept
+   *  for the rest of the session. */
+  module: ModuleValue | (() => ModuleValue | Promise<ModuleValue>)
+  /** The module's `.pyi` source for type checking; without it a type-checked
+   *  `import <name>` fails as unresolved. */
+  stubs?: string
+}
+
+/** The `externalModules` checkout option: modules by the name the sandbox imports them as. */
+export type ExternalModules = Record<string, ExternalModule>
+
+/**
+ * A checkout's `externalModules`, shared by every feed of the session: the
+ * entries as given and what each factory among them returned. Validates the
+ * entries' shape up front; a `module` is checked when first needed.
+ * @internal
+ */
+export class HostModules {
+  /** What each factory entry returned, by module name. */
+  readonly resolved = new Map<string, ModuleValue>()
+
+  constructor(private readonly entries: ExternalModules | undefined) {
+    for (const [name, entry] of Object.entries(entries ?? {})) {
+      const proto = entry !== null && typeof entry === 'object' ? Object.getPrototypeOf(entry) : undefined
+      if ((proto !== Object.prototype && proto !== null) || !('module' in entry)) {
+        throw new TypeError(`externalModules.${name} must be an object with a module property`)
+      }
+      if (entry.stubs !== undefined && typeof entry.stubs !== 'string') {
+        throw new TypeError(`externalModules.${name}.stubs must be a string`)
+      }
+    }
+  }
+
+  /** The `module` of the entry `name`, if there is one (own keys only). */
+  entry(name: string): ExternalModule['module'] | undefined {
+    const entry = ownEntry(this.entries, name) as ExternalModule | undefined
+    return entry?.module
+  }
+
+  /** The `.pyi` per module the entries declare, for the worker's type checker. */
+  stubs(): Record<string, string> {
+    return Object.fromEntries(
+      Object.entries(this.entries ?? {}).flatMap(([name, { stubs }]) => (stubs === undefined ? [] : [[name, stubs]])),
+    )
+  }
+}
 
 /** `value` wrapped so an async return cannot await it; `undefined` stays absent. */
 function boxed(value: unknown): { value: unknown } | undefined {
@@ -1409,7 +1419,7 @@ function ownEntry(record: unknown, key: string): unknown {
  * whose own keys name exactly what the sandbox may reach. Anything else, an
  * instance of some other class included, is a `TypeError` opening with `source`.
  */
-function checkedModule(value: unknown, source: string): ExternalModule {
+function checkedModule(value: unknown, source: string): ModuleValue {
   if (value instanceof ClassInstance) {
     return value
   }
@@ -1434,7 +1444,7 @@ function checkedModule(value: unknown, source: string): ExternalModule {
  * name, so each module is its own class, the same on every import and in every
  * process; the instance is host state, so it is new per feed.
  */
-function moduleValue(name: string, module: ExternalModule): unknown {
+function moduleValue(name: string, module: ModuleValue): unknown {
   if (module instanceof ClassInstance) {
     return module
   }

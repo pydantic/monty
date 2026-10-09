@@ -29,7 +29,7 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request
 
-from pydantic_monty import AsyncMontyWebsocket, MontyRuntimeError, MontyShutdown
+from pydantic_monty import AsyncMontyWebsocket, ExternalModule, MontyRuntimeError, MontyShutdown
 from pydantic_monty._binary import find_monty_binary
 
 _RELAY_SCRIPT = Path(__file__).resolve().parents[3] / 'scripts' / 'websocket_relay.py'
@@ -509,14 +509,12 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_w
 
 
 async def test_module_stubs_over_websocket(ws_url: str):
-    """`get_stubs` reports the configured module stubs from the far side."""
-    stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
+    """The configured module stubs reach the far side's type checker."""
 
     def add(a: int, b: int) -> int:
         return a + b
 
+    modules = {'tools': ExternalModule({'add': add}, stubs='def add(a: int, b: int) -> int: ...\n')}
     async with AsyncMontyWebsocket(ws_url) as pool:
-        async with pool.checkout(type_check=True, type_check_module_stubs=stubs) as session:
-            assert await session.get_stubs() == snapshot({'tools': 'def add(a: int, b: int) -> int: ...\n'})
-            result = await session.feed_run('import tools\ntools.add(1, 2)', external_modules={'tools': {'add': add}})
-            assert result == snapshot(3)
+        async with pool.checkout(type_check=True, external_modules=modules) as session:
+            assert await session.feed_run('import tools\ntools.add(1, 2)') == snapshot(3)

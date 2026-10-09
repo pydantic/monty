@@ -30,9 +30,9 @@ mod value;
 
 use bindings::exports::pydantic::monty::worker::{
     CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent, Guest,
-    ModuleStub, NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError,
-    RaisedException, RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status,
-    TimeZone, TypeCheckFormat,
+    NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError, RaisedException,
+    RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status, TimeZone,
+    TypeCheckFormat,
 };
 
 thread_local! {
@@ -355,7 +355,6 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             exception: Some(raised_exception_from_component(error)),
         }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
-        Request::GetStubs => pb::parent_request::Kind::GetStubs(pb::GetStubs {}),
         Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state: state.into() }),
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
     };
@@ -547,16 +546,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
         Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
-        Some(pb::child_event::Kind::TypeStubs(stubs)) => Event::TypeStubs(
-            stubs
-                .modules
-                .into_iter()
-                .map(|stub| ModuleStub {
-                    module: stub.module,
-                    source: stub.source,
-                })
-                .collect(),
-        ),
+
         None => invalid_event("ChildEvent carried no kind"),
     }
 }

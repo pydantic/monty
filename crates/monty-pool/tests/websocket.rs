@@ -2909,10 +2909,9 @@ fn position() -> SourceRange {
     }
 }
 
-// ---- module stubs and GetStubs --------------------------------------------
+// ---- module stubs ---------------------------------------------------------
 //
-// A serving relay reads `type_check_module_stubs` off the `Configure`, and
-// answers `GetStubs` itself with the stubs in effect.
+// A serving relay reads `type_check_module_stubs` off the `Configure`.
 
 fn module_stub(module: &str, source: &str) -> ModuleStub {
     ModuleStub::new(module, source).expect("a valid stub name")
@@ -2950,79 +2949,18 @@ async fn configure_carries_module_stubs() {
     join_server(server).await;
 }
 
-/// `get_stubs` converts the `TypeStubs` reply, and a stub naming a module the
-/// sandbox already provides is a protocol violation, not a stub.
-#[tokio::test]
-async fn get_stubs_reads_the_type_stubs_reply() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
-        try_read_request(&mut socket).expect("configure");
-        send_kind(&mut socket, ok_event());
-        let request = try_read_request(&mut socket).expect("get stubs");
-        assert!(
-            matches!(request.kind, Some(pb::parent_request::Kind::GetStubs(_))),
-            "expected GetStubs, got {request:?}"
-        );
-        send_kind(
-            &mut socket,
-            pb::child_event::Kind::TypeStubs(pb::TypeStubs {
-                modules: vec![pb::ModuleStub {
-                    module: "stripe".to_owned(),
-                    source: "async def list_payments(*, limit: int = ...) -> str: ...\n".to_owned(),
-                }]
-                .into(),
-            }),
-        );
-        // a relay answering with a name no stub may have is a protocol violation
-        try_read_request(&mut socket).expect("get stubs again");
-        send_kind(
-            &mut socket,
-            pb::child_event::Kind::TypeStubs(pb::TypeStubs {
-                modules: vec![pb::ModuleStub {
-                    module: "json".to_owned(),
-                    source: String::new(),
-                }]
-                .into(),
-            }),
-        );
-        while try_read_request(&mut socket).is_some() {}
-    });
-
-    let (_pool, mut checkout) = websocket_checkout(port).await;
-    let stubs = checkout.get_stubs().await.expect("get_stubs");
-    assert_eq!(
-        stubs,
-        vec![module_stub(
-            "stripe",
-            "async def list_payments(*, limit: int = ...) -> str: ...\n"
-        )]
-    );
-    let err = checkout.get_stubs().await.unwrap_err();
-    assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
-    assert_eq!(
-        err.to_string(),
-        "monty worker protocol error: invalid TypeStubs: invalid value for ModuleStub.module: module \"json\" is provided by the sandbox or its type checker and cannot be replaced"
-    );
-    join_server(server).await;
-}
-
-/// Only a feed is type-checked, so a `TypingError` answering `GetStubs` means
+/// Only a feed is type-checked, so a `TypingError` answering a `Dump` means
 /// the peer has lost sync: the worker is discarded rather than kept with the
 /// parent believing a suspended feed ended.
 #[tokio::test]
-async fn a_typing_error_reply_to_get_stubs_is_a_protocol_violation() {
+async fn a_typing_error_reply_to_dump_is_a_protocol_violation() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         try_read_request(&mut socket).expect("configure");
         send_kind(&mut socket, ok_event());
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::GetStubs(_)
-        ));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Dump(_)));
         send_kind(
             &mut socket,
             pb::child_event::Kind::TypingError(pb::TypingError {
@@ -3033,7 +2971,7 @@ async fn a_typing_error_reply_to_get_stubs_is_a_protocol_violation() {
     });
 
     let (_pool, mut checkout) = websocket_checkout(port).await;
-    let err = checkout.get_stubs().await.unwrap_err();
+    let err = checkout.dump().await.unwrap_err();
     assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
     assert_eq!(
         err.to_string(),
@@ -3077,78 +3015,5 @@ async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
         "monty worker protocol error: TypingError reply to a request that is not a type-checked Feed"
     );
     assert!(checkout.worker_id().is_none(), "the worker must be discarded");
-    join_server(server).await;
-}
-
-/// A peer that predates `GetStubs` answers it with an `Error` and stays as
-/// it was, so a feed suspended at the time is still resumable, as after a
-/// refused `Dump`.
-#[tokio::test]
-async fn get_stubs_refused_mid_feed_keeps_the_suspension() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
-        try_read_request(&mut socket).expect("configure");
-        send_kind(&mut socket, ok_event());
-        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
-        send_kind(
-            &mut socket,
-            pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
-                "fetch".to_owned(),
-                CallArgs::new(),
-                1,
-                None,
-                false,
-                position(),
-            )),
-        );
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::GetStubs(_)
-        ));
-        send_kind(
-            &mut socket,
-            pb::child_event::Kind::Error(pb::Error {
-                exception: Some(pb::RaisedException {
-                    exc_type: "RuntimeError".to_owned(),
-                    message: Some("protocol violation: request has no kind".to_owned()),
-                    traceback: vec![].into(),
-                    data: None,
-                }),
-            }),
-        );
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::ResumeCall(_)
-        ));
-        send_kind(
-            &mut socket,
-            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(1))),
-        );
-        while try_read_request(&mut socket).is_some() {}
-    });
-
-    let (_pool, mut checkout) = websocket_checkout(port).await;
-    let event = checkout
-        .feed("fetch()", vec![], vec![], false, &mut no_print)
-        .await
-        .expect("feed");
-    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
-    let err = checkout.get_stubs().await.unwrap_err();
-    let PoolError::Runtime(exc) = err else {
-        panic!("expected Runtime, got {err:?}");
-    };
-    assert_eq!(exc.message(), Some("protocol violation: request has no kind"));
-    let event = checkout
-        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
-        .await
-        .expect("resume");
-    let TurnEvent::Complete(value) = event else {
-        panic!("expected Complete, got {event:?}");
-    };
-    assert_eq!(value, MontyObject::int(1));
-    // the relay thread reads until the socket closes
-    drop(checkout);
     join_server(server).await;
 }

@@ -382,8 +382,6 @@ interface worker {
         dump,
         load(list<u8>),
         reset,
-        /// Asks for the module stubs in effect, answered with `type-stubs`.
-        get-stubs,
     }
 
     /// One Python traceback frame.
@@ -499,9 +497,8 @@ interface worker {
         ok,
         fatal-error(string),
         shutdown(option<list<u8>>),
-        /// Answers `get-stubs`: the stub of every host-provided module.
-        type-stubs(list<module-stub>),
     }
+
 
     /// All output produced by one request.
     record dispatch-result {

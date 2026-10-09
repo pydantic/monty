@@ -113,27 +113,34 @@ Stubs are scoped to the checkout.
 A later session does not see them.
 
 A stub declares names at the top level of the snippet.
-A host-provided module the code imports needs its own stub: `type_check_module_stubs` (`typeCheckModuleStubs`) maps a
-module name to its `.pyi` source.
+A host-provided module the code imports needs its own stub: the `stubs` of its `external_modules` entry
+(`externalModules` in JavaScript) is the module's `.pyi` source, kept beside its implementation so the two cannot
+drift apart.
 The checker writes each one as `<module>.pyi` beside the snippet, so `import tools` resolves and `from tools import add`
-sees its declarations; module stubs are not star-imported:
+sees its declarations; module stubs are not star-imported, and a module without `stubs` fails a type-checked import as
+unresolved:
 
 === "Python"
 
     ```python
-    from pydantic_monty import Monty, MontyTypingError
+    from pydantic_monty import ExternalModule, Monty, MontyTypingError
 
-    stubs = {'tools': 'def add(a: int, b: int) -> int: ...\n'}
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+
+    tools = ExternalModule({'add': add}, stubs='def add(a: int, b: int) -> int: ...\n')
 
     with Monty() as pool:
-        with pool.checkout(type_check=True, type_check_module_stubs=stubs) as session:
-            print(session.get_stubs() == stubs)
-            #> True
+        with pool.checkout(type_check=True, external_modules={'tools': tools}) as session:
             try:
                 session.feed_run("from tools import add\nadd('x', 2)")
             except MontyTypingError as exc:
                 print('invalid-argument-type' in exc.display())
                 #> True
+            print(session.feed_run('from tools import add\nadd(1, 2)'))
+            #> 3
     ```
 
 === "TypeScript"
@@ -141,17 +148,20 @@ sees its declarations; module stubs are not star-imported:
     ```ts
     import { Monty, MontyTypingError } from '@pydantic/monty'
 
-    const typeCheckModuleStubs = { tools: 'def add(a: int, b: int) -> int: ...\n' }
+    const tools = {
+      module: { add: (a: number, b: number) => a + b },
+      stubs: 'def add(a: int, b: int) -> int: ...\n',
+    }
 
     await using pool = await Monty.create()
-    await using session = await pool.checkout({ typeCheck: true, typeCheckModuleStubs })
-    console.log(await session.getStubs()) // { tools: 'def add(a: int, b: int) -> int: ...\n' }
+    await using session = await pool.checkout({ typeCheck: true, externalModules: { tools } })
     try {
       await session.feedRun("from tools import add\nadd('x', 2)")
     } catch (err) {
       if (!(err instanceof MontyTypingError)) throw err
       console.log(err.display().includes('invalid-argument-type')) // true
     }
+    console.log(await session.feedRun('from tools import add\nadd(1, 2)')) // 3
     ```
 
 A module name that is not an identifier, or that the sandbox or its type checker already provides, raises `ValueError`
@@ -162,8 +172,7 @@ included), and the few names the runtime or the checker provide without a typesh
 Typeshed includes modules the checker resolves but the runtime does not, such as `abc` and `enum`: a host can serve
 those through `external_modules`, but the checker keeps typeshed's stub for them; see
 [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
-[`get_stubs()`][pydantic_monty.MontySession.get_stubs] returns the stubs in effect.
-The runtime side of a host module is `external_modules`; see
+The runtime side of a host module is the entry's `module`; see
 [importing host modules](host-functions.md#importing-host-modules).
 
 Passing the same declarations to the model in its prompt, and to `type_check_stubs` here, is the pattern the
@@ -213,6 +222,9 @@ They are re-emitted ahead of the committed definitions, so a later rebinding of 
 runtime, while a name deleted after being imported stays bound for the checker.
 An import under an `if` or `try` is carried whether or not its branch ran: a later use of a name bound only in the
 branch that did not run checks clean and raises `NameError` at runtime.
+A carried import is re-emitted without its comments, so one the commit accepted under `# type: ignore`, or with
+`skip_type_check=True`, may no longer resolve; the checker drops the diagnostics of the carried imports themselves,
+since they report nothing the commit did not accept, and the name stays bound with an unknown type.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.

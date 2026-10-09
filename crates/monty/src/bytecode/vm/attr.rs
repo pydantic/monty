@@ -73,9 +73,8 @@ impl VM<'_> {
     /// Loads an attribute from a module for `from ... import` and pushes it onto the stack.
     ///
     /// Returns an ImportError (not AttributeError) if the attribute doesn't exist,
-    /// matching CPython's behavior for `from module import name`. `module_id` (the
-    /// frame's `import_from_module`) names the module for that message, since a
-    /// host-provided module need not be a `Module`.
+    /// matching CPython's behavior for `from module import name`. `module_id` names
+    /// the module for that message, since a host-provided module need not be a `Module`.
     pub(super) fn load_attr_import(&mut self, name_id: StringId, module_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
@@ -97,10 +96,12 @@ impl VM<'_> {
     /// while the suspended instruction is its attribute load, so a host's answer to
     /// that lookup can raise the same `ImportError` the synchronous load does.
     pub(crate) fn suspended_import_from(&self) -> Option<StringId> {
-        let frame = &self.current_frame;
-        (frame.bytecode.get(self.instruction_ip) == Some(&(Opcode::LoadAttrImport as u8)))
-            .then_some(frame.import_from_module)
-            .flatten()
+        let ip = self.instruction_ip;
+        let bytecode = self.current_frame.bytecode;
+        (bytecode.get(ip) == Some(&(Opcode::LoadAttrImport as u8))).then(|| {
+            // operands: u16 attribute name_id, then u16 module name_id, little-endian
+            StringId::from_index(u16::from_le_bytes([bytecode[ip + 3], bytecode[ip + 4]]))
+        })
     }
 
     /// The module a suspended `import <module>` is loading: `Some` while the suspended

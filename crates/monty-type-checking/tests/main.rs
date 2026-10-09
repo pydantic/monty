@@ -551,6 +551,28 @@ fn the_prelude_carries_a_committed_import_into_the_next_snippet() {
     assert_snapshot!(wrong.unwrap(), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
 }
 
+/// A committed import that does not resolve (suppressed with `# type: ignore`,
+/// or fed with type checking skipped) is re-emitted without its comment; the
+/// diagnostic it raises has no snippet line to land on and reports nothing the
+/// commit did not already accept, so it is dropped. The name stays bound.
+#[test]
+fn an_unresolved_import_in_the_prelude_is_not_reported_again() {
+    let committed = SourceFile::new("import requests\n", "repl_type_stubs.pyi");
+    let prelude = top_level_imports("import requests  # type: ignore\n");
+    assert_eq!(prelude, "import requests\n");
+    let context = TypeCheckContext {
+        stubs: Some(&committed),
+        module_stubs: &[],
+        prelude: &prelude,
+    };
+    let mut checker = TypeChecker::default();
+    let ok = render_with(&mut checker, "x = 1\nrequests.get('/')\n", &context);
+    assert!(ok.is_none(), "the prelude's own diagnostics must not surface: {ok:#?}");
+    // the snippet's own problems still are
+    let wrong = render_with(&mut checker, "x = 1\nimport requests\n", &context);
+    assert_snapshot!(wrong.unwrap(), @"main.py:2:8: error[unresolved-import] Cannot resolve imported module `requests`");
+}
+
 /// Imports under a module-level branch, loop, `try` or `with` are carried
 /// (the runtime may have bound them); those in a function or class body are
 /// not, as they bind locally.

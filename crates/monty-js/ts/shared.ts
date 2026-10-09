@@ -29,6 +29,7 @@ export {
   type ExternalFunction,
   type ExternalModule,
   type ExternalModules,
+  type ModuleValue,
   type FeedOptions,
   type FeedStartOptions,
   type FutureResolution,

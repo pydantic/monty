@@ -1,5 +1,5 @@
 //! `TypeCheckingConfig` ↔ `pb::Configure`'s type-check rendering fields, and
-//! the module stubs `Configure` carries and `TypeStubs` reports.
+//! the module stubs `Configure` carries.
 //!
 //! Type checking runs in the child, which renders the diagnostics before they
 //! cross the wire (ty's structured diagnostics borrow the checker's database).
@@ -12,9 +12,9 @@ use monty_types::{ModuleStub, TypeCheckingConfig, TypeCheckingFormat};
 use super::ProtoConvertError;
 use crate::pb;
 
-/// The module stubs a `Configure` or `TypeStubs` carries, validated as
-/// [`ModuleStub`]s. A module named twice is refused too: it would be checked
-/// against one stub and reported as both.
+/// The module stubs a `Configure` carries, validated as [`ModuleStub`]s. A
+/// module named twice is refused too: it would be checked against one stub and
+/// reported as both.
 pub fn module_stubs_from_proto(stubs: &[pb::ModuleStub]) -> Result<Vec<ModuleStub>, ProtoConvertError> {
     let invalid = |reason: String| ProtoConvertError::InvalidValue {
         field: "ModuleStub.module",

@@ -2915,10 +2915,9 @@ async fn an_import_is_answered_by_the_host() {
     session.finish().await.unwrap();
 }
 
-/// The session's module stubs type-check imports of host modules and come
-/// back from `get_stubs`.
+/// The session's module stubs type-check imports of host modules.
 #[tokio::test]
-async fn module_stubs_type_check_and_are_reported() {
+async fn module_stubs_type_check_imports() {
     let pool = Pool::new(config()).await.unwrap();
     let stub = ModuleStub::new("tools", "def add(a: int, b: int) -> int: ...\n").unwrap();
     let mut session = pool
@@ -2928,12 +2927,11 @@ async fn module_stubs_type_check_and_are_reported() {
                 format: TypeCheckingFormat::Concise,
                 color: false,
             },
-            type_check_module_stubs: vec![stub.clone()],
+            type_check_module_stubs: vec![stub],
             ..ReplConfig::default()
         })
         .await
         .unwrap();
-    assert_eq!(session.get_stubs().await.unwrap(), vec![stub]);
     let err = session
         .feed(
             "from tools import add\nadd('x', 2)",
@@ -2995,7 +2993,6 @@ async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
     // the same worker, a session with no stubs: the import must not resolve
     let mut session = pool.checkout(&checked(vec![])).await.unwrap();
     assert_eq!(session.worker_id(), Some(first_id));
-    assert_eq!(session.get_stubs().await.unwrap(), vec![]);
     let err = session
         .feed("import tools", vec![], vec![], false, &mut no_print)
         .await

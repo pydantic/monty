@@ -77,7 +77,8 @@ Keyword arguments from the sandbox arrive as a trailing object on the call.
 An error thrown by a host function crosses into the sandbox as a Python exception, using the error's `name` when it
 matches a Python exception type and `RuntimeError` otherwise.
 
-`externalModules` names the modules the sandbox may `import`.
+`externalModules` on `checkout` names the modules the sandbox may `import`, each pairing its value with an optional
+type stub.
 A plain object's public properties become the module's attributes, functions among them as host functions named
 `<module>.<attr>`:
 
@@ -85,11 +86,11 @@ A plain object's public properties become the module's attributes, functions amo
 import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create()
-await using session = await pool.checkout()
-
-const total = await session.feedRun('import tools\nfrom tools import add\ntools.add(1, 2) + add(3, 4)', {
-  externalModules: { tools: { add: (a: number, b: number) => a + b } },
+await using session = await pool.checkout({
+  externalModules: { tools: { module: { add: (a: number, b: number) => a + b } } },
 })
+
+const total = await session.feedRun('import tools\nfrom tools import add\ntools.add(1, 2) + add(3, 4)')
 console.log(total) // 10
 ```
 
@@ -262,8 +263,7 @@ await using session = await pool.checkout({
 console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data: () => 'data' } })) // data
 ```
 
-`typeCheckModuleStubs` gives the checker one `.pyi` per module the code imports through `externalModules`, and
-`session.getStubs()` returns the stubs in effect.
+An `externalModules` entry's `stubs` gives the checker the `.pyi` of a module the code imports.
 See [type checking](../type-checking.md#declaring-what-the-host-provides).
 
 Omitted `maxMemory` / `maxFeedDurationSecs` means unlimited.

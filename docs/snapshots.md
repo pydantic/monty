@@ -346,8 +346,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
     not from the `checkout()` that restored it.
-    The module stubs travel too, whether or not the session type-checks; the restoring `checkout()`'s
-    `type_check_module_stubs` are ignored.
+    The module stubs travel too, whether or not the session type-checks; the `stubs` of the restoring `checkout()`'s
+    `external_modules` are ignored, while their `module` values answer the restored session's imports and calls.
 - **A host module is a host object.** `import tools` binds the value the host answered with, so the next item applies
     to it: the attributes sent with it (values, and host functions named `tools.<attr>`) still work after the restore,
     while a lazy attribute or a method call on it fails as on any restored host object.

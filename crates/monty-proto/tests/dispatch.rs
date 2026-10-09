@@ -581,7 +581,7 @@ fn turn_events_carry_the_suspension_budget() {
 }
 
 // ---------------------------------------------------------------------------
-// Module stubs and GetStubs
+// Module stubs
 // ---------------------------------------------------------------------------
 
 fn module_stub(module: &str, source: &str) -> pb::ModuleStub {
@@ -611,65 +611,12 @@ fn configure_with_module_stubs(
     split_turn(&bytes).1
 }
 
-fn get_stubs(child: &mut Child) -> pb::child_event::Kind {
-    let request = frame_request(pb::parent_request::Kind::GetStubs(pb::GetStubs {}));
-    let (bytes, outcome) = dispatch_frame(child, &request);
-    assert_eq!(outcome, HandleOutcome::Continue);
-    split_turn(&bytes).1
-}
-
-/// The `(module, source)` pairs a `TypeStubs` reply carries.
-fn expect_type_stubs(event: pb::child_event::Kind) -> Vec<(String, String)> {
-    let pb::child_event::Kind::TypeStubs(stubs) = event else {
-        panic!("expected TypeStubs, got {event:?}");
-    };
-    stubs
-        .modules
-        .iter()
-        .map(|stub| (stub.module.clone(), stub.source.clone()))
-        .collect()
-}
-
 /// The message of the `Error` a request was refused with.
 fn expect_error_message(event: pb::child_event::Kind) -> String {
     let pb::child_event::Kind::Error(error) = event else {
         panic!("expected an Error event, got {event:?}");
     };
     error.exception.unwrap().message.unwrap()
-}
-
-/// `GetStubs` reports the configured stubs whether or not the session
-/// type-checks or has run, until `Reset` clears them.
-#[test]
-fn get_stubs_reports_the_configured_module_stubs() {
-    let mut child = Child::default();
-    assert_eq!(
-        expect_error_message(get_stubs(&mut child)),
-        "protocol violation: GetStubs before Configure"
-    );
-
-    let tools = ("tools".to_owned(), "def add(a: int, b: int) -> int: ...\n".to_owned());
-    let stubs = vec![module_stub(&tools.0, &tools.1)];
-    assert!(matches!(
-        configure_with_module_stubs(&mut child, false, stubs),
-        pb::child_event::Kind::Ok(_)
-    ));
-    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![tools.clone()]);
-    let (_, event) = feed(&mut child, "1 + 1");
-    assert_eq!(expect_complete(event), MontyObject::int(2));
-    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![tools]);
-
-    let request = frame_request(pb::parent_request::Kind::Reset(pb::Reset {}));
-    let (bytes, outcome) = dispatch_frame(&mut child, &request);
-    assert_eq!(outcome, HandleOutcome::Continue);
-    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
-    // the stubs went with the session: nothing is left to report
-    assert_eq!(
-        expect_error_message(get_stubs(&mut child)),
-        "protocol violation: GetStubs before Configure"
-    );
-    create_repl(&mut child);
-    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![]);
 }
 
 /// A module named twice is refused on `Configure`.
@@ -682,10 +629,10 @@ fn configure_refuses_a_duplicate_module_stub() {
 }
 
 /// A refused `Configure` keeps none of its stubs: a session loaded afterwards
-/// reports the dump's, not the refused configuration's.
+/// checks against the dump's, not the refused configuration's.
 #[test]
 fn a_refused_configure_keeps_no_stubs() {
-    let state = dump_configured(false, vec![]);
+    let state = dump_configured(true, vec![]);
     let mut child = Child::default();
     // longer than the scan threshold and nested past the parser's bound
     let nested = format!("x = {}1{}\n", "(".repeat(1 << 17), ")".repeat(1 << 17));
@@ -695,7 +642,8 @@ fn a_refused_configure_keeps_no_stubs() {
         "protocol violation: invalid type_check_module_stubs: tools stub source is too deeply nested"
     );
     load_state(&mut child, state);
-    assert_eq!(expect_type_stubs(get_stubs(&mut child)), vec![]);
+    let (_, event) = feed(&mut child, "import tools");
+    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
 }
 
 /// A stub for a module the sandbox provides is refused, and no session is created.
@@ -704,10 +652,11 @@ fn configure_refuses_a_reserved_module_stub() {
     let mut child = Child::default();
     let event = configure_with_module_stubs(&mut child, false, vec![module_stub("json", "")]);
     insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: invalid type_check_module_stubs: invalid value for ModuleStub.module: module "json" is provided by the sandbox or its type checker and cannot be replaced"#);
-    assert_eq!(
-        expect_error_message(get_stubs(&mut child)),
-        "protocol violation: GetStubs before Configure"
-    );
+    // no session was created, so a fresh `Configure` is accepted
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, false, vec![]),
+        pb::child_event::Kind::Ok(_)
+    ));
 }
 
 /// The dump of a session configured with `stubs`, after one feed.
@@ -783,25 +732,25 @@ fn load_restores_a_suspended_import() {
     assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(41));
 }
 
-/// A dump carries the module stubs whether or not the session type-checked,
-/// and `Load` restores them over the new worker's own.
+/// A dump carries the module stubs, and `Load` restores them over the new
+/// worker's own: the dumped module resolves, the configured one does not.
 #[test]
 fn load_restores_the_dumped_module_stubs() {
-    for type_check in [true, false] {
-        let state = dump_configured(type_check, vec![module_stub("tools", "x: int\n")]);
-        let mut child = Child::default();
-        let configured = vec![module_stub("other", "z: str\n")];
-        assert!(matches!(
-            configure_with_module_stubs(&mut child, type_check, configured),
-            pb::child_event::Kind::Ok(_)
-        ));
-        load_state(&mut child, state);
-        assert_eq!(
-            expect_type_stubs(get_stubs(&mut child)),
-            vec![("tools".to_owned(), "x: int\n".to_owned())],
-            "type_check={type_check}"
-        );
-    }
+    let state = dump_configured(true, vec![module_stub("tools", "x: int\n")]);
+    let mut child = Child::default();
+    let configured = vec![module_stub("other", "z: str\n")];
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, configured),
+        pb::child_event::Kind::Ok(_)
+    ));
+    load_state(&mut child, state);
+    let (_, event) = feed(&mut child, "import other");
+    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `other`");
+    let (_, event) = feed(&mut child, "import tools");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected the import to suspend, got {event:?}");
+    };
+    assert_eq!(call.function_name, "__import__");
 }
 
 /// The rendered diagnostics of a `TypingError` reply.

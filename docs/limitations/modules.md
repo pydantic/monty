@@ -99,7 +99,8 @@ The value the host answers with (in the bindings, the matching `external_modules
     that class, while `m.__name__` and `m.__dict__` raise `AttributeError`, as every other dunder attribute of a host
     object does;
 - a missing attribute raises `AttributeError: 'm' object has no attribute 'x'`, naming the host class rather than
-    CPython's `module 'm' has no attribute 'x'`;
+    CPython's `module 'm' has no attribute 'x'`, and calling the module raises `TypeError: 'm' object is not callable`
+    where CPython says `'module' object is not callable`;
 - every `import` statement asks again, since there is no `sys.modules` cache, so two imports of one module bind two
     objects (`import m as a; import m as b` leaves `a is not b`), and an import inside a function asks on each call;
 - an attribute can be assigned, as on any host object, but only that binding sees it: the next `import` starts

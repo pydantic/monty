@@ -21,8 +21,7 @@ use tokio::{
 };
 
 use crate::external::{
-    AfterModule, CallResult, ExternalLookup, HostNames, Staged, dispatch_object_call_or_coroutine,
-    py_err_to_ext_result, py_obj_to_ext_result,
+    AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
 };
 
 /// Dispatches a function call to a host-routed method (when `object_id` is
@@ -37,9 +36,12 @@ pub(crate) fn dispatch_function_call(
     names: &HostNames,
     instances: &InstanceStore,
 ) -> CallResult {
-    Python::attach(|py| match object_id {
-        Some(object_id) => dispatch_object_call_or_coroutine(py, function_name, &object_id, args, instances),
-        None => ExternalLookup::new(py, names, instances).call_or_coroutine(function_name, args),
+    Python::attach(|py| {
+        let lookup = ExternalLookup::new(py, names, instances);
+        match object_id {
+            Some(object_id) => lookup.call_object_or_coroutine(function_name, &object_id, args),
+            None => lookup.call_or_coroutine(function_name, args),
+        }
     })
 }
 

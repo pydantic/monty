@@ -147,6 +147,11 @@ impl TypeChecker {
         // type-check clean.
         let mut diagnostics = check_file_unwrap(&self.db, self.db.program_file(main_file));
         diagnostics.retain(filter_diagnostics);
+        // a diagnostic inside the injected prefix has no line of the snippet to land
+        // on, and reports nothing new: the prelude's imports were committed by snippets
+        // that already passed (or skipped) this check, e.g. `import x  # type: ignore`
+        let prefix_offset = TextSize::new(code_offset);
+        diagnostics.retain(|diagnostic| !starts_in_prefix(diagnostic, main_file, prefix_offset));
 
         if diagnostics.is_empty() {
             Ok(None)
@@ -322,6 +327,15 @@ impl fmt::Display for TypeCheckingDiagnostics<'_> {
             .color(self.config.color);
         DisplayDiagnostics::new(&self.type_checker.db, &config, &self.diagnostics).fmt(f)
     }
+}
+
+/// Whether `diagnostic`'s primary span starts inside the first `offset` bytes
+/// of `main_file`: the injected prelude and star import, never the snippet.
+fn starts_in_prefix(diagnostic: &Diagnostic, main_file: File, offset: TextSize) -> bool {
+    diagnostic.primary_span().is_some_and(|span| {
+        matches!(span.file(), UnifiedFile::Ty(file) if *file == main_file)
+            && span.range().is_some_and(|range| range.start() < offset)
+    })
 }
 
 /// Filter out diagnostics we want to ignore.

@@ -17,6 +17,7 @@ import {
   systemSleepCapOf,
 } from '../options.js'
 import type { CheckoutOptions, ResourceLimits } from '../pool.js'
+import { HostModules } from '../session.js'
 import type {
   Arena,
   ConfigureRequest,
@@ -275,13 +276,6 @@ export class WorkerTransport {
     throw new Error('Dump returned an unexpected event')
   }
 
-  /** The stubs of the session's host-provided modules, keyed by module name. */
-  async getStubs(): Promise<Record<string, string>> {
-    const event = await this.control({ tag: 'get-stubs' }, 'type-stubs', 'GetStubs')
-    if (event.tag === 'type-stubs') return Object.fromEntries(event.val.map((stub) => [stub.module, stub.source]))
-    throw new Error('GetStubs returned an unexpected event')
-  }
-
   /** Restores a previously dumped session into this fresh worker. */
   async restore(
     state: Uint8Array,
@@ -535,7 +529,7 @@ export function prepareSession(config: WorkerSessionConfig): ConfigureRequest {
     ...(config.limits === undefined ? {} : { limits: encodeLimits(config.limits) }),
     typeCheck: config.typeCheck ?? false,
     typeCheckStubs: config.typeCheckStubs,
-    typeCheckModuleStubs: Object.entries(config.typeCheckModuleStubs ?? {}).map(([module, source]) => ({
+    typeCheckModuleStubs: Object.entries(new HostModules(config.externalModules).stubs()).map(([module, source]) => ({
       module,
       source,
     })),

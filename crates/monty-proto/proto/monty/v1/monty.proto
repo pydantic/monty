@@ -546,7 +546,6 @@ message ParentRequest {
     Reset reset = 9;
     Shutdown shutdown = 10;
     AbortFeed abort_feed = 11;
-    GetStubs get_stubs = 12;
   }
 
   // W3C `traceparent` identifying the caller's span, so a child that exports
@@ -614,8 +613,8 @@ message Configure {
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
   // One `.pyi` per host-provided module, so `import <module>` resolves during
-  // type checking. Checked only when `type_check` is true; `GetStubs` reports
-  // them either way.
+  // type checking. Read only when `type_check` is true, but carried in the
+  // session's dump either way.
   repeated ModuleStub type_check_module_stubs = 14;
 }
 
@@ -750,14 +749,6 @@ message InstallDependencies {
   repeated string requirements = 1;
 }
 
-// Asks for the session's `type_check_module_stubs`, answered with `TypeStubs`.
-// Valid whenever no turn is in flight, including before the first `Feed`.
-//
-// A peer that predates this request answers an `Error` (a `RuntimeError`,
-// "protocol violation: request has no kind") and the session carries on; there
-// is no in-band negotiation, so only send it to a peer known to serve it.
-message GetStubs {}
-
 // ============================================================================
 // Events (child -> parent)
 // ============================================================================
@@ -784,7 +775,6 @@ message ChildEvent {
     Ok ok = 10;
     FatalError fatal_error = 11;
     ShutdownDump shutdown = 12;
-    TypeStubs type_stubs = 13;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -1096,10 +1086,4 @@ message ShutdownDump {
   // to load: no session yet, an ephemeral session, a relay without storage, or
   // a park that failed.
   optional bytes dump = 1;
-}
-
-// Answers `GetStubs` with the session's module stubs, as the type checker sees
-// them.
-message TypeStubs {
-  repeated ModuleStub modules = 1;
 }

@@ -7,9 +7,9 @@
 //! than leaking raw PyO3 errors.
 
 use monty_proto::python::{GraphEncoder, InstanceStore, exc_py_to_monty};
-use monty_types::{ExcType, ModuleStub, MontyException, NamedValues, StringRepr, unstable};
+use monty_types::{ExcType, MontyException, NamedValues, StringRepr, unstable};
 use pyo3::{
-    exceptions::{PyTypeError, PyValueError},
+    exceptions::PyTypeError,
     prelude::*,
     types::{PyDict, PyMapping, PyString},
 };
@@ -52,27 +52,6 @@ pub(crate) fn extract_type_check_stubs(
         },
         None => Ok(None),
     }
-}
-
-/// Extracts `type_check_module_stubs` (`{module: source}`) into validated
-/// stubs; a name that is not an identifier, or is a module the sandbox
-/// provides, is a `ValueError`.
-pub(crate) fn extract_module_stubs(stubs: Option<&Bound<'_, PyDict>>) -> PyResult<Vec<ModuleStub>> {
-    let Some(stubs) = stubs else {
-        return Ok(Vec::new());
-    };
-    stubs
-        .iter()
-        .map(|(module, source)| {
-            let module: String = module
-                .extract()
-                .map_err(|_| PyTypeError::new_err("type_check_module_stubs keys must be str"))?;
-            let source: String = source
-                .extract()
-                .map_err(|_| PyTypeError::new_err("type_check_module_stubs values must be str"))?;
-            ModuleStub::new(module, source).map_err(|err| PyValueError::new_err(err.to_string()))
-        })
-        .collect()
 }
 
 /// Extracts the `inputs` dict into the named values of a feed: one arena for

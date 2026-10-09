@@ -1,6 +1,7 @@
-//! Resolving names a sandbox snippet leaves undefined against the session's
-//! `external_lookup` dict, its imports against `external_modules`, plus
-//! method calls and lazy attribute lookups on host class instances.
+//! Resolving names a sandbox snippet leaves undefined against a feed's
+//! `external_lookup` dict, its imports against the session's
+//! `external_modules`, plus method calls and lazy attribute lookups on host
+//! class instances.
 //!
 //! [`ExternalLookup`] owns both halves of the lazy-resolution protocol — the
 //! `NameLookup` that resolves a bare name and the `FunctionCall` that invokes a
@@ -15,12 +16,13 @@ use monty_proto::python::{
     DecodedArena, InstanceStore, exc_py_to_monty, is_class_instance_wrapper, py_to_monty, py_to_monty_value,
 };
 use monty_types::{
-    CallArgs, ExtFunctionResult, IMPORT_FUNCTION, MontyObject, MontyUuid, NameLookupResult,
+    CallArgs, ExtFunctionResult, IMPORT_FUNCTION, ModuleStub, MontyObject, MontyUuid, NameLookupResult,
     unstable::{self, MontyNode},
 };
 use pyo3::{
-    exceptions::{PyAttributeError, PyRuntimeError, PyTypeError},
+    exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
+    sync::PyOnceLock,
     types::{PyDict, PyString, PyTuple, PyType},
 };
 
@@ -118,53 +120,79 @@ pub fn resolve_object_attr(
     }
 }
 
-/// The `external_lookup=` and `external_modules=` dicts one feed captured:
+/// The `external_modules=` a checkout captured: the host side of the modules
+/// every feed of the session may import.
+pub(crate) struct HostModules {
+    /// Each entry's `module`, by the name the snippet imports: a dict, a
+    /// `ClassInstance` or the factory returning one.
+    modules: Py<PyDict>,
+    /// What each factory returned, by module name: a factory runs once per
+    /// session, at the first import or call that needs it.
+    resolved: Py<PyDict>,
+}
+
+impl HostModules {
+    /// Captures `external_modules`, returning the stubs its entries declare
+    /// for the worker's type checker. Every entry must be an `ExternalModule`
+    /// whose `module` is a dict, a `ClassInstance` or a zero-argument callable
+    /// returning one: a dict names exactly what crosses, where a module or
+    /// `dir()` of an arbitrary object would also expose its imports and
+    /// whatever else it happens to carry.
+    pub(crate) fn capture(py: Python<'_>, entries: &Bound<'_, PyDict>) -> PyResult<(Self, Vec<ModuleStub>)> {
+        let modules = PyDict::new(py);
+        let mut stubs = Vec::new();
+        for (name, entry) in entries.iter() {
+            let (module, stub) = check_external_module(&name, &entry)?;
+            modules.set_item(&name, module)?;
+            stubs.extend(stub);
+        }
+        let captured = Self {
+            modules: modules.unbind(),
+            resolved: PyDict::new(py).unbind(),
+        };
+        Ok((captured, stubs))
+    }
+
+    /// A second owner of the same dicts, for a feed's drive context.
+    pub(crate) fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self {
+            modules: self.modules.clone_ref(py),
+            resolved: self.resolved.clone_ref(py),
+        }
+    }
+}
+
+/// The `external_lookup=` dict one feed captured and the session's modules:
 /// the host side of the names and imports a snippet leaves to it. Held as
 /// owned references so a snapshot can keep them for `resume_auto`.
 #[derive(Default)]
 pub(crate) struct HostNames {
     /// `external_lookup=`: host values by the bare name the snippet reads.
     pub(crate) lookup: Option<Py<PyDict>>,
-    /// `external_modules=`: module-like host values by the name the snippet
-    /// imports.
-    pub(crate) modules: Option<Py<PyDict>>,
-    /// What each factory entry of `modules` returned, by module name: a
-    /// factory runs once per feed, at the first import or call that needs it,
-    /// and its result stands for the module however `modules` changes after.
-    pub(crate) resolved_modules: Option<Py<PyDict>>,
+    /// The session's `external_modules`, shared by all of its feeds.
+    pub(crate) modules: Option<HostModules>,
 }
 
 impl HostNames {
-    /// Captures the dicts a feed was called with. Every `external_modules`
-    /// entry must be a dict, a `ClassInstance` or a zero-argument callable
-    /// returning one: a dict names exactly what crosses, where a module or
-    /// `dir()` of an arbitrary object would also expose its imports and
-    /// whatever else it happens to carry.
-    pub(crate) fn capture(lookup: Option<&Bound<'_, PyDict>>, modules: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
-        if let Some(modules) = modules {
-            for (name, module) in modules.iter() {
-                check_module_entry(&name, &module)?;
-            }
-        }
-        Ok(Self {
+    /// Captures the dict a feed was called with alongside the session's modules.
+    pub(crate) fn capture(py: Python<'_>, lookup: Option<&Bound<'_, PyDict>>, modules: Option<&HostModules>) -> Self {
+        Self {
             lookup: lookup.map(|d| d.clone().unbind()),
-            modules: modules.map(|d| d.clone().unbind()),
-            resolved_modules: modules.map(|d| PyDict::new(d.py()).unbind()),
-        })
+            modules: modules.map(|m| m.clone_ref(py)),
+        }
     }
 
     /// A second owner of the same dicts, for a snapshot's drive context.
     pub(crate) fn clone_ref(&self, py: Python<'_>) -> Self {
         Self {
             lookup: self.lookup.as_ref().map(|d| d.clone_ref(py)),
-            modules: self.modules.as_ref().map(|d| d.clone_ref(py)),
-            resolved_modules: self.resolved_modules.as_ref().map(|d| d.clone_ref(py)),
+            modules: self.modules.as_ref().map(|m| m.clone_ref(py)),
         }
     }
 }
 
-/// The session's `external_lookup` and `external_modules` dicts (absent when
-/// the caller passed none) plus the `Python` token and instance store every
+/// A feed's `external_lookup` and the session's `external_modules` (absent
+/// when the caller passed none) plus the `Python` token and instance store every
 /// resolution needs. Owns both halves of the lazy-resolution protocol:
 /// [`resolve_name`](Self::resolve_name) answers a `NameLookup`, and
 /// [`call`](Self::call) / [`call_or_coroutine`](Self::call_or_coroutine)
@@ -190,10 +218,52 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         Self {
             py,
             lookup: names.lookup.as_ref().map(|d| d.bind(py)),
-            modules: names.modules.as_ref().map(|d| d.bind(py)),
-            resolved_modules: names.resolved_modules.as_ref().map(|d| d.bind(py)),
+            modules: names.modules.as_ref().map(|m| m.modules.bind(py)),
+            resolved_modules: names.modules.as_ref().map(|m| m.resolved.bind(py)),
             instances,
         }
+    }
+
+    /// Answers a method call on a host object (a `FunctionCall` with an
+    /// `object_id`). A dict module's stand-in has no host object behind it, so
+    /// calling it is `TypeError` and any other method `AttributeError`, as for
+    /// a value of its kind; everything else routes through the instance store.
+    pub fn call_object(&self, function_name: &str, object_id: &MontyUuid, args: &CallArgs) -> ExtFunctionResult {
+        match self.module_stand_in(object_id) {
+            Ok(Some(name)) => {
+                ExtFunctionResult::Error(exc_py_to_monty(self.py, &module_method_error(&name, function_name)))
+            }
+            Ok(None) => dispatch_object_call(self.py, function_name, object_id, args, self.instances),
+            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+        }
+    }
+
+    /// Like [`call_object`](Self::call_object) but returns `CallResult::Coroutine`
+    /// when the method returns a coroutine.
+    pub fn call_object_or_coroutine(&self, function_name: &str, object_id: &MontyUuid, args: &CallArgs) -> CallResult {
+        match self.module_stand_in(object_id) {
+            Ok(Some(name)) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(
+                self.py,
+                &module_method_error(&name, function_name),
+            ))),
+            Ok(None) => dispatch_object_call_or_coroutine(self.py, function_name, object_id, args, self.instances),
+            Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
+        }
+    }
+
+    /// The dict module whose sandbox stand-in `object_id` identifies, if any
+    /// (see [`module_uuid`]); a `ClassInstance` module keeps the wrapper's own id.
+    fn module_stand_in(&self, object_id: &MontyUuid) -> PyResult<Option<String>> {
+        let Some(modules) = self.modules else {
+            return Ok(None);
+        };
+        for name in modules.keys() {
+            let name: String = name.extract()?;
+            if module_uuid("instance", &name) == *object_id {
+                return Ok(Some(name));
+            }
+        }
+        Ok(None)
     }
 
     /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
@@ -332,11 +402,10 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// The `external_modules` entry for `name`, if any. A factory entry is
-    /// called the first time the feed needs the module and its result kept
-    /// in `resolved_modules`, which is consulted first so an import, a
-    /// re-import and the calls of the module's functions all see one module
-    /// even if the host swaps the entry mid-feed; an awaitable it returns is
-    /// handed back for the async loop to await and [`install_module`](Self::install_module).
+    /// called the first time the session needs the module and its result kept
+    /// in `resolved_modules`, which is consulted first so every import and
+    /// call of the module's functions sees one module; an awaitable it returns
+    /// is handed back for the async loop to await and [`install_module`](Self::install_module).
     fn resolve_module(&self, name: &str) -> PyResult<Option<Resolved<'py>>> {
         let (Some(modules), Some(resolved)) = (self.modules, self.resolved_modules) else {
             return Ok(None);
@@ -358,12 +427,12 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Keeps what module `name`'s factory produced for the rest of the feed,
+    /// Keeps what module `name`'s factory produced for the rest of the session,
     /// refusing anything that is not a module shape.
     fn install_module(&self, name: &str, module: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         if !is_module_shape(&module)? {
             return Err(PyTypeError::new_err(format!(
-                "external_modules['{name}']() returned {}, not a dict or a ClassInstance",
+                "external_modules['{name}'].module() returned {}, not a dict or a ClassInstance",
                 module.get_type().name()?
             )));
         }
@@ -481,7 +550,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
 /// An `external_modules` entry after its factory (if any) ran.
 enum Resolved<'py> {
-    /// A module shape, installed in the feed's cache when a factory made it.
+    /// A module shape, installed in the session's cache when a factory made it.
     Module(Bound<'py, PyAny>),
     /// A factory's awaitable (a coroutine, a future, ...), still to be awaited
     /// by the async loop.
@@ -496,33 +565,83 @@ pub(crate) fn sync_module_coroutine_error(name: &str, awaitable: &Bound<'_, PyAn
         let _ = awaitable.call_method0("close");
     }
     PyRuntimeError::new_err(format!(
-        "external_modules['{name}']() returned an awaitable; async module factories require AsyncMonty"
+        "external_modules['{name}'].module() returned an awaitable; async module factories require AsyncMonty"
     ))
 }
 
-/// `TypeError` unless `name` is a `str` and `entry` a module shape (see
-/// [`is_module_shape`]) or a callable returning one; see [`HostNames::capture`].
-/// A class is callable but constructs an instance, never a module shape, so
-/// it is refused here with a message naming it rather than at the import.
-fn check_module_entry(name: &Bound<'_, PyAny>, entry: &Bound<'_, PyAny>) -> PyResult<()> {
-    const SHAPES: &str = "must be a dict, a ClassInstance or a callable returning one";
-    if !name.is_instance_of::<PyString>() {
-        Err(PyTypeError::new_err("external_modules keys must be str"))
-    } else if let Ok(class) = entry.cast::<PyType>() {
-        Err(PyTypeError::new_err(format!(
-            "external_modules[{}] {SHAPES}, not the class {}",
-            name.repr()?,
-            class.name()?
-        )))
-    } else if is_module_shape(entry)? || entry.is_callable() {
-        Ok(())
+/// The error for a method call on a dict module's stand-in, which has no host
+/// object to call: `__call__` (calling the module) is `TypeError`, any other
+/// name `AttributeError`, both as CPython words them for a value of that kind.
+fn module_method_error(name: &str, method: &str) -> PyErr {
+    if method == "__call__" {
+        PyTypeError::new_err(format!("'{name}' object is not callable"))
     } else {
-        Err(PyTypeError::new_err(format!(
-            "external_modules[{}] {SHAPES}, not {}",
+        PyAttributeError::new_err(format!("'{name}' object has no attribute '{method}'"))
+    }
+}
+
+/// Checks one `external_modules` entry (see [`HostModules::capture`]),
+/// returning its `module` and the [`ModuleStub`] its `stubs` declare. `name`
+/// must be a `str`, `entry` an `ExternalModule` and its `module` a module
+/// shape (see [`is_module_shape`]) or a callable returning one, else
+/// `TypeError`; a class is callable but constructs an instance, never a module
+/// shape, so it is refused here with a message naming it rather than at the
+/// import. A stub whose module name is not an identifier, or is a module the
+/// sandbox provides, is a `ValueError`.
+fn check_external_module<'py>(
+    name: &Bound<'py, PyAny>,
+    entry: &Bound<'py, PyAny>,
+) -> PyResult<(Bound<'py, PyAny>, Option<ModuleStub>)> {
+    const SHAPES: &str = "must be a dict, a ClassInstance or a callable returning one";
+    let Ok(name) = name.cast::<PyString>() else {
+        return Err(PyTypeError::new_err("external_modules keys must be str"));
+    };
+    if !entry.is_instance(external_module_class(entry.py())?)? {
+        return Err(PyTypeError::new_err(format!(
+            "external_modules[{}] must be an ExternalModule, not {}",
             name.repr()?,
             entry.get_type().name()?
-        )))
+        )));
     }
+    let module = entry.getattr("module")?;
+    if let Ok(class) = module.cast::<PyType>() {
+        return Err(PyTypeError::new_err(format!(
+            "external_modules[{}].module {SHAPES}, not the class {}",
+            name.repr()?,
+            class.name()?
+        )));
+    }
+    if !(is_module_shape(&module)? || module.is_callable()) {
+        return Err(PyTypeError::new_err(format!(
+            "external_modules[{}].module {SHAPES}, not {}",
+            name.repr()?,
+            module.get_type().name()?
+        )));
+    }
+    let stubs = entry.getattr("stubs")?;
+    let stub = if stubs.is_none() {
+        None
+    } else {
+        let Ok(source) = stubs.extract::<String>() else {
+            return Err(PyTypeError::new_err(format!(
+                "external_modules[{}].stubs must be a str or None, not {}",
+                name.repr()?,
+                stubs.get_type().name()?
+            )));
+        };
+        Some(
+            ModuleStub::new(name.to_cow()?.into_owned(), source)
+                .map_err(|err| PyValueError::new_err(err.to_string()))?,
+        )
+    };
+    Ok((module, stub))
+}
+
+/// Cached import of the `pydantic_monty.ExternalModule` class.
+fn external_module_class(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static EXTERNAL_MODULE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    EXTERNAL_MODULE.import(py, "pydantic_monty", "ExternalModule")
 }
 
 /// Whether `value` can stand for a module: a dict or a `ClassInstance` wrapper.

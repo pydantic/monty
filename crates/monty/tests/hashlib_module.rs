@@ -78,7 +78,7 @@ fn a_hash_mid_stream_survives_a_dump() {
 
         let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(&start, vec![], PrintWriter::Stdout).unwrap();
-        let bytes = dump("test.py", None, SessionRef::Idle(&repl)).unwrap();
+        let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
         let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
             panic!("expected an idle session");
         };
