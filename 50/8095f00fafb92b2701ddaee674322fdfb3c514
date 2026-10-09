@@ -1,0 +1,35 @@
+crates/monty/src/exception_private.rs
+  s_d3433d22bc9894::t_afbc057405d556 1681-1694
+crates/monty/src/types/hashlib/mod.rs
+  s_d3433d22bc9894::t_afbc057405d556 20,371-378,417,424,516-519,521,568-575
+docs/limitations/hashlib.md
+  s_d3433d22bc9894::t_e3533a8e79a39b 3-4,19-20,22-25,31-40,57-59
+crates/monty/src/modules/hashlib.rs
+  s_d3433d22bc9894::t_afbc057405d556 617,619
+crates/monty/src/modules/random.rs
+  s_d3433d22bc9894::t_afbc057405d556 534,565
+crates/monty/src/args/from_value.rs
+  s_d3433d22bc9894::t_afbc057405d556 20-22,149-151,154-157,169,172,180,275-280,282-301,305-316
+  s_d3433d22bc9894::t_b305cb2b764c10 27
+  s_d3433d22bc9894::t_161fc71b5c6f8c 302-304
+crates/monty/tests/hashlib_module.rs
+  s_d3433d22bc9894::t_5c157ba00f43ff 5-6,55-58
+  s_d3433d22bc9894::t_e3533a8e79a39b 7,10,18-33,38,44-54,59-64
+  s_d3433d22bc9894::t_161fc71b5c6f8c 34-37,39-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "508095f00fafb92b2701ddaee674322fdfb3c514",
+  "prompts": {},
+  "sessions": {
+    "s_d3433d22bc9894": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29e556f6-4132-4194-86ce-7bdd5550c7ae",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
