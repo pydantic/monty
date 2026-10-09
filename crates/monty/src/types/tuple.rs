@@ -290,7 +290,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     /// Linear search by equality, stored element on the left of `==` as CPython's
     /// `tuplecontains` does. `TupleIter` owns each yielded item, so a user
     /// `__eq__` re-entering the VM cannot invalidate the walk.
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(el) = iter.next(vm)? {
@@ -313,7 +313,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         Some(self.get(vm.heap).items.len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(key_id) = key
             && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
@@ -337,7 +337,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         Ok(self.clone_item(idx, vm))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A tuple equals another tuple; `tuple == namedtuple` is handled by the
         // reflected pass via `NamedTuple::py_eq_impl`.
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
@@ -433,7 +433,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -663,7 +663,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

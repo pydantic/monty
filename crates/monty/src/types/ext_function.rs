@@ -52,7 +52,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ExtFunction> {
 
     /// Identity only. Two lookups of the same name share one heap entry (the
     /// weak external-function cache), so `is` already answers this.
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

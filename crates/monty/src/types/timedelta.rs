@@ -364,7 +364,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -428,7 +428,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::Date(other)) => Ok(date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap)),
             Some(HeapReadOutput::DateTime(other)) => {
@@ -448,7 +448,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         }
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };

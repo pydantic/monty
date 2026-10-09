@@ -10,7 +10,7 @@ use crate::{
     fstring::decimal_digit_value,
     heap::{ContainsHeap, DropGuard, DropWithContext},
     string_builder::StringBuilder,
-    types::{PyTrait, str::allocate_string},
+    types::str::allocate_string,
     value::{EitherStr, Value},
 };
 

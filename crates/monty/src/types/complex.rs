@@ -591,7 +591,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
 
     /// Equal to another complex part-wise, and to a real number when the
     /// imaginary part is zero and the real part matches it exactly.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let c = *self.get(vm.heap);
         Ok(match other {
             Value::Ref(id) if let HeapData::Complex(o) = vm.heap.get(*id) => Some(c.eq(*o)),
@@ -643,7 +643,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // Addition is symmetric part-wise, so both forms share the immutable implementation.
+        self.py_radd_impl(other, vm)
+    }
+
+    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let c = *self.get(vm.heap);
         let result = match operand(other, vm)? {
             Some(Operand::Real(r)) => Complex::new(c.real + r, c.imag),
@@ -653,12 +658,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(result.into_value(vm.heap)))
     }
 
-    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        // Addition is symmetric part-wise, so the reflected form is the direct one.
-        self.py_add_impl(other, vm)
-    }
-
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let c = *self.get(vm.heap);
         let result = match operand(other, vm)? {
             Some(Operand::Real(r)) => Complex::new(c.real - r, c.imag),

@@ -148,7 +148,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     /// `__contains__ = None` instead reports that the object is not a container.
     /// Results use `py_bool`, whose handling of user objects is documented in
     /// `limitations/classes.md`.
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let class_id = self.get(vm.heap).class();
         if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
             Err(ExcType::type_error_object_not_container(&class_name(
@@ -211,7 +211,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 
     /// Returns `NotImplemented`; comparisons dispatch at the `Value` level because
     /// user and synthesized dataclass equality require the instance's `HeapId`.
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -476,7 +476,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

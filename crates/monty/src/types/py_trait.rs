@@ -13,6 +13,11 @@ use ahash::AHashSet;
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
+///
+/// The operator methods that may probe a dict or set by key (`py_eq_impl`,
+/// `py_contains_impl`, `py_getitem`, `py_cmp_op` and the set-algebra
+/// operators) take `&mut self`: a container loaded from a dump rebuilds its
+/// index on its first keyed use.
 use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
@@ -161,7 +166,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// `Ok(None)` means the type has no containment logic of its own, so
     /// [`Value::py_contains`] falls back to iteration and then `TypeError`.
-    fn py_contains_impl(&self, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -181,7 +186,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
@@ -211,7 +216,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Only the four ordering operators reach here. `Ok(None)` — the default —
     /// defers to `py_cmp`.
-    fn py_cmp_op(&self, _other: &Value, _op: CmpOperator, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_cmp_op(&mut self, _other: &Value, _op: CmpOperator, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -311,7 +316,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
 
     /// One-sided implementation of Python addition (`__add__`).
     ///
-    fn py_add_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -321,7 +326,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     }
 
     /// One-sided implementation of Python subtraction (`__sub__`).
-    fn py_sub_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -401,7 +406,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     }
 
     /// One-sided implementation of Python bitwise AND (`__and__`).
-    fn py_and_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -411,7 +416,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     }
 
     /// One-sided implementation of Python bitwise OR (`__or__`).
-    fn py_or_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -421,7 +426,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     }
 
     /// One-sided implementation of Python bitwise XOR (`__xor__`).
-    fn py_xor_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -611,7 +616,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// and access to interned string content.
     ///
     /// Default implementation returns TypeError.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_not_sub(&self.py_type_name(vm)))
     }
 

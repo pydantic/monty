@@ -165,7 +165,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         None
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Union::heap_or(self, other, vm)
     }
 
@@ -175,7 +175,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
 
     /// `Foo[int]`: a class's `__class_getitem__` is never looked up, so the
     /// wording is CPython's for a type without one.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_type_not_subscriptable(
             self.get(vm.heap).name.as_str(vm.interns),
         ))
@@ -190,7 +190,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         Ok(())
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Classes return `NotImplemented`; rich equality's final identity
         // fallback makes a class equal only to itself.
         Ok(None)

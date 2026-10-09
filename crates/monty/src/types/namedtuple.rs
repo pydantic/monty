@@ -367,7 +367,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     /// tuple subclass in CPython and inherits `tuplecontains`. Without this, `in`
     /// falls back to iteration and allocates a heap `TupleIterator`, which can
     /// trip the allocation limit on a tight heap.
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&mut self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(el) = iter.next(vm)? {
@@ -395,7 +395,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // A slice degrades to a plain tuple, as in CPython — the field names
         // describe the original instance only, so they cannot survive a slice.
         if let Value::Ref(key_id) = key
@@ -425,7 +425,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     /// `namedtuple + tuple-like` — concatenation into a plain tuple, as in
     /// CPython (the field names describe one instance only, so they cannot
     /// survive concatenation). A non-tuple-like right operand returns `None`.
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(mut other_items) = cloned_tuple_like_items(other, vm)? else {
             return Ok(None);
         };
@@ -471,7 +471,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A namedtuple equals another namedtuple element-wise, and also equals a
         // plain tuple with the same elements (class name is ignored). Both
         // directions of the tuple case are covered here, so `Tuple::py_eq_impl`
@@ -876,12 +876,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Class objects compare by identity, resolved before reaching here.
         Ok(None)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Union::heap_or(self, other, vm)
     }
 
@@ -891,7 +891,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
 
     /// `Point[int]` raises here where CPython builds a `types.GenericAlias`
     /// via the inherited `tuple.__class_getitem__` (see `limitations/namedtuple.md`).
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&mut self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_type_not_subscriptable(
             self.get(vm.heap).name(vm.interns),
         ))

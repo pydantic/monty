@@ -44,7 +44,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // `_DataclassParams` defines no `__eq__`, so it compares by identity,
         // which `Value::py_eq_impl` resolves before ever reaching here.
         Ok(None)
