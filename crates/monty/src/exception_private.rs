@@ -1278,6 +1278,15 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "negative count").into()
     }
 
+    /// Creates the `ValueError` CPython's float-to-string conversion raises for a
+    /// precision above `MAX_FLOAT_PRECISION` (`INT_MAX - 1024`).
+    ///
+    /// Matches CPython's format: `ValueError: precision too big`
+    #[must_use]
+    fn value_error_precision_too_big() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "precision too big").into()
+    }
+
     /// Creates a TypeError for isinstance() arg 2.
     ///
     /// Matches CPython's format: `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union`

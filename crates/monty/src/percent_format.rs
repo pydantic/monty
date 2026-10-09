@@ -19,7 +19,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    fstring::{ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
+    fstring::{MAX_FLOAT_PRECISION, ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     resource_checks::check_repeat_size,
     str_format::value_error,
@@ -850,6 +850,11 @@ fn format_float<T: Target>(
 ) -> RunResult<T::Output> {
     let number = float_operand::<T>(value, vm)?;
     let precision = spec.precision.unwrap_or(6);
+    // CPython bounds the precision by `INT_MAX - 1024` before looking at the
+    // value, so `inf`/`nan` are rejected too.
+    if precision > MAX_FLOAT_PRECISION {
+        return Err(ExcType::value_error_precision_too_big());
+    }
     // The precision may come from an argument (`%.*f`), and the fixed and
     // exponent formatters synthesise that many digits; `inf`/`nan` print as is.
     let tracker = &vm.heap.tracker;

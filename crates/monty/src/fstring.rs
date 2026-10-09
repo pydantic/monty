@@ -730,6 +730,14 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         check_complex_spec(spec)?;
     }
 
+    // CPython bounds a float precision by `INT_MAX - 1024` before looking at
+    // the value, so `inf`/`nan` and ints under a float presentation hit it too.
+    if spec.precision.is_some_and(|precision| precision > MAX_FLOAT_PRECISION)
+        && formats_as_float(spec.type_char, value_type)
+    {
+        return Err(ExcType::value_error_precision_too_big());
+    }
+
     // `spec.precision` on the float formats is rendered as that many decimal
     // digits. Reject an attacker-chosen oversized result before formatting;
     // tracker-backed builders guard the later copies at their actual size.
@@ -987,7 +995,7 @@ fn formats_as_integer(type_char: Option<TypeChar>, value_type: Type) -> bool {
 /// The float codes (`e`/`E`/`f`/`F`/`g`/`G`/`%`) always format as a float
 /// (an `int` is widened); `n` and a type-less spec do so only for an actual
 /// float or complex value. Used to gate the `z` (negative-zero coercion) flag,
-/// which is legal only for float presentations.
+/// which is legal only for float presentations, and the `MAX_FLOAT_PRECISION` cap.
 fn formats_as_float(type_char: Option<TypeChar>, value_type: Type) -> bool {
     match type_char {
         Some(
@@ -1054,6 +1062,11 @@ pub const MAX_ENCODED_FILL: u32 = 0xFF;
 
 /// Maximum width that fits in the 20-bit width field of the encoded format spec.
 pub const MAX_ENCODED_WIDTH: usize = (1 << 20) - 1;
+
+/// The largest precision CPython's float-to-string conversion accepts
+/// (`DOUBLE_TO_STRING_PRECISION_MAX`, `INT_MAX - 1024`). Above it every float
+/// presentation raises `ValueError: precision too big`, finite value or not.
+pub const MAX_FLOAT_PRECISION: usize = i32::MAX as usize - 1024;
 
 /// Maximum precision that fits in the 21-bit precision field of the encoded format
 /// spec. One slot (the zero value) is reserved to mean "no precision", so the
