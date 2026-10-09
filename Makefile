@@ -240,6 +240,10 @@ generate-unicode-type: ## Regenerate the str character-property tables from the 
 check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
 	git diff --exit-code crates/monty/src/types/unicode_type_data.rs
 
+.PHONY: generate-golden-dumps
+generate-golden-dumps: ## Regenerate golden dump fixtures by building each dump version's recorded commit
+	uv run scripts/generate_golden_dumps.py
+
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
