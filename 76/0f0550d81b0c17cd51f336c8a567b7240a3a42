@@ -1,0 +1,33 @@
+crates/monty/src/bytecode/vm/attr.rs
+  s_0e0e443213dfc2::t_226278d46c5562 76-78,100-103
+crates/monty-types/src/type_checking.rs
+  s_0e0e443213dfc2::t_17f307996f4c2e 191
+crates/monty/src/bytecode/op.rs
+  s_0e0e443213dfc2::t_226278d46c5562 294,297-298,703,716,958
+crates/monty/src/bytecode/vm/mod.rs
+  s_0e0e443213dfc2::t_226278d46c5562 413-418,459,516,663-666,687,1004,1627,1629-1633,2062-2063
+crates/monty/src/bytecode/vm/async_exec.rs
+  s_0e0e443213dfc2::t_226278d46c5562 517,531,599
+crates/monty/src/bytecode/vm/scheduler.rs
+  s_0e0e443213dfc2::t_226278d46c5562 18,104-106
+crates/monty/src/dump_format.rs
+  s_0e0e443213dfc2::t_226278d46c5562 52
+crates/monty/src/bytecode/compiler.rs
+  s_0e0e443213dfc2::t_226278d46c5562 1102-1103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "760f0550d81b0c17cd51f336c8a567b7240a3a42",
+  "prompts": {},
+  "sessions": {
+    "s_0e0e443213dfc2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "93cb8425-33fb-493c-8b2d-a8e9ceef6127",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
