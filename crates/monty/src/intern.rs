@@ -1001,6 +1001,10 @@ pub enum StaticStrings {
     Extendleft,
     /// `os.extsep` constant name.
     Extsep,
+    /// Kwarg name `f1` — `os.path.samefile(f1=...)`.
+    F1,
+    /// Kwarg name `f2` — `os.path.samefile(f2=...)`.
+    F2,
     /// `math.fabs()` function.
     Fabs,
     /// `math.factorial()` function.
@@ -1252,6 +1256,8 @@ pub enum StaticStrings {
     Islink,
     /// `islower()` method, shared by `str` and `bytes`.
     Islower,
+    /// `os.path.ismount()` function.
+    Ismount,
     /// `math.isnan()` function.
     Isnan,
     /// `str.isnumeric()` method.
@@ -1331,6 +1337,8 @@ pub enum StaticStrings {
     LeafSize,
     /// `length` parameter of a SHAKE `digest()`.
     Length,
+    /// `os.path.lexists()` function.
+    Lexists,
     /// `math.lgamma()` function.
     Lgamma,
     /// The value of `sys.platlibdir`.
@@ -1773,6 +1781,8 @@ pub enum StaticStrings {
     /// `blake2b.SALT_SIZE` class constant.
     #[strum(serialize = "SALT_SIZE")]
     SaltSize,
+    /// `os.path.samefile()` function.
+    Samefile,
     /// `os.path.samestat()` function.
     Samestat,
     /// `random.sample()` function.

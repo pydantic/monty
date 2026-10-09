@@ -550,6 +550,7 @@ except TypeError as e:
 
 # === realpath (pure cases) ===
 assert os.path.realpath('') == cwd
+assert os.path.realpath('', strict=True) == cwd
 try:
     os.path.realpath(1)
     assert False, 'expected TypeError'
@@ -571,6 +572,38 @@ assert os.path.exists('') == False
 assert os.path.isdir('') == False
 assert os.path.isfile('') == False
 assert os.path.islink('') == False
+assert os.path.lexists('') == False
+assert os.path.ismount('') == False
+try:
+    os.path.lexists(1.5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'lstat: path should be string, bytes or os.PathLike, not float'
+try:
+    os.path.ismount(1.5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'lstat: path should be string, bytes or os.PathLike, not float'
+try:
+    os.path.ismount()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "ismount() missing 1 required positional argument: 'path'"
+try:
+    os.path.samefile(1.5, 'x')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'stat: path should be string, bytes, os.PathLike or integer, not float'
+try:
+    os.path.samefile('', 'x')
+    assert False, 'expected FileNotFoundError'
+except FileNotFoundError as e:
+    assert str(e) == "[Errno 2] No such file or directory: ''"
+try:
+    os.path.samefile('x')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "samefile() missing 1 required positional argument: 'f2'"
 try:
     os.path.exists(1.5)
     assert False, 'expected TypeError'

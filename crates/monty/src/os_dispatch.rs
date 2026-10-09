@@ -136,8 +136,29 @@ pub(crate) enum PreConversionEffect {
     /// `os.path.getsize` and friends: keep one field of a `Path.stat` reply.
     StatField(StatField),
     /// `os.path.realpath`: the `Path.resolve` reply arrives as a path; the
-    /// function returns `str`.
-    ResolvedPath,
+    /// function returns `str`. Under `strict` the reply is then checked with
+    /// `Path.exists` ([`RealpathStrict`](Self::RealpathStrict)).
+    ResolvedPath { strict: bool },
+    /// `os.path.realpath(strict=True)`: a `False` from `Path.exists` on the
+    /// resolved path is `FileNotFoundError`; `True` yields the path.
+    RealpathStrict { resolved: String },
+    /// `os.path.lexists`: a `False` from `Path.exists` is not final — a
+    /// dangling symlink exists too — so `Path.is_symlink` decides next.
+    Lexists { path: String },
+    /// `os.path.samefile`: the first `Path.stat` reply is in; stat `second`
+    /// next. `second` is already extracted so its `TypeError` (the phrase and
+    /// type name of the `stat` converter's wording) is raised only now, after
+    /// the first stat succeeded, in CPython's order.
+    SamefileFirst {
+        first: String,
+        second: Result<String, (String, String)>,
+    },
+    /// `os.path.samefile`: both stats are in; compare them.
+    SamefileSecond {
+        first: String,
+        first_identity: (i64, i64),
+        second: String,
+    },
     /// `os.path.expanduser`: splice the `os.getenv('HOME')` reply in front of
     /// `tail`, the path after its leading `~`; `None` leaves the path as written.
     ExpandUser {
@@ -158,9 +179,10 @@ pub(crate) enum PreConversionEffect {
 
 impl PreConversionEffect {
     /// Applies the effect to the host's reply, yielding the value the VM
-    /// imports and pushes; `Chdir` adopts the directory as a side effect.
-    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<MontyObject, RunError> {
-        match self {
+    /// imports and pushes, or the next call of a multi-step operation;
+    /// `Chdir` adopts the directory as a side effect.
+    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<Reshaped, RunError> {
+        let reply = match self {
             Self::ListdirNames => listdir_names(value),
             Self::IterdirPaths { path } => iterdir_paths(value, &path, &vm.heap.tracker),
             Self::UrandomLength { size } => urandom_reply(value, size),
@@ -170,10 +192,19 @@ impl PreConversionEffect {
                 Ok(MontyObject::none())
             }
             Self::StatField(field) => stat_field_reply(&value, field),
-            Self::ResolvedPath => resolved_path_reply(&value),
+            Self::ResolvedPath { strict } => return resolved_path_reply(&value, strict),
+            Self::RealpathStrict { resolved } => realpath_strict_reply(&value, resolved),
+            Self::Lexists { path } => return lexists_reply(&value, path),
+            Self::SamefileFirst { first, second } => return samefile_first_reply(&value, first, second),
+            Self::SamefileSecond {
+                first,
+                first_identity,
+                second,
+            } => samefile_second_reply(&value, &first, first_identity, &second, &vm.env.cwd),
             Self::ExpandUser { tail, is_bytes } => expand_user_reply(&value, &tail, is_bytes),
             Self::ExpandVars { path, is_bytes } => expand_vars_reply(&value, &path, is_bytes),
-        }
+        };
+        reply.map(Reshaped::Value)
     }
 
     /// The Python operation this effect completes, for error messages.
@@ -184,11 +215,27 @@ impl PreConversionEffect {
             Self::IterdirPaths { .. } => "Path.iterdir",
             Self::UrandomLength { .. } => "os.urandom",
             Self::StatField(field) => field.function(),
-            Self::ResolvedPath => "os.path.realpath",
+            Self::ResolvedPath { .. } | Self::RealpathStrict { .. } => "os.path.realpath",
+            Self::Lexists { .. } => "os.path.lexists",
+            Self::SamefileFirst { .. } | Self::SamefileSecond { .. } => "os.path.samefile",
             Self::ExpandUser { .. } => "os.path.expanduser",
             Self::ExpandVars { .. } => "os.path.expandvars",
         }
     }
+}
+
+/// What a [`PreConversionEffect`] makes of the host's reply: the value the
+/// VM pushes, or the next call of an operation that needs several (the
+/// VM suspends again instead of resuming Python, as if the function had
+/// yielded it itself).
+pub(crate) enum Reshaped {
+    /// The operation is complete; push this.
+    Value(MontyObject),
+    /// Suspend again with this call, `effect` armed for its reply.
+    Call {
+        call: OsFunctionCall,
+        effect: Option<PendingEffect>,
+    },
 }
 
 /// The `os.stat` result field an `os.path` getter returns.
@@ -256,11 +303,111 @@ fn stat_result_field<'a>(value: &'a MontyObject, name: &str) -> Option<&'a Monty
 
 /// Turns a `Path.resolve` reply into the `str` that `os.path.realpath`
 /// returns — the resume half of [`PreConversionEffect::ResolvedPath`]. A
-/// host answering the callback itself may already return `str`.
-fn resolved_path_reply(value: &MontyObject) -> Result<MontyObject, RunError> {
+/// host answering the callback itself may already return `str`. Under
+/// `strict`, mounts resolve lexically and never report a missing path, so a
+/// `Path.exists` call on the result follows.
+fn resolved_path_reply(value: &MontyObject, strict: bool) -> Result<Reshaped, RunError> {
+    let resolved = match unstable::root_node(value) {
+        MontyNode::Path(path) | MontyNode::String(path) => path.clone(),
+        _ => return Err(invalid_reply("os.path.realpath", "a path", value)),
+    };
+    Ok(if strict {
+        Reshaped::Call {
+            call: OsFunctionCall::Exists(MontyPath::new(resolved.clone())),
+            effect: Some(PreConversionEffect::RealpathStrict { resolved }.into()),
+        }
+    } else {
+        Reshaped::Value(MontyObject::string(resolved))
+    })
+}
+
+/// Completes `os.path.realpath(strict=True)` from the `Path.exists` reply on
+/// the resolved path — the resume half of [`PreConversionEffect::RealpathStrict`].
+fn realpath_strict_reply(value: &MontyObject, resolved: String) -> Result<MontyObject, RunError> {
+    if bool_reply(value, "os.path.realpath")? {
+        Ok(MontyObject::string(resolved))
+    } else {
+        Err(ExcType::file_not_found_error(&resolved))
+    }
+}
+
+/// Completes `os.path.lexists` from the `Path.exists` reply — the resume half
+/// of [`PreConversionEffect::Lexists`]. `False` may still be a dangling
+/// symlink, which `Path.is_symlink` reports.
+fn lexists_reply(value: &MontyObject, path: String) -> Result<Reshaped, RunError> {
+    Ok(if bool_reply(value, "os.path.lexists")? {
+        Reshaped::Value(MontyObject::bool(true))
+    } else {
+        Reshaped::Call {
+            call: OsFunctionCall::IsSymlink(MontyPath::new(path)),
+            effect: None,
+        }
+    })
+}
+
+/// Moves `os.path.samefile` from its first `Path.stat` to its second — the
+/// resume half of [`PreConversionEffect::SamefileFirst`]. The second path's
+/// deferred `TypeError` and `FileNotFoundError` for the empty path raise here,
+/// where CPython's `os.stat(f2)` raises them.
+fn samefile_first_reply(
+    value: &MontyObject,
+    first: String,
+    second: Result<String, (String, String)>,
+) -> Result<Reshaped, RunError> {
+    let first_identity =
+        stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
+    let second = match second {
+        Ok(second) if second.is_empty() => return Err(ExcType::file_not_found_error("")),
+        Ok(second) => second,
+        Err((accepted, type_name)) => return Err(ExcType::type_error_os_path("stat", "path", &accepted, &type_name)),
+    };
+    Ok(Reshaped::Call {
+        call: OsFunctionCall::Stat(MontyPath::new(second.clone())),
+        effect: Some(
+            PreConversionEffect::SamefileSecond {
+                first,
+                first_identity,
+                second,
+            }
+            .into(),
+        ),
+    })
+}
+
+/// Completes `os.path.samefile` from the second `Path.stat` reply — the
+/// resume half of [`PreConversionEffect::SamefileSecond`]. CPython compares
+/// `(st_ino, st_dev)`; mounts report both as zero, so when neither reply
+/// carries an identity the normalized virtual paths decide instead.
+fn samefile_second_reply(
+    value: &MontyObject,
+    first: &str,
+    first_identity: (i64, i64),
+    second: &str,
+    cwd: &str,
+) -> Result<MontyObject, RunError> {
+    let second_identity =
+        stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
+    let same = if first_identity == (0, 0) && second_identity == (0, 0) {
+        normalize_virtual_path(&posix_join(cwd, first)) == normalize_virtual_path(&posix_join(cwd, second))
+    } else {
+        first_identity == second_identity
+    };
+    Ok(MontyObject::bool(same))
+}
+
+/// `(st_ino, st_dev)` of a `Path.stat` reply, `None` unless both are ints.
+fn stat_identity(value: &MontyObject) -> Option<(i64, i64)> {
+    match (stat_result_field(value, "st_ino"), stat_result_field(value, "st_dev")) {
+        (Some(MontyNode::Int(ino)), Some(MontyNode::Int(dev))) => Some((*ino, *dev)),
+        _ => None,
+    }
+}
+
+/// A `Path.exists` / `Path.is_symlink` reply as a bool, refusing anything else.
+fn bool_reply(value: &MontyObject, operation: &str) -> Result<bool, RunError> {
     match unstable::root_node(value) {
-        MontyNode::Path(path) | MontyNode::String(path) => Ok(MontyObject::string(path.clone())),
-        _ => Err(invalid_reply("os.path.realpath", "a path", value)),
+        MontyNode::Bool(answer) => Ok(*answer),
+        _ => Err(invalid_reply(operation, "a bool", value)),
     }
 }
 

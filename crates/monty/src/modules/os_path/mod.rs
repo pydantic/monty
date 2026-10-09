@@ -55,11 +55,14 @@ pub(crate) enum OsPathFunctions {
     Isfile,
     Isjunction,
     Islink,
+    Ismount,
     Join,
+    Lexists,
     Normcase,
     Normpath,
     Realpath,
     Relpath,
+    Samefile,
     Samestat,
     Split,
     Splitdrive,
@@ -95,11 +98,14 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Isfile, function(OsPathFunctions::Isfile)),
         (StaticStrings::Isjunction, function(OsPathFunctions::Isjunction)),
         (StaticStrings::Islink, function(OsPathFunctions::Islink)),
+        (StaticStrings::Ismount, function(OsPathFunctions::Ismount)),
+        (StaticStrings::Lexists, function(OsPathFunctions::Lexists)),
         (StaticStrings::Join, function(OsPathFunctions::Join)),
         (StaticStrings::Normcase, function(OsPathFunctions::Normcase)),
         (StaticStrings::Normpath, function(OsPathFunctions::Normpath)),
         (StaticStrings::Realpath, function(OsPathFunctions::Realpath)),
         (StaticStrings::Relpath, function(OsPathFunctions::Relpath)),
+        (StaticStrings::Samefile, function(OsPathFunctions::Samefile)),
         (StaticStrings::Samestat, function(OsPathFunctions::Samestat)),
         (StaticStrings::Split, function(OsPathFunctions::Split)),
         (StaticStrings::Splitdrive, function(OsPathFunctions::Splitdrive)),
@@ -155,11 +161,14 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsPathFunctions, args: ArgValues)
         OsPathFunctions::Isfile => isfile(vm, args),
         OsPathFunctions::Isjunction => isjunction(vm, args).map(CallResult::Value),
         OsPathFunctions::Islink => islink(vm, args),
+        OsPathFunctions::Ismount => ismount(vm, args),
+        OsPathFunctions::Lexists => lexists(vm, args),
         OsPathFunctions::Join => join(vm, args).map(CallResult::Value),
         OsPathFunctions::Normcase => normcase(vm, args).map(CallResult::Value),
         OsPathFunctions::Normpath => normpath(vm, args).map(CallResult::Value),
         OsPathFunctions::Realpath => realpath(vm, args),
         OsPathFunctions::Relpath => relpath(vm, args).map(CallResult::Value),
+        OsPathFunctions::Samefile => samefile(vm, args),
         OsPathFunctions::Samestat => samestat(vm, args).map(CallResult::Value),
         OsPathFunctions::Split => split(vm, args).map(CallResult::Value),
         OsPathFunctions::Splitdrive => splitdrive(vm, args).map(CallResult::Value),
@@ -681,6 +690,87 @@ fn islink(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     predicate(path, "lstat", PathAccepts::NoFd, OsFunctionCall::IsSymlink, vm)
 }
 
+one_path_arg!(
+    /// `os.path.ismount(path)` argument shape.
+    IsmountArgs,
+    "ismount",
+    path
+);
+
+/// Implementation of `os.path.ismount(path)`: every existing path counts as a
+/// mount point, so this is the `Path.exists` host call. The sandbox cannot
+/// see where the host's mounts begin, and answering `True` is what keeps the
+/// usual "walk up until a mount point" loops terminating.
+fn ismount(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let IsmountArgs { path } = IsmountArgs::from_args(args, vm)?;
+    defer_drop!(path, vm);
+    predicate(path, "lstat", PathAccepts::NoFd, OsFunctionCall::Exists, vm)
+}
+
+one_path_arg!(
+    /// `os.path.lexists(path)` argument shape.
+    LexistsArgs,
+    "lexists",
+    path
+);
+
+/// Implementation of `os.path.lexists(path)`: `Path.exists`, and when that is
+/// `False`, `Path.is_symlink` (a dangling symlink exists without a target);
+/// see [`PreConversionEffect::Lexists`].
+fn lexists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let LexistsArgs { path } = LexistsArgs::from_args(args, vm)?;
+    defer_drop!(path, vm);
+    let path = extract_os_path(path, "lstat", "path", PathAccepts::NoFd, vm)?;
+    if path.is_empty() {
+        Ok(CallResult::Value(Value::Bool(false)))
+    } else {
+        Ok(CallResult::OsCallWithEffect {
+            effect: PreConversionEffect::Lexists {
+                path: path.as_str().to_owned(),
+            }
+            .into(),
+            call: OsFunctionCall::Exists(path),
+        })
+    }
+}
+
+/// `os.path.samefile(f1, f2)` argument shape.
+#[derive(FromArgs)]
+#[from_args(name = "samefile", style = def)]
+struct SamefileArgs {
+    f1: Value,
+    f2: Value,
+}
+
+/// Implementation of `os.path.samefile(f1, f2)`: `Path.stat` on each in turn,
+/// then `samestat` on the replies (see [`PreConversionEffect::SamefileFirst`]).
+/// `f2` is extracted now but its errors are deferred to after the first
+/// stat, which is when CPython's `os.stat(f2)` would raise them.
+fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let SamefileArgs { f1, f2 } = SamefileArgs::from_args(args, vm)?;
+    defer_drop!(f1, vm);
+    defer_drop!(f2, vm);
+    let first = extract_os_path(f1, "stat", "path", PathAccepts::Fd, vm)?;
+    if first.is_empty() {
+        return Err(ExcType::file_not_found_error(""));
+    }
+    let second = match value_to_owned_string(f2, vm.heap, vm.interns) {
+        Some(second) => Ok(second),
+        None => Err((
+            PathAccepts::Fd.phrase_for(f2, vm).to_owned(),
+            f2.py_type_name_heap(vm.heap, vm.interns).into_owned(),
+        )),
+    };
+    Ok(CallResult::OsCallWithEffect {
+        effect: PreConversionEffect::SamefileFirst {
+            first: first.as_str().to_owned(),
+            second,
+        }
+        .into(),
+        call: OsFunctionCall::Stat(first),
+    })
+}
+
 /// Shared body of the predicates: the `os.stat` / `os.lstat` converter
 /// error for a bad type, `False` for the empty path (which CPython's `stat`
 /// fails on without the host's help), else the host call. A NUL byte is
@@ -790,9 +880,6 @@ fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let RealpathArgs { filename, strict } = RealpathArgs::from_args(args, vm)?;
     defer_drop!(filename, vm);
     let text = PathText::fspath(filename, vm)?;
-    if strict.bool() {
-        return Err(ExcType::not_implemented_os_arg(Some("realpath"), "strict"));
-    }
     if text.is_bytes {
         // The host boundary takes `str` paths only, like every `os` function.
         return Err(ExcType::type_error_os_path(
@@ -808,7 +895,7 @@ fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         let path = String::from_utf8(text.bytes).expect("str input");
         Ok(CallResult::OsCallWithEffect {
             call: OsFunctionCall::Resolve(MontyPath::new(path)),
-            effect: PreConversionEffect::ResolvedPath.into(),
+            effect: PreConversionEffect::ResolvedPath { strict: strict.bool() }.into(),
         })
     }
 }

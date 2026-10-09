@@ -132,12 +132,21 @@ Implemented through the host, with the same `str`/`Path`-only rule as the other 
 
 - `exists`, `isfile`, `isdir`, `islink` suspend as `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`.
     The empty path and a path containing a NUL byte answer `False` without consulting the host.
+- `lexists` suspends as `Path.exists` and, when that answers `False`, as `Path.is_symlink`, so a dangling symlink
+    counts as existing like CPython's `lstat`.
+- `ismount` suspends as `Path.exists`: every existing path is reported as a mount point. The sandbox cannot see
+    where the host's mounts begin, and `True` is what keeps "walk up until a mount point" loops terminating.
+- `samefile` suspends as `Path.stat` on each path in turn (the second path's errors are raised after the first
+    stat succeeds, as CPython orders them) and compares `(st_ino, st_dev)` like `samestat`. When neither reply
+    carries an identity, which is the case for every mount, the two normalized virtual paths decide instead, so
+    hard links are not detected there.
 - `getsize`, `getmtime`, `getatime`, `getctime` suspend as `Path.stat` and return one field of the reply; a host
     answering with something other than a stat result raises `RuntimeError`.
 - `realpath` suspends as `Path.resolve` and returns the reply as `str`. Mounts resolve lexically (see
-    [filesystem.md](filesystem.md)), so a missing path does not raise. `strict=True` raises
-    `NotImplementedError: realpath: strict unavailable on this platform`, since no host call carries the existence
-    check it promises; `ALLOW_MISSING` does not exist.
+    [filesystem.md](filesystem.md)), so a missing path does not raise unless `strict` is true, which adds a
+    `Path.exists` call on the result and raises `FileNotFoundError` naming the resolved path when it is missing.
+    The `NotADirectoryError` and symlink-loop `OSError` of CPython's strict mode never occur, and `ALLOW_MISSING`
+    does not exist.
 - `expanduser` suspends as `os.getenv('HOME')` only for a path starting with `~` or `~/`. When the host answers
     `None` the path is returned unchanged: CPython would fall back to the password database, which the sandbox
     cannot read, and for the same reason `~user` is always returned unchanged.
@@ -152,8 +161,7 @@ Divergences:
 - `commonprefix` on lists whose elements cannot be ordered reports the lists
     (`'<' not supported between instances of 'list' and 'list'`) where CPython names the elements; this is Monty's
     general list-comparison wording.
-- `lexists`, `samefile`, `sameopenfile` and `ismount` are not implemented: each needs a second host call (`lstat`,
-    or a stat of the parent) that no single existing OS call provides.
+- `sameopenfile` is not implemented: there are no file descriptors to `fstat`.
 - `supports_unicode_filenames` is always `False` (CPython sets it on macOS only).
 
 ## Not implemented

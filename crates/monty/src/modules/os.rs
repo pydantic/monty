@@ -576,7 +576,7 @@ pub(super) enum PathAccepts {
 
 impl PathAccepts {
     /// The accepted-types phrase for a value this converter is rejecting.
-    fn phrase_for(self, value: &Value, vm: &VM<'_>) -> &'static str {
+    pub(super) fn phrase_for(self, value: &Value, vm: &VM<'_>) -> &'static str {
         // `bytes` paths and integer fds (bools included — CPython fd-converts
         // them with only a RuntimeWarning) are the kinds CPython takes and
         // Monty never will; everything else keeps CPython's wording exactly.
