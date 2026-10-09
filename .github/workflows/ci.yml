@@ -784,6 +784,19 @@ jobs:
           uv python install 3.14
           echo "python=$(uv python find --managed-python 3.14)" >> "$GITHUB_OUTPUT"
 
+      # The working directory is mounted in the maturin container, so the installer can be verified on the host:
+      - name: get uv installer
+        if: matrix.os == 'linux' && matrix.pgo-runtime
+        working-directory: crates/monty-runtime
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh -o uv-installer.sh
+          gh attestation verify uv-installer.sh \
+            --repo astral-sh/uv \
+            --signer-workflow astral-sh/uv/.github/workflows/release.yml \
+            --deny-self-hosted-runners
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       # Maturin performs one PGO cycle for bin bindings for all versions (runtime is not
       # tied to the Python ABI).
       - name: build runtime wheel
@@ -794,7 +807,7 @@ jobs:
           # Resolve uv's interpreter inside the container and give Maturin a stable path.
           before-script-linux: |
             if [[ "$PGO_RUNTIME" == 'true' ]]; then
-              curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
+              env UV_UNMANAGED_INSTALL=/usr/local/bin sh uv-installer.sh
               export UV_PYTHON_INSTALL_DIR=/opt/uv-python
               uv python install 3.14
               ln -s "$(uv python find --managed-python 3.14)" /opt/pgo-python
