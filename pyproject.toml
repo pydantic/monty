@@ -272,6 +272,7 @@ ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques,wit'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
+    "crates/monty-bench/benches/pyperformance/*",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/src/types/str.rs",
