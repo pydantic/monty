@@ -1,0 +1,23 @@
+crates/monty/test_cases/str__format.py
+  s_205a78db7e3308::t_29e79994de7a89 67-70
+crates/monty/src/exception_private.rs
+  s_205a78db7e3308::t_29e79994de7a89 1281-1289
+crates/monty/test_cases/fstring__all.py
+  s_205a78db7e3308::t_29e79994de7a89 235-238,240,254-255,257-265
+  s_205a78db7e3308::t_c302344ce74f42 239,241-253,256
+crates/monty/test_cases/str__percent_format.py
+  s_205a78db7e3308::t_29e79994de7a89 369-373
+crates/monty/test_cases/bytes__percent_format.py
+  s_205a78db7e3308::t_29e79994de7a89 183-186
+crates/monty/src/fstring.rs
+  s_205a78db7e3308::t_29e79994de7a89 733-740,1066-1069
+  s_205a78db7e3308::t_8953e1eda19665 998
+crates/monty/src/percent_format.rs
+  s_205a78db7e3308::t_29e79994de7a89 22,853-857
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "00e94fa8e1f4973e81e1c9ab8dc2ea240846d8fe",
+  "prompts": {}
+}
