@@ -11,7 +11,7 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, assert_type
+from typing import Any, LiteralString, assert_type
 
 # === Type checking helper functions ===
 
@@ -443,6 +443,28 @@ assert_type(y, str | int)
 
 x2 = os.environ.get('foobar')
 assert_type(x2, str | None)
+
+joined = os.path.join('a', 'b')
+assert_type(joined, LiteralString)
+assert_type(os.path.join(str(1), 'b'), str)
+assert_type(os.path.join(Path('a'), 'b'), str)
+assert_type(os.path.join(b'a', b'b'), bytes)
+assert_type(os.path.splitext('a.b'), tuple[str, str])
+assert_type(os.path.split(Path('a/b')), tuple[str, str])
+assert_type(os.path.exists('a'), bool)
+assert_type(os.path.getsize(Path('a')), int)
+assert_type(os.path.getmtime('a'), float)
+assert_type(os.path.realpath('a'), str)
+assert_type(os.path.relpath('/a/b', '/a'), LiteralString)
+assert_type(os.path.relpath(Path('/a/b'), '/a'), str)
+assert_type(os.path.commonpath(['/a/b', '/a/c']), LiteralString)
+assert_type(os.path.commonpath([Path('/a/b'), '/a/c']), str)
+assert_type(os.path.commonprefix(['ab', 'ac']), LiteralString)
+assert_type(os.path.commonprefix([Path('ab'), 'ac']), str)
+assert_type(os.path.normpath(b'a//b'), bytes)
+assert_type(os.path.samestat(os.stat('a'), os.stat('b')), bool)
+assert_type(os.path.sep, str)
+assert_type(os.pathsep, str)
 
 
 # === re module ===
