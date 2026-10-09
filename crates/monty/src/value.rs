@@ -413,6 +413,9 @@ impl<'h> PyTrait<'h> for Value {
                 (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
                     Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
                 }
+                (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
+                    a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
+                )),
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
                 // A namedtuple orders like the tuple it subclasses, including
                 // against a plain tuple in either direction. Both sides are
@@ -455,6 +458,13 @@ impl<'h> PyTrait<'h> for Value {
             }
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(interns.get_bytes(*b2))))
+            }
+            // Cross-type bytes comparisons: interned vs heap-allocated
+            (Self::InternBytes(b1), Self::Ref(id2)) if let HeapData::Bytes(b2) = vm.heap.get(*id2) => {
+                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(b2.as_slice())))
+            }
+            (Self::Ref(id1), Self::InternBytes(b2)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
+                Ok(CmpOrder::Ordered(b1.as_slice().cmp(interns.get_bytes(*b2))))
             }
             _ => Ok(CmpOrder::Incomparable),
         }

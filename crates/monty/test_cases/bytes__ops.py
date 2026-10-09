@@ -89,6 +89,18 @@ assert b'\xfe' < b'\xff'
 assert sorted([b'c', b'a', b'b']) == [b'a', b'b', b'c']
 assert sorted([b'bb', b'a', b'ba']) == [b'a', b'ba', b'bb']
 
+# Computed (heap-allocated) bytes order the same as literals, in every mix
+built_c = b'ab' + b'c'
+built_d = b'ab' + b'd'
+assert built_c < built_d
+assert built_d > built_c
+assert built_c <= built_c
+assert built_c < b'abd'
+assert b'abc' < built_d
+assert b'abd' >= built_c
+assert min([built_d, built_c]) == b'abc'
+assert sorted([built_d, b'abb', built_c]) == [b'abb', b'abc', b'abd']
+
 # === bytes() constructor with keyword argument ===
 assert bytes(source=b'hello') == b'hello'
 assert bytes(source=3) == b'\x00\x00\x00'
