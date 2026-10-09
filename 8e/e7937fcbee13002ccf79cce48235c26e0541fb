@@ -1,0 +1,29 @@
+crates/monty-server/Makefile
+  s_b6aaa15a0880b7::t_b3dd9c4de2b43a 12
+render.yaml
+  s_b6aaa15a0880b7::t_52ce3de13f8019 36-38,133-135
+Makefile
+  s_b6aaa15a0880b7::t_525da48ac03ee3 204-205,208-211,253
+.github/workflows/ci.yml
+  s_b6aaa15a0880b7::t_525da48ac03ee3 9-11,234-237,242-245,252-253,256,270,272,308-310,313,321-322,352-355,358-359
+crates/monty-worker/Makefile
+  s_b6aaa15a0880b7::t_b3dd9c4de2b43a 12
+CLAUDE.md
+  s_b6aaa15a0880b7::t_525da48ac03ee3 54-58,61-74,130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8ee7937fcbee13002ccf79cce48235c26e0541fb",
+  "prompts": {},
+  "sessions": {
+    "s_b6aaa15a0880b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5d4e6d56-379e-45a2-b938-5d5940e45149",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

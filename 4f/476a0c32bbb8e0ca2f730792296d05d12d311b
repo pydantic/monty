@@ -1,0 +1,21 @@
+crates/monty-server/tests/wire_test.rs
+  s_882ac0e3fb224f::t_4a2c7a297d0b69 107,139,150
+crates/monty-server/src/wire.rs
+  s_882ac0e3fb224f::t_2ec6d53fa9a68b 91-92,94-96,118-119,135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4f476a0c32bbb8e0ca2f730792296d05d12d311b",
+  "prompts": {},
+  "sessions": {
+    "s_882ac0e3fb224f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4534ba91-0904-470f-84a9-1be499401e5f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

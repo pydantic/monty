@@ -1,0 +1,26 @@
+crates/monty-server/CLAUDE.md
+  s_6cbf7018f3f107::t_d00742b3b0cb7f 185
+crates/monty-server/src/run.rs
+  s_6cbf7018f3f107::t_d00742b3b0cb7f 43-44,59,72-76,174,177-180,186-187,204,230,294,323,326,366
+crates/monty-server-tests/tests/http/main.rs
+  s_6cbf7018f3f107::t_9c27a2f711cf93 88
+  s_6cbf7018f3f107::t_76440c12549b3c 100
+crates/monty-server/src/session.rs
+  s_6cbf7018f3f107::t_d00742b3b0cb7f 840,842,844,851
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a804dfa812c8e526266884dcf5ce071c67d90118",
+  "prompts": {},
+  "sessions": {
+    "s_6cbf7018f3f107": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "601c2b52-31cb-41ab-97f9-de4f96b43d06",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

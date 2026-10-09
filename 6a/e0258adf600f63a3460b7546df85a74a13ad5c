@@ -1,0 +1,25 @@
+render.yaml
+  s_065bd2ed705bbf::t_54687f4f28a744 59-62
+Makefile
+  s_065bd2ed705bbf::t_54687f4f28a744 68-70,117-120,122
+crates/monty-server-tests/python/test_monty_server.py
+  s_065bd2ed705bbf::t_54687f4f28a744 10-17,27-28,35,63-70,111,118-119,121,132-133,140-175,178-218,221,224-226,230,242-244,246-248,250-251,256,261,263,266
+docker-compose.yml
+  s_065bd2ed705bbf::t_54687f4f28a744 13-16,30-36,44,62-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6ae0258adf600f63a3460b7546df85a74a13ad5c",
+  "prompts": {},
+  "sessions": {
+    "s_065bd2ed705bbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc421dd5-2fec-42f6-8fbb-3b8320b8d6af",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

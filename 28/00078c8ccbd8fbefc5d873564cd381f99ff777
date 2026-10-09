@@ -1,0 +1,50 @@
+crates/monty-worker/src/session.rs
+  s_065bd2ed705bbf::t_976366c5448df8 260,691-694,702,715-716,734-736
+  s_065bd2ed705bbf::t_1b82e1abe3a35d 266,699,742
+crates/monty-worker/README.md
+  s_065bd2ed705bbf::t_dc242cdcaa5131 47,51,101-105,167,171,173-174,183-185,191-192,279-280
+crates/monty-server/src/session.rs
+  s_065bd2ed705bbf::t_707febfebf9075 332
+  s_065bd2ed705bbf::t_1b82e1abe3a35d 102,259,317,322,324,326,366,374,408,709
+  s_065bd2ed705bbf::t_976366c5448df8 6-10,99-100,107-108,255-257,264-265,373,394-395
+crates/monty-worker/src/lib.rs
+  s_065bd2ed705bbf::t_976366c5448df8 67,86-88
+crates/monty-server/CLAUDE.md
+  s_065bd2ed705bbf::t_1b82e1abe3a35d 55,94
+crates/monty-worker/CLAUDE.md
+  s_065bd2ed705bbf::t_dc242cdcaa5131 106-109
+crates/monty-server/src/dump_signing.rs
+  s_065bd2ed705bbf::t_976366c5448df8 12
+crates/monty-server/src/session/lifecycle.rs
+  s_065bd2ed705bbf::t_976366c5448df8 5-9
+  s_065bd2ed705bbf::t_1b82e1abe3a35d 15,38,93
+  s_065bd2ed705bbf::t_707febfebf9075 130
+crates/monty-server/src/session/park.rs
+  s_065bd2ed705bbf::t_1b82e1abe3a35d 116,173,185,248
+  s_065bd2ed705bbf::t_976366c5448df8 39,100,146-148,153-155,178-179
+  s_065bd2ed705bbf::t_3dc0ae6c299fad 40-41
+crates/monty-server/src/ids.rs
+  s_065bd2ed705bbf::t_976366c5448df8 1,7-11,48
+crates/monty-server/src/lib.rs
+  s_065bd2ed705bbf::t_976366c5448df8 9,74-75,80-82
+crates/monty-server/README.md
+  s_065bd2ed705bbf::t_dc242cdcaa5131 92-94,96-130,192-193,202,210-217
+crates/monty-server/src/store.rs
+  s_065bd2ed705bbf::t_976366c5448df8 28-29,184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2800078c8ccbd8fbefc5d873564cd381f99ff777",
+  "prompts": {},
+  "sessions": {
+    "s_065bd2ed705bbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc421dd5-2fec-42f6-8fbb-3b8320b8d6af",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

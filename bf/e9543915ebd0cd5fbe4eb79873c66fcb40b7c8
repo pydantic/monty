@@ -1,0 +1,181 @@
+crates/monty-server/src/session.rs
+  s_065bd2ed705bbf::t_2bd64d812ba435 173-174,209-211
+  s_065bd2ed705bbf::t_ea36484a1bb7d9 325
+  s_065bd2ed705bbf::t_2e636b3fa44b6d 1-172,175-208,212-324,326-478
+crates/monty-server-tests/tests/wire/keepalive.rs
+  s_065bd2ed705bbf::t_1c43e2803216b4 62-76
+  s_065bd2ed705bbf::t_d36273eca2265d 52
+crates/monty-worker/tests/limits_test.rs
+  s_065bd2ed705bbf::t_dab43798edca05 10
+crates/monty-server-tests/tests/client/drain.rs
+  s_065bd2ed705bbf::t_1c43e2803216b4 5,7-9,18,155-213
+crates/monty-server/src/index.rs
+  s_065bd2ed705bbf::t_09f4590911d764 27
+crates/monty-server/src/main.rs
+  s_065bd2ed705bbf::t_b0437e8b93877c 1-166
+crates/monty-server/src/worker.rs
+  s_065bd2ed705bbf::t_702c41871d7557 1-20,22-40,42-89,92,95-98
+  s_065bd2ed705bbf::t_16df45db256c25 21,41,90-91,93-94
+crates/monty-service/src/http.rs
+  s_065bd2ed705bbf::t_dab43798edca05 69-70
+  s_065bd2ed705bbf::t_db9cc6c28ef628 114
+  s_065bd2ed705bbf::t_6c87a1bc7c67f2 1-68,71-113,115-129
+crates/monty-worker/README.md
+  s_065bd2ed705bbf::t_76791a35c3ad23 51
+  s_065bd2ed705bbf::t_9a701e9f3af073 105,120,125,132,138,140,165,176-177
+  s_065bd2ed705bbf::t_77be8949e5ac84 1,3-6,8-11,15,19-22,27,29,32,35-36,45,53,63,67-69,90-92,108,110-113,115-116,164,169,171-172,182-186,194-197,201,205-207,210-215,245-247,249-251,255-263,270,275,300,302-305,308,312-314,318-320,322
+  s_065bd2ed705bbf::t_1a15ea82f78d2c 18
+crates/monty-server/Cargo.toml
+  s_065bd2ed705bbf::t_4a29ebe5db3fa0 1-51
+crates/monty-service/tests/telemetry_test.rs
+  s_065bd2ed705bbf::t_dab43798edca05 10
+  s_065bd2ed705bbf::t_2ad25a05bef213 1-9,11-202
+crates/monty-server/CLAUDE.md
+  s_065bd2ed705bbf::t_41e6f2007598d4 1-109
+Cargo.toml
+  s_065bd2ed705bbf::t_5015d1fd87d94e 19
+  s_065bd2ed705bbf::t_b13bf25b5c32f1 4,6,11
+crates/monty-worker/Dockerfile.dockerignore
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 7
+crates/monty-worker/tests/sandbox_telemetry_test.rs
+  s_065bd2ed705bbf::t_76791a35c3ad23 18-20,102
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 17
+crates/monty-service/Cargo.toml
+  s_065bd2ed705bbf::t_c45361f0a3c9a2 1-38
+crates/monty-worker/src/session.rs
+  s_065bd2ed705bbf::t_24220ff449c517 313,856,874,876
+  s_065bd2ed705bbf::t_dab43798edca05 23-26
+crates/monty-server/tests/wire_test.rs
+  s_065bd2ed705bbf::t_dab43798edca05 50-53,106-109,112-115,118-121
+  s_065bd2ed705bbf::t_aa52812ac14dbe 1-6,11-12,15-22,25-38,40,42-43,46,48-49,55,57-60,64-66,68-104,122,124-127,131-133,135-153
+  s_065bd2ed705bbf::t_ad619bff4e4a09 7-10,13-14,23-24,39,41,44-45,47,54,56,61-63,67,105,110-111,116-117,123,128-130,134
+crates/monty-server/src/wire.rs
+  s_065bd2ed705bbf::t_2b1888ef096fc6 1-146
+crates/monty-worker/tests/dump_signing_test.rs
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 7
+crates/monty-worker/Cargo.toml
+  s_065bd2ed705bbf::t_e95e56e41c3148 3,15-16,22-23
+  s_065bd2ed705bbf::t_ac558ff3448fe0 51,55,61-63
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 2
+crates/monty-server-tests/tests/wire/relay.rs
+  s_065bd2ed705bbf::t_1c43e2803216b4 1-21
+crates/monty-worker/src/translate.rs
+  s_065bd2ed705bbf::t_f345cae16ff096 16-17,23-24,240,250
+crates/monty-worker/CLAUDE.md
+  s_065bd2ed705bbf::t_10f576d6bd0f57 50-52
+  s_065bd2ed705bbf::t_5498faa44f0c56 1,3,5,11-23,28-31,81-83,95-97,106-109,124-125,160-162,164,168-175,190,199-201,210
+crates/monty-service/src/telemetry.rs
+  s_065bd2ed705bbf::t_609514d441d84e 1-2,6,16-19,21-31,33,35-40,42-123,138
+  s_065bd2ed705bbf::t_2ad25a05bef213 3-5,7-15,20,32,34,41,124-137
+crates/monty-server/Makefile
+  s_065bd2ed705bbf::t_d5c76ac13d7b5e 4-12
+crates/monty-server-tests/python/test_monty_server.py
+  s_065bd2ed705bbf::t_527679047de141 1-2,6-8,36-38,41,43-44,48-59,61-62,73,84,96-118,125-132,147,151-152,163-166,168-169,191,196,203,215,219-220
+README.md
+  s_065bd2ed705bbf::t_5015d1fd87d94e 3-11
+crates/monty-server-tests/CLAUDE.md
+  s_065bd2ed705bbf::t_e8d0d917eb4b39 4-19,26-28
+crates/monty-service/src/frames.rs
+  s_065bd2ed705bbf::t_9c1132c0062441 1-64,68-113
+  s_065bd2ed705bbf::t_db9cc6c28ef628 65-67
+crates/monty-server-tests/src/server.rs
+  s_065bd2ed705bbf::t_dab43798edca05 281-283,288-290
+  s_065bd2ed705bbf::t_57b2598c130bdd 1-3,5-6,23-26,30,37,39,82-92,95-103,105-125,146-147,233-234,238-241,244-245,250-252,257,260-262,266-267,271-272,277-278,280,284-287,291-293,296-302,306-307,318,328,334-335,341-342,348-356,362-363,368-369,374
+  s_065bd2ed705bbf::t_76791a35c3ad23 27,128
+crates/monty-server/src/client_ip.rs
+  s_065bd2ed705bbf::t_ff03e41f840539 17
+crates/monty-worker/src/main.rs
+  s_065bd2ed705bbf::t_e88901cf14fc74 16-18,20-21,55,57-58
+  s_065bd2ed705bbf::t_76791a35c3ad23 39-47,49-51,219
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 1,23,26,30,37,48,53,61,64,69,74,83,91,96,103,111,119,130,141-142,158,169,177,184,208-209,242
+  s_065bd2ed705bbf::t_ac558ff3448fe0 7,166
+  s_065bd2ed705bbf::t_dab43798edca05 9-13
+crates/monty-server/tests/server_test.rs
+  s_065bd2ed705bbf::t_8cbca77bef8f96 10-15,30,91-302
+  s_065bd2ed705bbf::t_e8803450d188c9 1-7,16-23,36-82
+crates/monty-worker/Dockerfile
+  s_065bd2ed705bbf::t_4f3ec548faeb12 1-2,4-8,19,27,32-34,56,91-93,97,104,110-111,114
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 53-54,71,73,85,94,118
+crates/monty-server-tests/Cargo.toml
+  s_065bd2ed705bbf::t_9fedd2efcec563 18-21
+crates/monty-server/tests/request_span_test.rs
+  s_065bd2ed705bbf::t_1c69c0f872b673 15,87
+  s_065bd2ed705bbf::t_250e83859fdde1 75-78
+  s_065bd2ed705bbf::t_8e6ceec0e49ca6 1-14,16-74,79-86,88-211
+.github/workflows/ci.yml
+  s_065bd2ed705bbf::t_94bfe11031c8f2 120,123-128,130-134,137-138,143,154-155,157,160-161,163-164,166-170,172,203,225-230,235-236,241,244-248,250,281,283-287,289-292,296-298,300,347,349
+Makefile
+  s_065bd2ed705bbf::t_d5c76ac13d7b5e 105-183
+  s_065bd2ed705bbf::t_527679047de141 36-38,40-43,49-52,76-77,84-87,185
+CLAUDE.md
+  s_065bd2ed705bbf::t_5015d1fd87d94e 14-32,36-37,41-48,65,80-81,91-92,95-98,170
+crates/monty-worker/Makefile
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 1
+  s_065bd2ed705bbf::t_d5c76ac13d7b5e 4-6,8,10-12
+render.yaml
+  s_065bd2ed705bbf::t_64b837756d6f95 1-4,6-8,10-11,13-15,21,23-25,45,49-56,68-138,140-142,144,149,154,160,166,169-170,173-174,176,180
+crates/monty-worker/tests/translate_test.rs
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 12
+  s_065bd2ed705bbf::t_24220ff449c517 10
+  s_065bd2ed705bbf::t_f345cae16ff096 15
+  s_065bd2ed705bbf::t_dab43798edca05 11
+crates/monty-server-tests/src/client/session.rs
+  s_065bd2ed705bbf::t_4fdcd1d9eb277c 321-323,327
+  s_065bd2ed705bbf::t_9f2d88ab61727f 35,41-42,59,65,68,70,140,145-150,189-191,193-194,196,202,209,216,223,230,238,246,254-255,262-266,270,273-281,285,288-296,303,307,310,314,317,326,331-332,335-336,343,350
+  s_065bd2ed705bbf::t_dab43798edca05 30
+crates/monty-server-tests/tests/wire/main.rs
+  s_065bd2ed705bbf::t_3c68fd6f6e591b 17
+crates/monty-service/src/drain.rs
+  s_065bd2ed705bbf::t_db9cc6c28ef628 11,84,147-152,159,175
+  s_065bd2ed705bbf::t_1315f2af3708ab 1-10,12-83,88-146,153-158,160-174,176-181
+  s_065bd2ed705bbf::t_dab43798edca05 85-87
+crates/monty-server-tests/src/lib.rs
+  s_065bd2ed705bbf::t_9f2d88ab61727f 1-3,35,52
+crates/monty-worker/tests/server_test.rs
+  s_065bd2ed705bbf::t_843b79fd01536c 362-363,368,379-380,382,384,386-389,406
+  s_065bd2ed705bbf::t_76791a35c3ad23 75
+  s_065bd2ed705bbf::t_dab43798edca05 22,24,396-403
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 1,23
+crates/monty-server/README.md
+  s_065bd2ed705bbf::t_4dc988464ec27a 1-214
+crates/monty-service/src/lib.rs
+  s_065bd2ed705bbf::t_f60d3296e72646 1-12
+crates/monty-server/src/run.rs
+  s_065bd2ed705bbf::t_dab43798edca05 67
+  s_065bd2ed705bbf::t_a00e6ced97a3c4 6-59,80-386
+crates/monty-server-tests/tests/http/main.rs
+  s_065bd2ed705bbf::t_d36273eca2265d 13,20,41,60,89,146,164,184,219,240,267,285,314,334
+  s_065bd2ed705bbf::t_ea964687d22b17 90,147,220
+crates/monty-worker/tests/request_span_test.rs
+  s_065bd2ed705bbf::t_dab43798edca05 14
+  s_065bd2ed705bbf::t_aeec765966d2ba 22-25,85-93,124-127,130,132,158,174-176,207-210,212-219,224
+crates/monty-worker/src/lib.rs
+  s_065bd2ed705bbf::t_c5e4d2907cd6d9 1,3-8,28,39,41,46-49,71-73,138,141-142
+  s_065bd2ed705bbf::t_f345cae16ff096 32
+  s_065bd2ed705bbf::t_76791a35c3ad23 51,62-65,126-134,181,362-369,373
+  s_065bd2ed705bbf::t_dab43798edca05 52
+  s_065bd2ed705bbf::t_404012ec82f5d1 332,379-382,386,405-408,410-411,413-415,417,421,423-424,426,437-441,443,445,448-449,457-458,466,471,474-475,477,488,490-492,497-499,509,513,519,529,531-533,539-543,546-548
+crates/monty-worker/tests/common/mod.rs
+  s_065bd2ed705bbf::t_2fbb4e1ffa5b2c 13
+crates/monty-server/src/lib.rs
+  s_065bd2ed705bbf::t_4fdcd1d9eb277c 57-61
+  s_065bd2ed705bbf::t_b16f52e16d4535 1-56,62-401
+crates/monty-server-tests/tests/wire/configure.rs
+  s_065bd2ed705bbf::t_dab43798edca05 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "bfe9543915ebd0cd5fbe4eb79873c66fcb40b7c8",
+  "prompts": {},
+  "sessions": {
+    "s_065bd2ed705bbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc421dd5-2fec-42f6-8fbb-3b8320b8d6af",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

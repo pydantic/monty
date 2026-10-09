@@ -1,0 +1,20 @@
+crates/monty-server/src/run.rs
+  s_6cbf7018f3f107::t_5ce1cc5a140816 92-96,233-237,301-304,306-307,311-324,333,338,342,345,353,355-361
+  s_6cbf7018f3f107::t_75097851136b0d 329-330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "021873a1bd8bbca560889ffacd4e53580c452751",
+  "prompts": {},
+  "sessions": {
+    "s_6cbf7018f3f107": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "601c2b52-31cb-41ab-97f9-de4f96b43d06",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
