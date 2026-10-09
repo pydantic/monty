@@ -1,0 +1,54 @@
+crates/monty/src/builtins/min_max.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 219
+docs/limitations/modules.md
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 7-10,38,40
+crates/monty/src/os_dispatch.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 37,136-156,172-175,186-236,238-253,257-324,424-428,751
+crates/monty/src/modules/mod.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 30,50,52-53,103,133,165,197,228
+crates/monty/src/modules/os.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 5-8,29,91-92,95-99,548,568
+docs/limitations/os.md
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 118-158,161
+crates/monty/src/exception_private.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 795-812
+docs/limitations/index.md
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 85,87
+crates/monty/test_cases/os_path__pure.py
+  s_e2a0d914a5e7a5::t_be63a7aa1823b4 1-289,291-541,544-618
+  s_e2a0d914a5e7a5::t_5f6f731d8252d2 290
+  s_e2a0d914a5e7a5::t_deec6a409c1486 542-543
+crates/monty/src/builtins/mod.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 26
+crates/monty/test_cases/os_path__fs.py
+  s_e2a0d914a5e7a5::t_0d4c22bd7c4acd 51
+  s_e2a0d914a5e7a5::t_d3c74dbae2e790 1-50,52-77
+crates/monty/src/modules/os_path/posix.rs
+  s_e2a0d914a5e7a5::t_18124d1e1190f2 234
+  s_e2a0d914a5e7a5::t_d169feb4cf07f7 1-131,133-158,160-173,175-189,191-203,205-210,217-221,223-233,235-238
+  s_e2a0d914a5e7a5::t_cc8fe1c43d79f8 132,174
+  s_e2a0d914a5e7a5::t_f886d9be187bed 159,211-216,222
+  s_e2a0d914a5e7a5::t_570f6da8fac800 190,204
+crates/monty/src/modules/os_path/mod.rs
+  s_e2a0d914a5e7a5::t_570f6da8fac800 14-15,23,73,191,283,529,692,810
+  s_e2a0d914a5e7a5::t_cc8fe1c43d79f8 520-522,596-597,798-803,921-924
+  s_e2a0d914a5e7a5::t_577478ce052140 1-13,16-22,24-72,74-190,192-282,284-519,523-528,530-595,598-691,693-797,804-809,811-920,925-941
+crates/monty/src/intern.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 540-541,660-661,741-744,831-835,858-859,972-975,998-999,1090-1093,1100-1101,1104-1105,1191-1192,1203-1204,1207-1208,1211-1212,1219-1220,1223-1224,1482-1485,1519-1521,1554-1557,1591-1592,1649-1650,1657-1658,1709-1712,1714-1715,1784-1787,1790-1791,1872-1873
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "efc5a09fbd59b20391a8a6ccf0233ff020052c46",
+  "prompts": {},
+  "sessions": {
+    "s_e2a0d914a5e7a5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c450defd-645a-4ff9-a70b-c99f759ba624",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
