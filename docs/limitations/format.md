@@ -48,15 +48,12 @@ modifiers. The divergences:
 
 ## Custom `__format__`
 
-f-strings, `str.format()` and `format()` dispatch to a type's `__format__`
-only for `date`, `datetime` and `time`, which interpret the spec as a
-`strftime` string (`f'{dt:%Y-%m-%d}'`, `'{:%Y-%m-%d}'.format(dt)` or
-`format(dt, '%Y-%m-%d')`); see
-[datetime.md](datetime.md). There is no general `__format__` protocol: user
-classes can't customise formatting (see [classes.md](classes.md)), and all
-other types use the builtin mini-language formatter. A format spec on a
-user-class instance is silently applied to `str(obj)` (`f'{obj:>10}'` pads),
-where CPython raises `TypeError: unsupported format string passed to Foo.__format__`.
+There is no general `__format__` protocol: user-defined methods are ignored
+(see [classes.md](classes.md)).
+A nonempty spec on a user-class instance raises
+`TypeError: unsupported format string passed to Foo.__format__`, even if the
+class defines a `__format__` method that would accept it in CPython.
+An empty spec uses `str(obj)` instead of calling the method.
 
 ## The `n` type uses the C locale only
 
@@ -76,8 +73,9 @@ CPython prints it literally, or the reverse. Common text is unaffected.
 
 - A `width` or `precision` whose decimal value overflows `usize` raises
     `SyntaxError: Invalid format specifier '...': width or precision overflows usize` in a literal f-string spec.
-    Runtime specs, including `str.format()` and `format()`, raise `ValueError`
-    instead, with an additional `for object of type '...'` suffix.
+    Runtime specs for types that support the format mini-language, including
+    `str.format()` and `format()`, raise `ValueError` instead, with an additional
+    `for object of type '...'` suffix.
 - Very large widths/precisions are additionally bounded by the resource
     tracker; see [resource_limits.md](resource_limits.md).
 
@@ -91,6 +89,8 @@ characters after the type field (`f'{1:kk}'`, `f'{1:10xyz}'`) and `usize`
 overflow, raising `SyntaxError` instead of CPython's runtime `ValueError`. The
 message text otherwise matches, minus CPython's `for object of type '...'`
 suffix, which needs the runtime value type. Specs whose error *is*
-value-type-dependent or only resolvable at format time (`Unknown format code 'k'`, the `Cannot specify …` grouping conflicts, and `Format specifier missing precision`) are deferred to runtime and raise the exact CPython `ValueError`,
-as do all dynamically-built specs (`f'{1:{spec}}'`) and all `str.format()`
-and `format()` specs.
+value-type-dependent or only resolvable at format time (`Unknown format code 'k'`, the `Cannot specify …` grouping conflicts, and `Format specifier missing precision`) are deferred to runtime and raise the exact CPython `ValueError`
+for types that support the format mini-language. Malformed dynamically-built
+specs (`f'{1:{spec}}'`), `str.format()` specs and `format()` specs also raise
+`ValueError` for those types. Types that do not support nonempty specs raise
+`TypeError` before runtime spec parsing, even when the spec is malformed.

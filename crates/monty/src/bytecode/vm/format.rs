@@ -65,6 +65,11 @@ impl VM<'_> {
                     let Value::Int(encoded) = spec_value else {
                         unreachable!("FORMAT_VALUE_STATIC_SPEC flag without Value::Int on stack");
                     };
+                    // Literal empty specs are elided; a static spec is always nonempty,
+                    // even when its parsed fields are all defaults (`０`).
+                    if conversion == 0 {
+                        this.check_format_type(value)?;
+                    }
                     let spec = decode_format_spec(*encoded);
                     this.format_parsed_value(value, conversion, &spec)?
                 } else {
@@ -98,12 +103,34 @@ impl VM<'_> {
             if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
                 Ok(formatted)
             } else {
+                if !format_spec.is_empty() {
+                    self.check_format_type(value)?;
+                }
                 let value_type = value.py_type_name(self);
                 let spec = self.parse_runtime_spec(format_spec, &value_type)?;
                 self.format_parsed_value(value, 0, &spec)
             }
         } else {
             self.convert_value(value, 0)
+        }
+    }
+
+    /// Rejects nonempty specs on values without a native formatter, before parsing them.
+    fn check_format_type(&self, value: &Value) -> Result<(), RunError> {
+        if matches!(
+            value.py_type(self),
+            Type::Str | Type::Bool | Type::Int | Type::Float | Type::Complex | Type::Date | Type::DateTime | Type::Time
+        ) {
+            Ok(())
+        } else {
+            Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!(
+                    "unsupported format string passed to {}.__format__",
+                    value.py_type_name(self)
+                ),
+            )
+            .into())
         }
     }
 
