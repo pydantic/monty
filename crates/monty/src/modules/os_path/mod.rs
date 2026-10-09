@@ -509,46 +509,51 @@ fn extreme<'a>(items: &'a [Value], is_min: bool, vm: &mut VM<'_>) -> RunResult<&
     Ok(best)
 }
 
-/// `s1[:i]` for the first `i` where `s1[i] != s2[i]`, or all of `s1`. Strings
-/// slice by code point and bytes by byte; anything else is iterated and
-/// indexed like CPython does it (so a dict's int keys raise `TypeError`),
-/// with `==` on the elements and a slice of `s1` as the result.
+/// `s1[:i]` for the first `i` where `s1[i] != s2[i]`, or `s1` itself when
+/// there is none (CPython returns the very object, so a list prefix of one
+/// list is that list). Strings slice by code point and bytes by byte;
+/// anything else is iterated and indexed like CPython does it (so a dict's
+/// int keys raise `TypeError`), with `==` on the elements.
 fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     match (s1.py_type_heap(vm.heap), s2.py_type_heap(vm.heap)) {
         (Type::Str, Type::Str) => {
             let a = value_to_owned_string(s1, vm.heap, vm.interns).expect("checked str");
             let b = value_to_owned_string(s2, vm.heap, vm.interns).expect("checked str");
-            let end = a
-                .char_indices()
-                .zip(b.chars())
-                .find(|((_, x), y)| x != y)
-                .map_or(a.len(), |((i, _), _)| i);
-            Ok(allocate_string(&a[..end], vm.heap))
+            let mismatch = a.char_indices().zip(b.chars()).find(|((_, x), y)| x != y);
+            Ok(match mismatch {
+                Some(((end, _), _)) => allocate_string(&a[..end], vm.heap),
+                None => s1.clone_with_heap(vm),
+            })
         }
         (Type::Bytes, Type::Bytes) => {
             let a = value_to_owned_bytes(s1, vm.heap, vm.interns).expect("checked bytes");
             let b = value_to_owned_bytes(s2, vm.heap, vm.interns).expect("checked bytes");
-            let end = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len());
-            Ok(Value::Ref(
-                vm.heap.allocate(HeapData::Bytes(Bytes::new(a[..end].to_vec()))),
-            ))
+            Ok(match a.iter().zip(&b).position(|(x, y)| x != y) {
+                Some(end) => Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(a[..end].to_vec())))),
+                None => s1.clone_with_heap(vm),
+            })
         }
         _ => {
             let elements = collect_iterable(s1, vm)?;
             defer_drop!(elements, vm);
-            let mut end = elements.len();
+            let mut mismatch = None;
             for (i, element) in elements.iter().enumerate() {
                 let other = s2.py_getitem(&Value::Int(i64::try_from(i).expect("sequence index fits i64")), vm)?;
                 defer_drop!(other, vm);
                 if !element.py_eq_operator(other, vm)? {
-                    end = i;
+                    mismatch = Some(i);
                     break;
                 }
             }
-            let stop = i64::try_from(end).expect("sequence index fits i64");
-            let slice = Value::Ref(vm.heap.allocate(HeapData::Slice(Slice::new(None, Some(stop), None))));
-            defer_drop!(slice, vm);
-            s1.py_getitem(slice, vm)
+            match mismatch {
+                Some(end) => {
+                    let stop = i64::try_from(end).expect("sequence index fits i64");
+                    let slice = Value::Ref(vm.heap.allocate(HeapData::Slice(Slice::new(None, Some(stop), None))));
+                    defer_drop!(slice, vm);
+                    s1.py_getitem(slice, vm)
+                }
+                None => Ok(s1.clone_with_heap(vm)),
+            }
         }
     }
 }

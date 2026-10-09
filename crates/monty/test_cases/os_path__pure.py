@@ -448,6 +448,11 @@ assert os.path.commonprefix([['a', 'b'], ['a', 'b', 'c']]) == ['a', 'b']
 assert os.path.commonprefix([[1, 2], [3]]) == []
 assert os.path.commonprefix([[], [1]]) == []
 assert os.path.commonprefix([[1.0, 2], [1, 3]]) == [1.0]
+# without a mismatch the smallest element is returned itself, not a copy
+shortest = [1, 2]
+assert os.path.commonprefix([shortest]) is shortest
+assert os.path.commonprefix([shortest, [1, 2, 3]]) is shortest
+assert os.path.commonprefix([shortest, [1, 3]]) is not shortest
 try:
     os.path.commonprefix(5)
     assert False, 'expected TypeError'
