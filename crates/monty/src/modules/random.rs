@@ -531,7 +531,7 @@ fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
         .get_one_arg("Random.getrandbits", vm.heap)?;
     defer_drop!(k, vm);
     let k = k.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
-    let k = u64::try_from(k).map_err(|_| ExcType::value_error("Cannot convert negative int"))?;
+    let k = u64::try_from(k).map_err(|_| ExcType::value_error_negative_int())?;
     if k == 0 {
         return Ok(Value::Int(0));
     }
@@ -562,7 +562,7 @@ fn randbytes(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
     defer_drop!(n, vm);
     // `getrandbits(n * 8)` is what rejects a negative or oversized count.
     let n = n.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
-    let n = usize::try_from(n).map_err(|_| ExcType::value_error("Cannot convert negative int"))?;
+    let n = usize::try_from(n).map_err(|_| ExcType::value_error_negative_int())?;
     if n == 0 {
         return Ok(allocate_bytes(Vec::new(), vm.heap));
     }

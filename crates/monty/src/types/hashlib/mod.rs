@@ -17,6 +17,7 @@ mod rustcrypto;
 
 use std::{
     fmt::Write,
+    mem,
     ops::{Deref, DerefMut},
 };
 
@@ -367,6 +368,14 @@ impl HashObject {
     }
 }
 
+/// The placeholder `update()` leaves in the heap while the real state is
+/// lifted out; an empty MD5 allocates nothing, and nothing can observe it.
+impl Default for HashObject {
+    fn default() -> Self {
+        Self::new(HashAlgorithm::Md5)
+    }
+}
+
 impl Blake2Params<'static> {
     /// The parameters of a plain `blake2b()` / `blake2s()` call.
     pub(crate) fn default_for(digest_size: u8) -> Self {
@@ -405,14 +414,14 @@ pub(crate) fn hex_string(data: &[u8]) -> String {
 #[derive(FromArgs)]
 #[from_args(name = "digest", style = c_named, at_most_total)]
 struct XofDigestArgs {
-    length: i64,
+    length: u64,
 }
 
 /// `hexdigest(length)` of a `_hashlib.HASHXOF`.
 #[derive(FromArgs)]
 #[from_args(name = "hexdigest", style = c_named, at_most_total)]
 struct XofHexdigestArgs {
-    length: i64,
+    length: u64,
 }
 
 // ============================================================================
@@ -504,12 +513,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
                 }
                 let data = args.get_one_arg(&method("update"), vm.heap)?;
                 defer_drop!(data, vm);
-                // The input borrows the heap, so the (small) state is updated
-                // outside it and written back.
-                let mut hash = self.get(vm.heap).clone();
-                hash.update(hash_input(data, vm)?, &vm.heap.tracker)?;
+                // The input borrows the heap, so the state is lifted out while
+                // it is absorbed and put back on every path.
+                let mut hash = mem::take(self.get_mut(vm.heap));
+                let absorbed = hash_input(data, vm).and_then(|input| hash.update(input, &vm.heap.tracker));
                 *self.get_mut(vm.heap) = hash;
-                Ok(CallResult::Value(Value::None))
+                absorbed.map(|()| CallResult::Value(Value::None))
             }
             Some(StaticStrings::Digest) if algorithm.is_xof() => {
                 let XofDigestArgs { length } = XofDigestArgs::from_args(args, vm)?;
@@ -556,14 +565,14 @@ impl<'h> HeapRead<'h, HashObject> {
 /// The longest SHAKE output, CPython's `_sha3` ceiling of `2**29` bytes.
 const MAX_XOF_LENGTH: usize = 1 << 29;
 
-/// Validates a SHAKE `digest()` / `hexdigest()` length and preflights the
-/// `bytes_per_output` bytes each output byte costs, so an oversized request
-/// is a graceful `MemoryError` rather than a hard-limit kill.
-fn xof_length(length: i64, bytes_per_output: usize, vm: &VM<'_>) -> RunResult<usize> {
-    let length = usize::try_from(length).map_err(|_| ExcType::value_error("negative digest length"))?;
-    if length >= MAX_XOF_LENGTH {
-        return Err(ExcType::value_error("digest length is too large"));
-    }
+/// Validates a SHAKE `digest()` / `hexdigest()` length with `_sha3`'s wording
+/// and preflights the `bytes_per_output` bytes each output byte costs, so an
+/// oversized request is a graceful `MemoryError` rather than a hard-limit kill.
+fn xof_length(length: u64, bytes_per_output: usize, vm: &VM<'_>) -> RunResult<usize> {
+    let length = usize::try_from(length)
+        .ok()
+        .filter(|&length| length < MAX_XOF_LENGTH)
+        .ok_or_else(|| ExcType::value_error("length is too large"))?;
     vm.heap.tracker.check_allocation(length * bytes_per_output)?;
     Ok(length)
 }

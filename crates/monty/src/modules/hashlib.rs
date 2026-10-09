@@ -612,12 +612,11 @@ fn c_long(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
 /// Argument Clinic's `unsigned_long` / `unsigned_long_long` converters,
 /// which reject a negative int before checking the width named by `c_type`.
 fn c_unsigned(value: &Value, c_type: &str, vm: &VM<'_>) -> RunResult<u64> {
-    let negative = || ExcType::value_error("Cannot convert negative int");
     match value {
         Value::Bool(b) => Ok(u64::from(*b)),
-        Value::Int(i) => u64::try_from(*i).map_err(|_| negative()),
+        Value::Int(i) => u64::try_from(*i).map_err(|_| ExcType::value_error_negative_int()),
         _ => match big_int(value, vm) {
-            Some(big) if big.sign() == Sign::Minus => Err(negative()),
+            Some(big) if big.sign() == Sign::Minus => Err(ExcType::value_error_negative_int()),
             Some(big) => big
                 .to_u64()
                 .ok_or_else(|| overflow_error(format!("Python int too large for C {c_type}"))),

@@ -1687,6 +1687,20 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
     }
 
+    /// `OverflowError: Python int too large for C unsigned long`, from Argument
+    /// Clinic's `unsigned_long` converter on an int beyond `u64`.
+    #[must_use]
+    fn overflow_c_unsigned_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "Python int too large for C unsigned long").into()
+    }
+
+    /// `ValueError: Cannot convert negative int`, which the unsigned Argument
+    /// Clinic converters raise before checking an int's width.
+    #[must_use]
+    fn value_error_negative_int() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Cannot convert negative int").into()
+    }
+
     /// Creates the TypeError for three-argument `pow()` with a non-integer operand and no
     /// float among them: `unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'`.
     #[must_use]
