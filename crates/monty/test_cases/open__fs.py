@@ -795,6 +795,9 @@ if is_monty:
     f.seek(0)
     assert list(f) == ['first\n', 'second\n', 'third']
     f.close()
+# generator expressions compile to `for` loops, so they can load an unread file
+with open(root / 'iter.txt') as f:
+    assert list(line.strip() for line in f) == ['first', 'second', 'third']
 
 # closed and write-only files
 f = open(root / 'iter.txt')

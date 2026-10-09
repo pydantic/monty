@@ -90,13 +90,13 @@ impl PendingEffect {
             // The reading still has to become a `struct_time` or a string, which
             // a future defers past the point the sandbox needs it.
             Self::Post(PostConversionEffect::ClockReading { .. }) => Some("time.time"),
+            // The load answers a `ForIter` or `next()` that is waiting for the
+            // buffer; a future would land on the stack where the file is expected.
+            Self::Post(PostConversionEffect::BufferLoad { .. } | PostConversionEffect::FileNext { .. }) => {
+                Some("file iteration")
+            }
             // A future strands these instead: the awaited value is the raw host reply.
-            Self::Post(
-                PostConversionEffect::BufferStore { .. }
-                | PostConversionEffect::BufferLoad { .. }
-                | PostConversionEffect::FileNext { .. }
-                | PostConversionEffect::WritePosition { .. },
-            ) => None,
+            Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
             // `asyncio.sleep` wants the future: `resume_with_result` moves the
             // result onto the pending awaitable instead.
             Self::Post(PostConversionEffect::SleepResult { .. }) => None,

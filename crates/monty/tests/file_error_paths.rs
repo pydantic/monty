@@ -210,6 +210,29 @@ except OSError as exc:
     );
 }
 
+/// A future cannot stand in for the load that `for` and `next()` wait on: the
+/// awaited value would land on the stack where the file iterator is expected.
+#[test]
+fn file_iteration_load_rejects_future_reply() {
+    for code in [
+        "f = open('/x.txt')\nfor line in f:\n    pass\n",
+        "f = open('/x.txt')\nnext(f)\n",
+    ] {
+        let err = run_with_open_then_io(
+            code,
+            "Path.read_text",
+            file_handle("/x.txt", "r"),
+            ExtFunctionResult::Future(1),
+        )
+        .unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::RuntimeError);
+        assert_eq!(
+            err.message().unwrap(),
+            "file iteration cannot be answered with a future"
+        );
+    }
+}
+
 #[test]
 fn for_loop_over_empty_file_via_intern() {
     let code = r"

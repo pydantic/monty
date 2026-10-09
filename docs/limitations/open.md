@@ -139,11 +139,12 @@ Everything else raises `AttributeError`, including: `truncate()`,
 - Iterating a file that has not been read yet needs that host load, which
     only the `for` statement and the `next()` builtin can issue. Any other
     consumer of the iterator protocol (`list(f)`, `enumerate(f)`, `zip(f, …)`,
-    `sorted(f)`, `''.join(f)`, a generator expression driven by one of them, …)
+    `sorted(f)`, `''.join(f)`, …)
     raises `NotImplementedError: iterating an unread _io.TextIOWrapper is only supported by 'for' loops and next(); call seek(0) first to load it`
     (`_io.BufferedReader` in binary mode).
     Once any read, `seek()` or iteration step has loaded the buffer, every
-    consumer works. Comprehensions compile to `for` loops and are unaffected.
+    consumer works. Comprehensions and generator expressions compile to `for`
+    loops and are unaffected, so `list(x for x in f)` reads an unread file.
 - `close()` releases the cached buffer (matching CPython), returning its memory
     when no other value, such as `data = f.read()`, retains it.
 - File I/O is rejected inside callbacks the interpreter evaluates in a
