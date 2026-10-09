@@ -1426,7 +1426,6 @@ jobs:
       - release-python
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
     permissions:
-      contents: write
       id-token: write
     steps:
       - name: Setup node
