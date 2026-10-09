@@ -1,0 +1,23 @@
+crates/monty/src/modules/hashlib.rs
+  s_d3433d22bc9894::t_ba4473ecce42ab 268-269
+docs/limitations/hashlib.md
+  s_d3433d22bc9894::t_ba4473ecce42ab 35-36
+crates/monty/test_cases/hashlib__errors.py
+  s_d3433d22bc9894::t_ba4473ecce42ab 340-341
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "770761ea51fc54b0fb1ecfef1e6c5275297adeb3",
+  "prompts": {},
+  "sessions": {
+    "s_d3433d22bc9894": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29e556f6-4132-4194-86ce-7bdd5550c7ae",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
