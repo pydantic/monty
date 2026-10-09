@@ -1,0 +1,25 @@
+docs/limitations/modules.md
+  s_85e79992fe406b::t_9066693a854e58 30,56
+docs/limitations/hashlib.md
+  s_85e79992fe406b::t_bbe8474bf3eb88 41
+docs/limitations/index.md
+  s_85e79992fe406b::t_9066693a854e58 81,95-96,101
+mkdocs.yml
+  s_85e79992fe406b::t_9066693a854e58 68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a7de139708c46e89e7991b816f4eb5f74978842b",
+  "prompts": {},
+  "sessions": {
+    "s_85e79992fe406b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4374c46d-a07d-4026-87ee-46a9d9dded27",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
