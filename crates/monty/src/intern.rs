@@ -803,7 +803,7 @@ pub enum StaticStrings {
     /// `dataclasses.dataclass` decorator.
     Dataclass,
     /// The `__dataclass_fields__` class attribute `@dataclass` writes: the
-    /// name -> `Field` mapping that drives every synthesized dunder.
+    /// name -> `Field` mapping the generated dunders were built from.
     #[strum(serialize = "__dataclass_fields__")]
     DataclassFields,
     /// The `__dataclass_params__` class attribute `@dataclass` writes: the
@@ -901,13 +901,25 @@ pub enum StaticStrings {
     /// `__args__` of a `types.GenericAlias`.
     #[strum(serialize = "__args__")]
     DunderArgs,
+    /// `__delattr__` — the frozen-dataclass hook `@dataclass` generates.
+    #[strum(serialize = "__delattr__")]
+    DunderDelattr,
     /// `__doc__` — synthesized into the namespace of classes created by the
     /// 3-arg `type()` builtin when the caller's dict omits it.
     #[strum(serialize = "__doc__")]
     DunderDoc,
+    /// `__eq__` — written into a class namespace by `@dataclass`.
+    #[strum(serialize = "__eq__")]
+    DunderEq,
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,
+    /// `__hash__` — written into a class namespace by `@dataclass`.
+    #[strum(serialize = "__hash__")]
+    DunderHash,
+    /// `__init__` — written into a class namespace by `@dataclass`.
+    #[strum(serialize = "__init__")]
+    DunderInit,
     /// `__main__`, the `__name__` of the module being run.
     #[strum(serialize = "__main__")]
     DunderMain,
@@ -929,6 +941,12 @@ pub enum StaticStrings {
     /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
     #[strum(serialize = "__qualname__")]
     DunderQualname,
+    /// `__repr__` — written into a class namespace by `@dataclass`.
+    #[strum(serialize = "__repr__")]
+    DunderRepr,
+    /// `__setattr__` — the frozen-dataclass hook `@dataclass` generates.
+    #[strum(serialize = "__setattr__")]
+    DunderSetattr,
     /// `Counter.elements()` method.
     Elements,
     /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
@@ -1669,7 +1687,7 @@ pub enum StaticStrings {
     Posix,
     /// Module name for `import posixpath`, and the name `os.path` reports.
     Posixpath,
-    /// `__post_init__` — the hook the synthesized `__init__` calls last.
+    /// `__post_init__` — the hook the generated `__init__` calls last.
     #[strum(serialize = "__post_init__")]
     PostInit,
     /// `math.pow()` function.

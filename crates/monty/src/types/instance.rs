@@ -18,7 +18,7 @@ use crate::{
     intern::Interns,
     modules::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
-        dataclasses::{self, DataclassHash},
+        dataclasses,
     },
     value::{EitherStr, Value},
 };
@@ -114,8 +114,8 @@ impl<'h> HeapRead<'h, Instance> {
     /// caller to drop. Takes ownership of both `name` and `value`.
     ///
     /// The entry point for an ordinary `obj.x = v`: it applies whatever the
-    /// class has to say about the write — today just
-    /// `@dataclass(frozen=True)` — and is where a class-level `__setattr__`
+    /// class has to say about the write — today just the `__setattr__` a
+    /// `@dataclass(frozen=True)` generates — and is where a user `__setattr__`
     /// hook would be dispatched once one is. The write itself is
     /// [`set_attr_unchecked`](Self::set_attr_unchecked).
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -129,10 +129,10 @@ impl<'h> HeapRead<'h, Instance> {
 
     /// Writes straight to the instance `__dict__`, skipping every check
     /// [`set_attr`](Self::set_attr) makes — the only place the write itself
-    /// lives, and what both `object.__setattr__` and a `@dataclass`'s
-    /// synthesized `__init__` call. The latter has to populate a
-    /// `frozen=True` instance that `set_attr` would refuse, exactly as
-    /// CPython's generated `__init__` goes through `object.__setattr__`.
+    /// lives, and what both `object.__setattr__` and a `frozen=True`
+    /// dataclass's generated `__init__` call. The latter has to populate an
+    /// instance that `set_attr` would refuse, exactly as CPython's generated
+    /// `__init__` goes through `object.__setattr__`.
     ///
     /// Whatever `set_attr` grows must stay above this line (see
     /// `limitations/classes.md`).
@@ -215,53 +215,41 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         Ok(None)
     }
 
-    /// Hashes an instance, following CPython's precedence.
-    ///
-    /// A `@dataclass` decoration generating a `__hash__` wins, since CPython
-    /// writes it into the class after the body has run. Otherwise the body
-    /// decides: a `__hash__` is used, `__hash__ = None` is the unhashable
-    /// opt-out, and defining `__eq__` is the same opt-out implicitly. What is
-    /// left hashes by identity.
+    /// Hashes an instance, following CPython's precedence: the class's
+    /// `__hash__` is used, `__hash__ = None` is the unhashable opt-out, and
+    /// defining `__eq__` is the same opt-out implicitly. What is left hashes by
+    /// identity. A `@dataclass`-generated `__hash__` runs natively.
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let class_id = self.get(vm.heap).class();
-        match dataclasses::hash_action(class_id, vm) {
-            Some(DataclassHash::FieldWise) => {
-                let field_names = dataclasses::dataclass_fields(class_id, vm).unwrap_or_default();
-                dataclasses::dataclass_hash(self.id(), &field_names, vm).map(Some)
+        if let Some(field_names) = dataclasses::generated_fields(class_id, "__hash__", vm) {
+            dataclasses::dataclass_hash(self.id(), &field_names, vm).map(Some)
+        } else if class_defines(class_id, "__hash__", vm) {
+            if class_defines_not_none(class_id, "__hash__", vm) {
+                instance_user_hash(self.id(), vm)
+            } else {
+                Ok(None)
             }
-            Some(DataclassHash::Unhashable) => Ok(None),
-            None if class_defines(class_id, "__hash__", vm) => {
-                if class_defines_not_none(class_id, "__hash__", vm) {
-                    instance_user_hash(self.id(), vm)
-                } else {
-                    Ok(None)
-                }
-            }
+        } else if class_defines(class_id, "__eq__", vm) {
             // CPython's `type` sets `__hash__ = None` whenever `__eq__` is defined.
-            None if class_defines(class_id, "__eq__", vm) => Ok(None),
-            None => Ok(Some(identity_hash(self.id()))),
+            Ok(None)
+        } else {
+            Ok(Some(identity_hash(self.id())))
         }
     }
 
-    /// Dispatches to a user or synthesized `__repr__`, falling back to the
-    /// identity-bearing default representation. The dataclass form registers
-    /// the instance in `heap_ids`, so a field pointing back renders `...`.
+    /// Dispatches to the class's `__repr__`, falling back to the
+    /// identity-bearing default representation. A `@dataclass`-generated one
+    /// runs natively and shares `heap_ids`, so a field pointing back renders `...`.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let self_id = self.id();
-        if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
+        let class_id = instance_class(self_id, vm);
+        if let Some(field_names) = dataclasses::generated_fields(class_id, "__repr__", vm) {
+            dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids)
+        } else if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
             defer_drop!(s, vm);
             Ok(f.write_str(s.to_str(vm)?)?)
         } else {
-            let class_id = instance_class(self_id, vm);
-            match dataclasses::dataclass_fields(class_id, vm) {
-                Some(field_names) => {
-                    heap_ids.insert(self_id);
-                    let result = dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids);
-                    heap_ids.remove(&self_id);
-                    result
-                }
-                None => self.py_default_repr_fmt(f, vm),
-            }
+            self.py_default_repr_fmt(f, vm)
         }
     }
 
@@ -735,41 +723,24 @@ fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
     }
 }
 
-/// Dispatches a user-defined `__eq__`, or `Ok(None)` when it is absent.
+/// Dispatches the class's `__eq__`, or `Ok(None)` when it is absent.
 ///
 /// The user's value is preserved so direct equality can return it unchanged;
-/// callers interpret `NotImplemented` according to their comparison mode.
+/// callers interpret `NotImplemented` according to their comparison mode. A
+/// `@dataclass`-generated `__eq__` runs natively rather than through a call.
 pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {
         return Ok(None);
     }
     let class_id = instance_class(self_id, vm);
-    if !class_defines(class_id, "__eq__", vm) {
-        return Ok(None);
-    }
-    let other = other.clone_with_heap(vm.heap);
-    instance_call_dunder_sync(self_id, "__eq__", Some(other), vm)
-}
-
-/// Dispatches the synthesized field-wise `__eq__` of a dataclass instance, or
-/// `Ok(None)` when `self_id` is not one — or is one declared `eq=False` — which
-/// leaves the caller on identity.
-///
-/// Not in `HeapObjectRead<Instance>::py_eq_impl` because fields are read as
-/// `self.field` is (see [`instance_attr`]), which needs the instance's `HeapId`.
-pub(crate) fn instance_dataclass_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
-    if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {
-        return Ok(None);
-    }
-    let class_id = instance_class(self_id, vm);
-    match dataclasses::dataclass_options(class_id, vm) {
-        // `eq=True` (the default) gets CPython's field-wise `__eq__`; `eq=False`
-        // and a plain class alike return `None`, leaving the caller on identity.
-        Some(options) if options.eq => {
-            let field_names = dataclasses::dataclass_fields(class_id, vm).unwrap_or_default();
-            dataclasses::dataclass_eq(self_id, &field_names, other, vm)
-        }
-        _ => Ok(None),
+    if let Some(field_names) = dataclasses::generated_fields(class_id, "__eq__", vm) {
+        let equal = dataclasses::dataclass_eq(self_id, &field_names, other, vm)?;
+        Ok(Some(equal.map_or(Value::NotImplemented, Value::Bool)))
+    } else if class_defines(class_id, "__eq__", vm) {
+        let other = other.clone_with_heap(vm.heap);
+        instance_call_dunder_sync(self_id, "__eq__", Some(other), vm)
+    } else {
+        Ok(None)
     }
 }
 
@@ -852,7 +823,8 @@ fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
             vm.heap.get(*id),
             // `functools.partial` is a descriptor in CPython 3.14 too, and binds
             // the instance the same way: after the arguments it already carries.
-            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_)
+            // A `@dataclass`-generated method is a function in CPython.
+            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_) | HeapData::DataclassMethod(_)
         ),
         _ => false,
     }

@@ -1,7 +1,7 @@
-//! The metadata `@dataclass` writes into a class namespace, where the
-//! behaviour cannot be dual-run against CPython: Monty stringizes annotations,
-//! and reads `__dataclass_params__` and `__post_init__` live where CPython
-//! bakes them into the methods it generates.
+//! The `__dataclass_fields__` mapping `@dataclass` writes and the `Field`
+//! objects in it, where the behaviour cannot be dual-run against CPython
+//! because Monty stringizes annotations — plus a cycle-collection check that
+//! needs the `test-hooks`-only `gc` module.
 //!
 //! Everything the two interpreters agree on lives in
 //! `test_cases/dataclass__is_dataclass.py` instead.
@@ -87,46 +87,43 @@ fn classvars_are_absent_from_the_mapping() {
     assert_snapshot!(eval_str("repr(list(Point.__dataclass_fields__))"), @"['x', 'y']");
 }
 
-/// The options are read from `__dataclass_params__` at each use, so lending a
-/// class another one's params changes how it behaves. CPython's generated
-/// methods ignore the swap.
+/// A cycle closed only by a generated `__init__`'s captured default must be
+/// collectable, which needs the collector to trace the method's children.
+///
+/// Emptying `__dataclass_fields__` and rebinding the class attribute leaves the
+/// `__init__` as the sole holder of `box`, so `C -> __init__ -> box -> C` is the
+/// whole cycle; under-tracing it leaves `gc.collect()` with nothing to free.
 #[test]
-fn rebound_params_change_the_options_in_force() {
-    let lend_frozen = "
-@dataclass(frozen=True)
-class Frozen:
-    a: int
+#[cfg(feature = "test-hooks")]
+fn generated_init_default_cycle_is_collected() {
+    let code = r"
+import gc
+from dataclasses import dataclass
 
-Point.__dataclass_params__ = Frozen.__dataclass_params__
-p = Point(1)
+class Box:
+    owner = None
+
+def build():
+    box = Box()
+
+    @dataclass
+    class C:
+        b: object = box
+
+    box.owner = C
+    C.__dataclass_fields__ = {}
+    C.b = None
+
+build()
+gc.collect()
 ";
-    assert_eq!(
-        expect_error(&format!("{lend_frozen}p.x = 2")),
-        "cannot assign to field 'x'"
-    );
-    assert_eq!(eval_str(&format!("{lend_frozen}str(hash(p) == hash((1, 5)))")), "True");
-}
-
-/// Params rebound to something else leave the class on CPython's default
-/// options rather than without any.
-#[test]
-fn foreign_params_fall_back_to_the_defaults() {
-    assert_eq!(
-        eval_str("Point.__dataclass_params__ = None\nstr(Point(1) == Point(1))"),
-        "True"
-    );
-    assert_eq!(
-        expect_error("Point.__dataclass_params__ = None\nhash(Point(1))"),
-        "unhashable type: 'Point'"
-    );
-}
-
-/// `__post_init__` is looked up at each construction, so a hook attached after
-/// decoration runs. CPython decides at decoration and never calls it.
-#[test]
-fn late_post_init_runs() {
-    assert_eq!(
-        eval_str("def hook(self):\n    self.y = 99\nPoint.__post_init__ = hook\nstr(Point(1).y)"),
-        "99"
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let freed = run.run_no_limits(vec![]).expect("should run");
+    let Some(freed) = freed.as_ref().as_int() else {
+        panic!("gc.collect() should return an int, got {freed:?}");
+    };
+    assert!(
+        freed > 0,
+        "the class -> __init__ -> default cycle should be collected, but gc.collect() freed {freed} entries",
     );
 }
