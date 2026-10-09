@@ -337,6 +337,8 @@ raises(
 )
 raises(ValueError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, 0), 'key length must be greater than 0.')
 raises(ValueError, lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, -1), 'key length must be greater than 0.')
+# an explicit non-positive `dklen` is rejected before the digest is inspected, so a SHAKE gets the same message
+raises(ValueError, lambda: hashlib.pbkdf2_hmac('shake_128', b'pw', b'salt', 1, 0), 'key length must be greater than 0.')
 raises(
     OverflowError,
     lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, 2**31),

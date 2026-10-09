@@ -32,8 +32,8 @@ and `new()` accepts those names; Monty raises `ValueError: unsupported hash type
 `ValueError: unsupported hash type <name>` where CPython raises its `ValueError` subclass
 `_hashlib.UnsupportedDigestmodError` with the OpenSSL message `[digital envelope routines] unsupported`.
 `pbkdf2_hmac()` with a SHAKE raises `ValueError: key length must be greater than 0.` when `dklen` is omitted and
-`ValueError: [Provider routines] xof digests not allowed` otherwise; CPython's messages for these come from OpenSSL
-and vary between builds.
+`ValueError: [Provider routines] xof digests not allowed` when it is positive; CPython's messages for these come from
+OpenSSL and vary between builds.
 
 ## SHAKE digest lengths
 

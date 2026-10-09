@@ -265,8 +265,8 @@ fn call_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         name.drop_with(vm);
         return blake2_init(kind, vm, ArgValues::from_parts(args, kwargs));
     }
-    // The name rejoins the varargs in place, so no second buffer is built
-    // for a call with a huge `*args` the parser is about to reject.
+    // The name rejoins the binder's own vector; `insert` may still grow it,
+    // but nothing is copied into a fresh buffer before the parser's checks.
     let mut positional = args;
     positional.insert(0, name);
     let OpensslNewArgs {
