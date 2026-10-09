@@ -1,0 +1,21 @@
+crates/monty/src/modules/os_path/mod.rs
+  s_f4328045f58601::t_911408a75ec351 512-516,522-526,531-534,539,544,548-556
+crates/monty/test_cases/os_path__pure.py
+  s_f4328045f58601::t_911408a75ec351 451-455
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5954990270ca83056fd35f0ae33b6f6a51d2682b",
+  "prompts": {},
+  "sessions": {
+    "s_f4328045f58601": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e97e358a-13a4-4763-9759-95dd659e8ef6",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
