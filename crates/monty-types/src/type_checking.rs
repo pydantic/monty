@@ -188,6 +188,7 @@ pub const RESERVED_MODULE_NAMES: &[&str] = &[
     "enum",
     "functools",
     "gc",
+    "hashlib",
     "itertools",
     "json",
     "math",

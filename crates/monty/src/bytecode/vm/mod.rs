@@ -410,6 +410,12 @@ pub struct CallFrame<'code> {
     /// construction. Threaded through serialization (`SerializedFrame`) so a
     /// suspended initializer resumes correctly.
     is_initializer: bool,
+
+    /// The module of the `from <module> import ...` statement in progress, set
+    /// by its `LoadModule` and read by the `LoadAttrImport`s that follow for
+    /// their `ImportError` message. Frame state rather than an operand so the
+    /// opcode keeps its one-operand shape; nothing else can run in between.
+    import_from_module: Option<StringId>,
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
@@ -450,6 +456,7 @@ impl<'code> CallFrame<'code> {
             is_parked: false,
             namespace: None,
             is_initializer: false,
+            import_from_module: None,
         }
     }
 
@@ -506,6 +513,7 @@ impl<'code> CallFrame<'code> {
             is_parked: false,
             namespace,
             is_initializer: false,
+            import_from_module: None,
         }
     }
 }
@@ -652,6 +660,10 @@ pub struct SerializedFrame {
     /// `CallFrame.namespace`).
     #[serde(rename = "N")]
     namespace: Option<Box<FrameNamespace>>,
+
+    /// The `from ... import` in progress, if the frame suspended inside one.
+    #[serde(default, rename = "M")]
+    import_from_module: Option<StringId>,
 }
 
 impl CallFrame<'_> {
@@ -672,6 +684,7 @@ impl CallFrame<'_> {
             call_offset: self.call_offset,
             is_initializer: self.is_initializer,
             namespace: mem::take(&mut self.namespace),
+            import_from_module: self.import_from_module,
         }
     }
 }
@@ -988,6 +1001,7 @@ impl<'h> VM<'h> {
                     is_parked: false,
                     namespace: sf.namespace,
                     is_initializer: sf.is_initializer,
+                    import_from_module: sf.import_from_module,
                 }
             })
             .collect();
@@ -1610,9 +1624,13 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.load_attr(name_id));
                 }
                 Opcode::LoadAttrImport => {
-                    let (name_idx, module_idx) = self.current_frame.fetch_u16_u16();
+                    let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
-                    let module_id = StringId::from_index(module_idx);
+                    // the compiler emits this only after the statement's `LoadModule`
+                    let module_id = self
+                        .current_frame
+                        .import_from_module
+                        .expect("LoadAttrImport runs after its LoadModule set the frame's module");
                     handle_call_result!(self, self.load_attr_import(name_id, module_id));
                 }
                 Opcode::StoreAttr => {
@@ -2041,6 +2059,8 @@ impl<'h> VM<'h> {
                 // Module Operations
                 Opcode::LoadModule => {
                     let module_id = self.current_frame.fetch_u16();
+                    // for the `LoadAttrImport`s of a `from ... import`; harmless for a bare `import`
+                    self.current_frame.import_from_module = Some(StringId::from_index(module_id));
                     handle_call_result!(self, self.load_module(module_id));
                 }
                 // Context Managers

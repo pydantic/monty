@@ -514,6 +514,7 @@ impl<'h> VM<'h> {
                 call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
                 namespace: f.namespace,
+                import_from_module: f.import_from_module,
             })
             .collect();
         // The namespace moves across so the frame left behind releases nothing.
@@ -527,6 +528,7 @@ impl<'h> VM<'h> {
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
             namespace: mem::take(&mut current.namespace),
+            import_from_module: current.import_from_module,
         });
 
         // Count this task's recursion depth contribution and subtract it from
@@ -594,6 +596,7 @@ impl<'h> VM<'h> {
                         is_parked: false,
                         namespace: sf.namespace,
                         is_initializer: sf.is_initializer,
+                        import_from_module: sf.import_from_module,
                     }
                 })
                 .collect();
