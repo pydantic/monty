@@ -1585,6 +1585,59 @@ async fn max_memory_leaves_normal_work_alone() {
     session.finish().await.unwrap();
 }
 
+/// Building the keyword index for a partial must reject large name copies
+/// before the worker's allocator reaches its hard memory limit.
+#[tokio::test]
+async fn partial_keyword_index_memory_limit_keeps_worker_alive() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl_config = ReplConfig {
+        limits: Some(ResourceLimits::default().max_memory(12 * 1024 * 1024)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl_config).await.unwrap();
+    let setup = "import functools\ndef f(**kw): return len(kw)\nd = {}\nfor i in range(9):\n    d['x' * 1_000_000 + str(i)] = i\np = functools.partial(f, **d)\nlen(d)";
+    assert_eq!(
+        expect_complete(session.feed(setup, vec![], vec![], false, &mut no_print).await.unwrap()),
+        MontyObject::int(9)
+    );
+
+    let err = session
+        .feed("p(z=[1])", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("copying the names should exceed the memory budget");
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected a worker-reported MemoryError, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_ne!(
+        exc.message(),
+        Some("the worker exceeded its memory limit and was terminated")
+    );
+    session.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+
+    // The same keyword index still works when enough memory is available.
+    let repl_config = ReplConfig {
+        limits: Some(ResourceLimits::default().max_memory(32 * 1024 * 1024)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl_config).await.unwrap();
+    assert_eq!(
+        expect_complete(session.feed(setup, vec![], vec![], false, &mut no_print).await.unwrap()),
+        MontyObject::int(9)
+    );
+    assert_eq!(
+        expect_complete(
+            session
+                .feed("p(z=0)", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap()
+        ),
+        MontyObject::int(10)
+    );
+    session.finish().await.unwrap();
+}
+
 /// Only `OOM_EXIT_CODE` carries a meaning: any other code a worker might return
 /// stays an opaque death rather than being read as a memory outcome.
 #[cfg(unix)]
