@@ -1,0 +1,65 @@
+crates/monty/src/modules/mod.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 31,51,53-54,106,137,170,203,235
+crates/monty/src/modules/os.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 5-8,29,91-92,95-99,548,568
+crates/monty/src/builtins/min_max.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 219
+crates/monty/src/modules/os_path/mod.rs
+  s_e2a0d914a5e7a5::t_577478ce052140 1-13,16-18,20,24-29,32-72,74-190,192-198,202-211,213-282,284-347,349-416,418-474,484-501,504-519,523,525-528,530-535,542,546-595,598-609,612,621-691,693-792,796-797,804-809,812-844,846-872,874-910,917-920,925-929,936,938-941
+  s_e2a0d914a5e7a5::t_570f6da8fac800 14-15,73,191,283,529,692,810
+  s_e2a0d914a5e7a5::t_cc8fe1c43d79f8 520-522,596-597,921-924
+crates/monty/src/modules/os_path/posix.rs
+  s_e2a0d914a5e7a5::t_d169feb4cf07f7 1-131,133-158,160-173,175-189,191-203,206-207,209-210,217-221,223-225,227-228,233,235,238
+  s_e2a0d914a5e7a5::t_cc8fe1c43d79f8 132,174
+  s_e2a0d914a5e7a5::t_f886d9be187bed 159,211-212,215-216,222
+  s_e2a0d914a5e7a5::t_570f6da8fac800 190
+  s_e2a0d914a5e7a5::t_18124d1e1190f2 234
+crates/monty/src/os_dispatch.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 37,136-138,141-156,172,174,186,188-236,238-253,257-258,261,264-280,283-285,288-291,295-297,300-324,424-428,751
+crates/monty/test_cases/os_path__fs.py
+  s_e2a0d914a5e7a5::t_d3c74dbae2e790 1-49,52-77
+  s_e2a0d914a5e7a5::t_0d4c22bd7c4acd 51
+docs/limitations/index.md
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 86,88
+crates/monty/test_cases/os_path__pure.py
+  s_e2a0d914a5e7a5::t_be63a7aa1823b4 1-87,89-289,291-342,344-498,500-508,512-541,544-618
+  s_9c892e4bbc2ca0::t_29884140d41124 88,343
+  s_e2a0d914a5e7a5::t_5f6f731d8252d2 290
+  s_9c892e4bbc2ca0::t_f028451c890b60 499
+  s_e2a0d914a5e7a5::t_deec6a409c1486 542-543
+docs/limitations/modules.md
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 7-10,39,41
+crates/monty/src/builtins/mod.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 26
+docs/limitations/os.md
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 118-123,125,127-130,132-137,141-154,157-158,161
+crates/monty/src/exception_private.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 795-812
+crates/monty/src/intern.rs
+  s_e2a0d914a5e7a5::t_32dfe3219a6b9c 540-541,664-665,751-754,841-845,874-875,990-993,1018-1019,1110-1113,1120-1121,1124-1125,1219-1220,1231-1232,1235-1236,1239-1240,1247-1248,1251-1252,1530-1533,1567-1569,1604-1607,1648-1649,1706-1707,1714-1715,1765-1768,1776-1777,1874-1877,1880-1881,1962-1963
+  s_e2a0d914a5e7a5::t_012c12b7129f8d 1769
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cfc171ba7811c9ed2c6263d3a5c1796e633dc462",
+  "prompts": {},
+  "sessions": {
+    "s_9c892e4bbc2ca0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68afb18d-e82a-4bdf-b58f-879d0a3f6eca",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    },
+    "s_e2a0d914a5e7a5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c450defd-645a-4ff9-a70b-c99f759ba624",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
