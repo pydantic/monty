@@ -140,6 +140,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.14'
+          # resolve the newest 3.14 patch, not whatever the runner image preinstalled
+          check-latest: true
 
       - run: rustc --version --verbose
       - run: python3 -V
@@ -201,6 +203,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.14'
+          # resolve the newest 3.14 patch, not whatever the runner image preinstalled
+          check-latest: true
 
       - run: rustc --version --verbose
       - run: python3 -V
@@ -255,6 +259,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.14'
+          # resolve the newest 3.14 patch, not whatever the runner image preinstalled
+          check-latest: true
 
       - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
@@ -407,6 +413,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.14'
+          # resolve the newest 3.14 patch, not whatever the runner image preinstalled
+          check-latest: true
 
       - run: cargo test -p monty --features memory-model-checks
       # monty-fs does host filesystem I/O, so its mount/path-security tests must
@@ -455,6 +463,8 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.14'
+          # resolve the newest 3.14 patch, not whatever the runner image preinstalled
+          check-latest: true
 
       - run: make dev-bench
 
