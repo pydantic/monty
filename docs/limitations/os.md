@@ -121,14 +121,16 @@ whether each call is permitted.
 yields the same module. `import os.path` binds `os` like CPython, `import os.path as p` binds the module, and
 `from os.path import join` works.
 
-Implemented, pure (no host involvement), accepting `str`, `bytes` and `pathlib.Path` like CPython:
+Implemented, pure (no host involvement), accepting `str`, `bytes` and `pathlib.Path` paths like CPython:
 `join`, `split`, `splitext`, `splitdrive`, `splitroot`, `basename`, `dirname`, `normpath`, `normcase`, `isabs`,
-`abspath`, `relpath`, `commonpath`, `commonprefix`, `samestat`, `isjunction`, `isdevdrive`, and the constants
+`abspath`, `relpath`, `commonpath`, `commonprefix`, `isjunction`, `isdevdrive`, and the constants
 `sep`, `altsep`, `extsep`, `curdir`, `pardir`, `pathsep`, `defpath`, `devnull` (`os.pathsep` and `os.defpath` too).
+`samestat`, which takes two stat results rather than paths, is pure as well.
 `abspath` and `relpath` use the session's virtual working directory (see above), exactly as CPython's use
 `os.getcwd()`.
 
-Implemented through the host, with the same `str`/`Path`-only rule as the other `os` functions:
+Implemented through the host. The filesystem-backed ones follow the same `str`/`Path`-only rule as the other
+`os` functions; `expanduser` and `expandvars` take `bytes` paths too, since they only consult the environment:
 
 - `exists`, `isfile`, `isdir`, `islink` suspend as `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`.
     The empty path and a path containing a NUL byte answer `False` without consulting the host.

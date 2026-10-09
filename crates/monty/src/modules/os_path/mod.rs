@@ -18,7 +18,7 @@ use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     builtins::candidate_wins,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{StaticStrings, StringId},
@@ -27,7 +27,7 @@ use crate::{
         os::{PathAccepts, extract_os_path},
     },
     os_dispatch::{PreConversionEffect, StatField, value_to_owned_bytes, value_to_owned_string},
-    types::{Bytes, List, Module, PyTrait, Type, allocate_tuple, collect_iterable, str::allocate_string},
+    types::{Bytes, Module, PyTrait, Slice, Type, allocate_tuple, collect_iterable, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -354,7 +354,7 @@ fn normcase(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let NormcaseArgs { s } = NormcaseArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let text = PathText::fspath(s, vm)?;
-    Ok(text.allocate(text.bytes.clone(), vm.heap))
+    Ok(text.into_value(vm.heap))
 }
 
 /// `os.path.normpath(path)` argument shape — CPython's is the C
@@ -481,15 +481,17 @@ fn commonprefix(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let nested = matches!(first.py_type_heap(vm.heap), Type::List | Type::Tuple);
     let raw_items = collect_iterable(m, vm)?;
     defer_drop!(raw_items, vm);
-    let items = if nested {
-        raw_items.iter().map(|item| item.clone_with_heap(vm)).collect()
-    } else {
-        raw_items
-            .iter()
-            .map(|item| PathText::fspath(item, vm).map(|text| text.allocate(text.bytes.clone(), vm.heap)))
-            .collect::<RunResult<Vec<_>>>()?
-    };
-    defer_drop!(items, vm);
+    // Guarded before conversion so a later `os.fspath` failure releases the
+    // values already converted.
+    let items = Vec::with_capacity(raw_items.len());
+    defer_drop_mut!(items, vm);
+    for item in raw_items {
+        items.push(if nested {
+            item.clone_with_heap(vm)
+        } else {
+            PathText::fspath(item, vm)?.into_value(vm.heap)
+        });
+    }
     let smallest = extreme(items, true, vm)?;
     let largest = extreme(items, false, vm)?;
     common_leading_slice(smallest, largest, vm)
@@ -508,8 +510,9 @@ fn extreme<'a>(items: &'a [Value], is_min: bool, vm: &mut VM<'_>) -> RunResult<&
 }
 
 /// `s1[:i]` for the first `i` where `s1[i] != s2[i]`, or all of `s1`. Strings
-/// slice by code point and bytes by byte; lists and tuples compare their
-/// elements with `==` and rebuild the prefix as a new container.
+/// slice by code point and bytes by byte; anything else is iterated and
+/// indexed like CPython does it (so a dict's int keys raise `TypeError`),
+/// with `==` on the elements and a slice of `s1` as the result.
 fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     match (s1.py_type_heap(vm.heap), s2.py_type_heap(vm.heap)) {
         (Type::Str, Type::Str) => {
@@ -530,7 +533,7 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
                 vm.heap.allocate(HeapData::Bytes(Bytes::new(a[..end].to_vec()))),
             ))
         }
-        (Type::List, Type::List) | (Type::Tuple, Type::Tuple) => {
+        _ => {
             let elements = collect_iterable(s1, vm)?;
             defer_drop!(elements, vm);
             let mut end = elements.len();
@@ -542,16 +545,11 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
                     break;
                 }
             }
-            let prefix: Vec<Value> = elements[..end].iter().map(|v| v.clone_with_heap(vm)).collect();
-            Ok(if matches!(s1.py_type_heap(vm.heap), Type::List) {
-                Value::Ref(vm.heap.allocate(HeapData::List(List::new(prefix))))
-            } else {
-                allocate_tuple(prefix.into_iter().collect(), vm.heap)
-            })
+            let stop = i64::try_from(end).expect("sequence index fits i64");
+            let slice = Value::Ref(vm.heap.allocate(HeapData::Slice(Slice::new(None, Some(stop), None))));
+            defer_drop!(slice, vm);
+            s1.py_getitem(slice, vm)
         }
-        // `min`/`max` already rejected anything the first element cannot be
-        // ordered against, so the extremes share its type.
-        _ => unreachable!("commonprefix extremes are mutually comparable"),
     }
 }
 
@@ -929,7 +927,7 @@ fn expanduser(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             .into(),
         })
     } else {
-        Ok(CallResult::Value(text.allocate(text.bytes.clone(), vm.heap)))
+        Ok(CallResult::Value(text.into_value(vm.heap)))
     }
 }
 
@@ -957,7 +955,7 @@ fn expandvars(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             .into(),
         })
     } else {
-        Ok(CallResult::Value(text.allocate(text.bytes.clone(), vm.heap)))
+        Ok(CallResult::Value(text.into_value(vm.heap)))
     }
 }
 
@@ -995,12 +993,12 @@ impl PathText {
 
     /// Allocates `bytes` as the type this argument arrived with.
     fn allocate(&self, bytes: Vec<u8>, heap: &Heap) -> Value {
-        if self.is_bytes {
-            Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(bytes))))
-        } else {
-            let text = String::from_utf8(bytes).expect("path algorithms split at ASCII separators, preserving UTF-8");
-            allocate_string(text, heap)
-        }
+        allocate_text(bytes, self.is_bytes, heap)
+    }
+
+    /// Allocates the argument itself, unchanged, as the type it arrived with.
+    fn into_value(self, heap: &Heap) -> Value {
+        allocate_text(self.bytes, self.is_bytes, heap)
     }
 
     /// A two-tuple of [`Self::allocate`]d results, for `split` and friends.
@@ -1013,6 +1011,16 @@ impl PathText {
     }
 }
 
+/// `bytes` as a `bytes` value, or as the `str` it was sliced from.
+fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
+    if is_bytes {
+        Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(bytes))))
+    } else {
+        let text = String::from_utf8(bytes).expect("path algorithms split at ASCII separators, preserving UTF-8");
+        allocate_string(text, heap)
+    }
+}
+
 /// `genericpath._check_arg_types`: the error for a path operation that
 /// failed on its arguments. The first argument that is neither `str` nor
 /// `bytes` is named (a `Path` included — CPython checks the raw arguments,
@@ -1021,7 +1029,7 @@ fn check_arg_types<'a>(func: &str, args: impl IntoIterator<Item = &'a Value>, vm
     for arg in args {
         match arg.py_type_heap(vm.heap) {
             Type::Str | Type::Bytes => {}
-            other => return ExcType::type_error_path_argument(func, &other.name(vm.heap, vm.interns)),
+            other => return ExcType::type_error_path_argument(func, &other.dunder_name(vm.heap, vm.interns)),
         }
     }
     ExcType::type_error_mixed_path_components()

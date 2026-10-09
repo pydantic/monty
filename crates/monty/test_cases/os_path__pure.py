@@ -5,6 +5,7 @@
 import os
 import os.path
 import posixpath
+from datetime import date
 from os import path as os_path_alias
 from os.path import join, splitext
 from pathlib import Path
@@ -85,6 +86,12 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "join() argument must be str, bytes, or os.PathLike object, not 'PosixPath'"
+# the raw argument's bare class name, as `__class__.__name__` gives it
+try:
+    os.path.join('a', date(2000, 1, 1))
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "join() argument must be str, bytes, or os.PathLike object, not 'date'"
 try:
     os.path.join()
     assert False, 'expected TypeError'
@@ -454,6 +461,12 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "'<' not supported between instances of 'str' and 'list'"
+# a dict indexes `m[0]` but iterates its keys, so the extremes are ints
+try:
+    os.path.commonprefix({0: [], 1: []})
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'int' object is not iterable"
 try:
     os.path.commonprefix([(1,), [1]])
     assert False, 'expected TypeError'
@@ -506,9 +519,8 @@ assert os.path.expanduser('~~') == '~~'
 assert os.path.expanduser('~no_such_user_zz/x') == '~no_such_user_zz/x'
 assert os.path.expanduser(b'x') == b'x'
 assert os.path.expanduser(Path('a/b')) == 'a/b'
-assert os.path.expanduser('~/x').endswith('/x')
-assert not os.path.expanduser('~').endswith('/'), 'home has no trailing slash'
-assert os.path.expanduser(b'~/x').endswith(b'/x')
+assert os.path.expanduser('~/x') == os.path.join(os.path.expanduser('~'), 'x')
+assert os.path.expanduser(b'~/x') == os.path.join(os.path.expanduser(b'~'), b'x')
 try:
     os.path.expanduser(1)
     assert False, 'expected TypeError'
