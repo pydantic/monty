@@ -18,6 +18,7 @@ use crate::{
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
     object::{CallArgs, MontyObject, MontyTimeZone},
+    scan::ScanArgs,
     unstable::{self, PushValue},
     virtual_path::normalize_virtual_path,
 };
@@ -60,6 +61,10 @@ pub enum OsFunctionCall {
     /// List directory contents.
     #[strum(serialize = "Path.iterdir")]
     Iterdir(MontyPath),
+    /// Read a bounded subtree in one call, for `os.scandir`, `os.walk`,
+    /// `Path.walk`, `Path.glob` and `Path.rglob` (see [`crate::scan`]).
+    #[strum(serialize = "Path.scan")]
+    Scan(ScanArgs),
     /// Resolve symlinks and return absolute path.
     #[strum(serialize = "Path.resolve")]
     Resolve(MontyPath),
@@ -200,6 +205,7 @@ impl OsFunctionCall {
             Self::Open(a) => a.to_args(),
             Self::Mkdir(a) => a.to_args(),
             Self::Rename(a) => a.to_args(),
+            Self::Scan(a) => a.to_args(),
             Self::Getenv(a) => a.to_args(),
             Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
@@ -270,7 +276,7 @@ impl OsFunctionCall {
             Self::Rmdir(_) => "rmdir: embedded null character in path",
             Self::Stat(_) => "stat: embedded null character in path",
             // `pathlib.Path.iterdir` reaches `os.scandir`, not `os.listdir`.
-            Self::Iterdir(_) => "scandir: embedded null character in path",
+            Self::Iterdir(_) | Self::Scan(_) => "scandir: embedded null character in path",
             Self::Rename(_) if for_destination => "rename: embedded null character in dst",
             Self::Rename(_) => "rename: embedded null character in src",
             // `resolve()` lstats each component before returning.
@@ -306,6 +312,7 @@ impl OsFunctionCall {
             Self::WriteBytes(a) | Self::AppendBytes(a) => Some(a.path.as_str()),
             Self::Open(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
+            Self::Scan(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
             Self::Getenv(_)
             | Self::GetEnviron
@@ -353,6 +360,7 @@ impl OsFunctionCall {
             Self::WriteBytes(a) | Self::AppendBytes(a) => (Some(&mut a.path), None),
             Self::Open(a) => (Some(&mut a.path), None),
             Self::Mkdir(a) => (Some(&mut a.path), None),
+            Self::Scan(a) => (Some(&mut a.path), None),
             Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
             Self::Getenv(_)
             | Self::GetEnviron

@@ -8,7 +8,8 @@ use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
     CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
     MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
-    ResourceTracker, SleepMode, dir_stat, file_stat,
+    ResourceTracker, ScanArgs, SleepMode, dir_stat, file_stat,
+    scan::{EntryInfo, ScanEntry, scan_reply},
 };
 
 /// Expose clock and sleep calls to the mock host.
@@ -60,6 +61,7 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
         OsFunctionCall::ReadBytes(_) => MontyObject::bytes(vec![]),
         OsFunctionCall::Stat(_) => MontyObject::none(),
         OsFunctionCall::Iterdir(_) => MontyObject::list([]),
+        OsFunctionCall::Scan(_) => scan_reply([]),
         OsFunctionCall::WriteText(_)
         | OsFunctionCall::WriteBytes(_)
         | OsFunctionCall::AppendText(_)
@@ -700,6 +702,10 @@ fn filesystem_result_effects_reject_invalid_replies() {
         ("open('./file.txt')", "open"),
         ("import os\nos.listdir('.')", "os.listdir"),
         ("from pathlib import Path\nPath('.').iterdir()", "Path.iterdir"),
+        ("import os\nos.scandir('.')", "os.scandir"),
+        ("import os\nos.walk('.')", "os.walk"),
+        ("from pathlib import Path\nPath('.').walk()", "Path.walk"),
+        ("from pathlib import Path\nPath('.').glob('*')", "Path.glob"),
     ] {
         let call = run_to_oscall_start(code);
         let err = call
@@ -1131,6 +1137,11 @@ fn os_unsupported_path_kinds() {
         (
             "import os\nos.mkdir(b'/x')",
             "TypeError: mkdir: path should be string or os.PathLike, not bytes",
+        ),
+        // `os.walk` converts with `fspath`, whose phrase narrows the same way.
+        (
+            "import os\nos.walk(b'/x')",
+            "TypeError: expected str or os.PathLike object, not bytes",
         ),
         (
             "import os\nos.rename('/a', b'/b')",
@@ -1720,6 +1731,131 @@ fn os_path_samefile_falls_back_to_paths_without_identities() {
     );
 }
 
+// =============================================================================
+// Path.scan: os.scandir, os.walk, Path.walk, Path.glob
+// =============================================================================
+
+/// The `ScanArgs` the first OS call of `code` carries, run in `/data`.
+fn scan_args(code: &str) -> ScanArgs {
+    match run_to_oscall_in(code, "/data") {
+        OsFunctionCall::Scan(args) => args,
+        call => panic!("expected Path.scan, got {}", call.name()),
+    }
+}
+
+/// Parts of a glob pattern as `ScanArgs::pattern` carries them.
+fn parts(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|part| (*part).to_owned()).collect()
+}
+
+#[test]
+fn scandir_and_walk_scan_args() {
+    let args = scan_args("import os; os.scandir()");
+    assert_eq!(args, ScanArgs::listing("/data/.".into(), Some(1), false));
+    let args = scan_args("import os; os.walk('sub', followlinks=True)");
+    assert_eq!(args, ScanArgs::listing("/data/sub".into(), None, true));
+    let args = scan_args("from pathlib import Path; Path('/abs').walk()");
+    assert_eq!(args, ScanArgs::listing("/abs".into(), None, false));
+}
+
+#[test]
+fn glob_hoists_its_literal_prefix_into_the_scan_root() {
+    let args = scan_args("from pathlib import Path; Path('.').glob('src/pkg/*.py')");
+    assert_eq!(args.path.as_str(), "/data/src/pkg");
+    assert_eq!(args.pattern, Some(parts(&["*.py"])));
+    assert_eq!(args.max_depth, Some(1));
+    assert!(!args.follow_symlinks);
+
+    let args = scan_args("from pathlib import Path; Path('.').glob('*/x/**/*.py')");
+    assert_eq!(args.path.as_str(), "/data/.");
+    assert_eq!(args.pattern, Some(parts(&["*", "x", "**", "*.py"])));
+    assert_eq!(args.max_depth, None);
+    // a pattern-ignoring host must descend symlinks that `*` can match
+    assert!(args.follow_symlinks);
+
+    // a fully literal pattern is an existence check of the root
+    let args = scan_args("from pathlib import Path; Path('a').glob('b/c.txt')");
+    assert_eq!(args, ScanArgs::listing("/data/a/b/c.txt".into(), Some(0), false));
+
+    // an explicit `case_sensitive` lists literal parts too, as CPython does
+    let args = scan_args("from pathlib import Path; Path('.').glob('src/*.PY', case_sensitive=False)");
+    assert_eq!(args.path.as_str(), "/data/.");
+    assert_eq!(args.pattern, Some(parts(&["src", "*.PY"])));
+    assert_eq!(args.case_sensitive, Some(false));
+
+    let args = scan_args("from pathlib import Path; Path('.').rglob('*.py', recurse_symlinks=True)");
+    assert_eq!(args.pattern, Some(parts(&["**", "*.py"])));
+    assert!(args.recurse_symlinks);
+    assert!(args.follow_symlinks);
+}
+
+/// A reply entry; `kind` is `d`(ir), `f`(ile) or `l`(ink to a directory).
+fn entry(path: &str, kind: char) -> ScanEntry {
+    ScanEntry {
+        path: path.to_owned(),
+        info: EntryInfo {
+            is_dir: kind != 'f',
+            is_file: kind == 'f',
+            is_symlink: kind == 'l',
+        },
+    }
+}
+
+/// Runs `code` against a host that ignores the pattern and answers with
+/// `entries`, returning the program's result.
+fn run_with_scan_reply(code: &str, entries: Vec<ScanEntry>) -> MontyObject {
+    run_oscall_with_result(code, scan_reply(entries)).2
+}
+
+#[test]
+fn glob_filters_a_reply_that_ignores_the_pattern() {
+    let tree = || {
+        vec![
+            entry("", 'd'),
+            entry("a.py", 'f'),
+            entry("b.txt", 'f'),
+            entry("pkg", 'd'),
+            entry("pkg/c.py", 'f'),
+            entry("pkg/sub", 'd'),
+            entry("pkg/sub/d.py", 'f'),
+            entry("link", 'l'),
+            entry("link/c.py", 'f'),
+        ]
+    };
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('**/*.py'))";
+    let expected = ["r/a.py", "r/pkg/c.py", "r/pkg/sub/d.py"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(run_with_scan_reply(code, tree()), MontyObject::list(expected));
+    // `*` descends a symlinked directory where `**` does not
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('*/c.py'))";
+    let expected = ["r/link/c.py", "r/pkg/c.py"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(run_with_scan_reply(code, tree()), MontyObject::list(expected));
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('**/', recurse_symlinks=True))";
+    let expected = ["r", "r/link", "r/pkg", "r/pkg/sub"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(run_with_scan_reply(code, tree()), MontyObject::list(expected));
+}
+
+#[test]
+fn walk_lists_symlinked_directories_as_os_walk_does() {
+    let tree = || vec![entry("", 'd'), entry("real", 'd'), entry("link", 'l'), entry("f", 'f')];
+    let code = "import os\n[(d, n, f) for d, n, f in os.walk('r')]";
+    let walked = run_with_scan_reply(code, tree());
+    let tuple = |dir: &str, dirs: &[&str], files: &[&str]| {
+        let strings = |items: &[&str]| MontyObject::list(items.iter().map(|i| MontyObject::string((*i).to_owned())));
+        MontyObject::tuple([MontyObject::string(dir.to_owned()), strings(dirs), strings(files)])
+    };
+    // `os.walk` lists the link among the directories but does not descend it
+    assert_eq!(
+        walked,
+        MontyObject::list([tuple("r", &["link", "real"], &["f"]), tuple("r/real", &[], &[])])
+    );
+    // `Path.walk` lists it among the files
+    let code = "from pathlib import Path\n[(str(d), n, f) for d, n, f in Path('r').walk()]";
+    assert_eq!(
+        run_with_scan_reply(code, tree()),
+        MontyObject::list([tuple("r", &["real"], &["f", "link"]), tuple("r/real", &[], &[])])
+    );
+}
+
 #[test]
 fn os_path_realpath_strict_rejects_a_nul_in_the_resolved_path() {
     // Without this the chained `Path.exists` would answer `False` locally and
@@ -1754,4 +1890,80 @@ fn os_path_expandvars_charges_its_amplified_result() {
     let environ = MontyObject::dict([(MontyObject::string("V"), MontyObject::string("x".repeat(1000)))]);
     let err = call.resume(environ, PrintWriter::Stdout).unwrap_err();
     assert_eq!(err.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn scan_rejects_malformed_replies() {
+    let call = run_to_oscall_start("import os\nos.scandir('/mnt')");
+    let err = call
+        .resume(MontyObject::list([MontyObject::int(3)]), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: os.scandir: expected (path, is_dir, is_file, is_symlink) tuples, got int"
+    );
+    let call = run_to_oscall_start("import os\nos.scandir('/mnt')");
+    let reply = scan_reply([entry("../escape", 'f')]);
+    let err = call.resume(reply, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: os.scandir: scan entry path \"../escape\" is not relative to the scan root"
+    );
+}
+
+/// Bottom-up walks queue their steps on the heap, so tree depth costs no Rust stack.
+#[test]
+fn deep_bottom_up_walk_does_not_recurse() {
+    let mut tree = vec![entry("", 'd')];
+    let mut path = String::new();
+    for _ in 0..8_000 {
+        path = if path.is_empty() {
+            "d".to_owned()
+        } else {
+            format!("{path}/d")
+        };
+        tree.push(entry(&path, 'd'));
+    }
+    let code = "import os\nlen(list(os.walk('r', topdown=False)))";
+    assert_eq!(run_with_scan_reply(code, tree), MontyObject::int(8_001));
+}
+
+/// `..` after a wildcard is collapsed in the result and its target matched once,
+/// where CPython spells out `sub/deep/../c.txt`.
+#[test]
+fn glob_collapses_dot_dot_after_a_wildcard() {
+    let tree = vec![
+        entry("", 'd'),
+        entry("a", 'd'),
+        entry("b", 'd'),
+        entry("c.txt", 'f'),
+        entry("a/x", 'd'),
+        entry("a/y", 'd'),
+        entry("a/c.txt", 'f'),
+    ];
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('*/../c.txt'))";
+    let expected = [MontyObject::string("r/c.txt".to_owned())];
+    assert_eq!(run_with_scan_reply(code, tree.clone()), MontyObject::list(expected));
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('*/*/../c.txt'))";
+    let expected = [MontyObject::string("r/a/c.txt".to_owned())];
+    assert_eq!(run_with_scan_reply(code, tree), MontyObject::list(expected));
+    // the receiver's own `..` keeps its spelling: it is hoisted into the scan root
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r/a/..').glob('c.txt'))";
+    let expected = [MontyObject::string("r/a/../c.txt".to_owned())];
+    assert_eq!(
+        run_with_scan_reply(code, vec![entry("", 'd')]),
+        MontyObject::list(expected)
+    );
+}
+
+/// A literal glob only matches when the reply actually described the root.
+#[test]
+fn literal_glob_needs_a_described_root() {
+    let code = "from pathlib import Path\nlist(Path('r').glob('a.txt'))";
+    assert_eq!(run_with_scan_reply(code, vec![]), MontyObject::list([]));
+    let code = "from pathlib import Path\n[str(p) for p in Path('r').glob('a.txt')]";
+    assert_eq!(
+        run_with_scan_reply(code, vec![entry("", 'f')]),
+        MontyObject::list([MontyObject::string("r/a.txt".to_owned())])
+    );
 }

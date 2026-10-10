@@ -14,6 +14,9 @@ whether each call is permitted.
     the same curated environment. It is a plain dict, not an `os._Environ`
     object: mutating it does **not** propagate back to the host.
 - `os.listdir(path=None)` — returns a list of entry names.
+- `os.scandir(path=None)` — `DirEntry` objects with `name`, `path`, `is_dir()`, `is_file()`, `is_symlink()`,
+    `is_junction()`, `stat()` and `__fspath__()`; the iterator supports `with` and `close()`.
+- `os.walk(top, topdown=True, onerror=None, followlinks=False)` — including pruning by mutating `dirnames`.
 - `os.stat(path)` — returns the same 10-field stat result as `Path.stat()`.
 - `os.mkdir(path, mode=0o777)`, `os.makedirs(name, mode=0o777, exist_ok=False)`
 - `os.remove(path)`, `os.unlink(path)`, `os.rmdir(path)`
@@ -39,7 +42,8 @@ whether each call is permitted.
 
 - **No `bytes` paths.** Paths must be `str` or `pathlib.Path`. `bytes` paths
     raise the path-converter `TypeError` with `bytes` dropped from the
-    accepted-types phrase, e.g. `stat: path should be string, os.PathLike or integer, not bytes`.
+    accepted-types phrase, e.g. `stat: path should be string, os.PathLike or integer, not bytes`,
+    and `os.walk`'s `fspath` wording narrows the same way (`expected str or os.PathLike object, not bytes`).
     For every other rejected type the phrase is CPython's verbatim, so `os.stat(1.5)` still
     says `should be string, bytes, os.PathLike or integer`. Note `open()`
     *does* accept `bytes` paths, decoding them as UTF-8; the `os` functions do
@@ -116,6 +120,16 @@ whether each call is permitted.
     `os.mkdir`/`os.makedirs` as `Path.mkdir`, `os.rename`/`os.replace` as
     `Path.rename`. A custom `os` callback cannot distinguish e.g. `os.listdir`
     from `Path.iterdir`.
+- **`os.scandir` and `os.walk` read their whole directory or tree when called.** One host call answers each (see
+    [pathlib.md](pathlib.md#glob-rglob-and-walk) for the shared divergences: no laziness, sorted entries, unreadable
+    subdirectories read as empty). So `os.walk(1.5)` raises its `TypeError` at the call, where CPython's generator
+    raises at the first `next()`.
+- **`DirEntry` answers from the scan.** `is_dir()`, `is_file()` and `is_symlink()` never ask the host again;
+    `stat()` does, and `stat(follow_symlinks=False)` on a symlink raises the same `NotImplementedError` as `os.stat`.
+    `inode()` is not implemented and `is_junction()` is always `False`. `DirEntry`, `Path(entry)`, `open(entry)` and
+    `os.fspath(entry)` accept it as a path, but other `os.PathLike` objects are still refused (see above).
+- **Hosts see one call name for every directory scan.** `os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and
+    `Path.rglob` all suspend as `Path.scan`.
 - **`os.stat` results** print as `StatResult(...)`, not
     `os.stat_result(...)`, and carry only the 10 core fields, same as
     `Path.stat()` (see [filesystem.md](filesystem.md)).
@@ -157,7 +171,7 @@ CPython's `TypeError`. The pure functions, `expanduser` and `expandvars` take `b
 
 ## Not implemented
 
-Everything else, including but not limited to: `os.fchdir`, `os.walk`, `os.scandir`,
+Everything else, including but not limited to: `os.fchdir`, `os.fwalk`,
 `os.removedirs`, `os.renames`, `os.lstat`, `os.access`, `os.symlink`,
 `os.readlink`, `os.link`, `os.chmod`, `os.chown`, `os.umask`, `os.truncate`,
 `os.utime`, `os.system`, `os.popen`, `os.fork`, `os.exec*`, `os.spawn*`,

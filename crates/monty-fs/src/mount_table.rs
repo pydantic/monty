@@ -20,6 +20,7 @@ use super::{
     error::MountError,
     mount_mode::MountMode,
     path_security::{contains_null_byte, reject_overlong_path},
+    scan,
 };
 
 /// Default aggregate memory budget for one mount: 100 MB in decimal bytes.
@@ -152,7 +153,7 @@ impl MountTable {
                 })
             } else {
                 match self.route_call(primary_path, &call) {
-                    Some(Ok(index)) => MountCallOutcome::Handled(self.mounts[index].execute(call)),
+                    Some(Ok(index)) => MountCallOutcome::Handled(self.execute_on(index, call)),
                     Some(Err(err)) => MountCallOutcome::Handled(Err(err)),
                     None => MountCallOutcome::NotHandled(call),
                 }
@@ -209,13 +210,28 @@ impl MountTable {
         }
     }
 
+    /// Runs `call` on the mount at `index`. A scan reads through the whole
+    /// table, since a descendant of its root may lie in a mount nested below it.
+    fn execute_on(&mut self, index: usize, call: OsFunctionCall) -> Result<MontyObject, MountError> {
+        match call {
+            OsFunctionCall::Scan(args) => scan::execute(&args, &mut self.mounts, index),
+            call => self.mounts[index].execute(call),
+        }
+    }
+
     /// Finds the longest-prefix mount index for `virtual_path`.
     fn find_mount_index(&self, virtual_path: &str) -> Option<usize> {
-        let normalized = normalize_virtual_path(virtual_path);
-        self.mounts
-            .iter()
-            .position(|mount| path_matches_mount(&normalized, mount.virtual_path()))
+        find_mount(&self.mounts, virtual_path)
     }
+}
+
+/// Finds the index of the longest-prefix mount for `virtual_path` in `mounts`,
+/// which [`MountTable`] keeps sorted longest prefix first.
+pub(super) fn find_mount(mounts: &[Mount], virtual_path: &str) -> Option<usize> {
+    let normalized = normalize_virtual_path(virtual_path);
+    mounts
+        .iter()
+        .position(|mount| path_matches_mount(&normalized, mount.virtual_path()))
 }
 
 /// A single mount point mapping a virtual path to a host directory.
@@ -337,14 +353,20 @@ impl Mount {
     /// Executes a filesystem call against this mount, consuming it so write
     /// payloads move into the backend.
     fn execute(&mut self, call: OsFunctionCall) -> Result<MontyObject, MountError> {
-        let mut ctx = MountContext {
+        let (mut ctx, mode) = self.backend();
+        dispatch::execute(dispatch::fs_request_from_call(call), &mut ctx, mode)
+    }
+
+    /// The context and mode a request on this mount runs against.
+    pub(super) fn backend(&mut self) -> (MountContext<'_>, &mut MountMode) {
+        let ctx = MountContext {
             mount_virtual: &self.root.virtual_path,
             mount_dir: &self.root.dir,
             write_bytes_used: &mut self.write_bytes_used,
             write_bytes_limit: self.write_bytes_limit,
             memory_usage_limit: self.memory_usage_limit,
         };
-        dispatch::execute(dispatch::fs_request_from_call(call), &mut ctx, &mut self.mode)
+        (ctx, &mut self.mode)
     }
 }
 

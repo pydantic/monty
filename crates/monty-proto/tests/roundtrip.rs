@@ -11,8 +11,8 @@ use monty_types::{
     MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
     MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues,
     OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
-    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, SourceRange, StackFrame, TimeCaller,
-    UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
+    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode, SourceRange, StackFrame,
+    TimeCaller, UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -980,6 +980,14 @@ fn os_calls_round_trip_all_variants() {
             name: Some("CET".to_owned()),
         })),
         OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
+        OsFunctionCall::Scan(ScanArgs::listing(p(), Some(1), false)),
+        OsFunctionCall::Scan(ScanArgs::listing(p(), None, true)),
+        OsFunctionCall::Scan(ScanArgs::glob(
+            p(),
+            vec!["**".to_owned(), "*.py".to_owned(), String::new()],
+            Some(false),
+            true,
+        )),
         OsFunctionCall::Sleep(Duration::ZERO),
         OsFunctionCall::Sleep(Duration::from_nanos(1)),
         OsFunctionCall::Sleep(Duration::from_millis(1_500)),

@@ -31,7 +31,12 @@ use crate::{
     modules::{ModuleFunctions, os_path},
     object_bridge::MontyObjectExt,
     os_dispatch::{PreConversionEffect, value_to_owned_string},
-    types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
+    types::{
+        Bytes, Module, Property, Type,
+        dir_scan::{scandir_call, walk_call},
+        property::ZeroArgOsProperty,
+        str::allocate_string,
+    },
     value::Value,
     virtual_path::posix_join,
 };
@@ -55,6 +60,8 @@ pub(crate) enum OsFunctions {
     Getcwdb,
     Chdir,
     Urandom,
+    Scandir,
+    Walk,
 }
 
 /// Creates the `os` module and allocates it on the heap.
@@ -84,6 +91,8 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::Getcwdb, function(OsFunctions::Getcwdb)),
         (StaticStrings::Chdir, function(OsFunctions::Chdir)),
         (StaticStrings::Urandom, function(OsFunctions::Urandom)),
+        (StaticStrings::Scandir, function(OsFunctions::Scandir)),
+        (StaticStrings::Walk, function(OsFunctions::Walk)),
         (StaticStrings::OsFspath, function(OsFunctions::Fspath)),
         // os.environ — property that yields the host environment as a dict.
         (
@@ -145,7 +154,80 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
         OsFunctions::Getcwdb => getcwdb(vm, args),
         OsFunctions::Chdir => chdir(vm, args),
         OsFunctions::Urandom => urandom(vm, args),
+        OsFunctions::Scandir => scandir(vm, args),
+        OsFunctions::Walk => walk(vm, args),
     }
+}
+
+/// `os.scandir(path=None)` argument shape — clinic-parsed with the
+/// `at_most_total` pre-count, like `os.listdir`.
+#[derive(FromArgs)]
+#[from_args(name = "scandir", at_most_total)]
+struct ScandirArgs {
+    #[from_args(default = Value::None)]
+    path: Value,
+}
+
+/// Implementation of `os.scandir(path=None)`: one depth-one host scan,
+/// answered with a `ScandirIterator` whose entries need no further host calls.
+fn scandir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let ScandirArgs { path } = ScandirArgs::from_args(args, vm)?;
+    defer_drop!(path, vm);
+    let path = if matches!(path, Value::None) {
+        MontyPath::from(".")
+    } else {
+        extract_os_path(path, "scandir", "path", PathAccepts::FdOrNone, vm)?
+    };
+    if path.is_empty() {
+        // The host would scan the working directory; CPython fails with ENOENT.
+        Err(ExcType::file_not_found_error(""))
+    } else {
+        Ok(scandir_call(path))
+    }
+}
+
+/// `os.walk(top, topdown=True, onerror=None, followlinks=False)` argument
+/// shape — a pure-Python generator in CPython, hence `style = def`.
+#[derive(FromArgs)]
+#[from_args(name = "walk", style = def)]
+struct WalkArgs {
+    top: Value,
+    #[from_args(default = LaxBool::new(true))]
+    topdown: LaxBool,
+    #[from_args(default = Value::None)]
+    onerror: Value,
+    #[from_args(default = LaxBool::new(false))]
+    followlinks: LaxBool,
+}
+
+/// Implementation of `os.walk(top, topdown=True, onerror=None, followlinks=False)`.
+///
+/// One host scan reads the whole tree; the returned iterator then walks it,
+/// honouring `dirnames` pruning and calling `onerror` as CPython's generator
+/// does. `top` is converted eagerly, so a bad type raises here rather than at
+/// the first `next()`.
+fn walk(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let WalkArgs {
+        top,
+        topdown,
+        onerror,
+        followlinks,
+    } = WalkArgs::from_args(args, vm)?;
+    defer_drop!(top, vm);
+    let top = match extract_path(top, vm, ExcType::type_error_fspath) {
+        Ok(top) => top,
+        Err(err) => {
+            onerror.drop_with(vm);
+            return Err(err);
+        }
+    };
+    Ok(walk_call(
+        top.into_string(),
+        false,
+        topdown.bool(),
+        onerror,
+        followlinks.bool(),
+    ))
 }
 
 /// `os.urandom(size, /)` argument shape: clinic-parsed, positional-only.
@@ -526,13 +608,13 @@ struct FspathArgs {
 }
 
 /// Implementation of `os.fspath(path)` — pure, no host involvement: `str` and
-/// `bytes` pass through unchanged, `Path` yields its string form.
+/// `bytes` pass through unchanged, `Path` and `DirEntry` yield their string form.
 fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let FspathArgs { path } = FspathArgs::from_args(args, vm)?;
     match path.py_type_heap(vm.heap) {
         Type::Str | Type::Bytes => Ok(CallResult::Value(path)),
-        Type::Path => {
-            let text = value_to_owned_string(&path, vm.heap, vm.interns).expect("Path always yields a string");
+        Type::Path | Type::DirEntry => {
+            let text = value_to_owned_string(&path, vm.heap, vm.interns).expect("a path-like always yields a string");
             path.drop_with(vm.heap);
             Ok(CallResult::Value(allocate_string(text, vm.heap)))
         }

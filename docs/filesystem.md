@@ -260,8 +260,19 @@ handler at all.
 
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
-`Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ` and `os.urandom`.
+`Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.scan`, `Path.stat`, `Path.rename`, `Path.resolve`,
+`Path.absolute`, `os.getenv`, `os.environ` and `os.urandom`.
+
+`Path.scan` answers `os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and `Path.rglob` with one call for a whole subtree.
+Its keyword arguments are `max_depth` (`None` for the whole tree), `follow_symlinks`, and a glob's `pattern` parts,
+`case_sensitive` and `recurse_symlinks`.
+The reply is a list of `(path, is_dir, is_file, is_symlink)` tuples, one for the scanned directory itself (`''`) and
+one per entry below it, with paths relative to the scanned directory.
+The pattern is only a hint: a handler may return entries it cannot match, because the sandbox filters the reply itself.
+[`AbstractOS.path_scan()`][pydantic_monty.AbstractOS.path_scan] does this by default from `path_iterdir()` and the
+predicates, returning [`ScanEntry`][pydantic_monty.ScanEntry] tuples.
+A handler that declines `Path.scan` makes `glob()` return nothing and `walk()` report a `PermissionError`, since both
+treat a directory they cannot read as CPython does.
 With `os_policy` configured to call the host, the handler also receives clock and sleep calls
 (see [the clock](security.md#the-clock)).
 Unseeded random generators and `random.seed()` call `os.urandom` only under `random_start='call_host'`

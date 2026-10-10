@@ -121,8 +121,8 @@ struct OpenArgs {
 
 /// Extracts a path string accepted by `open()`.
 ///
-/// Accepts `str` (interned or heap), `bytes` (UTF-8 decoded), and
-/// `PurePosixPath`. The error message mentions `os.PathLike` to match
+/// Accepts `str` (interned or heap), `bytes` (UTF-8 decoded), `PurePosixPath`
+/// and `os.DirEntry`. The error message mentions `os.PathLike` to match
 /// CPython, even though full PathLike support is limited to the variants
 /// listed above.
 fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
@@ -132,6 +132,7 @@ fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> 
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str()),
             HeapData::Path(p) => Some(p.as_str()),
+            HeapData::DirScan(scan) => scan.fspath(),
             HeapData::Bytes(b) => decode_utf8_path(b.as_slice())?,
             _ => None,
         },

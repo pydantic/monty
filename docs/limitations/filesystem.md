@@ -91,6 +91,22 @@ Consequences of the shared budget that have no CPython analogue:
 - Raising the budget above 256 MiB can hit the [message size cap](host-values.md#message-size):
     a mounted read whose result is too large raises `RuntimeError` inside the sandbox.
 
+## Directory scans
+
+`os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and `Path.rglob` read their subtree in one host call (see
+[pathlib.md](pathlib.md#glob-rglob-and-walk)).
+
+- The reply counts against the mount's memory limit, so walking or globbing a tree with millions of entries raises
+    `MemoryError` where CPython would stream it.
+- A scan may examine at most 10,000,000 entries, counting each time a glob pattern revisits a directory, then raises
+    `RuntimeError: directory scan examined more than 10000000 entries`. CPython has no such cap; it bounds patterns
+    like `*/**/*/**/*` whose cost multiplies with every recursive part, and walks through symlink cycles.
+- Paths deeper than [64 components](#at-most-64-path-components) are not listed, so a walk stops there.
+- `OverlayMemory` never follows symlinks, so a scan there reports them as neither files nor directories.
+- A symlink whose target is missing or outside the mount is left out, as `iterdir()` leaves it out and the
+    predicates answer `False` for it, so `glob('*')` and a walk never list a dangling link, where CPython lists it
+    with `is_symlink()` alone.
+
 ## Write limits
 
 Hosts can configure a cumulative `write_bytes_limit` per mount. In

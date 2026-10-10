@@ -43,7 +43,7 @@ use crate::{
         random::RandomRetry,
         time::ClockReading,
     },
-    types::{Path, file::FileName, random::RandomTarget},
+    types::{Path, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -73,6 +73,9 @@ pub(crate) enum PendingEffect {
     Pre(PreConversionEffect),
     /// Applies the converted value to VM state, possibly pinning a file.
     Post(PostConversionEffect),
+    /// Builds a walk, scandir or glob result from a `Path.scan` reply — or
+    /// from the `OSError` it answered with (see [`ScanEffect::absorbs`]).
+    Scan(ScanEffect),
 }
 
 impl PendingEffect {
@@ -82,6 +85,7 @@ impl PendingEffect {
     pub(crate) fn immediate_result_name(&self) -> Option<&'static str> {
         match self {
             Self::Pre(effect) => Some(effect.operation_name()),
+            Self::Scan(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
             Self::Post(PostConversionEffect::SeedRandom { .. }) => Some("os.urandom"),
             // `time.sleep` blocks by definition, so a future would leave the
@@ -104,6 +108,7 @@ impl PendingEffect {
         match self {
             Self::Pre(_) => {}
             Self::Post(effect) => effect.release(heap),
+            Self::Scan(effect) => effect.release(heap),
         }
     }
 }
@@ -117,6 +122,12 @@ impl From<PreConversionEffect> for PendingEffect {
 impl From<PostConversionEffect> for PendingEffect {
     fn from(effect: PostConversionEffect) -> Self {
         Self::Post(effect)
+    }
+}
+
+impl From<ScanEffect> for PendingEffect {
+    fn from(effect: ScanEffect) -> Self {
+        Self::Scan(effect)
     }
 }
 
@@ -588,9 +599,16 @@ fn extract_str_data(
     interns: &Interns,
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
-    let data_str = value_to_owned_string(&data, heap, interns);
+    // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
+    let data_str = data.to_str_heap(heap, interns).ok().map(str::to_owned);
 
-    let py_type = data.py_type_name_heap(heap, interns);
+    // CPython names the type by its `__name__`: no module (`DirEntry`, not
+    // `posix.DirEntry`), but a class's own name (`Point` for a named tuple).
+    let type_name = data.py_type_name_heap(heap, interns);
+    let py_type = type_name
+        .rsplit_once('.')
+        .map_or(&*type_name, |(_, name)| name)
+        .to_owned();
     data.drop_with(heap);
 
     match data_str {
@@ -692,15 +710,22 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
     args.get_one_arg(method, heap)
 }
 
-/// Owned `String` if `value` is a `str` or `Path`, else `None`. Caller drops
+/// Owned `String` if `value` is a `str`, `Path` or `DirEntry`, else `None`. Caller drops
 /// the source value afterwards. Also used by the `os` module's path-taking
 /// functions (`modules/os.rs`).
 pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
+    value_as_path_str(value, heap, interns).map(str::to_owned)
+}
+
+/// The text of a `str`, `Path` or `DirEntry` `value`, borrowed, else `None`:
+/// what [`value_to_owned_string`] copies, for sizing the copy first.
+pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match value {
-        Value::InternString(id) => Some(interns.get_str(*id).to_owned()),
+        Value::InternString(id) => Some(interns.get_str(*id)),
         Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str().to_owned()),
-            HeapData::Path(p) => Some(p.as_str().to_owned()),
+            HeapData::Str(s) => Some(s.as_str()),
+            HeapData::Path(p) => Some(p.as_str()),
+            HeapData::DirScan(scan) => scan.fspath(),
             _ => None,
         },
         _ => None,

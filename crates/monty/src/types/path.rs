@@ -15,7 +15,7 @@ use monty_types::{MontyPath, OsFunctionCall};
 use smallvec::SmallVec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs, LaxBool},
     builtins::open::builtin_open,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -24,7 +24,11 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     os_dispatch::{PreConversionEffect, build_path_os_call, is_path_os_method},
-    types::{LazyHeapSet, List, PyTrait, Type, allocate_tuple, str::allocate_string},
+    types::{
+        LazyHeapSet, List, PyTrait, Type, allocate_tuple,
+        dir_scan::{glob_call, walk_call},
+        str::allocate_string,
+    },
     value::{EitherStr, Value},
 };
 
@@ -327,19 +331,96 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
 }
 
+/// `Path.glob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
+#[derive(FromArgs)]
+#[from_args(name = "Path.glob", style = def)]
+struct PathGlobArgs {
+    #[from_args(static_string = "PatternAttr")]
+    pattern: Value,
+    #[from_args(kw_only, default = Value::None)]
+    case_sensitive: Value,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    recurse_symlinks: LaxBool,
+}
+
+/// `Path.rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
+#[derive(FromArgs)]
+#[from_args(name = "Path.rglob", style = def)]
+struct PathRglobArgs {
+    #[from_args(static_string = "PatternAttr")]
+    pattern: Value,
+    #[from_args(kw_only, default = Value::None)]
+    case_sensitive: Value,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    recurse_symlinks: LaxBool,
+}
+
+/// `Path.walk(top_down=True, on_error=None, follow_symlinks=False)`.
+#[derive(FromArgs)]
+#[from_args(name = "Path.walk", style = def)]
+struct PathWalkArgs {
+    #[from_args(default = LaxBool::new(true))]
+    top_down: LaxBool,
+    #[from_args(default = Value::None)]
+    on_error: Value,
+    #[from_args(default = LaxBool::new(false))]
+    follow_symlinks: LaxBool,
+}
+
+/// `Path.glob()` / `Path.rglob()` on the receiver `base`: validates the
+/// pattern as `pathlib` does, then hands it to [`glob_call`].
+///
+/// `rglob` is `glob` of `'**/' + pattern`. Any non-`None` `case_sensitive` is
+/// truth-tested, and makes CPython list even literal pattern parts.
+fn path_glob(
+    base: &str,
+    pattern: Value,
+    recursive: bool,
+    case_sensitive: Value,
+    recurse_symlinks: LaxBool,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    defer_drop!(pattern, vm);
+    defer_drop!(case_sensitive, vm);
+    let pattern_text = match value_as_path_str(pattern, vm.heap, vm.interns) {
+        Some(text) => text.to_owned(),
+        // CPython's `bytes` handling trips over its own `str` separator.
+        None if pattern.py_type(vm) == Type::Bytes => {
+            return Err(ExcType::type_error("a bytes-like object is required, not 'str'"));
+        }
+        None => {
+            return Err(ExcType::type_error(format!(
+                "_path_splitroot_ex: path should be string, bytes or os.PathLike, not {}",
+                pattern.py_type_name(vm)
+            )));
+        }
+    };
+    let case_sensitive = match case_sensitive {
+        Value::None => None,
+        value => Some(value.py_bool(vm)?),
+    };
+    let pattern_text = if recursive && !pattern_text.starts_with('/') {
+        format!("**/{pattern_text}")
+    } else {
+        pattern_text
+    };
+    glob_call(base, &pattern_text, case_sensitive, recurse_symlinks.bool())
+}
+
 /// Extracts a string from a Value for use as a path.
 fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     value_as_path_str(val, vm.heap, vm.interns)
         .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
 }
 
-/// Extracts a path-like operand (`str` or `Path`) as a string slice, `None` otherwise.
+/// Extracts a path-like operand (`str`, `Path` or `DirEntry`) as a string slice, `None` otherwise.
 fn value_as_path_str<'a>(val: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match val {
         Value::InternString(string_id) => Some(interns.get_str(*string_id)),
         Value::Ref(heap_id) => match heap.get(*heap_id) {
             HeapData::Str(s) => Some(s.as_str()),
             HeapData::Path(p) => Some(p.as_str()),
+            HeapData::DirScan(scan) => scan.fspath(),
             _ => None,
         },
         _ => None,
@@ -549,6 +630,33 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
         // Pure methods (no I/O)
         let value = match method {
             StaticStrings::Cwd => class_cwd(vm, args),
+            StaticStrings::Glob => {
+                let PathGlobArgs {
+                    pattern,
+                    case_sensitive,
+                    recurse_symlinks,
+                } = PathGlobArgs::from_args(args, vm)?;
+                let base = self.get(vm.heap).as_str().to_owned();
+                return path_glob(&base, pattern, false, case_sensitive, recurse_symlinks, vm);
+            }
+            StaticStrings::Rglob => {
+                let PathRglobArgs {
+                    pattern,
+                    case_sensitive,
+                    recurse_symlinks,
+                } = PathRglobArgs::from_args(args, vm)?;
+                let base = self.get(vm.heap).as_str().to_owned();
+                return path_glob(&base, pattern, true, case_sensitive, recurse_symlinks, vm);
+            }
+            StaticStrings::Walk => {
+                let PathWalkArgs {
+                    top_down,
+                    on_error,
+                    follow_symlinks,
+                } = PathWalkArgs::from_args(args, vm)?;
+                let top = self.get(vm.heap).as_str().to_owned();
+                return Ok(walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool()));
+            }
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", vm.heap)?;
                 Ok(Value::Bool(self.get(vm.heap).is_absolute()))

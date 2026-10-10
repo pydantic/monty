@@ -17,7 +17,7 @@ import pytest
 from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess
+from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess, ScanEntry
 
 # Alias for brevity in tests
 P = PurePosixPath
@@ -1001,6 +1001,157 @@ def test_iterdir_not_found(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("from pathlib import Path; list(Path('/missing').iterdir())", os=fs)
     assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: '/missing'")
+
+
+# =============================================================================
+# Directory Operations - os.walk / os.scandir / Path.glob (via Path.scan)
+# =============================================================================
+
+
+def scan_tree() -> OSAccess:
+    return OSAccess(
+        [
+            MemoryFile('/test/a.txt', content='a'),
+            MemoryFile('/test/b.py', content='b'),
+            MemoryFile('/test/pkg/c.py', content='c'),
+            MemoryFile('/test/pkg/sub/d.py', content='d'),
+        ]
+    )
+
+
+def test_walk_glob_and_scandir(monty_run: RunMonty):
+    """The default `path_scan` answers walks, globs and scandir from `path_iterdir`."""
+    code = """
+import os
+from pathlib import Path
+walked = [(d, sorted(n), sorted(f)) for d, n, f in os.walk('/test')]
+globbed = sorted(str(p) for p in Path('/test').glob('**/*.py'))
+scanned = sorted((e.name, e.is_dir()) for e in os.scandir('/test'))
+pruned = []
+for d, n, f in Path('/test').walk():
+    pruned.append(str(d))
+    n.clear()
+(walked, globbed, scanned, pruned)
+"""
+    assert monty_run(code, os=scan_tree()) == snapshot(
+        (
+            [
+                ('/test', ['pkg'], ['a.txt', 'b.py']),
+                ('/test/pkg', ['sub'], ['c.py']),
+                ('/test/pkg/sub', [], ['d.py']),
+            ],
+            ['/test/b.py', '/test/pkg/c.py', '/test/pkg/sub/d.py'],
+            [('a.txt', False), ('b.py', False), ('pkg', True)],
+            ['/test'],
+        )
+    )
+
+
+def test_scan_missing_directory(monty_run: RunMonty):
+    """A missing root raises from `os.scandir` and is swallowed by `Path.glob`."""
+    code = """
+import os
+from pathlib import Path
+try:
+    os.scandir('/missing')
+except FileNotFoundError as e:
+    error = str(e)
+(error, list(Path('/missing').glob('*')), list(os.walk('/missing')))
+"""
+    assert monty_run(code, os=scan_tree()) == snapshot(("[Errno 2] No such file or directory: '/missing'", [], []))
+
+
+class UnreadableOS(OSAccess):
+    """Refuses to list one directory, as a permissions error would."""
+
+    def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
+        if path == P('/test/pkg'):
+            raise PermissionError(f'[Errno 13] Permission denied: {str(path)!r}')
+        return super().path_iterdir(path)
+
+
+def test_path_scan_unreadable_descendant(monty_run: RunMonty):
+    """A directory below the root that cannot be listed reads as empty; the root itself raises."""
+    fs = UnreadableOS([MemoryFile('/test/a.py', content='a'), MemoryFile('/test/pkg/b.py', content='b')])
+    result = monty_run("from pathlib import Path; sorted(str(p) for p in Path('/test').glob('**/*.py'))", os=fs)
+    assert result == snapshot(['/test/a.py'])
+    with pytest.raises(PermissionError) as exc_info:
+        fs.path_scan(P('/test/pkg'), max_depth=None, follow_symlinks=False)
+    assert str(exc_info.value) == snapshot("[Errno 13] Permission denied: '/test/pkg'")
+
+
+class DanglingLinkOS(OSAccess):
+    """Reports one missing path as a symlink, as a dangling link is."""
+
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
+        return path == P('/test/dangling')
+
+
+def test_scan_dangling_symlink_root(monty_run: RunMonty):
+    """A dangling link cannot be listed, but a literal glob finds it, as CPython's `lexists` does."""
+    code = """
+import os
+from pathlib import Path
+errors = []
+try:
+    os.scandir('/test/dangling')
+except FileNotFoundError as e:
+    errors.append(str(e))
+list(os.walk('/test/dangling', onerror=lambda e: errors.append(f'{type(e).__name__}: {e}')))
+(errors, [str(p) for p in Path('/test').glob('dangling')])
+"""
+    fs = DanglingLinkOS([MemoryFile('/test/a.py', content='a')])
+    assert monty_run(code, os=fs) == snapshot(
+        (
+            [
+                "[Errno 2] No such file or directory: '/test/dangling'",
+                "FileNotFoundError: [Errno 2] No such file or directory: '/test/dangling'",
+            ],
+            ['/test/dangling'],
+        )
+    )
+
+
+def test_path_scan_deep_tree_without_links():
+    """Without following links, the default `path_scan` has no depth cap."""
+    deep = '/'.join(['d'] * 70)
+    fs = OSAccess([MemoryFile(f'/test/{deep}/f.txt', content='f')])
+    entries = fs.path_scan(P('/test'), max_depth=None, follow_symlinks=False)
+    assert entries[-1] == snapshot(
+        ScanEntry(
+            path='d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/f.txt',
+            is_dir=False,
+            is_file=True,
+            is_symlink=False,
+        )
+    )
+
+
+def test_path_scan_direct():
+    """`path_scan` returns the root and its descendants down to `max_depth`."""
+    fs = scan_tree()
+    assert sorted(fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False)) == snapshot(
+        [
+            ScanEntry(path='', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='a.txt', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='b.py', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='pkg', is_dir=True, is_file=False, is_symlink=False),
+        ]
+    )
+    assert sorted(fs.path_scan(P('/test/pkg'), max_depth=None, follow_symlinks=False)) == snapshot(
+        [
+            ScanEntry(path='', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='c.py', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='sub', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='sub/d.py', is_dir=False, is_file=True, is_symlink=False),
+        ]
+    )
+    assert fs.path_scan(P('/test/a.txt'), max_depth=None, follow_symlinks=False) == snapshot(
+        [ScanEntry(path='', is_dir=False, is_file=True, is_symlink=False)]
+    )
+    with pytest.raises(FileNotFoundError) as exc_info:
+        fs.path_scan(P('/test/missing'), max_depth=None, follow_symlinks=False)
+    assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/test/missing'")
 
 
 # =============================================================================

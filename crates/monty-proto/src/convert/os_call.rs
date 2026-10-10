@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use monty_types::{
     GetenvArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath, MontyTimeZone,
-    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, SourceRange, UrandomArgs,
-    sleep_duration, unstable,
+    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange,
+    UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
@@ -116,6 +116,14 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::AsyncSystemSleep(delay) => Call::AsyncSystemSleep(os_call::AsyncSleep {
             delay: delay.as_secs_f64(),
         }),
+        OsFunctionCall::Scan(a) => Call::Scan(os_call::Scan {
+            path: a.path.into_string(),
+            max_depth: a.max_depth,
+            follow_symlinks: a.follow_symlinks,
+            pattern: a.pattern.unwrap_or_default().into(),
+            case_sensitive: a.case_sensitive,
+            recurse_symlinks: a.recurse_symlinks,
+        }),
     };
     (call, values)
 }
@@ -179,6 +187,15 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::AsyncSystemSleep(s) => {
                 Self::AsyncSystemSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?)
             }
+            // An empty pattern is a plain listing: `ScanArgs::glob` never builds `Some([])`.
+            os_call::Call::Scan(scan) => Self::Scan(ScanArgs {
+                path: MontyPath::new(scan.path),
+                max_depth: scan.max_depth,
+                follow_symlinks: scan.follow_symlinks,
+                pattern: (!scan.pattern.is_empty()).then(|| scan.pattern.into_inner()),
+                case_sensitive: scan.case_sensitive,
+                recurse_symlinks: scan.recurse_symlinks,
+            }),
         })
     }
 }

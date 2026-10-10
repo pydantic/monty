@@ -1085,7 +1085,7 @@ pub struct OsCall {
     pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1195,6 +1195,29 @@ pub mod os_call {
         #[prost(double, tag = "1")]
         pub delay: f64,
     }
+    /// Path.scan(path, max_depth, follow_symlinks, pattern, ...) — answered with a
+    /// list of (relative_path, is_dir, is_file, is_symlink) tuples, root included.
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct Scan {
+        #[prost(string, tag = "1")]
+        pub path: crate::budgeted_prost::alloc::string::String,
+        /// Deepest entry to return; absent for the whole tree.
+        #[prost(uint32, optional, tag = "2")]
+        pub max_depth: ::core::option::Option<u32>,
+        #[prost(bool, tag = "3")]
+        pub follow_symlinks: bool,
+        /// Glob pattern parts, a pruning hint; empty for a plain listing.
+        #[prost(string, repeated, tag = "4")]
+        pub pattern: crate::budgeted_prost::alloc::vec::Vec<
+            crate::budgeted_prost::alloc::string::String,
+        >,
+        /// Absent for CPython's default (`case_sensitive=None`).
+        #[prost(bool, optional, tag = "5")]
+        pub case_sensitive: ::core::option::Option<bool>,
+        #[prost(bool, tag = "6")]
+        pub recurse_symlinks: bool,
+    }
     #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Call {
@@ -1288,6 +1311,9 @@ pub mod os_call {
         SystemSleep(Sleep),
         #[prost(message, tag = "30")]
         AsyncSystemSleep(AsyncSleep),
+        /// Path.scan — a subtree for os.walk / os.scandir / Path.walk / Path.glob.
+        #[prost(message, tag = "31")]
+        Scan(Scan),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

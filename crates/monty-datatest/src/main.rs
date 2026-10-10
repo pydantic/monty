@@ -10,6 +10,7 @@ use std::os::windows::fs::symlink_file;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    convert::Infallible,
     env,
     error::Error,
     ffi::CString,
@@ -36,6 +37,7 @@ use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
     MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
     SandboxTimeZone, dir_stat, file_stat,
+    scan::{EntryInfo, ScanSource, collect_scan, scan_reply},
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -915,6 +917,61 @@ fn is_virtual_dir(path: &str) -> bool {
     matches!(path, "/virtual" | "/virtual/subdir" | "/virtual/subdir/deep")
 }
 
+/// Reads the virtual filesystem below a scan root for `Path.scan`.
+struct VirtualScanSource<'a>(&'a str);
+
+impl VirtualScanSource<'_> {
+    /// Absolute virtual path of a path relative to the scan root.
+    fn absolute(&self, relative: &str) -> String {
+        if relative.is_empty() {
+            // The virtual filesystem names directories without a trailing slash.
+            let root = self.0.trim_end_matches('/');
+            if root.is_empty() {
+                "/".to_owned()
+            } else {
+                root.to_owned()
+            }
+        } else {
+            format!("{}/{relative}", self.0.trim_end_matches('/'))
+        }
+    }
+}
+
+impl ScanSource for VirtualScanSource<'_> {
+    type Error = Infallible;
+
+    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, Infallible> {
+        let listing = get_virtual_dir_entries(&self.absolute(dir)).map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| {
+                    let name = entry
+                        .rsplit_once('/')
+                        .map_or(entry.as_str(), |(_, name)| name)
+                        .to_owned();
+                    (name, virtual_entry_info(&entry))
+                })
+                .collect()
+        });
+        Ok(listing)
+    }
+
+    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
+        let path = self.absolute(path);
+        let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
+        Ok(exists.then(|| virtual_entry_info(&path)))
+    }
+}
+
+/// What the virtual filesystem holds at `path`; it has no symlinks.
+fn virtual_entry_info(path: &str) -> EntryInfo {
+    EntryInfo {
+        is_dir: is_virtual_dir(path),
+        is_file: get_virtual_file(path).is_some(),
+        is_symlink: false,
+    }
+}
+
 /// Get directory entries for a virtual directory.
 fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
     // First check if the directory exists
@@ -1080,6 +1137,14 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 .into()
             }
         }
+        OsFunctionCall::Scan(args) => match collect_scan(args, &mut VirtualScanSource(args.path.as_str())) {
+            Ok(Some(entries)) => scan_reply(entries).into(),
+            Ok(None) => MontyException::new(
+                ExcType::FileNotFoundError,
+                Some(format!("[Errno 2] No such file or directory: '{}'", args.path.as_str())),
+            )
+            .into(),
+        },
         OsFunctionCall::Resolve(p) | OsFunctionCall::Absolute(p) => MontyObject::string(p.as_str().to_owned()).into(),
         OsFunctionCall::Open(args) => {
             let path = args.path.as_str().to_owned();
