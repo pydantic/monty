@@ -74,6 +74,20 @@ len(result)
     assert isinstance(exc_info.value.exception(), MemoryError)
 
 
+@pytest.mark.parametrize('limit', [0, -1, -(2**70)])
+def test_counter_empty_most_common_memory(monty_run: RunMonty, limit: int):
+    code = """
+from collections import Counter
+c = Counter()
+for i in range(4000):
+    c[i] = i % 3
+padding = b'x' * 400000
+c.most_common(limit)
+"""
+    # The empty result fits; a temporary pair buffer for every entry does not.
+    assert monty_run(code, inputs={'limit': limit}, limits={'max_memory': 720 * 1024}) == []
+
+
 def test_timeout_limit(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('while True:\n    pass', limits={'max_feed_duration_secs': 0.1})

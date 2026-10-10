@@ -28,7 +28,7 @@ use crate::{
         allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type,
-        dict::Dict,
+        dict::{Dict, EntryCursor},
         instance::class_name,
         list::List,
         set::{FrozenSet, Set},
@@ -322,14 +322,10 @@ impl GraphExporter {
                 // Snapshot before recursing: a nested `__repr__` may mutate this set.
                 let children: Vec<Value> = {
                     let set_ref = set.get(vm.heap);
-                    (0..set_ref.len())
-                        .map(|i| {
-                            set_ref
-                                .storage()
-                                .value_at(i)
-                                .expect("index in range")
-                                .clone_with_heap(vm.heap)
-                        })
+                    set_ref
+                        .storage()
+                        .iter()
+                        .map(|value| value.clone_with_heap(vm.heap))
                         .collect()
                 };
                 defer_drop!(children, vm);
@@ -338,11 +334,12 @@ impl GraphExporter {
             HeapReadOutput::FrozenSet(fs) => {
                 let len = fs.get(vm.heap).len();
                 let mut items = Vec::with_capacity(len);
-                for i in 0..len {
+                let mut cursor = EntryCursor::default();
+                for _ in 0..len {
                     let item = fs
                         .get(vm.heap)
                         .storage()
-                        .value_at(i)
+                        .next_value(&mut cursor)
                         .expect("index in range")
                         .clone_with_heap(vm.heap);
                     defer_drop!(item, vm);
@@ -864,7 +861,7 @@ fn import_node(
         MontyNode::FrozenSet(ids) => {
             let set = import_set(&ids, built, vm, "unhashable frozenset element")?;
             let frozenset = FrozenSet::from_set(set);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::FrozenSet(frozenset))))
+            Ok(Value::Ref(vm.heap.allocate_as(frozenset).into_id()))
         }
         MontyNode::Date(date) => {
             let value = date_type::from_ymd(date.year, i32::from(date.month), i32::from(date.day))
@@ -1096,13 +1093,8 @@ fn intern_host_class_type(
 /// Clones every `(key, value)` pair out of a dict (or dataclass attrs) so
 /// recursive conversion cannot be invalidated by user code mutating it.
 fn snapshot_dict_pairs(dict: &Dict, heap: &Heap) -> Vec<(Value, Value)> {
-    (0..dict.len())
-        .map(|i| {
-            (
-                dict.key_at(i).expect("index in range").clone_with_heap(heap),
-                dict.value_at(i).expect("index in range").clone_with_heap(heap),
-            )
-        })
+    dict.iter()
+        .map(|(key, value)| (key.clone_with_heap(heap), value.clone_with_heap(heap)))
         .collect()
 }
 

@@ -53,9 +53,8 @@ These raise `NameError`:
     CPython hash. `sys.hash_info` is not exposed, so the parameters CPython
     publishes are unavailable (see [sys.md](sys.md)).
 - **`repr` of a dict being mutated by its own elements** — Monty iterates the
-    live entries like CPython, but deletion compacts Monty's dense entry storage
-    where CPython leaves a tombstone in place: a key deleted from inside a user
-    `__repr__` running *during that dict's repr* shifts later entries down, so
+    live entries by ordinal: a key deleted from inside a user `__repr__` running
+    *during that dict's repr* shifts later entries to lower ordinals, so
     the entry after the deleted one can be skipped from the output where CPython
     would still print it. Insertions during repr match CPython (appended and
     printed), as do list (live length, mid-repr pops truncate / appends extend),

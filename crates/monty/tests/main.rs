@@ -465,6 +465,49 @@ d";
 }
 
 #[test]
+fn output_sets_after_deletion() {
+    for removed in [0, 1, 40, 64, 128] {
+        let code = format!(
+            "members = {{(str(i), i) for i in range(128)}}\n\
+             for i in range({removed}):\n    members.remove((str(i), i))\n\
+             [members, frozenset(members)]"
+        );
+        let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let members: Vec<_> = (removed..128)
+            .map(|i| MontyObject::tuple([MontyObject::string(i.to_string()), MontyObject::int(i)]))
+            .collect();
+        assert_eq!(
+            run.run_no_limits(vec![]).unwrap(),
+            MontyObject::list([MontyObject::set(members.clone()), MontyObject::frozenset(members)]),
+            "removed {removed} members"
+        );
+    }
+}
+
+#[test]
+fn output_set_survives_a_member_repr_clearing_it() {
+    let code = "import functools
+
+class Mutator:
+    def __repr__(self):
+        members.clear()
+        return 'mutator'
+
+members = {('hole', 0), functools.partial(len, Mutator()), ('kept', 1), frozenset([2, 3])}
+members.remove(('hole', 0))
+members";
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        run.run_no_limits(vec![]).unwrap(),
+        MontyObject::set([
+            MontyObject::repr("functools.partial(<built-in function len>, mutator)".to_owned()),
+            MontyObject::tuple([MontyObject::string("kept".to_owned()), MontyObject::int(1)]),
+            MontyObject::frozenset([MontyObject::int(2), MontyObject::int(3)]),
+        ])
+    );
+}
+
+#[test]
 fn output_deque_with_nested_instance() {
     let code = "\
 from collections import deque

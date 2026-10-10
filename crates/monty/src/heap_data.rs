@@ -63,7 +63,7 @@ macro_rules! heap_payloads {
             #[serde(rename = "E")]
             Set(inline $crate::types::Set),
             #[serde(rename = "F")]
-            FrozenSet(inline $crate::types::FrozenSet),
+            FrozenSet(boxed $crate::types::FrozenSet),
             #[serde(rename = "C")]
             Closure(inline $crate::heap_data::Closure),
             #[serde(rename = "U")]
@@ -192,7 +192,7 @@ heap_payloads!(define_heap_data);
 
 // `HeapData` is copied on every allocate and free. `Dict`, the largest hot
 // variant, sets the payload ceiling; larger variants should remain boxed.
-const _: () = assert!(mem::size_of::<HeapData>() <= 80);
+const _: () = assert!(mem::size_of::<HeapData>() <= 72);
 
 impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.

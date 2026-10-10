@@ -180,8 +180,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         // All eager attrs are shown, in order.
         let name = self.get(vm.heap).name(vm.heap, vm.interns).to_owned();
         let attr_count = self.get(vm.heap).attrs.len();
-        write_dataclass_repr(f, &name, attr_count, vm, heap_ids, |i, vm| {
-            let Some((key, _)) = self.get(vm.heap).attrs.item_at(i) else {
+        let mut cursor = super::dict::EntryCursor::default();
+        write_dataclass_repr(f, &name, attr_count, vm, heap_ids, |_, vm| {
+            let mut value_cursor = cursor;
+            let Some((key, _)) = self.get(vm.heap).attrs.next_item(&mut cursor) else {
                 return Ok((String::new(), None));
             };
             let key = key.clone_with_heap(vm.heap);
@@ -197,12 +199,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             };
             // The value is cloned only after the fallible key formatting, so a
             // formatting error cannot strand an unguarded clone; re-reading at
-            // index `i` also observes any mutation a key `__repr__` performed,
+            // the same ordinal also observes any mutation a key `__repr__` performed,
             // matching `write_dataclass_repr`'s resolve-just-before-write rule.
             let value = self
                 .get(vm.heap)
                 .attrs
-                .item_at(i)
+                .next_item(&mut value_cursor)
                 .map(|(_, v)| v.clone_with_heap(vm.heap));
             Ok((key_str, value))
         })
@@ -309,7 +311,7 @@ pub(crate) fn write_dataclass_repr<'h>(
     field_count: usize,
     vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
-    field: impl Fn(usize, &mut VM<'h>) -> RunResult<(String, Option<Value>)>,
+    mut field: impl FnMut(usize, &mut VM<'h>) -> RunResult<(String, Option<Value>)>,
 ) -> RunResult<()> {
     let Ok(mut guard) = vm.recursion_guard() else {
         return Ok(f.write_str("...")?);

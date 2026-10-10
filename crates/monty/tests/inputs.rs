@@ -461,6 +461,19 @@ fn run_input(input: MontyObject) -> Result<MontyObject, monty_types::MontyExcept
     ex.run_no_limits(vec![input])
 }
 
+#[test]
+fn input_frozenset_roundtrip() {
+    for input in [
+        MontyObject::frozenset([]),
+        MontyObject::frozenset([
+            MontyObject::tuple([MontyObject::string("member".to_owned()), MontyObject::int(1)]),
+            MontyObject::frozenset([MontyObject::string("nested".to_owned())]),
+        ]),
+    ] {
+        assert_eq!(run_input(input.clone()).unwrap(), input);
+    }
+}
+
 /// A list element guaranteed to allocate on the heap during conversion.
 fn heap_element() -> MontyObject {
     MontyObject::list([MontyObject::int(1)])

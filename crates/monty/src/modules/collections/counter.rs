@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
     resource_checks::check_repeat_size,
-    types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
+    types::{Dict, List, PyTrait, allocate_tuple, dict::EntryCursor, iter::collect_owned_iterable, py_trait::CmpOrder},
     value::{VALUE_SIZE, Value},
 };
 
@@ -404,12 +404,23 @@ pub(crate) fn counter_most_common<'h>(
         .collect();
     let order = counter_order(counts, vm)?;
     let take = limit.unwrap_or(order.len()).min(order.len());
+    if take == 0 {
+        return Ok(vm.heap.allocate_as(List::new(Vec::new())).into_value());
+    }
+    // Resolve ordinals once after comparisons, before allocating result tuples.
+    vm.heap.tracker.check_allocation(
+        counter
+            .get(vm.heap)
+            .len()
+            .saturating_mul(mem::size_of::<(&Value, &Value)>()),
+    )?;
+    let pairs: Vec<_> = counter.get(vm.heap).iter().collect();
 
     let mut items: Vec<Value> = Vec::with_capacity(take);
     for &i in &order[..take] {
-        let dict = counter.get(vm.heap);
-        let key = dict.key_at(i).expect("index in range").clone_with_heap(vm.heap);
-        let count = dict.value_at(i).expect("index in range").clone_with_heap(vm.heap);
+        let (key, count) = &pairs[i];
+        let key = key.clone_with_heap(vm.heap);
+        let count = count.clone_with_heap(vm.heap);
         let pair = allocate_tuple(smallvec![key, count], vm.heap);
         items.push(pair);
     }
@@ -426,17 +437,13 @@ pub(crate) fn counter_elements<'h>(
 ) -> RunResult<Value> {
     args.check_zero_args("elements", vm.heap)?;
     let n = counter.get(vm.heap).len();
+    let mut cursor = EntryCursor::default();
 
-    // Resolve every repetition length up front: a count that `itertools.repeat`
-    // rejects — non-integer (TypeError) or outside `ssize_t` (OverflowError) —
-    // must raise before anything is built.
+    // Resolve every repetition length before building the result.
     let mut lengths = Vec::with_capacity(n);
-    for i in 0..n {
-        let count = counter
-            .get(vm.heap)
-            .value_at(i)
-            .expect("index in range")
-            .clone_with_heap(vm.heap);
+    for _ in 0..n {
+        let (_, count) = counter.get(vm.heap).next_item(&mut cursor).expect("in range");
+        let count = count.clone_with_heap(vm.heap);
         let len = count_repeat_len(&count, vm);
         count.drop_with(vm);
         lengths.push(len?);
@@ -452,13 +459,11 @@ pub(crate) fn counter_elements<'h>(
     // and `check_repeat_size` above is the real guard (it fires before this loop
     // whenever a memory limit is set). Pre-reserving would itself panic.
     let mut items: Vec<Value> = Vec::new();
-    for (i, &count) in lengths.iter().enumerate() {
+    let mut cursor = EntryCursor::default();
+    for &count in &lengths {
+        let (key, _) = counter.get(vm.heap).next_item(&mut cursor).expect("in range");
         for _ in 0..count {
-            let key = counter
-                .get(vm.heap)
-                .key_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
+            let key = key.clone_with_heap(vm.heap);
             items.push(key);
         }
     }

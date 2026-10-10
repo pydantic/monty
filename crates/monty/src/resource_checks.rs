@@ -126,7 +126,7 @@ pub(crate) fn check_value_buffer_growth(vm: &mut VM<'_>, len: usize, capacity: u
 /// Pre-checks the reallocation one insertion into a dict or set would cause,
 /// summing both of the buffers it grows.
 ///
-/// The dense entry vector and the `HashTable<usize>` indexing it reallocate
+/// The entry vector and the `HashTable<usize>` indexing it reallocate
 /// independently, with no allocation in between, so checking each increment
 /// against the same pre-insertion usage lets both pass while their sum clears
 /// the allocator's hard headroom.

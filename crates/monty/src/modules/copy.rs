@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, instance_call_copy_hook},
+    types::{Dict, List, Module, dict::EntryCursor, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -374,6 +374,7 @@ pub(crate) fn deep_copy_attrs(
     vm.heap
         .tracker
         .check_allocation(expected_len.saturating_mul(2 * VALUE_SIZE))?;
+    let mut cursor = EntryCursor::default();
     for index in 0.. {
         let (_, vm) = guard.as_parts_mut();
         vm.heap.tracker.check_time_every(index)?;
@@ -381,7 +382,7 @@ pub(crate) fn deep_copy_attrs(
         if attrs(source_id, vm).len() != expected_len {
             return Err(ExcType::runtime_error_dict_changed_size());
         }
-        let Some((key, value)) = clone_pair(attrs(source_id, vm), index, vm) else {
+        let Some((key, value)) = clone_pair(attrs(source_id, vm), &mut cursor, vm) else {
             break;
         };
         let (key_copy, value_copy) = deep_copy_pair(key, value, memo, vm)?;
@@ -419,9 +420,9 @@ pub(crate) fn deep_copy_slots<'h>(
     Ok(copied)
 }
 
-/// Clones the `index`th key/value pair out of a dict, or `None` past its end.
-pub(crate) fn clone_pair(dict: &Dict, index: usize, vm: &VM<'_>) -> Option<(Value, Value)> {
-    let (key, value) = dict.item_at(index)?;
+/// Clones the next key/value pair and advances the cursor, or returns `None` at the end.
+pub(crate) fn clone_pair(dict: &Dict, cursor: &mut EntryCursor, vm: &VM<'_>) -> Option<(Value, Value)> {
+    let (key, value) = dict.next_item(cursor)?;
     Some((key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
 }
 
@@ -580,11 +581,12 @@ fn clone_attrs(id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
         .tracker
         .check_allocation(len.saturating_mul(2).saturating_mul(VALUE_SIZE))?;
     let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
+    let mut cursor = EntryCursor::default();
     for index in 0..len {
         let (pairs, vm) = guard.as_parts_mut();
         vm.heap.tracker.check_time_every(index)?;
         let attrs = attrs(id, vm);
-        let (key, value) = attrs.item_at(index).expect("index is in bounds");
+        let (key, value) = attrs.next_item(&mut cursor).expect("entry exists");
         pairs.push((key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)));
     }
     Ok(guard.into_inner())

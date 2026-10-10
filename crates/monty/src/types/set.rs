@@ -3,6 +3,7 @@ use std::{cell::Cell, fmt::Write, mem};
 use ahash::AHashSet;
 use hashbrown::HashTable;
 use monty_types::{ResourceError, ResourceTracker};
+use serde::ser::SerializeSeq;
 use smallvec::SmallVec;
 
 use super::{PyTrait, iter::checked_preallocation_hint};
@@ -22,7 +23,7 @@ use crate::{
     resource_checks::check_entry_table_growth,
     types::{
         LazyHeapSet, Type,
-        dict::{ProbeOutcome, eq_is_native, probe_native_eq},
+        dict::{EntryCursor, ProbeOutcome, eq_is_native, probe_native_eq, should_compact_entries},
         list::repr_items_fmt,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -38,17 +39,34 @@ struct SetEntry {
     pub(crate) hash: u64,
 }
 
+impl SetEntry {
+    /// An unoccupied slot owns no Python value.
+    fn vacant() -> Self {
+        Self {
+            value: Value::Undefined,
+            hash: 0,
+        }
+    }
+
+    /// Undefined is never a Python set member.
+    fn is_live(&self) -> bool {
+        !matches!(self.value, Value::Undefined)
+    }
+}
+
 /// Internal storage shared between Set and FrozenSet.
 ///
-/// Uses a `HashTable<usize>` for O(1) lookups combined with a dense `Vec<SetEntry>`
+/// Uses a `HashTable<usize>` for O(1) lookups combined with a `Vec<SetEntry>`
 /// to preserve insertion order (consistent with Python 3.7+ dict behavior).
 /// The hash table maps value hashes to indices in the entries vector.
 #[derive(Debug, Default)]
 pub(crate) struct SetStorage {
     /// Maps hash to index in entries vector.
     indices: HashTable<usize>,
-    /// Dense vector of entries maintaining insertion order.
+    /// Entries in insertion order, with Undefined values marking deleted slots.
     entries: Vec<SetEntry>,
+    /// Changes when entries are removed or relocated.
+    version: u32,
 }
 
 impl SetStorage {
@@ -62,6 +80,7 @@ impl SetStorage {
         Self {
             indices: HashTable::with_capacity(capacity),
             entries: Vec::with_capacity(capacity),
+            version: 0,
         }
     }
 
@@ -76,10 +95,14 @@ impl SetStorage {
     /// what it holds rather than what it once held.
     fn from_entry_vec(entries: Vec<SetEntry>) -> Self {
         let mut indices = HashTable::with_capacity(entries.len());
-        for (idx, entry) in entries.iter().enumerate() {
+        for (idx, entry) in entries.iter().enumerate().filter(|(_, entry)| entry.is_live()) {
             indices.insert_unique(entry.hash, idx, |&i| entries[i].hash);
         }
-        Self { indices, entries }
+        Self {
+            indices,
+            entries,
+            version: 0,
+        }
     }
 
     /// Clones entries with proper reference counting.
@@ -89,6 +112,7 @@ impl SetStorage {
     fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<SetEntry> {
         self.entries
             .iter()
+            .filter(|entry| entry.is_live())
             .map(|e| SetEntry {
                 value: e.value.clone_with_heap(heap),
                 hash: e.hash,
@@ -98,12 +122,12 @@ impl SetStorage {
 
     /// Returns the number of elements in the set.
     fn len(&self) -> usize {
-        self.entries.len()
+        self.indices.len()
     }
 
     /// Returns true if the set is empty.
     fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.indices.is_empty()
     }
 
     /// Adds an element to the set, transferring ownership.
@@ -167,6 +191,7 @@ impl SetStorage {
             Ok(false)
         } else {
             let (value, vm) = value_guard.into_parts();
+            self.prepare_insert();
             if let Err(err) = check_storage_growth(self, &vm.heap.tracker) {
                 value.drop_with(vm);
                 return Err(err.into());
@@ -193,11 +218,14 @@ impl<'h> HeapRead<'h, SetStorage> {
 
         // Remove via short-lived mutable borrow
         let storage = self.get_mut(vm.heap);
-        let removed_entry = storage.entries.remove(index);
-        storage.indices.clear();
-        for (idx, e) in storage.entries.iter().enumerate() {
-            storage.indices.insert_unique(e.hash, idx, |&i| storage.entries[i].hash);
-        }
+        storage.version = storage.version.saturating_add(1);
+        let removed_entry = mem::replace(&mut storage.entries[index], SetEntry::vacant());
+        storage
+            .indices
+            .find_entry(removed_entry.hash, |&i| i == index)
+            .expect("entry is indexed")
+            .remove();
+        storage.compact_if_sparse();
 
         removed_entry.value.drop_with(vm);
         Ok(true)
@@ -221,7 +249,13 @@ impl<'h> HeapRead<'h, SetStorage> {
 
         // Remove the last entry (most efficient)
         let storage = self.get_mut(vm.heap);
-        let entry = storage.entries.pop().expect("checked non-empty");
+        storage.version = storage.version.saturating_add(1);
+        let entry = loop {
+            let entry = storage.entries.pop().expect("checked non-empty");
+            if entry.is_live() {
+                break entry;
+            }
+        };
 
         // Remove from hash table
         storage
@@ -230,12 +264,15 @@ impl<'h> HeapRead<'h, SetStorage> {
             .expect("entry must exist")
             .remove();
 
+        storage.compact_if_sparse();
         Ok(entry.value)
     }
 
     /// Removes all elements from the set.
     fn clear(&mut self, vm: &mut VM<'h>) {
-        let entries = mem::take(&mut self.get_mut(vm.heap).entries);
+        let storage = self.get_mut(vm.heap);
+        storage.version = storage.version.saturating_add(1);
+        let entries = mem::take(&mut storage.entries);
         self.get_mut(vm.heap).indices.clear();
         entries.drop_with(vm);
     }
@@ -250,6 +287,7 @@ impl SetStorage {
         Self::from_entry_vec(
             self.entries
                 .iter()
+                .filter(|entry| entry.is_live())
                 .map(|entry| SetEntry {
                     value: entry.value.clone_with_heap(heap),
                     hash: entry.hash,
@@ -450,14 +488,43 @@ impl<'h> HeapRead<'h, SetStorage> {
 impl SetStorage {
     /// Returns an iterator over the values in the set.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
-        self.entries.iter().map(|e| &e.value)
+        self.entries.iter().filter(|entry| entry.is_live()).map(|e| &e.value)
     }
 
-    /// Returns the value at the given index, if valid.
-    ///
-    /// Used by Python iterator objects for index-based iteration.
-    pub(crate) fn value_at(&self, index: usize) -> Option<&Value> {
-        self.entries.get(index).map(|e| &e.value)
+    /// Reads the next value in insertion order.
+    pub(crate) fn next_value(&self, cursor: &mut EntryCursor) -> Option<&Value> {
+        let index = self.next_index(cursor)?;
+        Some(&self.entries[index].value)
+    }
+
+    /// Finds the next occupied slot in insertion order.
+    pub(crate) fn next_index(&self, cursor: &mut EntryCursor) -> Option<usize> {
+        cursor.next(self.version, self.entries.len(), self.len(), |index| {
+            self.entries[index].is_live()
+        })
+    }
+
+    /// Reclaims holes in batches, or before growth when at least a quarter of
+    /// the slots can be recovered. Each rebuild is paid for by prior deletions.
+    fn compact_if_sparse(&mut self) {
+        let slots = self.entries.len();
+        let live = self.len();
+        let full = slots == self.entries.capacity() || self.indices.len() == self.indices.capacity();
+        if should_compact_entries(slots, live, full) {
+            self.version = self.version.saturating_add(1);
+            self.entries.retain(SetEntry::is_live);
+            self.indices.clear();
+            for (index, entry) in self.entries.iter().enumerate() {
+                self.indices.insert_unique(entry.hash, index, |&i| self.entries[i].hash);
+            }
+        }
+    }
+
+    /// Reclaims deleted slots before either buffer needs to grow.
+    fn prepare_insert(&mut self) {
+        if self.entries.len() == self.entries.capacity() || self.indices.len() == self.indices.capacity() {
+            self.compact_if_sparse();
+        }
     }
 
     /// Collects heap IDs for reference counting cleanup.
@@ -525,7 +592,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 /// CPython and Monty's set-iterator behavior).
 pub(crate) struct SetIter<'a, 'h> {
     storage: &'a HeapRead<'h, SetStorage>,
-    index: usize,
+    index: EntryCursor,
     expected_len: usize,
     token: RecursionToken,
     /// Most-recently-yielded element. `Value::Undefined` when nothing is
@@ -536,11 +603,11 @@ pub(crate) struct SetIter<'a, 'h> {
 
 impl<'a, 'h> SetIter<'a, 'h> {
     fn new(storage: &'a HeapRead<'h, SetStorage>, vm: &mut VM<'h>) -> RunResult<Self> {
-        let expected_len = storage.get(vm.heap).entries.len();
+        let expected_len = storage.get(vm.heap).len();
         let token = vm.recursion_token()?;
         Ok(Self {
             storage,
-            index: 0,
+            index: EntryCursor::default(),
             expected_len,
             token,
             current: Value::Undefined,
@@ -565,17 +632,16 @@ impl<'a, 'h> SetIter<'a, 'h> {
     pub(crate) fn next_entry<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<(&'i Value, u64)>> {
         // Drop the previously-yielded element (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        vm.heap.tracker.check_time_every(self.index)?;
+        vm.heap.tracker.check_time_every(self.index.index)?;
         let current = self.storage.get(vm.heap);
-        if current.entries.len() != self.expected_len {
+        if current.len() != self.expected_len {
             return Err(ExcType::runtime_error_set_changed_size());
         }
-        if self.index >= self.expected_len {
+        let Some(index) = current.next_index(&mut self.index) else {
             return Ok(None);
-        }
-        let hash = current.entries[self.index].hash;
-        self.current = current.entries[self.index].value.clone_with_heap(vm.heap);
-        self.index += 1;
+        };
+        let hash = current.entries[index].hash;
+        self.current = current.entries[index].value.clone_with_heap(vm.heap);
         Ok(Some((&self.current, hash)))
     }
 }
@@ -590,7 +656,7 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for SetIter<'_, 'h> {
 impl SetStorage {
     /// Returns true if this set is a subset of other.
     fn is_subset(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        for entry in &self.entries {
+        for entry in self.entries.iter().filter(|entry| entry.is_live()) {
             if !vm
                 .heap
                 .protect(other)
@@ -616,7 +682,7 @@ impl SetStorage {
             (other, self)
         };
 
-        for entry in &smaller.entries {
+        for entry in smaller.entries.iter().filter(|entry| entry.is_live()) {
             if vm
                 .heap
                 .protect(larger)
@@ -753,13 +819,14 @@ impl<'h> HeapRead<'h, SetStorage> {
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let items = Vec::with_capacity(len);
         defer_drop_mut!(items, vm);
+        let mut cursor = EntryCursor::default();
         for i in 0..len {
             // The whole snapshot runs before `repr_items_fmt` reaches its first
             // checkpoint, so it polls the deadline itself — otherwise a big set
             // overshoots the time limit by the entire copy.
             vm.heap.tracker.check_time_every(i)?;
             // No user code runs during the snapshot, so `len` is still current.
-            let value = self.get(vm.heap).value_at(i).expect("index in range");
+            let value = self.get(vm.heap).next_value(&mut cursor).expect("entry exists");
             items.push(value.clone_with_heap(vm.heap));
         }
 
@@ -863,15 +930,15 @@ impl<'h> HeapRead<'h, Set> {
         Set(self.get(vm.heap).0.clone_with_heap(vm.heap))
     }
 
-    /// Clones the member at `index` in insertion order, or `None` past the end.
+    /// Clones the next member in insertion order, or `None` past the end.
     ///
-    /// For Rust-side walks that index a set rather than iterate it — the
+    /// For Rust-side walks that need an owned value — the
     /// counterpart to [`List::try_clone_item`](super::List::try_clone_item),
     /// and how `copy.deepcopy` snapshots members before copying any of them.
-    pub(crate) fn try_clone_item(&self, index: usize, vm: &VM<'h>) -> Option<Value> {
+    pub(crate) fn clone_next(&self, cursor: &mut EntryCursor, vm: &VM<'h>) -> Option<Value> {
         self.get(vm.heap)
             .storage()
-            .value_at(index)
+            .next_value(cursor)
             .map(|value| value.clone_with_heap(vm.heap))
     }
 
@@ -1003,6 +1070,7 @@ impl<'h> HeapRead<'h, Set> {
 
         // Add new entry
         let (value, vm) = value_guard.into_parts();
+        self.get_mut(vm.heap).0.prepare_insert();
         if let Err(err) = check_storage_growth(&self.get(vm.heap).0, &vm.heap.tracker) {
             value.drop_with(vm);
             return Err(err.into());
@@ -1154,12 +1222,12 @@ impl<'h> HeapRead<'h, FrozenSet> {
         self.storage().contains(value, vm)
     }
 
-    /// Clones the member at `index` in insertion order, or `None` past the end,
-    /// as [`HeapRead<Set>::try_clone_item`](HeapRead::try_clone_item) does.
-    pub(crate) fn try_clone_item(&self, index: usize, vm: &VM<'h>) -> Option<Value> {
+    /// Clones the next member in insertion order, or `None` past the end,
+    /// as [`HeapRead<Set>::clone_next`](HeapRead::clone_next) does.
+    pub(crate) fn clone_next(&self, cursor: &mut EntryCursor, vm: &VM<'h>) -> Option<Value> {
         self.get(vm.heap)
             .storage()
-            .value_at(index)
+            .next_value(cursor)
             .map(|value| value.clone_with_heap(vm.heap))
     }
 
@@ -1222,7 +1290,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
             SetAlgebra::SymmetricDifference => self.storage().symmetric_difference(&other_storage, vm)?,
         };
 
-        let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(result)));
+        let heap_id = vm.heap.allocate_as(FrozenSet::wrap(result)).into_id();
         Ok(Value::Ref(heap_id))
     }
 
@@ -1570,7 +1638,7 @@ impl FrozenSet {
             None => Self::new(),
             Some(v) => Self::from_set(Set::from_iterable(v, vm)?),
         };
-        let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset));
+        let heap_id = vm.heap.allocate_as(frozenset).into_id();
         Ok(Value::Ref(heap_id))
     }
 }
@@ -1636,7 +1704,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
+        let result_id = vm.heap.allocate_as(result).into_id();
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1644,7 +1712,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
+        let result_id = vm.heap.allocate_as(result).into_id();
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1652,7 +1720,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
+        let result_id = vm.heap.allocate_as(result).into_id();
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1660,7 +1728,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         let Some(result) = self.xor_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
+        let result_id = vm.heap.allocate_as(result).into_id();
         Ok(Some(Value::Ref(result_id)))
     }
 
@@ -1673,7 +1741,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("frozenset.copy", vm.heap)?;
                 let cloned = self.get(vm.heap).storage.clone_with_heap(vm.heap);
-                let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)));
+                let heap_id = vm.heap.allocate_as(FrozenSet::wrap(cloned)).into_id();
                 Ok(Value::Ref(heap_id))
             }
             Some(StaticStrings::Union) => {
@@ -1756,7 +1824,11 @@ fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Opt
 
 impl serde::Serialize for SetStorage {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.entries.serialize(serializer)
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for entry in self.entries.iter().filter(|entry| entry.is_live()) {
+            seq.serialize_element(entry)?;
+        }
+        seq.end()
     }
 }
 
@@ -1804,7 +1876,7 @@ enum SetIteratorSource {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SetIterator {
     source: SetIteratorSource,
-    index: usize,
+    index: EntryCursor,
     expected_len: usize,
 }
 
@@ -1828,7 +1900,7 @@ impl SetIterator {
 
     /// Returns the captured number of values not yet yielded.
     pub(crate) fn size_hint(&self) -> usize {
-        self.expected_len.saturating_sub(self.index)
+        self.expected_len.saturating_sub(self.index.index)
     }
 
     /// Allocates an iterator and retains its source.
@@ -1838,7 +1910,7 @@ impl SetIterator {
         };
         let id = vm.heap.allocate(HeapData::SetIterator(Self {
             source,
-            index: 0,
+            index: EntryCursor::default(),
             expected_len,
         }));
         vm.heap.inc_ref(source_id);
@@ -1874,7 +1946,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let (source_id, index, expected_len, mutable) = {
+        let (source_id, mut position, expected_len, mutable) = {
             let iter = self.get(vm.heap);
             (
                 iter.source_id(),
@@ -1888,14 +1960,23 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
                 if mutable && set.len() != expected_len {
                     return Err(ExcType::runtime_error_set_changed_size());
                 }
-                set.storage().value_at(index)
+                let storage = set.storage();
+                storage
+                    .next_index(&mut position)
+                    .map(|index| &storage.entries[index].value)
             }
-            HeapData::FrozenSet(set) => set.storage().value_at(index),
+            HeapData::FrozenSet(set) => {
+                let storage = set.storage();
+                storage
+                    .next_index(&mut position)
+                    .map(|index| &storage.entries[index].value)
+            }
             _ => unreachable!("set iterator must retain set-like storage"),
         }
         .map(|value| value.clone_with_heap(vm.heap));
         if item.is_some() {
-            self.get_mut(vm.heap).index += 1;
+            let iter = self.get_mut(vm.heap);
+            iter.index = position;
         }
         Ok(item)
     }
@@ -1972,9 +2053,8 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {
         // that width is fixed here. Checked at 2× for the pair, as `py_iadd`
         // checks a clone plus the growth it feeds.
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
-        let members = clone_items(len, vm, |index, vm| {
-            self.try_clone_item(index, vm).expect("index is in bounds")
-        })?;
+        let mut cursor = EntryCursor::default();
+        let members = clone_items(len, vm, |_, vm| self.clone_next(&mut cursor, vm).expect("entry exists"))?;
         let mut members = DropGuard::new(members, vm);
         for index in 0..len {
             let (members, vm) = members.as_parts_mut();
@@ -2004,17 +2084,16 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, FrozenSet> {
         let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut guard = DropGuard::new(Set::new(), vm);
+        let mut cursor = EntryCursor::default();
         for index in 0..len {
             let (built, vm) = guard.as_parts_mut();
             vm.heap.tracker.check_time_every(index)?;
-            let item = self.try_clone_item(index, vm).expect("index is in bounds");
+            let item = self.clone_next(&mut cursor, vm).expect("entry exists");
             let copied = deep_copy(&item, memo, vm);
             item.drop_with(vm);
             built.add(copied?, vm)?;
         }
         let (built, vm) = guard.into_parts();
-        Ok(Value::Ref(
-            vm.heap.allocate(HeapData::FrozenSet(FrozenSet::from_set(built))),
-        ))
+        Ok(Value::Ref(vm.heap.allocate_as(FrozenSet::from_set(built)).into_id()))
     }
 }

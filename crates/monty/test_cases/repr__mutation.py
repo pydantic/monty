@@ -119,8 +119,8 @@ assert repr(d2) == '{K1: 1, K2: 2, K3: 3}'
 
 
 # === dict: deleting a NOT-yet-printed entry mid-repr diverges ===
-# Monty's dense storage shifts later entries down where CPython leaves a
-# tombstone, so the entry that moves into an already-printed slot is skipped
+# Monty resumes at the same live ordinal after deletion, so an entry that
+# moves into an already-printed ordinal is skipped
 # (see limitations/builtins.md). These also prove the live bounds re-check
 # cannot panic when the dict shrinks under the repr cursor.
 class ShiftPopper:
