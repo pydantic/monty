@@ -251,10 +251,10 @@ fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> 
 /// receive lower IDs. Those IDs become MakeFunction/MakeClosure operands.
 pub struct Compiler<'a, 'i> {
     /// Current code being built.
-    code: CodeBuilder,
+    pub(super) code: CodeBuilder,
 
     /// Compilation tables: private overlay for an existing session, direct insertion for a fresh program.
-    interns: &'a mut CompileInterns<'i>,
+    pub(super) interns: &'a mut CompileInterns<'i>,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -625,7 +625,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
-    fn compile_block(&mut self, nodes: &'a [PreparedNode]) -> Result<(), CompileError> {
+    pub(super) fn compile_block(&mut self, nodes: &'a [PreparedNode]) -> Result<(), CompileError> {
         for node in nodes {
             if self.code.is_dead() {
                 // Don't bother compiling dead code
@@ -783,6 +783,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 position,
             } => self.compile_class_def(name, body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
+            Node::Match {
+                subject,
+                cases,
+                position,
+            } => self.compile_match(subject, cases, *position)?,
             Node::With {
                 context, target, body, ..
             } => self.compile_with(context, target.as_ref(), body)?,
@@ -1110,7 +1115,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     // ========================================================================
 
     /// Compiles an expression, leaving its value on the stack.
-    fn compile_expr(&mut self, expr_loc: &ExprLoc) -> Result<(), CompileError> {
+    pub(super) fn compile_expr(&mut self, expr_loc: &ExprLoc) -> Result<(), CompileError> {
         // Set source location for traceback info
         self.code.set_location(expr_loc.position, None);
 
@@ -1545,7 +1550,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ///
     /// At module level, `Local` scope emits `StoreGlobal`
     /// because module-level locals live in the globals array.
-    fn compile_store(&mut self, target: &Identifier) -> Result<(), CompileError> {
+    pub(super) fn compile_store(&mut self, target: &Identifier) -> Result<(), CompileError> {
         let slot = target.namespace_id().as_u16();
         match target.scope {
             NameScope::Local => {

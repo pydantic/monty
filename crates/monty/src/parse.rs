@@ -1,12 +1,13 @@
 use std::{borrow::Cow, fmt};
 
 use ahash::AHashSet;
-use monty_types::{MontyException, StackFrame};
+use monty_types::{FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
 use num_bigint::BigInt;
 use num_traits::Num;
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
-    InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
+    InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Pattern as AstPattern,
+    Singleton, Stmt, UnaryOp,
     name::Name,
     token::TokenKind,
     visitor::{Visitor, walk_expr},
@@ -19,7 +20,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
-        Node, Operator, SequenceItem, UnpackTarget,
+        MatchCase, Node, Operator, Pattern, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{CompileInterns, StringId},
@@ -398,6 +399,167 @@ impl<'a, 'i> Parser<'a, 'i> {
         Ok(ExceptHandler { exc_type, name, body })
     }
 
+    /// Parses `match SUBJECT:` and its `case` clauses into [`Node::Match`].
+    fn parse_match(&mut self, m: ast::StmtMatch) -> Result<ParseNode, ParseError> {
+        let position = self.convert_range(m.range);
+        let subject = self.parse_expression(*m.subject)?;
+        let cases = m
+            .cases
+            .into_iter()
+            .map(|case| self.parse_match_case(case))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Node::Match {
+            subject,
+            cases,
+            position,
+        })
+    }
+
+    /// Parses one `case PATTERN [if GUARD]:` clause.
+    fn parse_match_case(&mut self, case: ast::MatchCase) -> Result<MatchCase<ParseNode>, ParseError> {
+        let position = self.convert_range(case.pattern.range());
+        let pattern = self.parse_pattern(case.pattern)?;
+        let guard = match case.guard {
+            Some(guard) => Some(self.parse_expression(*guard)?),
+            None => None,
+        };
+        let body = self.parse_statements(case.body)?;
+        Ok(MatchCase {
+            pattern,
+            guard,
+            body,
+            position,
+        })
+    }
+
+    /// Parses a pattern, charging each nesting level against the depth budget
+    /// like [`Self::parse_expression`], so a deeply nested pattern cannot
+    /// overflow the host stack in the prepare and compile passes.
+    fn parse_pattern(&mut self, pattern: AstPattern) -> Result<Pattern, ParseError> {
+        self.decr_depth_remaining(|| pattern.range())?;
+        let result = self.parse_pattern_impl(pattern);
+        self.depth_remaining += 1;
+        result
+    }
+
+    fn parse_pattern_impl(&mut self, pattern: AstPattern) -> Result<Pattern, ParseError> {
+        match pattern {
+            AstPattern::MatchValue(p) => Ok(Pattern::Value(self.parse_expression(*p.value)?)),
+            AstPattern::MatchSingleton(p) => {
+                let literal = match p.value {
+                    Singleton::None => Literal::None,
+                    Singleton::True => Literal::Bool(true),
+                    Singleton::False => Literal::Bool(false),
+                };
+                let position = self.convert_range(p.range);
+                Ok(Pattern::Singleton(ExprLoc::new(position, Expr::Literal(literal))))
+            }
+            AstPattern::MatchSequence(p) => {
+                let position = self.convert_range(p.range);
+                let patterns = self.parse_patterns(p.patterns)?;
+                let stars = patterns.iter().filter(|p| matches!(p, Pattern::Star { .. })).count();
+                if stars > 1 {
+                    Err(ParseError::syntax(
+                        "multiple starred names in sequence pattern",
+                        position,
+                    ))
+                } else {
+                    Ok(Pattern::Sequence { patterns, position })
+                }
+            }
+            AstPattern::MatchMapping(p) => {
+                let position = self.convert_range(p.range);
+                let keys = p
+                    .keys
+                    .into_iter()
+                    .map(|key| self.parse_expression(key))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.check_duplicate_mapping_keys(&keys, position)?;
+                let patterns = self.parse_patterns(p.patterns)?;
+                let rest = p.rest.map(|name| self.identifier(&name.id, name.range));
+                Ok(Pattern::Mapping {
+                    keys,
+                    patterns,
+                    rest,
+                    position,
+                })
+            }
+            AstPattern::MatchClass(p) => {
+                let position = self.convert_range(p.range);
+                let cls = self.parse_expression(*p.cls)?;
+                let patterns = self.parse_patterns(p.arguments.patterns)?;
+                let mut kwd_attrs: Vec<StringId> = Vec::with_capacity(p.arguments.keywords.len());
+                let mut kwd_patterns = Vec::with_capacity(p.arguments.keywords.len());
+                for keyword in p.arguments.keywords {
+                    let attr = self.interner.intern(&keyword.attr.id);
+                    let pattern = self.parse_pattern(keyword.pattern)?;
+                    // CPython anchors the diagnostic on the repeated keyword's sub-pattern.
+                    if kwd_attrs.contains(&attr) {
+                        return Err(ParseError::syntax(
+                            format!("attribute name repeated in class pattern: {}", keyword.attr.id),
+                            pattern.position(),
+                        ));
+                    }
+                    kwd_attrs.push(attr);
+                    kwd_patterns.push(pattern);
+                }
+                Ok(Pattern::Class {
+                    cls,
+                    patterns,
+                    kwd_attrs,
+                    kwd_patterns,
+                    position,
+                })
+            }
+            AstPattern::MatchStar(p) => Ok(Pattern::Star {
+                name: p.name.map(|name| self.identifier(&name.id, name.range)),
+                position: self.convert_range(p.range),
+            }),
+            AstPattern::MatchAs(p) => {
+                let position = self.convert_range(p.range);
+                let pattern = match p.pattern {
+                    Some(inner) => Some(Box::new(self.parse_pattern(*inner)?)),
+                    None => None,
+                };
+                let name = p.name.map(|name| self.identifier(&name.id, name.range));
+                Ok(Pattern::As {
+                    pattern,
+                    name,
+                    position,
+                })
+            }
+            AstPattern::MatchOr(p) => Ok(Pattern::Or {
+                patterns: self.parse_patterns(p.patterns)?,
+                position: self.convert_range(p.range),
+            }),
+        }
+    }
+
+    fn parse_patterns(&mut self, patterns: impl IntoIterator<Item = AstPattern>) -> Result<Vec<Pattern>, ParseError> {
+        patterns.into_iter().map(|p| self.parse_pattern(p)).collect()
+    }
+
+    /// Rejects a mapping pattern that checks one constant key twice (`{1: a, 1: b}`),
+    /// as CPython's compiler does. Keys compare by Python equality, so `1`, `1.0`
+    /// and `True` collide; dotted-name keys are runtime values and are not checked.
+    fn check_duplicate_mapping_keys(&self, keys: &[ExprLoc], position: CodeRange) -> Result<(), ParseError> {
+        for (i, key) in keys.iter().enumerate() {
+            if let Some(constant) = ConstantKey::of(key)
+                && keys[..i]
+                    .iter()
+                    .filter_map(ConstantKey::of)
+                    .any(|seen| seen.py_eq(constant))
+            {
+                let repr = constant.repr(self.interner);
+                return Err(ParseError::syntax(
+                    format!("mapping pattern checks duplicate key ({repr})"),
+                    position,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         self.decr_depth_remaining(|| statement.range())?;
         let result = self.parse_statement_impl(statement);
@@ -589,10 +751,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 self.depth_remaining += levels;
                 Ok(node)
             }
-            Stmt::Match(m) => Err(ParseError::not_implemented(
-                "pattern matching (match statements)",
-                self.convert_range(m.range),
-            )),
+            Stmt::Match(m) => self.parse_match(m),
             Stmt::Raise(ast::StmtRaise { exc, .. }) => {
                 // TODO add cause to Node::Raise
                 let expr = match exc {
@@ -2649,5 +2808,81 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
         cleaned
             .parse::<BigInt>()
             .map_err(|e| ParseError::syntax(format!("invalid integer literal {s:?}, error: {e}"), position))
+    }
+}
+
+/// A mapping-pattern key the parser can evaluate: a literal, optionally negated.
+///
+/// Mirrors the constant folding CPython applies before its duplicate-key check,
+/// so `-1` is a constant key while `Color.RED` is not.
+#[derive(Clone, Copy)]
+struct ConstantKey<'a> {
+    literal: &'a Literal,
+    negated: bool,
+}
+
+impl<'a> ConstantKey<'a> {
+    fn of(key: &'a ExprLoc) -> Option<Self> {
+        match &key.expr {
+            Expr::Literal(literal) => Some(Self {
+                literal,
+                negated: false,
+            }),
+            Expr::UnaryMinus(inner) => match &inner.expr {
+                Expr::Literal(literal @ (Literal::Int(_) | Literal::Float(_) | Literal::LongInt(_))) => {
+                    Some(Self { literal, negated: true })
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Python equality between two constant keys, as a `set` of them would see it.
+    fn py_eq(self, other: Self) -> bool {
+        match (self.number(), other.number()) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => match (self.literal, other.literal) {
+                (Literal::None, Literal::None) => true,
+                (Literal::Str(a), Literal::Str(b)) => a == b,
+                (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
+                (Literal::LongInt(a), Literal::LongInt(b)) => a == b && self.negated == other.negated,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The key as a float when it is a real number (`bool` included), applying the sign.
+    fn number(self) -> Option<f64> {
+        let magnitude = match self.literal {
+            Literal::Bool(b) => f64::from(u8::from(*b)),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "equality check only, like CPython's hash collision test"
+            )]
+            Literal::Int(i) => *i as f64,
+            Literal::Float(f) => *f,
+            _ => return None,
+        };
+        Some(if self.negated { -magnitude } else { magnitude })
+    }
+
+    /// The key's `repr`, for the duplicate-key diagnostic.
+    fn repr(self, interner: &CompileInterns<'_>) -> String {
+        let sign = if self.negated { "-" } else { "" };
+        match self.literal {
+            Literal::None => "None".to_owned(),
+            Literal::Bool(true) => "True".to_owned(),
+            Literal::Bool(false) => "False".to_owned(),
+            Literal::Int(i) => format!("{sign}{i}"),
+            Literal::Float(f) => format!("{sign}{}", FormatFloat(*f)),
+            Literal::Str(id) => StringRepr(interner.get_str(*id)).to_string(),
+            Literal::Bytes(id) => bytes_repr(interner.get_bytes(*id)),
+            Literal::LongInt(id) => format!("{sign}{}", interner.get_long_int(*id)),
+            Literal::Complex(imag) => format!("{}j", FormatFloat(*imag)),
+            Literal::Ellipsis => "Ellipsis".to_owned(),
+            Literal::Marker(_) => "<marker>".to_owned(),
+        }
     }
 }
