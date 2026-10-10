@@ -590,7 +590,12 @@ impl<'h> PyTrait<'h> for Value {
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
-            Self::Ref(id) => vm.heap.read(*id).py_str(vm),
+            // Built-in containers must register their root before formatting children.
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::List(_) | HeapData::Tuple(_) => self.py_repr(vm),
+                HeapData::Dict(d) if !d.is_defaultdict() && !d.is_counter() => self.py_repr(vm),
+                _ => vm.heap.read(*id).py_str(vm),
+            },
             _ => self.py_repr(vm),
         }
     }
