@@ -21,7 +21,7 @@ use crate::{
     os_dispatch::PostConversionEffect,
     types::{
         PyTrait, Type,
-        file::{FileMode, FileName},
+        file::{FileMode, FileName, extract_str_payload},
     },
     value::Value,
 };
@@ -184,14 +184,12 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
 /// a non-str raises the clinic `TypeError`. The value itself is validated
 /// after the open, in `apply_open_name`, where CPython validates it.
 fn newline_argument(value: &Value, vm: &VM<'_>) -> RunResult<Option<String>> {
-    match value {
-        Value::None => Ok(None),
-        Value::InternString(id) => Ok(Some(vm.interns.get_str(*id).to_owned())),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => Ok(Some(s.as_str().to_owned())),
-            _ => Err(kwarg_type_error("newline", value, vm)),
-        },
-        _ => Err(kwarg_type_error("newline", value, vm)),
+    if matches!(value, Value::None) {
+        Ok(None)
+    } else {
+        extract_str_payload(value, vm)
+            .map(Some)
+            .ok_or_else(|| kwarg_type_error("newline", value, vm))
     }
 }
 

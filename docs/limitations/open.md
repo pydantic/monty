@@ -77,10 +77,6 @@ before handing them to Monty.
 
 ### `newline`
 
-All five values (`None`, `''`, `'\n'`, `'\r'`, `'\r\n'`) select the same line splitting and translation as
-CPython's `TextIOWrapper`, with the same errors for binary mode and illegal values.
-The divergences:
-
 - `newline=None` writes `\n` unchanged on every host, because the sandbox's `os.linesep` is `\n`.
     CPython on Windows writes `\r\n`.
 - Universal-newline translation (`newline=None`) is applied once, when the file's content is loaded, so text-mode
@@ -100,12 +96,10 @@ methods and attributes are:
 - `read(N)` / `read(None)` — read up to N chars (text) or bytes (binary)
     from the current position, or everything remaining for `None`. Same
     backing buffer as `read()`.
-- `readline()` — read up to and including the next line terminator (per
-    `newline`; always `\n` in binary mode), or the remainder of the buffer if
-    the final line has none. Returns `''`/`b''` at EOF.
-- `readlines()` — return a `list` of all remaining lines.
-- `__iter__()` / `__next__()` — `iter(f) is f` and each step is one `readline()`, raising `StopIteration` at EOF.
-    Loading an unread file is possible only from `for` loops and `next()`; see the divergences below.
+- `readline()` — one line from the shared buffer; `''`/`b''` at EOF.
+- `readlines()` — a `list` of all remaining lines.
+- `__iter__()` / `__next__()` — loading an unread file is possible only from `for` loops and `next()`; see the
+    divergences below.
 - `tell()` — current position. **Text-mode divergence**: returns a
     char-index, not CPython's opaque byte cookie. Round-trips through
     `seek()` correctly.

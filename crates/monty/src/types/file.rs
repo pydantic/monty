@@ -19,17 +19,16 @@
 //! line for `readline`, etc.) is computed from the now-loaded buffer and
 //! pushed in its place. Subsequent reads and seeks slice that heap buffer in
 //! pure Monty with no further OS calls. The buffer lives in the heap and
-//! counts against the configured `max_memory`. Text opened with the default
-//! `newline=None` has `\r\n` and `\r` translated to `\n` as the buffer is
-//! installed, so every later slice and char position sees translated content.
+//! counts against the configured `max_memory`. With `newline=None`, `\r\n`
+//! and `\r` become `\n` as the buffer is installed, so positions count
+//! translated chars.
 //!
 //! # Iteration
 //!
-//! `iter(f)` is `f` and `__next__` slices the next line from the loaded buffer.
-//! `py_next` cannot yield to the host, so only the `ForIter` opcode and the
-//! `next()` builtin load an unread file: they check [`needs_buffer_load`]
-//! first and issue [`buffer_load_call`] with a `BufferLoad` (re-dispatch the
-//! instruction) or `FileNext` (answer the call) effect. Any other caller of
+//! `__next__` slices the next line from the loaded buffer and cannot yield to
+//! the host, so only the `ForIter` opcode and `next()` load an unread file:
+//! [`needs_buffer_load`] then [`buffer_load_call`] with a `BufferLoad`
+//! (re-dispatch) or `FileNext` (answer the call) effect. Any other caller of
 //! `py_next` on an unread file raises `NotImplementedError`.
 //!
 //! [`needs_buffer_load`]: HeapObjectRead::needs_buffer_load
@@ -1001,12 +1000,9 @@ pub(crate) fn apply_file_next(
 }
 
 /// Installs a host `ReadText` / `ReadBytes` result as `file`'s buffer and
-/// builds the position cache.
-///
-/// Interned results are promoted to heap entries so the buffer always has a
-/// `HeapId`, and universal-newline text has `\r\n` / `\r` rewritten to `\n`
-/// here, once. A buffer that is somehow already present (a snapshot/restore
-/// race) is kept and the new content dropped instead of stomping it.
+/// builds the position cache. Interned results are promoted to heap entries
+/// and universal-newline text is translated here, once. A buffer already
+/// present (a snapshot/restore race) is kept and the new content dropped.
 fn install_buffer<'h>(file: &mut HeapRead<'h, OpenFile>, result: Value, vm: &mut VM<'h>) -> RunResult<()> {
     let mut result_guard = DropGuard::new(result, vm);
     let (result, vm) = result_guard.as_parts_mut();
@@ -1611,7 +1607,7 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_>) -> RunResult<()>
 
 /// Owned `String` from a value pre-validated as a Python `str` (returns
 /// `None` only if `validate_write_data` was bypassed — caller unwraps).
-fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {
+pub(crate) fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {
     match data {
         Value::InternString(id) => Some(vm.interns.get_str(*id).to_owned()),
         Value::Ref(id) => match vm.heap.get(*id) {
