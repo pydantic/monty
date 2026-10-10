@@ -1239,6 +1239,28 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     }
 }
 
+/// `os.path.expandvars` amplifies its input by the length of the values it
+/// substitutes, so the result's growth is charged like a `StringBuilder`'s:
+/// refused at a capacity doubling, before the worker reaches its hard ceiling.
+#[test]
+fn expandvars_growth_is_rejected_before_the_hard_limit() {
+    let code = "import os\nos.path.expandvars('$V' * 20_000)";
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed(code);
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let environ = MontyObject::dict([(MontyObject::string("V"), MontyObject::string("x".repeat(1000)))]);
+    let (_, event) = child.resume_return(call.call_id, environ);
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError", "{code}");
+    let message = error.message.expect("MemoryError should have a message");
+    assert_reported_usage(&message, 1_370_472, code);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+    child.shutdown();
+}
+
 /// A merge charges the pairs it copies out, but not room for every one of them
 /// in the target: `a | b` over keys `a` already holds grows the result by
 /// nothing, so charging per source pair refused merges that comfortably fit.

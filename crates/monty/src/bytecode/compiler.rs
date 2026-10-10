@@ -788,7 +788,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             } => self.compile_with(context, target.as_ref(), body)?,
             Node::Import { names } => {
                 for import_name in names {
-                    self.compile_import(import_name.module_name, &import_name.binding)?;
+                    self.compile_import(import_name.module_name, import_name.package, &import_name.binding)?;
                 }
             }
             Node::ImportFrom {
@@ -1074,11 +1074,23 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.
-    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
+    /// Loads the module (so a missing one raises here) and binds it, or for an
+    /// unaliased dotted import discards it and binds its top-level `package`.
+    fn compile_import(
+        &mut self,
+        module_name: StringId,
+        package: Option<StringId>,
+        binding: &Identifier,
+    ) -> Result<(), CompileError> {
         let position = binding.position;
         self.code.set_location(position, None);
         self.code
             .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        if let Some(package) = package {
+            self.code.emit(Opcode::Pop)?;
+            self.code
+                .emit_u16(Opcode::LoadModule, check_name_index_u16(package, position)?)?;
+        }
         self.compile_store(binding)
     }
 

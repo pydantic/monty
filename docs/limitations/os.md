@@ -37,17 +37,25 @@ whether each call is permitted.
 
 ## Divergences from CPython
 
-- **No file descriptors, no `bytes` paths.** Paths must be `str` or
-    `pathlib.Path`. `bytes` paths and integer fds (bools included, which CPython
-    fd-converts with only a `RuntimeWarning`) raise the path-converter
-    `TypeError` with the accepted-types phrase narrowed to what Monty takes,
-    e.g. `stat: path should be string or os.PathLike, not bytes`. For every other
-    rejected type the phrase is CPython's verbatim, so `os.stat(1.5)` still
+- **No `bytes` paths.** Paths must be `str` or `pathlib.Path`. `bytes` paths
+    raise the path-converter `TypeError` with `bytes` dropped from the
+    accepted-types phrase, e.g. `stat: path should be string, os.PathLike or integer, not bytes`.
+    For every other rejected type the phrase is CPython's verbatim, so `os.stat(1.5)` still
     says `should be string, bytes, os.PathLike or integer`. Note `open()`
     *does* accept `bytes` paths, decoding them as UTF-8; the `os` functions do
     not. The verbatim `os.listdir` phrase is POSIX CPython's, which includes `integer`
-    even though Windows CPython omits it (no fd-based listdir there); the narrowed
-    phrase for `bytes`, `int` and `bool` is `string, os.PathLike or None`.
+    even though Windows CPython omits it (no fd-based listdir there).
+- **Every file descriptor is closed.** Where CPython's converter takes an int as
+    an fd (`os.stat`, `os.listdir`, `os.chdir`, and the `os.path` functions built on
+    `os.stat`), Monty takes it too, but the sandbox has no open fds, so the call fails
+    as it would on a closed one: `OSError: [Errno 9] Bad file descriptor: 3` from
+    `os.stat(3)` (unnamed from `os.listdir`, whose `fdopendir` route names no file),
+    `False` from `os.path.exists(3)`, `isfile` and `isdir`. This holds for the fds
+    CPython would find open, including the stdio fds and bools (`os.stat(True)` is
+    CPython's `os.stat(1)`, with a `RuntimeWarning`), and for negative ints, which
+    CPython reports with a platform errno. Ints outside C `int` raise the converter's
+    `OverflowError` (`fd is greater than maximum`) like CPython. `os.stat(fd, follow_symlinks=False)`
+    fails on the fd before CPython's `ValueError` about combining the two.
 - **No `__fspath__` protocol.** `os.fspath` (and every path-taking function)
     accepts only `str`, `bytes` (fspath only), and `pathlib.Path`: a
     user-defined class implementing `__fspath__` raises `TypeError` instead of
@@ -91,8 +99,8 @@ whether each call is permitted.
     CPython; `FileNotFoundError` comes from the host and names the resolved
     path. `os.chdir('')` raises `FileNotFoundError` without consulting the
     host. Only after the host accepts the target is the stored directory lexically normalized
-    (`..` collapses without consulting symlinks). Integer file descriptors are refused with
-    the `path_t` `TypeError`; CPython would `fchdir`. A Rust host that
+    (`..` collapses without consulting symlinks). An integer is a closed fd (`[Errno 9] Bad file descriptor`);
+    CPython would `fchdir`. A Rust host that
     answers the stat with a future gets `RuntimeError` instead of a silently
     unchanged directory.
 - **`mode` arguments** are type-checked (`'str' object cannot be interpreted as an integer`) but otherwise ignored:
@@ -115,10 +123,41 @@ whether each call is permitted.
     `mode` up front, while CPython only fails when it reaches the final
     `mkdir`, after creating parent directories.
 
+## `os.path`
+
+`os.path` is `posixpath` on every host, including Windows, where CPython's is `ntpath`; `import posixpath` yields
+the same module.
+
+The host-backed functions (`exists`, `isfile`, `isdir`, `islink`, `lexists`, `ismount`, `samefile`, `getsize`,
+`getmtime`, `getatime`, `getctime`, `realpath`) take paths like the `os` functions above: `str` or `pathlib.Path`,
+no `bytes`. The `os.stat`-based ones (`exists`, `isfile`, `isdir`, `samefile`, `getsize`, `getmtime`, `getatime`,
+`getctime`) treat an int as a closed fd, like CPython; `islink`, `lexists`, `ismount` and `realpath` reject it with
+CPython's `TypeError`. The pure functions, `expanduser` and `expandvars` take `bytes` too, as CPython's do.
+
+- `ismount` reports every existing path as a mount point. The sandbox cannot see where the host's mounts begin,
+    and `True` is what keeps "walk up until a mount point" loops terminating.
+- `samefile` compares `(st_ino, st_dev)` like CPython, but mounts report both as `0` for every file, so for two
+    mount paths the normalized virtual paths decide instead and hard links are not detected.
+- `samestat` compares the same two fields, so two mount stat results always compare equal.
+- `samestat` reads `st_ino` and `st_dev` synchronously, so on a host-backed object a lazy attribute reads as absent
+    and raises `AttributeError` (see [classes.md](classes.md)), where CPython would evaluate the getter.
+- `realpath` resolves lexically on mounts (see [filesystem.md](filesystem.md)), so a missing path does not raise
+    unless `strict` is true, which then raises `FileNotFoundError` naming the resolved path. The
+    `NotADirectoryError` and symlink-loop `OSError` of CPython's strict mode never occur, and `ALLOW_MISSING` does
+    not exist.
+- `expanduser` consults only `$HOME`, through the host: without it the path is returned unchanged, and `~user` is
+    always returned unchanged, since the sandbox has no password database to fall back on.
+- `expandvars` reads `os.environ` through the host, ignoring entries whose key or value is not `str`. A `bytes`
+    path is matched against that same `str` environment encoded as UTF-8, where CPython reads `os.environb`.
+- `commonprefix` on lists whose elements cannot be ordered reports the lists
+    (`'<' not supported between instances of 'list' and 'list'`) where CPython names the elements; this is Monty's
+    general list-comparison wording.
+- `sameopenfile` is not implemented: there are no file descriptors to `fstat`.
+- `supports_unicode_filenames` is always `False` (CPython sets it on macOS only).
+
 ## Not implemented
 
-Everything else, including but not limited to: `os.path.*` (use
-`pathlib.Path` instead), `os.fchdir`, `os.walk`, `os.scandir`,
+Everything else, including but not limited to: `os.fchdir`, `os.walk`, `os.scandir`,
 `os.removedirs`, `os.renames`, `os.lstat`, `os.access`, `os.symlink`,
 `os.readlink`, `os.link`, `os.chmod`, `os.chown`, `os.umask`, `os.truncate`,
 `os.utime`, `os.system`, `os.popen`, `os.fork`, `os.exec*`, `os.spawn*`,

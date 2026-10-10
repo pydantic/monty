@@ -115,9 +115,13 @@ impl Identifier {
 /// module name and binding target.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportName {
-    /// The module name to import (e.g., "sys", "typing").
+    /// The module name to import (e.g., "sys", "os.path").
     pub module_name: StringId,
-    /// The binding target — the alias if provided, otherwise the module name.
+    /// For an unaliased dotted import (`import os.path`), the top-level
+    /// package the statement binds instead of the module it loads.
+    pub package: Option<StringId>,
+    /// The binding target — the alias if provided, otherwise the module name
+    /// (or its top-level package when dotted).
     /// After the prepare phase, this includes the resolved namespace slot.
     pub binding: Identifier,
 }

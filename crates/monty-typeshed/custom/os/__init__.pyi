@@ -3,6 +3,8 @@ from typing import AnyStr, Callable, Protocol, TypeAlias, TypeVar, final, overlo
 
 from _typeshed import AnyStr_co, structseq
 
+from . import path as path
+
 _T = TypeVar('_T')
 environ: dict[str, str]
 
@@ -12,6 +14,8 @@ altsep: str | None
 extsep: str
 curdir: str
 pardir: str
+pathsep: str
+defpath: str
 linesep: str
 name: str
 devnull: str

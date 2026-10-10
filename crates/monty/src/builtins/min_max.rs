@@ -216,7 +216,7 @@ fn evaluate_key(item: Value, key_fn: &Value, key_context: &'static str, vm: &mut
 /// `min()` replaces the current winner when the new candidate compares smaller,
 /// while `max()` replaces it when the new candidate compares larger. Equal values
 /// keep the existing winner so ties preserve the first-seen item, matching CPython.
-fn candidate_wins(current: &Value, candidate: &Value, is_min: bool, vm: &mut VM<'_>) -> RunResult<bool> {
+pub(crate) fn candidate_wins(current: &Value, candidate: &Value, is_min: bool, vm: &mut VM<'_>) -> RunResult<bool> {
     let ordering = match candidate.py_cmp(current, vm)? {
         CmpOrder::Ordered(ordering) => ordering,
         // A `NaN` candidate (or `NaN`-carrying container) is neither smaller nor

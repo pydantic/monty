@@ -23,6 +23,7 @@ mod len;
 mod locals;
 mod map;
 mod min_max; // min and max share implementation
+pub(crate) use min_max::candidate_wins;
 mod next;
 pub(crate) mod object_setattr;
 mod oct;

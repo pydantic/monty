@@ -34,7 +34,15 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    modules::{random::RandomRetry, time::ClockReading},
+    modules::{
+        os::PathArgError,
+        os_path::{
+            StatField, expand_user_reply, expand_vars_reply, lexists_reply, realpath_strict_reply, resolved_path_reply,
+            samefile_first_reply, samefile_second_reply, stat_field_reply,
+        },
+        random::RandomRetry,
+        time::ClockReading,
+    },
     types::{Path, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
@@ -133,13 +141,56 @@ pub(crate) enum PreConversionEffect {
     /// `os.urandom(size)`: the reply must be `bytes` of exactly `size`, so a
     /// handler cannot hand the sandbox more than it asked (and preflighted) for.
     UrandomLength { size: usize },
+    /// `os.path.getsize` and friends: keep one field of a `Path.stat` reply.
+    StatField(StatField),
+    /// `os.path.realpath`: the `Path.resolve` reply arrives as a path; the
+    /// function returns `str`. Under `strict` the reply is then checked with
+    /// `Path.exists` ([`RealpathStrict`](Self::RealpathStrict)).
+    ResolvedPath { strict: bool },
+    /// `os.path.realpath(strict=True)`: a `False` from `Path.exists` on the
+    /// resolved path is `FileNotFoundError`; `True` yields the path.
+    RealpathStrict { resolved: String },
+    /// `os.path.lexists`: a `False` from `Path.exists` is not final — a
+    /// dangling symlink exists too — so `Path.is_symlink` decides next.
+    Lexists { path: String },
+    /// `os.path.samefile`: the first `Path.stat` reply is in; stat `second`
+    /// next. `second` is already extracted so its converter error is raised
+    /// only now, after the first stat succeeded, in CPython's order.
+    SamefileFirst {
+        first: String,
+        second: Result<String, PathArgError>,
+    },
+    /// `os.path.samefile`: both stats are in; compare them. The identity is
+    /// `(st_ino, st_dev)` as decimal text, an equality key that fits any int.
+    SamefileSecond {
+        first: String,
+        first_identity: (String, String),
+        second: String,
+    },
+    /// `os.path.expanduser`: splice the `os.getenv('HOME')` reply in front of
+    /// `tail`, the path after its leading `~`; `None` leaves the path as written.
+    ExpandUser {
+        #[serde(with = "serde_bytes")]
+        tail: Vec<u8>,
+        /// Whether the argument was `bytes`, so the result is too.
+        is_bytes: bool,
+    },
+    /// `os.path.expandvars`: substitute `$var` / `${var}` in `path` from the
+    /// `os.environ` reply.
+    ExpandVars {
+        #[serde(with = "serde_bytes")]
+        path: Vec<u8>,
+        /// Whether the argument was `bytes`, so the result is too.
+        is_bytes: bool,
+    },
 }
 
 impl PreConversionEffect {
     /// Applies the effect to the host's reply, yielding the value the VM
-    /// imports and pushes; `Chdir` adopts the directory as a side effect.
-    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<MontyObject, RunError> {
-        match self {
+    /// imports and pushes, or the next call of a multi-step operation;
+    /// `Chdir` adopts the directory as a side effect.
+    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<Reshaped, RunError> {
+        let reply = match self {
             Self::ListdirNames => listdir_names(value),
             Self::IterdirPaths { path } => iterdir_paths(value, &path, &vm.heap.tracker),
             Self::UrandomLength { size } => urandom_reply(value, size),
@@ -148,7 +199,20 @@ impl PreConversionEffect {
                 vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
                 Ok(MontyObject::none())
             }
-        }
+            Self::StatField(field) => stat_field_reply(&value, field),
+            Self::ResolvedPath { strict } => return resolved_path_reply(&value, strict),
+            Self::RealpathStrict { resolved } => realpath_strict_reply(&value, resolved),
+            Self::Lexists { path } => return lexists_reply(&value, path),
+            Self::SamefileFirst { first, second } => return samefile_first_reply(&value, first, second),
+            Self::SamefileSecond {
+                first,
+                first_identity,
+                second,
+            } => samefile_second_reply(&value, &first, &first_identity, &second, &vm.env.cwd),
+            Self::ExpandUser { tail, is_bytes } => expand_user_reply(&value, &tail, is_bytes),
+            Self::ExpandVars { path, is_bytes } => expand_vars_reply(&value, &path, is_bytes, &vm.heap.tracker),
+        };
+        reply.map(Reshaped::Value)
     }
 
     /// The Python operation this effect completes, for error messages.
@@ -158,8 +222,64 @@ impl PreConversionEffect {
             Self::Chdir { .. } => "os.chdir",
             Self::IterdirPaths { .. } => "Path.iterdir",
             Self::UrandomLength { .. } => "os.urandom",
+            Self::StatField(field) => field.function(),
+            Self::ResolvedPath { .. } | Self::RealpathStrict { .. } => "os.path.realpath",
+            Self::Lexists { .. } => "os.path.lexists",
+            Self::SamefileFirst { .. } | Self::SamefileSecond { .. } => "os.path.samefile",
+            Self::ExpandUser { .. } => "os.path.expanduser",
+            Self::ExpandVars { .. } => "os.path.expandvars",
         }
     }
+}
+
+/// What a [`PreConversionEffect`] makes of the host's reply: the value the
+/// VM pushes, or the next call of an operation that needs several (the
+/// VM suspends again instead of resuming Python, as if the function had
+/// yielded it itself).
+pub(crate) enum Reshaped {
+    /// The operation is complete; push this.
+    Value(MontyObject),
+    /// Suspend again with this call, `effect` armed for its reply.
+    Call {
+        call: OsFunctionCall,
+        effect: Option<PendingEffect>,
+    },
+}
+
+/// A `Path.stat` reply's field by name, so a host's stat result is accepted
+/// whatever its field order; `None` for anything but a named tuple with it.
+pub(crate) fn stat_result_field<'a>(value: &'a MontyObject, name: &str) -> Option<&'a MontyNode> {
+    match unstable::root_node(value) {
+        MontyNode::NamedTuple {
+            field_names, values, ..
+        } => field_names
+            .iter()
+            .position(|field| field == name)
+            .and_then(|index| values.get(index))
+            .map(|id| unstable::node(unstable::child(value.as_ref(), *id))),
+        _ => None,
+    }
+}
+
+/// A `Path.exists` / `Path.is_symlink` reply as a bool, refusing anything else.
+pub(crate) fn bool_reply(value: &MontyObject, operation: &str) -> Result<bool, RunError> {
+    match unstable::root_node(value) {
+        MontyNode::Bool(answer) => Ok(*answer),
+        _ => Err(invalid_reply(operation, "a bool", value)),
+    }
+}
+
+/// The `RuntimeError` for a host reply of the wrong shape: `invalid return
+/// type: {operation} requires the host to return {expected}, got {type}`.
+pub(crate) fn invalid_reply(operation: &str, expected: &str, value: &MontyObject) -> RunError {
+    SimpleException::new_msg(
+        ExcType::RuntimeError,
+        format!(
+            "invalid return type: {operation} requires the host to return {expected}, got {}",
+            value.as_ref().type_name()
+        ),
+    )
+    .into()
 }
 
 /// Applies the converted host value to VM state. The file variants and
@@ -261,32 +381,11 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 pub(crate) fn check_chdir_stat(value: &MontyObject, spelled: &str) -> Result<(), RunError> {
     const S_IFMT: i64 = 0o170_000;
     const S_IFDIR: i64 = 0o040_000;
-    // Located by name so a host's stat result is accepted whatever its field
-    // order, and anything without an integer `st_mode` is refused.
-    let st_mode = match unstable::root_node(value) {
-        MontyNode::NamedTuple {
-            field_names, values, ..
-        } => field_names
-            .iter()
-            .position(|name| name == "st_mode")
-            .and_then(|index| values.get(index))
-            .and_then(|mode| match unstable::node(unstable::child(value.as_ref(), *mode)) {
-                MontyNode::Int(mode) => Some(*mode),
-                _ => None,
-            }),
-        _ => None,
-    };
-    match st_mode {
-        Some(mode) if mode & S_IFMT == S_IFDIR => Ok(()),
-        Some(_) => Err(ExcType::not_a_directory_error(spelled)),
-        None => Err(SimpleException::new_msg(
-            ExcType::RuntimeError,
-            format!(
-                "invalid return type: os.chdir requires the host to return a stat result, got {}",
-                value.as_ref().type_name()
-            ),
-        )
-        .into()),
+    // Anything without an integer `st_mode` is refused.
+    match stat_result_field(value, "st_mode") {
+        Some(MontyNode::Int(mode)) if mode & S_IFMT == S_IFDIR => Ok(()),
+        Some(MontyNode::Int(_)) => Err(ExcType::not_a_directory_error(spelled)),
+        _ => Err(invalid_reply("os.chdir", "a stat result", value)),
     }
 }
 
@@ -609,7 +708,7 @@ pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Intern
 }
 
 /// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
+pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
     match value {
         Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
         Value::Ref(id) => match heap.get(*id) {

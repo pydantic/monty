@@ -45,7 +45,7 @@ use crate::{
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{
-        PendingEffect, PostConversionEffect, release_pending_effect, resolve_call_paths, urandom_reply_error,
+        PendingEffect, PostConversionEffect, Reshaped, release_pending_effect, resolve_call_paths, urandom_reply_error,
     },
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
@@ -2062,7 +2062,8 @@ impl<'h> VM<'h> {
             self.push(Value::Ref(heap_id));
             Ok(())
         } else {
-            Err(ExcType::module_not_found_error(self.interns.get_str(name_id)))
+            let (missing, parent) = StandardLib::missing_module(self.interns.get_str(name_id));
+            Err(ExcType::module_not_found_error(missing, parent))
         }
     }
 
@@ -2078,7 +2079,8 @@ impl<'h> VM<'h> {
         // effect waits in the slot until the value exists to apply it to.
         let obj = match self.pending_effect.take() {
             Some(PendingEffect::Pre(effect)) => match effect.reshape(obj, self) {
-                Ok(obj) => obj,
+                Ok(Reshaped::Value(obj)) => obj,
+                Ok(Reshaped::Call { call, effect }) => return self.suspend_again(call, effect),
                 Err(err) => return self.resume_with_exception(err),
             },
             post => {
@@ -2154,6 +2156,18 @@ impl<'h> VM<'h> {
                 self.push(value);
                 self.run_external()
             }
+            Err(err) => self.resume_with_exception(err),
+        }
+    }
+
+    /// Yields the next call of a multi-step operation from `resume`: the VM is
+    /// still suspended at the same instruction, so the host sees another
+    /// `OsCall` and the eventual value is pushed where the first would have been.
+    /// A call answered locally (a NUL byte in a predicate) resumes Python at once.
+    fn suspend_again(&mut self, call: OsFunctionCall, effect: Option<PendingEffect>) -> Result<FrameExit, RunError> {
+        match self.prepare_os_call(call, effect) {
+            Ok(Some(exit)) => Ok(exit),
+            Ok(None) => self.run_external(),
             Err(err) => self.resume_with_exception(err),
         }
     }

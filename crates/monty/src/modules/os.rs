@@ -2,9 +2,10 @@
 //!
 //! Environment access (`getenv`, `environ`), filesystem wrappers (`listdir`,
 //! `stat`, `mkdir`, `makedirs`, `remove`, `unlink`, `rmdir`, `rename`,
-//! `replace`), the pure `fspath`, and the POSIX path constants (`sep`,
-//! `linesep`, `name`, ...). The sandbox always presents a POSIX view
-//! regardless of host OS, so the constants are fixed.
+//! `replace`), the pure `fspath`, the `os.path` submodule (see `os_path`)
+//! and the POSIX path constants (`sep`, `linesep`, `name`, ...). The sandbox
+//! always presents a POSIX view regardless of host OS, so the constants are
+//! fixed.
 //!
 //! Filesystem functions never touch the host directly: they yield an
 //! [`OsFunctionCall`] (the same variants `pathlib.Path` methods use) for the
@@ -14,7 +15,9 @@
 //!
 //! `dir_fd` / `follow_symlinks` keyword arguments are parsed for signature
 //! parity but rejected with the `NotImplementedError` CPython raises on
-//! platforms without them — Monty never supports fd-relative paths.
+//! platforms without them — Monty never supports fd-relative paths. An int
+//! where CPython accepts an fd as the path is a closed fd here, so it fails
+//! as one would there (see [`PathArgError`]).
 
 use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, UrandomArgs};
 
@@ -25,7 +28,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HeapData, HeapId},
     intern::{StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, os_path},
     object_bridge::MontyObjectExt,
     os_dispatch::{PreConversionEffect, value_to_owned_string},
     types::{Bytes, Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
@@ -87,8 +90,15 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
             StaticStrings::Environ,
             Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
         ),
+        // `os.path` is its own module object, like CPython's `posixpath`.
+        (StaticStrings::Path, Value::Ref(os_path::create_module(vm))),
         // POSIX path constants — the sandbox path model is POSIX on every host.
         (StaticStrings::Sep, Value::InternString(StringId::from_ascii(b'/'))),
+        (StaticStrings::Pathsep, Value::InternString(StringId::from_ascii(b':'))),
+        (
+            StaticStrings::Defpath,
+            Value::InternString(vm.interns.intern_static(StaticStrings::DefpathString)),
+        ),
         (StaticStrings::Altsep, Value::None),
         (StaticStrings::Extsep, Value::InternString(StringId::from_ascii(b'.'))),
         (StaticStrings::Curdir, Value::InternString(StringId::from_ascii(b'.'))),
@@ -534,30 +544,107 @@ fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
 }
 
-/// Extracts a virtual path from a `str`/`Path` value for an os function,
-/// raising the `path_t` converter TypeError
-/// (`{func}: {arg} should be {accepted}, not {type}`) for anything else.
-fn extract_os_path(
+/// `str`/`Path` → [`MontyPath`] for an `os` function's path argument,
+/// raising the `path_t` converter's errors with `func`/`arg` naming the
+/// callsite (see [`PathArgError`]).
+pub(super) fn extract_os_path(
     value: &Value,
     func: &'static str,
     arg: &'static str,
     accepts: PathAccepts,
     vm: &VM<'_>,
 ) -> RunResult<MontyPath> {
-    extract_path(value, vm, |type_name| {
-        ExcType::type_error_os_path(func, arg, accepts.phrase_for(value, vm), type_name)
-    })
+    extract_accepted_path(value, accepts, vm).map_err(|err| err.into_error(func, arg))
+}
+
+/// [`extract_os_path`] with the failure kept as data, for the predicates
+/// (a closed fd answers `False`) and `samefile` (the second path's error is
+/// raised only after the first stat, as CPython orders them).
+pub(super) fn extract_accepted_path(
+    value: &Value,
+    accepts: PathAccepts,
+    vm: &VM<'_>,
+) -> Result<MontyPath, PathArgError> {
+    match fd_argument(value, vm) {
+        // `listdir` reaches its fd through `fdopendir`, whose error names no file
+        Some(PathArgError::BadFd { .. }) if matches!(accepts, PathAccepts::FdOrNone) => {
+            Err(PathArgError::BadFd { fd: None })
+        }
+        Some(err) if accepts.allows_fd() => Err(err),
+        _ => value_to_owned_string(value, vm.heap, vm.interns)
+            .map(MontyPath::new)
+            .ok_or_else(|| PathArgError::Type {
+                accepted: accepts.phrase_for(value, vm).to_owned(),
+                type_name: value.py_type_name_heap(vm.heap, vm.interns).into_owned(),
+            }),
+    }
+}
+
+/// Why a path argument was refused, as plain data so `samefile` can store
+/// the second path's error until the first stat has succeeded.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PathArgError {
+    /// The `path_t` converter's TypeError: its accepted-types phrase and the
+    /// rejected type's name.
+    Type { accepted: String, type_name: String },
+    /// An fd, which is always closed in the sandbox: `EBADF`, naming the fd
+    /// as the argument spelled it unless the call reports none.
+    BadFd { fd: Option<String> },
+    /// An int outside C `int`: `_fd_converter`'s OverflowError.
+    FdOverflow { above: bool },
+}
+
+impl PathArgError {
+    /// The exception, with `func`/`arg` naming the callsite in the TypeError.
+    pub(crate) fn into_error(self, func: &str, arg: &str) -> RunError {
+        match self {
+            Self::Type { accepted, type_name } => ExcType::type_error_os_path(func, arg, &accepted, &type_name),
+            Self::BadFd { fd } => ExcType::bad_file_descriptor(fd.as_deref()),
+            Self::FdOverflow { above } => fd_overflow_error(above),
+        }
+    }
+}
+
+/// CPython's `_fd_converter` applied to an int or bool (which it fd-converts
+/// with only a `RuntimeWarning`): a C-int value is a closed fd, the rest
+/// overflow. `None` for any other type.
+fn fd_argument(value: &Value, vm: &VM<'_>) -> Option<PathArgError> {
+    match value {
+        Value::Bool(fd) => Some(PathArgError::BadFd {
+            fd: Some(if *fd { "True" } else { "False" }.to_owned()),
+        }),
+        Value::Int(fd) => Some(match i32::try_from(*fd) {
+            Ok(_) => PathArgError::BadFd {
+                fd: Some(fd.to_string()),
+            },
+            Err(_) => PathArgError::FdOverflow { above: *fd > 0 },
+        }),
+        // Big ints (`LongInt`) are outside i64, so far outside C int.
+        _ => (value.py_type_heap(vm.heap) == Type::Int).then(|| PathArgError::FdOverflow {
+            above: !value.long_int_is_negative(vm),
+        }),
+    }
+}
+
+/// `_fd_converter`'s OverflowError for an int outside C `int`.
+fn fd_overflow_error(above: bool) -> RunError {
+    if above {
+        ExcType::overflow_fd_maximum()
+    } else {
+        ExcType::overflow_fd_minimum()
+    }
 }
 
 /// Which `path_t` converter kinds an `os` function accepts in CPython.
 ///
 /// Drives the accepted-types phrase in the converter TypeError. Monty takes
-/// only `str`/`Path`, so the phrase has two forms: CPython's verbatim (so
-/// types CPython also rejects get a byte-identical message) and a narrowed
-/// one used when the rejected value is a kind CPython *would* have taken —
-/// otherwise the error would list the very type it just refused.
+/// `str`/`Path`, and an int where an fd is allowed, so the phrase has two
+/// forms: CPython's verbatim (so types CPython also rejects get a
+/// byte-identical message) and one without `bytes`, used when the rejected
+/// value is `bytes` — otherwise the error would list the very type it just
+/// refused.
 #[derive(Clone, Copy)]
-enum PathAccepts {
+pub(super) enum PathAccepts {
     /// `path_t(allow_fd=False)` — `mkdir`, `remove`, `unlink`, `rmdir`, `rename`.
     NoFd,
     /// `path_t(allow_fd=True)` — `stat`.
@@ -567,22 +654,23 @@ enum PathAccepts {
 }
 
 impl PathAccepts {
+    /// Whether CPython's converter takes an int as an fd here.
+    fn allows_fd(self) -> bool {
+        matches!(self, Self::Fd | Self::FdOrNone)
+    }
+
     /// The accepted-types phrase for a value this converter is rejecting.
-    fn phrase_for(self, value: &Value, vm: &VM<'_>) -> &'static str {
-        // `bytes` paths and integer fds (bools included — CPython fd-converts
-        // them with only a RuntimeWarning) are the kinds CPython takes and
-        // Monty never will; everything else keeps CPython's wording exactly.
-        let refused = match value.py_type_heap(vm.heap) {
-            Type::Bytes => true,
-            Type::Int | Type::Bool => matches!(self, Self::Fd | Self::FdOrNone),
-            _ => false,
-        };
+    pub(super) fn phrase_for(self, value: &Value, vm: &VM<'_>) -> &'static str {
+        // `bytes` paths are the one kind CPython takes and Monty never will;
+        // everything else keeps CPython's wording exactly.
+        let refused = value.py_type_heap(vm.heap) == Type::Bytes;
         match (self, refused) {
             (Self::NoFd, false) => "string, bytes or os.PathLike",
             (Self::Fd, false) => "string, bytes, os.PathLike or integer",
             (Self::FdOrNone, false) => "string, bytes, os.PathLike, integer or None",
-            (Self::NoFd | Self::Fd, true) => "string or os.PathLike",
-            (Self::FdOrNone, true) => "string, os.PathLike or None",
+            (Self::NoFd, true) => "string or os.PathLike",
+            (Self::Fd, true) => "string, os.PathLike or integer",
+            (Self::FdOrNone, true) => "string, os.PathLike, integer or None",
         }
     }
 }
@@ -612,20 +700,13 @@ fn check_dir_fd(value: &Value, vm: &VM<'_>) -> RunResult<()> {
 /// raise the fd `OverflowError`), returning whether a (necessarily
 /// unsupported) fd was actually supplied.
 fn dir_fd_specified(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
-    match value {
-        Value::None => Ok(false),
-        Value::Bool(_) => Ok(true),
-        Value::Int(fd) => match i32::try_from(*fd) {
-            Ok(_) => Ok(true),
-            Err(_) if *fd > 0 => Err(ExcType::overflow_fd_maximum()),
-            Err(_) => Err(ExcType::overflow_fd_minimum()),
-        },
-        _ => match value.py_type_heap(vm.heap) {
-            // Big ints (`LongInt`) are outside i64, so far outside C int.
-            Type::Int if value.long_int_is_negative(vm) => Err(ExcType::overflow_fd_minimum()),
-            Type::Int => Err(ExcType::overflow_fd_maximum()),
-            other => Err(ExcType::type_error_dir_fd(&other.name(vm.heap, vm.interns))),
-        },
+    match (value, fd_argument(value, vm)) {
+        (Value::None, _) => Ok(false),
+        (_, Some(PathArgError::FdOverflow { above })) => Err(fd_overflow_error(above)),
+        (_, Some(_)) => Ok(true),
+        (_, None) => Err(ExcType::type_error_dir_fd(
+            &value.py_type_name_heap(vm.heap, vm.interns),
+        )),
     }
 }
 

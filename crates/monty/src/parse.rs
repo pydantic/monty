@@ -645,13 +645,23 @@ impl<'a, 'i> Parser<'a, 'i> {
                     .iter()
                     .map(|alias_node| {
                         let module_name = self.interner.intern(&alias_node.name);
-                        // The binding name is the alias if present, otherwise the module name
+                        // `import a.b` loads `a.b` but binds `a`; an alias binds `a.b` itself.
+                        let package = match (&alias_node.asname, alias_node.name.split_once('.')) {
+                            (None, Some((package, _))) => Some(self.interner.intern(package)),
+                            _ => None,
+                        };
+                        // The binding name is the alias if present, otherwise the module
+                        // name (or its top-level package when dotted).
                         let binding_name = alias_node
                             .asname
                             .as_ref()
-                            .map_or(module_name, |n| self.interner.intern(&n.id));
+                            .map_or(package.unwrap_or(module_name), |n| self.interner.intern(&n.id));
                         let binding = Identifier::new(binding_name, position);
-                        ImportName { module_name, binding }
+                        ImportName {
+                            module_name,
+                            package,
+                            binding,
+                        }
                     })
                     .collect();
                 Ok(Node::Import { names: import_names })

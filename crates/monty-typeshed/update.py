@@ -144,6 +144,10 @@ COPY_FILES = [
     'itertools.pyi',
     # narrowed to Monty's surface by custom/random.pyi
     'random.pyi',
+    # `os.path` is always `posixpath` (custom/os/path.pyi), which re-exports
+    # the host-backed functions from `genericpath`
+    'posixpath.pyi',
+    'genericpath.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
@@ -164,13 +168,16 @@ copy: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
 functools: 3.0-
+genericpath: 3.0-  # not importable at runtime, only for type checking (posixpath re-exports from it)
 hashlib: 3.0-
 itertools: 3.0-
 json: 3.0-
 math: 3.0-
 os: 3.0-
+os.path: 3.0-
 pathlib: 3.4-
 pathlib.types: 3.14-
+posixpath: 3.0-
 random: 3.0-
 re: 3.0-
 sys: 3.0-

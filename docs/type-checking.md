@@ -48,6 +48,9 @@ It checks against [`monty-typeshed`](https://crates.io/crates/monty-typeshed), a
 runtime surface: unsupported modules, builtins and methods are filtered out of the stubs entirely.
 Code reaching for something Monty does not implement usually fails the check up front, instead of failing at runtime
 halfway through.
+The exceptions are stubs vendored verbatim from upstream, such as `os.path`, which describe CPython's surface:
+`os.path.ALLOW_MISSING`, `sameopenfile` or a `bytes` path pass the check and fail at runtime, as
+[limitations/os.md](limitations/os.md) records.
 
 For an LLM writing code, that turns a whole class of runtime failures into a diagnostic you can hand straight back to
 the model as a retry prompt.

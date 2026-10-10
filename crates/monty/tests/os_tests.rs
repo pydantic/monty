@@ -7,8 +7,8 @@
 use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
     CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
-    MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceTracker, SleepMode,
-    dir_stat, file_stat,
+    MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
+    ResourceTracker, SleepMode, dir_stat, file_stat,
 };
 
 /// Expose clock and sleep calls to the mock host.
@@ -522,8 +522,10 @@ fn repl_keeps_the_directory_across_snippets() {
     );
 }
 
+/// CPython would `fchdir` an int; the sandbox has no open fds, so it fails
+/// as a closed one without reaching the host.
 #[test]
-fn os_chdir_rejects_non_path() {
+fn os_chdir_rejects_fd() {
     let err = MontyRun::new(
         "import os\nos.chdir(1)".to_owned(),
         "test.py",
@@ -533,11 +535,8 @@ fn os_chdir_rejects_non_path() {
     .unwrap()
     .run_no_limits(vec![])
     .unwrap_err();
-    assert_eq!(err.exc_type(), ExcType::TypeError);
-    assert_eq!(
-        err.message().unwrap(),
-        "chdir: path should be string or os.PathLike, not int"
-    );
+    assert_eq!(err.exc_type(), ExcType::OSError);
+    assert_eq!(err.message().unwrap(), "[Errno 9] Bad file descriptor: 1");
 }
 
 // =============================================================================
@@ -1114,38 +1113,20 @@ fn os_unsupported_kwargs() {
     }
 }
 
-/// `bytes` paths and integer fds are the kinds CPython accepts and Monty
-/// never will, so the converter drops them from its accepted-types phrase
-/// rather than listing the type it just rejected. CPython accepts these
-/// calls, so they cannot dual-run in test_cases (see limitations/os.md).
+/// `bytes` paths are the kind CPython accepts and Monty never will, so the
+/// converter drops them from its accepted-types phrase rather than listing
+/// the type it just rejected. CPython accepts these calls, so they cannot
+/// dual-run in test_cases (see limitations/os.md).
 #[test]
 fn os_unsupported_path_kinds() {
     let cases = [
         (
             "import os\nos.listdir(b'/x')",
-            "TypeError: listdir: path should be string, os.PathLike or None, not bytes",
-        ),
-        (
-            "import os\nos.listdir(1)",
-            "TypeError: listdir: path should be string, os.PathLike or None, not int",
+            "TypeError: listdir: path should be string, os.PathLike, integer or None, not bytes",
         ),
         (
             "import os\nos.stat(b'/x')",
-            "TypeError: stat: path should be string or os.PathLike, not bytes",
-        ),
-        (
-            "import os\nos.stat(1)",
-            "TypeError: stat: path should be string or os.PathLike, not int",
-        ),
-        // Bools fd-convert in CPython too (with a RuntimeWarning), so they are
-        // narrowed exactly like ints where the converter allows fds.
-        (
-            "import os\nos.stat(True)",
-            "TypeError: stat: path should be string or os.PathLike, not bool",
-        ),
-        (
-            "import os\nos.listdir(True)",
-            "TypeError: listdir: path should be string, os.PathLike or None, not bool",
+            "TypeError: stat: path should be string, os.PathLike or integer, not bytes",
         ),
         (
             "import os\nos.mkdir(b'/x')",
@@ -1160,6 +1141,44 @@ fn os_unsupported_path_kinds() {
         (
             "import os\nos.remove(1)",
             "TypeError: remove: path should be string, bytes or os.PathLike, not int",
+        ),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(run_to_error(code), expected, "code: {code}");
+    }
+}
+
+/// Where CPython's converter takes an fd, the sandbox has none open, so the
+/// stdio fds CPython would stat fail here like any other. Fds no process has
+/// open dual-run in test_cases; these are the ones CPython would accept.
+#[test]
+fn os_open_fds_are_closed_in_the_sandbox() {
+    let cases = [
+        ("import os\nos.stat(0)", "OSError: [Errno 9] Bad file descriptor: 0"),
+        // bools fd-convert in CPython too, with only a RuntimeWarning
+        (
+            "import os\nos.stat(True)",
+            "OSError: [Errno 9] Bad file descriptor: True",
+        ),
+        // `listdir` goes through `fdopendir`, whose error names no file
+        ("import os\nos.listdir(0)", "OSError: [Errno 9] Bad file descriptor"),
+        ("import os\nos.listdir(True)", "OSError: [Errno 9] Bad file descriptor"),
+        (
+            "import os\nos.path.getsize(1)",
+            "OSError: [Errno 9] Bad file descriptor: 1",
+        ),
+        (
+            "import os\nos.path.samefile(1, '/')",
+            "OSError: [Errno 9] Bad file descriptor: 1",
+        ),
+        // the predicates answer the closed fd `False`, as CPython's `os.stat` failure makes them
+        (
+            "import os\nraise ValueError(repr(os.path.exists(1)))",
+            "ValueError: False",
+        ),
+        (
+            "import os\nraise ValueError(repr(os.path.isdir(True)))",
+            "ValueError: False",
         ),
     ];
     for (code, expected) in cases {
@@ -1650,4 +1669,89 @@ fn asyncio_sleep_answered_with_a_failed_future_raises() {
 /// The positional arguments of a call as owned values.
 fn positional(call: &CallArgs) -> Vec<MontyObject> {
     call.args().map(|arg| arg.to_owned()).collect()
+}
+
+/// A `StatResult` whose identity fields are set, for `os.path.samefile`.
+fn stat_with_identity(ino: i64, dev: i64) -> MontyObject {
+    MontyObject::named_tuple(
+        "StatResult".to_owned(),
+        vec!["st_mode".to_owned(), "st_ino".to_owned(), "st_dev".to_owned()],
+        vec![
+            MontyObject::int(0o100_644),
+            MontyObject::int(ino),
+            MontyObject::int(dev),
+        ],
+    )
+}
+
+/// Drives `os.path.samefile(f1, f2)` through its two `Path.stat` calls.
+fn run_samefile(first: MontyObject, second: MontyObject) -> MontyObject {
+    let call = run_to_oscall_start("import os\nos.path.samefile('a', 'sub/../a')");
+    assert_eq!(call.function_call.name(), "Path.stat");
+    let RunProgress::OsCall(call) = call.resume(first, PrintWriter::Stdout).unwrap() else {
+        panic!("expected the second Path.stat");
+    };
+    assert_eq!(call.function_call.name(), "Path.stat");
+    call.resume(second, PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .expect("expected Complete after the second stat")
+}
+
+#[test]
+fn os_path_samefile_compares_identities_when_the_host_reports_them() {
+    assert_eq!(
+        run_samefile(stat_with_identity(5, 1), stat_with_identity(5, 1)),
+        MontyObject::bool(true)
+    );
+    // Same normalized path, different inode: the host's identity wins.
+    assert_eq!(
+        run_samefile(stat_with_identity(5, 1), stat_with_identity(6, 1)),
+        MontyObject::bool(false)
+    );
+}
+
+#[test]
+fn os_path_samefile_falls_back_to_paths_without_identities() {
+    // Mounts report `st_ino` and `st_dev` as 0, so 'a' and 'sub/../a' compare by normalized path.
+    assert_eq!(
+        run_samefile(file_stat(0o644, 1, 0.0), file_stat(0o644, 2, 0.0)),
+        MontyObject::bool(true)
+    );
+}
+
+#[test]
+fn os_path_realpath_strict_rejects_a_nul_in_the_resolved_path() {
+    // Without this the chained `Path.exists` would answer `False` locally and
+    // strict `realpath` would return a bool.
+    let call = run_to_oscall_start("import os\nos.path.realpath('a', strict=True)");
+    assert_eq!(call.function_call.name(), "Path.resolve");
+    let err = call
+        .resume(MontyObject::path("/mnt/a\0b".to_owned()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "ValueError: lstat: embedded null character in path"
+    );
+}
+
+#[test]
+fn os_path_expandvars_charges_its_amplified_result() {
+    // 20k two-byte references to a 1000-byte value amplify the input 500x; the
+    // expansion must stop at the memory limit rather than build the 20 MB result.
+    let runner = MontyRun::new(
+        "import os\nos.path.expandvars('$V' * 20_000)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(1 << 20));
+    let RunProgress::OsCall(call) = runner.start(vec![], tracker, PrintWriter::Stdout).unwrap() else {
+        panic!("expected the os.environ call");
+    };
+    assert_eq!(call.function_call.name(), "os.environ");
+    let environ = MontyObject::dict([(MontyObject::string("V"), MontyObject::string("x".repeat(1000)))]);
+    let err = call.resume(environ, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
 }
