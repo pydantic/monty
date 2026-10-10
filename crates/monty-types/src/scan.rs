@@ -480,8 +480,8 @@ pub fn split_literal_prefix(parts: &[String], case_sensitive: Option<bool>) -> (
 pub struct GlobSelector<'p> {
     /// Parsed pattern parts.
     parts: &'p [String],
-    /// What each part index does, compiled once.
-    steps: Vec<Step>,
+    /// What each part index does, compiled once; `None` where no step leads.
+    steps: Vec<Option<Step>>,
     /// Whether `**` descends into symlinked directories.
     recurse_symlinks: bool,
 }
@@ -507,11 +507,27 @@ enum Step {
 
 impl<'p> GlobSelector<'p> {
     /// Compiles `parts` (see [`ScanArgs::pattern`] and [`ScanArgs::case_sensitive`]).
+    ///
+    /// Only the steps reachable from the first part are compiled. Each consumes
+    /// the parts it covers, so compilation is linear in the pattern: compiling
+    /// every index would copy a literal tail once per part it has.
     #[must_use]
     pub fn new(parts: &'p [String], case_sensitive: Option<bool>, recurse_symlinks: bool) -> Self {
-        let steps = (0..=parts.len())
-            .map(|index| compile_step(parts, index, case_sensitive, recurse_symlinks))
-            .collect();
+        let mut steps: Vec<Option<Step>> = (0..=parts.len()).map(|_| None).collect();
+        let mut index = 0;
+        loop {
+            let step = compile_step(parts, index, case_sensitive, recurse_symlinks);
+            let next = match &step {
+                Step::Exists => None,
+                Step::Special => Some(index + 1),
+                Step::Literal { next, .. } | Step::Wildcard { next, .. } | Step::Recursive { next, .. } => Some(*next),
+            };
+            steps[index] = Some(step);
+            match next {
+                Some(next) => index = next,
+                None => break,
+            }
+        }
         Self {
             parts,
             steps,
@@ -548,13 +564,16 @@ impl<'p> GlobSelector<'p> {
     /// The selection loop behind [`Self::select`] and [`Self::prune`].
     fn run<E>(&self, source: &mut impl ScanSource<Error = E>, run: &mut Run) -> Result<(), E> {
         let mut seen = HashSet::new();
-        run.push(0, "", false);
+        run.push(0, String::new(), false);
         while let Some(state) = run.stack.pop() {
             if !seen.insert(state.clone()) {
                 continue;
             }
             let (index, path, exists) = state;
-            match &self.steps[index] {
+            let step = self.steps[index]
+                .as_ref()
+                .expect("states are only pushed by the step chain compiled from part 0");
+            match step {
                 Step::Exists => {
                     if exists || lexists(&path, source)? {
                         run.emit(path);
@@ -565,9 +584,9 @@ impl<'p> GlobSelector<'p> {
                     if index + 1 < self.parts.len() {
                         path.push('/');
                     }
-                    run.push(index + 1, &path, exists);
+                    run.push(index + 1, path, exists);
                 }
-                Step::Literal { joined, next } => run.push(*next, &(path + joined), false),
+                Step::Literal { joined, next } => run.push(*next, path + joined, false),
                 Step::Wildcard { matcher, next } => {
                     let dir_only = *next < self.parts.len();
                     for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default() {
@@ -577,7 +596,7 @@ impl<'p> GlobSelector<'p> {
                             if !dir_only {
                                 run.emit(entry);
                             } else if info.is_dir {
-                                run.push(*next, &(entry + "/"), true);
+                                run.push(*next, entry + "/", true);
                             }
                         }
                     }
@@ -603,7 +622,7 @@ impl<'p> GlobSelector<'p> {
         let dir_only = next < self.parts.len();
         let match_pos = path.len();
         if matcher.is_none_or(|matcher| matcher.matches("")) {
-            run.push(next, &path, exists);
+            run.push(next, path.clone(), exists);
         }
         let mut dirs = vec![path];
         while let Some(dir) = dirs.pop() {
@@ -616,7 +635,7 @@ impl<'p> GlobSelector<'p> {
                     let entry = if dir_only { entry + "/" } else { entry };
                     if matched {
                         if dir_only {
-                            run.push(next, &entry, true);
+                            run.push(next, entry.clone(), true);
                         } else {
                             run.emit(entry.clone());
                         }
@@ -641,15 +660,25 @@ struct Run {
 
 impl Run {
     /// Queues a state with its path normalized (keeping a trailing `/`); one
-    /// climbing above the root is dropped.
-    fn push(&mut self, index: usize, path: &str, exists: bool) {
-        if let Some(normalized) = normalize_relative(path.trim_end_matches('/')) {
-            let mut normalized = normalized.into_owned();
-            if path.ends_with('/') && !normalized.is_empty() {
-                normalized.push('/');
+    /// climbing above the root is dropped. A path that is already normal, the
+    /// common case, is queued as it is rather than copied.
+    fn push(&mut self, index: usize, mut path: String, exists: bool) {
+        let trimmed_len = path.trim_end_matches('/').len();
+        let dir = trimmed_len > 0 && trimmed_len < path.len();
+        let normalized = match normalize_relative(&path[..trimmed_len]) {
+            None => return,
+            Some(Cow::Owned(mut normalized)) => {
+                if dir && !normalized.is_empty() {
+                    normalized.push('/');
+                }
+                normalized
             }
-            self.stack.push((index, normalized, exists));
-        }
+            Some(Cow::Borrowed(_)) => {
+                path.truncate(trimmed_len + usize::from(dir));
+                path
+            }
+        };
+        self.stack.push((index, normalized, exists));
     }
 
     /// Records a match.
@@ -739,8 +768,13 @@ fn join(dir: &str, name: &str) -> String {
     }
 }
 
-/// Lexically normalizes a relative path, `None` if `..` climbs above the root.
-fn normalize_relative(path: &str) -> Option<Cow<'_, str>> {
+/// Lexically normalizes a `/`-separated relative path, dropping `.` and empty
+/// components and resolving `..`; `None` if `..` climbs above the root.
+///
+/// [`ScanTree`] stores and looks paths up in this form, so a caller spelling
+/// one differently (`./sub`, `sub/../other`) normalizes it first.
+#[must_use]
+pub fn normalize_relative(path: &str) -> Option<Cow<'_, str>> {
     if path.is_empty() || path.split('/').all(|part| !is_special(part)) {
         Some(Cow::Borrowed(path))
     } else {
@@ -765,8 +799,9 @@ fn normalize_relative(path: &str) -> Option<Cow<'_, str>> {
 /// One path segment's pattern with `fnmatch` semantics: `*`, `?`, `[...]`,
 /// `[!...]`; a leading dot is matched like any other character.
 ///
-/// Matching is linear-time backtracking over `*` only, never exponential, since
-/// hosts run it on sandbox-chosen patterns.
+/// Matching backtracks over `*` only, so it costs at most pattern length ×
+/// name length (the regex CPython compiles the pattern to backtracks the same
+/// way), never exponential. Mounts bound both lengths by their name limit.
 #[derive(Debug, Clone)]
 pub struct SegmentPattern {
     tokens: Vec<Token>,
@@ -846,11 +881,17 @@ impl SegmentPattern {
     }
 
     /// Whether a single-character token accepts `c`.
+    ///
+    /// Case-insensitively, `re.IGNORECASE` compares lowercased characters and
+    /// folds a class's ranges both ways, so the variants tried are `c`, its
+    /// lowercase, that lowercase's uppercase (`K` → `k` → `K`, for `[A-Z]`) and
+    /// its uppercase's lowercase (`ſ` → `S` → `s`, for `[a-z]`).
     fn token_matches(&self, token: &Token, c: char) -> bool {
         let variants = if self.case_sensitive {
-            [c, c, c]
+            [c, c, c, c]
         } else {
-            [c, simple_lower(c), simple_upper(c)]
+            let lower = simple_lower(c);
+            [c, lower, simple_upper(lower), simple_lower(simple_upper(c))]
         };
         match token {
             Token::Char(expected) => variants
@@ -906,13 +947,11 @@ fn parse_class(chars: &[char], start: usize) -> Option<(Token, usize)> {
     Some((Token::Class { negated, items }, end + 1))
 }
 
-/// Single-character lowercase, as `re.IGNORECASE` compares (multi-char folds keep `c`).
+/// Single-character lowercase, as `re.IGNORECASE` compares. Unicode's one
+/// multi-character lowercase, `İ` → `i̇`, has the simple mapping `i`, its first
+/// character, which is what CPython uses.
 fn simple_lower(c: char) -> char {
-    let mut lower = c.to_lowercase();
-    match (lower.next(), lower.next()) {
-        (Some(lower), None) => lower,
-        _ => c,
-    }
+    c.to_lowercase().next().unwrap_or(c)
 }
 
 /// Single-character uppercase counterpart of [`simple_lower`].

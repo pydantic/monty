@@ -18,6 +18,7 @@ use monty_proto::{
 use monty_types::{
     CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
     OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
+    scan::{EntryInfo, ScanEntry, scan_reply},
     unstable::{self, MontyNode},
 };
 
@@ -1258,6 +1259,68 @@ fn expandvars_growth_is_rejected_before_the_hard_limit() {
     let message = error.message.expect("MemoryError should have a message");
     assert_reported_usage(&message, 1_370_472, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+    child.shutdown();
+}
+
+/// Results built from a `Path.scan` reply are charged before they can grow
+/// past the hard ceiling: a walk's `dirnames` repeating one long name, and a
+/// glob whose matches dwarf the tree they are drawn from.
+#[test]
+fn scan_results_are_charged_before_the_hard_limit() {
+    let entry = |path: &str, is_dir: bool| ScanEntry {
+        path: path.to_owned(),
+        info: EntryInfo {
+            is_dir,
+            is_file: !is_dir,
+            is_symlink: false,
+        },
+    };
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed("import os\nwalk = os.walk('/d')");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let (_, event) = child.resume_return(call.call_id, scan_reply([entry("", true), entry("sub", true)]));
+    expect_complete(event);
+    // every name is copied and joined before the next step; charged as one allocation
+    let (_, event) = child.feed(
+        "dirpath, dirnames, filenames = next(walk)\ndirnames.clear()\ndirnames.extend(['x' * 10_000] * 10_000)\nnext(walk)",
+    );
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+
+    // `**/*/**` yields every entry once per ancestor: a chain of 200 directories
+    // is a few hundred reply entries but tens of thousands of matches
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed("from pathlib import Path\nmatches = Path('/d').glob('**/*/**')");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let mut entries = vec![entry("", true)];
+    let mut path = String::new();
+    for _ in 0..200 {
+        path = if path.is_empty() {
+            "d".to_owned()
+        } else {
+            format!("{path}/d")
+        };
+        entries.push(entry(&path, true));
+        entries.push(entry(&format!("{path}/f"), false));
+    }
+    let (_, event) = child.resume_return(call.call_id, scan_reply(entries));
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    // raised as the matches grew, not by a preflight of the finished list
+    let message = error.message.expect("MemoryError should have a message");
+    assert!(
+        reported_usage(&message, "glob") < 1_300_000,
+        "usage reported after collecting every match: {message}"
+    );
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 

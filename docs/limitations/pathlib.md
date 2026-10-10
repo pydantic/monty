@@ -79,6 +79,9 @@ Pattern semantics follow CPython 3.14's: hidden files match `*`, `**` descends o
 - **Pruning `dirnames` in `walk()` works** (`dirnames.remove(...)`, `dirnames.clear()`), but only saves sandbox
     work: the host has already read the pruned directories.
     Monty has no list slice assignment, so the common `dirnames[:] = [...]` raises `TypeError`.
+    A name added to `dirnames` is looked up in the snapshot normalized (`./sub`, `sub/../other`), but one that
+    leaves the walked directory, absolute or climbing above it with `..`, is reported to `on_error` as missing,
+    where CPython lists it.
 - **Order is sorted by name within each directory.** CPython yields directory entries in filesystem order.
 - **`..` after a wildcard is collapsed lexically**: `'*/../a.txt'` yields `a.txt` once, spelled without the
     `..`, where CPython yields `sub/../a.txt` once per subdirectory and resolves each through the filesystem.

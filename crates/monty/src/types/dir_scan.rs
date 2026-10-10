@@ -9,11 +9,14 @@
 //! The objects share one heap payload, [`DirScan`], so the heap registers a
 //! single variant for the family.
 
-use std::fmt::Write;
+use std::{borrow::Cow, fmt::Write};
 
 use monty_types::{
-    MontyObject, MontyPath, OsFunctionCall, ScanArgs, StringRepr,
-    scan::{EntryInfo, GlobSelector, ScanTree, indexed_size, parse_scan_reply, split_literal_prefix},
+    MontyObject, MontyPath, OsFunctionCall, ResourceError, ResourceTracker, ScanArgs, StringRepr,
+    scan::{
+        EntryInfo, GlobSelector, ScanSource, ScanTree, indexed_size, normalize_relative, parse_scan_reply,
+        split_literal_prefix,
+    },
 };
 use serde::{Deserialize, Serialize};
 use smallvec::smallvec;
@@ -26,7 +29,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
-    os_dispatch::value_to_owned_string,
+    os_dispatch::value_as_path_str,
     types::{
         LazyHeapSet, List, Path, PyTrait, Type, allocate_tuple,
         list::ListIterator,
@@ -146,8 +149,9 @@ pub(crate) struct WalkIterator {
 /// A step of [`WalkIterator`], mirroring CPython's `os.walk` stack.
 #[derive(Debug, Serialize, Deserialize)]
 enum WalkStep {
-    /// List a directory: its path relative to the scan root and as yielded.
-    Visit { relative: String, spelled: String },
+    /// List a directory: its normalized path relative to the scan root, `None`
+    /// for a `dirnames` entry that left the scanned tree, and as yielded.
+    Visit { relative: Option<String>, spelled: String },
     /// Yield a bottom-up result whose subdirectories are done.
     Yield {
         spelled: String,
@@ -457,7 +461,9 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
 ///
 /// Names may be `str` or path-like, as `os.path.join` takes them. Like CPython,
 /// a name that is not a directory is still visited (and reported to `onerror`);
-/// a symlink is skipped unless the walk follows links.
+/// a symlink is skipped unless the walk follows links. A name is looked up in
+/// the tree normalized, as it is stored; one leaving the tree (absolute, or
+/// `..` above the top) is visited as missing, where CPython would list it.
 fn descend_into_dirnames<'h>(
     this: &mut HeapObjectRead<'h, DirScan>,
     pending: PendingDirnames,
@@ -476,22 +482,37 @@ fn descend_into_dirnames<'h>(
     let HeapData::List(list) = vm.heap.get(*list_id) else {
         unreachable!("a walk's dirnames is always a list")
     };
-    let mut names = Vec::with_capacity(list.as_slice().len());
+    // Each name is copied, then joined onto the directory and spelled for its
+    // step; charged first, since a list can repeat one long name many times.
+    let mut total = 0_usize;
     for item in list.as_slice() {
-        match value_to_owned_string(item, vm.heap, vm.interns) {
-            Some(name) => names.push(name),
-            None => {
-                return Err(ExcType::type_error(format!(
-                    "join() argument must be str, bytes, or os.PathLike object, not '{}'",
-                    item.py_type_name_heap(vm.heap, vm.interns)
-                )));
-            }
-        }
+        let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
+            return Err(ExcType::type_error(format!(
+                "join() argument must be str, bytes, or os.PathLike object, not '{}'",
+                item.py_type_name_heap(vm.heap, vm.interns)
+            )));
+        };
+        let step = name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>();
+        total = total.saturating_add(step);
     }
+    vm.heap.tracker.check_allocation(total)?;
+    let names: Vec<String> = list
+        .as_slice()
+        .iter()
+        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns))
+        .map(str::to_owned)
+        .collect();
     let walk = walk_mut(this, vm);
     for name in names.iter().rev() {
-        let child = scan_join(&relative, name);
-        let is_symlink = walk.tree.get(&child).is_some_and(|info| info.is_symlink);
+        let child = if name.starts_with('/') {
+            None
+        } else {
+            normalize_relative(&scan_join(&relative, name)).map(Cow::into_owned)
+        };
+        let is_symlink = child
+            .as_deref()
+            .and_then(|child| walk.tree.get(child))
+            .is_some_and(|info| info.is_symlink);
         if walk.followlinks || !is_symlink {
             let spelled = walk.join_spelled(&spelled, name);
             walk.stack.push(WalkStep::Visit {
@@ -554,10 +575,14 @@ impl WalkIterator {
                 }
                 WalkStep::Visit { relative, spelled } => (relative, spelled),
             };
-            match self.tree.get(&relative) {
-                None => return WalkAction::Error(ExcType::file_not_found_error(&spelled)),
-                Some(info) if !info.is_dir => return WalkAction::Error(ExcType::not_a_directory_error(&spelled)),
-                Some(_) => {}
+            let Some((relative, info)) = relative.and_then(|relative| {
+                let info = self.tree.get(&relative)?;
+                Some((relative, info))
+            }) else {
+                return WalkAction::Error(ExcType::file_not_found_error(&spelled));
+            };
+            if !info.is_dir {
+                return WalkAction::Error(unlistable_error(info, &spelled));
             }
             let mut dirs = Vec::new();
             let mut files = Vec::new();
@@ -587,7 +612,7 @@ impl WalkIterator {
                 .iter()
                 .rev()
                 .map(|name| WalkStep::Visit {
-                    relative: scan_join(&relative, name),
+                    relative: Some(scan_join(&relative, name)),
                     spelled: self.join_spelled(&spelled, name),
                 })
                 .collect();
@@ -604,6 +629,17 @@ impl WalkIterator {
         } else {
             os_path_join(dir, name)
         }
+    }
+}
+
+/// The error listing an entry that is not a directory raises: CPython's
+/// `scandir` cannot open a dangling symlink at all, so that is
+/// `FileNotFoundError`; anything else present is `NotADirectoryError`.
+fn unlistable_error(info: EntryInfo, spelled: &str) -> RunError {
+    if info.is_symlink && !info.is_dir && !info.is_file {
+        ExcType::file_not_found_error(spelled)
+    } else {
+        ExcType::not_a_directory_error(spelled)
     }
 }
 
@@ -725,7 +761,7 @@ impl ScanEffect {
             Self::Scandir { spelled } => {
                 let tree = tree.map_err(RunError::from)?;
                 if !tree.root().is_dir {
-                    return Err(ExcType::not_a_directory_error(&spelled));
+                    return Err(unlistable_error(tree.root(), &spelled));
                 }
                 let entries = tree.children("").to_vec();
                 let iter = DirScan::Scandir(ScandirIterator {
@@ -744,7 +780,7 @@ impl ScanEffect {
                     Vec::new()
                 } else {
                     vec![WalkStep::Visit {
-                        relative: String::new(),
+                        relative: Some(String::new()),
                         spelled: setup.top,
                     }]
                 };
@@ -761,7 +797,10 @@ impl ScanEffect {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(walk)))))
             }
             Self::Glob(setup) => {
-                let matches = tree.map_or_else(|_| Vec::new(), |tree| setup.select(tree));
+                let matches = match tree {
+                    Ok(tree) => setup.select(tree, &vm.heap.tracker)?,
+                    Err(_) => Vec::new(),
+                };
                 vm.heap.tracker.check_time()?;
                 let total: usize = matches.iter().map(|path| path.len() + size_of::<Value>()).sum();
                 vm.heap.tracker.check_allocation(total)?;
@@ -787,17 +826,26 @@ impl ScanEffect {
 
 impl GlobSetup {
     /// Runs the selector over the reply and spells each match as `pathlib` does.
-    fn select(&self, mut tree: ScanTree) -> Vec<String> {
+    ///
+    /// The matches can dwarf the reply they are drawn from (`**/*/**` yields
+    /// every entry once per ancestor), so the selector polls `tracker` as it
+    /// reads, raising `MemoryError` as they grow rather than at the hard ceiling.
+    fn select(&self, tree: ScanTree, tracker: &ResourceTracker) -> Result<Vec<String>, ResourceError> {
         if self.parts.is_empty() {
             // A host that omitted the root has not shown that it exists.
             let root = tree.described_root();
             let exists = root.is_some_and(|info| info.is_dir || !self.require_dir);
-            return if exists { vec![self.base.clone()] } else { Vec::new() };
+            return Ok(if exists { vec![self.base.clone()] } else { Vec::new() });
         }
         let selector = GlobSelector::new(&self.parts, self.case_sensitive, self.recurse_symlinks);
-        let Ok(matches) = selector.select(&mut tree);
+        let mut tree = TrackedTree {
+            tree,
+            tracker,
+            visits: 0,
+        };
+        let matches = selector.select(&mut tree)?;
         let base = Path::new(self.base.clone());
-        matches
+        Ok(matches
             .into_iter()
             .map(|relative| {
                 let relative = match self.last_part.as_str() {
@@ -810,7 +858,36 @@ impl GlobSetup {
                     base.joinpath(relative)
                 }
             })
-            .collect()
+            .collect())
+    }
+}
+
+/// A reply's tree read under the sandbox's limits: the selector's work and
+/// the matches it collects grow with every entry visited, so each visit is a
+/// poll of the memory and time limits.
+struct TrackedTree<'a> {
+    tree: ScanTree,
+    tracker: &'a ResourceTracker,
+    /// Visits so far, which paces the polls.
+    visits: usize,
+}
+
+impl ScanSource for TrackedTree<'_> {
+    type Error = ResourceError;
+
+    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, ResourceError> {
+        let Ok(listing) = self.tree.list(dir);
+        Ok(listing)
+    }
+
+    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, ResourceError> {
+        let Ok(info) = self.tree.lookup(path);
+        Ok(info)
+    }
+
+    fn visit(&mut self) -> Result<(), ResourceError> {
+        self.visits += 1;
+        self.tracker.check_memory_time_every(self.visits)
     }
 }
 

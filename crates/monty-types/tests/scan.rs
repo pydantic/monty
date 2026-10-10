@@ -3,7 +3,7 @@
 //! Expectations for single segments come from CPython's `fnmatch` (case
 //! sensitive) and `re.IGNORECASE` over `fnmatch.translate` (insensitive).
 
-use std::convert::Infallible;
+use std::{convert::Infallible, iter::repeat_n};
 
 use monty_types::scan::{
     EntryInfo, GlobSelector, ScanEntry, ScanSource, ScanTree, SegmentPattern, split_literal_prefix,
@@ -70,6 +70,16 @@ fn case_insensitive_segments_fold_one_character_at_a_time() {
         ("Straße", "STRASSE", false),
         ("[!A]", "a", false),
         ("ǅ", "ǆ", true),
+        // `re.IGNORECASE` lowercases with Unicode's simple mapping (`İ` → `i`),
+        // folds ranges both ways and pairs `ſ` with `s`
+        ("[A-Z]", "İ", true),
+        ("i", "İ", true),
+        ("I", "ı", true),
+        ("[A-Z]", "K", true),
+        ("k", "K", true),
+        ("[a-z]", "ſ", true),
+        ("s", "ſ", true),
+        ("[A-Z]", "ß", false),
     ];
     for (pattern, name, expected) in cases {
         assert_eq!(
@@ -86,6 +96,23 @@ fn pathological_segment_patterns_are_linear() {
     let pattern = "*a".repeat(100) + "b";
     let name = "a".repeat(10_000);
     assert!(!SegmentPattern::new(&pattern, true).matches(&name));
+}
+
+/// Compiling is linear in the parts: only the steps the first part leads to
+/// are built, each consuming the parts it covers, so a long literal tail is
+/// joined once rather than once per part before it.
+#[test]
+fn long_literal_tails_compile_once() {
+    let mut parts = vec!["**".to_owned()];
+    parts.extend(repeat_n("a".to_owned(), 100_000));
+    let mut tree = tree(&[("", 'd'), ("a", 'd'), ("a/a", 'f')]);
+    for recurse_symlinks in [false, true] {
+        let Ok(matches) = GlobSelector::new(&parts, None, recurse_symlinks).select(&mut tree);
+        assert_eq!(matches, Vec::<String>::new());
+    }
+    parts.truncate(3);
+    let Ok(matches) = GlobSelector::new(&parts, None, false).select(&mut tree);
+    assert_eq!(matches, ["a/a"]);
 }
 
 #[test]
@@ -201,7 +228,7 @@ fn dot_dot_routes_collapse() {
     let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
     GlobSelector::new(&parts, None, false).prune(&mut source).unwrap();
     assert!(source.1 < 100, "listed {} times", source.1);
-    // CPython would spell out every route and yield 3^13 matches
+    // CPython would spell out every route and yield 3^14 matches
     source.1 = 0;
     let Ok(mut matches) = GlobSelector::new(&parts, None, false).select(&mut source);
     matches.sort();

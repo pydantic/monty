@@ -319,6 +319,40 @@ fn overlong_patterns_are_refused() {
         exc.message(),
         Some("[Errno 36] File name too long: '*/*/*/*/*/*/*/*/*/*/…/*/*/*/*/*/*/*/*/*/*'")
     );
+    // emptied parts still count as components, so a long tail cannot slip past the limit
+    let mut parts: Vec<&str> = repeat_n("", 65).collect();
+    parts.push("*");
+    let err = scan(&mut table, glob("/mnt", &parts)).unwrap_err();
+    assert_eq!(err.into_exception().exc_type(), ExcType::OSError);
+}
+
+/// A scan crossing into a mount nested below its root reads that mount, as
+/// single-path lookups of the same paths do, and never the directory it shadows.
+#[test]
+fn nested_mounts_are_scanned_through_the_table() {
+    let dir = create_tree();
+    let inner = TempDir::new().unwrap();
+    fs::write(inner.path().join("other.txt"), "o").unwrap();
+    let mut table = mount(&dir, MountMode::ReadWrite);
+    table
+        .mount("/mnt/sub", inner.path(), MountMode::ReadOnly, None)
+        .unwrap();
+    let tree = scan(&mut table, ScanArgs::listing("/mnt".into(), None, false)).unwrap();
+    assert_eq!(
+        tree,
+        entries(&[
+            ("", 'd'),
+            ("a.txt", 'f'),
+            ("b.py", 'f'),
+            ("sub", 'd'),
+            ("sub/other.txt", 'f'),
+        ])
+    );
+    // literal parts below the nested mount are looked up there too
+    let found = scan(&mut table, glob("/mnt", &["*", "other.txt"])).unwrap();
+    assert!(found.contains(&("sub/other.txt".to_owned(), 'f')));
+    let shadowed = scan(&mut table, glob("/mnt", &["*", "c.txt"])).unwrap();
+    assert!(!shadowed.iter().any(|(path, _)| path == "sub/c.txt"), "{shadowed:?}");
 }
 
 #[test]

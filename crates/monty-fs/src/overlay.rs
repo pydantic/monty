@@ -14,8 +14,8 @@ use super::{
     common::{
         LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8, check_write_limit,
         commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir, host_is_file,
-        host_list_visible_dir_entry_names, host_path_info, host_read_bytes, host_read_text, host_stat,
-        join_mount_relative, map_io, read_file_limited,
+        host_list_visible_dir_entry_names, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
+        read_file_limited,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -170,7 +170,6 @@ pub(super) fn execute(
             Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
         }
         FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
-        FsRequest::Scan { .. } => unreachable!("dispatch::execute routes scans before the backends"),
     }
 }
 
@@ -376,16 +375,46 @@ pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, state: &OverlayState
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => described(false, true),
         Some(OverlayEntry::Directory { .. }) => described(true, false),
         Some(OverlayEntry::Deleted) => PathInfo::ABSENT,
-        None => {
-            let is_symlink = real_is_symlink(ctx, path);
-            let mut info = match resolve_real_path_state(path, ctx, OnLookupFailure::Missing)? {
-                RealPathState::Present(rel) => host_path_info(ctx.mount_dir, &rel),
-                RealPathState::Missing => PathInfo::ABSENT,
-            };
-            info.info.is_symlink = is_symlink;
-            info
-        }
+        None => real_path_info(path, ctx),
     })
+}
+
+/// [`path_info`] for a path the overlay does not answer, in one walk of the
+/// parent chain and one `lstat` of the name, where asking each predicate would
+/// walk and stat the path again per predicate. As [`real_is_symlink`] says,
+/// the chain must be link-free for the name to be the sandbox's; a link at the
+/// end is reported as one and nothing more, since the mode never follows it.
+fn real_path_info(vpath: &str, ctx: &MountContext<'_>) -> PathInfo {
+    let Ok(target) = resolve_virtual_path(vpath, ctx.mount_virtual) else {
+        return PathInfo::ABSENT;
+    };
+    let rel = target.for_dir_op();
+    let parent = rel.rsplit_once('/').map_or("", |(parent, _)| parent);
+    if reject_symlink_chain(ctx.mount_dir, parent, vpath).is_err() {
+        return PathInfo::ABSENT;
+    }
+    let described = |is_dir: bool, is_file: bool, exists: bool| PathInfo {
+        info: EntryInfo {
+            is_dir,
+            is_file,
+            is_symlink: false,
+        },
+        exists,
+    };
+    match classify_target(ctx.mount_dir, rel, vpath) {
+        Ok(RealTarget::Symlink) => PathInfo {
+            info: EntryInfo {
+                is_dir: false,
+                is_file: false,
+                is_symlink: true,
+            },
+            exists: false,
+        },
+        Ok(RealTarget::Dir) => described(true, false, true),
+        // Not a symlink, so following changes nothing: one `stat` tells a regular file from a device or pipe.
+        Ok(RealTarget::File) => described(false, host_is_file(ctx.mount_dir, rel), true),
+        Ok(RealTarget::Absent) | Err(_) => PathInfo::ABSENT,
+    }
 }
 
 /// Reads text from the overlay or from the real filesystem on fallback.

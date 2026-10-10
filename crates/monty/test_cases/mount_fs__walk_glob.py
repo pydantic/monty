@@ -145,6 +145,15 @@ for dirpath, dirnames, filenames in os.walk(root):
         dirnames.append(Path('subdir'))
 assert seen == ['', '/subdir', '/subdir/deep']
 
+# names added to `dirnames` are looked up normalized, and yielded as spelled
+seen = []
+for dirpath, dirnames, filenames in os.walk(root):
+    seen.append(rel(dirpath))
+    if 'subdir' in dirnames:
+        dirnames.clear()
+        dirnames.extend(['./subdir', 'subdir/deep/../deep'])
+assert seen == ['', '/./subdir', '/./subdir/deep', '/subdir/deep/../deep']
+
 # errors go to `onerror`, and are otherwise ignored
 errors = []
 

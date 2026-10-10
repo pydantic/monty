@@ -1080,6 +1080,38 @@ def test_path_scan_unreadable_descendant(monty_run: RunMonty):
     assert str(exc_info.value) == snapshot("[Errno 13] Permission denied: '/test/pkg'")
 
 
+class DanglingLinkOS(OSAccess):
+    """Reports one missing path as a symlink, as a dangling link is."""
+
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
+        return path == P('/test/dangling')
+
+
+def test_scan_dangling_symlink_root(monty_run: RunMonty):
+    """A dangling link cannot be listed, but a literal glob finds it, as CPython's `lexists` does."""
+    code = """
+import os
+from pathlib import Path
+errors = []
+try:
+    os.scandir('/test/dangling')
+except FileNotFoundError as e:
+    errors.append(str(e))
+list(os.walk('/test/dangling', onerror=lambda e: errors.append(f'{type(e).__name__}: {e}')))
+(errors, [str(p) for p in Path('/test').glob('dangling')])
+"""
+    fs = DanglingLinkOS([MemoryFile('/test/a.py', content='a')])
+    assert monty_run(code, os=fs) == snapshot(
+        (
+            [
+                "[Errno 2] No such file or directory: '/test/dangling'",
+                "FileNotFoundError: [Errno 2] No such file or directory: '/test/dangling'",
+            ],
+            ['/test/dangling'],
+        )
+    )
+
+
 def test_path_scan_deep_tree_without_links():
     """Without following links, the default `path_scan` has no depth cap."""
     deep = '/'.join(['d'] * 70)
