@@ -449,10 +449,7 @@ pub struct MatchCase<N> {
 ///
 /// The shapes mirror `ast.pattern`; the compiler lowers them following
 /// CPython's `codegen_pattern_*` so capture bindings happen only once the whole
-/// pattern has matched. Parse-time validation rejects the shapes CPython's
-/// compiler rejects (duplicate mapping keys, repeated class attributes, two
-/// starred names); the context-dependent errors (duplicate captures, unreachable
-/// irrefutable patterns, mismatched alternatives) are raised by the compiler.
+/// pattern has matched.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Pattern {
     /// `case 1:` / `case 'x':` / `case Color.RED:` - matches when `subject == value`.

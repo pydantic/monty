@@ -584,14 +584,18 @@ pub enum Opcode {
     /// `[subject, keys] -> [subject, keys, values_or_None, bool]`;
     /// `MATCH_KEYS_REST`: `[subject, keys] -> [rest_dict]`.
     MatchKeys = 126,
-    /// Class-pattern check: `[subject, cls, kwd_names] -> [subject, names_or_None, bool]`,
+    /// Class-pattern check: `[subject, cls, kwd_names] -> [subject, cls, names_or_None, bool]`,
     /// where `names` are the attributes the sub-patterns read (`None` entries
     /// stand for the subject itself). Operand: u8 count of positional
     /// sub-patterns, resolved via `__match_args__`.
     MatchClass = 127,
-    /// Reads one class-pattern attribute: `[subject, names] -> [subject, names, value, bool]`.
+    /// Reads one class-pattern attribute: `[subject, cls, names] -> [subject, cls, names, value, bool]`.
     /// Operand: u8 index into `names`. May suspend for a host lookup.
     MatchAttr = 128,
+    /// Move TOS beneath the `n` items below it: `[a, b, c, v]` with `n = 3`
+    /// becomes `[v, a, b, c]`. Operand: u8 n. The inverse of `LiftToTop`; the
+    /// pattern compiler uses it to park a capture under the pattern's temporaries.
+    SinkTop = 129,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -716,7 +720,8 @@ impl Opcode {
             | Self::AssertFailed
             | Self::MatchKeys
             | Self::MatchClass
-            | Self::MatchAttr => OperandShape::U8,
+            | Self::MatchAttr
+            | Self::SinkTop => OperandShape::U8,
             Self::LoadSmallInt => OperandShape::I8,
             Self::LoadModule
             | Self::LoadConst
@@ -973,8 +978,8 @@ impl Opcode {
             (DictSetItem, Operand::U8(_)) => -2,
             // `DictUpdate`/`SetExtend` also take a u8 stack-depth operand.
             (DictUpdate | SetExtend, Operand::U8(_)) => -1,
-            // `LiftToTop(n)` reorders the stack — net effect 0.
-            (LiftToTop, Operand::U8(_)) => 0,
+            // `LiftToTop(n)` / `SinkTop(n)` reorder the stack — net effect 0.
+            (LiftToTop | SinkTop, Operand::U8(_)) => 0,
             // `MatchKeys` either pushes `[values_or_None, bool]` above the subject
             // and keys, or replaces both with the `**rest` dict.
             (MatchKeys, Operand::U8(mode)) => {
@@ -984,9 +989,9 @@ impl Opcode {
                     2
                 }
             }
-            // `MatchClass` pops class and keyword names; pushes `[names_or_None, bool]` above the subject.
-            (MatchClass, Operand::U8(_)) => 0,
-            // `MatchAttr` pushes `[value, bool]` above the subject and names.
+            // `MatchClass` pops the keyword names; pushes `[names_or_None, bool]` above subject and class.
+            (MatchClass, Operand::U8(_)) => 1,
+            // `MatchAttr` pushes `[value, bool]` above the subject, class and names.
             (MatchAttr, Operand::U8(_)) => 2,
 
             // === Fixed-effect, no operand (context managers) ===

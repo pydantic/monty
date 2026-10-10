@@ -1,7 +1,7 @@
 use std::{borrow::Cow, fmt};
 
 use ahash::AHashSet;
-use monty_types::{FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
+use monty_types::{FormatComplex, FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
 use num_bigint::BigInt;
 use num_traits::Num;
 use ruff_python_ast::{
@@ -442,6 +442,11 @@ impl<'a, 'i> Parser<'a, 'i> {
         result
     }
 
+    /// Converts one Ruff pattern, raising the shape errors CPython's compiler
+    /// raises: two starred names, duplicate constant mapping keys and repeated
+    /// class attributes. Context-dependent errors (duplicate captures,
+    /// unreachable irrefutable patterns, mismatched alternatives) belong to the
+    /// bytecode compiler.
     fn parse_pattern_impl(&mut self, pattern: AstPattern) -> Result<Pattern, ParseError> {
         match pattern {
             AstPattern::MatchValue(p) => Ok(Pattern::Value(self.parse_expression(*p.value)?)),
@@ -2829,9 +2834,9 @@ impl<'a> ConstantKey<'a> {
                 negated: false,
             }),
             Expr::UnaryMinus(inner) => match &inner.expr {
-                Expr::Literal(literal @ (Literal::Int(_) | Literal::Float(_) | Literal::LongInt(_))) => {
-                    Some(Self { literal, negated: true })
-                }
+                Expr::Literal(
+                    literal @ (Literal::Int(_) | Literal::Float(_) | Literal::LongInt(_) | Literal::Complex(_)),
+                ) => Some(Self { literal, negated: true }),
                 _ => None,
             },
             _ => None,
@@ -2847,6 +2852,7 @@ impl<'a> ConstantKey<'a> {
                 (Literal::Str(a), Literal::Str(b)) => a == b,
                 (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
                 (Literal::LongInt(a), Literal::LongInt(b)) => a == b && self.negated == other.negated,
+                (Literal::Complex(a), Literal::Complex(b)) => self.signed(*a) == other.signed(*b),
                 _ => false,
             },
             _ => false,
@@ -2865,7 +2871,12 @@ impl<'a> ConstantKey<'a> {
             Literal::Float(f) => *f,
             _ => return None,
         };
-        Some(if self.negated { -magnitude } else { magnitude })
+        Some(self.signed(magnitude))
+    }
+
+    /// Applies the key's sign to a literal magnitude.
+    fn signed(self, magnitude: f64) -> f64 {
+        if self.negated { -magnitude } else { magnitude }
     }
 
     /// The key's `repr`, for the duplicate-key diagnostic.
@@ -2880,7 +2891,12 @@ impl<'a> ConstantKey<'a> {
             Literal::Str(id) => StringRepr(interner.get_str(*id)).to_string(),
             Literal::Bytes(id) => bytes_repr(interner.get_bytes(*id)),
             Literal::LongInt(id) => format!("{sign}{}", interner.get_long_int(*id)),
-            Literal::Complex(imag) => format!("{}j", FormatFloat(*imag)),
+            // `-2j` negates `0+2j`, so its real part is `-0.0` and CPython shows `(-0-2j)`.
+            Literal::Complex(imag) => FormatComplex {
+                real: if self.negated { -0.0 } else { 0.0 },
+                imag: self.signed(*imag),
+            }
+            .to_string(),
             Literal::Ellipsis => "Ellipsis".to_owned(),
             Literal::Marker(_) => "<marker>".to_owned(),
         }

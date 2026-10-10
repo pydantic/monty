@@ -1370,6 +1370,13 @@ impl<'h> VM<'h> {
                     let src_idx = len - 1 - n as usize;
                     self.stack[src_idx..].rotate_left(1);
                 }
+                Opcode::SinkTop => {
+                    let n = usize::from(self.current_frame.fetch_u8());
+                    // Move TOS beneath the n items below it: one rotation of the
+                    // affected slice, the mirror image of `LiftToTop`.
+                    let len = self.stack.len();
+                    self.stack[len - 1 - n..].rotate_right(1);
+                }
                 Opcode::RaiseUnboundLocal => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);

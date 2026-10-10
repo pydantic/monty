@@ -56,6 +56,7 @@ extend-exclude = [
     "crates/monty/test_cases/match__error_capture_unreachable.py",
     "crates/monty/test_cases/match__error_different_names.py",
     "crates/monty/test_cases/match__error_duplicate_key.py",
+    "crates/monty/test_cases/match__error_duplicate_complex_key.py",
     "crates/monty/test_cases/match__error_duplicate_int_key.py",
     "crates/monty/test_cases/match__error_duplicate_name.py",
     "crates/monty/test_cases/match__error_multiple_stars.py",
@@ -154,7 +155,8 @@ quote-style = "single"
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
-# test cases deliberately exercise `match` statements with no matching case
+# test cases deliberately exercise `match` statements with no matching case; pyright
+# has no per-directory rule overrides, so this is off for every target above
 reportMatchNotExhaustive = false
 include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking", "examples"]
 exclude = [
@@ -184,6 +186,7 @@ exclude = [
     "crates/monty/test_cases/match__error_capture_unreachable.py",
     "crates/monty/test_cases/match__error_different_names.py",
     "crates/monty/test_cases/match__error_duplicate_key.py",
+    "crates/monty/test_cases/match__error_duplicate_complex_key.py",
     "crates/monty/test_cases/match__error_duplicate_int_key.py",
     "crates/monty/test_cases/match__error_duplicate_name.py",
     "crates/monty/test_cases/match__error_multiple_stars.py",
