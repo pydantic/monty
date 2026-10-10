@@ -21,6 +21,7 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
+use exceptions::HandledException;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
@@ -704,7 +705,7 @@ pub struct VMSnapshot {
     /// When entering an except handler, the exception is pushed onto this stack.
     /// When exiting via `ClearException`, the top is popped. This allows nested
     /// except handlers to restore the outer exception context.
-    exception_stack: Vec<Value>,
+    exception_stack: Vec<HandledException>,
 
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
@@ -819,7 +820,7 @@ pub struct VM<'h> {
     /// When entering an except handler, the exception is pushed onto this stack.
     /// When exiting via `ClearException`, the top is popped. This allows nested
     /// except handlers to restore the outer exception context.
-    exception_stack: Vec<Value>,
+    exception_stack: Vec<HandledException>,
 
     /// IP of the instruction being executed (for exception table lookup).
     ///
@@ -1898,13 +1899,19 @@ impl<'h> VM<'h> {
                 Opcode::Reraise => {
                     // Clone rather than pop: a locally caught bare raise must
                     // preserve its enclosing handler's active exception.
-                    let raised = self.exception_stack.last().map(|exc| exc.clone_with_heap(self.heap));
-                    let error = match &raised {
-                        Some(exc) => self.make_exception(exc, true), // is_raise=true for reraise
+                    let active = self
+                        .exception_stack
+                        .last()
+                        .map(|exc| (exc.error.clone(), exc.value.clone_with_heap(self.heap)));
+                    let (error, raised) = match active {
+                        Some((Some(error), value)) => (RunError::Exc(error), Some(value)),
+                        // Older dumps retain the exception object but not its traceback.
+                        Some((None, value)) => (self.make_exception(&value, true), Some(value)),
                         // No active exception - create a RuntimeError
-                        None => {
-                            SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
-                        }
+                        None => (
+                            SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into(),
+                            None,
+                        ),
                     };
                     if let Some(result) = self.handle_exception_with_value(error, raised) {
                         return Err(result);
