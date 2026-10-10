@@ -1091,6 +1091,12 @@ fn next_line<'h>(file: &mut HeapRead<'h, OpenFile>, vm: &mut VM<'h>) -> RunResul
 
 /// `__next__` on an unread file from a caller that cannot suspend for the host
 /// read (`list(f)`, `enumerate(f)`, …); only `for` and `next()` issue it.
+///
+/// TODO: `enumerate`, `zip`, `map`, `filter` and `sorted` go away from this
+/// list once they are bytecode, since they then iterate through `ForIter`.
+/// The Rust-side consumers that remain (`list(f)`, `''.join(f)`, `sum(f)`, …)
+/// need a call-boundary retry: stash the call in a `PostConversionEffect`
+/// like `SeedRandom { retry }`, yield the load, replay the call on resume.
 fn unloaded_iteration_error(file_type: Type) -> RunError {
     ExcType::not_implemented(format!(
         "iterating an unread {file_type} is only supported by 'for' loops and next(); call seek(0) first to load it"
