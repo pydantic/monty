@@ -120,7 +120,11 @@ try:
     os.stat(99999)
     assert False, 'expected OSError'
 except OSError as e:
-    assert str(e) == '[Errno 9] Bad file descriptor: 99999'
+    # Windows CPython reports the closed fd as an invalid handle
+    if sys.platform == 'win32':
+        assert str(e) == '[WinError 6] The handle is invalid: 99999'
+    else:
+        assert str(e) == '[Errno 9] Bad file descriptor: 99999'
 try:
     os.stat(2**40)
     assert False, 'expected OverflowError'
