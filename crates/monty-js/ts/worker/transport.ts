@@ -17,6 +17,7 @@ import {
   systemSleepCapOf,
 } from '../options.js'
 import type { CheckoutOptions, ResourceLimits } from '../pool.js'
+import { HostModules } from '../session.js'
 import type {
   Arena,
   ConfigureRequest,
@@ -528,6 +529,10 @@ export function prepareSession(config: WorkerSessionConfig): ConfigureRequest {
     ...(config.limits === undefined ? {} : { limits: encodeLimits(config.limits) }),
     typeCheck: config.typeCheck ?? false,
     typeCheckStubs: config.typeCheckStubs,
+    typeCheckModuleStubs: Object.entries(new HostModules(config.externalModules).stubs()).map(([module, source]) => ({
+      module,
+      source,
+    })),
     assertMessageAnnotations: encodeAssertMessageAnnotations(config.assertMessageAnnotations),
     typeCheckFormat: componentTypeCheckFormat(config.typeCheckFormat ?? 'full'),
     typeCheckColor: config.typeCheckColor ?? false,

@@ -297,6 +297,102 @@ In JavaScript every host function may be async, and there is no separate pool cl
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
+## Importing host modules
+
+`import` of a module the sandbox does not have asks the host for it.
+`external_modules` on `checkout` names the modules the session's snippets may import, keyed by module name
+(`externalModules` in JavaScript).
+Each entry is an [`ExternalModule`][pydantic_monty.ExternalModule] pairing the module's value with its type stub, so
+the two cannot drift apart:
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import ExternalModule, Monty
+
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+
+    code = """
+    import tools
+    from tools import add
+
+    tools.add(1, 2) + add(3, 4)
+    """
+
+    tools = ExternalModule({'add': add})
+
+    with Monty() as pool:
+        with pool.checkout(external_modules={'tools': tools}) as session:
+            print(session.feed_run(code))
+            #> 10
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty } from '@pydantic/monty'
+
+    const code = `
+    import tools
+    from tools import add
+
+    tools.add(1, 2) + add(3, 4)
+    `
+
+    await using pool = await Monty.create()
+    const tools = { add: (a: number, b: number) => a + b }
+    await using session = await pool.checkout({ externalModules: { tools: { module: tools } } })
+    console.log(await session.feedRun(code)) // 10
+    ```
+
+The entry's `module` is the module's value: a dict (a plain object in JavaScript) becomes a host object named after
+the module, with its public items (keys not starting with `_`) sent along.
+A Python module is not accepted: a dict names exactly what the sandbox may reach, where a module would also expose
+everything it imports.
+In JavaScript a plain object is one whose prototype is `Object.prototype` or null, so a module namespace
+(`import * as tools`) qualifies while an instance of another class does not.
+A callable attribute becomes a host function named `<module>.<attr>`, dispatched like an `external_lookup` entry: a
+JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
+Any other attribute is converted when the module is imported.
+A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
+Any other value is refused with `TypeError`: by the Python binding at `checkout`, by the JavaScript binding when the
+module is first needed.
+A zero-argument callable (`Callable[[], ModuleValue]`, `() => ModuleValue`) returning one of those is a lazy module: it
+runs when the session first needs the module, at its `import` or at a call of one of its functions through a binding
+restored from a dump, and its result stands for the module for the rest of the session, so a module the snippets never
+import costs nothing to offer.
+Under `AsyncMonty` it may return an awaitable, and in JavaScript a promise; the sync `Monty` raises `RuntimeError` for
+an awaitable.
+An exception it raises, or a return value that is not a module shape, raises at that first point of need.
+`from tools import add` reads the attribute of that object and raises `ImportError` for a name it does not have.
+An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
+or `math`, are never looked up here.
+Every `import` statement asks again: the sandbox has no module cache, and a module bound by an earlier feed is a
+plain global.
+The Python binding reads the module's dict on each import; the JavaScript binding reuses the module value it built for
+the first import for the rest of the session, so a plain attribute the host changes afterwards is not seen again, while
+a call of a module function always reads the current attribute.
+The bound value is a host object, so `type(tools)` is its host class, not `module`; see
+[modules](limitations/modules.md#host-modules).
+
+Module names are identifiers.
+A submodule is an entry of its parent's `modules` (`ExternalModule(..., modules={'sub': ...})`, `{ module, modules: { sub } }`
+in JavaScript): it is an attribute of the parent, so `import pkg.sub`, `import pkg.sub as s`, `from pkg import sub` and
+`from pkg.sub import add` all reach it, its host functions are named by their path (`pkg.sub.add`), and a submodule
+the parent does not have raises `ModuleNotFoundError: No module named 'pkg.nope'`.
+A submodule's `module` is its value, never a callable, since it crosses with its parent, and a `ClassInstance` module
+has no submodules, since its attributes are its own.
+
+On the wire the import is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the top-level
+module name as its argument, answered with the module value, so a host driving suspensions itself answers it like any
+other call; the sandbox reads a dotted import's further components as attributes of that value.
+The name is reserved: `__import__(...)` in the sandbox raises `NameError`.
+To type-check code that imports a host module, give the entry its `stubs`; see
+[type checking](type-checking.md#declaring-what-the-host-provides).
+
 ## Driving suspensions yourself
 
 `feed_run` answers every suspension for you and returns only the final value.

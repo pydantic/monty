@@ -42,6 +42,12 @@ if __name__ == '__main__':
 
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.
+`external_modules` on `checkout` names the modules the session's snippets may `import`: each an `ExternalModule`
+whose `module` is a dict whose public items are sent with it (callables as host functions, other values converted),
+a `ClassInstance` sent as itself, or a zero-argument callable (async under `AsyncMonty`) returning one of those, run
+when the session first needs the module. Its optional `stubs` is the `.pyi` the type checker resolves the import
+against, and its optional `modules` are its submodules, reached as attributes and by `import <name>.<sub>` (a
+`ClassInstance` module has none, its attributes being its own).
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.

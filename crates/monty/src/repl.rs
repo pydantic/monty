@@ -766,7 +766,7 @@ impl ReplFunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.run(result, print)
+        self.snapshot.run(result.into(), print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` for async resolution.

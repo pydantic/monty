@@ -82,6 +82,13 @@ A host function that takes a path and reads it, or takes a URL and fetches it, i
 primitive that you wrote.
 Validate arguments in the host function as you would validate any untrusted input.
 
+An `import` of a module the sandbox does not ship is a host call too: the host decides which modules exist
+(`external_modules` on `checkout`); every public item of a module given as a dict is reachable by the sandbox, a
+callable one running on the host like any other host function, while a module given as a `ClassInstance` exposes
+only what its wrapper policy allows.
+Sandbox code cannot name the underlying `__import__` call itself; it raises `NameError`.
+See [importing host modules](host-functions.md#importing-host-modules).
+
 ### Host objects and classes
 
 [`ClassInstance`][pydantic_monty.ClassInstance] and [`ClassType`][pydantic_monty.ClassType] wrappers put a host object, or a host class, in front of the sandbox.

@@ -35,6 +35,13 @@ alongside the source and a `from <stubs> import *` line is injected, so
 checked code can reference host functions without defining them — diagnostic
 line numbers are adjusted back to the original source.
 
+`run_with` takes a `TypeCheckContext` in place of the stubs file, adding what a
+session accumulates: `module_stubs`, one `ModuleStub` per host-provided module,
+each written as `/<module>.pyi` so that `import <module>` resolves (never
+star-imported), and `prelude`, statements injected ahead of the star import.
+`top_level_imports` builds that prelude from the imports of the committed
+snippets, so a module imported by an earlier snippet resolves in a later one.
+
 `TypeCheckingConfig` picks the output format (ty's `full`, `concise`, `json`,
 `github`, ... renderings) and whether to use ANSI colour. It is passed to
 `run` rather than applied to the result because `TypeCheckingDiagnostics`

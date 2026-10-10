@@ -2,10 +2,10 @@
 
 use super::VM;
 use crate::{
-    bytecode::vm::CallResult,
+    bytecode::{Opcode, vm::CallResult},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
-    heap::{ContainsHeap, DropWithContext},
+    heap::{ContainsHeap, DropWithContext, HeapData},
     intern::StringId,
     value::{EitherStr, Value},
 };
@@ -73,8 +73,10 @@ impl VM<'_> {
     /// Loads an attribute from a module for `from ... import` and pushes it onto the stack.
     ///
     /// Returns an ImportError (not AttributeError) if the attribute doesn't exist,
-    /// matching CPython's behavior for `from module import name`.
-    pub(super) fn load_attr_import(&mut self, name_id: StringId) -> Result<CallResult, RunError> {
+    /// matching CPython's behavior for `from module import name`. `module_id` (the
+    /// frame's `import_from_module`) names the module for that message, since a
+    /// host-provided module need not be a `Module`.
+    pub(super) fn load_attr_import(&mut self, name_id: StringId, module_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
         let obj = this.pop();
@@ -84,13 +86,71 @@ impl VM<'_> {
         match obj.py_getattr(&attr, this) {
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
-                // Only compute module_name when we need it for the error message
-                let module_name = obj.module_name(this);
                 let name_str = this.interns.get_str(name_id);
-                Err(ExcType::cannot_import_name(name_str, &module_name))
+                Err(ExcType::cannot_import_name(name_str, this.interns.get_str(module_id)))
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Loads the next component of a dotted import: pops the module so far and
+    /// pushes its attribute `name_id`. A missing attribute is
+    /// `ModuleNotFoundError` naming `path_id` (`a.b`), with `; 'a' is not a
+    /// package` when the module is a built-in one, since a built-in module has
+    /// no submodules a host could supply.
+    pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
+        let this = self;
+
+        let obj = this.pop();
+        defer_drop!(obj, this);
+
+        let attr = EitherStr::Interned(name_id);
+        match obj.py_getattr(&attr, this) {
+            Ok(result) => Ok(result),
+            Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
+                let path = this.interns.get_str(path_id);
+                // the parent as spelled in the import (`os.path`), not the module's own name
+                let is_builtin = matches!(obj, Value::Ref(id) if matches!(this.heap.get(*id), HeapData::Module(_)));
+                let parent = is_builtin.then(|| path.rsplit_once('.').map_or(path, |(parent, _)| parent));
+                Err(ExcType::module_not_found_error(path, parent))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The dotted path a suspended `LoadSubmodule` is loading (`a.b`): `Some`
+    /// while the suspended instruction is one, so a host's answer to the lazy
+    /// attribute lookup can raise the same `ModuleNotFoundError` the synchronous
+    /// load does.
+    pub(crate) fn suspended_submodule(&self) -> Option<StringId> {
+        let ip = self.instruction_ip;
+        let bytecode = self.current_frame.bytecode;
+        (bytecode.get(ip) == Some(&(Opcode::LoadSubmodule as u8))).then(|| {
+            // operands: u16 attribute name_id, then u16 path name_id, little-endian
+            StringId::from_index(u16::from_le_bytes([bytecode[ip + 3], bytecode[ip + 4]]))
+        })
+    }
+
+    /// The module a suspended `from <module> import <name>` is loading from: `Some`
+    /// while the suspended instruction is its attribute load, so a host's answer to
+    /// that lookup can raise the same `ImportError` the synchronous load does.
+    pub(crate) fn suspended_import_from(&self) -> Option<StringId> {
+        let frame = &self.current_frame;
+        (frame.bytecode.get(self.instruction_ip) == Some(&(Opcode::LoadAttrImport as u8)))
+            .then_some(frame.import_from_module)
+            .flatten()
+    }
+
+    /// The module a suspended `import <module>` is loading: `Some` while the suspended
+    /// instruction is its `LoadModule`. This is what distinguishes an import's host call
+    /// from a direct call of an undefined `__import__`.
+    pub(crate) fn suspended_import(&self) -> Option<StringId> {
+        let ip = self.instruction_ip;
+        let bytecode = self.current_frame.bytecode;
+        (bytecode.get(ip) == Some(&(Opcode::LoadModule as u8))).then(|| {
+            // operand: u16 module name_id, little-endian
+            StringId::from_index(u16::from_le_bytes([bytecode[ip + 1], bytecode[ip + 2]]))
+        })
     }
 
     /// Stores a value as an attribute on an object.

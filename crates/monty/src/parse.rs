@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
-        Node, Operator, SequenceItem, UnpackTarget,
+        Node, Operator, SequenceItem, Submodule, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{CompileInterns, StringId},
@@ -44,6 +44,11 @@ pub const MAX_NESTING_DEPTH: u16 = 200;
 /// stack overflow while still catching the error before the recursion limit.
 #[cfg(debug_assertions)]
 pub const MAX_NESTING_DEPTH: u16 = 30;
+
+/// The most components a dotted import may have (`import a.b.c` has three).
+/// Each component interns the path through it, so an unbounded chain would
+/// retain memory quadratic in its length; real packages stay well below this.
+pub const MAX_IMPORT_COMPONENTS: usize = 32;
 
 /// `from __future__ import ...` features whose semantics Monty already provides,
 /// so importing them is a no-op rather than an error.
@@ -644,26 +649,24 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let import_names = names
                     .iter()
                     .map(|alias_node| {
-                        let module_name = self.interner.intern(&alias_node.name);
+                        let (module_name, submodules) = self.import_path(&alias_node.name, position)?;
                         // `import a.b` loads `a.b` but binds `a`; an alias binds `a.b` itself.
-                        let package = match (&alias_node.asname, alias_node.name.split_once('.')) {
-                            (None, Some((package, _))) => Some(self.interner.intern(package)),
-                            _ => None,
-                        };
+                        let binds_top_level = alias_node.asname.is_none() && !submodules.is_empty();
                         // The binding name is the alias if present, otherwise the module
                         // name (or its top-level package when dotted).
                         let binding_name = alias_node
                             .asname
                             .as_ref()
-                            .map_or(package.unwrap_or(module_name), |n| self.interner.intern(&n.id));
+                            .map_or(module_name, |n| self.interner.intern(&n.id));
                         let binding = Identifier::new(binding_name, position);
-                        ImportName {
+                        Ok(ImportName {
                             module_name,
-                            package,
+                            submodules,
+                            binds_top_level,
                             binding,
-                        }
+                        })
                     })
-                    .collect();
+                    .collect::<Result<_, ParseError>>()?;
                 Ok(Node::Import { names: import_names })
             }
             Stmt::ImportFrom(ast::StmtImportFrom {
@@ -716,8 +719,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ));
                 }
                 // Module name is required for absolute imports
-                let module_name = match module {
-                    Some(m) => self.interner.intern(&m),
+                let (module_name, submodules) = match module {
+                    Some(m) => self.import_path(&m, position)?,
                     None => {
                         return Err(ParseError::import_error(
                             "attempted relative import with no known parent package",
@@ -746,6 +749,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Node::ImportFrom {
                     module_name,
+                    submodules,
                     names,
                     position,
                 })
@@ -2235,6 +2239,31 @@ impl<'a, 'i> Parser<'a, 'i> {
                 Err(err) => Err(ParseError::syntax(err.to_string(), self.convert_range(spec.range))),
             }
         }
+    }
+
+    /// Splits a dotted module name into the top-level module and the
+    /// [`Submodule`]s after it, interning each component and each prefix;
+    /// more than [`MAX_IMPORT_COMPONENTS`] of them is a `SyntaxError`.
+    fn import_path(&mut self, dotted: &str, position: CodeRange) -> Result<(StringId, Vec<Submodule>), ParseError> {
+        if dotted.split('.').nth(MAX_IMPORT_COMPONENTS).is_some() {
+            return Err(ParseError::syntax(
+                format!("dotted import has more than {MAX_IMPORT_COMPONENTS} components"),
+                position,
+            ));
+        }
+        let mut parts = dotted.split('.');
+        let module_name = self.interner.intern(parts.next().unwrap_or_default());
+        let mut end = dotted.find('.').unwrap_or(dotted.len());
+        let submodules = parts
+            .map(|part| {
+                end += 1 + part.len();
+                Submodule {
+                    name: self.interner.intern(part),
+                    path: self.interner.intern(&dotted[..end]),
+                }
+            })
+            .collect();
+        Ok((module_name, submodules))
     }
 
     fn convert_range(&self, range: TextRange) -> CodeRange {

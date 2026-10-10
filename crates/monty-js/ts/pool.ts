@@ -16,7 +16,7 @@ import {
   encodeOsPolicy,
   validateMaxCheckouts,
 } from './options.js'
-import { MontySession } from './session.js'
+import { type ExternalModules, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
 /** Options for [`Monty`]. */
@@ -77,6 +77,15 @@ export interface CheckoutOptions {
   typeCheck?: boolean
   /** Stub file contents used by type checking. */
   typeCheckStubs?: string
+  /**
+   * The modules the session's snippets may `import`, keyed by module name,
+   * each pairing the module's host value with the `.pyi` stub type checking
+   * resolves `import <module>` against (never star-imported, unlike
+   * `typeCheckStubs`) and with its submodules. A name that is not an
+   * identifier, or that the sandbox provides itself, throws. Importing a
+   * module absent here raises `ModuleNotFoundError`.
+   */
+  externalModules?: ExternalModules
   /**
    * How `MontyTypingError` diagnostics are rendered (default `'full'`).
    * Chosen here rather than on the thrown error because the checker's
@@ -195,11 +204,13 @@ export class Monty {
     }
     const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
     const osPolicy = encodeOsPolicy(options.osPolicy ?? {})
+    const modules = new HostModules(options.externalModules)
     const native = this.native.checkout({
       scriptName: options.scriptName ?? 'main.py',
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       typeCheck: options.typeCheck ?? false,
       ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+      typeCheckModuleStubs: modules.stubs(),
       ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
       ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
@@ -208,7 +219,7 @@ export class Monty {
     })
     const telemetryContext = captureTelemetryContext()
     await native.enter(telemetryContext)
-    return new MontySession(native)
+    return new MontySession(native, modules)
   }
 
   /**

@@ -809,6 +809,22 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
+    /// One `.pyi` per host-provided module, so `import <module>` resolves during
+    /// type checking. Read only when `type_check` is true, but carried in the
+    /// session's dump either way.
+    #[prost(message, repeated, tag = "14")]
+    pub type_check_module_stubs: crate::budgeted_prost::alloc::vec::Vec<ModuleStub>,
+}
+/// The `.pyi` source of one host-provided module. `module` must be an
+/// identifier and not a module the sandbox provides itself, or the runtime and
+/// the checker would disagree about the import.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct ModuleStub {
+    #[prost(string, tag = "1")]
+    pub module: crate::budgeted_prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source: crate::budgeted_prost::alloc::string::String,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

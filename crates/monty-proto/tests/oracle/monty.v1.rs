@@ -799,6 +799,21 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<::prost::alloc::string::String>,
+    /// One `.pyi` per host-provided module, so `import <module>` resolves during
+    /// type checking. Read only when `type_check` is true, but carried in the
+    /// session's dump either way.
+    #[prost(message, repeated, tag = "14")]
+    pub type_check_module_stubs: ::prost::alloc::vec::Vec<ModuleStub>,
+}
+/// The `.pyi` source of one host-provided module. `module` must be an
+/// identifier and not a module the sandbox provides itself, or the runtime and
+/// the checker would disagree about the import.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ModuleStub {
+    #[prost(string, tag = "1")]
+    pub module: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source: ::prost::alloc::string::String,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -1027,9 +1042,16 @@ pub struct Print {
 /// Suspension: the sandbox called an external function, or — when `object_id`
 /// is set — a method on a host-backed object (the receiver is NOT included in
 /// `args`; the host routes by uuid). The receiver may be a class instance or a
-/// class type: calling a host class arrives as a `__call__` method call on the
-/// class's uuid, and the host's own policy decides whether construction is
-/// allowed. Answer with `ResumeCall`.
+/// class type: calling either arrives as a `__call__` method call on its uuid,
+/// and the host's own policy decides whether the call (for a class, its
+/// construction) is allowed. Answer with `ResumeCall`.
+///
+/// An `import` of a module the sandbox does not have is this suspension too:
+/// `function_name` is `__import__` with the module name as its one positional
+/// argument, and the answer's `return_value` is bound as the module, usually a
+/// host-backed class instance. `not_found` raises `ModuleNotFoundError`;
+/// `from m import a` then loads `a` off that value (an eager attr, else a
+/// `NameLookup` with `object_id`).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FunctionCall {
     #[prost(string, tag = "1")]

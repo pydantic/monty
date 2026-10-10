@@ -1528,8 +1528,8 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn module_not_found_error(module_name: &str, parent: Option<&str>) -> RunError {
         let msg = match parent {
-            Some(parent) => format!("No module named '{module_name}'; '{parent}' is not a package"),
-            None => format!("No module named '{module_name}'"),
+            Some(parent) => format!("{}; '{parent}' is not a package", no_module_named(module_name)),
+            None => no_module_named(module_name),
         };
         let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, msg);
         RunError::Exc(ExceptionRaise {
@@ -2871,6 +2871,11 @@ impl RunError {
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
     }
+}
+
+/// CPython's `ModuleNotFoundError` message for `module_name`.
+fn no_module_named(module_name: &str) -> String {
+    format!("No module named '{module_name}'")
 }
 
 /// Formats a list of parameter names for error messages, matching CPython's

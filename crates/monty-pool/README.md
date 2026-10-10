@@ -234,6 +234,10 @@ if the new session is not in the state the old one was in at the shutdown.
 The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
 A bare disconnect is never resumed, since the request may have run.
 
+`ReplConfig::type_check_module_stubs` gives the type checker one `.pyi` per host-provided module.
+`ModuleStub::new` refuses a module name that is not an identifier or that the sandbox or its type checker already
+provides.
+
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.

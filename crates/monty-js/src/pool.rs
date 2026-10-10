@@ -21,6 +21,7 @@
 //! locks inside the spawned future).
 
 use std::{
+    collections::HashMap,
     future::Future,
     pin::Pin,
     result::Result as StdResult,
@@ -36,8 +37,8 @@ use monty_pool::{
 };
 use monty_types::{
     unstable::{self, NodeId},
-    AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, NamedValues, PrintStream,
-    SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, ExcType, ModuleStub, MontyException, MontyObject, NameLookupResult, NamedValues,
+    PrintStream, SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -126,6 +127,9 @@ pub struct NativeCheckoutOptions {
     pub type_check: bool,
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
+    /// A `.pyi` source per host-provided module, keyed by module name, so
+    /// `import <module>` type-checks.
+    pub type_check_module_stubs: Option<HashMap<String, String>>,
     /// How typing diagnostics are rendered, e.g. `'full'` or `'concise'`.
     /// Chosen here rather than on the thrown error because the checker's
     /// structured diagnostics never leave the worker.
@@ -295,6 +299,12 @@ impl NativePool {
     pub fn checkout(&self, options: NativeCheckoutOptions) -> Result<NativeSession> {
         let limits = options.limits.map(extract_limits).transpose()?;
         let os_policy = extract_os_policy(&options)?;
+        let type_check_module_stubs = options
+            .type_check_module_stubs
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(module, source)| ModuleStub::new(module, source).map_err(|err| Error::from_reason(err.to_string())))
+            .collect::<Result<Vec<_>>>()?;
         Ok(NativeSession {
             pool: Arc::clone(&self.pool),
             closing: self.closing.subscribe(),
@@ -323,7 +333,9 @@ impl NativePool {
                 persistence: Persistence::ServerDefault,
                 // only a serving relay has profiles; its default applies
                 profile: None,
+                type_check_module_stubs,
             },
+
             checkout: Arc::new(AsyncMutex::new(None)),
         })
     }

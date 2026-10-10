@@ -1,6 +1,10 @@
-use std::{fmt, io::ErrorKind, mem};
+use std::{
+    fmt::{self, Write as _},
+    io::ErrorKind,
+    mem,
+};
 
-use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
+use monty_types::{ModuleStub, TypeCheckingConfig, TypeCheckingFormat};
 use ruff_db::{
     Db as _,
     diagnostic::{
@@ -11,6 +15,7 @@ use ruff_db::{
     files::{File, system_path_to_file},
     system::{DbWithTestSystem, DbWithWritableSystem as _, SystemPath, SystemPathBuf},
 };
+use ruff_python_stdlib::identifiers::is_identifier;
 use ruff_text_size::{TextRange, TextSize};
 use salsa::Setter as _;
 use ty_python_semantic::{Db as _, check_file_unwrap};
@@ -18,6 +23,7 @@ use ty_python_semantic::{Db as _, check_file_unwrap};
 use crate::db::{MemoryDb, SRC_ROOT};
 
 /// Definition of a source file.
+#[derive(Debug, Clone, Copy)]
 pub struct SourceFile<'a> {
     /// source code
     pub source_code: &'a str,
@@ -31,6 +37,21 @@ impl<'a> SourceFile<'a> {
     pub fn new(source_code: &'a str, path: &'a str) -> Self {
         Self { source_code, path }
     }
+}
+
+/// What a session adds to one type check besides the snippet itself; see
+/// [`TypeChecker::run_with`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TypeCheckContext<'a> {
+    /// Declarations star-imported into the snippet: the host's stubs and, in a
+    /// session, every snippet committed before this one.
+    pub stubs: Option<&'a SourceFile<'a>>,
+    /// Written as `/<module>.pyi`, one per host-provided module, so that
+    /// `import <module>` resolves; never star-imported.
+    pub module_stubs: &'a [ModuleStub],
+    /// Statements injected ahead of the star import, one per line: the
+    /// imports of the committed snippets (see [`crate::top_level_imports`]).
+    pub prelude: &'a str,
 }
 
 #[derive(Debug, Default)]
@@ -59,11 +80,36 @@ impl TypeChecker {
         stubs_file: Option<&SourceFile<'_>>,
         config: TypeCheckingConfig,
     ) -> Result<Option<TypeCheckingDiagnostics<'a>>, String> {
+        let context = TypeCheckContext {
+            stubs: stubs_file,
+            ..TypeCheckContext::default()
+        };
+        self.run_with(python_source, &context, config)
+    }
+
+    /// [`run`](Self::run) with everything a session adds: module stubs are
+    /// written beside the snippet so their imports resolve, and the prelude
+    /// goes ahead of the stubs' star import so a later stub binding shadows
+    /// it, as at runtime. Diagnostics are shifted back onto the snippet's lines.
+    pub fn run_with<'a>(
+        &'a mut self,
+        python_source: &SourceFile<'_>,
+        context: &TypeCheckContext<'_>,
+        config: TypeCheckingConfig,
+    ) -> Result<Option<TypeCheckingDiagnostics<'a>>, String> {
         let src_root = SystemPathBuf::from(SRC_ROOT);
         let main_path = src_root.join(python_source.path);
         let main_source = python_source.source_code;
 
-        let (main_file, code_offset): (File, u32) = if let Some(stubs_file) = stubs_file {
+        for (path, source) in stub_files(context.module_stubs)? {
+            self.write_root_file(&src_root.join(path), source)?;
+        }
+
+        let mut prefix = context.prelude.to_owned();
+        if !prefix.is_empty() && !prefix.ends_with('\n') {
+            prefix.push('\n');
+        }
+        if let Some(stubs_file) = context.stubs {
             let stubs_path = src_root.join(stubs_file.path);
             let stubs = self.write_root_file(&stubs_path, stubs_file.source_code)?;
             // Writing the script over its own stubs would drop them and make it import
@@ -74,22 +120,20 @@ impl TypeChecker {
                     python_source.path, stubs_file.path
                 ));
             }
-
-            // prepend the stub import to the main source code
             let stub_stem = stubs_file
                 .path
                 .split_once('.')
                 .map_or(stubs_file.path, |(before, _)| before);
-            let mut new_source = format!("from {stub_stem} import *\n");
-            let offset = u32::try_from(new_source.len()).map_err(to_string)?;
-            new_source.push_str(main_source);
-
-            let main_file = self.write_root_file(&main_path, &new_source)?;
-            // one line offset for errors vs. the original source code since we injected the stub import
-            (main_file, offset)
+            writeln!(prefix, "from {stub_stem} import *").map_err(to_string)?;
+        }
+        // errors are reported against the original source, so the injected
+        // prefix is subtracted from every span below
+        let (main_file, code_offset): (File, u32) = if prefix.is_empty() {
+            (self.write_root_file(&main_path, main_source)?, 0)
         } else {
-            let main_file = self.write_root_file(&main_path, main_source)?;
-            (main_file, 0)
+            let offset = u32::try_from(prefix.len()).map_err(to_string)?;
+            prefix.push_str(main_source);
+            (self.write_root_file(&main_path, &prefix)?, offset)
         };
 
         // Use `check_file_unwrap` (not `check_types` alone) so that parser errors
@@ -98,6 +142,11 @@ impl TypeChecker {
         // type-check clean.
         let mut diagnostics = check_file_unwrap(&self.db, self.db.program_file(main_file));
         diagnostics.retain(filter_diagnostics);
+        // a diagnostic inside the injected prefix has no line of the snippet to land
+        // on, and reports nothing new: the prelude's imports were committed by snippets
+        // that already passed this check, e.g. `import x  # type: ignore`
+        let prefix_offset = TextSize::new(code_offset);
+        diagnostics.retain(|diagnostic| !starts_in_prefix(diagnostic, main_file, prefix_offset));
 
         if diagnostics.is_empty() {
             Ok(None)
@@ -273,6 +322,55 @@ impl fmt::Display for TypeCheckingDiagnostics<'_> {
             .color(self.config.color);
         DisplayDiagnostics::new(&self.type_checker.db, &config, &self.diagnostics).fmt(f)
     }
+}
+
+/// The files the module stubs are written as, relative to the root: a plain
+/// module is `<m>.pyi`, while a dotted path (`a.b`) and the modules above it
+/// form a package tree (`a/__init__.pyi`, `a/b.pyi`), an ancestor without a
+/// stub of its own getting an empty `__init__.pyi` so the import resolves.
+/// Every component is checked to be an identifier: `ModuleStub::new` already
+/// does, but a deserialized stub skips it, and a path component here would
+/// write outside the root `reset` scrubs.
+fn stub_files(stubs: &[ModuleStub]) -> Result<Vec<(String, &str)>, String> {
+    let mut files: Vec<(String, &str)> = Vec::new();
+    let is_package = |module: &str| {
+        stubs
+            .iter()
+            .any(|stub| stub.module().starts_with(module) && stub.module()[module.len()..].starts_with('.'))
+    };
+    for stub in stubs {
+        let parts: Vec<&str> = stub.module().split('.').collect();
+        if parts.iter().any(|part| !is_identifier(part)) {
+            return Err(format!("invalid module name {:?}", stub.module()));
+        }
+        // ancestors with no stub of their own are empty packages
+        for depth in 1..parts.len() {
+            let ancestor = parts[..depth].join(".");
+            if !stubs.iter().any(|other| other.module() == ancestor) {
+                let init = format!("{}/__init__.pyi", parts[..depth].join("/"));
+                if !files.iter().any(|(path, _)| *path == init) {
+                    files.push((init, ""));
+                }
+            }
+        }
+        let dir = parts.join("/");
+        let path = if is_package(stub.module()) {
+            format!("{dir}/__init__.pyi")
+        } else {
+            format!("{dir}.pyi")
+        };
+        files.push((path, stub.source()));
+    }
+    Ok(files)
+}
+
+/// Whether `diagnostic`'s primary span starts inside the first `offset` bytes
+/// of `main_file`: the injected prelude and star import, never the snippet.
+fn starts_in_prefix(diagnostic: &Diagnostic, main_file: File, offset: TextSize) -> bool {
+    diagnostic.primary_span().is_some_and(|span| {
+        matches!(span.file(), UnifiedFile::Ty(file) if *file == main_file)
+            && span.range().is_some_and(|range| range.start() < offset)
+    })
 }
 
 /// Filter out diagnostics we want to ignore.

@@ -1,5 +1,10 @@
-use std::str::FromStr;
+use std::{
+    error::Error,
+    fmt::{self, Display},
+    str::FromStr,
+};
 
+use ruff_python_stdlib::identifiers::is_identifier;
 use serde::{Deserialize, Serialize};
 use strum::VariantNames;
 
@@ -86,4 +91,135 @@ pub struct TypeCheckState {
     pub pending_snippet: Option<String>,
     /// How diagnostics are rendered by whoever runs the type checker.
     pub config: TypeCheckingConfig,
+    /// The import statements of every committed snippet, re-injected ahead of
+    /// the stubs' star import, which does not re-export a `.pyi`'s imports.
+    #[serde(default)]
+    pub committed_imports: String,
 }
+
+/// A `.pyi` for one host-provided module, written for the type checker so
+/// `import <module>` resolves: `/<module>.pyi`, or inside a package tree for a
+/// dotted path (`a.b` is `/a/b.pyi` beside `/a/__init__.pyi`). The path is
+/// validated on construction: identifiers, the first not one the sandbox's own
+/// stdlib uses, or the runtime and the checker would disagree about the import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleStub {
+    module: String,
+    source: String,
+}
+
+impl ModuleStub {
+    /// A stub for `module`, a dotted path whose top-level name
+    /// [`validate_module_name`] accepts and whose other components are identifiers.
+    pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
+        let module = module.into();
+        let mut parts = module.split('.');
+        let top = parts.next().unwrap_or_default();
+        validate_module_name(top).map_err(|_| invalid_path(&module, top))?;
+        if let Some(part) = parts.find(|part| !is_identifier(part)) {
+            return Err(invalid_path(&module, part));
+        }
+        Ok(Self {
+            module,
+            source: source.into(),
+        })
+    }
+
+    /// The module the stub describes.
+    #[must_use]
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    /// The `.pyi` source.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
+/// Refuses a name a host-provided module may not have: not an identifier, or one
+/// of [`RESERVED_MODULE_NAMES`]. What [`ModuleStub::new`] checks, exported so a
+/// host can refuse a module name before building anything on it.
+pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
+    if !is_identifier(name) {
+        Err(ModuleStubError::InvalidName(name.to_owned()))
+    } else if RESERVED_MODULE_NAMES.contains(&name) {
+        Err(ModuleStubError::ReservedName(name.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+/// The error for a dotted stub path: a reserved top-level name keeps its own
+/// error, any other bad component makes the whole path invalid.
+fn invalid_path(path: &str, part: &str) -> ModuleStubError {
+    if RESERVED_MODULE_NAMES.contains(&part) {
+        ModuleStubError::ReservedName(part.to_owned())
+    } else {
+        ModuleStubError::InvalidName(path.to_owned())
+    }
+}
+
+/// Why a host-provided module's name was refused (see [`validate_module_name`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleStubError {
+    /// Not a Python identifier, or a keyword.
+    InvalidName(String),
+    /// A module the sandbox provides itself, or one its type stubs rely on.
+    ReservedName(String),
+}
+
+impl Display for ModuleStubError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidName(name) => write!(f, "module name {name:?} is not a valid identifier"),
+            Self::ReservedName(name) => write!(
+                f,
+                "module {name:?} is provided by the sandbox or its type checker and cannot be replaced"
+            ),
+        }
+    }
+}
+
+impl Error for ModuleStubError {}
+
+/// Module names a [`ModuleStub`] may not use: every module of the vendored
+/// typeshed (the sandbox's stdlib and the private modules its stubs import), plus
+/// those the runtime or ty provide without a typeshed entry (`gc`, `ty_extensions`).
+/// A stub under one of these would shadow that module for the checker alone.
+pub const RESERVED_MODULE_NAMES: &[&str] = &[
+    "__future__",
+    "__main__",
+    "_collections_abc",
+    "_typeshed",
+    "abc",
+    "asyncio",
+    "base64",
+    "binascii",
+    "builtins",
+    "collections",
+    "copy",
+    "dataclasses",
+    "datetime",
+    "enum",
+    "functools",
+    "gc",
+    "genericpath",
+    "hashlib",
+    "itertools",
+    "json",
+    "math",
+    "os",
+    "pathlib",
+    "posixpath",
+    "random",
+    "re",
+    "sys",
+    "time",
+    "ty_extensions",
+    "types",
+    "typing",
+    "typing_extensions",
+    "unicodedata",
+];

@@ -21,7 +21,7 @@ use monty_pool::{
     ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
+use monty_types::{CallArgs, ExtFunctionResult, ModuleStub, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -2907,4 +2907,113 @@ fn position() -> SourceRange {
         start: 0,
         end: 7,
     }
+}
+
+// ---- module stubs ---------------------------------------------------------
+//
+// A serving relay reads `type_check_module_stubs` off the `Configure`.
+
+fn module_stub(module: &str, source: &str) -> ModuleStub {
+    ModuleStub::new(module, source).expect("a valid stub name")
+}
+
+/// `ReplConfig::type_check_module_stubs` crosses the wire on `Configure`,
+/// module name and source intact.
+#[tokio::test]
+async fn configure_carries_module_stubs() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        let request = try_read_request(&mut socket).expect("configure");
+        let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
+            panic!("expected Configure, got {request:?}");
+        };
+        let stubs: Vec<(String, String)> = configure
+            .type_check_module_stubs
+            .iter()
+            .map(|stub| (stub.module.clone(), stub.source.clone()))
+            .collect();
+        assert_eq!(stubs, vec![("tools".to_owned(), "x: int\n".to_owned())]);
+        send_kind(&mut socket, ok_event());
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = websocket_pool(port).await;
+    let repl = ReplConfig {
+        type_check_module_stubs: vec![module_stub("tools", "x: int\n")],
+        ..ReplConfig::default()
+    };
+    let checkout = pool.checkout(&repl).await.expect("checkout");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// Only a feed is type-checked, so a `TypingError` answering a `Dump` means
+/// the peer has lost sync: the worker is discarded rather than kept with the
+/// parent believing a suspended feed ended.
+#[tokio::test]
+async fn a_typing_error_reply_to_dump_is_a_protocol_violation() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_kind(&mut socket, ok_event());
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Dump(_)));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::TypingError(pb::TypingError {
+                diagnostics: "main.py:1:1: error[unresolved-import]".to_owned(),
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout.dump().await.unwrap_err();
+    assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "monty worker protocol error: TypingError reply to a request that is not a type-checked Feed"
+    );
+    assert!(checkout.worker_id().is_none(), "the worker must be discarded");
+    join_server(server).await;
+}
+
+/// A feed that skips type checking cannot produce a `TypingError`, so one
+/// answering it is out of sync too, and the worker is discarded.
+#[tokio::test]
+async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        try_read_request(&mut socket).expect("configure");
+        send_kind(&mut socket, ok_event());
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Feed(feed) if feed.skip_type_check
+        ));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::TypingError(pb::TypingError {
+                diagnostics: "main.py:1:1: error[unresolved-import]".to_owned(),
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("import nope", vec![], vec![], true, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "monty worker protocol error: TypingError reply to a request that is not a type-checked Feed"
+    );
+    assert!(checkout.worker_id().is_none(), "the worker must be discarded");
+    join_server(server).await;
 }

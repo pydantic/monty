@@ -366,11 +366,16 @@ export type TypeCheckFormat =
   | 'pylint'
   | 'gitlab'
   | 'github'
+export interface ModuleStub {
+  module: string
+  source: string
+}
 export interface ConfigureRequest {
   scriptName: string
   limits?: ResourceLimits
   typeCheck: boolean
   typeCheckStubs?: string
+  typeCheckModuleStubs: Array<ModuleStub>
   assertMessageAnnotations?: number
   typeCheckFormat: TypeCheckFormat
   typeCheckColor: boolean

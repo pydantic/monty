@@ -979,6 +979,18 @@ fn module_with_too_many_interned_strings_returns_syntax_error() {
 }
 
 #[test]
+fn dotted_import_with_too_many_components_returns_syntax_error() {
+    // each component interns the path through it, so the chain is capped
+    let code = format!("import a{}", ".a".repeat(32));
+    let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("dotted import has more than 32 components"));
+    let code = format!("from a{} import b", ".a".repeat(31));
+    MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("32 components compile");
+}
+
+#[test]
 fn oversized_tuple_literal_returns_syntax_error() {
     let mut code = "x = (".to_owned();
     for _ in 0..70_000 {

@@ -109,17 +109,31 @@ impl Identifier {
     }
 }
 
+/// One component after the first of a dotted import (`b` in `import a.b.c`):
+/// the attribute read on the module before it, and the dotted path up to it
+/// for the `ModuleNotFoundError` that names it.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct Submodule {
+    /// The attribute name (`b`).
+    pub name: StringId,
+    /// The path through this component (`a.b`).
+    pub path: StringId,
+}
+
 /// A single module in an `import` statement (e.g., `sys` in `import sys` or `sys as s`).
 ///
 /// Each entry in `import a, b as c` becomes one `ImportName` with its own
-/// module name and binding target.
+/// module name and binding target. A dotted name loads the top-level module and
+/// reads each further component as an attribute of the one before.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportName {
-    /// The module name to import (e.g., "sys", "os.path").
+    /// The top-level module to load (`a` for `import a.b`).
     pub module_name: StringId,
-    /// For an unaliased dotted import (`import os.path`), the top-level
-    /// package the statement binds instead of the module it loads.
-    pub package: Option<StringId>,
+    /// The further components of a dotted name, in order.
+    pub submodules: Vec<Submodule>,
+    /// Whether the statement binds the top-level module (`import a.b` binds
+    /// `a`) rather than the last component (`import a.b as x` binds `a.b`).
+    pub binds_top_level: bool,
     /// The binding target — the alias if provided, otherwise the module name
     /// (or its top-level package when dotted).
     /// After the prepare phase, this includes the resolved namespace slot.
@@ -781,8 +795,10 @@ pub enum Node<F> {
     ///
     /// Imports specific names from a module into the current namespace.
     ImportFrom {
-        /// The module name to import from (e.g., "typing").
+        /// The top-level module to load (`a` for `from a.b import c`).
         module_name: StringId,
+        /// The further components of a dotted module name, in order.
+        submodules: Vec<Submodule>,
         /// Names to import: (import_name, binding) pairs.
         /// The import_name is the name in the module, the binding is the local name
         /// (alias if provided, otherwise the import name) with resolved namespace slot.

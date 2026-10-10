@@ -1,12 +1,48 @@
-//! `TypeCheckingConfig` ↔ `pb::Configure`'s type-check rendering fields.
+//! `TypeCheckingConfig` ↔ `pb::Configure`'s type-check rendering fields, and
+//! the module stubs `Configure` carries.
 //!
 //! Type checking runs in the child, which renders the diagnostics before they
 //! cross the wire (ty's structured diagnostics borrow the checker's database).
 //! The parent therefore chooses the rendering up front, on `Configure`.
 
-use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
+use std::collections::HashSet;
 
+use monty_types::{ModuleStub, TypeCheckingConfig, TypeCheckingFormat};
+
+use super::ProtoConvertError;
 use crate::pb;
+
+/// The module stubs a `Configure` carries, validated as [`ModuleStub`]s. A
+/// module named twice is refused too: it would be checked against one stub and
+/// reported as both.
+pub fn module_stubs_from_proto(stubs: &[pb::ModuleStub]) -> Result<Vec<ModuleStub>, ProtoConvertError> {
+    let invalid = |reason: String| ProtoConvertError::InvalidValue {
+        field: "ModuleStub.module",
+        reason,
+    };
+    let mut seen = HashSet::with_capacity(stubs.len());
+    stubs
+        .iter()
+        .map(|stub| {
+            if !seen.insert(stub.module.as_str()) {
+                return Err(invalid(format!("module {:?} has more than one stub", stub.module)));
+            }
+            ModuleStub::new(stub.module.clone(), stub.source.clone()).map_err(|err| invalid(err.to_string()))
+        })
+        .collect()
+}
+
+/// The wire form of `stubs`.
+#[must_use]
+pub fn module_stubs_to_proto(stubs: &[ModuleStub]) -> Vec<pb::ModuleStub> {
+    stubs
+        .iter()
+        .map(|stub| pb::ModuleStub {
+            module: stub.module().to_owned(),
+            source: stub.source().to_owned(),
+        })
+        .collect()
+}
 
 impl From<TypeCheckingFormat> for pb::TypeCheckFormat {
     fn from(format: TypeCheckingFormat) -> Self {

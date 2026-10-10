@@ -4,12 +4,16 @@
 //! are spawned as tokio tasks and resolved in batches when the sandbox blocks.
 //! System sleeps use the same scheduling with tokio timers.
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{
+    future::{Future, ready},
+    pin::Pin,
+    time::Duration,
+};
 
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
-use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
+use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::{
     task::{JoinError, JoinSet},
@@ -17,24 +21,27 @@ use tokio::{
 };
 
 use crate::external::{
-    CallResult, ExternalLookup, dispatch_object_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
+    AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
 };
 
 /// Dispatches a function call to a host-routed method (when `object_id` is
 /// set — an instance method, a classmethod, or `__call__` construction) or an
-/// external function, returning `CallResult::Coroutine` (for the caller to
-/// spawn) when the Python result is a coroutine.
+/// external function or import (answered from `names`), returning
+/// `CallResult::Coroutine` (for the caller to spawn) when the Python result
+/// is a coroutine.
 pub(crate) fn dispatch_function_call(
     function_name: &str,
     object_id: Option<MontyUuid>,
     args: &CallArgs,
-    external_lookup: Option<&Py<PyDict>>,
+    names: &HostNames,
     instances: &InstanceStore,
 ) -> CallResult {
-    Python::attach(|py| match object_id {
-        Some(object_id) => dispatch_object_call_or_coroutine(py, function_name, &object_id, args, instances),
-        None => ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), instances)
-            .call_or_coroutine(function_name, args),
+    Python::attach(|py| {
+        let lookup = ExternalLookup::new(py, names, instances);
+        match object_id {
+            Some(object_id) => lookup.call_object_or_coroutine(function_name, &object_id, args),
+            None => lookup.call_or_coroutine(function_name, args),
+        }
     })
 }
 
@@ -87,6 +94,71 @@ pub(crate) fn dispatch_coroutine(
 ) -> PyResult<Dispatched<AnswerFuture>> {
     let future = coroutine_future(coro, instances)?;
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
+}
+
+/// Hands a module factory's awaitable to the caller as [`Dispatched::Module`]:
+/// the caller awaits it, then installs the module and answers under its own
+/// callback context (see [`PendingModule`]).
+pub(crate) fn dispatch_module_coroutine(
+    name: String,
+    coro: Py<PyAny>,
+    then: AfterModule,
+) -> PyResult<Dispatched<AnswerFuture>> {
+    let future = python_future(coro)?;
+    Ok(Dispatched::Module(PendingModule {
+        name,
+        then,
+        future: Box::pin(future),
+    }))
+}
+
+/// A module factory's awaitable in flight. The caller awaits
+/// [`settle`](Self::settle) outside the GIL, then finishes the request with
+/// [`SettledModule::dispatch`] inside its callback context, so installing the
+/// module and making the call it was needed for run where host callbacks do.
+pub(crate) struct PendingModule {
+    name: String,
+    then: AfterModule,
+    future: Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send>>,
+}
+
+impl PendingModule {
+    /// Awaits the factory.
+    pub(crate) async fn settle(self) -> SettledModule {
+        SettledModule {
+            name: self.name,
+            then: self.then,
+            result: self.future.await,
+        }
+    }
+}
+
+/// A settled module factory, ready to install its module and answer.
+pub(crate) struct SettledModule {
+    name: String,
+    then: AfterModule,
+    result: PyResult<Py<PyAny>>,
+}
+
+impl SettledModule {
+    /// Installs the module and answers: an import, or a sync function, as a
+    /// value; an async function's coroutine dispatched under `mode` like any
+    /// other host coroutine, since the sandbox awaits the call.
+    pub(crate) fn dispatch(
+        self,
+        py: Python<'_>,
+        call_id: u32,
+        mode: CoroutineMode,
+        join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+        names: &HostNames,
+        instances: &InstanceStore,
+    ) -> PyResult<Dispatched<AnswerFuture>> {
+        let result = self.result.map(|module| module.into_bound(py));
+        match ExternalLookup::new(py, names, instances).finish_after_module(&self.name, result, &self.then) {
+            Staged::Done(result) => Ok(Dispatched::AsValue(Box::pin(ready(result)))),
+            Staged::Coroutine(coro) => dispatch_coroutine(coro, call_id, mode, join_set, instances),
+        }
+    }
 }
 
 /// Schedules a system sleep like a coroutine answer, allowing gathered sleeps to overlap.
@@ -155,6 +227,9 @@ pub(crate) enum Dispatched<F> {
     Eager(F),
     /// Settles into a plain `resume` answer; see [`CoroutineMode::AsValue`].
     AsValue(F),
+    /// A module factory still to await before the answer can be made; the
+    /// caller settles it and dispatches again.
+    Module(PendingModule),
 }
 
 /// Waits for at least one `JoinSet` task to complete, then drains any other

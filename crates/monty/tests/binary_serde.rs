@@ -24,7 +24,7 @@ fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
 /// Round-trips a paused run through the dump format, asserting it comes back on
 /// the arm it went out on.
 fn round_trip_progress(progress: &RunProgress) -> RunProgress {
-    let bytes = dump("test.py", None, SessionRef::Running(progress)).unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(progress)).unwrap();
     match Dump::load(&bytes).unwrap().state {
         Session::Running(progress) => *progress,
         _ => panic!("dumped a running session, loaded something else"),

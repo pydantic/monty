@@ -8,6 +8,7 @@ from typing_extensions import Self
 
 from . import (
     AsyncSnapshot,
+    ExternalModule,
     ExternalResult,
     ExternalSettledResult,
     OsHandler,
@@ -607,6 +608,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        external_modules: dict[str, ExternalModule] | None = None,
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
@@ -630,6 +632,16 @@ class Monty:
                 successfully executed snippet is appended to the accumulated
                 context used for type-checking subsequent snippets.
             type_check_stubs: Stub declarations made available to type checking.
+            external_modules: The modules the session's snippets may `import`,
+                keyed by module name, each an `ExternalModule` pairing the
+                module's host value (or a zero-argument callable returning it,
+                run when the session first needs the module) with the `.pyi`
+                stub type checking resolves `import <module>` against, and
+                with its submodules (`modules`), reached as attributes and by
+                dotted imports. A stub is never star-imported. A name that is
+                not an identifier, or that the sandbox provides, raises
+                `ValueError`; any other entry raises `TypeError`. Importing a
+                module absent here raises `ModuleNotFoundError`.
             type_check_format: How `MontyTypingError` diagnostics are rendered;
                 `None` (the default) means `'full'`. Chosen here rather than on
                 the error because the checker's structured diagnostics never
@@ -845,8 +857,10 @@ class MontySession:
         the dump are not preserved (the restored overlay starts empty). Raises
         if the dump is actually an idle session.
 
-        `external_lookup` / `os` are captured for `resume_auto()`, exactly as on
-        `feed_start`. One caveat applies to a *restored* snapshot: a restored
+        `external_lookup` / `os` are captured for
+        `resume_auto()`, exactly as on `feed_start`; they are host state, never
+        part of a dump, so a restored snapshot needs them again. One caveat
+        applies to a *restored* snapshot: a restored
         `FutureSnapshot`'s pending coroutines are gone (they lived in the
         previous process), so `resume_auto()` on it raises — resolve it manually
         with `resume({call_id: ...})`.
@@ -925,6 +939,7 @@ class AsyncMonty:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        external_modules: dict[str, ExternalModule] | None = None,
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
@@ -1041,6 +1056,7 @@ class AsyncMontyWebsocket:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        external_modules: dict[str, ExternalModule] | None = None,
         type_check_format: TypeCheckFormat | None = None,
         type_check_color: bool = False,
         assert_message_annotations: bool | int = ...,
@@ -1227,10 +1243,11 @@ class AsyncMontySession:
         Restore a snapshot generated while a block of code is running (e.g.
         after `feed_start`) and return the re-announced snapshot to resume.
 
-        `external_lookup` / `os` are captured for `resume_auto()`, with the same
-        restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
-        cannot be driven with `resume_auto()` — its pending coroutines are gone).
-        `state` may be an ID, as in `load_session`.
+        `external_lookup` / `os` are captured for
+        `resume_auto()`, with the same restored-snapshot caveats as the sync
+        method (host state is not in the dump, so pass them again; a restored
+        `FutureSnapshot` cannot be driven with `resume_auto()` — its pending
+        coroutines are gone). `state` may be an ID, as in `load_session`.
         """
 
     async def dump(self) -> bytes:

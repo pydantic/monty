@@ -16,11 +16,11 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
-    os_call_from_proto, pb, validate_requirement,
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, module_stubs_to_proto,
+    named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION, ModuleStub,
     MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
     ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
@@ -80,6 +80,10 @@ pub struct ReplConfig {
     /// The serving relay's profile to run the session under; `None` takes the
     /// relay's default. Subprocess workers ignore it.
     pub profile: Option<String>,
+    /// One `.pyi` per host-provided module, so `import <module>` type-checks.
+    /// Carried in the session's dump even when `type_check` is off; only a
+    /// type-checked session reads them.
+    pub type_check_module_stubs: Vec<ModuleStub>,
 }
 
 /// How a serving relay (`monty-server`) treats a session's state.
@@ -122,6 +126,7 @@ impl Default for ReplConfig {
             os_policy: OsPolicy::default(),
             persistence: Persistence::default(),
             profile: None,
+            type_check_module_stubs: Vec::new(),
         }
     }
 }
@@ -265,6 +270,12 @@ pub enum TurnEvent {
     /// a host-backed object, routed by uuid — a class instance, or a class
     /// type (a classmethod call, or construction of a host class, which is
     /// spelled `__call__`); the receiver is NOT included in `args`.
+    ///
+    /// An `import` of a module the sandbox does not have arrives here too:
+    /// `function_name` is [`IMPORT_FUNCTION`](monty_types::IMPORT_FUNCTION)
+    /// with the module name as its one argument, and the returned value is
+    /// bound as the module (usually a host-backed instance whose attributes
+    /// are the tools); [`ResumeValue::NotFound`] raises `ModuleNotFoundError`.
     FunctionCall {
         function_name: String,
         /// One arena holding every positional and keyword argument.
@@ -334,7 +345,7 @@ pub enum ResumeValue {
     /// other tasks; resolve later via [`Checkout::resume_futures`].
     Future,
     /// No handler exists for the called name — the sandbox raises
-    /// `NameError`.
+    /// `NameError` (`ModuleNotFoundError` for an `import`).
     NotFound,
     /// No handler accepted this OS call — the sandbox raises the call's own
     /// no-handler default (`PermissionError` naming the path for filesystem
@@ -1852,6 +1863,14 @@ impl Checkout {
                     };
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
+                    // only a feed that did not skip type checking is type-checked: a
+                    // child answering anything else this way has lost sync, and keeping
+                    // it would leave the parent believing a suspended feed ended
+                    if !matches!(&request.kind, Some(pb::parent_request::Kind::Feed(feed)) if !feed.skip_type_check) {
+                        return Err(
+                            self.protocol_violation("TypingError reply to a request that is not a type-checked Feed")
+                        );
+                    }
                     self.pending = None;
                     self.feed_mounts = None;
                     return Err(PoolError::Typing(typing.diagnostics));
@@ -2142,6 +2161,7 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
+        type_check_module_stubs: module_stubs_to_proto(&repl.type_check_module_stubs).into(),
     }))
 }
 
