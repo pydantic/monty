@@ -1443,6 +1443,16 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// A `_csv.Error` with the given message.
+    fn csv_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::CsvError, msg).into()
+    }
+
+    /// The `_csv.Error` for a dialect name nothing registered.
+    fn csv_unknown_dialect() -> RunError {
+        Self::csv_error("unknown dialect")
+    }
+
     /// Creates an IndexError for list index out of range (getitem).
     ///
     /// Matches CPython's format: `IndexError('list index out of range')`
@@ -2865,6 +2875,14 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
+    /// The Python exception type raised, or `None` for an internal error.
+    pub(crate) fn exc_type(&self) -> Option<ExcType> {
+        match self {
+            Self::Exc(raise) | Self::UncatchableExc(raise) => Some(raise.exc.exc_type()),
+            Self::Internal(_) => None,
+        }
+    }
+
     /// Whether this is a catchable `StopIteration` from `__next__`.
     ///
     /// Matching only `Exc` prevents uncatchable errors being mistaken for exhaustion.

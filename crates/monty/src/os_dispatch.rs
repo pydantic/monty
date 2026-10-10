@@ -100,6 +100,8 @@ impl PendingEffect {
             Self::Post(PostConversionEffect::BufferLoad { .. } | PostConversionEffect::FileNext { .. }) => {
                 Some("file iteration")
             }
+            // The replayed call expects its argument loaded; a future would stand in for the call's result.
+            Self::Post(PostConversionEffect::LoadThenCall { .. }) => Some("file loading"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
             // `asyncio.sleep` wants the future: `resume_with_result` moves the
@@ -341,6 +343,18 @@ pub(crate) enum PostConversionEffect {
         /// lengthened the payload: CPython reports that, not what reached the file.
         #[serde(default)]
         text_length: Option<u64>,
+        /// Answer `None` instead of the count: `csv.writer.writerows()` writes
+        /// its lines in one host call but returns nothing.
+        #[serde(default)]
+        result_none: bool,
+    },
+    /// Load an unread file's buffer, then replay `callable(args)`, whose first
+    /// argument the file is (`csv.reader(f)`): the consumer never sees an
+    /// unloaded file. Owns the callable and the arguments across the yield.
+    LoadThenCall {
+        file_id: HeapId,
+        callable: Value,
+        args: ArgValues,
     },
     /// Preserve `open()`'s filename while the returned handle supplies the I/O target,
     /// and apply the `newline` argument, whose value CPython validates after the open.
@@ -383,6 +397,15 @@ impl PostConversionEffect {
             Self::FileNext { file_id, default } => {
                 heap.heap_mut().dec_ref(file_id);
                 default.drop_with(heap);
+            }
+            Self::LoadThenCall {
+                file_id,
+                callable,
+                args,
+            } => {
+                heap.heap_mut().dec_ref(file_id);
+                callable.drop_with(heap);
+                args.drop_with(heap);
             }
             Self::OpenName { .. } | Self::DiscardResult | Self::ClockReading { .. } => {}
             Self::SleepResult { result } => result.drop_with(heap),

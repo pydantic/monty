@@ -769,6 +769,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             previous_position: self.get(vm.heap).position,
             previous_length: self.get(vm.heap).file_length,
             text_length,
+            result_none: false,
         }
         .into();
         Ok(CallResult::OsCallWithEffect { call, effect })
@@ -1112,14 +1113,16 @@ fn unloaded_iteration_error(file_type: Type) -> RunError {
 /// values returned by Monty's filesystem backends and CPython's `write()`.
 ///
 /// `text_length` replaces the host's count as the return value when newline
-/// translation lengthened the payload (see [`Newline::translate_write`]);
-/// the logical position still advances by what reached the file.
+/// translation lengthened the payload (see [`Newline::translate_write`]), and
+/// `result_none` replaces it with `None` (`csv.writer.writerows()`); the
+/// logical position still advances by what reached the file.
 ///
 /// As with [`apply_buffer_store`], the pending-file-effect pin on `file_id`
 /// is released by `defer_drop!` regardless of which path the function takes.
 pub(crate) fn apply_write_position(
     file_id: HeapId,
     text_length: Option<u64>,
+    result_none: bool,
     result: Value,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
@@ -1157,6 +1160,10 @@ pub(crate) fn apply_write_position(
 
     let (result, vm) = result_guard.into_parts();
     match text_length {
+        _ if result_none => {
+            result.drop_with(vm);
+            Ok(Value::None)
+        }
         Some(length) => {
             result.drop_with(vm);
             Ok(Value::Int(

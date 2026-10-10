@@ -250,6 +250,15 @@ impl ArgValues {
         call
     }
 
+    /// The first positional argument, if any, without consuming the arguments.
+    pub(crate) fn first_positional(&self) -> Option<&Value> {
+        match self {
+            Self::Empty | Self::Kwargs(_) => None,
+            Self::One(v) | Self::Two(v, _) => Some(v),
+            Self::ArgsKargs { args, .. } => args.first(),
+        }
+    }
+
     /// Returns the number of positional arguments.
     ///
     /// For `Kwargs` returns 0, for `ArgsKargs` returns only the positional args count.

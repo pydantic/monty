@@ -2190,8 +2190,16 @@ impl<'h> VM<'h> {
                 apply_file_next(file_id, default, value, self).map(Some)
             }
             Some(PendingEffect::Post(PostConversionEffect::WritePosition {
-                file_id, text_length, ..
-            })) => apply_write_position(file_id, text_length, value, self).map(Some),
+                file_id,
+                text_length,
+                result_none,
+                ..
+            })) => apply_write_position(file_id, text_length, result_none, value, self).map(Some),
+            Some(PendingEffect::Post(PostConversionEffect::LoadThenCall {
+                file_id,
+                callable,
+                args,
+            })) => return self.resume_load_then_call(file_id, callable, args, value),
             Some(PendingEffect::Post(PostConversionEffect::OpenName { name, newline })) => {
                 apply_open_name(name, newline, value, self).map(Some)
             }
@@ -2215,6 +2223,41 @@ impl<'h> VM<'h> {
                     self.push(value);
                 }
                 self.run_external()
+            }
+            Err(err) => self.resume_with_exception(err),
+        }
+    }
+
+    /// `LoadThenCall` resume: installs the host content, then replays the call
+    /// that found its file unread. The call's own outcome decides what happens
+    /// next, since the replay may itself suspend (a second unread file).
+    fn resume_load_then_call(
+        &mut self,
+        file_id: HeapId,
+        callable: Value,
+        args: ArgValues,
+        value: Value,
+    ) -> Result<FrameExit, RunError> {
+        if let Err(err) = apply_buffer_load(file_id, value, self) {
+            callable.drop_with(self);
+            args.drop_with(self);
+            return self.resume_with_exception(err);
+        }
+        let result = self.call_function(&callable, args);
+        callable.drop_with(self);
+        match result {
+            Ok(CallResult::Value(value)) => {
+                self.push(value);
+                self.run_external()
+            }
+            Ok(CallResult::FramePushed) => self.run_external(),
+            Ok(CallResult::OsCall(call)) => self.suspend_again(call, None),
+            Ok(CallResult::OsCallWithEffect { call, effect }) => self.suspend_again(call, Some(effect)),
+            Ok(other) => {
+                other.drop_with(self);
+                Err(RunError::internal(
+                    "LoadThenCall: replayed call produced an unexpected result",
+                ))
             }
             Err(err) => self.resume_with_exception(err),
         }
@@ -2282,6 +2325,7 @@ impl<'h> VM<'h> {
                 PendingEffect::Post(
                     effect @ (PostConversionEffect::BufferLoad { .. }
                     | PostConversionEffect::FileNext { .. }
+                    | PostConversionEffect::LoadThenCall { .. }
                     | PostConversionEffect::SeedRandom { .. }),
                 ) => effect.release(self.heap),
                 PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
