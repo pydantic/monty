@@ -547,6 +547,19 @@ except TypeError as exc:
     assert str(exc) == 'called match pattern must be a class'
 
 
+# a repeated attribute is only reported once extraction reaches it
+class OnlyA:
+    __match_args__ = ('a',)
+
+
+match OnlyA():
+    case OnlyA(a, a=1):
+        result = 'matched'
+    case _:
+        result = 'missing attribute wins'
+assert result == 'missing attribute wins'
+
+
 class BadArgs:
     __match_args__ = ['a']
 

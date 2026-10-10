@@ -339,6 +339,7 @@ impl<'a> Compiler<'a, '_> {
     /// `Point(0, y=1)`: `MatchClass` checks the instance and resolves the
     /// attribute names (`__match_args__` then keywords); one `MatchAttr` per
     /// sub-pattern then reads its attribute, so a host-side read can suspend.
+    /// The class stays on the stack so `MatchAttr` can name it in errors.
     fn compile_pattern_class(
         &mut self,
         cls: &ExprLoc,
@@ -359,8 +360,8 @@ impl<'a> Compiler<'a, '_> {
         self.code.set_location(position, None);
         self.code.emit_u16(Opcode::BuildTuple, nattrs)?;
         self.code.emit_u8(Opcode::MatchClass, nargs)?;
-        // The subject stays, with the names tuple (or None) above it.
-        pc.on_top += 2;
+        // The subject and class stay, with the names tuple (or None) above them.
+        pc.on_top += 3;
         self.jump_to_fail_pop(pc, Opcode::JumpIfFalse)?;
         for (index, pattern) in patterns.iter().chain(kwd_patterns).enumerate() {
             self.code.set_location(position, None);
@@ -371,9 +372,10 @@ impl<'a> Compiler<'a, '_> {
             pc.on_top -= 1;
             self.compile_subpattern(pattern, pc)?;
         }
-        // Success: drop the names tuple and the subject.
-        pc.on_top -= 2;
+        // Success: drop the names tuple, the class and the subject.
+        pc.on_top -= 3;
         self.code.set_location(position, None);
+        self.code.emit(Opcode::Pop)?;
         self.code.emit(Opcode::Pop)?;
         self.code.emit(Opcode::Pop)
     }
@@ -497,17 +499,13 @@ impl<'a> Compiler<'a, '_> {
     }
 
     /// Moves the top of the stack beneath the `depth` items below it.
-    ///
-    /// `LiftToTop(depth)` applied `depth` times rotates the top `depth + 1`
-    /// items by one, which is exactly that sink; patterns are shallow, so the
-    /// quadratic instruction count stays negligible (CPython's `SWAP` chain
-    /// has the same shape).
     fn emit_sink_top(&mut self, depth: usize, position: CodeRange) -> Result<(), CompileError> {
         let depth_u8 = u8::try_from(depth).map_err(|_| CompileError::new("too many names in pattern", position))?;
-        for _ in 0..depth {
-            self.code.emit_u8(Opcode::LiftToTop, depth_u8)?;
+        if depth == 0 {
+            Ok(())
+        } else {
+            self.code.emit_u8(Opcode::SinkTop, depth_u8)
         }
-        Ok(())
     }
 
     /// Emits a jump to the failure path from the current pattern depth.
