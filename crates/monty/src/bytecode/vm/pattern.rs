@@ -1,19 +1,22 @@
 //! Runtime support for `match` statement patterns: the `MatchShape`,
-//! `MatchKeys` and `MatchClass` opcodes, Monty's counterparts of CPython's
-//! `MATCH_SEQUENCE` / `MATCH_MAPPING` / `MATCH_KEYS` / `MATCH_CLASS`.
+//! `MatchKeys`, `MatchClass` and `MatchAttr` opcodes, Monty's counterparts of
+//! CPython's `MATCH_SEQUENCE` / `MATCH_MAPPING` / `MATCH_KEYS` / `MATCH_CLASS`.
 //!
 //! The compiler (`bytecode/pattern.rs`) only emits these against values it has
 //! already shaped: `MatchKeys` always follows a successful mapping `MatchShape`,
-//! and the keys / keyword-name tuples are built by the preceding `BuildTuple`.
+//! `MatchAttr` a successful `MatchClass`, and the keys / keyword-name tuples
+//! are built by the preceding `BuildTuple`. Class patterns read one attribute
+//! per `MatchAttr` instruction so a read that has to go to the host can suspend
+//! between them like any other attribute load.
 
-use super::{CallResult, VM};
+use super::{CallResult, VM, attr::PendingLookupEffect};
 use crate::{
     builtins::{Builtins, isinstance::isinstance_check},
     bytecode::op::{MATCH_SHAPE_MAPPING, MATCH_SHAPE_MIN_LEN},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
-    types::{Dict, PyTrait, Type, instance::class_name, tuple::allocate_tuple},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
+    types::{Dict, PyTrait, Type, instance::class_name, str::allocate_string, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -106,21 +109,23 @@ impl VM<'_> {
         Ok(())
     }
 
-    /// `MatchClass`: `[subject, cls, kwd_names] -> [attrs_or_None, bool]`.
+    /// `MatchClass`: `[subject, cls, kwd_names] -> [subject, names_or_None, bool]`.
     ///
-    /// Checks `isinstance(subject, cls)`, then extracts `nargs` attributes named
-    /// by `cls.__match_args__` followed by the keyword attributes; a missing
-    /// attribute fails the match, every other problem raises `TypeError`.
+    /// Checks `isinstance(subject, cls)` and resolves the attribute names the
+    /// sub-patterns read: `nargs` from `cls.__match_args__` (a `None` entry
+    /// meaning the subject itself, for self-matching builtins), then the
+    /// keywords. Every other problem raises `TypeError`; the reads themselves
+    /// are the following `MatchAttr` instructions.
     pub(super) fn match_class(&mut self, nargs: usize) -> RunResult<()> {
         let this = self;
-        let names = this.pop();
+        let kwd_names = this.pop();
         let cls = this.pop();
-        let subject = this.pop();
-        defer_drop!(names, this);
+        let subject = this.peek().clone_with_heap(this.heap);
+        defer_drop!(kwd_names, this);
         defer_drop!(cls, this);
         defer_drop!(subject, this);
-        if let Some(attrs) = class_pattern_attrs(subject, cls, names, nargs, this)? {
-            let tuple = allocate_tuple(attrs.into_iter().collect(), this.heap);
+        if let Some(names) = class_pattern_names(subject, cls, kwd_names, nargs, this)? {
+            let tuple = allocate_tuple(names.into_iter().collect(), this.heap);
             this.push(tuple);
             this.push(Value::Bool(true));
         } else {
@@ -128,6 +133,65 @@ impl VM<'_> {
             this.push(Value::Bool(false));
         }
         Ok(())
+    }
+
+    /// `MatchAttr`: `[subject, names] -> [subject, names, value, bool]`.
+    ///
+    /// Reads attribute `index` of the names tuple off the subject. A missing
+    /// attribute fails the match; a host-side attribute suspends with a
+    /// [`PendingLookupEffect::MatchAttr`] that lands the same pair on resume.
+    pub(super) fn match_attr(&mut self, index: usize) -> Result<CallResult, RunError> {
+        let this = self;
+        let len = this.stack.len();
+        let subject = this.stack[len - 2].clone_with_heap(this.heap);
+        defer_drop!(subject, this);
+        let Value::Ref(names_id) = &this.stack[len - 1] else {
+            unreachable!("MatchAttr follows a successful MatchClass, which pushed the names tuple")
+        };
+        let HeapReadOutput::Tuple(names) = this.heap.read(*names_id) else {
+            unreachable!("MatchAttr follows a successful MatchClass, which pushed the names tuple")
+        };
+        let name = names.clone_item(index, this);
+        defer_drop!(name, this);
+        let Some(attr) = name.as_either_str(this.heap) else {
+            // A self-matching builtin: the sub-pattern gets the subject itself.
+            this.push(subject.clone_with_heap(this.heap));
+            return Ok(CallResult::Value(Value::Bool(true)));
+        };
+        match subject.py_getattr(&attr, this) {
+            Ok(CallResult::Value(value)) => {
+                this.push(value);
+                Ok(CallResult::Value(Value::Bool(true)))
+            }
+            Ok(CallResult::AttrLookup {
+                name,
+                class_name,
+                object_id,
+                type_object,
+                effect,
+            }) => {
+                effect.drop_with(this);
+                Ok(CallResult::AttrLookup {
+                    name,
+                    class_name,
+                    object_id,
+                    type_object,
+                    effect: Some(PendingLookupEffect::MatchAttr),
+                })
+            }
+            Ok(other) => {
+                other.drop_with(this);
+                Err(ExcType::type_error(format!(
+                    "class pattern attribute '{}' is not a plain attribute",
+                    attr.as_str(this.interns)
+                )))
+            }
+            Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
+                this.push(Value::None);
+                Ok(CallResult::Value(Value::Bool(false)))
+            }
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -184,9 +248,12 @@ fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<
     Ok(guard.into_inner())
 }
 
-/// The attribute values a class pattern sub-matches, or `None` when the
-/// subject is not an instance of `cls` or lacks one of the attributes.
-fn class_pattern_attrs(
+/// The attribute names a class pattern reads, as `str` values (`None` for the
+/// subject itself), or `None` when the subject is not an instance of `cls`.
+///
+/// A name used twice, positionally or by keyword, is CPython's
+/// `TypeError: Cls() got multiple sub-patterns for attribute 'x'`.
+fn class_pattern_names(
     subject: &Value,
     cls: &Value,
     kwd_names: &Value,
@@ -200,48 +267,49 @@ fn class_pattern_attrs(
         return Ok(None);
     }
     let mut guard = DropGuard::new(Vec::with_capacity(nargs), vm);
-    let (attrs, vm) = guard.as_parts_mut();
-    // Attribute names already consumed, so `P(1, x=2)` with `x` first in
-    // `__match_args__` is rejected like CPython does.
-    let mut seen: Vec<String> = Vec::new();
+    let (names, vm) = guard.as_parts_mut();
     if nargs > 0 {
         match class_match_args(cls, nargs, vm)? {
             MatchArgs::SelfMatch => {
                 if nargs > 1 {
                     return Err(positional_count_error(cls, 1, nargs, vm));
                 }
-                attrs.push(subject.clone_with_heap(vm.heap));
+                names.push(Value::None);
             }
-            MatchArgs::Names { allowed, names } => {
+            MatchArgs::Names {
+                allowed,
+                names: positional,
+            } => {
                 if allowed < nargs {
                     return Err(positional_count_error(cls, allowed, nargs, vm));
                 }
-                for name in &names {
-                    match class_pattern_attr(subject, cls, name, &mut seen, vm)? {
-                        Some(value) => attrs.push(value),
-                        None => return Ok(None),
-                    }
-                }
+                names.extend(positional.iter().map(|name| either_str_value(name, vm.heap)));
             }
         }
     }
-    let Value::Ref(names_id) = kwd_names else {
+    let Value::Ref(kwd_id) = kwd_names else {
         unreachable!("MatchClass keyword names are a tuple built by the compiler")
     };
-    let HeapReadOutput::Tuple(kwd_names) = vm.heap.read(*names_id) else {
+    let HeapReadOutput::Tuple(kwd_names) = vm.heap.read(*kwd_id) else {
         unreachable!("MatchClass keyword names are a tuple built by the compiler")
     };
     let len = kwd_names.get(vm.heap).as_slice().len();
     for i in 0..len {
-        let name = kwd_names.clone_item(i, vm);
-        defer_drop!(name, vm);
-        let name = name
-            .as_either_str(vm.heap)
-            .expect("MatchClass keyword names are interned strings");
-        match class_pattern_attr(subject, cls, &name, &mut seen, vm)? {
-            Some(value) => attrs.push(value),
-            None => return Ok(None),
+        names.push(kwd_names.clone_item(i, vm));
+    }
+    let mut seen: Vec<String> = Vec::with_capacity(names.len());
+    for name in names.iter() {
+        let Some(name) = name.as_either_str(vm.heap) else {
+            continue;
+        };
+        let name = name.as_str(vm.interns);
+        if seen.iter().any(|s| s == name) {
+            let class = class_pattern_name(cls, vm);
+            return Err(ExcType::type_error(format!(
+                "{class}() got multiple sub-patterns for attribute '{name}'"
+            )));
         }
+        seen.push(name.to_owned());
     }
     Ok(Some(guard.into_inner()))
 }
@@ -320,6 +388,14 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
     Ok(MatchArgs::Names { allowed, names })
 }
 
+/// An attribute name as a `str` value for the `MatchClass` names tuple.
+fn either_str_value(name: &EitherStr, heap: &Heap) -> Value {
+    match name {
+        EitherStr::Interned(id) => Value::InternString(*id),
+        EitherStr::Heap(text) => allocate_string(text.clone(), heap),
+    }
+}
+
 /// `TypeError: Foo.__match_args__ must be a tuple (got list)`.
 fn match_args_type_error(cls: &Value, match_args: &Value, vm: &VM<'_>) -> RunError {
     let class = class_pattern_name(cls, vm);
@@ -334,39 +410,6 @@ fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>
     ExcType::type_error(format!(
         "{class}() accepts {allowed} positional sub-pattern{plural} ({given} given)"
     ))
-}
-
-/// Reads one attribute for a class pattern: `None` when the subject has no
-/// such attribute, `TypeError` when the pattern already consumed the name.
-fn class_pattern_attr(
-    subject: &Value,
-    cls: &Value,
-    name: &EitherStr,
-    seen: &mut Vec<String>,
-    vm: &mut VM<'_>,
-) -> RunResult<Option<Value>> {
-    let name_str = name.as_str(vm.interns);
-    if seen.iter().any(|s| s == name_str) {
-        let class = class_pattern_name(cls, vm);
-        return Err(ExcType::type_error(format!(
-            "{class}() got multiple sub-patterns for attribute '{name_str}'"
-        )));
-    }
-    seen.push(name_str.to_owned());
-    match subject.py_getattr(name, vm) {
-        Ok(CallResult::Value(value)) => Ok(Some(value)),
-        // A host-backed object whose attribute lives host-side: the lookup would
-        // suspend the VM mid-pattern, which `match` cannot resume.
-        Ok(other) => {
-            other.drop_with(vm);
-            Err(ExcType::not_implemented(format!(
-                "class pattern attribute '{name_str}' requires a host lookup, which match statements do not support"
-            ))
-            .into())
-        }
-        Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => Ok(None),
-        Err(err) => Err(err),
-    }
 }
 
 /// The class's `__name__`, as CPython's class pattern errors spell it.
