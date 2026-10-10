@@ -1,9 +1,9 @@
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, cmp::Ordering, fmt};
 
 use ahash::AHashSet;
 use monty_types::{FormatComplex, FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
 use num_bigint::BigInt;
-use num_traits::Num;
+use num_traits::{Num, Zero};
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Pattern as AstPattern,
@@ -27,7 +27,7 @@ use crate::{
     source_map::{SourceMap, StackFrameExt},
     source_nesting::nesting_bound_exceeded,
     stringize::stringize_annotation,
-    types::long_int::INT_MAX_STR_DIGITS,
+    types::long_int::{INT_MAX_STR_DIGITS, bigint_cmp_f64},
     value::EitherStr,
 };
 
@@ -474,6 +474,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
             AstPattern::MatchMapping(p) => {
                 let position = self.convert_range(p.range);
+                check_subpattern_count(p.keys.len(), "mapping", position)?;
                 let keys = p
                     .keys
                     .into_iter()
@@ -491,6 +492,11 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
             AstPattern::MatchClass(p) => {
                 let position = self.convert_range(p.range);
+                check_subpattern_count(
+                    p.arguments.patterns.len() + p.arguments.keywords.len(),
+                    "class",
+                    position,
+                )?;
                 let cls = self.parse_expression(*p.cls)?;
                 let patterns = self.parse_patterns(p.arguments.patterns)?;
                 let mut kwd_attrs: Vec<StringId> = Vec::with_capacity(p.arguments.keywords.len());
@@ -547,13 +553,14 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// Rejects a mapping pattern that checks one constant key twice (`{1: a, 1: b}`),
     /// as CPython's compiler does. Keys compare by Python equality, so `1`, `1.0`
     /// and `True` collide; dotted-name keys are runtime values and are not checked.
+    /// The pairwise scan is bounded by [`check_subpattern_count`].
     fn check_duplicate_mapping_keys(&self, keys: &[ExprLoc], position: CodeRange) -> Result<(), ParseError> {
         for (i, key) in keys.iter().enumerate() {
             if let Some(constant) = ConstantKey::of(key)
                 && keys[..i]
                     .iter()
                     .filter_map(ConstantKey::of)
-                    .any(|seen| seen.py_eq(constant))
+                    .any(|seen| seen.py_eq(constant, self.interner))
             {
                 let repr = constant.repr(self.interner);
                 return Err(ParseError::syntax(
@@ -2816,6 +2823,23 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
     }
 }
 
+/// The widest pattern the bytecode can encode: sub-pattern counts and attribute
+/// indexes are `u8` operands. Checked before any pairwise scan over a pattern's
+/// parts so untrusted source cannot buy quadratic parse time with a wide pattern.
+const MAX_SUBPATTERNS: usize = u8::MAX as usize;
+
+/// `SyntaxError: too many sub-patterns in <kind> pattern` past [`MAX_SUBPATTERNS`].
+fn check_subpattern_count(count: usize, kind: &str, position: CodeRange) -> Result<(), ParseError> {
+    if count > MAX_SUBPATTERNS {
+        Err(ParseError::syntax(
+            format!("too many sub-patterns in {kind} pattern"),
+            position,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// A mapping-pattern key the parser can evaluate: a literal, optionally negated.
 ///
 /// Mirrors the constant folding CPython applies before its duplicate-key check,
@@ -2844,34 +2868,30 @@ impl<'a> ConstantKey<'a> {
     }
 
     /// Python equality between two constant keys, as a `set` of them would see it.
-    fn py_eq(self, other: Self) -> bool {
-        match (self.number(), other.number()) {
-            (Some(a), Some(b)) => a == b,
+    fn py_eq(self, other: Self, interner: &CompileInterns<'_>) -> bool {
+        match (self.number(interner), other.number(interner)) {
+            (Some(a), Some(b)) => a.py_eq(&b),
             (None, None) => match (self.literal, other.literal) {
                 (Literal::None, Literal::None) => true,
                 (Literal::Str(a), Literal::Str(b)) => a == b,
                 (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
-                (Literal::LongInt(a), Literal::LongInt(b)) => a == b && self.negated == other.negated,
-                (Literal::Complex(a), Literal::Complex(b)) => self.signed(*a) == other.signed(*b),
                 _ => false,
             },
             _ => false,
         }
     }
 
-    /// The key as a float when it is a real number (`bool` included), applying the sign.
-    fn number(self) -> Option<f64> {
-        let magnitude = match self.literal {
-            Literal::Bool(b) => f64::from(u8::from(*b)),
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "equality check only, like CPython's hash collision test"
-            )]
-            Literal::Int(i) => *i as f64,
-            Literal::Float(f) => *f,
+    /// The key as an exact number (`bool` included), with its sign applied.
+    fn number(self, interner: &CompileInterns<'_>) -> Option<ConstantNumber> {
+        let number = match self.literal {
+            Literal::Bool(b) => ConstantNumber::Int(BigInt::from(u8::from(*b))),
+            Literal::Int(i) => ConstantNumber::Int(BigInt::from(*i)),
+            Literal::LongInt(id) => ConstantNumber::Int(interner.get_long_int(*id).clone()),
+            Literal::Float(f) => ConstantNumber::Float(*f),
+            Literal::Complex(imag) => ConstantNumber::Complex(*imag),
             _ => return None,
         };
-        Some(self.signed(magnitude))
+        Some(if self.negated { number.neg() } else { number })
     }
 
     /// Applies the key's sign to a literal magnitude.
@@ -2899,6 +2919,46 @@ impl<'a> ConstantKey<'a> {
             .to_string(),
             Literal::Ellipsis => "Ellipsis".to_owned(),
             Literal::Marker(_) => "<marker>".to_owned(),
+        }
+    }
+}
+
+/// A constant mapping-pattern key's numeric value, compared without rounding
+/// so distinct integers above 2**53 never collide and `2**63 == 2.0**63` does.
+enum ConstantNumber {
+    Int(BigInt),
+    Float(f64),
+    /// A pure imaginary literal (`2j`); the real part is zero.
+    Complex(f64),
+}
+
+impl ConstantNumber {
+    fn neg(self) -> Self {
+        match self {
+            Self::Int(i) => Self::Int(-i),
+            Self::Float(f) => Self::Float(-f),
+            Self::Complex(imag) => Self::Complex(-imag),
+        }
+    }
+
+    /// Python `==` across `int`, `float` and `complex`.
+    fn py_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => a == b,
+            (Self::Int(i), Self::Float(f)) | (Self::Float(f), Self::Int(i)) => {
+                bigint_cmp_f64(i, *f) == Some(Ordering::Equal)
+            }
+            (Self::Complex(a), Self::Complex(b)) => a == b,
+            // `0j == 0`: a pure imaginary equals a real only when both are zero.
+            (Self::Complex(imag), real) | (real, Self::Complex(imag)) => *imag == 0.0 && real.is_zero(),
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        match self {
+            Self::Int(i) => i.is_zero(),
+            Self::Float(f) | Self::Complex(f) => *f == 0.0,
         }
     }
 }

@@ -217,6 +217,11 @@ impl VM<'_> {
 
 /// Looks every key of the `keys` tuple up in the mapping `subject`: the values
 /// in key order, or `None` as soon as one key is absent.
+///
+/// Keys are checked in order against the ones before them, like CPython's
+/// `seen` set: a key equal to an earlier one is a `ValueError`, unless an
+/// earlier key was already found missing. The pattern's key count is bounded
+/// by the compiler (255), so the pairwise scan stays small.
 fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
     let (Value::Ref(subject_id), Value::Ref(keys_id)) = (subject, keys) else {
         return Ok(None);
@@ -231,6 +236,13 @@ fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunRes
     for i in 0..len {
         let key = keys.clone_item(i, vm);
         defer_drop!(key, vm);
+        for earlier in 0..i {
+            let earlier = keys.clone_item(earlier, vm);
+            defer_drop!(earlier, vm);
+            if earlier.py_eq(key, vm)? {
+                return Err(ExcType::value_error_duplicate_mapping_key(key, vm));
+            }
+        }
         match dict.dict_get(key, vm)? {
             Some(value) => values.push(value),
             None => return Ok(None),
