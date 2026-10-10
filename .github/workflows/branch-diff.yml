@@ -34,6 +34,10 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
+      # fails naming any tracked file on the base branch that no rule classifies
+      - name: Check every file is classified
+        run: uv run scripts/branch_diff.py --check
+
       - name: Post branch diff
         run: uv run scripts/branch_diff.py --head refs/remotes/pull/head
         env:
