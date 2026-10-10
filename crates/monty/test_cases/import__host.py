@@ -73,6 +73,13 @@ try:
     assert False, 'expected ModuleNotFoundError'
 except ModuleNotFoundError as exc:
     assert str(exc) == "No module named 'tools.nope'"
+# the error names the path through the first missing component
+try:
+    import tools.nested.nope.deeper
+
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as exc:
+    assert str(exc) == "No module named 'tools.nested.nope'"
 
 
 # === imports inside functions ===

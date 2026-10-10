@@ -383,7 +383,8 @@ A submodule is an entry of its parent's `modules` (`ExternalModule(..., modules=
 in JavaScript): it is an attribute of the parent, so `import pkg.sub`, `import pkg.sub as s`, `from pkg import sub` and
 `from pkg.sub import add` all reach it, its host functions are named by their path (`pkg.sub.add`), and a submodule
 the parent does not have raises `ModuleNotFoundError: No module named 'pkg.nope'`.
-A submodule's `module` is its value, never a callable, since it crosses with its parent.
+A submodule's `module` is its value, never a callable, since it crosses with its parent, and a `ClassInstance` module
+has no submodules, since its attributes are its own.
 
 On the wire the import is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the top-level
 module name as its argument, answered with the module value, so a host driving suspensions itself answers it like any

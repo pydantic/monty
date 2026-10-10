@@ -189,14 +189,24 @@ struct ModuleTree {
     stubs: Vec<ModuleStub>,
     submodules: Submodules,
     stand_ins: HashMap<MontyUuid, String>,
+    /// The entries being walked, outermost first, by object identity and
+    /// path: an entry met again inside itself would recurse forever.
+    ancestors: Vec<(usize, String)>,
 }
 
 impl ModuleTree {
     /// Checks the `ExternalModule` at dotted `path` (see
     /// [`check_external_module`]), records its stub, stand-in and submodules,
     /// and returns its `module`. Only a top-level entry may be a factory: a
-    /// submodule crosses with its parent, so there is nothing to defer.
+    /// submodule crosses with its parent, so there is nothing to defer. An
+    /// entry nested inside itself is a `ValueError` rather than a stack overflow.
     fn collect(&mut self, path: &str, entry: &Bound<'_, PyAny>, top_level: bool) -> PyResult<Py<PyAny>> {
+        let identity = entry.as_ptr() as usize;
+        if let Some((_, ancestor)) = self.ancestors.iter().find(|(ptr, _)| *ptr == identity) {
+            return Err(PyValueError::new_err(format!(
+                "external_modules['{path}'] is external_modules['{ancestor}'] again: modules cannot nest cyclically"
+            )));
+        }
         let CheckedModule {
             module,
             stub,
@@ -204,12 +214,14 @@ impl ModuleTree {
         } = check_external_module(path, entry, top_level)?;
         self.stubs.extend(stub);
         self.stand_ins.insert(module_uuid("instance", path), path.to_owned());
+        self.ancestors.push((identity, path.to_owned()));
         let mut children = Vec::new();
         for (name, child) in submodules {
             let child_path = format!("{path}.{name}");
             let value = self.collect(&child_path, &child, false)?;
             children.push((name, value));
         }
+        self.ancestors.pop();
         if !children.is_empty() {
             self.submodules.insert(path.to_owned(), children);
         }
@@ -473,13 +485,26 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// Keeps what module `name`'s factory produced for the rest of the session,
-    /// refusing anything that is not a module shape.
+    /// refusing anything that is not a module shape or that cannot carry the
+    /// submodules declared for it, the checks a value entry passed at checkout.
     fn install_module(&self, name: &str, module: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         if !is_module_shape(&module)? {
             return Err(PyTypeError::new_err(format!(
                 "external_modules['{name}'].module() returned {}, not a dict or a ClassInstance",
                 module.get_type().name()?
             )));
+        }
+        if let Some(children) = self.submodules.and_then(|tree| tree.get(name)) {
+            let Ok(dict) = module.cast::<PyDict>() else {
+                return Err(PyTypeError::new_err(format!(
+                    "external_modules['{name}'].module() returned a ClassInstance, which cannot carry .modules"
+                )));
+            };
+            if let Some((child, _)) = children.iter().find(|(child, _)| dict.contains(child).unwrap_or(false)) {
+                return Err(PyValueError::new_err(format!(
+                    "external_modules['{name}'].module() returned a dict with both an item and a submodule named '{child}'"
+                )));
+            }
         }
         self.resolved_modules
             .expect("a module was resolved, so the cache exists")
@@ -738,6 +763,13 @@ fn check_external_module<'py>(path: &str, entry: &Bound<'py, PyAny>, top_level: 
                 )));
             }
             submodules.push((name.to_string(), child));
+        }
+        // a wrapper's attributes are its own, so nothing can be hung on it
+        if !submodules.is_empty() && is_class_instance_wrapper(&module)? {
+            return Err(PyTypeError::new_err(format!(
+                "{} must be None when .module is a ClassInstance, whose attributes are its own",
+                where_(".modules")
+            )));
         }
     }
     Ok(CheckedModule {

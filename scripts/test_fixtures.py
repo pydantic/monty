@@ -585,6 +585,7 @@ for _fixture in (add_ints, concat_strings, return_value, get_list, raise_error, 
 # runner's `tools` object carries a `nested` attribute
 tools.__path__ = []
 nested = types.ModuleType('tools.nested')
+nested.__path__ = []  # a package too, so a missing submodule of it is named plainly
 nested.return_value = return_value  # type: ignore[attr-defined]
 nested.VERSION = 7  # type: ignore[attr-defined]
 tools.nested = nested  # type: ignore[attr-defined]

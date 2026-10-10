@@ -301,6 +301,40 @@ test('invalid submodules are rejected', async () => {
       message: 'externalModules.pkg.module has both a property and a submodule named sub',
     },
   )
+  // a wrapper's attributes are its own
+  const wrapper = { module: new ClassInstance({}), modules: { sub: { module: tools } } }
+  await t.throwsAsync(pool().checkout({ externalModules: { pkg: wrapper } }), {
+    instanceOf: TypeError,
+    message: 'externalModules.pkg.modules must be absent when module is a ClassInstance',
+  })
+  // an entry nested inside itself is refused rather than walked forever
+  const modules: ExternalModules = {}
+  const pkg = { module: {}, modules }
+  modules.sub = { module: {}, modules: { pkg } }
+  await t.throwsAsync(pool().checkout({ externalModules: { pkg } }), {
+    instanceOf: TypeError,
+    message: 'externalModules.pkg.sub.pkg is externalModules.pkg again: modules cannot nest cyclically',
+  })
+})
+
+test('a factory result is checked against its submodules', async () => {
+  // what a factory returns meets the checks a value entry passed at checkout, at the import
+  const cases: [() => unknown, string][] = [
+    [() => new ClassInstance({}), 'externalModules.pkg.module() returned a ClassInstance, which cannot carry modules'],
+    [
+      () => ({ sub: 1 }),
+      'externalModules.pkg.module() returned an object with both a property and a submodule named sub',
+    ],
+  ]
+  for (const [factory, message] of cases) {
+    await using session = await pool().checkout({
+      externalModules: { pkg: { module: factory as () => ModuleValue, modules: { sub: { module: tools } } } },
+    })
+    await t.throwsAsync(session.feedRun('import pkg'), {
+      instanceOf: MontyRuntimeError,
+      message: `TypeError: ${message}`,
+    })
+  }
 })
 
 test('an entry must be an object with a module property', async () => {

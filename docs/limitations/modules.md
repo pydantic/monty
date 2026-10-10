@@ -118,6 +118,8 @@ The value the host answers with (in the bindings, the matching `external_modules
 - in the Python binding a plain class in a module dict crosses as a host function named `m.X` (calling it constructs
     on the host), not as a type, so `isinstance(v, m.X)` raises `TypeError`; wrap it in `ClassType` to send a type;
 - module names and the keys of a module dict are identifiers, since a host function is named by its dotted path, so
-    `getattr(m, 'a.b')` has nothing to find.
+    `getattr(m, 'a.b')` on a dict module has nothing to find, while a `ClassInstance` module answers under its
+    wrapper's attribute policy;
+- a dotted import of more than 32 components (`import a.b.c` has three) is a `SyntaxError` at compile time.
 
 With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.

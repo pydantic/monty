@@ -355,7 +355,8 @@ class ExternalModule:
     modules: dict[str, ExternalModule] | None = None
     """Submodules by name, each reached as an attribute of this module and by
     `import <name>.<sub>`; their `module` must be a dict or a `ClassInstance`,
-    not a callable, and their `stubs` are laid out as a package."""
+    not a callable, and their `stubs` are laid out as a package. A `ClassInstance`
+    module carries none, since its attributes are its own."""
 
 
 TypeCheckFormat: TypeAlias = Literal[

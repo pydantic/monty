@@ -275,6 +275,14 @@ def test_a_class_instance_submodule(pool: Monty):
             id='clash',
         ),
         pytest.param(
+            ExternalModule(ClassInstance(_Tools()), modules={'sub': ExternalModule(TOOLS)}),
+            TypeError,
+            snapshot(
+                "external_modules['pkg'].modules must be None when .module is a ClassInstance, whose attributes are its own"
+            ),
+            id='class-instance-parent',
+        ),
+        pytest.param(
             ExternalModule({}, modules=[]),  # pyright: ignore[reportArgumentType]
             TypeError,
             snapshot("external_modules['pkg'].modules must be a dict or None, not list"),
@@ -292,6 +300,46 @@ def test_invalid_submodules_are_rejected(pool: Monty, entry: ExternalModule, err
     with pytest.raises(error) as exc_info:
         pool.checkout(external_modules={'pkg': entry})
     assert str(exc_info.value) == message
+
+
+def test_cyclic_submodules_are_rejected(pool: Monty):
+    """An entry nested inside itself is refused at checkout rather than walked forever."""
+    modules: dict[str, ExternalModule] = {}
+    pkg = ExternalModule({}, modules=modules)
+    modules['sub'] = ExternalModule({}, modules={'pkg': pkg})
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(external_modules={'pkg': pkg})
+    assert str(exc_info.value) == snapshot(
+        "external_modules['pkg.sub.pkg'] is external_modules['pkg'] again: modules cannot nest cyclically"
+    )
+
+
+@pytest.mark.parametrize(
+    ('factory', 'message'),
+    [
+        pytest.param(
+            lambda: ClassInstance(_Tools()),
+            snapshot(
+                "TypeError: external_modules['pkg'].module() returned a ClassInstance, which cannot carry .modules"
+            ),
+            id='class-instance',
+        ),
+        pytest.param(
+            lambda: {'sub': 1},
+            snapshot(
+                "ValueError: external_modules['pkg'].module() returned a dict with both an item and a submodule named 'sub'"
+            ),
+            id='clash',
+        ),
+    ],
+)
+def test_a_factory_result_is_checked_against_its_submodules(pool: Monty, factory: Any, message: str):
+    """What a factory returns meets the checks a value entry passed at checkout, at the import."""
+    pkg = ExternalModule(factory, modules={'sub': ExternalModule(TOOLS)})
+    with pool.checkout(external_modules={'pkg': pkg}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import pkg')
+        assert str(exc_info.value) == message
 
 
 @pytest.mark.parametrize(

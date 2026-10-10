@@ -661,6 +661,7 @@ class TurnAnswerer {
       returned instanceof Promise ? await returned : returned,
       `externalModules.${name}.module() returned`,
     )
+    this.modules.checkResolved(name, module)
     this.modules.resolved.set(name, module)
     return { value: module }
   }
@@ -1373,7 +1374,8 @@ export interface ExternalModule {
    *  `import <name>` fails as unresolved. */
   stubs?: string
   /** Submodules by name, each reached as an attribute of this module and by
-   *  `import <name>.<sub>`; their stubs are laid out as a package. */
+   *  `import <name>.<sub>`; their stubs are laid out as a package. A
+   *  `ClassInstance` module carries none, since its attributes are its own. */
   modules?: ExternalModules
 }
 
@@ -1401,7 +1403,7 @@ export class HostModules {
 
   constructor(private readonly entries: ExternalModules | undefined) {
     for (const [name, entry] of Object.entries(entries ?? {})) {
-      this.check(name, name, entry, true)
+      this.check(name, name, entry, true, new Map())
     }
   }
 
@@ -1409,9 +1411,23 @@ export class HostModules {
    * Validates the entry at dotted `path` and records its stub and stand-in,
    * then its submodules. Names are identifiers, so an import and a host
    * function name split into them unambiguously; a submodule's `module` is
-   * its value, never a factory, since it crosses with its parent.
+   * its value, never a factory, since it crosses with its parent. `ancestors`
+   * maps the entries being walked to their paths, so one nested inside itself
+   * is a `TypeError` rather than a stack overflow.
    */
-  private check(path: string, name: string, entry: ExternalModule, topLevel: boolean): void {
+  private check(
+    path: string,
+    name: string,
+    entry: ExternalModule,
+    topLevel: boolean,
+    ancestors: Map<ExternalModule, string>,
+  ): void {
+    const ancestor = ancestors.get(entry)
+    if (ancestor !== undefined) {
+      throw new TypeError(
+        `externalModules.${path} is externalModules.${ancestor} again: modules cannot nest cyclically`,
+      )
+    }
     if (!IDENTIFIER.test(name)) {
       throw new TypeError(`externalModules.${path} is not a valid module name`)
     }
@@ -1429,11 +1445,36 @@ export class HostModules {
       this.stubSources[path] = entry.stubs
     }
     this.standIns.set(moduleUuid('instance', path), path)
-    for (const [sub, child] of Object.entries(entry.modules ?? {})) {
+    const subs = Object.entries(entry.modules ?? {})
+    // a wrapper's attributes are its own, so nothing can be hung on it
+    if (subs.length > 0 && entry.module instanceof ClassInstance) {
+      throw new TypeError(`externalModules.${path}.modules must be absent when module is a ClassInstance`)
+    }
+    ancestors.set(entry, path)
+    for (const [sub, child] of subs) {
       if (typeof entry.module !== 'function' && ownEntry(entry.module, sub) !== undefined) {
         throw new TypeError(`externalModules.${path}.module has both a property and a submodule named ${sub}`)
       }
-      this.check(`${path}.${sub}`, sub, child, false)
+      this.check(`${path}.${sub}`, sub, child, false, ancestors)
+    }
+    ancestors.delete(entry)
+  }
+
+  /**
+   * Rejects what a factory returned for `name` when it cannot carry the
+   * submodules declared for it, the checks a value entry passed at checkout.
+   */
+  checkResolved(name: string, module: ModuleValue): void {
+    const subs = Object.keys(this.submodules(name))
+    if (subs.length === 0) return
+    if (module instanceof ClassInstance) {
+      throw new TypeError(`externalModules.${name}.module() returned a ClassInstance, which cannot carry modules`)
+    }
+    const clash = subs.find((sub) => ownEntry(module, sub) !== undefined)
+    if (clash !== undefined) {
+      throw new TypeError(
+        `externalModules.${name}.module() returned an object with both a property and a submodule named ${clash}`,
+      )
     }
   }
 
