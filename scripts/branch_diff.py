@@ -96,7 +96,9 @@ RULES: list[tuple[str, Category]] = [
     ('crates/monty-typeshed/check.py', OTHER),
     ('crates/monty-typeshed/update.py', OTHER),
     ('scripts/**', OTHER),
-    # docs: the site, every readme and the examples the site links to
+    # docs: the site, every readme and the examples the site links to; agent instructions are tooling
+    ('**/AGENTS.md', OTHER),
+    ('**/CLAUDE.md', OTHER),
     ('**/*.md', DOCS),
     ('docs/**', DOCS),
     ('limitations', DOCS),
