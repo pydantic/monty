@@ -60,11 +60,12 @@ impl TypeChecker {
         config: TypeCheckingConfig,
     ) -> Result<Option<TypeCheckingDiagnostics<'a>>, String> {
         let src_root = SystemPathBuf::from(SRC_ROOT);
-        let main_path = src_root.join(python_source.path);
+        // Track the same normalized paths as the in-memory filesystem for reset.
+        let main_path = SystemPath::absolute(python_source.path, &src_root);
         let main_source = python_source.source_code;
 
         let (main_file, code_offset): (File, u32) = if let Some(stubs_file) = stubs_file {
-            let stubs_path = src_root.join(stubs_file.path);
+            let stubs_path = SystemPath::absolute(stubs_file.path, &src_root);
             let stubs = self.write_root_file(&stubs_path, stubs_file.source_code)?;
             // Writing the script over its own stubs would drop them and make it import
             // itself; compare interned files, not strings, since the db normalises paths.
@@ -337,10 +338,6 @@ impl TouchedRootFile {
                 // removed by a later `cleanup` call. Every ancestor above this
                 // one is necessarily also non-empty (they contain this directory),
                 // so there is no point walking further up.
-                //
-                // `MemoryFileSystem::remove_directory` reports "directory not
-                // empty" as `io::Error::other(...)` (kind `Other`), so we match on
-                // the message rather than on `ErrorKind::DirectoryNotEmpty`.
                 Err(err) if err.to_string().contains("directory not empty") => break,
                 // `NotFound` at this point would mean the directory never existed
                 // or was already removed, both of which indicate a logic bug
