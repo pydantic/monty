@@ -584,9 +584,14 @@ pub enum Opcode {
     /// `[subject, keys] -> [subject, keys, values_or_None, bool]`;
     /// `MATCH_KEYS_REST`: `[subject, keys] -> [rest_dict]`.
     MatchKeys = 126,
-    /// Class-pattern check: `[subject, cls, kwd_names] -> [attrs_or_None, bool]`.
-    /// Operand: u8 count of positional sub-patterns, resolved via `__match_args__`.
+    /// Class-pattern check: `[subject, cls, kwd_names] -> [subject, names_or_None, bool]`,
+    /// where `names` are the attributes the sub-patterns read (`None` entries
+    /// stand for the subject itself). Operand: u8 count of positional
+    /// sub-patterns, resolved via `__match_args__`.
     MatchClass = 127,
+    /// Reads one class-pattern attribute: `[subject, names] -> [subject, names, value, bool]`.
+    /// Operand: u8 index into `names`. May suspend for a host lookup.
+    MatchAttr = 128,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -710,7 +715,8 @@ impl Opcode {
             | Self::Assert
             | Self::AssertFailed
             | Self::MatchKeys
-            | Self::MatchClass => OperandShape::U8,
+            | Self::MatchClass
+            | Self::MatchAttr => OperandShape::U8,
             Self::LoadSmallInt => OperandShape::I8,
             Self::LoadModule
             | Self::LoadConst
@@ -978,8 +984,10 @@ impl Opcode {
                     2
                 }
             }
-            // `MatchClass` pops subject, class and keyword names; pushes `[attrs_or_None, bool]`.
-            (MatchClass, Operand::U8(_)) => -1,
+            // `MatchClass` pops class and keyword names; pushes `[names_or_None, bool]` above the subject.
+            (MatchClass, Operand::U8(_)) => 0,
+            // `MatchAttr` pushes `[value, bool]` above the subject and names.
+            (MatchAttr, Operand::U8(_)) => 2,
 
             // === Fixed-effect, no operand (context managers) ===
             // `BeforeWith` pushes the `__enter__` result on top of the existing ctx.

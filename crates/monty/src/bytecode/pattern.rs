@@ -336,8 +336,9 @@ impl<'a> Compiler<'a, '_> {
         }
     }
 
-    /// `Point(0, y=1)`: `MatchClass` extracts the attributes named by the
-    /// class's `__match_args__` and the keywords; each is then sub-matched.
+    /// `Point(0, y=1)`: `MatchClass` checks the instance and resolves the
+    /// attribute names (`__match_args__` then keywords); one `MatchAttr` per
+    /// sub-pattern then reads its attribute, so a host-side read can suspend.
     fn compile_pattern_class(
         &mut self,
         cls: &ExprLoc,
@@ -348,6 +349,7 @@ impl<'a> Compiler<'a, '_> {
         pc: &mut PatternContext,
     ) -> Result<(), CompileError> {
         let nargs = pattern_count_u8(patterns.len(), "class", position)?;
+        pattern_count_u8(patterns.len() + kwd_patterns.len(), "class", position)?;
         let nattrs = pattern_count_u16(kwd_attrs.len(), "class", position)?;
         self.compile_expr(cls)?;
         for attr in kwd_attrs {
@@ -357,24 +359,32 @@ impl<'a> Compiler<'a, '_> {
         self.code.set_location(position, None);
         self.code.emit_u16(Opcode::BuildTuple, nattrs)?;
         self.code.emit_u8(Opcode::MatchClass, nargs)?;
-        // The attributes tuple (or None) replaces the subject.
-        pc.on_top += 1;
+        // The subject stays, with the names tuple (or None) above it.
+        pc.on_top += 2;
         self.jump_to_fail_pop(pc, Opcode::JumpIfFalse)?;
-        self.unpack_subpattern_values(patterns.len() + kwd_patterns.len(), pc)?;
-        for pattern in patterns.iter().chain(kwd_patterns) {
+        for (index, pattern) in patterns.iter().chain(kwd_patterns).enumerate() {
+            self.code.set_location(position, None);
+            self.code
+                .emit_u8(Opcode::MatchAttr, pattern_count_u8(index, "class", position)?)?;
+            pc.on_top += 1;
+            self.jump_to_fail_pop(pc, Opcode::JumpIfFalse)?;
             pc.on_top -= 1;
             self.compile_subpattern(pattern, pc)?;
         }
-        Ok(())
+        // Success: drop the names tuple and the subject.
+        pc.on_top -= 2;
+        self.code.set_location(position, None);
+        self.code.emit(Opcode::Pop)?;
+        self.code.emit(Opcode::Pop)
     }
 
-    /// Replaces the tuple on top of the stack with its `count` items, first
-    /// item on top, adjusting `on_top` so each sub-pattern consumes one.
+    /// Replaces the mapping values tuple on top of the stack with its `count`
+    /// items, first item on top, adjusting `on_top` so each sub-pattern consumes one.
     fn unpack_subpattern_values(&mut self, count: usize, pc: &mut PatternContext) -> Result<(), CompileError> {
         if count == 0 {
             self.code.emit(Opcode::Pop)?;
         } else {
-            let count_u8 = pattern_count_u8(count, "class", self.code.current_position())?;
+            let count_u8 = pattern_count_u8(count, "mapping", self.code.current_position())?;
             self.code.emit_u8(Opcode::UnpackSequence, count_u8)?;
         }
         pc.on_top += count;

@@ -2049,6 +2049,10 @@ impl<'h> VM<'h> {
                     let nargs = usize::from(self.current_frame.fetch_u8());
                     try_catch!(self, self.match_class(nargs));
                 }
+                Opcode::MatchAttr => {
+                    let index = usize::from(self.current_frame.fetch_u8());
+                    handle_call_result!(self, self.match_attr(index));
+                }
                 // Special
                 Opcode::Nop => {
                     // No operation
