@@ -117,8 +117,8 @@ A host-provided module the code imports needs its own stub: the `stubs` of its `
 (`externalModules` in JavaScript) is the module's `.pyi` source, kept beside its implementation so the two cannot
 drift apart.
 The checker writes each one as `<module>.pyi` beside the snippet, so `import tools` resolves and `from tools import add`
-sees its declarations; module stubs are not star-imported, and a module without `stubs` fails a type-checked import as
-unresolved:
+sees its declarations; module stubs are not star-imported, and a module with neither `stubs` nor a typeshed entry (see
+below) fails a type-checked import as unresolved:
 
 === "Python"
 

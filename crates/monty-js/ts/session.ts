@@ -1378,7 +1378,7 @@ export class HostModules {
   constructor(private readonly entries: ExternalModules | undefined) {
     for (const [name, entry] of Object.entries(entries ?? {})) {
       const proto = entry !== null && typeof entry === 'object' ? Object.getPrototypeOf(entry) : undefined
-      if ((proto !== Object.prototype && proto !== null) || !('module' in entry)) {
+      if ((proto !== Object.prototype && proto !== null) || !Object.prototype.hasOwnProperty.call(entry, 'module')) {
         throw new TypeError(`externalModules.${name} must be an object with a module property`)
       }
       if (entry.stubs !== undefined && typeof entry.stubs !== 'string') {

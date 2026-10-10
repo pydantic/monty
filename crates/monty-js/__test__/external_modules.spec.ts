@@ -86,13 +86,16 @@ test('name-based calls respect module exposure', async () => {
   // name (as a forged frame would) still finds nothing.
   const privateProbe = () => 'hidden'
   Object.defineProperty(privateProbe, 'name', { value: 'tools._secret' })
-  await using session = await pool().checkout({
-    externalModules: { tools: { module: { _secret: () => 'hidden' } } },
-  })
-  await t.throwsAsync(session.feedRun('import tools\nprobe()', { inputs: { probe: privateProbe } }), {
-    instanceOf: MontyRuntimeError,
-    message: "NameError: name 'tools._secret' is not defined",
-  })
+  {
+    // scoped so the worker is back in the pool before the next checkout
+    await using session = await pool().checkout({
+      externalModules: { tools: { module: { _secret: () => 'hidden' } } },
+    })
+    await t.throwsAsync(session.feedRun('import tools\nprobe()', { inputs: { probe: privateProbe } }), {
+      instanceOf: MontyRuntimeError,
+      message: "NameError: name 'tools._secret' is not defined",
+    })
+  }
   class Tools {
     reveal(): string {
       return 'hidden'
