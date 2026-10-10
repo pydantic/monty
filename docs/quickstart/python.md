@@ -89,6 +89,22 @@ it.
 
 A name present in both is served by the eager `inputs` binding.
 
+`external_modules` on `checkout` names the modules the sandbox may `import`, each an
+[`ExternalModule`][pydantic_monty.ExternalModule] pairing a dict of the module's public items with its type stub:
+
+```python
+from pydantic_monty import ExternalModule, Monty
+
+tools = ExternalModule({'add': lambda a, b: a + b})
+
+with Monty() as pool:
+    with pool.checkout(external_modules={'tools': tools}) as session:
+        print(session.feed_run('import tools\ntools.add(1, 2)'))
+        #> 3
+```
+
+See [importing host modules](../host-functions.md#importing-host-modules).
+
 ### Which values cross the boundary
 
 `None`, `bool`, `int` (arbitrary precision), `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,

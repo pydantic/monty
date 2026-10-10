@@ -222,9 +222,9 @@ They are re-emitted ahead of the committed definitions, so a later rebinding of 
 runtime, while a name deleted after being imported stays bound for the checker.
 An import under an `if` or `try` is carried whether or not its branch ran: a later use of a name bound only in the
 branch that did not run checks clean and raises `NameError` at runtime.
-A carried import is re-emitted without its comments, so one the commit accepted under `# type: ignore`, or with
-`skip_type_check=True`, may no longer resolve; the checker drops the diagnostics of the carried imports themselves,
-since they report nothing the commit did not accept, and the name stays bound with an unknown type.
+A carried import is re-emitted without its comments, so one the commit accepted under `# type: ignore` may no longer
+resolve; the checker drops the diagnostics of the carried imports themselves, since they report nothing the commit did
+not accept, and the name stays bound with an unknown type.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.

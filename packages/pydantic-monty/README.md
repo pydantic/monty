@@ -126,6 +126,28 @@ with Monty() as pool:
     #> 11
 ```
 
+### Host modules
+
+`external_modules` on `checkout` names the modules the sandbox may `import`: each an `ExternalModule` pairing a
+dict of the module's public items (callables become host functions) with the `.pyi` the type checker resolves the
+import against.
+
+```python
+from pydantic_monty import ExternalModule, Monty
+
+
+def add(a: int, b: int) -> int:
+    return a + b
+
+
+tools = ExternalModule({'add': add}, stubs='def add(a: int, b: int) -> int: ...\n')
+
+with Monty() as pool:
+    with pool.checkout(external_modules={'tools': tools}) as session:
+        print(session.feed_run('from tools import add\nadd(1, 2)'))
+        #> 3
+```
+
 ### Host objects and classes
 
 Wrap a host object in `ClassInstance` to let the sandbox read chosen attributes and call chosen methods on it, or a

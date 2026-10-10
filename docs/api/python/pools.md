@@ -28,3 +28,5 @@ Install as [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) — see 
             - CollectString
             - TypeCheckFormat
             - PrintCallback
+            - ExternalModule
+            - ModuleValue
