@@ -405,3 +405,90 @@ result
     assert_eq!(items.len(), 2);
     assert_eq!(items[0], MontyObject::string("type".to_owned()));
 }
+
+// ---------------------------------------------------------------------------
+// `csv.reader(f)` / `csv.DictReader(f)` over an unread file load it through the
+// `LoadThenCall` effect, then replay the construction. A host failure must
+// surface at the call and leave the file ready to retry; a future cannot stand
+// in for the load.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn csv_reader_load_host_error_then_retry() {
+    let code = r"
+import csv
+f = open('/x.csv')
+try:
+    csv.reader(f)
+except OSError as exc:
+    first = str(exc)
+(first, list(csv.reader(f)))
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let open_call = progress.into_os_call().expect("expected Open OsCall");
+    let progress = open_call
+        .resume(
+            MontyObject::file_handle(file_handle("/x.csv", "r")),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let read_call = progress
+        .into_os_call()
+        .expect("expected ReadText OsCall from csv.reader()");
+    assert_eq!(read_call.function_call.name(), "Path.read_text");
+    let host_exc = MontyException::new(ExcType::OSError, Some("boom".to_owned()));
+    let progress = read_call
+        .resume(ExtFunctionResult::Error(host_exc), PrintWriter::Stdout)
+        .unwrap();
+    let retry_call = progress.into_os_call().expect("expected retry OsCall");
+    assert_eq!(retry_call.function_call.name(), "Path.read_text");
+    let final_progress = retry_call
+        .resume(MontyObject::string("a,b\n1,2\n".to_owned()), PrintWriter::Stdout)
+        .unwrap();
+    let result = final_progress.into_complete().expect("expected Complete");
+    assert_eq!(
+        result,
+        MontyObject::tuple([
+            MontyObject::string("boom".to_owned()),
+            MontyObject::list([
+                MontyObject::list([MontyObject::string("a".to_owned()), MontyObject::string("b".to_owned()),]),
+                MontyObject::list([MontyObject::string("1".to_owned()), MontyObject::string("2".to_owned()),]),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn csv_dict_reader_consumed_by_builtin_loads_file() {
+    let code = r"
+import csv
+[row['b'] for row in csv.DictReader(open('/x.csv'))]
+";
+    let result = run_with_open_then_io(
+        code,
+        "Path.read_text",
+        file_handle("/x.csv", "r"),
+        MontyObject::string("a,b\n1,2\n3,4\n".to_owned()).into(),
+    )
+    .expect("script should complete");
+    assert_eq!(
+        result,
+        MontyObject::list([MontyObject::string("2".to_owned()), MontyObject::string("4".to_owned())])
+    );
+}
+
+#[test]
+fn csv_reader_load_rejects_future_reply() {
+    let err = run_with_open_then_io(
+        "import csv\ncsv.reader(open('/x.csv'))\n",
+        "Path.read_text",
+        file_handle("/x.csv", "r"),
+        ExtFunctionResult::Future(1),
+    )
+    .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::RuntimeError);
+    assert_eq!(err.message().unwrap(), "file loading cannot be answered with a future");
+}

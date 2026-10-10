@@ -239,6 +239,7 @@ const exceptionTypes: Array<[string, string]> = [
   ['re.PatternError', 're.PatternError'],
   ['binascii.Error', 'binascii.Error'],
   ['binascii.Incomplete', 'binascii.Incomplete'],
+  ['_csv.Error', '_csv.Error'],
   ['SomeCustomError', 'RuntimeError'],
 ]
 

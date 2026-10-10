@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import binascii
+import csv
 import json
 
 import pytest
@@ -129,6 +130,16 @@ def test_binascii_error(monty_run: RunMonty):
     assert isinstance(inner, binascii.Error)
     assert isinstance(inner, ValueError)
     assert str(inner) == snapshot('Incorrect padding')
+
+
+def test_csv_error(monty_run: RunMonty):
+    # A sandbox `csv` failure surfaces as the real stdlib class, a direct `Exception` subclass.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import csv\nlist(csv.reader([1]))')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, csv.Error)
+    assert not isinstance(inner, ValueError)
+    assert str(inner) == snapshot('iterator should return strings, not int (the file should be opened in text mode)')
 
 
 def test_type_error(monty_run: RunMonty):
