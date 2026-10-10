@@ -92,6 +92,8 @@ Swap `CodeModeToolset(weather_toolset)` for `weather_toolset` to see the same ta
 
 Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/examples) is runnable from a dev build of the package it uses; its README has the commands.
 
+- [`snapshot_replay`](https://github.com/pydantic/monty/tree/main/examples/snapshot_replay): record synchronous host calls,
+    replay their responses in a fresh worker, and compare a hypothetical response without repeating the live calls.
 - [`sql_playground`](https://github.com/pydantic/monty/tree/main/examples/sql_playground): customer purchase data in CSV
     joined with tweets in JSON, with sentiment analysis called in a loop from the sandbox.
     With JSON tool calling the 50+ per-tweet results would flood the context window; in Monty they stay inside the sandbox

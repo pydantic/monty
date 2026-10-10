@@ -1,0 +1,9 @@
+{
+  "return_value": {
+    "version": "what-if",
+    "requires_python": ">=3.14",
+    "requires_dist": [
+      "pydantic-monty==0.0.23"
+    ]
+  }
+}
