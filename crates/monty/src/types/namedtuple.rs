@@ -550,12 +550,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
-        // `_fields` is a data attribute (a tuple of the field names); field
-        // lookup by that name is impossible since fields cannot start with `_`.
+        // `_fields` (and its alias `__match_args__`) is a data attribute, a tuple
+        // of the field names; no field can shadow it since fields cannot start with `_`.
         // Gated on `class_id`: Monty's internal named tuples (`sys.version_info`,
         // host imports) model CPython *structseqs*, which expose none of the
         // `collections.namedtuple` API.
-        if attr.static_string(vm.interns) == Some(StaticStrings::UnderFields) && self.get(vm.heap).class_id().is_some()
+        if matches!(
+            attr.static_string(vm.interns),
+            Some(StaticStrings::UnderFields | StaticStrings::MatchArgsDunder)
+        ) && self.get(vm.heap).class_id().is_some()
         {
             return Ok(Some(CallResult::Value(self.fields_tuple(vm))));
         }
@@ -851,6 +854,11 @@ impl NamedTupleClass {
     }
 
     /// The stored `__module__` value, for GC tracing and attribute reads.
+    /// Field names in definition order; also the class's `__match_args__`.
+    pub(crate) fn field_names(&self) -> &[EitherStr] {
+        &self.field_names
+    }
+
     pub(crate) fn module(&self) -> &Value {
         &self.module
     }
@@ -913,7 +921,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
                 let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
                 allocate_string(name, vm.heap)
             }
-            Some(StaticStrings::UnderFields) => {
+            // `__match_args__` is `_fields` under the name class patterns read.
+            Some(StaticStrings::UnderFields | StaticStrings::MatchArgsDunder) => {
                 let names = self.get(vm.heap).field_names.clone();
                 fields_tuple_from(&names, vm)
             }
