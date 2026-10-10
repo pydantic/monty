@@ -266,6 +266,41 @@ assert count == 2
 assert others == {'b': 1}
 assert type(others) is dict
 
+
+# keys that compare equal at run time are a ValueError, checked in key order
+class Alias:
+    A = 1
+    B = 1
+    S = 'k'
+
+
+try:
+    match {1: 'x', 2: 'y'}:
+        case {Alias.A: a, Alias.B: b}:
+            pass
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'mapping pattern checks duplicate key (1)'
+try:
+    match {'k': 'x', 2: 'y'}:
+        case {Alias.S: a, 'k': b}:
+            pass
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == "mapping pattern checks duplicate key ('k')"
+match {1: 'x', 2: 'y'}:
+    case {Alias.A: a, 3: c, Alias.B: b}:
+        result = 'matched'
+    case _:
+        result = 'missing key before the duplicate'
+assert result == 'missing key before the duplicate'
+
+# integers past 2**53 are distinct constant keys
+match {9007199254740992: 'p', 9007199254740993: 'q'}:
+    case {9007199254740992: p, 9007199254740993: q}:
+        pass
+assert (p, q) == ('p', 'q')
+
 # non-string and dotted-name keys
 match {1: 'one', Color.RED: 'red', None: 'nil'}:
     case {1: v1, None: v2}:
