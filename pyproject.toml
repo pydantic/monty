@@ -51,6 +51,17 @@ extend-exclude = [
     "crates/monty/test_cases/function__err_repeated_keyword.py",
     "crates/monty/test_cases/nonlocal__error_module_level.py",
     "crates/monty/test_cases/traceback__nonlocal_module_scope.py",
+    # invalid `match` patterns whose compile-time SyntaxError is the point of the test
+    "crates/monty/test_cases/match__error_as_duplicate.py",
+    "crates/monty/test_cases/match__error_capture_unreachable.py",
+    "crates/monty/test_cases/match__error_different_names.py",
+    "crates/monty/test_cases/match__error_duplicate_key.py",
+    "crates/monty/test_cases/match__error_duplicate_int_key.py",
+    "crates/monty/test_cases/match__error_duplicate_name.py",
+    "crates/monty/test_cases/match__error_multiple_stars.py",
+    "crates/monty/test_cases/match__error_or_wildcard_unreachable.py",
+    "crates/monty/test_cases/match__error_repeated_attr.py",
+    "crates/monty/test_cases/match__error_wildcard_unreachable.py",
     # These files test specific quote styles in error messages and must not be reformatted
     "crates/monty/test_cases/type__float_repr_newline.py",
     "crates/monty/test_cases/type__float_repr_both_quotes.py",
@@ -143,6 +154,8 @@ quote-style = "single"
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
+# test cases deliberately exercise `match` statements with no matching case
+reportMatchNotExhaustive = false
 include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking", "examples"]
 exclude = [
     "crates/monty-type-checking/tests/bad_types.py",
@@ -166,6 +179,17 @@ exclude = [
     "crates/monty/test_cases/loop__continue_in_function_error.py",
     "crates/monty/test_cases/loop__break_in_if_error.py",
     "crates/monty/test_cases/loop__continue_in_if_error.py",
+    # invalid `match` patterns whose compile-time SyntaxError is the point of the test
+    "crates/monty/test_cases/match__error_as_duplicate.py",
+    "crates/monty/test_cases/match__error_capture_unreachable.py",
+    "crates/monty/test_cases/match__error_different_names.py",
+    "crates/monty/test_cases/match__error_duplicate_key.py",
+    "crates/monty/test_cases/match__error_duplicate_int_key.py",
+    "crates/monty/test_cases/match__error_duplicate_name.py",
+    "crates/monty/test_cases/match__error_multiple_stars.py",
+    "crates/monty/test_cases/match__error_or_wildcard_unreachable.py",
+    "crates/monty/test_cases/match__error_repeated_attr.py",
+    "crates/monty/test_cases/match__error_wildcard_unreachable.py",
     # deliberately calls `reduce`/`partial` with wrong arity and types to pin
     # their TypeError messages
     "crates/monty/test_cases/functools__reduce.py",
