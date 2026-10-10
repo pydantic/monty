@@ -47,6 +47,34 @@ except ImportError as exc:
     assert str(exc) == "cannot import name 'nope' from 'tools' (unknown location)"
 
 
+# === a submodule is an attribute of its parent ===
+import tools.nested
+import tools.nested as n
+from tools import nested
+from tools.nested import return_value as rv, VERSION
+
+assert tools.nested.VERSION == 7
+assert n.VERSION == 7
+assert nested.VERSION == 7
+assert VERSION == 7
+assert rv([1, 2]) == [1, 2]
+assert n.return_value('x') == 'x'
+
+# === a submodule the parent does not have ===
+try:
+    import tools.nope
+
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as exc:
+    assert str(exc) == "No module named 'tools.nope'"
+try:
+    from tools.nope import x
+
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as exc:
+    assert str(exc) == "No module named 'tools.nope'"
+
+
 # === imports inside functions ===
 def total():
     from tools import add_ints as plus

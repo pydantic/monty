@@ -164,6 +164,8 @@ below) fails a type-checked import as unresolved:
     console.log(await session.feedRun('from tools import add\nadd(1, 2)')) // 3
     ```
 
+A submodule's `stubs` is laid out as a package beside its parent's (`pkg/__init__.pyi`, `pkg/sub.pyi`), so
+`import pkg.sub` and `from pkg import sub` resolve; a parent with no `stubs` of its own becomes an empty package.
 A module name that is not an identifier, or that the sandbox or its type checker already provides, raises `ValueError`
 (throws in JavaScript).
 The reserved names are the sandbox's own modules, the rest of the vendored typeshed (`__future__` and `__main__`

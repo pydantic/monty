@@ -378,8 +378,16 @@ a call of a module function always reads the current attribute.
 The bound value is a host object, so `type(tools)` is its host class, not `module`; see
 [modules](limitations/modules.md#host-modules).
 
-On the wire the import is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the module name
-as its argument, answered with the module value, so a host driving suspensions itself answers it like any other call.
+Module names are identifiers.
+A submodule is an entry of its parent's `modules` (`ExternalModule(..., modules={'sub': ...})`, `{ module, modules: { sub } }`
+in JavaScript): it is an attribute of the parent, so `import pkg.sub`, `import pkg.sub as s`, `from pkg import sub` and
+`from pkg.sub import add` all reach it, its host functions are named by their path (`pkg.sub.add`), and a submodule
+the parent does not have raises `ModuleNotFoundError: No module named 'pkg.nope'`.
+A submodule's `module` is its value, never a callable, since it crosses with its parent.
+
+On the wire the import is one [`FunctionCall`](snapshots.md#the-snapshot-kinds) named `__import__` with the top-level
+module name as its argument, answered with the module value, so a host driving suspensions itself answers it like any
+other call; the sandbox reads a dotted import's further components as attributes of that value.
 The name is reserved: `__import__(...)` in the sandbox raises `NameError`.
 To type-check code that imports a host module, give the entry its `stubs`; see
 [type checking](type-checking.md#declaring-what-the-host-provides).

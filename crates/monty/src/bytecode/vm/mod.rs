@@ -1623,6 +1623,13 @@ impl<'h> VM<'h> {
                     let name_id = StringId::from_index(name_idx);
                     handle_call_result!(self, self.load_attr(name_id));
                 }
+                Opcode::LoadSubmodule => {
+                    let (name_idx, path_idx) = self.current_frame.fetch_u16_u16();
+                    let path_id = StringId::from_index(path_idx);
+                    // the module a following `LoadAttrImport` names in its `ImportError`
+                    self.current_frame.import_from_module = Some(path_id);
+                    handle_call_result!(self, self.load_submodule(StringId::from_index(name_idx), path_id));
+                }
                 Opcode::LoadAttrImport => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
@@ -2061,7 +2068,7 @@ impl<'h> VM<'h> {
                     let module_id = self.current_frame.fetch_u16();
                     // for the `LoadAttrImport`s of a `from ... import`; harmless for a bare `import`
                     self.current_frame.import_from_module = Some(StringId::from_index(module_id));
-                    handle_call_result!(self, self.load_module(module_id));
+                    handle_call_result!(self, Ok(self.load_module(module_id)));
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
@@ -2080,19 +2087,16 @@ impl<'h> VM<'h> {
     /// Loads a built-in module, or asks the host for any other: the import
     /// suspends as an external call of [`IMPORT_FUNCTION`] with the module
     /// name as its argument, and the host's answer becomes the module value
-    /// (a `not_found` answer raises `ModuleNotFoundError`).
-    fn load_module(&mut self, module_id: u16) -> RunResult<CallResult> {
+    /// (a `not_found` answer raises `ModuleNotFoundError`). The name is always
+    /// a top-level one; `LoadSubmodule` walks the rest of a dotted import.
+    fn load_module(&mut self, module_id: u16) -> CallResult {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
-            Some(module) => Ok(CallResult::Value(Value::Ref(module.create(self)))),
-            // a dotted name below a built-in module that is not a package cannot be a host module
-            None if StandardLib::missing_module(self.interns.get_str(name_id)).1.is_some() => {
-                Err(StandardLib::not_found_error(self.interns.get_str(name_id)))
-            }
-            None => Ok(CallResult::External(
+            Some(module) => CallResult::Value(Value::Ref(module.create(self))),
+            None => CallResult::External(
                 EitherStr::Heap(IMPORT_FUNCTION.to_owned()),
                 ArgValues::One(Value::InternString(name_id)),
-            )),
+            ),
         }
     }
 

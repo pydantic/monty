@@ -21,6 +21,7 @@ use monty_proto::python::{
 use monty_types::{
     CallArgs, ExtFunctionResult, IMPORT_FUNCTION, ModuleStub, MontyObject, MontyUuid, NameLookupResult,
     unstable::{self, MontyNode},
+    validate_module_name,
 };
 use pyo3::{
     exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
@@ -123,17 +124,23 @@ pub fn resolve_object_attr(
     }
 }
 
+/// The submodules of each module by its dotted path (`foo`, `foo.bar`): the
+/// `modules` of its entry, each a dict or a `ClassInstance`.
+type Submodules = HashMap<String, Vec<(String, Py<PyAny>)>>;
+
 /// The `external_modules=` a checkout captured: the host side of the modules
 /// every feed of the session may import.
 pub(crate) struct HostModules {
-    /// Each entry's `module`, by the name the snippet imports: a dict, a
-    /// `ClassInstance` or the factory returning one.
+    /// Each top-level entry's `module`, by the name the snippet imports: a
+    /// dict, a `ClassInstance` or the factory returning one.
     modules: Py<PyDict>,
     /// What each factory returned, by module name: a factory runs once per
     /// session, at the first import or call that needs it.
     resolved: Py<PyDict>,
-    /// Each module's name by the uuid of its dict stand-in (see [`module_uuid`]),
-    /// so a method call on one is answered without scanning the modules.
+    /// See [`Submodules`].
+    submodules: Arc<Submodules>,
+    /// Each module's dotted path by the uuid of its dict stand-in (see
+    /// [`module_uuid`]), so a method call on one is answered without a scan.
     stand_ins: Arc<HashMap<MontyUuid, String>>,
 }
 
@@ -143,24 +150,25 @@ impl HostModules {
     /// whose `module` is a dict, a `ClassInstance` or a zero-argument callable
     /// returning one: a dict names exactly what crosses, where a module or
     /// `dir()` of an arbitrary object would also expose its imports and
-    /// whatever else it happens to carry.
+    /// whatever else it happens to carry. Names are identifiers, so an import
+    /// and a host function name split into them unambiguously.
     pub(crate) fn capture(py: Python<'_>, entries: &Bound<'_, PyDict>) -> PyResult<(Self, Vec<ModuleStub>)> {
         let modules = PyDict::new(py);
-        let mut stubs = Vec::new();
-        let mut stand_ins = HashMap::new();
+        let mut tree = ModuleTree::default();
         for (name, entry) in entries.iter() {
-            let (module, stub) = check_external_module(&name, &entry)?;
+            let name = module_key(&name, "external_modules")?;
+            let name_str = name.to_cow()?;
+            validate_module_name(&name_str).map_err(|err| PyValueError::new_err(err.to_string()))?;
+            let module = tree.collect(&name_str, &entry, true)?;
             modules.set_item(&name, module)?;
-            stubs.extend(stub);
-            let name: String = name.extract()?;
-            stand_ins.insert(module_uuid("instance", &name), name);
         }
         let captured = Self {
             modules: modules.unbind(),
             resolved: PyDict::new(py).unbind(),
-            stand_ins: Arc::new(stand_ins),
+            submodules: Arc::new(tree.submodules),
+            stand_ins: Arc::new(tree.stand_ins),
         };
-        Ok((captured, stubs))
+        Ok((captured, tree.stubs))
     }
 
     /// A second owner of the same dicts, for a feed's drive context.
@@ -168,8 +176,44 @@ impl HostModules {
         Self {
             modules: self.modules.clone_ref(py),
             resolved: self.resolved.clone_ref(py),
+            submodules: Arc::clone(&self.submodules),
             stand_ins: Arc::clone(&self.stand_ins),
         }
+    }
+}
+
+/// What walking the `external_modules` entries gathers besides the top-level
+/// values: see [`HostModules`].
+#[derive(Default)]
+struct ModuleTree {
+    stubs: Vec<ModuleStub>,
+    submodules: Submodules,
+    stand_ins: HashMap<MontyUuid, String>,
+}
+
+impl ModuleTree {
+    /// Checks the `ExternalModule` at dotted `path` (see
+    /// [`check_external_module`]), records its stub, stand-in and submodules,
+    /// and returns its `module`. Only a top-level entry may be a factory: a
+    /// submodule crosses with its parent, so there is nothing to defer.
+    fn collect(&mut self, path: &str, entry: &Bound<'_, PyAny>, top_level: bool) -> PyResult<Py<PyAny>> {
+        let CheckedModule {
+            module,
+            stub,
+            submodules,
+        } = check_external_module(path, entry, top_level)?;
+        self.stubs.extend(stub);
+        self.stand_ins.insert(module_uuid("instance", path), path.to_owned());
+        let mut children = Vec::new();
+        for (name, child) in submodules {
+            let child_path = format!("{path}.{name}");
+            let value = self.collect(&child_path, &child, false)?;
+            children.push((name, value));
+        }
+        if !children.is_empty() {
+            self.submodules.insert(path.to_owned(), children);
+        }
+        Ok(module.unbind())
     }
 }
 
@@ -218,6 +262,7 @@ pub struct ExternalLookup<'a, 'py> {
     lookup: Option<&'py Bound<'py, PyDict>>,
     modules: Option<&'py Bound<'py, PyDict>>,
     resolved_modules: Option<&'py Bound<'py, PyDict>>,
+    submodules: Option<&'py Submodules>,
     stand_ins: Option<&'py HashMap<MontyUuid, String>>,
     instances: &'a InstanceStore,
 }
@@ -232,6 +277,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             lookup: names.lookup.as_ref().map(|d| d.bind(py)),
             modules: names.modules.as_ref().map(|m| m.modules.bind(py)),
             resolved_modules: names.modules.as_ref().map(|m| m.resolved.bind(py)),
+            submodules: names.modules.as_ref().map(|m| &*m.submodules),
             stand_ins: names.modules.as_ref().map(|m| &*m.stand_ins),
             instances,
         }
@@ -364,10 +410,9 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// The host callable `function_name` names: an entry of `external_lookup`,
-    /// or, for a dotted name, that attribute of the `external_modules` entry
-    /// (a host function bound by an import is named `<module>.<attr>`). Module
-    /// names and dict keys may both contain dots, so the module is the longest
-    /// prefix `external_modules` has. `None` when neither has it.
+    /// or, for a dotted name, that attribute of the module the path before the
+    /// last dot walks to (a host function bound by an import is named
+    /// `<module>.<attr>`). `None` when neither has it.
     fn callable(&self, function_name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
         if function_name.contains('.') {
             match self.module_of(function_name)? {
@@ -442,17 +487,42 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         Ok(module)
     }
 
-    /// The `external_modules` entry a dotted `function_name` calls into, with
-    /// the index of the dot that separates module from attribute. Module names
-    /// and dict keys may both contain dots, so the module is the longest prefix
-    /// `external_modules` has.
+    /// The module a dotted `function_name` calls into, with the index of the
+    /// dot before its attribute: the path up to that dot is walked one
+    /// component at a time, the first through `external_modules` (a factory's
+    /// awaitable comes back as such) and the rest through the submodules of
+    /// the one before. `None` as soon as a component is missing, so a
+    /// worker-sent name costs one lookup per component.
     fn module_of(&self, function_name: &str) -> PyResult<Option<(usize, Resolved<'py>)>> {
-        for (dot, _) in function_name.rmatch_indices('.') {
-            if let Some(module) = self.resolve_module(&function_name[..dot])? {
-                return Ok(Some((dot, module)));
-            }
+        let Some((module_path, _)) = function_name.rsplit_once('.') else {
+            return Ok(None);
+        };
+        let mut parts = module_path.split('.');
+        let top = parts.next().unwrap_or_default();
+        let mut module = match self.resolve_module(top)? {
+            Some(Resolved::Module(module)) => module,
+            Some(awaitable @ Resolved::Awaitable(_)) => return Ok(Some((module_path.len(), awaitable))),
+            None => return Ok(None),
+        };
+        let mut path = top.to_owned();
+        for part in parts {
+            let Some(child) = self.submodule(&path, part) else {
+                return Ok(None);
+            };
+            path.push('.');
+            path.push_str(part);
+            module = child;
         }
-        Ok(None)
+        Ok(Some((module_path.len(), Resolved::Module(module))))
+    }
+
+    /// The submodule `name` of the module at dotted `path`, if it has one.
+    fn submodule(&self, path: &str, name: &str) -> Option<Bound<'py, PyAny>> {
+        self.submodules?
+            .get(path)?
+            .iter()
+            .find(|(child, _)| child == name)
+            .map(|(_, value)| value.bind(self.py).clone())
     }
 
     /// Finishes a request whose module factory returned an awaitable, once the
@@ -523,12 +593,13 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// The sandbox value of an `external_modules` entry. A `ClassInstance`
+    /// The sandbox value of the module at dotted `path`. A `ClassInstance`
     /// wrapper crosses as itself, its methods routing back by uuid; a dict
-    /// becomes a host object named after the module whose public items are
-    /// sent eagerly: callables as host functions named `<module>.<attr>` (a
-    /// `ClassType` wrapper as the type it wraps), other values converted.
-    fn module_value(&self, name: &str, module: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
+    /// becomes a host object named after the path whose public items are sent
+    /// eagerly: callables as host functions named `<path>.<attr>` (a
+    /// `ClassType` wrapper as the type it wraps), other values converted, and
+    /// each submodule as its own module value.
+    fn module_value(&self, path: &str, module: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
         if is_class_instance_wrapper(module)? {
             return py_to_monty_value(module, self.instances)
                 .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc));
@@ -536,15 +607,19 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let mut attrs = Vec::new();
         for (attr, value) in module_attrs(module)? {
             let value = if value.is_callable() && !is_class_type_wrapper(&value)? {
-                MontyObject::function(format!("{name}.{attr}"), None)
+                MontyObject::function(format!("{path}.{attr}"), None)
             } else {
                 py_to_monty_value(&value, self.instances)
                     .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?
             };
             attrs.push((MontyObject::string(attr), value));
         }
-        let class = MontyObject::class_type(name, module_uuid("class", name), true, false, []);
-        Ok(MontyObject::class_instance(class, module_uuid("instance", name), attrs))
+        for (name, child) in self.submodules.and_then(|tree| tree.get(path)).into_iter().flatten() {
+            let value = self.module_value(&format!("{path}.{name}"), child.bind(self.py))?;
+            attrs.push((MontyObject::string(name), value));
+        }
+        let class = MontyObject::class_type(path, module_uuid("class", path), true, false, []);
+        Ok(MontyObject::class_instance(class, module_uuid("instance", path), attrs))
     }
 }
 
@@ -580,43 +655,47 @@ fn module_method_error(name: &str, method: &str) -> PyErr {
     }
 }
 
-/// Checks one `external_modules` entry (see [`HostModules::capture`]),
-/// returning its `module` and the [`ModuleStub`] its `stubs` declare. `name`
-/// must be a `str`, `entry` an `ExternalModule` and its `module` a module
-/// shape (see [`is_module_shape`]) or a callable returning one, else
-/// `TypeError`; a class is callable but constructs an instance, never a module
-/// shape, so it is refused here with a message naming it rather than at the
-/// import. A stub whose module name is not an identifier, or is a module the
-/// sandbox provides, is a `ValueError`.
-fn check_external_module<'py>(
-    name: &Bound<'py, PyAny>,
-    entry: &Bound<'py, PyAny>,
-) -> PyResult<(Bound<'py, PyAny>, Option<ModuleStub>)> {
-    const SHAPES: &str = "must be a dict, a ClassInstance or a callable returning one";
-    let Ok(name) = name.cast::<PyString>() else {
-        return Err(PyTypeError::new_err("external_modules keys must be str"));
-    };
+/// Checks the `ExternalModule` for the module at dotted `path` (see
+/// [`HostModules::capture`]), returning its `module`, the [`ModuleStub`] its
+/// `stubs` declare and its `modules` entries. `entry` must be an
+/// `ExternalModule` and its `module` a module shape (see [`is_module_shape`])
+/// or, at the top level, a callable returning one, else `TypeError`; a class
+/// is callable but constructs an instance, never a module shape, so it is
+/// refused here with a message naming it rather than at the import. A
+/// submodule name that is not an identifier, or that the parent dict also
+/// has, is a `ValueError`, as is a stub path the checker refuses.
+fn check_external_module<'py>(path: &str, entry: &Bound<'py, PyAny>, top_level: bool) -> PyResult<CheckedModule<'py>> {
+    let where_ = |suffix: &str| format!("external_modules['{path}']{suffix}");
     if !entry.is_instance(external_module_class(entry.py())?)? {
         return Err(PyTypeError::new_err(format!(
-            "external_modules[{}] must be an ExternalModule, not {}",
-            name.repr()?,
+            "{} must be an ExternalModule, not {}",
+            where_(""),
             entry.get_type().name()?
         )));
     }
+    let shapes = if top_level {
+        "must be a dict, a ClassInstance or a callable returning one"
+    } else {
+        "must be a dict or a ClassInstance"
+    };
     let module = entry.getattr("module")?;
     if let Ok(class) = module.cast::<PyType>() {
         return Err(PyTypeError::new_err(format!(
-            "external_modules[{}].module {SHAPES}, not the class {}",
-            name.repr()?,
+            "{} {shapes}, not the class {}",
+            where_(".module"),
             class.name()?
         )));
     }
-    if !(is_module_shape(&module)? || module.is_callable()) {
+    if !(is_module_shape(&module)? || (top_level && module.is_callable())) {
         return Err(PyTypeError::new_err(format!(
-            "external_modules[{}].module {SHAPES}, not {}",
-            name.repr()?,
+            "{} {shapes}, not {}",
+            where_(".module"),
             module.get_type().name()?
         )));
+    }
+    // a dict's keys are checked now rather than at the import
+    if module.is_instance_of::<PyDict>() {
+        module_attrs(&module)?;
     }
     let stubs = entry.getattr("stubs")?;
     let stub = if stubs.is_none() {
@@ -624,17 +703,64 @@ fn check_external_module<'py>(
     } else {
         let Ok(source) = stubs.extract::<String>() else {
             return Err(PyTypeError::new_err(format!(
-                "external_modules[{}].stubs must be a str or None, not {}",
-                name.repr()?,
+                "{} must be a str or None, not {}",
+                where_(".stubs"),
                 stubs.get_type().name()?
             )));
         };
-        Some(
-            ModuleStub::new(name.to_cow()?.into_owned(), source)
-                .map_err(|err| PyValueError::new_err(err.to_string()))?,
-        )
+        Some(ModuleStub::new(path, source).map_err(|err| PyValueError::new_err(err.to_string()))?)
     };
-    Ok((module, stub))
+    let modules = entry.getattr("modules")?;
+    let mut submodules = Vec::new();
+    if !modules.is_none() {
+        let Ok(modules) = modules.cast::<PyDict>() else {
+            return Err(PyTypeError::new_err(format!(
+                "{} must be a dict or None, not {}",
+                where_(".modules"),
+                modules.get_type().name()?
+            )));
+        };
+        for (name, child) in modules.iter() {
+            let name = module_key(&name, &where_(".modules"))?;
+            if !name.call_method0("isidentifier")?.is_truthy()? {
+                return Err(PyValueError::new_err(format!(
+                    "{} name {name:?} is not a valid identifier",
+                    where_(".modules")
+                )));
+            }
+            if module
+                .cast::<PyDict>()
+                .is_ok_and(|dict| dict.contains(&name).unwrap_or(false))
+            {
+                return Err(PyValueError::new_err(format!(
+                    "{} has both an item and a submodule named {name:?}",
+                    where_(".module")
+                )));
+            }
+            submodules.push((name.to_string(), child));
+        }
+    }
+    Ok(CheckedModule {
+        module,
+        stub,
+        submodules,
+    })
+}
+
+/// What [`check_external_module`] reads off one `ExternalModule`.
+struct CheckedModule<'py> {
+    module: Bound<'py, PyAny>,
+    stub: Option<ModuleStub>,
+    /// Its `modules`, each still to be checked.
+    submodules: Vec<(String, Bound<'py, PyAny>)>,
+}
+
+/// A module-mapping key as a Python `str`; `where_` names the mapping in the
+/// `TypeError` for any other key.
+fn module_key<'py>(key: &Bound<'py, PyAny>, where_: &str) -> PyResult<Bound<'py, PyString>> {
+    key.cast::<PyString>()
+        .cloned()
+        .map_err(|_| PyTypeError::new_err(format!("{where_} keys must be str")))
 }
 
 /// Cached import of the `pydantic_monty.ExternalModule` class.
@@ -660,13 +786,20 @@ fn module_attr<'py>(module: &Bound<'py, PyAny>, attr: &str) -> PyResult<Option<B
 }
 
 /// The public items of a dict `external_modules` entry, in order; keys must
-/// be `str`.
+/// be identifiers, since a host function is named by its dotted path.
 fn module_attrs<'py>(module: &Bound<'py, PyAny>) -> PyResult<Vec<(String, Bound<'py, PyAny>)>> {
     let mut attrs = Vec::new();
     for (key, value) in module.cast::<PyDict>()?.iter() {
-        let Ok(key) = key.extract::<String>() else {
+        let Ok(key) = key.cast::<PyString>() else {
             return Err(PyTypeError::new_err("external_modules entries must have str keys"));
         };
+        if !key.call_method0("isidentifier")?.is_truthy()? {
+            return Err(PyValueError::new_err(format!(
+                "external_modules entries must have identifier keys, not {}",
+                key.repr()?
+            )));
+        }
+        let key = key.to_string();
         if !key.starts_with('_') {
             attrs.push((key, value));
         }

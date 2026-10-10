@@ -101,13 +101,8 @@ impl TypeChecker {
         let main_path = src_root.join(python_source.path);
         let main_source = python_source.source_code;
 
-        for stub in context.module_stubs {
-            // `ModuleStub::new` validates the name, but a deserialized stub skips
-            // it, and a path component here would write outside the root `reset` scrubs.
-            if !is_identifier(stub.module()) {
-                return Err(format!("invalid module name {:?}", stub.module()));
-            }
-            self.write_root_file(&src_root.join(format!("{}.pyi", stub.module())), stub.source())?;
+        for (path, source) in stub_files(context.module_stubs)? {
+            self.write_root_file(&src_root.join(path), source)?;
         }
 
         let mut prefix = context.prelude.to_owned();
@@ -327,6 +322,46 @@ impl fmt::Display for TypeCheckingDiagnostics<'_> {
             .color(self.config.color);
         DisplayDiagnostics::new(&self.type_checker.db, &config, &self.diagnostics).fmt(f)
     }
+}
+
+/// The files the module stubs are written as, relative to the root: a plain
+/// module is `<m>.pyi`, while a dotted path (`a.b`) and the modules above it
+/// form a package tree (`a/__init__.pyi`, `a/b.pyi`), an ancestor without a
+/// stub of its own getting an empty `__init__.pyi` so the import resolves.
+/// Every component is checked to be an identifier: `ModuleStub::new` already
+/// does, but a deserialized stub skips it, and a path component here would
+/// write outside the root `reset` scrubs.
+fn stub_files(stubs: &[ModuleStub]) -> Result<Vec<(String, &str)>, String> {
+    let mut files: Vec<(String, &str)> = Vec::new();
+    let is_package = |module: &str| {
+        stubs
+            .iter()
+            .any(|stub| stub.module().starts_with(module) && stub.module()[module.len()..].starts_with('.'))
+    };
+    for stub in stubs {
+        let parts: Vec<&str> = stub.module().split('.').collect();
+        if parts.iter().any(|part| !is_identifier(part)) {
+            return Err(format!("invalid module name {:?}", stub.module()));
+        }
+        // ancestors with no stub of their own are empty packages
+        for depth in 1..parts.len() {
+            let ancestor = parts[..depth].join(".");
+            if !stubs.iter().any(|other| other.module() == ancestor) {
+                let init = format!("{}/__init__.pyi", parts[..depth].join("/"));
+                if !files.iter().any(|(path, _)| *path == init) {
+                    files.push((init, ""));
+                }
+            }
+        }
+        let dir = parts.join("/");
+        let path = if is_package(stub.module()) {
+            format!("{dir}/__init__.pyi")
+        } else {
+            format!("{dir}.pyi")
+        };
+        files.push((path, stub.source()));
+    }
+    Ok(files)
 }
 
 /// Whether `diagnostic`'s primary span starts inside the first `offset` bytes

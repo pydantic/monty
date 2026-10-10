@@ -352,6 +352,10 @@ class ExternalModule:
     stubs: str | None = None
     """The module's `.pyi` source for type checking; without it a type-checked
     `import <name>` fails as unresolved."""
+    modules: dict[str, ExternalModule] | None = None
+    """Submodules by name, each reached as an attribute of this module and by
+    `import <name>.<sub>`; their `module` must be a dict or a `ClassInstance`,
+    not a callable, and their `stubs` are laid out as a package."""
 
 
 TypeCheckFormat: TypeAlias = Literal[

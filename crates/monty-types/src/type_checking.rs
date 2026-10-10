@@ -97,10 +97,11 @@ pub struct TypeCheckState {
     pub committed_imports: String,
 }
 
-/// A `.pyi` for one host-provided module, written as `/<module>.pyi` for the
-/// type checker so `import <module>` resolves. The name is validated on
-/// construction: an identifier the sandbox's own stdlib does not use, or the
-/// runtime and the checker would disagree about what the import gives.
+/// A `.pyi` for one host-provided module, written for the type checker so
+/// `import <module>` resolves: `/<module>.pyi`, or inside a package tree for a
+/// dotted path (`a.b` is `/a/b.pyi` beside `/a/__init__.pyi`). The path is
+/// validated on construction: identifiers, the first not one the sandbox's own
+/// stdlib uses, or the runtime and the checker would disagree about the import.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleStub {
     module: String,
@@ -108,10 +109,16 @@ pub struct ModuleStub {
 }
 
 impl ModuleStub {
-    /// A stub for `module`, refusing a name [`validate_module_name`] refuses.
+    /// A stub for `module`, a dotted path whose top-level name
+    /// [`validate_module_name`] accepts and whose other components are identifiers.
     pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
         let module = module.into();
-        validate_module_name(&module)?;
+        let mut parts = module.split('.');
+        let top = parts.next().unwrap_or_default();
+        validate_module_name(top).map_err(|_| invalid_path(&module, top))?;
+        if let Some(part) = parts.find(|part| !is_identifier(part)) {
+            return Err(invalid_path(&module, part));
+        }
         Ok(Self {
             module,
             source: source.into(),
@@ -141,6 +148,16 @@ pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
         Err(ModuleStubError::ReservedName(name.to_owned()))
     } else {
         Ok(())
+    }
+}
+
+/// The error for a dotted stub path: a reserved top-level name keeps its own
+/// error, any other bad component makes the whole path invalid.
+fn invalid_path(path: &str, part: &str) -> ModuleStubError {
+    if RESERVED_MODULE_NAMES.contains(&part) {
+        ModuleStubError::ReservedName(part.to_owned())
+    } else {
+        ModuleStubError::InvalidName(path.to_owned())
     }
 }
 

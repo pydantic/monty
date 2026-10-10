@@ -636,11 +636,12 @@ class Monty:
                 keyed by module name, each an `ExternalModule` pairing the
                 module's host value (or a zero-argument callable returning it,
                 run when the session first needs the module) with the `.pyi`
-                stub type checking resolves `import <module>` against. A stub
-                is never star-imported; a stub's module name that is not an
-                identifier, or that the sandbox provides, raises `ValueError`.
-                Any other entry raises `TypeError`. Importing a module absent
-                here raises `ModuleNotFoundError`.
+                stub type checking resolves `import <module>` against, and
+                with its submodules (`modules`), reached as attributes and by
+                dotted imports. A stub is never star-imported. A name that is
+                not an identifier, or that the sandbox provides, raises
+                `ValueError`; any other entry raises `TypeError`. Importing a
+                module absent here raises `ModuleNotFoundError`.
             type_check_format: How `MontyTypingError` diagnostics are rendered;
                 `None` (the default) means `'full'`. Chosen here rather than on
                 the error because the checker's structured diagnostics never

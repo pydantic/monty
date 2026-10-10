@@ -17,7 +17,6 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
     intern::{CompileInterns, Interns, StringId},
-    modules::StandardLib,
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
@@ -746,7 +745,7 @@ impl Program {
                         vm.set_instruction_ip(load_ip);
                     }
                     let err = match vm.suspended_import() {
-                        Some(module_id) => StandardLib::not_found_error(vm.interns.get_str(module_id)),
+                        Some(module_id) => ExcType::module_not_found_error(vm.interns.get_str(module_id), None),
                         None => ExcType::name_error(function_name.as_str(vm.interns)).into(),
                     };
                     args.drop_with(vm);
@@ -803,7 +802,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
         FrameExit::Return(_) => unreachable!("returns are handled above"),
         FrameExit::ExternalCall { function_name, .. } => match vm.suspended_import() {
             // an import nobody serves is a missing module, as in `run_to_completion`
-            Some(module_id) => StandardLib::not_found_error(vm.interns.get_str(module_id)),
+            Some(module_id) => ExcType::module_not_found_error(vm.interns.get_str(module_id), None),
             None => ExcType::not_implemented(format!(
                 "External function '{}' not implemented with standard execution",
                 function_name.as_str(vm.interns)

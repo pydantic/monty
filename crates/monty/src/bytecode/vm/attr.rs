@@ -5,7 +5,7 @@ use crate::{
     bytecode::{Opcode, vm::CallResult},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
-    heap::{ContainsHeap, DropWithContext},
+    heap::{ContainsHeap, DropWithContext, HeapData},
     intern::StringId,
     value::{EitherStr, Value},
 };
@@ -91,6 +91,44 @@ impl VM<'_> {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Loads the next component of a dotted import: pops the module so far and
+    /// pushes its attribute `name_id`. A missing attribute is
+    /// `ModuleNotFoundError` naming `path_id` (`a.b`), with `; 'a' is not a
+    /// package` when the module is a built-in one, since a built-in module has
+    /// no submodules a host could supply.
+    pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
+        let this = self;
+
+        let obj = this.pop();
+        defer_drop!(obj, this);
+
+        let attr = EitherStr::Interned(name_id);
+        match obj.py_getattr(&attr, this) {
+            Ok(result) => Ok(result),
+            Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
+                let path = this.interns.get_str(path_id);
+                // the parent as spelled in the import (`os.path`), not the module's own name
+                let is_builtin = matches!(obj, Value::Ref(id) if matches!(this.heap.get(*id), HeapData::Module(_)));
+                let parent = is_builtin.then(|| path.rsplit_once('.').map_or(path, |(parent, _)| parent));
+                Err(ExcType::module_not_found_error(path, parent))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The dotted path a suspended `LoadSubmodule` is loading (`a.b`): `Some`
+    /// while the suspended instruction is one, so a host's answer to the lazy
+    /// attribute lookup can raise the same `ModuleNotFoundError` the synchronous
+    /// load does.
+    pub(crate) fn suspended_submodule(&self) -> Option<StringId> {
+        let ip = self.instruction_ip;
+        let bytecode = self.current_frame.bytecode;
+        (bytecode.get(ip) == Some(&(Opcode::LoadSubmodule as u8))).then(|| {
+            // operands: u16 attribute name_id, then u16 path name_id, little-endian
+            StringId::from_index(u16::from_le_bytes([bytecode[ip + 3], bytecode[ip + 4]]))
+        })
     }
 
     /// The module a suspended `from <module> import <name>` is loading from: `Some`

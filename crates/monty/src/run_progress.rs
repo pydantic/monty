@@ -19,7 +19,6 @@ use crate::{
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     intern::StringId,
-    modules::StandardLib,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
@@ -563,15 +562,24 @@ pub(crate) fn resume_lookup(
     vm.run_external()
 }
 
-/// The `ImportError` a `from <module> import <name>` raises when the host answers
-/// its attribute lookup with `AttributeError` or nothing, matching the synchronous
-/// load; any other error, or one outside an import, passes through unchanged.
+/// The error an import raises when the host answers its attribute lookup with
+/// `AttributeError` or nothing, matching the synchronous load: `ImportError`
+/// for the name of a `from <module> import <name>`, `ModuleNotFoundError` for
+/// the component of a dotted module. Any other error, or one outside an
+/// import, passes through unchanged.
 fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
-    match (&err, vm.suspended_import_from()) {
-        (RunError::Exc(exc), Some(module)) if exc.exc.exc_type() == ExcType::AttributeError => {
-            ExcType::cannot_import_name(name, vm.interns.get_str(module))
-        }
-        _ => err,
+    let RunError::Exc(exc) = &err else {
+        return err;
+    };
+    if exc.exc.exc_type() != ExcType::AttributeError {
+        return err;
+    }
+    if let Some(module) = vm.suspended_import_from() {
+        ExcType::cannot_import_name(name, vm.interns.get_str(module))
+    } else if let Some(path) = vm.suspended_submodule() {
+        ExcType::module_not_found_error(vm.interns.get_str(path), None)
+    } else {
+        err
     }
 }
 
@@ -976,7 +984,7 @@ fn resume_import(
             vm.resume_with_exception(RunError::Exc(raise))
         }
         (ExtFunctionResult::NotFound(_), None) => {
-            vm.resume_with_exception(StandardLib::not_found_error(vm.interns.get_str(module_id)))
+            vm.resume_with_exception(ExcType::module_not_found_error(vm.interns.get_str(module_id), None))
         }
         (ExtFunctionResult::Future(_), _) | (_, Some(_)) => {
             let message = format!(

@@ -3,15 +3,12 @@
 //! This module provides implementations for Python built-in modules like `sys`, `typing`,
 //! and `asyncio`. These are created on-demand when import statements are executed.
 
-use std::{
-    fmt::{self, Write},
-    str::FromStr,
-};
+use std::fmt::{self, Write};
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::RunResult,
     heap::HeapId,
     intern::StaticStrings,
 };
@@ -134,35 +131,6 @@ impl StandardLib {
         (0..)
             .map_while(StaticStrings::from_repr)
             .filter_map(|name| Self::from_static(name).map(|_| <&'static str>::from(name)))
-    }
-
-    /// Whether `name` (dotted for `os.path`) is a built-in module.
-    fn is_module(name: &str) -> bool {
-        StaticStrings::from_str(name).ok().and_then(Self::from_static).is_some()
-    }
-
-    /// Splits an unresolvable import the way CPython reports it: the shortest
-    /// prefix that is not a module, plus the module just before it when there
-    /// is one (`No module named 'os.x'; 'os' is not a package`).
-    pub(crate) fn missing_module(name: &str) -> (&str, Option<&str>) {
-        let mut parent = None;
-        for (end, _) in name.match_indices('.') {
-            let prefix = &name[..end];
-            if Self::is_module(prefix) {
-                parent = Some(prefix);
-            } else {
-                return (prefix, parent);
-            }
-        }
-        (name, parent)
-    }
-
-    /// The `ModuleNotFoundError` for an import of `name` that nothing serves,
-    /// naming the first missing component as CPython does (see
-    /// [`missing_module`](Self::missing_module)).
-    pub(crate) fn not_found_error(name: &str) -> RunError {
-        let (missing, parent) = Self::missing_module(name);
-        ExcType::module_not_found_error(missing, parent)
     }
 
     /// Creates a new instance of this module on the heap.

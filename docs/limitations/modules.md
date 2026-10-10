@@ -92,9 +92,11 @@ typeshed's `abc`, not against what the host serves.
 ## Host modules
 
 An `import` of any module the runtime does not ship, the checker-only ones above included, asks the host for it as
-the external function call `__import__` with the module name as its argument.
-The one exception is a dotted name below a bundled module that is not a package (`import os.x`), which raises
-`ModuleNotFoundError: No module named 'os.x'; 'os' is not a package` without asking.
+the external function call `__import__` with the top-level module name as its argument.
+A dotted import (`import a.b.c`, `from a.b import c`) asks for `a` and reads each further component as an attribute of
+the one before, as CPython reads a submodule out of its package; below a bundled module that is not a package
+(`import os.x`) the attribute read raises `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package`
+without asking the host.
 The value the host answers with (in the bindings, the matching `external_modules` entry) is bound as the module, so:
 
 - the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr and `m.__class__`
@@ -107,12 +109,15 @@ The value the host answers with (in the bindings, the matching `external_modules
     objects (`import m as a; import m as b` leaves `a is not b`), and an import inside a function asks on each call;
 - an attribute can be assigned, as on any host object, but only that binding sees it: the next `import` starts
     from the host's attributes again;
-- a not-found answer raises `ModuleNotFoundError: No module named 'm'`, as in CPython (a dotted `m.x` names `m`, the
-    first component, since nothing tells the sandbox which part was missing), and an exception raised by the
+- a not-found answer raises `ModuleNotFoundError: No module named 'm'`, as in CPython, and an exception raised by the
     host is raised at the `import`;
+- a submodule the answer lacks raises `ModuleNotFoundError: No module named 'm.x'`, the wording CPython uses for a
+    package without that submodule, since a host module is never told apart from a package;
 - `from m import x` reads `x` from the answered value, whether sent with it or looked up lazily, and raises
     `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute;
 - in the Python binding a plain class in a module dict crosses as a host function named `m.X` (calling it constructs
-    on the host), not as a type, so `isinstance(v, m.X)` raises `TypeError`; wrap it in `ClassType` to send a type.
+    on the host), not as a type, so `isinstance(v, m.X)` raises `TypeError`; wrap it in `ClassType` to send a type;
+- module names and the keys of a module dict are identifiers, since a host function is named by its dotted path, so
+    `getattr(m, 'a.b')` has nothing to find.
 
 With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.

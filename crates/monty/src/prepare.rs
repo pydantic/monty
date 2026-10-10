@@ -987,7 +987,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             let resolved_binding = self.get_id(import_name.binding)?;
                             Ok(ImportName {
                                 module_name: import_name.module_name,
-                                package: import_name.package,
+                                submodules: import_name.submodules,
+                                binds_top_level: import_name.binds_top_level,
                                 binding: resolved_binding,
                             })
                         })
@@ -996,6 +997,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
                 Node::ImportFrom {
                     module_name,
+                    submodules,
                     names,
                     position,
                 } => {
@@ -1010,6 +1012,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .collect::<Result<_, _>>()?;
                     new_nodes.push(Node::ImportFrom {
                         module_name,
+                        submodules,
                         names: resolved_names,
                         position,
                     });

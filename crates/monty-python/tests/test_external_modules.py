@@ -217,16 +217,81 @@ def test_a_module_factory_failure_raises_at_the_import(pool: Monty, factory: Any
         assert session.feed_run('1 + 1') == snapshot(2)
 
 
-def test_a_dotted_module_name(pool: Monty):
-    """A module name may itself hold dots: `pkg.tools` is one `external_modules` entry."""
-    with pool.checkout(external_modules={'pkg.tools': ExternalModule(TOOLS)}) as session:
-        assert session.feed_run('from pkg.tools import add\nadd(1, 2)') == snapshot(3)
+def test_submodules_are_attributes_of_their_parent(pool: Monty):
+    """`modules` nests a module under its parent: reached as an attribute, and by every
+    form of dotted import."""
+    sub = ExternalModule({'add': add, 'VERSION': 2})
+    pkg = ExternalModule({'VERSION': 1}, modules={'sub': sub})
+    with pool.checkout(external_modules={'pkg': pkg}) as session:
+        code = (
+            'import pkg.sub\n'
+            'import pkg.sub as s\n'
+            'from pkg import sub\n'
+            'from pkg.sub import add, VERSION\n'
+            '[pkg.VERSION, pkg.sub.VERSION, s.add(1, 2), sub.add(3, 4), add(5, 6), VERSION, type(pkg.sub).__name__]'
+        )
+        assert session.feed_run(code) == snapshot([1, 2, 3, 7, 11, 2, 'pkg.sub'])
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import pkg.nope')
+        assert str(exc_info.value) == snapshot("ModuleNotFoundError: No module named 'pkg.nope'")
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('from pkg.sub.deeper import x')
+        assert str(exc_info.value) == snapshot("ModuleNotFoundError: No module named 'pkg.sub.deeper'")
+        # a submodule's stand-in answers a call on itself like any module's
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import pkg.sub\npkg.sub()')
+        assert str(exc_info.value) == snapshot("TypeError: 'pkg.sub' object is not callable")
 
 
-def test_a_dotted_dict_key(pool: Monty):
-    """A dict key holding a dot is reachable through `getattr`, and callable."""
-    with pool.checkout(external_modules={'tools': ExternalModule({'a.b': add})}) as session:
-        assert session.feed_run("import tools\ngetattr(tools, 'a.b')(1, 2)") == snapshot(3)
+def test_a_class_instance_submodule(pool: Monty):
+    class Tools:
+        def add(self, a: int, b: int) -> int:
+            return a + b
+
+    pkg = ExternalModule({}, modules={'sub': ExternalModule(ClassInstance(Tools(), allowed_methods={'add'}))})
+    with pool.checkout(external_modules={'pkg': pkg}) as session:
+        assert session.feed_run('from pkg import sub\nsub.add(2, 3)') == snapshot(5)
+
+
+@pytest.mark.parametrize(
+    ('entry', 'error', 'message'),
+    [
+        pytest.param(
+            ExternalModule({}, modules={'sub': ExternalModule(lambda: TOOLS)}),
+            TypeError,
+            snapshot("external_modules['pkg.sub'].module must be a dict or a ClassInstance, not function"),
+            id='nested-factory',
+        ),
+        pytest.param(
+            ExternalModule({}, modules={'1sub': ExternalModule(TOOLS)}),
+            ValueError,
+            snapshot("external_modules['pkg'].modules name '1sub' is not a valid identifier"),
+            id='nested-name',
+        ),
+        pytest.param(
+            ExternalModule({'sub': 1}, modules={'sub': ExternalModule(TOOLS)}),
+            ValueError,
+            snapshot("external_modules['pkg'].module has both an item and a submodule named 'sub'"),
+            id='clash',
+        ),
+        pytest.param(
+            ExternalModule({}, modules=[]),  # pyright: ignore[reportArgumentType]
+            TypeError,
+            snapshot("external_modules['pkg'].modules must be a dict or None, not list"),
+            id='modules-not-dict',
+        ),
+        pytest.param(
+            ExternalModule({'a.b': add}),
+            ValueError,
+            snapshot("external_modules entries must have identifier keys, not 'a.b'"),
+            id='dotted-key',
+        ),
+    ],
+)
+def test_invalid_submodules_are_rejected(pool: Monty, entry: ExternalModule, error: type[Exception], message: str):
+    with pytest.raises(error) as exc_info:
+        pool.checkout(external_modules={'pkg': entry})
+    assert str(exc_info.value) == message
 
 
 @pytest.mark.parametrize(
@@ -260,6 +325,23 @@ def test_name_based_calls_respect_module_exposure(pool: Monty, tools: Any, name:
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('import tools\nprobe()', inputs={'probe': probe})
         assert str(exc_info.value) == message
+
+
+def test_a_forged_name_with_many_dots_is_matched_against_the_configured_modules(pool: Monty):
+    """A host function name is walked one component at a time through the configured modules:
+    a forged name of thousands of components stops at the first missing one, and finds nothing."""
+
+    def probe() -> str:
+        return 'hidden'
+
+    probe.__name__ = 'a.' * 5000 + 'f'
+    modules = {'tools': ExternalModule(TOOLS), 'a': ExternalModule({}, modules={'a': ExternalModule(TOOLS)})}
+    with pool.checkout(external_modules=modules) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('probe()', inputs={'probe': probe})
+        assert str(exc_info.value) == snapshot(f"NameError: name '{probe.__name__}' is not defined")
+        # a configured path still matches
+        assert session.feed_run('from a.a import add\nadd(1, 2)') == snapshot(3)
 
 
 def test_the_module_object(pool: Monty):
@@ -361,6 +443,18 @@ def test_module_stubs_type_check_imports(pool: Monty):
         assert session.feed_run('tools.add(3, 4)') == snapshot(7)
 
 
+def test_submodule_stubs_type_check_as_a_package(pool: Monty):
+    sub = ExternalModule({'add': add}, stubs=ADD_STUB)
+    pkg = ExternalModule({'VERSION': 1}, stubs='VERSION: int\n', modules={'sub': sub})
+    with pool.checkout(type_check=True, type_check_format='concise', external_modules={'pkg': pkg}) as session:
+        assert session.feed_run('import pkg.sub\nfrom pkg import VERSION\npkg.sub.add(1, VERSION)') == snapshot(2)
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run("from pkg.sub import add\nadd('x', 2)")
+        assert str(exc_info.value) == snapshot(
+            'main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`\n'
+        )
+
+
 def test_a_module_without_stubs_does_not_type_check(pool: Monty):
     with pool.checkout(type_check=True, type_check_format='concise', external_modules=MODULES) as session:
         with pytest.raises(MontyTypingError) as exc_info:
@@ -395,7 +489,8 @@ def test_module_stubs_ride_in_a_dump(pool: Monty):
         ('1tools', snapshot('module name "1tools" is not a valid identifier')),
     ],
 )
-def test_invalid_module_stub_names(pool: Monty, module: str, message: str):
-    with pytest.raises(ValueError) as exc_info:
-        pool.checkout(external_modules={module: ExternalModule({}, stubs='')})
-    assert str(exc_info.value) == message
+def test_invalid_module_names(pool: Monty, module: str, message: str):
+    for entry in (ExternalModule({}, stubs=''), ExternalModule({})):
+        with pytest.raises(ValueError) as exc_info:
+            pool.checkout(external_modules={module: entry})
+        assert str(exc_info.value) == message

@@ -81,9 +81,9 @@ export interface CheckoutOptions {
    * The modules the session's snippets may `import`, keyed by module name,
    * each pairing the module's host value with the `.pyi` stub type checking
    * resolves `import <module>` against (never star-imported, unlike
-   * `typeCheckStubs`). A stub's module name that is not an identifier, or that
-   * the sandbox provides itself, throws. Importing a module absent here raises
-   * `ModuleNotFoundError`.
+   * `typeCheckStubs`) and with its submodules. A name that is not an
+   * identifier, or that the sandbox provides itself, throws. Importing a
+   * module absent here raises `ModuleNotFoundError`.
    */
   externalModules?: ExternalModules
   /**

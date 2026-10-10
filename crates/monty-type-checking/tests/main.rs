@@ -627,12 +627,44 @@ fn module_stub_names_are_validated() {
     let stub = |name: &str| ModuleStub::new(name, "").map(|_| ()).unwrap_err();
     assert_eq!(stub("1tools"), ModuleStubError::InvalidName("1tools".to_owned()));
     assert_eq!(stub("class"), ModuleStubError::InvalidName("class".to_owned()));
-    assert_eq!(stub("a.b"), ModuleStubError::InvalidName("a.b".to_owned()));
+    assert_eq!(stub("a.1b"), ModuleStubError::InvalidName("a.1b".to_owned()));
+    assert_eq!(stub("a."), ModuleStubError::InvalidName("a.".to_owned()));
     assert_eq!(stub("json"), ModuleStubError::ReservedName("json".to_owned()));
+    assert_eq!(stub("json.decoder"), ModuleStubError::ReservedName("json".to_owned()));
     assert_eq!(stub("builtins"), ModuleStubError::ReservedName("builtins".to_owned()));
-    assert_snapshot!(stub("a.b").to_string(), @r#"module name "a.b" is not a valid identifier"#);
+    assert_snapshot!(stub("a.1b").to_string(), @r#"module name "a.1b" is not a valid identifier"#);
     assert_snapshot!(stub("json").to_string(), @r#"module "json" is provided by the sandbox or its type checker and cannot be replaced"#);
     assert_eq!(ModuleStub::new("stripe", "x: int\n").unwrap().module(), "stripe");
+    // a submodule's stub names its path; `a.json` is not the stdlib's `json`
+    assert_eq!(ModuleStub::new("stripe.json", "").unwrap().module(), "stripe.json");
+}
+
+/// Stubs for a dotted path form a package: `import a.b`, `from a.b import x`
+/// and `from a import b` all resolve, an ancestor without a stub of its own is
+/// an empty package, and the submodule's names are not the parent's.
+#[test]
+fn dotted_module_stubs_form_a_package() {
+    let stubs = [
+        ModuleStub::new("pkg", "VERSION: int\n").unwrap(),
+        ModuleStub::new("pkg.tools", "def add(a: int, b: int) -> int: ...\n").unwrap(),
+        ModuleStub::new("bare.sub", "x: str\n").unwrap(),
+    ];
+    let context = TypeCheckContext {
+        module_stubs: &stubs,
+        ..TypeCheckContext::default()
+    };
+    let mut checker = TypeChecker::default();
+    let code = "import pkg.tools\nfrom pkg.tools import add\nfrom pkg import tools, VERSION\nimport bare.sub\n[pkg.tools.add(1, 2), add(3, 4), tools.add(5, 6), VERSION, bare.sub.x]\n";
+    let ok = render_with(&mut checker, code, &context);
+    assert!(ok.is_none(), "the package stubs should resolve: {ok:#?}");
+    let wrong = render_with(&mut checker, "from pkg.tools import add\nadd('x', 2)\n", &context);
+    assert_snapshot!(wrong.unwrap(), @r#"main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+    let unresolved = render_with(&mut checker, "from pkg import add\n", &context);
+    assert_snapshot!(unresolved.unwrap(), @"main.py:1:17: error[unresolved-import] Module `pkg` has no member `add`");
+    // the package tree is scrubbed with the rest
+    checker.reset().unwrap();
+    let gone = render_with(&mut checker, "import pkg.tools\n", &TypeCheckContext::default());
+    assert_snapshot!(gone.unwrap(), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `pkg.tools`");
 }
 
 /// Every module of the vendored typeshed must be reserved, or a stub could

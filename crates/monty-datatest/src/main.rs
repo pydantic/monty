@@ -663,6 +663,15 @@ impl FixtureRegistry {
     /// Registers and returns the host object `import tools` binds: its eager attrs are
     /// the fixture functions, so `tools.add_ints(1, 2)` dispatches like a bare `add_ints(1, 2)`.
     fn make_tools_module(&mut self) -> MontyObject {
+        // `tools.nested`: a submodule, reached as an attribute of its parent
+        let nested = self.register(Fixture {
+            class_name: "tools.nested",
+            type_id: 6, // distinct per fixture class (real hosts pass the Python type id)
+            attrs: vec![
+                ("return_value", MontyObject::function("return_value", None)),
+                ("VERSION", MontyObject::int(7)),
+            ],
+        });
         let functions = [
             "add_ints",
             "concat_strings",
@@ -678,6 +687,7 @@ impl FixtureRegistry {
             attrs: functions
                 .iter()
                 .map(|name| (*name, MontyObject::function(*name, None)))
+                .chain([("nested", nested)])
                 .collect(),
         })
     }

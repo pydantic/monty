@@ -581,7 +581,15 @@ os.environ = VirtualEnviron()
 tools = types.ModuleType('tools')
 for _fixture in (add_ints, concat_strings, return_value, get_list, raise_error, async_call, async_fail):
     setattr(tools, _fixture.__name__, _fixture)
+# a package (so `import tools.nested` resolves) with one submodule, as the Rust
+# runner's `tools` object carries a `nested` attribute
+tools.__path__ = []
+nested = types.ModuleType('tools.nested')
+nested.return_value = return_value  # type: ignore[attr-defined]
+nested.VERSION = 7  # type: ignore[attr-defined]
+tools.nested = nested  # type: ignore[attr-defined]
 sys.modules['tools'] = tools
+sys.modules['tools.nested'] = nested
 
 # =============================================================================
 # Names exported into every CPython test's globals.

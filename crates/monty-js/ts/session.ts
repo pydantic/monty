@@ -595,34 +595,43 @@ class TurnAnswerer {
   /**
    * The host value `functionName` names: an own entry of `externalLookup`, or
    * for `<module>.<attr>` (an import's host function) that own property of the
-   * `externalModules` entry. Both parts may hold dots, so the module is the
-   * longest prefix `externalModules` has. Own keys only: an inherited callable
-   * (e.g. `Object.prototype.toString`) must never be dispatched as a host function.
-   * The entry comes back boxed: a plain value with a `then` of its own would
-   * otherwise be awaited by this async return, running a host method the
-   * sandbox only tried to call.
+   * module the path before the last dot walks to, one component at a time
+   * through `externalModules` and then the submodules of each. Own keys only:
+   * an inherited callable (e.g. `Object.prototype.toString`) must never be
+   * dispatched as a host function. The entry comes back boxed: a plain value
+   * with a `then` of its own would otherwise be awaited by this async return,
+   * running a host method the sandbox only tried to call.
    */
   private async hostEntry(functionName: string): Promise<{ value: unknown } | undefined> {
-    if (!functionName.includes('.')) {
+    const dot = functionName.lastIndexOf('.')
+    if (dot < 0) {
       return boxed(ownEntry(this.externalLookup, functionName))
     }
-    for (let dot = functionName.lastIndexOf('.'); dot > 0; dot = functionName.lastIndexOf('.', dot - 1)) {
-      const resolved = await this.module(functionName.slice(0, dot))
-      if (resolved !== undefined) {
-        const module = resolved.value
-        const attr = functionName.slice(dot + 1)
-        // the rule `moduleValue` sends by: a `ClassInstance` module routes by uuid
-        // under its own policy, and a private name is never a module function, so a
-        // frame naming either (only a non-conforming worker sends one) finds nothing
-        if (module instanceof ClassInstance || attr.startsWith('_')) {
-          return undefined
-        }
-        const entry = ownEntry(module, attr)
-        // called with the module as its receiver, as `module.attr(...)` would be
-        return boxed(typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry)
-      }
+    const [top, ...rest] = functionName.slice(0, dot).split('.')
+    const resolved = await this.module(top as string)
+    if (resolved === undefined) {
+      return undefined
     }
-    return undefined
+    let module = resolved.value
+    let path = top as string
+    for (const part of rest) {
+      const child = ownEntry(this.modules.submodules(path), part) as ExternalModule | undefined
+      if (child === undefined || typeof child.module === 'function') {
+        return undefined
+      }
+      module = child.module
+      path = `${path}.${part}`
+    }
+    const attr = functionName.slice(dot + 1)
+    // the rule `moduleValue` sends by: a `ClassInstance` module routes by uuid
+    // under its own policy, and a private name is never a module function, so a
+    // frame naming either (only a non-conforming worker sends one) finds nothing
+    if (module instanceof ClassInstance || attr.startsWith('_')) {
+      return undefined
+    }
+    const entry = ownEntry(module, attr)
+    // called with the module as its receiver, as `module.attr(...)` would be
+    return boxed(typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry)
   }
 
   /**
@@ -673,7 +682,7 @@ class TurnAnswerer {
       if (resolved === undefined) {
         return this.native.resumeNotFound(onPrint)
       }
-      value = this.modules.values.get(name) ?? moduleValue(name, resolved.value)
+      value = this.modules.values.get(name) ?? moduleValue(name, resolved.value, this.modules)
       this.modules.values.set(name, value)
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
@@ -1358,14 +1367,18 @@ export type ModuleValue = Record<string, unknown> | ClassInstance
 export interface ExternalModule {
   /** The module's value, or a zero-argument function returning it (or a
    *  `Promise` of it), run when the session first needs the module and kept
-   *  for the rest of the session. */
+   *  for the rest of the session. A submodule's must be the value itself. */
   module: ModuleValue | (() => ModuleValue | Promise<ModuleValue>)
   /** The module's `.pyi` source for type checking; without it a type-checked
    *  `import <name>` fails as unresolved. */
   stubs?: string
+  /** Submodules by name, each reached as an attribute of this module and by
+   *  `import <name>.<sub>`; their stubs are laid out as a package. */
+  modules?: ExternalModules
 }
 
-/** The `externalModules` checkout option: modules by the name the sandbox imports them as. */
+/** The `externalModules` checkout option: modules by the name the sandbox
+ *  imports them as, each an identifier. */
 export type ExternalModules = Record<string, ExternalModule>
 
 /**
@@ -1381,19 +1394,46 @@ export class HostModules {
    *  per module for the session, since its id is fixed and the instance store
    *  keeps each wrapper sent. */
   readonly values = new Map<string, unknown>()
-  /** Each module's name by the id of its plain-object stand-in (see [`moduleValue`]). */
+  /** Each module's dotted path by the id of its plain-object stand-in (see [`moduleValue`]). */
   private readonly standIns = new Map<string, string>()
+  /** The `.pyi` of every module that declares one, by dotted path. */
+  private readonly stubSources: Record<string, string> = {}
 
   constructor(private readonly entries: ExternalModules | undefined) {
     for (const [name, entry] of Object.entries(entries ?? {})) {
-      this.standIns.set(moduleUuid('instance', name), name)
-      const proto = entry !== null && typeof entry === 'object' ? Object.getPrototypeOf(entry) : undefined
-      if ((proto !== Object.prototype && proto !== null) || !Object.prototype.hasOwnProperty.call(entry, 'module')) {
-        throw new TypeError(`externalModules.${name} must be an object with a module property`)
+      this.check(name, name, entry, true)
+    }
+  }
+
+  /**
+   * Validates the entry at dotted `path` and records its stub and stand-in,
+   * then its submodules. Names are identifiers, so an import and a host
+   * function name split into them unambiguously; a submodule's `module` is
+   * its value, never a factory, since it crosses with its parent.
+   */
+  private check(path: string, name: string, entry: ExternalModule, topLevel: boolean): void {
+    if (!IDENTIFIER.test(name)) {
+      throw new TypeError(`externalModules.${path} is not a valid module name`)
+    }
+    const proto = entry !== null && typeof entry === 'object' ? Object.getPrototypeOf(entry) : undefined
+    if ((proto !== Object.prototype && proto !== null) || !Object.prototype.hasOwnProperty.call(entry, 'module')) {
+      throw new TypeError(`externalModules.${path} must be an object with a module property`)
+    }
+    if (!topLevel && typeof entry.module === 'function') {
+      throw new TypeError(`externalModules.${path}.module must be a plain object or ClassInstance, not a function`)
+    }
+    if (entry.stubs !== undefined && typeof entry.stubs !== 'string') {
+      throw new TypeError(`externalModules.${path}.stubs must be a string`)
+    }
+    if (entry.stubs !== undefined) {
+      this.stubSources[path] = entry.stubs
+    }
+    this.standIns.set(moduleUuid('instance', path), path)
+    for (const [sub, child] of Object.entries(entry.modules ?? {})) {
+      if (typeof entry.module !== 'function' && ownEntry(entry.module, sub) !== undefined) {
+        throw new TypeError(`externalModules.${path}.module has both a property and a submodule named ${sub}`)
       }
-      if (entry.stubs !== undefined && typeof entry.stubs !== 'string') {
-        throw new TypeError(`externalModules.${name}.stubs must be a string`)
-      }
+      this.check(`${path}.${sub}`, sub, child, false)
     }
   }
 
@@ -1402,19 +1442,30 @@ export class HostModules {
     return this.standIns.get(id)
   }
 
-  /** The `module` of the entry `name`, if there is one (own keys only). */
+  /** The top-level entry's `module` for `name`, if there is one (own keys only). */
   entry(name: string): ExternalModule['module'] | undefined {
     const entry = ownEntry(this.entries, name) as ExternalModule | undefined
     return entry?.module
   }
 
-  /** The `.pyi` per module the entries declare, for the worker's type checker. */
+  /** The submodules of the module at dotted `path`, by name. */
+  submodules(path: string): ExternalModules {
+    let entry: ExternalModule | undefined
+    for (const part of path.split('.')) {
+      entry = ownEntry(entry === undefined ? this.entries : entry.modules, part) as ExternalModule | undefined
+      if (entry === undefined) return {}
+    }
+    return entry?.modules ?? {}
+  }
+
+  /** The `.pyi` per module the entries declare, by dotted path, for the worker's type checker. */
   stubs(): Record<string, string> {
-    return Object.fromEntries(
-      Object.entries(this.entries ?? {}).flatMap(([name, { stubs }]) => (stubs === undefined ? [] : [[name, stubs]])),
-    )
+    return { ...this.stubSources }
   }
 }
+
+/** A Python identifier, the shape of every module name. */
+const IDENTIFIER = /^[\p{ID_Start}_][\p{ID_Continue}]*$/u
 
 /** `value` wrapped so an async return cannot await it; `undefined` stays absent. */
 function boxed(value: unknown): { value: unknown } | undefined {
@@ -1431,8 +1482,9 @@ function ownEntry(record: unknown, key: string): unknown {
 /**
  * `value` when it can stand for a module: a [`ClassInstance`], or a plain
  * object (prototype `Object.prototype` or null, so a module namespace counts)
- * whose own keys name exactly what the sandbox may reach. Anything else, an
- * instance of some other class included, is a `TypeError` opening with `source`.
+ * whose own keys, identifiers all, name exactly what the sandbox may reach.
+ * Anything else, an instance of some other class included, is a `TypeError`
+ * opening with `source`.
  */
 function checkedModule(value: unknown, source: string): ModuleValue {
   if (value instanceof ClassInstance) {
@@ -1440,6 +1492,11 @@ function checkedModule(value: unknown, source: string): ModuleValue {
   }
   const proto = value !== null && typeof value === 'object' ? Object.getPrototypeOf(value) : undefined
   if (proto === Object.prototype || proto === null) {
+    // a host function is named by its dotted path, so a key must be one component
+    const key = Object.keys(value as object).find((key) => !IDENTIFIER.test(key))
+    if (key !== undefined) {
+      throw new TypeError(`${source} a plain object with a key '${key}' that is not a valid identifier`)
+    }
     return value as Record<string, unknown>
   }
   const kind =
@@ -1461,7 +1518,7 @@ function checkedModule(value: unknown, source: string): ModuleValue {
  * a call on the module (see [`HostModules.standIn`]); the session keeps the
  * one wrapper it builds in [`HostModules.values`].
  */
-function moduleValue(name: string, module: ModuleValue): unknown {
+function moduleValue(path: string, module: ModuleValue, modules: HostModules): unknown {
   if (module instanceof ClassInstance) {
     return module
   }
@@ -1469,10 +1526,18 @@ function moduleValue(name: string, module: ModuleValue): unknown {
   // names are filtered before any value is read, so a private getter never runs
   for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
     const value = module[key]
-    attrs[key] = typeof value === 'function' ? namedHostFunction(`${name}.${key}`, value as ExternalFunction) : value
+    attrs[key] = typeof value === 'function' ? namedHostFunction(`${path}.${key}`, value as ExternalFunction) : value
   }
-  const classType = new ClassType(Object, { name, id: moduleUuid('class', name) })
-  return new ClassInstance(attrs, { classType, eagerAttrs: 'all', id: moduleUuid('instance', name) })
+  // each submodule is its own module value, under its own dotted path
+  for (const [sub, child] of Object.entries(modules.submodules(path))) {
+    attrs[sub] = moduleValue(
+      `${path}.${sub}`,
+      checkedModule(child.module, `externalModules.${path}.${sub}.module is`),
+      modules,
+    )
+  }
+  const classType = new ClassType(Object, { name: path, id: moduleUuid('class', path) })
+  return new ClassInstance(attrs, { classType, eagerAttrs: 'all', id: moduleUuid('instance', path) })
 }
 
 /** A function carrying `name` to the sandbox, calling `fn` on the host. */

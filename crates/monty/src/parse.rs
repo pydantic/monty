@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
-        Node, Operator, SequenceItem, UnpackTarget,
+        Node, Operator, SequenceItem, Submodule, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{CompileInterns, StringId},
@@ -644,22 +644,20 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let import_names = names
                     .iter()
                     .map(|alias_node| {
-                        let module_name = self.interner.intern(&alias_node.name);
+                        let (module_name, submodules) = self.import_path(&alias_node.name);
                         // `import a.b` loads `a.b` but binds `a`; an alias binds `a.b` itself.
-                        let package = match (&alias_node.asname, alias_node.name.split_once('.')) {
-                            (None, Some((package, _))) => Some(self.interner.intern(package)),
-                            _ => None,
-                        };
+                        let binds_top_level = alias_node.asname.is_none() && !submodules.is_empty();
                         // The binding name is the alias if present, otherwise the module
                         // name (or its top-level package when dotted).
                         let binding_name = alias_node
                             .asname
                             .as_ref()
-                            .map_or(package.unwrap_or(module_name), |n| self.interner.intern(&n.id));
+                            .map_or(module_name, |n| self.interner.intern(&n.id));
                         let binding = Identifier::new(binding_name, position);
                         ImportName {
                             module_name,
-                            package,
+                            submodules,
+                            binds_top_level,
                             binding,
                         }
                     })
@@ -716,8 +714,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ));
                 }
                 // Module name is required for absolute imports
-                let module_name = match module {
-                    Some(m) => self.interner.intern(&m),
+                let (module_name, submodules) = match module {
+                    Some(m) => self.import_path(&m),
                     None => {
                         return Err(ParseError::import_error(
                             "attempted relative import with no known parent package",
@@ -746,6 +744,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Node::ImportFrom {
                     module_name,
+                    submodules,
                     names,
                     position,
                 })
@@ -2235,6 +2234,24 @@ impl<'a, 'i> Parser<'a, 'i> {
                 Err(err) => Err(ParseError::syntax(err.to_string(), self.convert_range(spec.range))),
             }
         }
+    }
+
+    /// Splits a dotted module name into the top-level module and the
+    /// [`Submodule`]s after it, interning each component and each prefix.
+    fn import_path(&mut self, dotted: &str) -> (StringId, Vec<Submodule>) {
+        let mut parts = dotted.split('.');
+        let module_name = self.interner.intern(parts.next().unwrap_or_default());
+        let mut end = dotted.find('.').unwrap_or(dotted.len());
+        let submodules = parts
+            .map(|part| {
+                end += 1 + part.len();
+                Submodule {
+                    name: self.interner.intern(part),
+                    path: self.interner.intern(&dotted[..end]),
+                }
+            })
+            .collect();
+        (module_name, submodules)
     }
 
     fn convert_range(&self, range: TextRange) -> CodeRange {

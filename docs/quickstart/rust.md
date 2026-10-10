@@ -308,7 +308,8 @@ When `FunctionCall::allow_eager_await` is true the call is awaited immediately a
 result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
 An `import` of a module the sandbox does not have is a `FunctionCall` too, named
-[`IMPORT_FUNCTION`](../api/rust/monty-types.md#import_function) (`__import__`) with the module name as its one argument.
+[`IMPORT_FUNCTION`](../api/rust/monty-types.md#import_function) (`__import__`) with the top-level module name as its one
+argument; a dotted import reads the further components as attributes of the answer.
 The value the host resumes with is bound as the module, usually a host-backed class instance whose attributes are the
 tools.
 [`ResumeValue::NotFound`](../api/rust/monty-pool.md#resumevalue) raises `ModuleNotFoundError`; in-process,

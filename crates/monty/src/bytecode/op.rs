@@ -435,6 +435,14 @@ pub enum Opcode {
     /// The name is resolved through the executor interner at runtime.
     /// Creates the module on the heap and pushes a `Value::Ref` to it.
     LoadModule = 106,
+    /// Pop a module, push its submodule for a dotted import. Operands: u16
+    /// attribute name_id, u16 name_id of the dotted path through it (`a.b`).
+    ///
+    /// Reads the attribute like `LoadAttr`, but a missing one is
+    /// `ModuleNotFoundError: No module named 'a.b'` (`; 'a' is not a package`
+    /// when the module is a built-in one), and the path becomes the frame's
+    /// `import_from_module` for the `LoadAttrImport`s of a `from a.b import`.
+    LoadSubmodule = 107,
     /// Duplicate the top two stack values, preserving order: `[a, b] -> [a, b, a, b]`.
     ///
     Dup2 = 108,
@@ -713,7 +721,7 @@ impl Opcode {
             | Self::ForIter => OperandShape::Offset,
             Self::CallBuiltinFunction | Self::CallBuiltinType | Self::UnpackEx => OperandShape::U8U8,
             Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction => OperandShape::U16U8,
-            Self::LoadGlobalCallable => OperandShape::U16U16,
+            Self::LoadGlobalCallable | Self::LoadSubmodule => OperandShape::U16U16,
             Self::MakeClosure => OperandShape::U16U8U8,
             Self::LoadName | Self::StoreName | Self::DeleteName => OperandShape::U16U16U8,
             Self::CallFunctionKw => OperandShape::CallKw,
@@ -968,6 +976,7 @@ impl Opcode {
             (RaiseUnboundLocal, Operand::U16(_)) => 0,
             // === Fixed-effect, U16U16 operand ===
             (LoadGlobalCallable, Operand::U16U16(..)) => 1,
+            (LoadSubmodule, Operand::U16U16(..)) => 0,
 
             // === Fixed-effect, U16U16U8 operand ===
             (LoadName, Operand::U16U16U8(..)) => 1,

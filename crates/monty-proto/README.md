@@ -35,8 +35,9 @@ for the schema and the protocol rules documented alongside it.
   instances carry worker-generated uuids that never reach that store. Calling a
   host-backed instance arrives as a `__call__` method call on its uuid.
 - Host modules: an `import` the worker cannot serve is a `FunctionCall` named
-  `__import__` with the module name as its argument, answered with the module
-  value or `not_found`; `Configure.type_check_module_stubs` carries one
+  `__import__` with the top-level module name as its argument, answered with
+  the module value or `not_found`; the worker reads a dotted import's further
+  components as attributes of the answer. `Configure.type_check_module_stubs` carries one
   `ModuleStub` (`.pyi` source) per host module for the worker's type checker.
 - `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
   version a parent declares in `Configure`, and the range a child serves.

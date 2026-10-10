@@ -56,6 +56,44 @@ fn from_import_loads_names_from_the_answer() {
     assert_eq!(done.into_complete(), Some(MontyObject::int(42)));
 }
 
+/// A dotted import loads the top-level module from the host and walks the rest
+/// as attributes: `import a.b` binds `a`, an alias binds the submodule, and
+/// `from a.b import c` reads from the submodule.
+#[test]
+fn a_dotted_import_walks_submodules_of_the_answer() {
+    let nested = |id| host_object("a.b", id, vec![("c", MontyObject::int(6))]);
+    let module = |id| host_object("a", id, vec![("b", nested(id + 10))]);
+
+    let done = answer_import(start("import a.b\na.b.c"), "a", module(1));
+    assert_eq!(done.into_complete(), Some(MontyObject::int(6)));
+    let done = answer_import(start("import a.b as m\nm.c * 2"), "a", module(1));
+    assert_eq!(done.into_complete(), Some(MontyObject::int(12)));
+    let done = answer_import(start("from a.b import c\nc + 1"), "a", module(1));
+    assert_eq!(done.into_complete(), Some(MontyObject::int(7)));
+    let done = answer_import(start("from a import b\nb.c"), "a", module(1));
+    assert_eq!(done.into_complete(), Some(MontyObject::int(6)));
+}
+
+/// A component the answer lacks is `ModuleNotFoundError` naming the path to it.
+#[test]
+fn a_missing_submodule_is_a_module_not_found_error() {
+    let module = host_object("a", 1, vec![("b", MontyObject::int(1))]);
+    for code in ["import a.nope.deeper", "from a.nope import x"] {
+        // the host object has no eager `nope`, so the sandbox asks for it lazily
+        let lookup = answer_import(start(code), "a", module.clone())
+            .into_name_lookup()
+            .unwrap();
+        assert_eq!(lookup.name, "nope");
+        let err = lookup
+            .resume(NameLookupResult::Undefined, PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string().lines().last(),
+            Some("ModuleNotFoundError: No module named 'a.nope'")
+        );
+    }
+}
+
 #[test]
 fn a_missing_name_is_an_import_error_naming_the_module() {
     let progress = start("from tools import missing");
