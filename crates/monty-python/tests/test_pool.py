@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
 import sys
 import threading
 from typing import cast
@@ -18,6 +19,27 @@ from pydantic_monty import AsyncMonty, Monty, MontyCrashedError, MontyRuntimeErr
 
 def test_basic_execution(monty_run: RunMonty):
     assert monty_run('1 + 2') == snapshot(3)
+
+
+def test_pool_construction_imports_no_modules_lazily():
+    # hosts that run `pydantic_monty` under an import-restricted environment
+    # (e.g. Temporal's workflow sandbox) fail any module first imported after
+    # the initial load — pool construction must not trigger a `pydantic_monty.*`
+    # import, which is why `_binary` loads eagerly at package import. A fresh
+    # interpreter is required since pytest has already imported the module.
+    code = """\
+import sys
+
+import pydantic_monty
+
+loaded = set(sys.modules)
+with pydantic_monty.Monty() as pool, pool.checkout() as session:
+    session.feed_run('1 + 1')
+late = sorted(name for name in sys.modules.keys() - loaded if name.startswith('pydantic_monty'))
+print(late)
+"""
+    result = subprocess.run([sys.executable, '-c', code], check=True, capture_output=True, text=True)
+    assert result.stdout == snapshot('[]\n')
 
 
 def test_session_state_persists_across_feeds(pool: Monty):

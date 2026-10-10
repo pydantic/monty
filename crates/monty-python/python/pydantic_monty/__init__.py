@@ -6,6 +6,10 @@ from typing import Any, Callable, Literal, Protocol
 
 from typing_extensions import NotRequired, TypeAlias, TypedDict
 
+# imported eagerly so `pydantic_monty._binary` is already in `sys.modules` when
+# hosts that forbid imports after load (e.g. Temporal's workflow sandbox) build a
+# pool; `find_monty_binary` itself still runs lazily at `Monty()` construction
+from . import _binary as _binary
 from ._monty import (
     NOT_HANDLED,
     AsyncFunctionSnapshot,
