@@ -198,7 +198,7 @@ the flag is `--type-check-format`.
 - **Code compiled at runtime is not checked.** `eval()` and `exec()` compile their source strings inside the sandbox,
     where no checker runs.
     See [`limitations/eval_exec.md`](limitations/eval_exec.md).
-- **Passing the type check does not mean the code runs.** Parser-rejected constructs (`match`, `yield`) are not
+- **Passing the type check does not mean the code runs.** Parser-rejected constructs (`yield`, `del`) are not
     modelled.
     Five stub-only modules (`abc`, `types`, `typing_extensions`, `_collections_abc`, `_typeshed`) resolve during checking
     because the stubs need them, then raise `ModuleNotFoundError` at runtime.

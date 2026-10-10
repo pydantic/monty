@@ -1397,6 +1397,9 @@ pub enum StaticStrings {
     Match,
     /// `@dataclass(match_args=...)`.
     MatchArgs,
+    /// The `__match_args__` class attribute class patterns read and `@dataclass` writes.
+    #[strum(serialize = "__match_args__")]
+    MatchArgsDunder,
     /// `re.Match`
     #[strum(serialize = "Match")]
     MatchClass,

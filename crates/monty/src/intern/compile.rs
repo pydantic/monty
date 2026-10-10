@@ -158,6 +158,24 @@ impl<'i> CompileInterns<'i> {
         }
     }
 
+    /// Borrows a committed or pending bytes literal for diagnostics.
+    pub(crate) fn get_bytes(&self, id: BytesId) -> &[u8] {
+        let base = self.base.bytes.len();
+        match &self.pending {
+            Some(pending) if id.index() >= base => pending.bytes[id.index() - base].value(),
+            _ => self.base.get_bytes(id),
+        }
+    }
+
+    /// Borrows a committed or pending big integer literal for diagnostics.
+    pub(crate) fn get_long_int(&self, id: LongIntId) -> &BigInt {
+        let base = self.base.long_ints.len();
+        match &self.pending {
+            Some(pending) if id.index() >= base => pending.long_ints[id.index() - base].value(),
+            _ => self.base.get_long_int(id),
+        }
+    }
+
     /// Finds a name already present in either table.
     pub(crate) fn get_string_id_by_name(&self, text: &str) -> Option<StringId> {
         if text.is_empty() {

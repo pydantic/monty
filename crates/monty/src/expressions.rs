@@ -433,6 +433,113 @@ pub enum UnpackTarget {
     },
 }
 
+/// One `case` clause of a [`Node::Match`]: its pattern, optional guard and body.
+///
+/// Generic over the node type so it rides the same Raw -> Prepared pipeline as
+/// [`Try`]. The pattern's capture names are resolved to slots during prepare,
+/// like any other assignment target.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MatchCase<N> {
+    pub pattern: Pattern,
+    /// `case PATTERN if GUARD:` - evaluated only after the pattern matches and
+    /// its names are bound, so a failing guard still leaves the captures bound.
+    pub guard: Option<ExprLoc>,
+    pub body: Vec<N>,
+    /// Source range of the pattern (the `case` header's caret range).
+    pub position: CodeRange,
+}
+
+/// A structural pattern inside a `case` clause (PEP 634).
+///
+/// The shapes mirror `ast.pattern`; the compiler lowers them following
+/// CPython's `codegen_pattern_*` so capture bindings happen only once the whole
+/// pattern has matched.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum Pattern {
+    /// `case 1:` / `case 'x':` / `case Color.RED:` - matches when `subject == value`.
+    Value(ExprLoc),
+    /// `case None:` / `case True:` / `case False:` - matches by identity.
+    Singleton(ExprLoc),
+    /// `case [a, *rest, b]:` - matches a sequence (not `str`/`bytes`) of the right length.
+    Sequence {
+        /// Sub-patterns in order; at most one may be [`Pattern::Star`].
+        patterns: Vec<Self>,
+        position: CodeRange,
+    },
+    /// `case {'k': v, **rest}:` - matches a mapping containing every key.
+    Mapping {
+        /// Key expressions (literals or dotted names), paired with `patterns`.
+        keys: Vec<ExprLoc>,
+        /// One sub-pattern per key, matched against the looked-up values.
+        patterns: Vec<Self>,
+        /// `**rest`: bound to a new `dict` of the entries the keys did not consume.
+        rest: Option<Identifier>,
+        position: CodeRange,
+    },
+    /// `case Point(0, y=1):` - `isinstance` check plus attribute sub-patterns.
+    Class {
+        /// Expression evaluating to the class (a name or dotted name).
+        cls: ExprLoc,
+        /// Positional sub-patterns, resolved through the class's `__match_args__`.
+        patterns: Vec<Self>,
+        /// Keyword attribute names, paired with `kwd_patterns`.
+        kwd_attrs: Vec<StringId>,
+        kwd_patterns: Vec<Self>,
+        position: CodeRange,
+    },
+    /// `*name` / `*_` inside a sequence pattern; captures the surplus items as a `list`.
+    Star {
+        name: Option<Identifier>,
+        position: CodeRange,
+    },
+    /// `case x:` (capture), `case _:` (wildcard) or `case PATTERN as x:`.
+    ///
+    /// `pattern: None` is the bare capture/wildcard form; `name: None` with no
+    /// pattern is the `_` wildcard.
+    As {
+        pattern: Option<Box<Self>>,
+        name: Option<Identifier>,
+        position: CodeRange,
+    },
+    /// `case 1 | 2 | x:` - alternatives tried left to right; all must bind the same names.
+    Or { patterns: Vec<Self>, position: CodeRange },
+}
+
+impl Pattern {
+    /// The source range of the pattern, for diagnostics and traceback carets.
+    #[must_use]
+    pub fn position(&self) -> CodeRange {
+        match self {
+            Self::Value(expr) | Self::Singleton(expr) => expr.position,
+            Self::Sequence { position, .. }
+            | Self::Mapping { position, .. }
+            | Self::Class { position, .. }
+            | Self::Star { position, .. }
+            | Self::As { position, .. }
+            | Self::Or { position, .. } => *position,
+        }
+    }
+
+    /// Whether this is the bare `_` wildcard, which matches anything and binds nothing.
+    #[must_use]
+    pub fn is_wildcard(&self) -> bool {
+        matches!(
+            self,
+            Self::As {
+                pattern: None,
+                name: None,
+                ..
+            }
+        )
+    }
+
+    /// Whether this is `*_`: a starred wildcard inside a sequence pattern.
+    #[must_use]
+    pub fn is_star_wildcard(&self) -> bool {
+        matches!(self, Self::Star { name: None, .. })
+    }
+}
+
 /// Target of a single assignment step within a chained assignment.
 ///
 /// Chained assignments (`a = b[i] = obj.x = expr`) evaluate `expr` once and
@@ -745,6 +852,17 @@ pub enum Node<F> {
     /// Executes body, catches matching exceptions with handlers, runs else if no exception,
     /// and always runs finally.
     Try(Try<Self>),
+    /// `match SUBJECT:` with one or more `case` clauses (PEP 634).
+    ///
+    /// The subject is evaluated once; cases are tried top to bottom and the
+    /// first whose pattern matches (and whose guard, if any, is truthy) runs.
+    /// Nothing happens when no case matches. See `limitations/match.md`.
+    Match {
+        subject: ExprLoc,
+        cases: Vec<MatchCase<Self>>,
+        /// Source position of the `match` statement, for caret placement.
+        position: CodeRange,
+    },
     /// `with EXPR [as TARGET]: BODY` — runs BODY with a context manager.
     ///
     /// Semantics match CPython: `EXPR` is evaluated, `__enter__` is called on

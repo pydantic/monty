@@ -8,7 +8,7 @@ use crate::{
     builtins::Builtins,
     expressions::{
         AssignTarget, Callable, CaptureSource, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName,
-        NameScope, Node, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        MatchCase, NameScope, Node, Pattern, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{CompileInterns, StringId},
@@ -954,6 +954,22 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         finally,
                     }));
                 }
+                Node::Match {
+                    subject,
+                    cases,
+                    position,
+                } => {
+                    let subject = self.prepare_expression(subject)?;
+                    let cases = cases
+                        .into_iter()
+                        .map(|case| self.prepare_match_case(case))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    new_nodes.push(Node::Match {
+                        subject,
+                        cases,
+                        position,
+                    });
+                }
                 Node::With {
                     context,
                     target,
@@ -1506,6 +1522,100 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     position,
                 })
             }
+        }
+    }
+
+    /// Prepares one `case` clause: pattern captures bind like assignment
+    /// targets, then the guard and body are prepared in the same scope.
+    fn prepare_match_case(&mut self, case: MatchCase<ParseNode>) -> Result<MatchCase<PreparedNode>, ParseError> {
+        let pattern = self.prepare_pattern(case.pattern)?;
+        let guard = match case.guard {
+            Some(guard) => Some(self.prepare_expression(guard)?),
+            None => None,
+        };
+        let body = self.prepare_nodes(case.body)?;
+        Ok(MatchCase {
+            pattern,
+            guard,
+            body,
+            position: case.position,
+        })
+    }
+
+    /// Resolves a pattern's expressions and capture names.
+    ///
+    /// Every capture (`case x`, `*rest`, `**rest`, `as name`) is a store target in
+    /// the enclosing scope, so it goes through [`Self::get_id`] like an unpack name.
+    fn prepare_pattern(&mut self, pattern: Pattern) -> Result<Pattern, ParseError> {
+        Ok(match pattern {
+            Pattern::Value(expr) => Pattern::Value(self.prepare_expression(expr)?),
+            Pattern::Singleton(expr) => Pattern::Singleton(self.prepare_expression(expr)?),
+            Pattern::Sequence { patterns, position } => Pattern::Sequence {
+                patterns: self.prepare_patterns(patterns)?,
+                position,
+            },
+            Pattern::Mapping {
+                keys,
+                patterns,
+                rest,
+                position,
+            } => Pattern::Mapping {
+                keys: keys
+                    .into_iter()
+                    .map(|key| self.prepare_expression(key))
+                    .collect::<Result<Vec<_>, _>>()?,
+                patterns: self.prepare_patterns(patterns)?,
+                rest: self.prepare_capture(rest)?,
+                position,
+            },
+            Pattern::Class {
+                cls,
+                patterns,
+                kwd_attrs,
+                kwd_patterns,
+                position,
+            } => Pattern::Class {
+                cls: self.prepare_expression(cls)?,
+                patterns: self.prepare_patterns(patterns)?,
+                kwd_attrs,
+                kwd_patterns: self.prepare_patterns(kwd_patterns)?,
+                position,
+            },
+            Pattern::Star { name, position } => Pattern::Star {
+                name: self.prepare_capture(name)?,
+                position,
+            },
+            Pattern::As {
+                pattern,
+                name,
+                position,
+            } => Pattern::As {
+                pattern: match pattern {
+                    Some(inner) => Some(Box::new(self.prepare_pattern(*inner)?)),
+                    None => None,
+                },
+                name: self.prepare_capture(name)?,
+                position,
+            },
+            Pattern::Or { patterns, position } => Pattern::Or {
+                patterns: self.prepare_patterns(patterns)?,
+                position,
+            },
+        })
+    }
+
+    fn prepare_patterns(&mut self, patterns: Vec<Pattern>) -> Result<Vec<Pattern>, ParseError> {
+        patterns.into_iter().map(|p| self.prepare_pattern(p)).collect()
+    }
+
+    /// Resolves an optional capture name to its store slot.
+    fn prepare_capture(&mut self, name: Option<Identifier>) -> Result<Option<Identifier>, ParseError> {
+        match name {
+            Some(ident) => {
+                self.names_assigned_in_order.insert(ident.name_id);
+                Ok(Some(self.get_id(ident)?))
+            }
+            None => Ok(None),
         }
     }
 
@@ -2556,6 +2666,21 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
+        Node::Match { subject, cases, .. } => {
+            collect_assigned_names_from_expr(subject, assigned_names, interner);
+            for case in cases {
+                collect_pattern_captures(&case.pattern, assigned_names);
+                for_each_pattern_expr(&case.pattern, &mut |expr| {
+                    collect_assigned_names_from_expr(expr, assigned_names, interner);
+                });
+                if let Some(guard) = &case.guard {
+                    collect_assigned_names_from_expr(guard, assigned_names, interner);
+                }
+                for n in &case.body {
+                    collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                }
+            }
+        }
         Node::With {
             context, target, body, ..
         } => {
@@ -2880,6 +3005,20 @@ fn collect_cell_vars_from_node(
             }
             for n in finally {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+            }
+        }
+        Node::Match { subject, cases, .. } => {
+            collect_cell_vars_from_expr(subject, our_locals, cell_vars, interner);
+            for case in cases {
+                for_each_pattern_expr(&case.pattern, &mut |expr| {
+                    collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+                });
+                if let Some(guard) = &case.guard {
+                    collect_cell_vars_from_expr(guard, our_locals, cell_vars, interner);
+                }
+                for n in &case.body {
+                    collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                }
             }
         }
         Node::With {
@@ -3433,6 +3572,20 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
+        Node::Match { subject, cases, .. } => {
+            collect_referenced_names_from_expr(subject, referenced, interner);
+            for case in cases {
+                for_each_pattern_expr(&case.pattern, &mut |expr| {
+                    collect_referenced_names_from_expr(expr, referenced, interner);
+                });
+                if let Some(guard) = &case.guard {
+                    collect_referenced_names_from_expr(guard, referenced, interner);
+                }
+                for n in &case.body {
+                    collect_referenced_names_from_node(n, referenced, interner);
+                }
+            }
+        }
         Node::With {
             context, target, body, ..
         } => {
@@ -3771,6 +3924,84 @@ fn collect_referenced_names_from_fstring_parts(
             // Also check dynamic format specs which can contain interpolated expressions
             if let Some(FormatSpec::Dynamic(spec_parts)) = format_spec {
                 collect_referenced_names_from_fstring_parts(spec_parts, referenced, interner);
+            }
+        }
+    }
+}
+
+/// Adds every name a pattern binds (`case x`, `*rest`, `**rest`, `as name`) to `names`.
+fn collect_pattern_captures(pattern: &Pattern, names: &mut AHashSet<StringId>) {
+    match pattern {
+        Pattern::Value(_) | Pattern::Singleton(_) => {}
+        Pattern::Sequence { patterns, .. } | Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                collect_pattern_captures(p, names);
+            }
+        }
+        Pattern::Mapping { patterns, rest, .. } => {
+            for p in patterns {
+                collect_pattern_captures(p, names);
+            }
+            if let Some(rest) = rest {
+                names.insert(rest.name_id);
+            }
+        }
+        Pattern::Class {
+            patterns, kwd_patterns, ..
+        } => {
+            for p in patterns.iter().chain(kwd_patterns) {
+                collect_pattern_captures(p, names);
+            }
+        }
+        Pattern::Star { name, .. } => {
+            if let Some(name) = name {
+                names.insert(name.name_id);
+            }
+        }
+        Pattern::As { pattern, name, .. } => {
+            if let Some(inner) = pattern {
+                collect_pattern_captures(inner, names);
+            }
+            if let Some(name) = name {
+                names.insert(name.name_id);
+            }
+        }
+    }
+}
+
+/// Calls `f` on every expression a pattern evaluates: value and singleton
+/// constants, mapping keys and class names. Captures are not expressions.
+fn for_each_pattern_expr(pattern: &Pattern, f: &mut impl FnMut(&ExprLoc)) {
+    match pattern {
+        Pattern::Value(expr) | Pattern::Singleton(expr) => f(expr),
+        Pattern::Sequence { patterns, .. } | Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                for_each_pattern_expr(p, f);
+            }
+        }
+        Pattern::Mapping { keys, patterns, .. } => {
+            for key in keys {
+                f(key);
+            }
+            for p in patterns {
+                for_each_pattern_expr(p, f);
+            }
+        }
+        Pattern::Class {
+            cls,
+            patterns,
+            kwd_patterns,
+            ..
+        } => {
+            f(cls);
+            for p in patterns.iter().chain(kwd_patterns) {
+                for_each_pattern_expr(p, f);
+            }
+        }
+        Pattern::Star { .. } => {}
+        Pattern::As { pattern, .. } => {
+            if let Some(inner) = pattern {
+                for_each_pattern_expr(inner, f);
             }
         }
     }

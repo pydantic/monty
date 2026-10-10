@@ -13,6 +13,7 @@ mod context_manager;
 mod exceptions;
 mod format;
 mod namespace;
+mod pattern;
 mod recursion;
 mod scheduler;
 
@@ -32,7 +33,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::{Opcode, decode_assert_flags},
+        op::{MATCH_KEYS_REST, Opcode, decode_assert_flags},
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -1369,6 +1370,13 @@ impl<'h> VM<'h> {
                     let src_idx = len - 1 - n as usize;
                     self.stack[src_idx..].rotate_left(1);
                 }
+                Opcode::SinkTop => {
+                    let n = usize::from(self.current_frame.fetch_u8());
+                    // Move TOS beneath the n items below it: one rotation of the
+                    // affected slice, the mirror image of `LiftToTop`.
+                    let len = self.stack.len();
+                    self.stack[len - 1 - n..].rotate_right(1);
+                }
                 Opcode::RaiseUnboundLocal => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
@@ -2030,6 +2038,27 @@ impl<'h> VM<'h> {
                 Opcode::UnpackEx => {
                     let (before, after) = self.current_frame.fetch_u8_u8();
                     try_catch!(self, self.unpack_ex(before as usize, after as usize));
+                }
+                // Pattern matching
+                Opcode::MatchShape => {
+                    let (length, flags) = self.current_frame.fetch_u16_u8();
+                    self.match_shape(length, flags);
+                }
+                Opcode::MatchKeys => {
+                    let mode = self.current_frame.fetch_u8();
+                    if mode == MATCH_KEYS_REST {
+                        try_catch!(self, self.match_keys_rest());
+                    } else {
+                        try_catch!(self, self.match_keys());
+                    }
+                }
+                Opcode::MatchClass => {
+                    let nargs = usize::from(self.current_frame.fetch_u8());
+                    try_catch!(self, self.match_class(nargs));
+                }
+                Opcode::MatchAttr => {
+                    let index = usize::from(self.current_frame.fetch_u8());
+                    handle_call_result!(self, self.match_attr(index));
                 }
                 // Special
                 Opcode::Nop => {
