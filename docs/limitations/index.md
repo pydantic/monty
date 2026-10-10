@@ -77,6 +77,7 @@ The following modules are present:
 | `bisect`      | [bisect.md](bisect.md)           |
 | `collections` | [collections.md](collections.md) |
 | `copy`        | [copy.md](copy.md)               |
+| `csv`         | [csv.md](csv.md)                 |
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
 | `functools`   | [functools.md](functools.md)     |
