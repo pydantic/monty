@@ -2,10 +2,10 @@
 //! suspends as an `__import__` host call, and the host's answer is the module.
 
 use insta::assert_snapshot;
-use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, builtin_module_names, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, IMPORT_FUNCTION, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, PrintWriter, ResourceTracker,
+    NameLookupResult, PrintWriter, RESERVED_MODULE_NAMES, ResourceTracker,
 };
 
 /// Starts `code` as a one-shot run.
@@ -276,4 +276,17 @@ fn a_direct_dunder_import_is_a_name_error_without_a_host_call() {
             ~~~~~~~~~~
     NameError: name '__import__' is not defined
     "#);
+}
+
+/// Every module the runtime provides is a reserved stub name, so a host cannot
+/// give the type checker a stub the runtime would never consult. Dotted names
+/// (`os.path`) are not identifiers and so can never be stub names.
+#[test]
+fn every_builtin_module_is_a_reserved_stub_name() {
+    for name in builtin_module_names() {
+        assert!(
+            name.contains('.') || RESERVED_MODULE_NAMES.contains(&name),
+            "built-in module {name} is missing from RESERVED_MODULE_NAMES"
+        );
+    }
 }

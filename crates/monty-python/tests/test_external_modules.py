@@ -14,6 +14,7 @@ from inline_snapshot import snapshot
 from pydantic_monty import (
     AsyncMonty,
     ClassInstance,
+    ClassType,
     ExternalModule,
     Monty,
     MontyComplete,
@@ -294,6 +295,20 @@ def test_a_dict_module_is_not_callable_and_has_no_other_methods(pool: Monty):
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('import tools\ntools.nope()')
         assert str(exc_info.value) == snapshot("AttributeError: 'tools' object has no attribute 'nope'")
+
+
+def test_a_class_type_in_a_module_dict_is_a_type(pool: Monty):
+    """A `ClassType` wrapper crosses as the type it wraps, while a bare class is a
+    host function that constructs on the host."""
+
+    class Config:
+        def __init__(self, key: str) -> None:
+            self.key = key
+
+    tools = {'Config': ClassType(Config, init=True), 'Plain': Config}
+    with pool.checkout(external_modules={'tools': ExternalModule(tools)}) as session:
+        code = 'import tools\nc = tools.Config("k")\n[isinstance(c, tools.Config), type(c).__name__, type(tools.Plain).__name__]'
+        assert session.feed_run(code) == snapshot([True, 'Config', 'function'])
 
 
 def test_a_class_instance_module(pool: Monty):

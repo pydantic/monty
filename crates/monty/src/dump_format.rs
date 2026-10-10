@@ -117,7 +117,7 @@ pub struct Dump {
     /// `Some` when the session was created with type checking enabled.
     pub type_check: Option<TypeCheckState>,
     /// The stubs of the session's host-provided modules, whether or not it
-    /// type-checks: what a restored session reports as its types.
+    /// type-checks, so a restored session checks against the same ones.
     #[serde(default)]
     pub module_stubs: Vec<ModuleStub>,
     /// The interpreter state, and where it was paused.

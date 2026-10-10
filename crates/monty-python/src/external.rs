@@ -12,8 +12,11 @@
 //! are a separate concern: they route through the session's [`InstanceStore`]
 //! to the original wrapped object or class, not `external_lookup`.
 
+use std::{collections::HashMap, sync::Arc};
+
 use monty_proto::python::{
-    DecodedArena, InstanceStore, exc_py_to_monty, is_class_instance_wrapper, py_to_monty, py_to_monty_value,
+    DecodedArena, InstanceStore, exc_py_to_monty, is_class_instance_wrapper, is_class_type_wrapper, py_to_monty,
+    py_to_monty_value,
 };
 use monty_types::{
     CallArgs, ExtFunctionResult, IMPORT_FUNCTION, ModuleStub, MontyObject, MontyUuid, NameLookupResult,
@@ -129,6 +132,9 @@ pub(crate) struct HostModules {
     /// What each factory returned, by module name: a factory runs once per
     /// session, at the first import or call that needs it.
     resolved: Py<PyDict>,
+    /// Each module's name by the uuid of its dict stand-in (see [`module_uuid`]),
+    /// so a method call on one is answered without scanning the modules.
+    stand_ins: Arc<HashMap<MontyUuid, String>>,
 }
 
 impl HostModules {
@@ -141,14 +147,18 @@ impl HostModules {
     pub(crate) fn capture(py: Python<'_>, entries: &Bound<'_, PyDict>) -> PyResult<(Self, Vec<ModuleStub>)> {
         let modules = PyDict::new(py);
         let mut stubs = Vec::new();
+        let mut stand_ins = HashMap::new();
         for (name, entry) in entries.iter() {
             let (module, stub) = check_external_module(&name, &entry)?;
             modules.set_item(&name, module)?;
             stubs.extend(stub);
+            let name: String = name.extract()?;
+            stand_ins.insert(module_uuid("instance", &name), name);
         }
         let captured = Self {
             modules: modules.unbind(),
             resolved: PyDict::new(py).unbind(),
+            stand_ins: Arc::new(stand_ins),
         };
         Ok((captured, stubs))
     }
@@ -158,6 +168,7 @@ impl HostModules {
         Self {
             modules: self.modules.clone_ref(py),
             resolved: self.resolved.clone_ref(py),
+            stand_ins: Arc::clone(&self.stand_ins),
         }
     }
 }
@@ -207,6 +218,7 @@ pub struct ExternalLookup<'a, 'py> {
     lookup: Option<&'py Bound<'py, PyDict>>,
     modules: Option<&'py Bound<'py, PyDict>>,
     resolved_modules: Option<&'py Bound<'py, PyDict>>,
+    stand_ins: Option<&'py HashMap<MontyUuid, String>>,
     instances: &'a InstanceStore,
 }
 
@@ -220,6 +232,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             lookup: names.lookup.as_ref().map(|d| d.bind(py)),
             modules: names.modules.as_ref().map(|m| m.modules.bind(py)),
             resolved_modules: names.modules.as_ref().map(|m| m.resolved.bind(py)),
+            stand_ins: names.modules.as_ref().map(|m| &*m.stand_ins),
             instances,
         }
     }
@@ -230,11 +243,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// a value of its kind; everything else routes through the instance store.
     pub fn call_object(&self, function_name: &str, object_id: &MontyUuid, args: &CallArgs) -> ExtFunctionResult {
         match self.module_stand_in(object_id) {
-            Ok(Some(name)) => {
-                ExtFunctionResult::Error(exc_py_to_monty(self.py, &module_method_error(&name, function_name)))
-            }
-            Ok(None) => dispatch_object_call(self.py, function_name, object_id, args, self.instances),
-            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+            Some(name) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &module_method_error(name, function_name))),
+            None => dispatch_object_call(self.py, function_name, object_id, args, self.instances),
         }
     }
 
@@ -242,28 +252,18 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// when the method returns a coroutine.
     pub fn call_object_or_coroutine(&self, function_name: &str, object_id: &MontyUuid, args: &CallArgs) -> CallResult {
         match self.module_stand_in(object_id) {
-            Ok(Some(name)) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(
+            Some(name) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(
                 self.py,
-                &module_method_error(&name, function_name),
+                &module_method_error(name, function_name),
             ))),
-            Ok(None) => dispatch_object_call_or_coroutine(self.py, function_name, object_id, args, self.instances),
-            Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
+            None => dispatch_object_call_or_coroutine(self.py, function_name, object_id, args, self.instances),
         }
     }
 
     /// The dict module whose sandbox stand-in `object_id` identifies, if any
     /// (see [`module_uuid`]); a `ClassInstance` module keeps the wrapper's own id.
-    fn module_stand_in(&self, object_id: &MontyUuid) -> PyResult<Option<String>> {
-        let Some(modules) = self.modules else {
-            return Ok(None);
-        };
-        for name in modules.keys() {
-            let name: String = name.extract()?;
-            if module_uuid("instance", &name) == *object_id {
-                return Ok(Some(name));
-            }
-        }
-        Ok(None)
+    fn module_stand_in(&self, object_id: &MontyUuid) -> Option<&'py str> {
+        self.stand_ins?.get(object_id).map(String::as_str)
     }
 
     /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
@@ -526,8 +526,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// The sandbox value of an `external_modules` entry. A `ClassInstance`
     /// wrapper crosses as itself, its methods routing back by uuid; a dict
     /// becomes a host object named after the module whose public items are
-    /// sent eagerly: callables as host functions named `<module>.<attr>`,
-    /// other values converted.
+    /// sent eagerly: callables as host functions named `<module>.<attr>` (a
+    /// `ClassType` wrapper as the type it wraps), other values converted.
     fn module_value(&self, name: &str, module: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
         if is_class_instance_wrapper(module)? {
             return py_to_monty_value(module, self.instances)
@@ -535,7 +535,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
         let mut attrs = Vec::new();
         for (attr, value) in module_attrs(module)? {
-            let value = if value.is_callable() {
+            let value = if value.is_callable() && !is_class_type_wrapper(&value)? {
                 MontyObject::function(format!("{name}.{attr}"), None)
             } else {
                 py_to_monty_value(&value, self.instances)

@@ -5,7 +5,7 @@
 //! `Child` state machine over the message-based transport without any wasm
 //! toolchain.
 
-use monty::{MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
+use monty::{Dump, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
     FrameReader, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
@@ -778,6 +778,31 @@ fn a_type_checked_feed_resolves_the_module_stubs() {
         panic!("expected the import to suspend, got {event:?}");
     };
     assert_eq!(call.function_name, "__import__");
+}
+
+/// The same import committed by several feeds is carried once, so the
+/// prelude does not grow with the number of feeds.
+#[test]
+fn a_repeated_import_is_carried_once() {
+    let mut child = Child::default();
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, vec![]),
+        pb::child_event::Kind::Ok(_)
+    ));
+    for code in ["import math", "import math\nimport json", "import math"] {
+        let (_, event) = feed(&mut child, code);
+        assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    }
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+    let state = Dump::load(&result.state.into_inner()).expect("a dump this build wrote loads");
+    assert_eq!(
+        state.type_check.unwrap().committed_imports,
+        "import math\nimport json\n"
+    );
 }
 
 /// An import committed by one feed is still bound for the next feed's check.

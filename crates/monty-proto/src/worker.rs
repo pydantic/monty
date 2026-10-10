@@ -862,8 +862,13 @@ impl Child {
                     && let Some(snippet) = state.pending_snippet.take()
                 {
                     // the stubs' star import does not re-export the snippet's
-                    // imports, so they are injected ahead of it
-                    state.committed_imports.push_str(&top_level_imports(&snippet));
+                    // imports, so they are injected ahead of it, each statement once
+                    for import in top_level_imports(&snippet).lines() {
+                        if !state.committed_imports.lines().any(|line| line == import) {
+                            state.committed_imports.push_str(import);
+                            state.committed_imports.push('\n');
+                        }
+                    }
                     state.committed_stubs.push('\n');
                     state.committed_stubs.push_str(&snippet);
                 }

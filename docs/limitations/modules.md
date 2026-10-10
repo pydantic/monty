@@ -93,6 +93,8 @@ typeshed's `abc`, not against what the host serves.
 
 An `import` of any module the runtime does not ship, the checker-only ones above included, asks the host for it as
 the external function call `__import__` with the module name as its argument.
+The one exception is a dotted name below a bundled module that is not a package (`import os.x`), which raises
+`ModuleNotFoundError: No module named 'os.x'; 'os' is not a package` without asking.
 The value the host answers with (in the bindings, the matching `external_modules` entry) is bound as the module, so:
 
 - the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr and `m.__class__`
@@ -109,6 +111,8 @@ The value the host answers with (in the bindings, the matching `external_modules
     first component, since nothing tells the sandbox which part was missing), and an exception raised by the
     host is raised at the `import`;
 - `from m import x` reads `x` from the answered value, whether sent with it or looked up lazily, and raises
-    `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute.
+    `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute;
+- in the Python binding a plain class in a module dict crosses as a host function named `m.X` (calling it constructs
+    on the host), not as a type, so `isinstance(v, m.X)` raises `TypeError`; wrap it in `ClassType` to send a type.
 
 With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.

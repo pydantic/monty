@@ -491,10 +491,6 @@ export class MontySession {
 class TurnAnswerer {
   /** Pending async external calls, by call id. */
   readonly futures = new Map<number, PendingFuture>()
-  /** Module values built by this feed's imports, so importing a module twice
-   *  yields one wrapper (the instance store keeps each wrapper sent). */
-  private readonly moduleValues = new Map<string, unknown>()
-
   constructor(
     private readonly native: NativeSession,
     private readonly instances: InstanceStore,
@@ -677,8 +673,8 @@ class TurnAnswerer {
       if (resolved === undefined) {
         return this.native.resumeNotFound(onPrint)
       }
-      value = this.moduleValues.get(name) ?? moduleValue(name, resolved.value)
-      this.moduleValues.set(name, value)
+      value = this.modules.values.get(name) ?? moduleValue(name, resolved.value)
+      this.modules.values.set(name, value)
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
@@ -706,6 +702,13 @@ class TurnAnswerer {
       )
     }
     if (wrapper === undefined) {
+      const standIn = this.modules.standIn(objectId)
+      if (standIn !== undefined) {
+        // a plain-object module restored from a dump: answer as a value of its kind would
+        return call.functionName === '__call__'
+          ? this.native.resumeError('TypeError', `'${standIn}' object is not callable`, onPrint)
+          : this.native.resumeError('AttributeError', attributeErrorMessage(standIn, call.functionName), onPrint)
+      }
       // A session restored into a process that never sent the object.
       const message =
         `no host object registered for method call '${call.functionName}' (id ${objectId}) — ` +
@@ -1374,9 +1377,16 @@ export type ExternalModules = Record<string, ExternalModule>
 export class HostModules {
   /** What each factory entry returned, by module name. */
   readonly resolved = new Map<string, ModuleValue>()
+  /** The sandbox value built for each module (see [`moduleValue`]): one wrapper
+   *  per module for the session, since its id is fixed and the instance store
+   *  keeps each wrapper sent. */
+  readonly values = new Map<string, unknown>()
+  /** Each module's name by the id of its plain-object stand-in (see [`moduleValue`]). */
+  private readonly standIns = new Map<string, string>()
 
   constructor(private readonly entries: ExternalModules | undefined) {
     for (const [name, entry] of Object.entries(entries ?? {})) {
+      this.standIns.set(moduleUuid('instance', name), name)
       const proto = entry !== null && typeof entry === 'object' ? Object.getPrototypeOf(entry) : undefined
       if ((proto !== Object.prototype && proto !== null) || !Object.prototype.hasOwnProperty.call(entry, 'module')) {
         throw new TypeError(`externalModules.${name} must be an object with a module property`)
@@ -1385,6 +1395,11 @@ export class HostModules {
         throw new TypeError(`externalModules.${name}.stubs must be a string`)
       }
     }
+  }
+
+  /** The module whose plain-object stand-in has `id`, if any. */
+  standIn(id: string): string | undefined {
+    return this.standIns.get(id)
   }
 
   /** The `module` of the entry `name`, if there is one (own keys only). */
@@ -1442,7 +1457,9 @@ function checkedModule(value: unknown, source: string): ModuleValue {
  * eagerly, functions as host functions named `<module>.<attr>` so calls route
  * back through [`TurnAnswerer.hostEntry`]. The class id derives from the module
  * name, so each module is its own class, the same on every import and in every
- * process; the instance is host state, so it is new per feed.
+ * process, and so is the instance id, so a restored session still recognises
+ * a call on the module (see [`HostModules.standIn`]); the session keeps the
+ * one wrapper it builds in [`HostModules.values`].
  */
 function moduleValue(name: string, module: ModuleValue): unknown {
   if (module instanceof ClassInstance) {
@@ -1455,7 +1472,7 @@ function moduleValue(name: string, module: ModuleValue): unknown {
     attrs[key] = typeof value === 'function' ? namedHostFunction(`${name}.${key}`, value as ExternalFunction) : value
   }
   const classType = new ClassType(Object, { name, id: moduleUuid('class', name) })
-  return new ClassInstance(attrs, { classType, eagerAttrs: 'all' })
+  return new ClassInstance(attrs, { classType, eagerAttrs: 'all', id: moduleUuid('instance', name) })
 }
 
 /** A function carrying `name` to the sandbox, calling `fn` on the host. */

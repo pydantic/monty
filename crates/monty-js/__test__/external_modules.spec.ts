@@ -69,6 +69,27 @@ test('a plain-object module is not callable and has no other methods', async () 
   })
 })
 
+test('a restored plain-object module is still not callable', async () => {
+  // the module's stand-in keeps the same id in every process, so a session restored
+  // from a dump answers `tools()` as a value of its kind, not as a store miss
+  let blob: Buffer
+  {
+    await using session = await pool().checkout({ externalModules: { tools: { module: tools } } })
+    await session.feedRun('import tools')
+    blob = await session.dump()
+  }
+  await using session = await pool().checkout({ externalModules: { tools: { module: tools } } })
+  await session.loadSession(blob)
+  await t.throwsAsync(session.feedRun('tools()'), {
+    instanceOf: MontyRuntimeError,
+    message: "TypeError: 'tools' object is not callable",
+  })
+  await t.throwsAsync(session.feedRun('tools.nope()'), {
+    instanceOf: MontyRuntimeError,
+    message: "AttributeError: 'tools' object has no attribute 'nope'",
+  })
+})
+
 test('a ClassInstance module', async () => {
   class Tools {
     add(a: number, b: number): number {

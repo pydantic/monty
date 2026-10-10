@@ -128,6 +128,14 @@ impl StandardLib {
         }
     }
 
+    /// The import names of every built-in module (`os.path` included), so a
+    /// host can keep its own module names clear of them.
+    pub fn names() -> impl Iterator<Item = &'static str> {
+        (0..)
+            .map_while(StaticStrings::from_repr)
+            .filter_map(|name| Self::from_static(name).map(|_| <&'static str>::from(name)))
+    }
+
     /// Whether `name` (dotted for `os.path`) is a built-in module.
     fn is_module(name: &str) -> bool {
         StaticStrings::from_str(name).ok().and_then(Self::from_static).is_some()

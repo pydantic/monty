@@ -149,7 +149,7 @@ impl TypeChecker {
         diagnostics.retain(filter_diagnostics);
         // a diagnostic inside the injected prefix has no line of the snippet to land
         // on, and reports nothing new: the prelude's imports were committed by snippets
-        // that already passed (or skipped) this check, e.g. `import x  # type: ignore`
+        // that already passed this check, e.g. `import x  # type: ignore`
         let prefix_offset = TextSize::new(code_offset);
         diagnostics.retain(|diagnostic| !starts_in_prefix(diagnostic, main_file, prefix_offset));
 
