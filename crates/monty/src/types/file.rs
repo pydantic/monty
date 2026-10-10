@@ -1611,8 +1611,9 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_>) -> RunResult<()>
     }
 }
 
-/// Owned `String` from a value pre-validated as a Python `str` (returns
-/// `None` only if `validate_write_data` was bypassed — caller unwraps).
+/// Owned `String` from a Python `str` value, interned or heap-resident;
+/// `None` for any other type. `write()` unwraps it after `validate_write_data`,
+/// `open()`'s `newline` argument uses `None` to raise its `TypeError`.
 pub(crate) fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {
     match data {
         Value::InternString(id) => Some(vm.interns.get_str(*id).to_owned()),
