@@ -771,7 +771,12 @@ impl MontyTypeExt for MontyType {
             | Type::MissingType
             | Type::DirEntry
             | Type::ScandirIterator
-            | Type::WalkGenerator => return None,
+            | Type::WalkGenerator
+            | Type::CsvReader
+            | Type::CsvWriter
+            | Type::CsvDictReader
+            | Type::CsvDictWriter
+            | Type::CsvDialect => return None,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,

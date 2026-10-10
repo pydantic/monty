@@ -11,7 +11,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     modules::{
-        ModuleFunctions, collections,
+        ModuleFunctions, collections, csv,
         hashlib::{self, Blake2Kind},
         itertools,
         itertools::ItertoolsFunctions,
@@ -305,6 +305,21 @@ pub enum Type {
     /// `hashlib.blake2s`, a type in CPython and so callable here.
     #[strum(serialize = "_blake2.blake2s")]
     Blake2s,
+    /// The iterator `csv.reader()` returns, CPython's `_csv.reader`.
+    #[strum(serialize = "_csv.reader")]
+    CsvReader,
+    /// The object `csv.writer()` returns, CPython's `_csv.writer`.
+    #[strum(serialize = "_csv.writer")]
+    CsvWriter,
+    /// `csv.DictReader`, a class in CPython and so callable here.
+    #[strum(serialize = "csv.DictReader")]
+    CsvDictReader,
+    /// `csv.DictWriter`, a class in CPython and so callable here.
+    #[strum(serialize = "csv.DictWriter")]
+    CsvDictWriter,
+    /// A resolved `csv` dialect, CPython's `_csv.Dialect`.
+    #[strum(serialize = "_csv.Dialect")]
+    CsvDialect,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -502,6 +517,8 @@ impl Type {
                 | Self::ItertoolsGroupBy
                 | Self::ItertoolsGrouper
                 | Self::ItertoolsTee
+                | Self::CsvReader
+                | Self::CsvDictReader
         )
     }
 
@@ -799,6 +816,9 @@ impl Type {
             | Self::ItertoolsTeeDataObject => itertools::construct(self, vm, args),
 
             Self::Complex => complex::init(vm, args),
+            Self::CsvDictReader => csv::dict_reader_init(vm, args),
+            Self::CsvDictWriter => csv::dict_writer_init(vm, args),
+            Self::CsvDialect => csv::dialect_init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),
@@ -851,7 +871,7 @@ impl Type {
 /// - The special values `inf`, `-inf`, `infinity`, and `nan` (case-insensitive)
 ///
 /// Underscore digit separators are not currently supported.
-fn parse_f64_from_str(value: &str) -> RunResult<f64> {
+pub(crate) fn parse_f64_from_str(value: &str) -> RunResult<f64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(value_error_could_not_convert_string_to_float(value));
