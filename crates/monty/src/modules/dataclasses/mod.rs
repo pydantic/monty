@@ -30,7 +30,7 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
-        Class, DataclassOptions, Dict, Instance, LazyHeapSet, Module, PyTrait,
+        Class, DataclassOptions, Dict, Instance, LazyHeapSet, Module, PyTrait, TupleVec, allocate_tuple,
         host_class::{host_class_type, write_dataclass_repr},
         instance::{class_defines, class_dunder, class_name, instance_attr},
     },
@@ -239,6 +239,7 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     // can still fail; a class left with fields alone reads back as a default one.
     store_dataclass_fields(&mut class, fields, vm)?;
     store_dataclass_params(&mut class, options, vm)?;
+    store_match_args(&mut class, vm)?;
     // Last, so the options a class acts on are only ever those of a decoration
     // that ran to completion.
     class.set_dataclass_options(options, vm);
@@ -319,6 +320,27 @@ fn store_dataclass_params<'h>(
     let params = vm.heap.allocate_as(DataclassParams::new(options)).into_value();
     let name = Value::InternString(vm.interns.intern_static(StaticStrings::DataclassParams));
     let replaced = class.set_attr(name, params, vm)?;
+    replaced.drop_with(vm);
+    Ok(())
+}
+
+/// Writes `__match_args__` into the class namespace: the field names in
+/// definition order, so `case Point(x, y):` binds positionally. A class that
+/// defines its own `__match_args__` keeps it, as in CPython.
+fn store_match_args<'h>(class: &mut HeapRead<'h, Class>, vm: &mut VM<'h>) -> RunResult<()> {
+    let name_id = vm.interns.intern_static(StaticStrings::MatchArgsDunder);
+    let namespace = class.get(vm.heap).namespace();
+    if namespace.get_by_str("__match_args__", vm.heap, vm.interns).is_some() {
+        return Ok(());
+    }
+    let names: TupleVec = fields_dict_id(namespace, vm)
+        .map(|fields_id| field_specs(fields_id, vm))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, _)| Value::InternString(name))
+        .collect();
+    let match_args = allocate_tuple(names, vm.heap);
+    let replaced = class.set_attr(Value::InternString(name_id), match_args, vm)?;
     replaced.drop_with(vm);
     Ok(())
 }
