@@ -130,8 +130,9 @@ the same module.
 
 The host-backed functions (`exists`, `isfile`, `isdir`, `islink`, `lexists`, `ismount`, `samefile`, `getsize`,
 `getmtime`, `getatime`, `getctime`, `realpath`) take paths like the `os` functions above: `str` or `pathlib.Path`,
-no `bytes`, and an int is a closed fd. The pure functions, `expanduser` and `expandvars` take `bytes` too, as
-CPython's do.
+no `bytes`. The `os.stat`-based ones (`exists`, `isfile`, `isdir`, `samefile`, `getsize`, `getmtime`, `getatime`,
+`getctime`) treat an int as a closed fd, like CPython; `islink`, `lexists`, `ismount` and `realpath` reject it with
+CPython's `TypeError`. The pure functions, `expanduser` and `expandvars` take `bytes` too, as CPython's do.
 
 - `ismount` reports every existing path as a mount point. The sandbox cannot see where the host's mounts begin,
     and `True` is what keeps "walk up until a mount point" loops terminating.

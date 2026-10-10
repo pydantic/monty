@@ -66,17 +66,19 @@ except TypeError as e:
         assert str(e) == 'listdir: path should be string, bytes, os.PathLike or None, not float'
     else:
         assert str(e) == 'listdir: path should be string, bytes, os.PathLike, integer or None, not float'
-# an int is an fd, which no process has open at 99999; the sandbox has none open at all
-try:
-    os.listdir(99999)
-    assert False, 'expected OSError'
-except OSError as e:
-    assert str(e) == '[Errno 9] Bad file descriptor'
-try:
-    os.listdir(2**40)
-    assert False, 'expected OverflowError'
-except OverflowError as e:
-    assert str(e) == 'fd is greater than maximum'
+# an int is an fd, which no process has open at 99999; the sandbox has none
+# open at all. Windows CPython rejects the int outright (see above).
+if sys.platform != 'win32':
+    try:
+        os.listdir(99999)
+        assert False, 'expected OSError'
+    except OSError as e:
+        assert str(e) == '[Errno 9] Bad file descriptor'
+    try:
+        os.listdir(2**40)
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'fd is greater than maximum'
 try:
     os.listdir('.', '.')
     assert False, 'expected TypeError'

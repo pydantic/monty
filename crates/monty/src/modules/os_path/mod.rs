@@ -994,9 +994,9 @@ struct RealpathArgs {
 
 /// Implementation of `os.path.realpath(filename)` — the `Path.resolve` host
 /// call, with a [`PreConversionEffect::ResolvedPath`] turning the host's path
-/// reply into `str`. The empty path resolves to the working directory without
-/// a call, as CPython's does. `strict=True` is refused: no host call can
-/// promise the existence check it demands.
+/// reply into `str` and, under `strict`, chaining the existence check. The
+/// empty path is `os.getcwd()` without a call, as in CPython; the sandbox's
+/// working directory is session state, so there is nothing to check.
 fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let RealpathArgs { filename, strict } = RealpathArgs::from_args(args, vm)?;
     defer_drop!(filename, vm);
