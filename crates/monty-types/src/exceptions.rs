@@ -385,6 +385,14 @@ pub enum ExcType {
     /// older code. Monty exposes it for the same reason.
     #[strum(serialize = "binascii.Incomplete")]
     BinasciiIncomplete,
+
+    // --- csv module ---
+    /// `csv.Error` - raised by the `csv` readers and writers for malformed data
+    /// and unknown dialect names.
+    ///
+    /// A direct `Exception` subclass, named `_csv.Error` as in CPython.
+    #[strum(serialize = "_csv.Error")]
+    CsvError,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
