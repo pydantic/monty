@@ -10,7 +10,7 @@ use crate::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
         instance::instance_defines_iter, slice::value_to_option_i64,
     },
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 impl VM<'_> {
@@ -495,6 +495,29 @@ impl VM<'_> {
 
         let value = this.pop();
         defer_drop!(value, this);
+
+        // Fast path: tuple, list, push onto stack without a temporary vector.
+        if let Value::Ref(id) = value
+            && let Some(items) = match this.heap.get(*id) {
+                HeapData::Tuple(tuple) => Some(tuple.as_slice()),
+                HeapData::List(list) => Some(list.as_slice()),
+                _ => None,
+            }
+        {
+            if items.len() != count {
+                return Err(unpack_size_error(count, items.len()));
+            }
+            if count > this.stack.capacity() - this.stack.len() {
+                let capacity = this.stack.len().saturating_add(count);
+                this.heap
+                    .tracker
+                    .check_allocation(capacity.saturating_mul(VALUE_SIZE))?;
+                this.stack.reserve_exact(count);
+            }
+            this.stack
+                .extend(items.iter().rev().map(|item| item.clone_with_heap(this.heap)));
+            return Ok(());
+        }
         let items = unpack_exact(value, count, this)?;
         // Push items in reverse order so first item is on top
         for item in items.into_iter().rev() {
@@ -582,18 +605,27 @@ fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
 /// Python unpack (`random.setstate`). Consumes at most `count + 1` items, so an
 /// endless iterable still fails.
 pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+    // Fast path: tuple, list; unpack without iterator.
+    if let Value::Ref(id) = value
+        && let Some(items) = match vm.heap.get(*id) {
+            HeapData::Tuple(tuple) => Some(tuple.as_slice()),
+            HeapData::List(list) => Some(list.as_slice()),
+            _ => None,
+        }
+    {
+        if items.len() != count {
+            return Err(unpack_size_error(count, items.len()));
+        }
+        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
+        return Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
+    }
     if !value.py_is_iterable(vm) {
         return Err(unpack_type_error(value, vm));
     }
-    // CPython's `UNPACK_SEQUENCE` special-cases exactly these three, so only
-    // they can report a total in the "too many" message. It is deliberately
-    // a local match rather than a `PyTrait` method: the set is a quirk of
-    // one CPython error message, not a property types should declare, and
-    // nothing may branch on it to decide *how* to iterate.
+    // Dicts also report their total size in the "too many" error; other
+    // iterables stop at the first surplus item without reporting a total.
     let total = match value {
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::List(list) => Some(list.len()),
-            HeapData::Tuple(tuple) => Some(tuple.as_slice().len()),
             HeapData::Dict(dict) => Some(dict.len()),
             _ => None,
         },
