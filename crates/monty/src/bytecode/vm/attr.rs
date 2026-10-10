@@ -27,6 +27,11 @@ pub(crate) enum PendingLookupEffect {
     /// `getattr(obj, name, default)`: push `default` for `Undefined`. Owns
     /// the heap reference until the resume consumes it.
     Default(Value),
+    /// A class-pattern attribute read (`MatchAttr`): pushes the served value
+    /// (or `None` for `Undefined`) itself and yields the match flag, so the
+    /// resumed instruction lands the same `[value, bool]` pair it pushes
+    /// when the attribute is answered synchronously.
+    MatchAttr,
 }
 
 impl PendingLookupEffect {
@@ -44,6 +49,14 @@ impl PendingLookupEffect {
                 value
             }
             (Self::Default(default), None) => default,
+            (Self::MatchAttr, Some(value)) => {
+                vm.push(value);
+                Value::Bool(true)
+            }
+            (Self::MatchAttr, None) => {
+                vm.push(Value::None);
+                Value::Bool(false)
+            }
         }
     }
 }

@@ -18,11 +18,6 @@ both.
 
 - **`isinstance` has no inheritance.** A class pattern on a user-defined or host class
     matches instances of exactly that class; see [classes.md](classes.md).
-- **Host-backed objects.** A class pattern reads attributes with the normal attribute
-    lookup. On a host class instance an attribute the host has not already sent would
-    need a round trip to the host, which cannot happen mid-pattern, so it raises
-    `NotImplementedError: class pattern attribute 'x' requires a host lookup, which match statements do not support`
-    instead of matching or failing.
 - **Host classes only have the `__match_args__` the host sent** as a class
     attribute. Without one, a positional sub-pattern raises
     `TypeError: Cls() accepts 0 positional sub-patterns (1 given)` even when the
