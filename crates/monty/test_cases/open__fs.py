@@ -97,8 +97,8 @@ assert bytes_path_file.read() == 'hello world\n'
 bytes_path_file.close()
 
 # === All eight positional args accepted at CPython defaults ===
-# Monty only honors `file` and `mode`; the other six must be at their CPython
-# defaults (encoding='utf-8' is also accepted as a documented no-op since
+# Monty only honors `file`, `mode` and `newline`; the other five must be at their
+# CPython defaults (encoding='utf-8' is also accepted as a documented no-op since
 # Monty already uses UTF-8).
 positional = open(root / 'hello.txt', 'r', -1, 'utf-8', None, None, True, None)
 assert positional.read() == 'hello world\n'
@@ -115,7 +115,6 @@ if is_monty:
         ('buffering', 0),
         ('encoding', 'latin-1'),
         ('errors', 'strict'),
-        ('newline', ''),
         ('closefd', False),
     ):
         try:
@@ -645,3 +644,186 @@ try:
     assert False, 'expected FileNotFoundError opening a missing file via Path.open'
 except FileNotFoundError as exc:
     assert str(exc).startswith("[Errno 2] No such file or directory: '")
+
+# === newline argument ===
+# The value is validated after the open, as in CPython: a missing file still raises
+# FileNotFoundError, and 'w' still creates the file before the ValueError.
+(root / 'nl.txt').write_bytes(b'a\nb\r\nc\rd')
+try:
+    open(root / 'nl.txt', newline='x')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'illegal newline value: x'
+try:
+    open(root / 'nl_missing.txt', newline='x')
+    assert False, 'expected FileNotFoundError'
+except FileNotFoundError:
+    pass
+try:
+    open(root / 'nl_created.txt', 'w', newline='x')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'illegal newline value: x'
+assert (root / 'nl_created.txt').exists()
+try:
+    open(root / 'nl.txt', 'rb', newline='')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == "binary mode doesn't take a newline argument"
+try:
+    open(root / 'nl.txt', newline=1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "open() argument 'newline' must be str or None, not int"
+
+# Reading: None translates to '\n', '' keeps the terminators, an explicit
+# terminator splits only on itself.
+newline_reads = {
+    None: (['a\n', 'b\n', 'c\n', 'd'], 'a\n', 'b\nc\nd'),
+    '': (['a\n', 'b\r\n', 'c\r', 'd'], 'a\n', 'b\r\nc\rd'),
+    '\n': (['a\n', 'b\r\n', 'c\rd'], 'a\n', 'b\r\nc\rd'),
+    '\r': (['a\nb\r', '\nc\r', 'd'], 'a\nb\r', '\nc\rd'),
+    '\r\n': (['a\nb\r\n', 'c\rd'], 'a\nb\r\n', 'c\rd'),
+}
+for nl, (lines, first, rest) in newline_reads.items():
+    with open(root / 'nl.txt', newline=nl) as f:
+        assert f.readlines() == lines
+    with open(root / 'nl.txt', newline=nl) as f:
+        assert f.readline() == first
+        assert f.read() == rest
+    with open(root / 'nl.txt', newline=nl) as f:
+        assert [line for line in f] == lines
+with open(root / 'nl.txt') as f:
+    assert f.read(3) == 'a\nb'
+    assert f.read() == '\nc\nd'
+with (root / 'nl.txt').open(newline='') as f:
+    assert f.readline() == 'a\n'
+
+# Writing: only '\r' and '\r\n' translate, and write() reports the length as passed.
+newline_writes = (
+    (None, b'x\ny\r\nz'),
+    ('', b'x\ny\r\nz'),
+    ('\n', b'x\ny\r\nz'),
+    ('\r', b'x\ry\r\rz'),
+    ('\r\n', b'x\r\ny\r\r\nz'),
+)
+for nl, raw in newline_writes:
+    with open(root / 'nl_out.txt', 'w', newline=nl) as f:
+        assert f.write('x\ny\r\nz') == 6
+    assert (root / 'nl_out.txt').read_bytes() == raw
+with open(root / 'nl_out.txt', 'w', newline='\r\n') as f:
+    assert f.write('one\n') == 4
+    assert f.write('two\n') == 4
+assert (root / 'nl_out.txt').read_bytes() == b'one\r\ntwo\r\n'
+
+# === Iteration ===
+(root / 'iter.txt').write_text('first\nsecond\nthird')
+f = open(root / 'iter.txt')
+assert iter(f) is f
+assert next(f) == 'first\n'
+assert f.readline() == 'second\n'
+assert next(f) == 'third'
+try:
+    next(f)
+    assert False, 'expected StopIteration'
+except StopIteration:
+    pass
+assert next(f, 'done') == 'done'
+f.close()
+
+# next() with a default on an unread file loads it first
+f = open(root / 'iter.txt')
+assert next(f, 'done') == 'first\n'
+f.close()
+(root / 'iter_empty.txt').write_text('')
+f = open(root / 'iter_empty.txt')
+assert next(f, 'done') == 'done'
+f.close()
+f = open(root / 'iter_empty.txt')
+try:
+    next(f)
+    assert False, 'expected StopIteration'
+except StopIteration:
+    pass
+f.close()
+
+# for loops load an unread file on their first step
+collected = []
+with open(root / 'iter.txt') as f:
+    for line in f:
+        collected.append(line)
+assert collected == ['first\n', 'second\n', 'third']
+with open(root / 'iter.txt') as f:
+    for line in f:
+        break
+    assert line == 'first\n'
+    # the position is shared with every other read
+    assert [line for line in f] == ['second\n', 'third']
+    assert [line for line in f] == []
+    assert f.read() == ''
+    f.seek(0)
+    # once loaded, any consumer can iterate the file
+    assert list(f) == ['first\n', 'second\n', 'third']
+with open(root / 'iter.txt') as f:
+    assert [line.strip() for line in f if line.startswith('s')] == ['second']
+with open(root / 'iter.txt') as f:
+    assert f.read(3) == 'fir'
+    assert list(f) == ['st\n', 'second\n', 'third']
+with open(root / 'iter.txt') as f:
+    assert [f.readline(), f.readline()] == ['first\n', 'second\n']
+    assert sorted(f) == ['third']
+collected = []
+with open(root / 'lines.bin', 'rb') as f:
+    for line in f:
+        collected.append(line)
+assert collected == [b'a\n', b'b\n', b'c']
+with open(root / 'iter_empty.txt') as f:
+    for line in f:
+        assert False, 'empty file yielded a line'
+
+# Consumers that cannot yield to the host see an unread file as not loaded yet.
+if is_monty:
+    f = open(root / 'iter.txt')
+    try:
+        list(f)
+        assert False, 'expected NotImplementedError'
+    except NotImplementedError as exc:
+        assert (
+            str(exc)
+            == "iterating an unread _io.TextIOWrapper is only supported by 'for' loops and next(); call seek(0) first to load it"
+        )
+    f.seek(0)
+    assert list(f) == ['first\n', 'second\n', 'third']
+    f.close()
+# generator expressions compile to `for` loops, so they can load an unread file
+with open(root / 'iter.txt') as f:
+    assert list(line.strip() for line in f) == ['first', 'second', 'third']
+
+# closed and write-only files
+f = open(root / 'iter.txt')
+f.close()
+try:
+    iter(f)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'I/O operation on closed file.'
+try:
+    for line in f:
+        pass
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'I/O operation on closed file.'
+w = open(root / 'iter_w.txt', 'w')
+assert iter(w) is w
+try:
+    next(w)
+    assert False, 'expected UnsupportedOperation'
+except OSError as exc:
+    assert str(exc) == 'not readable'
+try:
+    for line in w:
+        pass
+    assert False, 'expected UnsupportedOperation'
+except OSError as exc:
+    assert str(exc) == 'not readable'
+w.close()

@@ -2,9 +2,11 @@
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::RunResult,
+    heap::HeapReadOutput,
+    os_dispatch::PostConversionEffect,
     types::iter::iterator_next,
     value::Value,
 };
@@ -30,8 +32,19 @@ struct NextArgs {
 ///   `StopIteration` when the iterator is exhausted.
 /// - `next(iterator, default)` - Returns the next item from the iterator, or
 ///   `default` if the iterator is exhausted.
-pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+///
+/// A file nobody has read yet first loads its buffer from the host: the call
+/// yields the read with a `FileNext` effect, which answers it on resume.
+pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
     defer_drop!(iterator, vm);
-    iterator_next(iterator, default, vm)
+    if let Value::Ref(id) = iterator
+        && let HeapReadOutput::OpenFile(file) = vm.heap.read(*id)
+        && file.needs_buffer_load(vm)
+    {
+        let effect = PostConversionEffect::FileNext { file_id: *id, default };
+        Ok(file.buffer_load_call(vm, effect))
+    } else {
+        iterator_next(iterator, default, vm).map(CallResult::Value)
+    }
 }

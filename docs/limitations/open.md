@@ -45,8 +45,8 @@ being changed or removed between calls, both documented further down.
 
 ## `open()` arguments
 
-Only `file` and `mode` are honored. The other six arguments
-(`buffering`, `encoding`, `errors`, `newline`, `closefd`, `opener`) must be
+Only `file`, `mode` and `newline` are honored. The other five arguments
+(`buffering`, `encoding`, `errors`, `closefd`, `opener`) must be
 at their CPython defaults; passing any non-default value raises
 `TypeError: '<name>' argument is not yet supported`.
 
@@ -75,6 +75,15 @@ If you have non-UTF-8 bytes you need to pass as a path, decode them
 explicitly on the caller side (e.g. via `os.fsdecode` outside the sandbox)
 before handing them to Monty.
 
+### `newline`
+
+- `newline=None` writes `\n` unchanged on every host, because the sandbox's `os.linesep` is `\n`.
+    CPython on Windows writes `\r\n`.
+- Universal-newline translation (`newline=None`) is applied once, when the file's content is loaded, so text-mode
+    `tell()` and `seek()` positions count translated characters.
+    CPython's opaque cookies are byte-based either way (see below).
+- The `newlines` attribute is missing.
+
 ## File object surface
 
 The returned object is one of `TextIOWrapper`, `BufferedReader`,
@@ -87,11 +96,10 @@ methods and attributes are:
 - `read(N)` / `read(None)` — read up to N chars (text) or bytes (binary)
     from the current position, or everything remaining for `None`. Same
     backing buffer as `read()`.
-- `readline()` — read up to and including the next `\n`, or the remainder
-    of the buffer if the final line has no newline. Returns `''`/`b''` at
-    EOF.
-- `readlines()` — return a `list` of all remaining lines (each ending with
-    `\n` except possibly the last).
+- `readline()` — one line from the shared buffer; `''`/`b''` at EOF.
+- `readlines()` — a `list` of all remaining lines.
+- `__iter__()` / `__next__()` — loading an unread file is possible only from `for` loops and `next()`; see the
+    divergences below.
 - `tell()` — current position. **Text-mode divergence**: returns a
     char-index, not CPython's opaque byte cookie. Round-trips through
     `seek()` correctly.
@@ -110,19 +118,27 @@ Bytes filenames remain bytes, and `Path.open()` uses the path's string spelling.
 Subsequent reads and writes still target the file opened originally, even after `os.chdir()`.
 
 Everything else raises `AttributeError`, including: `truncate()`,
-`fileno()`, `isatty()`, `detach()`, `buffer`, `raw`, and the iterator
-protocol (`__iter__`/`__next__`, including `for line in f:`).
+`fileno()`, `isatty()`, `detach()`, `buffer`, `raw` and `newlines`.
 
 ## Behavioural divergences
 
-- All reads (bare `read()`, sized `read(N)`, `readline`, `readlines`) and
-    `seek()` share a single heap-resident buffer populated on the first such
-    call. The host serves only one full-file `ReadText`/`ReadBytes` per
-    file; everything after is sliced in pure Monty. Memory cost: the whole
-    file remains allocated and counts against the worker's allocator-backed
-    `max_memory`. The buffer is **never invalidated**, so external modifications
-    to the underlying file after the first read are not visible to subsequent
-    reads.
+- All reads (bare `read()`, sized `read(N)`, `readline`, `readlines`),
+    iteration and `seek()` share a single heap-resident buffer populated on
+    the first such call. The host serves only one full-file
+    `ReadText`/`ReadBytes` per file; everything after is sliced in pure
+    Monty. Memory cost: the whole file remains allocated and counts against
+    the worker's allocator-backed `max_memory`. The buffer is **never
+    invalidated**, so external modifications to the underlying file after
+    the first read are not visible to subsequent reads.
+- Iterating a file that has not been read yet needs that host load, which
+    only the `for` statement and the `next()` builtin can issue. Any other
+    consumer of the iterator protocol (`list(f)`, `enumerate(f)`, `zip(f, …)`,
+    `sorted(f)`, `''.join(f)`, …)
+    raises `NotImplementedError: iterating an unread _io.TextIOWrapper is only supported by 'for' loops and next(); call seek(0) first to load it`
+    (`_io.BufferedReader` in binary mode).
+    Once any read, `seek()` or iteration step has loaded the buffer, every
+    consumer works. Comprehensions and generator expressions compile to `for`
+    loops and are unaffected, so `list(x for x in f)` reads an unread file.
 - `close()` releases the cached buffer (matching CPython), returning its memory
     when no other value, such as `data = f.read()`, retains it.
 - File I/O is rejected inside callbacks the interpreter evaluates in a
@@ -164,15 +180,12 @@ protocol (`__iter__`/`__next__`, including `for line in f:`).
 - `readline(size)` and `readlines(hint)` are zero-argument only; passing
     a size/hint argument raises `TypeError`. CPython accepts both and uses
     them to cap the returned bytes/chars.
-- File iteration (`for line in f`) is NOT supported: it goes through the
-    `GetIter` opcode, which cannot yield to the host. Use `readlines()` and
-    iterate the resulting list instead.
 - `write()` to a text file requires `str`; to a binary file requires
     `bytes`. The error messages match CPython
     (`a bytes-like object is required, not '<type>'` /
     `write() argument must be str, not <type>`).
-- Text I/O is whole-file UTF-8 with no error handlers and no newline
-    translation; line endings written to a `'w'` file are preserved verbatim.
+- Text I/O is whole-file UTF-8 with no error handlers; newline handling
+    follows the `newline` argument (see above).
 - `io.UnsupportedOperation` (raised by `read()` on `'w'` files, `write()`
     on `'r'` files, etc.) inherits from both `OSError` and `ValueError` for
     catch purposes, so `except OSError:` and `except ValueError:` both work as

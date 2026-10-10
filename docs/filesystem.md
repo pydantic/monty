@@ -195,7 +195,8 @@ Relative symlinks that stay inside the mount are followed in the non-overlay mod
 - **No live file descriptors.** `open()` keeps no OS handle between calls; each read or write is a separate one-shot
     host operation.
     This is what makes mid-execution [snapshots](snapshots.md) safe.
-    It also means `for line in f` is not supported.
+    It also means a file's whole content is loaded into the sandbox on its first read, `seek()` or iteration step;
+    [limitations/open.md](limitations/open.md) lists the iterator consumers that cannot issue that load.
 - **Only regular files** can be read, written or opened.
     FIFOs, sockets and device nodes raise `PermissionError`, because mount I/O must never block on sandbox-reachable
     input.
