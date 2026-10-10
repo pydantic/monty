@@ -2080,19 +2080,19 @@ impl<'h> VM<'h> {
     /// Loads a built-in module, or asks the host for any other: the import
     /// suspends as an external call of [`IMPORT_FUNCTION`] with the module
     /// name as its argument, and the host's answer becomes the module value
-    /// (a `not_found` answer raises `ModuleNotFoundError`). A dotted name
-    /// below a built-in module that is not a package never reaches the host.
+    /// (a `not_found` answer raises `ModuleNotFoundError`).
     fn load_module(&mut self, module_id: u16) -> RunResult<CallResult> {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
             Some(module) => Ok(CallResult::Value(Value::Ref(module.create(self)))),
-            None => match StandardLib::missing_module(self.interns.get_str(name_id)) {
-                (missing, Some(parent)) => Err(ExcType::module_not_found_error(missing, Some(parent))),
-                _ => Ok(CallResult::External(
-                    EitherStr::Heap(IMPORT_FUNCTION.to_owned()),
-                    ArgValues::One(Value::InternString(name_id)),
-                )),
-            },
+            // a dotted name below a built-in module that is not a package cannot be a host module
+            None if StandardLib::missing_module(self.interns.get_str(name_id)).1.is_some() => {
+                Err(StandardLib::not_found_error(self.interns.get_str(name_id)))
+            }
+            None => Ok(CallResult::External(
+                EitherStr::Heap(IMPORT_FUNCTION.to_owned()),
+                ArgValues::One(Value::InternString(name_id)),
+            )),
         }
     }
 

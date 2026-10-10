@@ -19,6 +19,7 @@ use crate::{
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     intern::StringId,
+    modules::StandardLib,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
@@ -975,7 +976,7 @@ fn resume_import(
             vm.resume_with_exception(RunError::Exc(raise))
         }
         (ExtFunctionResult::NotFound(_), None) => {
-            vm.resume_with_exception(ExcType::module_not_found_error(vm.interns.get_str(module_id), None))
+            vm.resume_with_exception(StandardLib::not_found_error(vm.interns.get_str(module_id)))
         }
         (ExtFunctionResult::Future(_), _) | (_, Some(_)) => {
             let message = format!(

@@ -11,7 +11,7 @@ use std::{
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::RunResult,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::HeapId,
     intern::StaticStrings,
 };
@@ -147,6 +147,14 @@ impl StandardLib {
             }
         }
         (name, parent)
+    }
+
+    /// The `ModuleNotFoundError` for an import of `name` that nothing serves,
+    /// naming the first missing component as CPython does (see
+    /// [`missing_module`](Self::missing_module)).
+    pub(crate) fn not_found_error(name: &str) -> RunError {
+        let (missing, parent) = Self::missing_module(name);
+        ExcType::module_not_found_error(missing, parent)
     }
 
     /// Creates a new instance of this module on the heap.

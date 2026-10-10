@@ -105,7 +105,8 @@ The value the host answers with (in the bindings, the matching `external_modules
     objects (`import m as a; import m as b` leaves `a is not b`), and an import inside a function asks on each call;
 - an attribute can be assigned, as on any host object, but only that binding sees it: the next `import` starts
     from the host's attributes again;
-- a not-found answer raises `ModuleNotFoundError: No module named 'm'`, as in CPython, and an exception raised by the
+- a not-found answer raises `ModuleNotFoundError: No module named 'm'`, as in CPython (a dotted `m.x` names `m`, the
+    first component, since nothing tells the sandbox which part was missing), and an exception raised by the
     host is raised at the `import`;
 - `from m import x` reads `x` from the answered value, whether sent with it or looked up lazily, and raises
     `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute.
