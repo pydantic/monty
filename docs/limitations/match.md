@@ -26,13 +26,13 @@ both.
 ## Parse-time checks
 
 - **Duplicate mapping keys are only detected for literals**, optionally negated
-    (`1`, `-1`, `'a'`, `None`, `b'x'`, `1.5`), compared by Python equality so `1`,
+    (`1`, `-1`, `'a'`, `None`, `b'x'`, `1.5`, `2j`), compared by Python equality so `1`,
     `1.0` and `True` collide.
     CPython folds constant expressions first, so it also rejects `{1 + 0j: a, 1: b}`;
     Monty compiles it and the second key simply never matches a distinct entry.
 - **A pattern after `**rest`** reports `SyntaxError: Pattern cannot follow a double star pattern`
     (Ruff's wording) where CPython says `invalid syntax`.
-- **Bytecode operand limits.** A sequence or class pattern with more than 255
-    sub-patterns, a mapping pattern with more than 65535 keys, or a pattern that
-    captures more than 255 names raises `SyntaxError: too many sub-patterns in ... pattern`
-    (or `too many names in pattern`) at compile time; CPython has no such limit.
+- **Bytecode operand limits.** A sequence, mapping or class pattern with more
+    than 255 sub-patterns, or a pattern that captures more than 255 names, raises
+    `SyntaxError: too many sub-patterns in ... pattern` (or `too many names in pattern`)
+    at compile time; CPython has no such limit.

@@ -109,7 +109,7 @@ impl VM<'_> {
         Ok(())
     }
 
-    /// `MatchClass`: `[subject, cls, kwd_names] -> [subject, names_or_None, bool]`.
+    /// `MatchClass`: `[subject, cls, kwd_names] -> [subject, cls, names_or_None, bool]`.
     ///
     /// Checks `isinstance(subject, cls)` and resolves the attribute names the
     /// sub-patterns read: `nargs` from `cls.__match_args__` (a `None` entry
@@ -119,8 +119,9 @@ impl VM<'_> {
     pub(super) fn match_class(&mut self, nargs: usize) -> RunResult<()> {
         let this = self;
         let kwd_names = this.pop();
-        let cls = this.pop();
-        let subject = this.peek().clone_with_heap(this.heap);
+        let len = this.stack.len();
+        let cls = this.stack[len - 1].clone_with_heap(this.heap);
+        let subject = this.stack[len - 2].clone_with_heap(this.heap);
         defer_drop!(kwd_names, this);
         defer_drop!(cls, this);
         defer_drop!(subject, this);
@@ -135,16 +136,21 @@ impl VM<'_> {
         Ok(())
     }
 
-    /// `MatchAttr`: `[subject, names] -> [subject, names, value, bool]`.
+    /// `MatchAttr`: `[subject, cls, names] -> [subject, cls, names, value, bool]`.
     ///
     /// Reads attribute `index` of the names tuple off the subject. A missing
     /// attribute fails the match; a host-side attribute suspends with a
     /// [`PendingLookupEffect::MatchAttr`] that lands the same pair on resume.
+    /// A name already read by an earlier index is CPython's
+    /// `TypeError: Cls() got multiple sub-patterns for attribute 'x'`, raised
+    /// here rather than up front so a missing earlier attribute still wins.
     pub(super) fn match_attr(&mut self, index: usize) -> Result<CallResult, RunError> {
         let this = self;
         let len = this.stack.len();
-        let subject = this.stack[len - 2].clone_with_heap(this.heap);
+        let subject = this.stack[len - 3].clone_with_heap(this.heap);
+        let cls = this.stack[len - 2].clone_with_heap(this.heap);
         defer_drop!(subject, this);
+        defer_drop!(cls, this);
         let Value::Ref(names_id) = &this.stack[len - 1] else {
             unreachable!("MatchAttr follows a successful MatchClass, which pushed the names tuple")
         };
@@ -158,6 +164,20 @@ impl VM<'_> {
             this.push(subject.clone_with_heap(this.heap));
             return Ok(CallResult::Value(Value::Bool(true)));
         };
+        for earlier in 0..index {
+            let earlier = names.clone_item(earlier, this);
+            defer_drop!(earlier, this);
+            let repeated = earlier
+                .as_either_str(this.heap)
+                .is_some_and(|e| e.as_str(this.interns) == attr.as_str(this.interns));
+            if repeated {
+                let class = class_pattern_name(cls, this);
+                return Err(ExcType::type_error(format!(
+                    "{class}() got multiple sub-patterns for attribute '{}'",
+                    attr.as_str(this.interns)
+                )));
+            }
+        }
         match subject.py_getattr(&attr, this) {
             Ok(CallResult::Value(value)) => {
                 this.push(value);
@@ -250,9 +270,6 @@ fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<
 
 /// The attribute names a class pattern reads, as `str` values (`None` for the
 /// subject itself), or `None` when the subject is not an instance of `cls`.
-///
-/// A name used twice, positionally or by keyword, is CPython's
-/// `TypeError: Cls() got multiple sub-patterns for attribute 'x'`.
 fn class_pattern_names(
     subject: &Value,
     cls: &Value,
@@ -296,20 +313,6 @@ fn class_pattern_names(
     let len = kwd_names.get(vm.heap).as_slice().len();
     for i in 0..len {
         names.push(kwd_names.clone_item(i, vm));
-    }
-    let mut seen: Vec<String> = Vec::with_capacity(names.len());
-    for name in names.iter() {
-        let Some(name) = name.as_either_str(vm.heap) else {
-            continue;
-        };
-        let name = name.as_str(vm.interns);
-        if seen.iter().any(|s| s == name) {
-            let class = class_pattern_name(cls, vm);
-            return Err(ExcType::type_error(format!(
-                "{class}() got multiple sub-patterns for attribute '{name}'"
-            )));
-        }
-        seen.push(name.to_owned());
     }
     Ok(Some(guard.into_inner()))
 }
