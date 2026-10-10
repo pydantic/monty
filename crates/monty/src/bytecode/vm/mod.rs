@@ -13,6 +13,7 @@ mod context_manager;
 mod exceptions;
 mod format;
 mod namespace;
+mod pattern;
 mod recursion;
 mod scheduler;
 
@@ -32,7 +33,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::{Opcode, decode_assert_flags},
+        op::{MATCH_KEYS_REST, Opcode, decode_assert_flags},
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -2030,6 +2031,23 @@ impl<'h> VM<'h> {
                 Opcode::UnpackEx => {
                     let (before, after) = self.current_frame.fetch_u8_u8();
                     try_catch!(self, self.unpack_ex(before as usize, after as usize));
+                }
+                // Pattern matching
+                Opcode::MatchShape => {
+                    let (length, flags) = self.current_frame.fetch_u16_u8();
+                    self.match_shape(length, flags);
+                }
+                Opcode::MatchKeys => {
+                    let mode = self.current_frame.fetch_u8();
+                    if mode == MATCH_KEYS_REST {
+                        try_catch!(self, self.match_keys_rest());
+                    } else {
+                        try_catch!(self, self.match_keys());
+                    }
+                }
+                Opcode::MatchClass => {
+                    let nargs = usize::from(self.current_frame.fetch_u8());
+                    try_catch!(self, self.match_class(nargs));
                 }
                 // Special
                 Opcode::Nop => {

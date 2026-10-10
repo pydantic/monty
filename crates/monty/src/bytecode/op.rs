@@ -33,6 +33,22 @@ pub const FORMAT_VALUE_STATIC_SPEC: u8 = 0x08;
 /// the opcode pops two comparison operands instead of one test value.
 pub const ASSERT_CMP_FLAG: u8 = 0x10;
 
+/// `MatchShape` flag: test for a mapping (`dict` and its subclasses) rather
+/// than a sequence (`list`, `tuple`, `range`, `deque` - never `str`/`bytes`).
+pub const MATCH_SHAPE_MAPPING: u8 = 0x01;
+
+/// `MatchShape` flag: the u16 length operand is a lower bound (a sequence
+/// pattern with a star, or a mapping pattern) rather than an exact length.
+pub const MATCH_SHAPE_MIN_LEN: u8 = 0x02;
+
+/// `MatchKeys` mode: look every key up and push the values tuple (or `None`)
+/// plus a match flag, leaving the subject and keys tuple in place.
+pub const MATCH_KEYS_VALUES: u8 = 0;
+
+/// `MatchKeys` mode: pop the subject and keys and push a new `dict` of the
+/// entries the keys did not consume, for a `**rest` capture.
+pub const MATCH_KEYS_REST: u8 = 1;
+
 /// Encodes an optional fused comparison into the `Assert`/`AssertFailed`
 /// flags operand: `ASSERT_CMP_FLAG | as_operand` when present, `0` when not.
 pub fn assert_flags(cmp_op: Option<CmpOperator>) -> u8 {
@@ -559,6 +575,18 @@ pub enum Opcode {
     /// Unbind a name through the frame's namespace; `NameError` if absent.
     /// Operands as `LoadName`.
     DeleteName = 124,
+
+    // === Pattern matching (`match` statements) ===
+    /// Shape test for sequence and mapping patterns: `[subject] -> [subject, bool]`.
+    /// Operands: u16 length, u8 flags (`MATCH_SHAPE_MAPPING`, `MATCH_SHAPE_MIN_LEN`).
+    MatchShape = 125,
+    /// Mapping-pattern key lookup. Operand: u8 mode. `MATCH_KEYS_VALUES`:
+    /// `[subject, keys] -> [subject, keys, values_or_None, bool]`;
+    /// `MATCH_KEYS_REST`: `[subject, keys] -> [rest_dict]`.
+    MatchKeys = 126,
+    /// Class-pattern check: `[subject, cls, kwd_names] -> [attrs_or_None, bool]`.
+    /// Operand: u8 count of positional sub-patterns, resolved via `__match_args__`.
+    MatchClass = 127,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -680,7 +708,9 @@ impl Opcode {
             | Self::SetExtend
             | Self::LiftToTop
             | Self::Assert
-            | Self::AssertFailed => OperandShape::U8,
+            | Self::AssertFailed
+            | Self::MatchKeys
+            | Self::MatchClass => OperandShape::U8,
             Self::LoadSmallInt => OperandShape::I8,
             Self::LoadModule
             | Self::LoadConst
@@ -710,7 +740,7 @@ impl Opcode {
             | Self::JumpIfFalseOrPop
             | Self::ForIter => OperandShape::Offset,
             Self::CallBuiltinFunction | Self::CallBuiltinType | Self::UnpackEx => OperandShape::U8U8,
-            Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction => OperandShape::U16U8,
+            Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction | Self::MatchShape => OperandShape::U16U8,
             Self::LoadGlobalCallable => OperandShape::U16U16,
             Self::MakeClosure => OperandShape::U16U8U8,
             Self::LoadName | Self::StoreName | Self::DeleteName => OperandShape::U16U16U8,
@@ -863,6 +893,8 @@ impl Opcode {
 
             // === Variable-effect: U16U8 operand ===
             (MakeFunction, Operand::U16U8(_, defaults)) => 1 - i32::from(defaults),
+            // `MatchShape` pushes the test result above the subject it inspects.
+            (MatchShape, Operand::U16U8(..)) => 1,
             (CallAttr, Operand::U16U8(_, arg_count)) => -i32::from(arg_count),
             (CallAttrExtended, Operand::U16U8(_, flags)) => -(1 + i32::from(flags & 0x01)),
 
@@ -937,6 +969,17 @@ impl Opcode {
             (DictUpdate | SetExtend, Operand::U8(_)) => -1,
             // `LiftToTop(n)` reorders the stack — net effect 0.
             (LiftToTop, Operand::U8(_)) => 0,
+            // `MatchKeys` either pushes `[values_or_None, bool]` above the subject
+            // and keys, or replaces both with the `**rest` dict.
+            (MatchKeys, Operand::U8(mode)) => {
+                if mode == MATCH_KEYS_REST {
+                    -1
+                } else {
+                    2
+                }
+            }
+            // `MatchClass` pops subject, class and keyword names; pushes `[attrs_or_None, bool]`.
+            (MatchClass, Operand::U8(_)) => -1,
 
             // === Fixed-effect, no operand (context managers) ===
             // `BeforeWith` pushes the `__enter__` result on top of the existing ctx.
