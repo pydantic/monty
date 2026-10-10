@@ -3,7 +3,7 @@
 # requires-python = ">=3.13"
 # dependencies = ["rich==15.0.0"]
 # ///
-"""Show the LOC diff of each commit on the current branch, split into production, test and other code.
+"""Show the LOC diff of each commit on the current branch, split into production, test, docs and other code.
 
 Usage:
     uv run scripts/branch_diff.py [--check] [--markdown] [--head HEAD] [base]
@@ -42,6 +42,7 @@ class Category(StrEnum):
 
     PRODUCTION = 'production'
     TEST = 'test'
+    DOCS = 'docs'
     OTHER = 'other'
 
 
@@ -50,17 +51,27 @@ Numstat = tuple[int, int, str]
 
 PRODUCTION = Category.PRODUCTION
 TEST = Category.TEST
+DOCS = Category.DOCS
 OTHER = Category.OTHER
 
 # `PurePosixPath.full_match` globs, `**` spans any number of directories; the first match wins.
 RULES: list[tuple[str, Category]] = [
-    # everything in a crate's `src/` is production, whatever the crate is for
-    ('crates/*/src/**', PRODUCTION),
-    # generated and vendored code
+    # dot files and directories (CI, agent skills and instructions), config, lock files and generated code
+    ('**/.*', OTHER),
+    ('**/.*/**', OTHER),
+    ('**/Cargo.toml', OTHER),
+    ('**/pyproject.toml', OTHER),
+    ('**/package.json', OTHER),
+    ('**/package-lock.json', OTHER),
+    ('**/tsconfig*.json', OTHER),
+    ('Cargo.lock', OTHER),
+    ('uv.lock', OTHER),
+    ('clippy.toml', OTHER),
+    ('Makefile', OTHER),
+    ('LICENSE', OTHER),
     ('crates/monty-proto/tests/oracle/**', OTHER),
     ('crates/monty-js/ts/worker/component/**', OTHER),
-    ('crates/monty-typeshed/vendor/**', OTHER),
-    # tests, benchmarks and the crates that only exist to run them
+    # tests, benchmarks, the crates that only exist to run them and the scripts the test harness imports
     ('crates/*/tests/**', TEST),
     ('crates/*/benches/**', TEST),
     ('crates/monty/test_cases/**', TEST),
@@ -72,35 +83,29 @@ RULES: list[tuple[str, Category]] = [
     ('crates/monty-js/smoke-test/**', TEST),
     ('crates/monty-js/test-support/**', TEST),
     ('crates/monty-js/vitest*.config.ts', TEST),
-    # docs, config, lock files and tooling
-    ('**/*.md', OTHER),
-    ('**/.gitignore', OTHER),
-    ('**/.prettierignore', OTHER),
-    ('**/Cargo.toml', OTHER),
-    ('**/pyproject.toml', OTHER),
-    ('**/package.json', OTHER),
-    ('**/package-lock.json', OTHER),
-    ('**/tsconfig.json', OTHER),
-    ('.*', OTHER),
-    ('.*/**', OTHER),
-    ('docs/**', OTHER),
-    ('limitations', OTHER),
-    ('examples/**', OTHER),
-    ('scripts/**', OTHER),
-    ('Cargo.lock', OTHER),
-    ('uv.lock', OTHER),
-    ('clippy.toml', OTHER),
-    ('mkdocs.yml', OTHER),
-    ('Makefile', OTHER),
-    ('LICENSE', OTHER),
-    ('crates/monty-js/.cargo/**', OTHER),
+    ('scripts/complete_tests.py', TEST),
+    ('scripts/cpython_watchdog.py', TEST),
+    ('scripts/run_traceback.py', TEST),
+    ('scripts/test_fixtures.py', TEST),
+    # tooling that is never shipped, including the API docs generator
+    ('crates/monty-apidoc/**', OTHER),
     ('crates/monty-js/scripts/**', OTHER),
     ('crates/monty-proto/proto/buf.yaml', OTHER),
     ('crates/monty-python/example.py', OTHER),
     ('crates/monty-python/exercise.py', OTHER),
     ('crates/monty-typeshed/check.py', OTHER),
     ('crates/monty-typeshed/update.py', OTHER),
-    # shipped code outside `src/`
+    ('scripts/**', OTHER),
+    # docs: the site, every readme and the examples the site links to; agent instructions are tooling
+    ('**/AGENTS.md', OTHER),
+    ('**/CLAUDE.md', OTHER),
+    ('**/*.md', DOCS),
+    ('docs/**', DOCS),
+    ('limitations', DOCS),
+    ('mkdocs.yml', DOCS),
+    ('examples/**', DOCS),
+    # shipped code: every other crate's `src/`, `build.rs`, bindings, schemas and the type stubs compiled in
+    ('crates/*/src/**', PRODUCTION),
     ('crates/*/build.rs', PRODUCTION),
     ('crates/monty-js/ts/**', PRODUCTION),
     ('crates/monty-js/*.d.ts', PRODUCTION),
@@ -108,6 +113,7 @@ RULES: list[tuple[str, Category]] = [
     ('crates/monty-proto/proto/**/*.proto', PRODUCTION),
     ('crates/monty-wasm-runtime/wit/**', PRODUCTION),
     ('crates/monty-typeshed/custom/**', PRODUCTION),
+    ('crates/monty-typeshed/vendor/**', PRODUCTION),
 ]
 
 
@@ -177,7 +183,9 @@ def main() -> None:
 def parse_args() -> argparse.Namespace:
     """Parse the command line, defaulting `base` to the PR's base branch in GitHub Actions."""
     base_ref = os.environ.get('GITHUB_BASE_REF')
-    parser = argparse.ArgumentParser(description='Per-commit LOC diff split into production, test and other code.')
+    parser = argparse.ArgumentParser(
+        description='Per-commit LOC diff split into production, test, docs and other code.'
+    )
     parser.add_argument('base', nargs='?', default=f'origin/{base_ref}' if base_ref else 'main')
     parser.add_argument('--head', help='ref to report on instead of the checkout, omits working changes')
     parser.add_argument('--check', action='store_true', help='check every tracked file can be classified')
@@ -312,8 +320,8 @@ def render_markdown(branch: str, rows: list[Row]) -> str:
         COMMENT_MARKER,
         f'### Branch diff: {code_span(branch)}',
         '',
-        '| Commit | Message | Production | Test | Other |',
-        '| --- | --- | --: | --: | --: |',
+        '| Commit | Message | Production | Test | Docs | Other |',
+        '| --- | --- | --: | --: | --: | --: |',
     ]
     for i, row in enumerate(rows):
         # commit messages on a PR are untrusted, keep them from adding table cells or HTML
