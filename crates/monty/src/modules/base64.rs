@@ -13,7 +13,7 @@
 //! Encoders take bytes only; decoders also take ASCII `str` (CPython's
 //! `_bytes_from_decode_data`).
 
-use std::{borrow::Cow, cmp::Ordering, iter::once};
+use std::{borrow::Cow, cmp::Ordering};
 
 use monty_types::ResourceTracker;
 
@@ -188,7 +188,7 @@ fn call_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // type-checks it, so a 1-byte `str` is an AssertionError, not a TypeError.
         assert_len(altchars, 2, vm)?;
         let alt = encode_input(altchars, vm)?.into_owned();
-        translate(&mut encoded, b"+/", &alt, &vm.heap.tracker)?;
+        translate(&mut encoded, b"+/", &alt);
     }
     Ok(allocate_bytes(encoded, vm.heap))
 }
@@ -208,10 +208,10 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // Unlike the encode path, CPython coerces before asserting the length.
         let alt = decode_input(altchars, vm)?.into_owned();
         assert_len_bytes(&alt, 2)?;
-        translate(&mut data, &alt, b"+/", &vm.heap.tracker)?;
+        translate(&mut data, &alt, b"+/");
     }
     let strict = validate.py_bool(vm)?;
-    let decoded = b64_decode(&data, strict, &vm.heap.tracker)?;
+    let decoded = b64_decode(&data, strict)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -227,7 +227,7 @@ fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StandardB64DecodeArgs { s } = StandardB64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let decoded = b64_decode(decode_input(s, vm)?.as_ref(), false, &vm.heap.tracker)?;
+    let decoded = b64_decode(decode_input(s, vm)?.as_ref(), false)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -237,7 +237,7 @@ fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
     let UrlsafeB64EncodeArgs { s } = UrlsafeB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let mut encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
-    translate(&mut encoded, b"+/", b"-_", &vm.heap.tracker)?;
+    translate(&mut encoded, b"+/", b"-_");
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -246,8 +246,8 @@ fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
     let UrlsafeB64DecodeArgs { s } = UrlsafeB64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let mut data = decode_input(s, vm)?.into_owned();
-    translate(&mut data, b"-_", b"+/", &vm.heap.tracker)?;
-    let decoded = b64_decode(&data, false, &vm.heap.tracker)?;
+    translate(&mut data, b"-_", b"+/");
+    let decoded = b64_decode(&data, false)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -276,9 +276,9 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if !matches!(map01, Value::None) {
         let map = decode_input(map01, vm)?.into_owned();
         assert_len_bytes(&map, 1)?;
-        translate(&mut data, b"01", &[b'O', map[0]], &vm.heap.tracker)?;
+        translate(&mut data, b"01", &[b'O', map[0]]);
     }
-    let decoded = b32_decode(&data, B32_ALPHABET, casefold.py_bool(vm)?, &vm.heap.tracker)?;
+    let decoded = b32_decode(&data, B32_ALPHABET, casefold.py_bool(vm)?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -301,7 +301,7 @@ fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if !data.len().is_multiple_of(8) {
         return Err(incorrect_padding());
     }
-    let decoded = b32_decode(&data, B32HEX_ALPHABET, casefold.py_bool(vm)?, &vm.heap.tracker)?;
+    let decoded = b32_decode(&data, B32HEX_ALPHABET, casefold.py_bool(vm)?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -321,7 +321,7 @@ fn call_b16decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(casefold, vm);
 
     let data = decode_input(s, vm)?.into_owned();
-    let decoded = b16_decode(&data, casefold.py_bool(vm)?, &vm.heap.tracker)?;
+    let decoded = b16_decode(&data, casefold.py_bool(vm)?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -341,10 +341,7 @@ fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .saturating_mul(usize::from(MAX_LINE_SIZE) + 1);
     check_estimated_size(capacity, &vm.heap.tracker)?;
     let mut encoded = Vec::with_capacity(capacity);
-    for (index, chunk) in data.chunks(usize::from(MAX_BIN_SIZE)).enumerate() {
-        // Each chunk is 57 bytes, so the encode's own poll never reaches its
-        // stride; this loop is the one that runs long.
-        vm.heap.tracker.check_time_every(index)?;
+    for chunk in data.chunks(usize::from(MAX_BIN_SIZE)) {
         encoded.extend_from_slice(&b64_encode(chunk, &vm.heap.tracker)?);
         encoded.push(b'\n');
     }
@@ -356,7 +353,7 @@ fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_decodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DecodebytesArgs { s } = DecodebytesArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let decoded = b64_decode(input_type_check(s, vm)?.as_ref(), false, &vm.heap.tracker)?;
+    let decoded = b64_decode(input_type_check(s, vm)?.as_ref(), false)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -379,7 +376,7 @@ fn call_b85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B85DecodeArgs { b } = B85DecodeArgs::from_args(args, vm)?;
     defer_drop!(b, vm);
 
-    let decoded = b85_decode(decode_input(b, vm)?.as_ref(), B85_ALPHABET, "base85", &vm.heap.tracker)?;
+    let decoded = b85_decode(decode_input(b, vm)?.as_ref(), B85_ALPHABET, "base85")?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -397,7 +394,7 @@ fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let Z85DecodeArgs { s } = Z85DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
-    let decoded = b85_decode(decode_input(s, vm)?.as_ref(), Z85_ALPHABET, "z85", &vm.heap.tracker)?;
+    let decoded = b85_decode(decode_input(s, vm)?.as_ref(), Z85_ALPHABET, "z85")?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -631,21 +628,18 @@ pub(super) fn b64_encode_reserving(data: &[u8], extra: usize, tracker: &Resource
     let capacity = data.len().div_ceil(3) * 4 + extra;
     check_estimated_size(capacity, tracker)?;
     let mut out = Vec::with_capacity(capacity);
-    for window in data.chunks(ResourceTracker::poll_window(3)) {
-        tracker.check_time()?;
-        for chunk in window.chunks(3) {
-            let b0 = usize::from(chunk[0]);
-            let b1 = chunk.get(1).map_or(0, |b| usize::from(*b));
-            let b2 = chunk.get(2).map_or(0, |b| usize::from(*b));
-            out.push(B64_ALPHABET[b0 >> 2]);
-            out.push(B64_ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)]);
-            out.push(if chunk.len() > 1 {
-                B64_ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)]
-            } else {
-                b'='
-            });
-            out.push(if chunk.len() > 2 { B64_ALPHABET[b2 & 0x3f] } else { b'=' });
-        }
+    for chunk in data.chunks(3) {
+        let b0 = usize::from(chunk[0]);
+        let b1 = chunk.get(1).map_or(0, |b| usize::from(*b));
+        let b2 = chunk.get(2).map_or(0, |b| usize::from(*b));
+        out.push(B64_ALPHABET[b0 >> 2]);
+        out.push(B64_ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)]);
+        out.push(if chunk.len() > 1 {
+            B64_ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)]
+        } else {
+            b'='
+        });
+        out.push(if chunk.len() > 2 { B64_ALPHABET[b2 & 0x3f] } else { b'=' });
     }
     Ok(out)
 }
@@ -657,7 +651,7 @@ pub(super) fn b64_encode_reserving(data: &[u8], extra: usize, tracker: &Resource
 /// `b64decode(b'YQ==YQ==')` is three bytes, not two `a`s. The state machine
 /// transcribes CPython's, since which error an input produces depends on
 /// exactly where CPython gives up.
-pub(super) fn b64_decode(data: &[u8], strict: bool, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+pub(super) fn b64_decode(data: &[u8], strict: bool) -> RunResult<Vec<u8>> {
     if strict && data.first() == Some(&b'=') {
         return Err(binascii_error("Leading padding not allowed"));
     }
@@ -671,68 +665,65 @@ pub(super) fn b64_decode(data: &[u8], strict: bool, tracker: &ResourceTracker) -
     // non-zero `quad_pos` legal at end of input.
     let mut quad_closed = false;
 
-    for window in data.chunks(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL) {
-        tracker.check_time()?;
-        for byte in window {
-            if *byte == b'=' {
-                if strict {
-                    // A pad is only ever legal two or three characters into an
-                    // open quad. One character in, CPython reports the same
-                    // "1 more than a multiple of 4" error it would at end of input.
-                    if quad_closed || quad_pos == 0 {
-                        return Err(binascii_error("Excess padding not allowed"));
-                    } else if quad_pos == 1 {
-                        return Err(invalid_data_characters(out.len()));
-                    }
-                }
-                padding_started = true;
-                // Only count pads while the quad is open: once closed, further `=`
-                // bytes are inert, and counting them would overflow these `u8`s.
-                if quad_pos >= 2 && !quad_closed {
-                    pads += 1;
-                    if quad_pos + pads >= 4 {
-                        quad_closed = true;
-                    }
-                }
-                continue;
-            }
-
-            let Some(sextet) = b64_value(*byte) else {
-                if strict {
-                    return Err(binascii_error("Only base64 data is allowed"));
-                }
-                continue;
-            };
+    for byte in data {
+        if *byte == b'=' {
             if strict {
-                if quad_closed {
-                    return Err(binascii_error("Excess data after padding"));
-                } else if padding_started {
-                    return Err(binascii_error("Discontinuous padding not allowed"));
+                // A pad is only ever legal two or three characters into an
+                // open quad. One character in, CPython reports the same
+                // "1 more than a multiple of 4" error it would at end of input.
+                if quad_closed || quad_pos == 0 {
+                    return Err(binascii_error("Excess padding not allowed"));
+                } else if quad_pos == 1 {
+                    return Err(invalid_data_characters(out.len()));
                 }
             }
-            pads = 0;
-            quad_closed = false;
+            padding_started = true;
+            // Only count pads while the quad is open: once closed, further `=`
+            // bytes are inert, and counting them would overflow these `u8`s.
+            if quad_pos >= 2 && !quad_closed {
+                pads += 1;
+                if quad_pos + pads >= 4 {
+                    quad_closed = true;
+                }
+            }
+            continue;
+        }
 
-            match quad_pos {
-                0 => {
-                    quad_pos = 1;
-                    leftchar = sextet;
-                }
-                1 => {
-                    quad_pos = 2;
-                    out.push((leftchar << 2) | (sextet >> 4));
-                    leftchar = sextet & 0x0f;
-                }
-                2 => {
-                    quad_pos = 3;
-                    out.push((leftchar << 4) | (sextet >> 2));
-                    leftchar = sextet & 0x03;
-                }
-                _ => {
-                    quad_pos = 0;
-                    out.push((leftchar << 6) | sextet);
-                    leftchar = 0;
-                }
+        let Some(sextet) = b64_value(*byte) else {
+            if strict {
+                return Err(binascii_error("Only base64 data is allowed"));
+            }
+            continue;
+        };
+        if strict {
+            if quad_closed {
+                return Err(binascii_error("Excess data after padding"));
+            } else if padding_started {
+                return Err(binascii_error("Discontinuous padding not allowed"));
+            }
+        }
+        pads = 0;
+        quad_closed = false;
+
+        match quad_pos {
+            0 => {
+                quad_pos = 1;
+                leftchar = sextet;
+            }
+            1 => {
+                quad_pos = 2;
+                out.push((leftchar << 2) | (sextet >> 4));
+                leftchar = sextet & 0x0f;
+            }
+            2 => {
+                quad_pos = 3;
+                out.push((leftchar << 4) | (sextet >> 2));
+                leftchar = sextet & 0x03;
+            }
+            _ => {
+                quad_pos = 0;
+                out.push((leftchar << 6) | sextet);
+                leftchar = 0;
             }
         }
     }
@@ -774,29 +765,26 @@ fn b32_encode(data: &[u8], alphabet: &[u8; 32], tracker: &ResourceTracker) -> Ru
     let capacity = data.len().div_ceil(5) * 8;
     check_estimated_size(capacity, tracker)?;
     let mut out = Vec::with_capacity(capacity);
-    for window in data.chunks(ResourceTracker::poll_window(5)) {
-        tracker.check_time()?;
-        for chunk in window.chunks(5) {
-            let mut acc: u64 = 0;
-            for i in 0..5 {
-                acc = (acc << 8) | u64::from(chunk.get(i).copied().unwrap_or(0));
-            }
-            // Characters carrying data; the remaining 8 - encoded_len are pads.
-            let encoded_len = match chunk.len() {
-                1 => 2,
-                2 => 4,
-                3 => 5,
-                4 => 7,
-                _ => 8,
-            };
-            for i in 0..8 {
-                out.push(if i < encoded_len {
-                    let shift = 35 - i * 5;
-                    alphabet[usize::try_from((acc >> shift) & 0x1f).expect("5 bits fit usize")]
-                } else {
-                    b'='
-                });
-            }
+    for chunk in data.chunks(5) {
+        let mut acc: u64 = 0;
+        for i in 0..5 {
+            acc = (acc << 8) | u64::from(chunk.get(i).copied().unwrap_or(0));
+        }
+        // Characters carrying data; the remaining 8 - encoded_len are pads.
+        let encoded_len = match chunk.len() {
+            1 => 2,
+            2 => 4,
+            3 => 5,
+            4 => 7,
+            _ => 8,
+        };
+        for i in 0..8 {
+            out.push(if i < encoded_len {
+                let shift = 35 - i * 5;
+                alphabet[usize::try_from((acc >> shift) & 0x1f).expect("5 bits fit usize")]
+            } else {
+                b'='
+            });
         }
     }
     Ok(out)
@@ -807,7 +795,7 @@ fn b32_encode(data: &[u8], alphabet: &[u8; 32], tracker: &ResourceTracker) -> Ru
 /// Assumes the caller has already checked that the length is a multiple of
 /// eight and applied any `map01` translation — CPython performs both before
 /// this point and the resulting error ordering is observable.
-fn b32_decode(data: &[u8], alphabet: &[u8; 32], casefold: bool, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+fn b32_decode(data: &[u8], alphabet: &[u8; 32], casefold: bool) -> RunResult<Vec<u8>> {
     let folded: Cow<'_, [u8]> = if casefold {
         Cow::Owned(data.to_ascii_uppercase())
     } else {
@@ -816,8 +804,6 @@ fn b32_decode(data: &[u8], alphabet: &[u8; 32], casefold: bool, tracker: &Resour
     let stripped = {
         let mut end = folded.len();
         while end > 0 && folded[end - 1] == b'=' {
-            // An input that is nothing but padding walks the whole buffer here.
-            tracker.check_time_every_bytes(folded.len() - end)?;
             end -= 1;
         }
         &folded[..end]
@@ -826,23 +812,18 @@ fn b32_decode(data: &[u8], alphabet: &[u8; 32], casefold: bool, tracker: &Resour
 
     let mut out = Vec::with_capacity(stripped.len() / 8 * 5 + 5);
     let mut last_acc: u64 = 0;
-    // Each byte costs a linear scan of the 32-character alphabet, so this is
-    // the slowest decoder in the module.
-    for window in stripped.chunks(ResourceTracker::poll_window(8)) {
-        tracker.check_time()?;
-        for group in window.chunks(8) {
-            let mut acc: u64 = 0;
-            for byte in group {
-                let Some(value) = alphabet.iter().position(|c| c == byte) else {
-                    return Err(binascii_error("Non-base32 digit found"));
-                };
-                acc = (acc << 5) | u64::try_from(value).expect("alphabet index fits u64");
-            }
-            last_acc = acc;
-            // A short final group is still written as five bytes here and
-            // trimmed below, as CPython's `decoded[-5:] = last[:leftover]` does.
-            out.extend_from_slice(&acc.to_be_bytes()[3..]);
+    for group in stripped.chunks(8) {
+        let mut acc: u64 = 0;
+        for byte in group {
+            let Some(value) = alphabet.iter().position(|c| c == byte) else {
+                return Err(binascii_error("Non-base32 digit found"));
+            };
+            acc = (acc << 5) | u64::try_from(value).expect("alphabet index fits u64");
         }
+        last_acc = acc;
+        // A short final group is still written as five bytes here and trimmed
+        // below, exactly as CPython's `decoded[-5:] = last[:leftover]` does.
+        out.extend_from_slice(&acc.to_be_bytes()[3..]);
     }
 
     // 0, 1, 3, 4 and 6 are the pad counts a base32 encoder can emit.
@@ -865,12 +846,9 @@ fn b16_encode(data: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     let capacity = data.len() * 2;
     check_estimated_size(capacity, tracker)?;
     let mut out = Vec::with_capacity(capacity);
-    for window in data.chunks(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL) {
-        tracker.check_time()?;
-        for byte in window {
-            out.push(HEX[usize::from(byte >> 4)]);
-            out.push(HEX[usize::from(byte & 0x0f)]);
-        }
+    for byte in data {
+        out.push(HEX[usize::from(byte >> 4)]);
+        out.push(HEX[usize::from(byte & 0x0f)]);
     }
     Ok(out)
 }
@@ -879,42 +857,22 @@ fn b16_encode(data: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
 ///
 /// CPython screens the whole input for non-`[0-9A-F]` bytes before
 /// `binascii.unhexlify` sees it, so a bad digit outranks an odd length.
-fn b16_decode(data: &[u8], casefold: bool, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+fn b16_decode(data: &[u8], casefold: bool) -> RunResult<Vec<u8>> {
     let folded: Cow<'_, [u8]> = if casefold {
         Cow::Owned(data.to_ascii_uppercase())
     } else {
         Cow::Borrowed(data)
     };
-    // Screens the whole buffer before a single byte is decoded, so on a large
-    // input it is the longer of the two passes; polling per window leaves the
-    // scan itself a tight loop.
-    for window in folded.chunks(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL) {
-        tracker.check_time()?;
-        if window.iter().any(|b| !matches!(b, b'0'..=b'9' | b'A'..=b'F')) {
-            return Err(binascii_error("Non-base16 digit found"));
-        }
+    if folded.iter().any(|b| !matches!(b, b'0'..=b'9' | b'A'..=b'F')) {
+        return Err(binascii_error("Non-base16 digit found"));
     }
     if !folded.len().is_multiple_of(2) {
         return Err(binascii_error("Odd-length string"));
     }
-    // Reserved rather than collected: collecting into a `Result` erases the
-    // lower size hint, leaving the output to grow by doubling.
-    let mut out = Vec::with_capacity(folded.len() / 2);
-    // `chunks_exact` rather than `chunks`: the length is known even above and
-    // the window is a multiple of two, so no window ever has a remainder for
-    // it to drop — and the known stride is what lets this vectorise. A plain
-    // `chunks` costs the loop that, at several times what the poll does.
-    for window in folded.chunks(ResourceTracker::poll_window(2)) {
-        tracker.check_time()?;
-        out.extend(
-            window
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|pair| (hex_value(pair[0]) << 4) | hex_value(pair[1])),
-        );
-    }
-    Ok(out)
+    Ok(folded
+        .chunks(2)
+        .map(|pair| (hex_value(pair[0]) << 4) | hex_value(pair[1]))
+        .collect())
 }
 
 /// Maps a validated uppercase hex digit to its value.
@@ -937,21 +895,18 @@ fn b85_encode(data: &[u8], alphabet: &[u8; 85], pad: bool, tracker: &ResourceTra
     check_estimated_size(capacity, tracker)?;
     let mut out = Vec::with_capacity(capacity);
 
-    for window in data.chunks(ResourceTracker::poll_window(4)) {
-        tracker.check_time()?;
-        for chunk in window.chunks(4) {
-            let mut word: u32 = 0;
-            for i in 0..4 {
-                word = (word << 8) | u32::from(chunk.get(i).copied().unwrap_or(0));
-            }
-            // Five base-85 digits, most significant first.
-            let mut digits = [0u8; 5];
-            for slot in digits.iter_mut().rev() {
-                *slot = alphabet[usize::try_from(word % 85).expect("remainder below 85")];
-                word /= 85;
-            }
-            out.extend_from_slice(&digits);
+    for chunk in data.chunks(4) {
+        let mut word: u32 = 0;
+        for i in 0..4 {
+            word = (word << 8) | u32::from(chunk.get(i).copied().unwrap_or(0));
         }
+        // Five base-85 digits, most significant first.
+        let mut digits = [0u8; 5];
+        for slot in digits.iter_mut().rev() {
+            *slot = alphabet[usize::try_from(word % 85).expect("remainder below 85")];
+            word /= 85;
+        }
+        out.extend_from_slice(&digits);
     }
 
     if !pad {
@@ -965,32 +920,27 @@ fn b85_encode(data: &[u8], alphabet: &[u8; 85], pad: bool, tracker: &ResourceTra
 /// A trailing partial group is completed with the alphabet's highest character
 /// and the extra bytes trimmed off, so any input length decodes. Unlike the
 /// other decoders here, failures are plain `ValueError`s, as CPython's are.
-fn b85_decode(data: &[u8], alphabet: &[u8; 85], codec: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+fn b85_decode(data: &[u8], alphabet: &[u8; 85], codec: &str) -> RunResult<Vec<u8>> {
     let table = base85_table(alphabet);
     let padding = (5 - data.len() % 5) % 5;
     let mut out = Vec::with_capacity(data.len().div_ceil(5) * 4);
 
-    // The byte offset of the current group, which the errors below report.
-    let mut start = 0;
-    for window in data.chunks(ResourceTracker::poll_window(5)) {
-        tracker.check_time()?;
-        for chunk in window.chunks(5) {
-            let mut acc: u64 = 0;
-            for offset in 0..5 {
-                // Positions past the end are the virtual padding: the top digit.
-                let value = match chunk.get(offset) {
-                    Some(byte) => table[usize::from(*byte)].ok_or_else(|| {
-                        codec_value_error(format!("bad {codec} character at position {}", start + offset))
-                    })?,
-                    None => 84,
-                };
-                acc = acc * 85 + u64::from(value);
-            }
-            let word = u32::try_from(acc)
-                .map_err(|_| codec_value_error(format!("{codec} overflow in hunk starting at byte {start}")))?;
-            out.extend_from_slice(&word.to_be_bytes());
-            start += 5;
+    for (chunk_index, chunk) in data.chunks(5).enumerate() {
+        let start = chunk_index * 5;
+        let mut acc: u64 = 0;
+        for offset in 0..5 {
+            // Positions past the end are the virtual padding: the top digit.
+            let value = match chunk.get(offset) {
+                Some(byte) => table[usize::from(*byte)].ok_or_else(|| {
+                    codec_value_error(format!("bad {codec} character at position {}", start + offset))
+                })?,
+                None => 84,
+            };
+            acc = acc * 85 + u64::from(value);
         }
+        let word = u32::try_from(acc)
+            .map_err(|_| codec_value_error(format!("{codec} overflow in hunk starting at byte {start}")))?;
+        out.extend_from_slice(&word.to_be_bytes());
     }
 
     out.truncate(out.len() - padding);
@@ -1023,27 +973,24 @@ fn a85_encode(data: &[u8], pad: bool, foldspaces: bool, extra: usize, tracker: &
     // rewrite them the way CPython rewrites `chunks[-1]`.
     let mut last_start = 0;
 
-    for window in data.chunks(ResourceTracker::poll_window(4)) {
-        tracker.check_time()?;
-        for chunk in window.chunks(4) {
-            last_start = out.len();
-            let mut word: u32 = 0;
-            for i in 0..4 {
-                word = (word << 8) | u32::from(chunk.get(i).copied().unwrap_or(0));
+    for chunk in data.chunks(4) {
+        last_start = out.len();
+        let mut word: u32 = 0;
+        for i in 0..4 {
+            word = (word << 8) | u32::from(chunk.get(i).copied().unwrap_or(0));
+        }
+        if word == 0 {
+            out.push(b'z');
+        } else if foldspaces && word == 0x2020_2020 {
+            out.push(b'y');
+        } else {
+            // Five base-85 digits, most significant first.
+            let mut digits = [0u8; 5];
+            for slot in digits.iter_mut().rev() {
+                *slot = A85_FIRST_DIGIT + u8::try_from(word % 85).expect("remainder below 85");
+                word /= 85;
             }
-            if word == 0 {
-                out.push(b'z');
-            } else if foldspaces && word == 0x2020_2020 {
-                out.push(b'y');
-            } else {
-                // Five base-85 digits, most significant first.
-                let mut digits = [0u8; 5];
-                for slot in digits.iter_mut().rev() {
-                    *slot = A85_FIRST_DIGIT + u8::try_from(word % 85).expect("remainder below 85");
-                    word /= 85;
-                }
-                out.extend_from_slice(&digits);
-            }
+            out.extend_from_slice(&digits);
         }
     }
 
@@ -1072,7 +1019,6 @@ fn a85_wrap(result: &[u8], width: usize, adobe: bool, tracker: &ResourceTracker)
     let mut out = Vec::with_capacity(capacity);
     let mut last_len = 0;
     for (index, line) in result.chunks(width).enumerate() {
-        tracker.check_time_every(index)?;
         if index > 0 {
             out.push(b'\n');
         }
@@ -1154,51 +1100,46 @@ fn a85_strip_adobe(data: &[u8], adobe: bool) -> RunResult<&[u8]> {
 /// Alone among the decoders this can outgrow its input, so its buffer is sized
 /// by [`a85_decoded_size`] rather than from the input's length.
 fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
-    // The four digits CPython appends to flush a partial group, ridden along
-    // as a final window so the loop body is written once.
-    const FLUSH: [u8; 4] = [A85_LAST_DIGIT; 4];
-
-    let capacity = a85_decoded_size(data, foldspaces, &vm.heap.tracker)?;
+    let capacity = a85_decoded_size(data, foldspaces);
     check_estimated_size(capacity, &vm.heap.tracker)?;
     let mut out: Vec<u8> = Vec::with_capacity(capacity);
     let mut acc: u64 = 0;
     let mut digits = 0u8;
+    // Counts only the bytes reaching `skips`, the one arm whose cost grows with
+    // a caller's `ignorechars`. Indexing by position instead would let input
+    // that lands those bytes off the poll's stride skip the clock entirely.
+    let mut ignored = 0usize;
 
-    // Polled per window rather than per byte, which covers every arm — the
-    // digit arms are cheap but unbounded in number, and `skips` below is a
-    // `py_contains` per byte, so a window caps the expensive work between two
-    // checks either way.
-    for window in data
-        .chunks(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL)
-        .chain(once(&FLUSH[..]))
-    {
-        vm.heap.tracker.check_time()?;
-        for byte in window.iter().copied() {
-            if (A85_FIRST_DIGIT..=A85_LAST_DIGIT).contains(&byte) {
-                acc = acc * 85 + u64::from(byte - A85_FIRST_DIGIT);
-                digits += 1;
-                if digits == 5 {
-                    // Five digits reach 85**5 - 1, half again as much as a word holds.
-                    let word = u32::try_from(acc).map_err(|_| codec_value_error("Ascii85 overflow"))?;
-                    out.extend_from_slice(&word.to_be_bytes());
-                    acc = 0;
-                    digits = 0;
-                }
-            } else if byte == b'z' {
-                // The short forms stand for a whole word, so they cannot appear
-                // part-way through one.
-                if digits != 0 {
-                    return Err(codec_value_error("z inside Ascii85 5-tuple"));
-                }
-                out.extend_from_slice(&[0; 4]);
-            } else if foldspaces && byte == b'y' {
-                if digits != 0 {
-                    return Err(codec_value_error("y inside Ascii85 5-tuple"));
-                }
-                out.extend_from_slice(b"    ");
-            } else if !ignore.skips(byte, vm)? {
-                // `ignorechars` is a Python container, so `skips` is a
-                // `py_contains` per byte — linear for `bytes`.
+    for byte in data.iter().copied().chain([A85_LAST_DIGIT; 4]) {
+        if (A85_FIRST_DIGIT..=A85_LAST_DIGIT).contains(&byte) {
+            acc = acc * 85 + u64::from(byte - A85_FIRST_DIGIT);
+            digits += 1;
+            if digits == 5 {
+                // Five digits reach 85**5 - 1, half again as much as a word holds.
+                let word = u32::try_from(acc).map_err(|_| codec_value_error("Ascii85 overflow"))?;
+                out.extend_from_slice(&word.to_be_bytes());
+                acc = 0;
+                digits = 0;
+            }
+        } else if byte == b'z' {
+            // The short forms stand for a whole word, so they cannot appear
+            // part-way through one.
+            if digits != 0 {
+                return Err(codec_value_error("z inside Ascii85 5-tuple"));
+            }
+            out.extend_from_slice(&[0; 4]);
+        } else if foldspaces && byte == b'y' {
+            if digits != 0 {
+                return Err(codec_value_error("y inside Ascii85 5-tuple"));
+            }
+            out.extend_from_slice(b"    ");
+        } else {
+            // `ignorechars` is a Python container, so this is a `py_contains`
+            // per byte — linear for `bytes`. Nothing here returns to the VM's
+            // dispatch checkpoint, so the loop polls the clock itself.
+            vm.heap.tracker.check_time_every(ignored)?;
+            ignored += 1;
+            if !ignore.skips(byte, vm)? {
                 return Err(codec_value_error(format!(
                     "Non-Ascii85 digit found: {}",
                     char::from(byte)
@@ -1216,34 +1157,22 @@ fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut 
 /// How many bytes [`a85_decode`] writes before its trailing trim.
 ///
 /// The input's length is no guide: five ordinary digits decode to four bytes,
-/// but `z` — and `y` when folding — each stand for a whole four-byte word, so
-/// a buffer of them quadruples. Counting both is exact for an input that
-/// decodes and an upper bound for one that fails part-way.
-fn a85_decoded_size(data: &[u8], foldspaces: bool, tracker: &ResourceTracker) -> RunResult<usize> {
-    let mut digits = 0usize;
-    let mut words = 0usize;
-    // This runs ahead of the decode's own pass, so it is half of what a large
-    // input costs. Counted as two passes over each window rather than one:
-    // each is a plain predicate the compiler vectorises, where the single
-    // if/else chain they replace ran a byte at a time.
-    for chunk in data.chunks(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL) {
-        tracker.check_time()?;
-        digits += count_matching(chunk, |byte| (A85_FIRST_DIGIT..=A85_LAST_DIGIT).contains(&byte));
-        words += count_matching(chunk, |byte| byte == b'z' || (foldspaces && byte == b'y'));
-    }
-    // The decode appends four `u`s of its own, so any partial group is flushed
-    // as a whole one — which makes the group count the digits rounded up.
-    // Saturating so a 32-bit target reports a rejectable size rather than wrapping.
-    Ok(digits.div_ceil(5).saturating_add(words).saturating_mul(4))
-}
-
-/// Counts the bytes of `data` satisfying `predicate`.
-///
-/// Out of line for the same reason as [`decode_hex_window`]: on its own the
-/// compiler vectorises it, inlined into a polled loop it does not.
-#[inline(never)]
-fn count_matching(data: &[u8], predicate: impl Fn(u8) -> bool) -> usize {
-    data.iter().filter(|byte| predicate(**byte)).count()
+/// but `z` (and `y` when folding) stands for a whole four-byte word, so a
+/// buffer of them quadruples. Exact for an input that decodes, and an upper
+/// bound for one that fails part-way.
+fn a85_decoded_size(data: &[u8], foldspaces: bool) -> usize {
+    // Two plain counts rather than one if/else chain, so each vectorises.
+    let digits = data
+        .iter()
+        .filter(|byte| (A85_FIRST_DIGIT..=A85_LAST_DIGIT).contains(*byte))
+        .count();
+    let words = data
+        .iter()
+        .filter(|byte| **byte == b'z' || (foldspaces && **byte == b'y'))
+        .count();
+    // The decode appends four digits of its own, so a partial group is flushed
+    // as a whole one. Saturating so a 32-bit target reports a rejectable size.
+    digits.div_ceil(5).saturating_add(words).saturating_mul(4)
 }
 
 /// Which bytes `a85decode` skips rather than decoding.
@@ -1278,7 +1207,7 @@ fn codec_value_error(message: impl Into<String>) -> RunError {
 /// same index of `to` — CPython's `bytes.translate(bytes.maketrans(...))`.
 ///
 /// Later entries win, matching `maketrans` when `from` repeats a byte.
-fn translate(data: &mut [u8], from: &[u8], to: &[u8], tracker: &ResourceTracker) -> RunResult<()> {
+fn translate(data: &mut [u8], from: &[u8], to: &[u8]) {
     let mut table: [u8; 256] = [0; 256];
     for (i, slot) in table.iter_mut().enumerate() {
         *slot = u8::try_from(i).expect("index bounded by table length");
@@ -1286,13 +1215,9 @@ fn translate(data: &mut [u8], from: &[u8], to: &[u8], tracker: &ResourceTracker)
     for (src, dst) in from.iter().zip(to) {
         table[usize::from(*src)] = *dst;
     }
-    for window in data.chunks_mut(ResourceTracker::BYTE_LOOP_CHECK_INTERVAL) {
-        tracker.check_time()?;
-        for byte in window {
-            *byte = table[usize::from(*byte)];
-        }
+    for byte in data {
+        *byte = table[usize::from(*byte)];
     }
-    Ok(())
 }
 
 /// Borrows the bytes of an encoder input.

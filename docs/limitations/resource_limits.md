@@ -267,6 +267,8 @@ indistinguishable from a stack overflow.
     `swapcase`) and `is*()` predicates are **not** polled and run to completion.
     Their cost is linear in the input, so the overshoot is bounded by the largest
     string `max_memory` admits.
+- `binascii` and `base64` conversions are **not** polled either, for the same
+    reason; a large input can overrun the budget into the grace period.
 - `base64.a85decode()` polls the clock every 64th byte that matches no
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`

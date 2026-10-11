@@ -2098,7 +2098,7 @@ fn expanding_codecs_fail_softly() {
         let (_, event) = child.feed(&format!("{}{call}", SETUP.replace("{FILL}", fill)));
         assert_eq!(expect_error(event).exc_type, "MemoryError", "{call}");
         // the worker raised rather than exiting, so it is still serving
-        assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2), "{call}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{call}");
         child.shutdown();
     }
 }
@@ -2145,7 +2145,7 @@ fn expanding_codecs_reserve_what_they_preflight() {
     for (limit, code, encoded_len) in cases {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(limit));
-        assert_eq!(child.feed_complete(code), MontyObject::Int(encoded_len), "{code}");
+        assert_eq!(child.feed_complete(code), MontyObject::int(encoded_len), "{code}");
         child.shutdown();
     }
 }
@@ -2155,14 +2155,23 @@ fn expanding_codecs_reserve_what_they_preflight() {
 ///
 /// Plain text encodes to a little over its own length, so bounding it at the
 /// 3.125 bytes per byte that `b'\xff'` reaches would reject, at a third of the
-/// budget it needs, an input the session has ample room for.
+/// budget it needs, an input the session has ample room for. Dots and newlines
+/// expand only in position, so text full of them must not be charged as if
+/// every one did.
 #[test]
 fn quoted_printable_is_sized_from_what_it_quotes() {
-    let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
-    let code = "import binascii\nsrc = b'a' * 10_000_000\nlen(binascii.b2a_qp(src))";
-    assert_eq!(child.feed_complete(code), MontyObject::Int(10_266_666));
-    child.shutdown();
+    let cases = [
+        ("b'a' * 10_000_000", 10_266_666),
+        // every dot starts a line and escapes; no newline expands
+        ("b'.\\n' * 4_000_000", 16_000_000),
+    ];
+    for (src, encoded_len) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
+        let code = format!("import binascii\nsrc = {src}\nlen(binascii.b2a_qp(src))");
+        assert_eq!(child.feed_complete(&code), MontyObject::int(encoded_len), "{src}");
+        child.shutdown();
+    }
 }
 
 /// A `Configure` carrying `max_memory`, which is what limits the worker.
