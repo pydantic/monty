@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use monty::MontyRun;
+use monty::{Dump, MontyRun, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter,
     ResourceLimits, ResourceTracker,
@@ -582,4 +582,167 @@ fn csv_reader_load_rejects_future_reply() {
     .unwrap_err();
     assert_eq!(err.exc_type(), ExcType::RuntimeError);
     assert_eq!(err.message().unwrap(), "file loading cannot be answered with a future");
+}
+
+// ---------------------------------------------------------------------------
+// `json.load` and `json.dump` reuse the buffered-read and one-shot-write
+// effects, so a host failure must leave the file retry-safe exactly as
+// `read()` / `write()` do, and a future cannot answer the load.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_load_host_error_then_retry() {
+    let code = r"
+import json
+f = open('/x.json')
+try:
+    json.load(f)
+except OSError as exc:
+    first = str(exc)
+(first, json.load(f))
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let open_call = progress.into_os_call().expect("expected Open OsCall");
+    let progress = open_call
+        .resume(
+            MontyObject::file_handle(file_handle("/x.json", "r")),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let read_call = progress.into_os_call().expect("expected ReadText OsCall");
+    assert_eq!(read_call.function_call.name(), "Path.read_text");
+    let host_exc = MontyException::new(ExcType::OSError, Some("transient".to_owned()));
+    let progress = read_call
+        .resume(ExtFunctionResult::Error(host_exc), PrintWriter::Stdout)
+        .unwrap();
+    // The failed load cleared `pending_read`, so the retry reads again.
+    let retry_call = progress.into_os_call().expect("expected retry OsCall");
+    assert_eq!(retry_call.function_call.name(), "Path.read_text");
+    let result = retry_call
+        .resume(MontyObject::string("[1, 2]".to_owned()), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .expect("expected Complete");
+    assert_eq!(
+        result,
+        MontyObject::tuple([
+            MontyObject::string("transient".to_owned()),
+            MontyObject::list([MontyObject::int(1), MontyObject::int(2)]),
+        ])
+    );
+}
+
+#[test]
+fn json_load_rejects_future_reply() {
+    let err = run_with_open_then_io(
+        "import json\nf = open('/x.json')\njson.load(f)\n",
+        "Path.read_text",
+        file_handle("/x.json", "r"),
+        ExtFunctionResult::Future(1),
+    )
+    .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::RuntimeError);
+    assert_eq!(err.message().unwrap(), "json.load cannot be answered with a future");
+}
+
+#[test]
+fn json_load_parse_error_after_host_read() {
+    // The host content is installed as the buffer before parsing, so the
+    // failed parse still leaves the file at EOF, as `fp.read()` would.
+    let code = r"
+import json
+f = open('/x.json')
+try:
+    json.load(f)
+except json.JSONDecodeError as exc:
+    result = (str(exc), f.read())
+result
+";
+    let result = run_with_open_then_io(
+        code,
+        "Path.read_text",
+        file_handle("/x.json", "r"),
+        MontyObject::string("[1,".to_owned()).into(),
+    )
+    .expect("script should complete");
+    assert_eq!(
+        result,
+        MontyObject::tuple([
+            MontyObject::string("Expecting value: line 1 column 4 (char 3)".to_owned()),
+            MontyObject::string(String::new()),
+        ])
+    );
+}
+
+#[test]
+fn json_dump_host_error_rolls_back_position() {
+    let code = r"
+import json
+f = open('/x.json', 'w')
+try:
+    json.dump({'a': 1}, f)
+except OSError as exc:
+    after = (f.tell(), str(exc))
+after
+";
+    let host_exc = MontyException::new(ExcType::OSError, Some("device full".to_owned()));
+    let result = run_with_open_then_io(code, "Path.append_text", file_handle("/x.json", "w"), host_exc.into())
+        .expect("script should complete after catching the host error");
+    assert_eq!(
+        result,
+        MontyObject::tuple([MontyObject::int(0), MontyObject::string("device full".to_owned())])
+    );
+}
+
+#[test]
+fn json_dump_answers_none_and_advances_position() {
+    let code = r"
+import json
+f = open('/x.json', 'w')
+(json.dump([1, 2], f), f.tell())
+";
+    let result = run_with_open_then_io(
+        code,
+        "Path.append_text",
+        file_handle("/x.json", "w"),
+        MontyObject::int(6).into(),
+    )
+    .expect("script should complete");
+    assert_eq!(result, MontyObject::tuple([MontyObject::none(), MontyObject::int(6)]));
+}
+
+#[test]
+fn json_load_dump_taken_while_waiting_for_the_host_still_parses() {
+    // The `JsonLoad` effect rides in the suspended state, so a session dumped
+    // during the host read parses the reply exactly like the original.
+    let code = "import json\nf = open('/x.json')\njson.load(f)['k']\n";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = progress
+        .into_os_call()
+        .expect("expected Open OsCall")
+        .resume(
+            MontyObject::file_handle(file_handle("/x.json", "r")),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected a running session");
+    };
+    for progress in [progress, *loaded] {
+        let read_call = progress.into_os_call().expect("expected ReadText OsCall");
+        assert_eq!(read_call.function_call.name(), "Path.read_text");
+        let result = read_call
+            .resume(MontyObject::string(r#"{"k": [true]}"#.to_owned()), PrintWriter::Stdout)
+            .unwrap()
+            .into_complete()
+            .expect("expected Complete");
+        assert_eq!(result, MontyObject::list([MontyObject::bool(true)]));
+    }
 }
