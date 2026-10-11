@@ -190,13 +190,18 @@ fn json_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> Py
 }
 
 /// Builds a real `tomllib.TOMLDecodeError` from the `msg` / `doc` / `pos`
-/// payload, which it shares with `json.JSONDecodeError`. The constructor
-/// derives `lineno` / `colno` from `doc`, so both are overridden for a dropped
-/// (oversized) document, as is the message it formats.
+/// payload, which it shares with `json.JSONDecodeError`. Every attribute is
+/// set explicitly: before Python 3.14 the constructor stores only `args`, and
+/// on 3.14 it derives `lineno` / `colno` from `doc`, which is wrong for a
+/// dropped (oversized) document, as is the message it formats. Absent the
+/// module (Python 3.10) this degrades to the `ValueError` parent.
 fn toml_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> PyErr {
     if let ExcData::Json(data) = exc_data
         && let Ok(exc_cls) = get_toml_decode_error(py)
         && let Ok(exc_instance) = exc_cls.call1((&data.msg, data.doc.as_deref().unwrap_or(""), data.pos))
+        && exc_instance.setattr("msg", &data.msg).is_ok()
+        && exc_instance.setattr("doc", data.doc.as_deref().unwrap_or("")).is_ok()
+        && exc_instance.setattr("pos", data.pos).is_ok()
         && exc_instance.setattr("lineno", data.lineno).is_ok()
         && exc_instance.setattr("colno", data.colno).is_ok()
         && exc_instance.setattr("args", (PyString::new(py, &msg),)).is_ok()

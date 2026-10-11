@@ -5,13 +5,16 @@ from __future__ import annotations
 import binascii
 import csv
 import json
-import tomllib
+import sys
 
 import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
 from pydantic_monty import Monty, MontyError, MontyRuntimeError, MontySyntaxError
+
+if sys.version_info >= (3, 11):
+    import tomllib
 
 # === MontyRuntimeError tests ===
 
@@ -123,6 +126,7 @@ def test_json_decode_error_message_only_fallback(monty_run: RunMonty):
     assert str(inner) == snapshot('nope')
 
 
+@pytest.mark.skipif(sys.version_info < (3, 11), reason='tomllib is new in Python 3.11')
 def test_toml_decode_error(monty_run: RunMonty):
     # `tomllib.TOMLDecodeError` carries the same five attributes as
     # `json.JSONDecodeError`, so it surfaces through the same payload.
@@ -137,6 +141,7 @@ def test_toml_decode_error(monty_run: RunMonty):
     assert inner.doc == 'a = 1\nb = [1,,]'
 
 
+@pytest.mark.skipif(sys.version_info < (3, 11), reason='tomllib is new in Python 3.11')
 def test_toml_decode_error_at_end_of_document(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("import tomllib\ntomllib.loads('a = \\'x')")

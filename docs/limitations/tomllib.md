@@ -41,6 +41,7 @@ a real `tomllib.TOMLDecodeError` with all five attributes from a structured payl
 time, except that documents larger than 64 KiB are not carried, in which case `doc` is `''`.
 A `TOMLDecodeError` raised manually inside the sandbox has no payload and surfaces as a plain
 `ValueError` carrying the message.
+On a host Python without `tomllib` (3.10) the exception surfaces as its `ValueError` parent.
 
 ## Values
 
