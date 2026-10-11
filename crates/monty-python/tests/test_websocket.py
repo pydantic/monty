@@ -514,5 +514,5 @@ async def test_module_stubs_over_websocket(ws_url: str):
 
     modules = {'tools': ExternalModule({'add': add}, stubs='def add(a: int, b: int) -> int: ...\n')}
     async with AsyncMontyWebsocket(ws_url) as pool:
-        async with pool.checkout(type_check=True) as session:
-            assert await session.feed_run('import tools\ntools.add(1, 2)', external_modules=modules) == snapshot(3)
+        async with pool.checkout(type_check=True, external_modules=modules) as session:
+            assert await session.feed_run('import tools\ntools.add(1, 2)') == snapshot(3)

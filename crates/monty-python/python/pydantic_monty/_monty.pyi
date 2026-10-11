@@ -613,6 +613,7 @@ class Monty:
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
+        external_modules: Mapping[str, ExternalModule | Callable[[], ExternalModule]] | None = None,
     ) -> MontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -631,8 +632,8 @@ class Monty:
                 successfully executed snippet is appended to the accumulated
                 context used for type-checking subsequent snippets.
             type_check_stubs: Stub declarations made available to type checking.
-                A host module's own stub is the `stubs` of its `ExternalModule`,
-                passed with each feed's `external_modules`.
+                A host module's own stub is the `stubs` of its `ExternalModule`
+                in `external_modules`.
             type_check_format: How `MontyTypingError` diagnostics are rendered;
                 `None` (the default) means `'full'`. Chosen here rather than on
                 the error because the checker's structured diagnostics never
@@ -656,6 +657,14 @@ class Monty:
             os_policy: Session clock, sleep and random initialization policies;
                 see `OSPolicy`. Defaults to the worker's clock in UTC and its
                 entropy, with sleeps handled by the pool and capped at ten seconds.
+            external_modules: Modules the session's feeds may import, keyed by
+                import name: an `ExternalModule` or a zero-argument factory
+                returning one, called once per session when first needed.
+                Module stubs resolve imports for the type checker only; the
+                `module` answers the import at runtime. Stubs are never
+                star-imported. Invalid or sandbox-provided names raise
+                `ValueError`; invalid entries raise `TypeError`. An import of a
+                module absent here raises `ModuleNotFoundError`.
         """
 
 @final
@@ -676,7 +685,6 @@ class MontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: Mapping[str, ExternalModule | Callable[[], ExternalModule]] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -708,12 +716,6 @@ class MontySession:
                 returned directly when the name is read, and an absent name
                 raises `NameError`. The lazy counterpart to `inputs`; a name
                 present in both is served by the eager `inputs` binding.
-            external_modules: Modules keyed by import name: an `ExternalModule` or
-                zero-argument factory, called on first use at most once per feed.
-                Module stubs resolve imports for the type checker only; the
-                `module` answers the import at runtime. Stubs are never star-imported.
-                Invalid or sandbox-provided names raise `ValueError`; invalid entries
-                raise `TypeError`. Missing host modules raise `ModuleNotFoundError`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -747,7 +749,6 @@ class MontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: Mapping[str, ExternalModule | Callable[[], ExternalModule]] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
@@ -770,7 +771,8 @@ class MontySession:
         ```
 
         External calls, imports and name lookups return snapshots.
-        `external_lookup` and `external_modules` are captured for `resume_auto()`.
+        `external_lookup` is captured for `resume_auto()`, which also answers
+        imports from the session's `external_modules`.
 
         Use `snapshot.dump()` to checkpoint the worker mid-execution and
         `load_snapshot` to restore it.
@@ -787,7 +789,6 @@ class MontySession:
                 `resume_auto()` resolves external calls and undefined names
                 against (as in `feed_run`). Captured for `resume_auto()`; not
                 used by a plain `resume(...)`.
-            external_modules: As on `feed_run`, but used only by `resume_auto()`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -835,7 +836,6 @@ class MontySession:
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: Mapping[str, ExternalModule | Callable[[], ExternalModule]] | None = None,
         os: OsHandler | None = None,
     ) -> SyncSnapshot:
         """
@@ -868,7 +868,6 @@ class MontySession:
                 coroutines are gone (they lived in the previous process), so
                 `resume_auto()` on it raises — resolve it manually with
                 `resume({call_id: ...})`.
-            external_modules: Captured for `resume_auto()`, as above.
             os: Captured for `resume_auto()`, as above.
         """
 
@@ -950,13 +949,16 @@ class AsyncMonty:
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
+        external_modules: Mapping[str, ExternalModule | Callable[[], Awaitable[ExternalModule]]] | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated worker.
 
         The worker is checked out of the pool by `async with` on the returned
         session and returned to the pool when the `async with` block exits.
-        Arguments are identical to `Monty.checkout`.
+        Arguments are identical to `Monty.checkout`, except that an
+        `external_modules` factory returns an awaitable of the `ExternalModule`;
+        the factories a feed needs at once are awaited concurrently.
         """
 
 @final
@@ -1066,6 +1068,7 @@ class AsyncMontyWebsocket:
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
+        external_modules: Mapping[str, ExternalModule | Callable[[], Awaitable[ExternalModule]]] | None = None,
         ephemeral: bool | None = None,
         profile: str | None = None,
     ) -> AsyncMontySession:
@@ -1104,7 +1107,6 @@ class AsyncMontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: Mapping[str, ExternalModule | Callable[[], Awaitable[ExternalModule]]] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -1141,9 +1143,6 @@ class AsyncMontySession:
                 is read, and an absent name raises `NameError`. The lazy
                 counterpart to `inputs`; a name present in both is served by the
                 eager `inputs` binding.
-            external_modules: As on `MontySession.feed_run`, except that a
-                callable entry returns an awaitable of the `ExternalModule`;
-                the factories a feed needs at once are awaited concurrently.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -1171,7 +1170,6 @@ class AsyncMontySession:
         *,
         inputs: dict[str, Any] | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: Mapping[str, ExternalModule | Callable[[], Awaitable[ExternalModule]]] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
         cwd: str | None = None,
@@ -1183,9 +1181,9 @@ class AsyncMontySession:
         (whose `resume(...)` / `resume_auto()` is awaitable) or a
         `MontyComplete`.
 
-        As in the sync version, `external_lookup`, `external_modules` and `os`
-        are captured for `await snapshot.resume_auto()` rather than consulted
-        during this initial drive. A coroutine external answered by `resume_auto()` is awaited
+        As in the sync version, `external_lookup` and `os` are captured for
+        `await snapshot.resume_auto()` rather than consulted during this
+        initial drive. A coroutine external answered by `resume_auto()` is awaited
         directly when the snapshot's `allow_eager_await` is true; otherwise it
         is awaited concurrently and yields an `AsyncFutureSnapshot` whose
         `resume_auto()` settles the pending coroutines.
@@ -1203,7 +1201,6 @@ class AsyncMontySession:
                 against (as in `feed_run`). Callables may be coroutine
                 functions. Captured for `resume_auto()`; not used by a plain
                 `resume(...)`.
-            external_modules: As on `feed_run`, but used only by `resume_auto()`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -1244,7 +1241,6 @@ class AsyncMontySession:
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
-        external_modules: Mapping[str, ExternalModule | Callable[[], Awaitable[ExternalModule]]] | None = None,
         os: OsHandler | None = None,
     ) -> AsyncSnapshot:
         """
@@ -1263,7 +1259,6 @@ class AsyncMontySession:
                 in the dump, so pass it again, and a restored `FutureSnapshot`
                 cannot be driven with `resume_auto()` — its pending coroutines
                 are gone.
-            external_modules: Captured for `resume_auto()`, as above.
             os: Captured for `resume_auto()`, as above.
         """
 
@@ -1383,7 +1378,7 @@ class FunctionSnapshot:
         """Answer this call automatically, then return the next snapshot (or
         `MontyComplete`). Resumes at most once.
 
-        Imports and stub requests use the captured `external_modules`. Other OS calls
+        Imports and stub requests use the session's `external_modules`. Other OS calls
         try mounts, then `os`, then Monty's unhandled default. External calls use
         `external_lookup`; missing names raise `NameError`. Coroutine results raise
         `RuntimeError`; use `AsyncMonty` for async externals."""

@@ -348,7 +348,7 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     not from the `checkout()` that restored it.
     Module stubs are retained even when type checking is off, so a restored session requests stubs only for modules
     it never asked about; every `import` still asks the host for the module value.
-    Supply `external_modules` again to answer those imports and function calls.
+    The restoring `checkout()`'s `external_modules` answer those imports and function calls.
 - **Host modules follow host-object restoration rules.** Eager attributes, including functions named `tools.<attr>`,
     survive restoration; lazy attribute access and method calls fail as described below.
     An `import` after restoration asks the host again.

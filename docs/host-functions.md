@@ -300,7 +300,8 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
 ## Importing host modules
 
 Imports of unknown modules ask the host for them.
-Pass `external_modules` to `feed_run`, `feed_start` or `load_snapshot` (`externalModules` in JavaScript).
+Pass `external_modules` to `checkout()` (`externalModules` in JavaScript); an imported module stays bound for the
+session, so its modules are fixed for the session too.
 It maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values containing the module and its optional
 `.pyi` type stub:
 
@@ -324,8 +325,8 @@ It maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values
     tools = ExternalModule({'add': add})
 
     with Monty() as pool:
-        with pool.checkout() as session:
-            print(session.feed_run(code, external_modules={'tools': tools}))
+        with pool.checkout(external_modules={'tools': tools}) as session:
+            print(session.feed_run(code))
             #> 10
     ```
 
@@ -343,8 +344,8 @@ It maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values
 
     await using pool = await Monty.create()
     const tools = new ExternalModule({ add: (a: number, b: number) => a + b })
-    await using session = await pool.checkout()
-    console.log(await session.feedRun(code, { externalModules: { tools } })) // 10
+    await using session = await pool.checkout({ externalModules: { tools } })
+    console.log(await session.feedRun(code)) // 10
     ```
 
 An entry's `module` dict (a plain object in JavaScript) becomes a host object named after the module.
@@ -356,15 +357,14 @@ A callable attribute becomes a host function named `<module>.<attr>`, dispatched
 JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
 Any other attribute is converted when the module is imported.
 A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
-Any other value is refused with `TypeError` when the feed is called, before anything runs.
-A zero-argument factory returning an `ExternalModule` runs when the feed first needs the module: for an import,
+Any other value is refused with `TypeError` at the checkout, before a worker is taken.
+A zero-argument factory returning an `ExternalModule` runs when a feed first needs the module: for an import,
 a stub request, or a function call through a restored binding.
-The result is cached for that feed.
-For one lookup per session, memoize the factory: `functools.cache` serves a synchronous one, while an async factory
-must cache the awaited `ExternalModule` itself, since a cached coroutine cannot be awaited a second time.
+Its result stands for the module for the rest of the session, so a module no feed imports costs nothing to offer.
 Under `AsyncMonty` it may return an awaitable, and in JavaScript a promise; the sync `Monty` raises `RuntimeError` for
 an awaitable.
-Factory exceptions and invalid return values raise at the requesting import, stub request or call.
+Factory exceptions and invalid return values raise at the requesting import, stub request or call, and the next use
+runs the factory again.
 `from tools import add` reads the attribute of that object and raises `ImportError` for a name it does not have.
 An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
 or `math`, are never looked up here.

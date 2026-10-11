@@ -77,19 +77,19 @@ Keyword arguments from the sandbox arrive as a trailing object on the call.
 An error thrown by a host function crosses into the sandbox as a Python exception, using the error's `name` when it
 matches a Python exception type and `RuntimeError` otherwise.
 
-`externalModules` maps import names to `ExternalModule` values with optional type stubs, or to zero-argument
-factories returning one (a promise is awaited), run when the feed first needs the module.
+`externalModules` on `checkout()` maps import names to `ExternalModule` values with optional type stubs, or to
+zero-argument factories returning one (a promise is awaited), run when a feed first needs the module.
 A plain object's public properties become module attributes; functions become host functions named `<module>.<attr>`:
 
 ```ts
 import { ExternalModule, Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create()
-await using session = await pool.checkout()
-
 const tools = new ExternalModule({ add: (a: number, b: number) => a + b })
+await using session = await pool.checkout({ externalModules: { tools } })
+
 const code = 'import tools\nfrom tools import add\ntools.add(1, 2) + add(3, 4)'
-console.log(await session.feedRun(code, { externalModules: { tools } })) // 10
+console.log(await session.feedRun(code)) // 10
 ```
 
 See [importing host modules](../host-functions.md#importing-host-modules).

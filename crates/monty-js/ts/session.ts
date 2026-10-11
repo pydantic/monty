@@ -88,11 +88,6 @@ export interface FeedOptions {
    * served by the eager `inputs` binding.
    */
   externalLookup?: Record<string, unknown>
-  /**
-   * Importable host modules (see [`ExternalModules`]); missing imports raise `ModuleNotFoundError`.
-   * Their `.pyi` stubs resolve imports without being star-imported like `typeCheckStubs`.
-   */
-  externalModules?: ExternalModules
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -114,8 +109,8 @@ export interface FeedOptions {
 
 /**
  * Options for [`MontySession.feedStart`]. External calls, imports and lookups return snapshots.
- * [`snapshot.resumeAuto()`](FunctionSnapshot#resumeAuto) uses the captured
- * `externalLookup`, `externalModules` and `os` to answer each suspension.
+ * [`snapshot.resumeAuto()`](FunctionSnapshot#resumeAuto) uses the captured `externalLookup`
+ * and `os`, and the session's `externalModules`, to answer each suspension.
  */
 export interface FeedStartOptions {
   /** Values bound as globals before the snippet runs. */
@@ -126,8 +121,6 @@ export interface FeedStartOptions {
    * by a plain `snapshot.resume(...)`.
    */
   externalLookup?: Record<string, unknown>
-  /** Host modules for `resumeAuto()`, as in [`FeedOptions.externalModules`]; unused by `resume(...)`. */
-  externalModules?: ExternalModules
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -156,8 +149,6 @@ export interface LoadSnapshotOptions {
    * the previous process; resolve it manually with `resume([...])`.
    */
   externalLookup?: Record<string, unknown>
-  /** Host modules for `resumeAuto()`, as in [`FeedStartOptions.externalModules`]. */
-  externalModules?: ExternalModules
   /** Handler for OS calls, consulted by `resumeAuto()` as in `feedStart`. */
   os?: OsCallback
 }
@@ -199,12 +190,12 @@ export class MontySession {
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
 
-  /** One attrs object per module path: a wrapper's id is fixed, and the instance store
-   *  takes a new wrapper only for the object it already routes to (see [`moduleValue`]). */
-  private readonly moduleAttrs = new Map<string, Record<string, unknown>>()
-
-  /** @internal — sessions are created by `Monty.checkout`. */
-  constructor(native: NativeSession) {
+  /** @internal — sessions are created by `Monty.checkout`, which validates the modules first. */
+  constructor(
+    native: NativeSession,
+    /** The checkout's `externalModules`, answering every feed's imports. */
+    private readonly modules: HostModules = new HostModules(undefined),
+  ) {
     this.native = native
     this.workerId = native.workerId ?? undefined
   }
@@ -222,9 +213,8 @@ export class MontySession {
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
-    // Validate modules before sending the feed; discard pending futures between feeds.
-    const modules = new HostModules(options.externalModules, this.moduleAttrs)
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, modules, options.os)
+    // Discard pending futures between feeds.
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -396,8 +386,7 @@ export class MontySession {
   /** Captures the feed's handlers for `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions | LoadSnapshotOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const modules = new HostModules(options.externalModules, this.moduleAttrs)
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, modules, options.os)
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
     return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
@@ -627,7 +616,7 @@ class TurnAnswerer {
   }
 
   /**
-   * Resolves a module, caching each factory's result for the feed.
+   * Resolves a module, caching each factory's result for the session.
    * Await only real Promises. Invalid results raise TypeError at the requesting
    * import, call or stub request (see [`checkedModule`]).
    */
@@ -674,7 +663,7 @@ class TurnAnswerer {
   /**
    * Returns requested modules' `.pyi` stubs and their submodules by dotted path,
    * using `null` for missing stubs. Run factories concurrently and reuse their
-   * results for subsequent imports in this feed.
+   * results for the session's imports.
    */
   private async answerImportStubs(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
     const [args] = restoreCallArgs(call, this.instances)
@@ -1377,7 +1366,7 @@ export type ModuleValue = Record<string, unknown> | ClassInstance
 
 /**
  * An importable host module with an optional `.pyi` stub for type checking.
- * Supply it in [`FeedOptions.externalModules`] or as another module's property
+ * Supply it in [`CheckoutOptions.externalModules`] or as another module's property
  * for a submodule such as `pkg.sub`.
  */
 export class ExternalModule {
@@ -1393,25 +1382,24 @@ export class ExternalModule {
 }
 
 /** Modules keyed by import name. Invalid identifiers, keywords and sandbox-provided names throw.
- *  Factories run at most once per feed, when first needed, and may return a Promise. */
+ *  Factories run at most once per session, when first needed, and may return a Promise. */
 export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
 
 /**
- * Validates a feed's modules and caches factory results. Factory results are
- * validated when first needed; other entries are validated before execution.
+ * Validates a session's modules and caches factory results. Factory results are
+ * validated when first needed; other entries are validated at the checkout.
  * @internal
  */
 export class HostModules {
-  /** Factory results cached for this feed. */
+  /** Factory results cached for this session. */
   readonly resolved = new Map<string, ExternalModule>()
   /** Each module's dotted path by the id of its plain-object stand-in (see [`moduleValue`]). */
   private readonly standIns = new Map<string, string>()
+  /** One attrs object per module path: a wrapper's id is fixed, and the instance store
+   *  takes a new wrapper only for the object it already routes to (see [`moduleValue`]). */
+  readonly attrs = new Map<string, Record<string, unknown>>()
 
-  constructor(
-    private readonly entries: ExternalModules | undefined,
-    /** The session's attrs objects (see [`MontySession.moduleAttrs`]), shared by its feeds. */
-    readonly attrs: Map<string, Record<string, unknown>>,
-  ) {
+  constructor(private readonly entries: ExternalModules | undefined) {
     for (const [name, entry] of Object.entries(entries ?? {})) {
       if (!IDENTIFIER.test(name) || KEYWORDS.has(name)) {
         throw new TypeError(`externalModules.${name} is not a valid module name`)
@@ -1628,7 +1616,7 @@ function collectStubs(path: string, entry: ExternalModule, stubs: Record<string,
 
 /**
  * Passes ClassInstance through; wraps plain objects with eager public attributes,
- * read afresh on every import so each feed's values and policies apply.
+ * read afresh on every import as the Python binding reads its dict.
  * Functions use dotted names for [`TurnAnswerer.hostEntry`]. Class and instance
  * IDs derive from the module path, preserving identity across imports and restores,
  * so the wrapper is rebuilt on the session's one attrs object for the path.

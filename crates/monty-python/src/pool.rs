@@ -73,7 +73,8 @@ use crate::{
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{
-        CallResult, ExternalLookup, HostNames, is_coroutine, is_module_call, resolve_object_attr, wire_call_arguments,
+        CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_module_call, resolve_object_attr,
+        wire_call_arguments,
     },
     get_not_handled,
     limits::extract_limits,
@@ -194,6 +195,7 @@ impl PyMonty {
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
         os_policy = None,
+        external_modules = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -208,6 +210,7 @@ impl PyMonty {
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
         os_policy: Option<OsPolicyArg>,
+        external_modules: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyMontySession> {
         Ok(PyMontySession {
             pool: Arc::clone(&self.pool),
@@ -228,6 +231,7 @@ impl PyMonty {
                 None,
             )?,
             instances: InstanceStore::new(py),
+            modules: external_modules.map(|m| HostModules::capture(py, m)).transpose()?,
             checkout: Arc::new(AsyncMutex::new(None)),
             used: AtomicBool::new(false),
         })
@@ -241,6 +245,8 @@ pub struct PyMontySession {
     pool: SharedPool,
     repl_config: ReplConfig,
     instances: InstanceStore,
+    /// `external_modules=`: the modules every feed of the session may import.
+    modules: Option<HostModules>,
     checkout: SharedCheckout,
     /// Set once the session has been fed or restored. `load_session` /
     /// `load_snapshot` are valid only while this is unset (a fresh, undriven
@@ -287,7 +293,7 @@ impl PyMontySession {
     ///
     /// Blocks the calling thread with the GIL released; async external
     /// functions are not supported here — use [`AsyncMonty`].
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, external_modules=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run(
         &self,
@@ -295,7 +301,6 @@ impl PyMontySession {
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         cwd: Option<String>,
@@ -315,7 +320,11 @@ impl PyMontySession {
             os,
             skip_type_check,
         )?;
-        drive_sync(py, args, &HostNames::capture(py, external_lookup, external_modules)?)
+        drive_sync(
+            py,
+            args,
+            &HostNames::capture(py, external_lookup, self.modules.as_ref()),
+        )
     }
 
     /// Starts a snippet but, instead of driving it to completion, returns a
@@ -331,7 +340,7 @@ impl PyMontySession {
     /// captured on the snapshot so `snapshot.resume_auto()` can answer
     /// subsequent suspensions from them (and from this feed's mounts), letting
     /// a caller iterate to completion without resolving each call by hand.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, external_modules=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start(
         &self,
@@ -339,7 +348,6 @@ impl PyMontySession {
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         cwd: Option<String>,
@@ -359,7 +367,7 @@ impl PyMontySession {
             os,
             skip_type_check,
         )?;
-        let names = HostNames::capture(py, external_lookup, external_modules)?;
+        let names = HostNames::capture(py, external_lookup, self.modules.as_ref());
         feed_start_sync(py, args, names, self.repl_config.script_name.clone())
     }
 
@@ -401,8 +409,7 @@ impl PyMontySession {
     /// restored snapshot: a restored `FutureSnapshot`'s pending coroutines are
     /// gone (they lived in the previous process), so async `resume_auto()` on it
     /// raises — resolve it manually with `resume({call_id: ...})`.
-    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, external_modules=None, os=None))]
-    #[expect(clippy::too_many_arguments)]
+    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
     fn load_snapshot(
         &self,
         py: Python<'_>,
@@ -410,7 +417,6 @@ impl PyMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         // extract args before committing the session, so a bad-args error
@@ -419,7 +425,7 @@ impl PyMontySession {
         check_callable(py, os.as_ref())?;
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
-        let names = HostNames::capture(py, external_lookup, external_modules)?;
+        let names = HostNames::capture(py, external_lookup, self.modules.as_ref());
         let trace_context = capture_otel_context(py);
         let (event, script_name) = self.restore_turn(py, state, mounts)?;
         let Some(event) = event else {
@@ -593,6 +599,7 @@ impl PyAsyncMonty {
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
         os_policy = None,
+        external_modules = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn checkout(
@@ -607,6 +614,7 @@ impl PyAsyncMonty {
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
         os_policy: Option<OsPolicyArg>,
+        external_modules: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
@@ -627,6 +635,7 @@ impl PyAsyncMonty {
                 None,
             )?,
             instances: InstanceStore::new(py),
+            modules: external_modules.map(|m| HostModules::capture(py, m)).transpose()?,
             checkout: Arc::new(AsyncMutex::new(None)),
             connect_headers: None,
             used: AtomicBool::new(false),
@@ -747,6 +756,7 @@ impl PyAsyncMontyWebsocket {
         assert_message_annotations = AssertAnnotationsArg::default(),
         print_flush_interval = None,
         os_policy = None,
+        external_modules = None,
         ephemeral = None,
         profile = None,
     ))]
@@ -763,6 +773,7 @@ impl PyAsyncMontyWebsocket {
         assert_message_annotations: AssertAnnotationsArg,
         print_flush_interval: Option<f64>,
         os_policy: Option<OsPolicyArg>,
+        external_modules: Option<&Bound<'_, PyAny>>,
         ephemeral: Option<bool>,
         profile: Option<String>,
     ) -> PyResult<PyAsyncMontySession> {
@@ -789,6 +800,7 @@ impl PyAsyncMontyWebsocket {
                 profile,
             )?,
             instances: InstanceStore::new(py),
+            modules: external_modules.map(|m| HostModules::capture(py, m)).transpose()?,
             checkout: Arc::new(AsyncMutex::new(None)),
             connect_headers: self.connect_headers.as_ref().map(|cb| cb.clone_ref(py)),
             used: AtomicBool::new(false),
@@ -805,6 +817,8 @@ pub struct PyAsyncMontySession {
     pool: SharedPool,
     repl_config: ReplConfig,
     instances: InstanceStore,
+    /// `external_modules=`: the modules every feed of the session may import.
+    modules: Option<HostModules>,
     checkout: SharedCheckout,
     /// A WebSocket pool's `connect_headers` callback, called by `__aenter__`;
     /// `None` for subprocess pools, which make no request.
@@ -877,7 +891,7 @@ impl PyAsyncMontySession {
     /// print callbacks in this process. Session state persists across feeds.
     ///
     /// Worker I/O runs on the tokio runtime, off the asyncio event loop.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, external_modules=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run<'py>(
         &self,
@@ -885,7 +899,6 @@ impl PyAsyncMontySession {
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         cwd: Option<String>,
@@ -905,7 +918,7 @@ impl PyAsyncMontySession {
             os,
             skip_type_check,
         )?;
-        let names = HostNames::capture(py, external_lookup, external_modules)?;
+        let names = HostNames::capture(py, external_lookup, self.modules.as_ref());
         let abandoned = Arc::clone(&self.drive_abandoned);
         future_into_py(py, async move { drive_async(args, names, abandoned).await })
     }
@@ -915,7 +928,7 @@ impl PyAsyncMontySession {
     /// is awaitable) or a `MontyComplete`. See that method for the
     /// snapshot-driven protocol and the `external_lookup` / `os` capture that
     /// backs `resume_auto()`.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, external_modules=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, cwd=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start<'py>(
         &self,
@@ -923,7 +936,6 @@ impl PyAsyncMontySession {
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         cwd: Option<String>,
@@ -943,7 +955,7 @@ impl PyAsyncMontySession {
             os,
             skip_type_check,
         )?;
-        let names = HostNames::capture(py, external_lookup, external_modules)?;
+        let names = HostNames::capture(py, external_lookup, self.modules.as_ref());
         feed_start_async(py, args, names, self.repl_config.script_name.clone())
     }
 
@@ -980,8 +992,7 @@ impl PyAsyncMontySession {
     /// session; raises if the dump is actually an idle session. `external_lookup`
     /// / `os` are captured for `resume_auto()` with the same caveats as the sync
     /// method (a restored `FutureSnapshot` cannot be `resume_auto`'d).
-    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, external_modules=None, os=None))]
-    #[expect(clippy::too_many_arguments)]
+    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
     fn load_snapshot<'py>(
         &self,
         py: Python<'py>,
@@ -989,7 +1000,6 @@ impl PyAsyncMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // extract args before committing the session (a bad-args error leaves
@@ -997,7 +1007,7 @@ impl PyAsyncMontySession {
         check_callable(py, os.as_ref())?;
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
-        let names = HostNames::capture(py, external_lookup, external_modules)?;
+        let names = HostNames::capture(py, external_lookup, self.modules.as_ref());
         if self.used.swap(true, Ordering::Relaxed) {
             return Err(session_used_err());
         }

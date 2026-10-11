@@ -128,7 +128,8 @@ with Monty() as pool:
 
 ### Host modules
 
-`external_modules` maps import names to `ExternalModule` values containing the module's public items and a `.pyi` stub.
+`external_modules` on `checkout()` maps import names to `ExternalModule` values containing the module's public items
+and a `.pyi` stub, for every feed of the session.
 Callables become host functions.
 Type checking fetches the stub when a feed first imports the module.
 
@@ -145,8 +146,8 @@ modules = {'tools': tools}
 code = 'from tools import add\nadd(1, 2)'
 
 with Monty() as pool:
-    with pool.checkout() as session:
-        print(session.feed_run(code, external_modules=modules))
+    with pool.checkout(external_modules=modules) as session:
+        print(session.feed_run(code))
         #> 3
 ```
 

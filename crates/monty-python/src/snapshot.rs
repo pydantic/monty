@@ -17,11 +17,11 @@
 //!
 //! Every suspension surfaces, OS calls included — `feed_start` never answers
 //! one for you, so a mounted file read comes back as a `FunctionSnapshot` with
-//! `is_os_function` set. The captured `external_lookup=` / `external_modules=`
-//! / `os=` and the feed's mounts are consulted only by `resume_auto`, which
-//! answers a host module's OS call (`import`, `import_stubs`) from
-//! `external_modules=` and offers any other to the mounts first, falling back
-//! to `os=`. Mounts are fixed for the whole feed
+//! `is_os_function` set. The captured `external_lookup=` / `os=`, the
+//! session's `external_modules=` and the feed's mounts are consulted only by
+//! `resume_auto`, which answers a host module's OS call (`import`,
+//! `import_stubs`) from `external_modules=` and offers any other to the mounts
+//! first, falling back to `os=`. Mounts are fixed for the whole feed
 //! (passed to `feed_start`), so `resume` takes no `mount=`. Restoring a
 //! suspended feed with `load_snapshot` re-establishes those mounts — the caller
 //! re-supplies them, as they are never part of the dump.
@@ -89,9 +89,9 @@ pub(crate) struct DriveContext {
     script_name: String,
     /// Host OTel context captured at feed/load entry; never serialized with the worker.
     trace_context: Option<Py<PyAny>>,
-    /// `external_lookup=` / `external_modules=` captured at `feed_start` /
-    /// `load_snapshot`; consulted only by `resume_auto` (plain `resume` never
-    /// looks names up here).
+    /// `external_lookup=` captured at `feed_start` / `load_snapshot` and the
+    /// session's `external_modules=`; consulted only by `resume_auto` (plain
+    /// `resume` never looks names up here).
     names: HostNames,
     /// `os=` captured at `feed_start` / `load_snapshot`; consulted only by
     /// `resume_auto`, and only for OS calls this feed's mounts don't cover.
@@ -721,8 +721,8 @@ impl PyFunctionSnapshot {
 
     /// Answers this call automatically, then drives to the next snapshot (or
     /// [`MontyComplete`]). A host module's OS call (`import`, `import_stubs`)
-    /// is answered from `external_modules=`; any other OS call is offered to
-    /// the feed's mounts first and falls back to the `os=` captured at
+    /// is answered from the session's `external_modules=`; any other OS call is
+    /// offered to the feed's mounts first and falls back to the `os=` captured at
     /// `feed_start` / `load_snapshot`; an external call is resolved through
     /// `external_lookup=`, and a name absent
     /// from it resolves to `NotFound` so the sandbox raises `NameError` —

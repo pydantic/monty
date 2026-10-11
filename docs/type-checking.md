@@ -113,8 +113,8 @@ Stubs are scoped to the checkout.
 A later session does not see them.
 
 Global stubs declare names at the top level of the snippet.
-For imported host modules, supply `.pyi` source in each `external_modules` entry's `stubs` (`externalModules` in
-JavaScript).
+For imported host modules, supply `.pyi` source in the `stubs` of each `external_modules` entry of the `checkout()`
+(`externalModules` in JavaScript).
 The worker requests it on the first type-checked import, running the entry's factory if needed.
 The checker writes `<module>.pyi` beside the snippet so imports resolve against its declarations.
 Module stubs are not star-imported.
@@ -134,15 +134,13 @@ A module with neither `stubs` nor a typeshed entry fails a type-checked import a
     modules = {'tools': tools}
 
     with Monty() as pool:
-        with pool.checkout(type_check=True) as session:
+        with pool.checkout(type_check=True, external_modules=modules) as session:
             try:
-                code = "from tools import add\nadd('x', 2)"
-                session.feed_run(code, external_modules=modules)
+                session.feed_run("from tools import add\nadd('x', 2)")
             except MontyTypingError as exc:
                 print('invalid-argument-type' in exc.display())
                 #> True
-            code = 'from tools import add\nadd(1, 2)'
-            print(session.feed_run(code, external_modules=modules))
+            print(session.feed_run('from tools import add\nadd(1, 2)'))
             #> 3
     ```
 
@@ -157,14 +155,14 @@ A module with neither `stubs` nor a typeshed entry fails a type-checked import a
     )
 
     await using pool = await Monty.create()
-    await using session = await pool.checkout({ typeCheck: true })
+    await using session = await pool.checkout({ typeCheck: true, externalModules: { tools } })
     try {
-      await session.feedRun("from tools import add\nadd('x', 2)", { externalModules: { tools } })
+      await session.feedRun("from tools import add\nadd('x', 2)")
     } catch (err) {
       if (!(err instanceof MontyTypingError)) throw err
       console.log(err.display().includes('invalid-argument-type')) // true
     }
-    console.log(await session.feedRun('from tools import add\nadd(1, 2)', { externalModules: { tools } })) // 3
+    console.log(await session.feedRun('from tools import add\nadd(1, 2)')) // 3
     ```
 
 The session requests each module's stub once and retains the answer in its dumps.

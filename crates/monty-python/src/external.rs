@@ -119,15 +119,15 @@ pub fn resolve_object_attr(
     }
 }
 
-/// A feed's validated modules and cached factory results, retained for `resume_auto`.
-/// A factory runs on first use and its validated result serves the rest of the feed;
-/// a failure is raised there and the next use runs the factory again.
+/// A session's validated modules and cached factory results, shared by its feeds and
+/// their `resume_auto` snapshots. A factory runs on first use and its validated result
+/// serves the rest of the session; a failure is raised there and the next use runs it again.
 pub(crate) struct HostModules {
     /// Each entry by the name the snippet imports: an `ExternalModule`, or
     /// the factory returning one.
     entries: Py<PyDict>,
     /// What each factory returned, by module name: a factory runs once per
-    /// feed, at the first import, call or stubs ask that needs it.
+    /// session, at the first import, call or stubs ask that needs it.
     resolved: Py<PyDict>,
     /// Each dict module's dotted path by the uuid of its stand-in (see
     /// [`module_uuid`]), so a method call on one is answered without a scan.
@@ -198,21 +198,17 @@ impl HostModules {
 pub(crate) struct HostNames {
     /// `external_lookup=`: host values by the bare name the snippet reads.
     pub(crate) lookup: Option<Py<PyDict>>,
-    /// `external_modules=`: the modules the snippet may import.
+    /// The session's `external_modules=`.
     pub(crate) modules: Option<HostModules>,
 }
 
 impl HostNames {
-    /// Captures the dicts a feed was called with, validating the modules.
-    pub(crate) fn capture(
-        py: Python<'_>,
-        lookup: Option<&Bound<'_, PyDict>>,
-        modules: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Self> {
-        Ok(Self {
+    /// Pairs the lookup a feed was called with and the session's modules.
+    pub(crate) fn capture(py: Python<'_>, lookup: Option<&Bound<'_, PyDict>>, modules: Option<&HostModules>) -> Self {
+        Self {
             lookup: lookup.map(|d| d.clone().unbind()),
-            modules: modules.map(|m| HostModules::capture(py, m)).transpose()?,
-        })
+            modules: modules.map(|m| m.clone_ref(py)),
+        }
     }
 
     /// A second owner of the same dicts, for a snapshot's drive context.
@@ -422,7 +418,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// Resolves a module, caching its factory result for all imports, calls and stub requests
-    /// in this feed. Returns awaitables for the async loop to await and install.
+    /// in this session. Returns awaitables for the async loop to await and install.
     fn resolve_module(&self, name: &str) -> PyResult<Option<Resolved<'py>>> {
         let Some(modules) = self.modules else {
             return Ok(None);
@@ -444,7 +440,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Validates and caches a factory result for the rest of the feed.
+    /// Validates and caches a factory result for the rest of the session.
     fn install_module(&self, name: &str, module: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let modules = self.modules.expect("a module was resolved, so the entries exist");
         if !module.is_instance(external_module_class(self.py)?)? {

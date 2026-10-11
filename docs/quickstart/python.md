@@ -89,8 +89,8 @@ it.
 
 A name present in both is served by the eager `inputs` binding.
 
-`external_modules` maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values containing the
-module's public items and an optional type stub:
+`external_modules` on `checkout()` maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values
+containing the module's public items and an optional type stub, for every feed of the session:
 
 ```python
 from pydantic_monty import ExternalModule, Monty
@@ -99,8 +99,8 @@ modules = {'tools': ExternalModule({'add': lambda a, b: a + b})}
 code = 'import tools\ntools.add(1, 2)'
 
 with Monty() as pool:
-    with pool.checkout() as session:
-        print(session.feed_run(code, external_modules=modules))
+    with pool.checkout(external_modules=modules) as session:
+        print(session.feed_run(code))
         #> 3
 ```
 
