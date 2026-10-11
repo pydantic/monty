@@ -99,6 +99,13 @@ impl PyExternalModule {
                 )));
             };
             let name = key.to_cow()?;
+            // two keys that differ only as `str` subclasses would collide as plain text
+            if copy.contains(&*name)? {
+                return Err(PyValueError::new_err(format!(
+                    "ExternalModule attrs has the key {} twice",
+                    key.repr()?
+                )));
+            }
             if !is_identifier(&name) {
                 return Err(PyValueError::new_err(format!(
                     "ExternalModule attrs must have identifier keys, not {}",

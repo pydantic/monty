@@ -47,6 +47,16 @@ def tools_module() -> types.ModuleType:
     return module
 
 
+class _Key(str):
+    """A `str` whose hash and equality are its identity, so two spellings of one name coexist in a dict."""
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+
 class _Tools:
     def reveal(self) -> str:
         return 'hidden'
@@ -96,6 +106,12 @@ def test_import_binds_the_host_module(pool: Monty):
             {},
             snapshot("ExternalModule attrs must have identifier keys, not 'for'"),
             id='keyword-key',
+        ),
+        pytest.param(
+            {_Key('add'): add, _Key('add'): concat},
+            {},
+            snapshot("ExternalModule attrs has the key 'add' twice"),
+            id='duplicate-key',
         ),
         pytest.param(
             {'json': ExternalModule(TOOLS)},
