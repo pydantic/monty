@@ -31,3 +31,4 @@ bad_types.py:139:1: error[unresolved-attribute] Module `hashlib` has no member `
 bad_types.py:140:16: error[invalid-argument-type] Argument to function `sha256` is incorrect: Expected `bytes`, found `Literal["text"]`
 bad_types.py:141:15: error[invalid-argument-type] Argument to function `loads` is incorrect: Expected `str`, found `Literal[b"a = 1"]`
 bad_types.py:142:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `SupportsRead[bytes]`, found `Literal["pyproject.toml"]`
+bad_types.py:143:24: error[unknown-argument] Argument `parse_float` does not match any known parameter of function `loads`

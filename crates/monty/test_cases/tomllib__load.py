@@ -8,8 +8,9 @@ is_monty = sys.platform == 'monty'
 
 # === load() reads a binary file object ===
 toml_path = root / 'config.toml'
-with open(toml_path, 'w') as f:
-    f.write('[project]\nname = "demo"\nversion = "1.0"\n\n[tool.example]\nenabled = true\nitems = [1, 2, 3]\n')
+# written in binary mode so the bytes read back are the same on every platform
+with open(toml_path, 'wb') as f:
+    f.write(b'[project]\nname = "demo"\nversion = "1.0"\n\n[tool.example]\nenabled = true\nitems = [1, 2, 3]\n')
 
 with open(toml_path, 'rb') as f:
     config = tomllib.load(f)
@@ -45,8 +46,8 @@ with open(root / 'empty.toml', 'rb') as f:
     assert tomllib.load(f) == {}
 
 # === errors ===
-with open(root / 'bad.toml', 'w') as f:
-    f.write('a = 1\nb =\n')
+with open(root / 'bad.toml', 'wb') as f:
+    f.write(b'a = 1\nb =\n')
 with open(root / 'bad.toml', 'rb') as f:
     try:
         tomllib.load(f)
@@ -102,3 +103,12 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "load() missing 1 required positional argument: 'fp'"
+
+# `parse_float` is not implemented; CPython accepts it
+if is_monty:
+    with open(toml_path, 'rb') as f:
+        try:
+            tomllib.load(f, parse_float=float)
+            assert False, 'expected TypeError'
+        except TypeError as exc:
+            assert str(exc) == "load() got an unexpected keyword argument 'parse_float'"

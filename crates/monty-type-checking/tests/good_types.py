@@ -634,8 +634,7 @@ with Path('pyproject.toml').open('rb') as toml_file:
 try:
     tomllib.loads('?')
 except tomllib.TOMLDecodeError as toml_exc:
-    check_str(toml_exc.msg)
-    check_int(toml_exc.lineno)
+    check_str(str(toml_exc))
 
 # === iter() / next() ===
 # Element types must survive the `Iterator` protocol: `Iterator.__next__` is

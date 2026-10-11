@@ -71,7 +71,7 @@ are unimplemented and may appear over time.
 Some available modules cover only part of their CPython surface: `functools`
 implements only `reduce` and `partial`, `copy` only `copy()` and `deepcopy()`,
 `time` everything but `tzset` and the `clock_*` family, `hashlib` everything but `file_digest()` and `scrypt()`,
-and `collections` only the four types above; `tomllib` has its whole surface, minus the `parse_float` argument.
+and `collections` only the four types above; `tomllib` all three of its names, with the argument and exception differences listed in [tomllib.md](tomllib.md).
 The absent names are missing from
 the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime; see each module's page for the specifics.

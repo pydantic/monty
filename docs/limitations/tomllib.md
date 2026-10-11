@@ -16,7 +16,8 @@ their `(at line N, column M)` / `(at end of document)` suffix, match CPython 3.1
     `got some positional-only arguments passed as keyword arguments: 's'`.
 - Inline arrays and inline tables may nest 200 levels deep; deeper input raises
     `RecursionError: maximum recursion depth exceeded`. CPython's limit depends on the interpreter
-    recursion limit and lies between 400 and 500 levels. Tables created by headers and dotted keys are
+    recursion limit: at the default, nested arrays fail just under 500 levels and nested inline tables
+    just over 330. Tables created by headers and dotted keys are
     not subject to this cap, only to CPython's 1000-part key limit (`RecursionError: TOML key has more than the allowed 1000 parts`),
     which Monty fixes at 1000 rather than reading `sys.getrecursionlimit()`.
 

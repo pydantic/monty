@@ -137,7 +137,7 @@ COPY_FILES = [
     'json/__init__.pyi',
     'json/encoder.pyi',
     'json/decoder.pyi',
-    # tomllib: `loads`, `load` and `TOMLDecodeError` are all implemented
+    # narrowed to Monty's surface (no `parse_float`) by custom/tomllib.pyi
     'tomllib.pyi',
     # ==============================
     'math.pyi',

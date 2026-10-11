@@ -140,3 +140,4 @@ hashlib.file_digest
 hashlib.sha256('text')
 tomllib.loads(b'a = 1')
 tomllib.load('pyproject.toml')
+tomllib.loads('a = 1', parse_float=float)
