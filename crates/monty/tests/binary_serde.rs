@@ -341,6 +341,36 @@ fn run_progress_round_trip_at_external_call() {
     assert_eq!(result.into_complete().unwrap(), MontyObject::int(101)); // 100 + 1
 }
 
+/// A dump keeps a deleted entry's tombstone, so an iterator dumped past one
+/// resumes on the entry it would have read next. Compacting the table would
+/// renumber its slots and skip `2`.
+#[test]
+fn run_progress_round_trip_iterators_past_a_tombstone() {
+    let code = "
+d = {i: i for i in range(4)}
+d.pop(0)
+di = iter(d)
+next(di)
+s = {0, 1, 2, 3}
+s.discard(0)
+si = iter(s)
+next(si)
+ext_fn()
+str((list(di), list(si)))
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+
+    let call = round_trip_progress(&progress)
+        .into_function_call()
+        .expect("should be at function call");
+    let result = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::string("([2, 3], [2, 3])"));
+}
+
 #[test]
 fn run_progress_round_trip_multiple_calls() {
     // Test multiple external calls with a round-trip between each

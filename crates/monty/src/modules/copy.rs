@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, instance_call_copy_hook},
+    types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -374,14 +374,12 @@ pub(crate) fn deep_copy_attrs(
     vm.heap
         .tracker
         .check_allocation(expected_len.saturating_mul(2 * VALUE_SIZE))?;
+    // `__dict__` is a dict, and CPython copies it by iterating it.
+    let mut cursor = TableCursor::new(expected_len);
     for index in 0.. {
         let (_, vm) = guard.as_parts_mut();
         vm.heap.tracker.check_time_every(index)?;
-        // `__dict__` is a dict, and CPython copies it by iterating it.
-        if attrs(source_id, vm).len() != expected_len {
-            return Err(ExcType::runtime_error_dict_changed_size());
-        }
-        let Some((key, value)) = clone_pair(attrs(source_id, vm), index, vm) else {
+        let Some((key, value)) = attrs(source_id, vm).clone_next_pair(&mut cursor, vm.heap)? else {
             break;
         };
         let (key_copy, value_copy) = deep_copy_pair(key, value, memo, vm)?;
@@ -417,12 +415,6 @@ pub(crate) fn deep_copy_slots<'h>(
     }
     let (copied, _) = guard.into_parts();
     Ok(copied)
-}
-
-/// Clones the `index`th key/value pair out of a dict, or `None` past its end.
-pub(crate) fn clone_pair(dict: &Dict, index: usize, vm: &VM<'_>) -> Option<(Value, Value)> {
-    let (key, value) = dict.item_at(index)?;
-    Some((key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
 }
 
 /// Deep-copies an owned key and value, releasing both either way.
@@ -580,11 +572,10 @@ fn clone_attrs(id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
         .tracker
         .check_allocation(len.saturating_mul(2).saturating_mul(VALUE_SIZE))?;
     let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
-    for index in 0..len {
-        let (pairs, vm) = guard.as_parts_mut();
+    let (pairs, vm) = guard.as_parts_mut();
+    // One borrow for the whole snapshot, so no user code can run under it.
+    for (index, (key, value)) in attrs(id, vm).iter().enumerate() {
         vm.heap.tracker.check_time_every(index)?;
-        let attrs = attrs(id, vm);
-        let (key, value) = attrs.item_at(index).expect("index is in bounds");
         pairs.push((key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)));
     }
     Ok(guard.into_inner())

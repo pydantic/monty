@@ -52,15 +52,13 @@ These raise `NameError`:
     no hash randomisation), but never persist one or compare one against a
     CPython hash. `sys.hash_info` is not exposed, so the parameters CPython
     publishes are unavailable (see [sys.md](sys.md)).
-- **`repr` of a dict being mutated by its own elements** — Monty iterates the
-    live entries like CPython, but deletion compacts Monty's dense entry storage
-    where CPython leaves a tombstone in place: a key deleted from inside a user
-    `__repr__` running *during that dict's repr* shifts later entries down, so
-    the entry after the deleted one can be skipped from the output where CPython
-    would still print it. Insertions during repr match CPython (appended and
-    printed), as do list (live length, mid-repr pops truncate / appends extend),
-    `set`, `collections.deque` and `collections.Counter` (all snapshot, like
-    CPython).
+- **a set iterated while it is mutated may yield a newly added element** —
+    Monty's sets keep insertion order, so an element added during iteration is
+    appended after the cursor and gets yielded. CPython places it by hash, which
+    can put it behind the cursor and out of that walk's reach. Both engines raise
+    `RuntimeError: Set changed size during iteration` when the size changes; this
+    is only about which walk sees a same-size replacement, and it follows from
+    the ordering difference, not from the mutation.
 - **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
     hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
     `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.

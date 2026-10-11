@@ -10,14 +10,14 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::HashValue,
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem,
-        HeapObjectRead, HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId,
+        HeapItem, HeapObjectRead, HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
-    modules::copy::{Memo, PyDeepCopy, clone_items, deep_copy},
+    modules::copy::{Memo, PyDeepCopy, deep_copy},
     types::{
         LazyHeapSet, Type,
-        hash_table::{PyHashTable, TableEntry, TableSource, TableWalk},
+        hash_table::{Live, PyHashTable, TableCursor, TableEntry, TableSource, TableWalk},
         list::repr_items_fmt,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -42,6 +42,18 @@ impl TableEntry for SetEntry {
     #[inline]
     fn hash(&self) -> u64 {
         self.hash
+    }
+
+    fn tombstone() -> Self {
+        Self {
+            value: Value::Undefined,
+            hash: 0,
+        }
+    }
+
+    #[inline]
+    fn is_live(&self) -> bool {
+        !matches!(self.value, Value::Undefined)
     }
 }
 
@@ -79,10 +91,10 @@ impl SetStorage {
         }
     }
 
-    /// The entries, in insertion order.
+    /// The live entries, in insertion order, tombstones skipped.
     #[inline]
-    fn entries(&self) -> &[SetEntry] {
-        self.table.entries()
+    fn live(&self) -> Live<'_, SetEntry> {
+        self.table.live()
     }
 
     /// Clones entries with proper reference counting.
@@ -90,8 +102,7 @@ impl SetStorage {
     /// The returned entries are owned: they implement [`DropWithContext`], so
     /// a caller that may abandon them partway must hold them in a guard.
     fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<SetEntry> {
-        self.entries()
-            .iter()
+        self.live()
             .map(|e| SetEntry {
                 value: e.value.clone_with_heap(heap),
                 hash: e.hash,
@@ -152,7 +163,7 @@ impl SetStorage {
         let mut error = None;
         let existing = self
             .table
-            .probe_raw(hash, |_, entry| {
+            .probe_raw(hash, |entry| {
                 if error.is_some() {
                     return false;
                 }
@@ -190,12 +201,12 @@ impl<'h> HeapRead<'h, SetStorage> {
     fn remove(&mut self, value: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let hash = set_element_hash(value, vm)?;
 
-        let Some(index) = self.find_index(value, hash, vm)? else {
+        let Some(slot) = self.find_index(value, hash, vm)? else {
             return Ok(false);
         };
 
         // Remove via short-lived mutable borrow
-        let removed_entry = self.get_mut(vm.heap).table.remove_at(index);
+        let removed_entry = self.get_mut(vm.heap).table.remove(slot);
         removed_entry.value.drop_with(vm);
         Ok(true)
     }
@@ -235,8 +246,7 @@ impl SetStorage {
     /// would reproduce at the source's bucket count — see [`Self::from_entry_vec`].
     fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
         Self::from_entry_vec(
-            self.entries()
-                .iter()
+            self.live()
                 .map(|entry| SetEntry {
                     value: entry.value.clone_with_heap(heap),
                     hash: entry.hash,
@@ -280,21 +290,27 @@ impl<'h> TableSource<'h> for HeapRead<'h, SetStorage> {
 }
 
 impl SetStorage {
-    /// Returns an iterator over the values in the set.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
-        self.entries().iter().map(|e| &e.value)
+    /// Appends a clone of every member to `members`, polling the clock as it goes.
+    ///
+    /// `copy.deepcopy` snapshots a set this way before copying any member, as
+    /// CPython's reduction through `list(x)` does, so a hook that mutates the
+    /// source cannot disturb the walk. `members` is the caller's to release.
+    pub(crate) fn clone_members_into(&self, members: &mut Vec<Value>, heap: &Heap) -> RunResult<()> {
+        for (index, value) in self.iter().enumerate() {
+            heap.tracker.check_time_every(index)?;
+            members.push(value.clone_with_heap(heap));
+        }
+        Ok(())
     }
 
-    /// Returns the value at the given index, if valid.
-    ///
-    /// Used by Python iterator objects for index-based iteration.
-    pub(crate) fn value_at(&self, index: usize) -> Option<&Value> {
-        self.entries().get(index).map(|e| &e.value)
+    /// Returns an iterator over the values in the set.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
+        self.live().map(|e| &e.value)
     }
 
     /// Collects heap IDs for reference counting cleanup.
     fn collect_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        for entry in self.table.entries_mut() {
+        for entry in self.table.live_mut() {
             if let Value::Ref(id) = &entry.value {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
@@ -392,10 +408,9 @@ impl<'a, 'h> SetIter<'a, 'h> {
     pub(crate) fn next_entry<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<(&'i Value, u64)>> {
         // Drop the previously-yielded element (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
-        let Some(index) = self.walk.advance(vm)? else {
+        let Some(entry) = self.walk.next(vm)? else {
             return Ok(None);
         };
-        let entry = &self.walk.source().get(vm.heap).entries()[index];
         let hash = entry.hash;
         self.current = entry.value.clone_with_heap(vm.heap);
         Ok(Some((&self.current, hash)))
@@ -412,7 +427,7 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for SetIter<'_, 'h> {
 impl SetStorage {
     /// Returns true if this set is a subset of other.
     fn is_subset(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        for entry in self.entries() {
+        for entry in self.live() {
             if !vm
                 .heap
                 .protect(other)
@@ -438,7 +453,7 @@ impl SetStorage {
             (other, self)
         };
 
-        for entry in smaller.entries() {
+        for entry in smaller.live() {
             if vm
                 .heap
                 .protect(larger)
@@ -575,13 +590,12 @@ impl<'h> HeapRead<'h, SetStorage> {
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let items = Vec::with_capacity(len);
         defer_drop_mut!(items, vm);
-        for i in 0..len {
+        // One borrow for the whole snapshot, so no user code can run under it.
+        for (i, value) in self.get(vm.heap).iter().enumerate() {
             // The whole snapshot runs before `repr_items_fmt` reaches its first
             // checkpoint, so it polls the deadline itself — otherwise a big set
             // overshoots the time limit by the entire copy.
             vm.heap.tracker.check_time_every(i)?;
-            // No user code runs during the snapshot, so `len` is still current.
-            let value = self.get(vm.heap).value_at(i).expect("index in range");
             items.push(value.clone_with_heap(vm.heap));
         }
 
@@ -683,18 +697,6 @@ impl<'h> HeapRead<'h, Set> {
     #[must_use]
     pub fn copy(&self, vm: &VM<'h>) -> Set {
         Set(self.get(vm.heap).0.clone_with_heap(vm.heap))
-    }
-
-    /// Clones the member at `index` in insertion order, or `None` past the end.
-    ///
-    /// For Rust-side walks that index a set rather than iterate it — the
-    /// counterpart to [`List::try_clone_item`](super::List::try_clone_item),
-    /// and how `copy.deepcopy` snapshots members before copying any of them.
-    pub(crate) fn try_clone_item(&self, index: usize, vm: &VM<'h>) -> Option<Value> {
-        self.get(vm.heap)
-            .storage()
-            .value_at(index)
-            .map(|value| value.clone_with_heap(vm.heap))
     }
 
     fn storage(&self) -> BorrowedHeapRead<'_, 'h, SetStorage> {
@@ -969,15 +971,6 @@ impl<'h> HeapRead<'h, FrozenSet> {
     /// to avoid holding a borrow on the storage during `py_eq` calls.
     pub(crate) fn contains(&self, value: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         self.storage().contains(value, vm)
-    }
-
-    /// Clones the member at `index` in insertion order, or `None` past the end,
-    /// as [`HeapRead<Set>::try_clone_item`](HeapRead::try_clone_item) does.
-    pub(crate) fn try_clone_item(&self, index: usize, vm: &VM<'h>) -> Option<Value> {
-        self.get(vm.heap)
-            .storage()
-            .value_at(index)
-            .map(|value| value.clone_with_heap(vm.heap))
     }
 
     /// Binary set operation via HeapRead. Creates a new frozenset from the result.
@@ -1573,14 +1566,15 @@ fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Opt
 
 impl serde::Serialize for SetStorage {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.entries().serialize(serializer)
+        self.table.serialize(serializer)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for SetStorage {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let entries: Vec<SetEntry> = serde::Deserialize::deserialize(deserializer)?;
-        Ok(Self::from_entry_vec(entries))
+        Ok(Self {
+            table: PyHashTable::deserialize(deserializer)?,
+        })
     }
 }
 
@@ -1621,8 +1615,13 @@ enum SetIteratorSource {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SetIterator {
     source: SetIteratorSource,
-    index: usize,
-    expected_len: usize,
+    /// Position and the size guard.
+    ///
+    /// `setiterobject` has no `di->len` counterpart, so
+    /// [`TableSource::changed_keys_error`] is `None` for a set and a
+    /// renumbering mid-walk ends the walk instead of raising.
+    #[serde(flatten)]
+    cursor: TableCursor,
 }
 
 impl SetIterator {
@@ -1645,7 +1644,7 @@ impl SetIterator {
 
     /// Returns the captured number of values not yet yielded.
     pub(crate) fn size_hint(&self) -> usize {
-        self.expected_len.saturating_sub(self.index)
+        self.cursor.size_hint()
     }
 
     /// Allocates an iterator and retains its source.
@@ -1655,8 +1654,7 @@ impl SetIterator {
         };
         let id = vm.heap.allocate(HeapData::SetIterator(Self {
             source,
-            index: 0,
-            expected_len,
+            cursor: TableCursor::new(expected_len),
         }));
         vm.heap.inc_ref(source_id);
         Value::Ref(id)
@@ -1691,30 +1689,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let (source_id, index, expected_len, mutable) = {
-            let iter = self.get(vm.heap);
-            (
-                iter.source_id(),
-                iter.index,
-                iter.expected_len,
-                matches!(iter.source, SetIteratorSource::Set(_)),
-            )
+        // The cursor lives in this heap entry and the table in another, so a
+        // copy is stepped under the storage borrow and stored back after. A
+        // frozen set cannot change size, so its length check is a no-op
+        // rather than a special case.
+        let (cursor, value) = {
+            let storage = match vm.heap.get(self.get(vm.heap).source_id()) {
+                HeapData::Set(set) => set.storage(),
+                HeapData::FrozenSet(set) => set.storage(),
+                _ => unreachable!("set iterator must retain set-like storage"),
+            };
+            let mut cursor = self.get(vm.heap).cursor.clone();
+            let entry = storage.table.step::<HeapRead<'_, SetStorage>>(&mut cursor)?;
+            (cursor, entry.map(|entry| entry.value.clone_with_heap(vm.heap)))
         };
-        let item = match vm.heap.get(source_id) {
-            HeapData::Set(set) => {
-                if mutable && set.len() != expected_len {
-                    return Err(ExcType::runtime_error_set_changed_size());
-                }
-                set.storage().value_at(index)
-            }
-            HeapData::FrozenSet(set) => set.storage().value_at(index),
-            _ => unreachable!("set iterator must retain set-like storage"),
-        }
-        .map(|value| value.clone_with_heap(vm.heap));
-        if item.is_some() {
-            self.get_mut(vm.heap).index += 1;
-        }
-        Ok(item)
+        self.get_mut(vm.heap).cursor = cursor;
+        Ok(value)
     }
 }
 
@@ -1775,10 +1765,9 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {
         // that width is fixed here. Checked at 2× for the pair, as `py_iadd`
         // checks a clone plus the growth it feeds.
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
-        let members = clone_items(len, vm, |index, vm| {
-            self.try_clone_item(index, vm).expect("index is in bounds")
-        })?;
-        let mut members = DropGuard::new(members, vm);
+        let mut members = DropGuard::new(Vec::with_capacity(len), vm);
+        let (snapshot, vm) = members.as_parts_mut();
+        self.get(vm.heap).storage().clone_members_into(snapshot, vm.heap)?;
         for index in 0..len {
             let (members, vm) = members.as_parts_mut();
             vm.heap.tracker.check_time_every(index)?;
@@ -1806,14 +1795,15 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, FrozenSet> {
     fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
+        let members = Vec::with_capacity(len);
+        defer_drop_mut!(members, vm);
+        self.get(vm.heap).storage().clone_members_into(members, vm.heap)?;
         let mut guard = DropGuard::new(Set::new(), vm);
-        for index in 0..len {
+        for (index, member) in members.iter().enumerate() {
             let (built, vm) = guard.as_parts_mut();
             vm.heap.tracker.check_time_every(index)?;
-            let item = self.try_clone_item(index, vm).expect("index is in bounds");
-            let copied = deep_copy(&item, memo, vm);
-            item.drop_with(vm);
-            built.add(copied?, vm)?;
+            let copied = deep_copy(member, memo, vm)?;
+            built.add(copied, vm)?;
         }
         let (built, vm) = guard.into_parts();
         Ok(Value::Ref(

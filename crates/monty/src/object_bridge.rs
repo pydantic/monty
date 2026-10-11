@@ -322,33 +322,19 @@ impl GraphExporter {
                 // Snapshot before recursing: a nested `__repr__` may mutate this set.
                 let children: Vec<Value> = {
                     let set_ref = set.get(vm.heap);
-                    (0..set_ref.len())
-                        .map(|i| {
-                            set_ref
-                                .storage()
-                                .value_at(i)
-                                .expect("index in range")
-                                .clone_with_heap(vm.heap)
-                        })
-                        .collect()
+                    set_ref.iter().map(|v| v.clone_with_heap(vm.heap)).collect()
                 };
                 defer_drop!(children, vm);
                 MontyNode::Set(self.push_all(children, vm))
             }
             HeapReadOutput::FrozenSet(fs) => {
-                let len = fs.get(vm.heap).len();
-                let mut items = Vec::with_capacity(len);
-                for i in 0..len {
-                    let item = fs
-                        .get(vm.heap)
-                        .storage()
-                        .value_at(i)
-                        .expect("index in range")
-                        .clone_with_heap(vm.heap);
-                    defer_drop!(item, vm);
-                    items.push(self.push(item, vm));
-                }
-                MontyNode::FrozenSet(items)
+                // Snapshot like the set branch, so the walk never holds a position.
+                let children: Vec<Value> = {
+                    let storage = fs.get(vm.heap).storage();
+                    storage.iter().map(|v| v.clone_with_heap(vm.heap)).collect()
+                };
+                defer_drop!(children, vm);
+                MontyNode::FrozenSet(self.push_all(children, vm))
             }
             HeapReadOutput::Cell(_) | HeapReadOutput::HostClassType(_) => {
                 unreachable!("cells and host class types are routed by push_ref")
@@ -1101,13 +1087,8 @@ fn intern_host_class_type(
 /// Clones every `(key, value)` pair out of a dict (or dataclass attrs) so
 /// recursive conversion cannot be invalidated by user code mutating it.
 fn snapshot_dict_pairs(dict: &Dict, heap: &Heap) -> Vec<(Value, Value)> {
-    (0..dict.len())
-        .map(|i| {
-            (
-                dict.key_at(i).expect("index in range").clone_with_heap(heap),
-                dict.value_at(i).expect("index in range").clone_with_heap(heap),
-            )
-        })
+    dict.iter()
+        .map(|(key, value)| (key.clone_with_heap(heap), value.clone_with_heap(heap)))
         .collect()
 }
 

@@ -252,7 +252,7 @@ pub(super) fn field_at<'a>(vm: &'a VM<'_>, fields_id: HeapId, idx: usize) -> Opt
     let HeapData::Dict(fields) = vm.heap.get(fields_id) else {
         return None;
     };
-    match fields.value_at(idx) {
+    match fields.iter().nth(idx).map(|(_, value)| value) {
         Some(Value::Ref(id)) => field_at_id(vm, *id),
         _ => None,
     }

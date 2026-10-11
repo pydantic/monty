@@ -14,8 +14,21 @@
 //! probe and the walk, the two operations that run guest code. Everything that
 //! hands out an index does so only from inside a method that has already
 //! revalidated it.
+//!
+//! Deletion leaves a **tombstone** rather than shifting the entries down, so a
+//! slot index stays valid across one. Shifting was the second half of the same
+//! bug class: a walk holding index `i` stepped over whichever entry slid into
+//! `i` behind it, silently dropping it where CPython raises. Slots are
+//! therefore not dense — `len` counts the live ones, the slot vector spans the
+//! dead ones too.
+//!
+//! No slot number leaves this module. Code elsewhere reads the entries under
+//! one borrow ([`PyHashTable::live`]), steps a position that is checked on
+//! every step ([`TableWalk`], [`TableCursor`], [`TableScan`]), or acts on the
+//! opaque [`Slot`] a probe returns. None of these can be computed by the
+//! caller and read back after guest code has run.
 
-use std::{marker::PhantomData, mem};
+use std::{marker::PhantomData, mem, slice};
 
 use ahash::AHashSet;
 use hashbrown::HashTable;
@@ -32,6 +45,12 @@ use crate::{
     value::Value,
 };
 
+/// Slot count below which tombstones are left alone.
+///
+/// Compaction is only worth the reindex once a table is big enough for the
+/// dead slots to cost a scan; under this a walk crosses them for free.
+const COMPACT_MIN_SLOTS: usize = 8;
+
 /// One entry of a Python hash table.
 ///
 /// `dict` stores a key and a value, `set` stores just the element, but both
@@ -46,6 +65,16 @@ pub(crate) trait TableEntry {
     /// Reused rather than recomputed, as CPython does, so a probe never calls
     /// user `__hash__` on something already in the table.
     fn hash(&self) -> u64;
+
+    /// A dead slot, left behind by a deletion so later slots keep their index.
+    ///
+    /// Must hold no heap reference: a tombstone is skipped by the refcount and
+    /// GC walks, so anything it retained would leak. `Value::Undefined` is the
+    /// marker both entry types use, since it can never be a Python value.
+    fn tombstone() -> Self;
+
+    /// Whether this slot still holds an entry.
+    fn is_live(&self) -> bool;
 }
 
 /// An insertion-ordered hash table: buckets of indices into a dense entry vector.
@@ -55,15 +84,23 @@ pub(crate) trait TableEntry {
 /// that a hand-maintained `indices.insert_unique` next to a `entries.push` in
 /// each of `dict` and `set` invited.
 ///
-/// Reading entries is open, since walking them in order is ordinary work
-/// (repr, serde, cloning). Finding one is not: use [`TableSource::find_index`],
-/// which is the only probe that survives a guest callback.
+/// Entries are read under one borrow through [`live`](Self::live), which no
+/// guest code can interrupt. Finding one goes through
+/// [`TableSource::find_index`], the only probe that survives a guest callback.
+///
+/// Slots are not dense. A deletion tombstones its slot in place so the
+/// positions a walk is holding stay meaningful, which makes
+/// [`len`](Self::len) (live entries) and the slot count two different numbers.
 #[derive(Debug)]
 pub(crate) struct PyHashTable<E> {
-    /// Maps an entry's hash to its index in `entries`.
+    /// Maps an entry's hash to its slot in `entries`. Tombstoned slots are
+    /// removed from here, so a probe never reaches a dead one.
     indices: HashTable<usize>,
-    /// Dense entry vector, in insertion order.
+    /// Slots in insertion order, live entries and tombstones interleaved.
     entries: Vec<E>,
+    /// Live entries. `entries.len()` is the slot count, which tombstones make
+    /// larger; this is what `len()` reports.
+    used: usize,
 }
 
 impl<E> Default for PyHashTable<E> {
@@ -71,7 +108,31 @@ impl<E> Default for PyHashTable<E> {
         Self {
             indices: HashTable::new(),
             entries: Vec::new(),
+            used: 0,
         }
+    }
+}
+
+/// Dumps every slot, tombstones included, as a plain sequence of entries.
+///
+/// Compacting would renumber the slots a dumped iterator's [`TableCursor`]
+/// points at. A dump from before tombstones is simply a table with none.
+impl<E: serde::Serialize> serde::Serialize for PyHashTable<E> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.entries.serialize(serializer)
+    }
+}
+
+impl<'de, E: TableEntry + serde::Deserialize<'de>> serde::Deserialize<'de> for PyHashTable<E> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let entries: Vec<E> = Vec::deserialize(deserializer)?;
+        let mut table = Self {
+            indices: HashTable::with_capacity(entries.len()),
+            used: entries.iter().filter(|entry| entry.is_live()).count(),
+            entries,
+        };
+        table.reindex();
+        Ok(table)
     }
 }
 
@@ -81,6 +142,7 @@ impl<E: TableEntry> PyHashTable<E> {
         Self {
             indices: HashTable::with_capacity(capacity),
             entries: Vec::with_capacity(capacity),
+            used: 0,
         }
     }
 
@@ -89,70 +151,136 @@ impl<E: TableEntry> PyHashTable<E> {
     /// The bucket table is sized to the entry count: a `HashTable` keeps the
     /// buckets it grew to across `clear` and `remove`, so a table rebuilt this
     /// way costs what it holds rather than what it once held.
+    ///
+    /// Every entry given must be live; set algebra hands over a compacted
+    /// vector. Decoding a dump, which may hold tombstones, goes through serde.
     pub(crate) fn from_entries(entries: Vec<E>) -> Self {
+        debug_assert!(entries.iter().all(E::is_live), "from_entries takes live entries only");
         let mut table = Self {
             indices: HashTable::with_capacity(entries.len()),
+            used: entries.len(),
             entries,
         };
         table.reindex();
         table
     }
 
-    /// The entries, in insertion order.
+    /// The live entries, in insertion order.
+    ///
+    /// The borrow is what makes this safe: nothing can mutate the table while
+    /// it is held, so the entries it hands out are the table's current ones.
     #[inline]
-    pub(crate) fn entries(&self) -> &[E] {
-        &self.entries
+    pub(crate) fn live(&self) -> Live<'_, E> {
+        Live {
+            slots: self.entries.iter(),
+            remaining: self.used,
+        }
     }
 
-    /// The entries, mutably, for changing what an entry holds in place.
+    /// The live entries, mutably, for changing what an entry holds.
     ///
-    /// Must not be used to add, remove or reorder entries, nor to change an
-    /// entry's hash: the buckets index entries by position and are keyed on
-    /// that hash, so either desyncs the table. Overwriting a whole entry goes
-    /// through [`replace_at`](Self::replace_at); this is for refcount work.
+    /// Must not change an entry's hash or probe key: the buckets are keyed on
+    /// both. Refcount bookkeeping is the intended use.
     #[inline]
-    pub(crate) fn entries_mut(&mut self) -> &mut [E] {
-        &mut self.entries
+    pub(crate) fn live_mut(&mut self) -> impl Iterator<Item = &mut E> {
+        self.entries.iter_mut().filter(|entry| entry.is_live())
     }
 
-    /// Replaces the entry at `index`, returning the old one.
+    /// The entry a probe found.
     ///
-    /// The bucket pointing at `index` is left alone, so the replacement must
-    /// probe the same as what it displaces — that it carries the same hash is
-    /// asserted in debug builds. A dict rewriting the value at an existing key
+    /// The slot must come from a probe of this table with no mutation since —
+    /// see [`Slot`].
+    #[inline]
+    pub(crate) fn entry(&self, slot: &Slot) -> &E {
+        self.get_live(slot.0).expect(PROBE_SLOT_LIVE)
+    }
+
+    /// Overwrites the entry a probe found, returning the old one.
+    ///
+    /// The replacement must probe the same as what it displaces, since its
+    /// bucket stays where it is. A dict rewriting the value at an existing key
     /// is the intended use.
     #[inline]
-    pub(crate) fn replace_at(&mut self, index: usize, entry: E) -> E {
+    #[expect(clippy::needless_pass_by_value, reason = "taking the slot spends it")]
+    pub(crate) fn replace(&mut self, slot: Slot, entry: E) -> E {
+        let old = self
+            .entries
+            .get_mut(slot.0)
+            .filter(|e| e.is_live())
+            .expect(PROBE_SLOT_LIVE);
         debug_assert_eq!(
+            old.hash(),
             entry.hash(),
-            self.entries[index].hash(),
-            "a replacement must carry the hash its bucket was indexed under"
+            "replace keeps the bucket, so the hash must match"
         );
-        mem::replace(&mut self.entries[index], entry)
+        mem::replace(old, entry)
     }
 
-    /// The number of entries.
+    /// Removes the entry a probe found, returning it.
+    #[inline]
+    #[expect(clippy::needless_pass_by_value, reason = "taking the slot spends it")]
+    pub(crate) fn remove(&mut self, slot: Slot) -> E {
+        self.tombstone_at(slot.0)
+    }
+
+    /// Validates `cursor`'s guards and yields the next live entry.
+    ///
+    /// For the heap-resident iterators, which keep their cursor in a different
+    /// heap object from the table and so cannot hold a [`TableWalk`]. The
+    /// cursor is advanced only on success.
+    pub(crate) fn step<'h, S: TableSource<'h, Entry = E>>(&self, cursor: &mut TableCursor) -> RunResult<Option<&E>> {
+        let next_live = self.next_live_slot(cursor.slot);
+        Ok(cursor
+            .advance::<S>(self.used, next_live)?
+            .map(|slot| &self.entries[slot]))
+    }
+
+    /// The live entry at `slot`, or `None` if the slot is out of range or was
+    /// tombstoned by a deletion since the index was taken.
+    #[inline]
+    fn get_live(&self, slot: usize) -> Option<&E> {
+        self.entries.get(slot).filter(|entry| entry.is_live())
+    }
+
+    /// The first live slot at or after `from`.
+    #[inline]
+    fn next_live_slot(&self, from: usize) -> Option<usize> {
+        (from..self.entries.len()).find(|&i| self.entries[i].is_live())
+    }
+
+    /// The number of live entries — what `len()` reports to Python.
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.entries.len()
+        self.used
     }
 
-    /// Whether the table holds no entries.
+    /// Whether the table holds no live entries.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.used == 0
     }
 
-    /// Appends an entry and indexes it.
+    /// Appends a live entry, dropping accumulated tombstones first if they have
+    /// grown to half the slots.
     ///
     /// The caller must have established that `entry` is absent, through
     /// [`TableSource::find_index`] or a probe that runs no guest code — a
     /// duplicate would be unreachable rather than rejected.
+    ///
+    /// Compacting only here mirrors CPython, which drops its dead slots in
+    /// `dictresize` and nowhere else. It renumbers the survivors, so an
+    /// in-progress iteration can miss one; [`TableCursor`] is what catches
+    /// that, exactly as CPython's `di_used`/`di->len` pair does.
     #[inline]
     pub(crate) fn push(&mut self, entry: E) {
+        debug_assert!(entry.is_live(), "push takes a live entry");
+        if self.entries.len() >= COMPACT_MIN_SLOTS && self.entries.len() - self.used >= self.entries.len() / 2 {
+            self.compact();
+        }
         let index = self.entries.len();
         let hash = entry.hash();
         self.entries.push(entry);
+        self.used += 1;
         self.indices.insert_unique(hash, index, |&i| self.entries[i].hash());
     }
 
@@ -171,78 +299,147 @@ impl<E: TableEntry> PyHashTable<E> {
         )
     }
 
-    /// Removes the entry at `index`, returning it, and reindexes the rest.
+    /// Tombstones the entry at `slot` and returns it.
     ///
-    /// Removal shifts every later entry down, so every bucket after it would
-    /// otherwise point one place too far; the table is rebuilt wholesale rather
-    /// than patched. That makes removal O(n), which is a known cost of the
-    /// dense-vector layout rather than of this type.
-    pub(crate) fn remove_at(&mut self, index: usize) -> E {
-        let entry = self.entries.remove(index);
-        self.reindex();
-        entry
+    /// Ownership of whatever the entry held transfers to the caller. Later
+    /// slots keep their index, which is the point — a walk holding one is
+    /// still looking at the entry it read. Only the one bucket leaves
+    /// `indices`, so this is O(1) rather than the full reindex that shifting
+    /// forced.
+    ///
+    /// The slot must be live; a probe or [`next_live_slot`](Self::next_live_slot)
+    /// is how one is reached, and both skip the dead.
+    fn tombstone_at(&mut self, slot: usize) -> E {
+        debug_assert!(self.entries[slot].is_live(), "tombstoning a dead slot");
+        let hash = self.entries[slot].hash();
+        if let Ok(bucket) = self.indices.find_entry(hash, |&i| i == slot) {
+            bucket.remove();
+        }
+        self.used -= 1;
+        mem::replace(&mut self.entries[slot], E::tombstone())
     }
 
-    /// Removes and returns the last entry, if any.
+    /// Tombstones and returns the last live entry, if any.
     ///
-    /// Cheaper than [`remove_at`](Self::remove_at): nothing shifts, so only the
-    /// one bucket has to go and the rest of the index stays valid. `set.pop`
-    /// takes the tail for exactly this reason.
+    /// The tail in iteration order, which is what `set.pop` and `dict.popitem`
+    /// take. Tombstones after it are left where they are; the next `push`
+    /// clears them if they have accumulated.
     pub(crate) fn pop_last(&mut self) -> Option<E> {
-        let entry = self.entries.pop()?;
-        self.indices
-            .find_entry(entry.hash(), |&index| index == self.entries.len())
-            .expect("every entry is indexed")
-            .remove();
-        Some(entry)
+        let slot = self.entries.iter().rposition(E::is_live)?;
+        Some(self.tombstone_at(slot))
     }
 
-    /// Takes every entry out, leaving the table empty.
+    /// Takes every live entry out, leaving the table empty.
     ///
     /// The entries are returned rather than dropped because they own heap
     /// references; the caller releases them through [`DropWithContext`].
+    /// Tombstones are dropped here rather than returned — they hold nothing.
     ///
     /// [`DropWithContext`]: crate::heap::DropWithContext
     pub(crate) fn take_entries(&mut self) -> Vec<E> {
         self.indices.clear();
-        mem::take(&mut self.entries)
+        self.used = 0;
+        let mut entries = mem::take(&mut self.entries);
+        entries.retain(E::is_live);
+        entries
     }
 
-    /// Consumes the table, yielding its entries for the caller to release.
-    pub(crate) fn into_entries(self) -> Vec<E> {
+    /// Consumes the table, yielding its live entries for the caller to release.
+    pub(crate) fn into_entries(mut self) -> Vec<E> {
+        self.entries.retain(E::is_live);
         self.entries
     }
 
-    /// Rebuilds the bucket table from the current entries.
+    /// Drops every tombstone and renumbers `indices` onto the survivors.
+    fn compact(&mut self) {
+        self.entries.retain(E::is_live);
+        debug_assert_eq!(self.entries.len(), self.used);
+        self.reindex();
+    }
+
+    /// Rebuilds the bucket table from the current live slots.
     fn reindex(&mut self) {
         self.indices.clear();
-        for (index, entry) in self.entries.iter().enumerate() {
-            self.indices
-                .insert_unique(entry.hash(), index, |&i| self.entries[i].hash());
+        for index in 0..self.entries.len() {
+            if !self.entries[index].is_live() {
+                continue;
+            }
+            let hash = self.entries[index].hash();
+            self.indices.insert_unique(hash, index, |&i| self.entries[i].hash());
         }
     }
 
     /// Walks the bucket chain for `hash`, stopping at the first entry `matches`
-    /// accepts, and returns that entry's index.
+    /// accepts, and returns its slot.
     ///
-    /// The bucket borrow is held throughout, so this is sound only if nothing
-    /// can mutate the table meanwhile: either `matches` runs no guest code, or
-    /// the table is unreachable from guest code (still being built, or a fresh
-    /// algebra result). A published table probed with user `__eq__` must use
+    /// The bucket borrow is held for the whole walk, so this is only sound when
+    /// nothing can mutate the table during it. That means one of two things:
+    /// the predicate runs no guest code (a native string or int comparison), or
+    /// the table is not reachable from guest code at all (one still being
+    /// built, or the fresh result of a set operation). Probing a *published*
+    /// table with a predicate that can reach user `__eq__` must go through
     /// [`TableSource::find_index`], which revalidates around the callback.
     #[inline]
-    pub(crate) fn probe_raw(&self, hash: u64, mut matches: impl FnMut(usize, &E) -> bool) -> Option<usize> {
+    pub(crate) fn probe_raw(&self, hash: u64, mut matches: impl FnMut(&E) -> bool) -> Option<Slot> {
+        self.probe_indexed(hash, |_, entry| matches(entry)).map(Slot)
+    }
+
+    /// [`probe_raw`](Self::probe_raw), handing the predicate each candidate's
+    /// slot too, for the guarded probe's snapshot of candidates.
+    #[inline]
+    fn probe_indexed(&self, hash: u64, mut matches: impl FnMut(usize, &E) -> bool) -> Option<usize> {
         self.indices
             .find(hash, |&index| matches(index, &self.entries[index]))
             .copied()
     }
 }
 
+/// Panic message for a [`Slot`] used after the table changed under it.
+const PROBE_SLOT_LIVE: &str = "a probe slot is used before the table next changes";
+
+/// The position of an entry a probe found.
+///
+/// Only a probe makes one, and it is neither `Clone` nor `Copy`, so a caller
+/// cannot derive a position from an ordinal or keep one for later. It is valid
+/// until the table next changes: consume it before anything that can run
+/// guest code. [`PyHashTable::entry`], [`replace`](PyHashTable::replace) and
+/// [`remove`](PyHashTable::remove) are the ways to use it.
+#[must_use]
+#[derive(Debug)]
+pub(crate) struct Slot(usize);
+
+/// The live entries of a table, in insertion order. See [`PyHashTable::live`].
+pub(crate) struct Live<'a, E> {
+    slots: slice::Iter<'a, E>,
+    /// Live entries not yet yielded, so the size hint is exact.
+    remaining: usize,
+}
+
+impl<'a, E: TableEntry> Iterator for Live<'a, E> {
+    type Item = &'a E;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = self.slots.find(|entry| entry.is_live())?;
+        self.remaining -= 1;
+        Some(entry)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+
+    fn fold<B, F: FnMut(B, Self::Item) -> B>(self, init: B, f: F) -> B {
+        self.slots.filter(|entry| entry.is_live()).fold(init, f)
+    }
+}
+
+impl<E: TableEntry> ExactSizeIterator for Live<'_, E> {}
+
 /// The outcome of the probe continuation that runs after every snapshotted
 /// candidate has been compared and missed.
 pub(crate) enum ProbeOutcome {
     /// The key was found in this entry.
-    Found(usize),
+    Found(Slot),
     /// Every live candidate has been compared, none matched.
     Missing,
     /// A candidate moved mid-probe, so the whole probe must start over.
@@ -255,7 +452,7 @@ pub(crate) enum ProbeOutcome {
 /// Implemented by the `HeapRead` handles for `dict` and `set`. The handle, not
 /// a borrow of the table, is what the probe holds onto: [`table`](Self::table)
 /// is re-read from the heap after every callback, which is what makes the
-/// index it eventually returns meaningful. An implementation must therefore
+/// slot it eventually returns meaningful. An implementation must therefore
 /// read through the heap each time rather than cache anything.
 pub(crate) trait TableSource<'h> {
     /// The entry type of the table this source exposes.
@@ -270,14 +467,31 @@ pub(crate) trait TableSource<'h> {
     /// container rather than to the walk.
     fn changed_size_error() -> RunError;
 
+    /// The `RuntimeError` raised when a live entry turns up after the walk has
+    /// been handed every entry it was owed — a compaction renumbered the slots
+    /// under the cursor.
+    ///
+    /// `None` for a container whose CPython iterator has no such guard, which
+    /// is the case for `set`: `dictiterobject` carries `di->len` alongside its
+    /// size check, `setiterobject` carries only the size check.
+    fn changed_keys_error() -> Option<RunError> {
+        None
+    }
+
     /// Finds the index of the entry equal to `key`, or `None` if absent.
     ///
-    /// `hash` must be `key`'s hash — passed, not computed, so set algebra can
-    /// reuse the one cached beside an element. Candidates are snapshotted so
-    /// `py_eq` runs without the bucket borrow held, and revalidated either side
-    /// of it; one that moved restarts the probe, as in CPython's `lookdict`.
-    /// The returned index is live only until the next call into the VM.
-    fn find_index(&self, key: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
+    /// `hash` must be `key`'s hash; taking it as an argument rather than
+    /// computing it lets set algebra pass the hash cached beside an element,
+    /// as CPython's `set_contains_entry` does, so nothing already in a table
+    /// gets re-hashed.
+    ///
+    /// Candidates are snapshotted so `py_eq` can run without the bucket borrow
+    /// held, and revalidated either side of it: only one that moved restarts
+    /// the probe, as in CPython's `lookdict`. Restarts poll the limits, since
+    /// each callback restarts the VM's dispatch countdown.
+    ///
+    /// The returned slot is valid only until the next call into the VM.
+    fn find_index(&self, key: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<Slot>> {
         // False for anything whose `__eq__` could mutate the container; when
         // true, revalidation and the miss continuation are skipped (the
         // str/int path).
@@ -296,7 +510,7 @@ pub(crate) trait TableSource<'h> {
             // that may need user code are cloned for the guarded loop below.
             // Once one is deferred, later candidates queue behind it so
             // comparisons keep CPython's probe order.
-            let found = table.probe_raw(hash, |index, entry| {
+            let found = table.probe_indexed(hash, |index, entry| {
                 if entry.hash() != hash {
                     return false;
                 }
@@ -317,7 +531,7 @@ pub(crate) trait TableSource<'h> {
             // the predicate above keeps them empty on the `found` path.
             defer_drop!(candidate_keys, vm);
             if let Some(index) = found {
-                return Ok(Some(index));
+                return Ok(Some(Slot(index)));
             }
             if candidate_indices.is_empty() {
                 return Ok(None);
@@ -335,7 +549,7 @@ pub(crate) trait TableSource<'h> {
                     continue 'restart;
                 }
                 if eq {
-                    return Ok(Some(candidate_index));
+                    return Ok(Some(Slot(candidate_index)));
                 }
             }
 
@@ -346,7 +560,7 @@ pub(crate) trait TableSource<'h> {
                 return Ok(None);
             }
             match self.probe_after_compare(hash, key, candidate_keys, vm)? {
-                ProbeOutcome::Found(index) => return Ok(Some(index)),
+                ProbeOutcome::Found(slot) => return Ok(Some(slot)),
                 ProbeOutcome::Missing => return Ok(None),
                 // a candidate moved: fall through to the next probe from scratch
                 ProbeOutcome::Restart => (),
@@ -405,7 +619,7 @@ pub(crate) trait TableSource<'h> {
                     return Ok(ProbeOutcome::Restart);
                 }
                 if eq {
-                    return Ok(ProbeOutcome::Found(candidate_index));
+                    return Ok(ProbeOutcome::Found(Slot(candidate_index)));
                 }
             }
 
@@ -426,7 +640,7 @@ pub(crate) trait TableSource<'h> {
         let mut indices: SmallVec<[usize; 2]> = SmallVec::new();
         let mut keys: SmallVec<[Value; 2]> = SmallVec::new();
         let table = self.table(vm);
-        table.probe_raw(hash, |index, entry| {
+        table.probe_indexed(hash, |index, entry| {
             if entry.hash() == hash {
                 indices.push(index);
                 keys.push(entry.probe_key().clone_with_heap(vm.heap));
@@ -442,23 +656,31 @@ pub(crate) trait TableSource<'h> {
     #[inline]
     fn probe_valid(&self, index: usize, hash: u64, key: &Value, vm: &VM<'h>) -> bool {
         self.table(vm)
-            .entries()
-            .get(index)
+            .get_live(index)
             .is_some_and(|entry| entry.hash() == hash && entry.probe_key().is(key))
     }
 }
 
 /// The resize-checked step shared by the `dict` and `set` iterators.
 ///
-/// Walking either container can run guest code that mutates it, so the position
-/// is re-checked against the live length at every step and a change ends the
-/// walk with the container's `RuntimeError` rather than reading past the
-/// entries. Only the position lives here — the yielded values, recursion token
-/// and lending slots belong to the iterator, which differs per type.
+/// Walking either container yields values into `py_eq` / `py_hash` /
+/// membership tests, any of which can run guest code that mutates what is
+/// being walked. The position is therefore re-validated against the live
+/// length at every step rather than trusted from construction, and a change
+/// ends the walk with the container's `RuntimeError` instead of reading past
+/// the entries.
+///
+/// This is only the position; the yielded values, the recursion token and the
+/// lending slots belong to the iterator built on top, because `dict` lends a
+/// pair and `set` lends an element and its hash.
+///
+/// The position is a *slot*, so it steps over the tombstones a deletion leaves
+/// and the live count it is owed is tracked separately — see
+/// [`TableCursor`], which applies the same two guards to the heap-resident
+/// Python iterators.
 pub(crate) struct TableWalk<'a, 'h, S: TableSource<'h>> {
     source: &'a S,
-    index: usize,
-    expected_len: usize,
+    cursor: TableCursor,
     /// `'h` is the heap brand the source is read under; the walk never stores
     /// anything carrying it, but must not outlive it either.
     heap: PhantomData<fn(&'h ())>,
@@ -469,34 +691,156 @@ impl<'a, 'h, S: TableSource<'h>> TableWalk<'a, 'h, S> {
     pub(crate) fn new(source: &'a S, vm: &VM<'h>) -> Self {
         Self {
             source,
-            index: 0,
-            expected_len: source.table(vm).len(),
+            cursor: TableCursor::new(source.table(vm).len()),
             heap: PhantomData,
         }
     }
 
-    /// The source being walked, for reading the entry an index names.
-    pub(crate) fn source(&self) -> &'a S {
-        self.source
+    /// The next live entry, or `None` once the walk is exhausted.
+    ///
+    /// Polls the limits (amortized) and re-checks the live length first, so a
+    /// mutation from guest code between steps raises the container's
+    /// `RuntimeError` here. The entry borrows `vm`, so it cannot be held
+    /// across anything that runs guest code.
+    pub(crate) fn next<'v>(&mut self, vm: &'v VM<'h>) -> RunResult<Option<&'v S::Entry>> {
+        vm.heap.tracker.check_time_every(self.cursor.slot)?;
+        self.source.table(vm).step::<S>(&mut self.cursor)
+    }
+}
+
+/// A position that tolerates mutation, as CPython's `PyDict_Next` does.
+///
+/// Each step re-reads the table and yields the next live entry after the last
+/// one, with no size check: an entry appended mid-scan is reached, a deleted
+/// one is skipped. Repr uses this, since CPython's `dict_repr` walks the same
+/// way and raises nothing when a `__repr__` mutates the dict.
+#[derive(Debug, Default)]
+pub(crate) struct TableScan {
+    /// The slot to resume scanning from.
+    slot: usize,
+}
+
+impl TableScan {
+    /// The next live entry of `table` after the last one yielded.
+    pub(crate) fn next<'t, E: TableEntry>(&mut self, table: &'t PyHashTable<E>) -> Option<&'t E> {
+        let slot = table.next_live_slot(self.slot)?;
+        self.slot = slot + 1;
+        Some(&table.entries[slot])
+    }
+}
+
+/// The mutation guards CPython's dict and set iterators apply, in its order.
+///
+/// Shared by [`TableWalk`] and by the heap-resident `dict`/`set` iterator
+/// objects, which need the same rules but persist across suspensions. Those
+/// flatten it into their own dumped fields, which keeps the keys a pre-tombstone
+/// iterator was dumped with.
+///
+/// Two guards, because tombstones make one insufficient. The size check alone
+/// is defeated by a paired delete and insert; the live count is what catches a
+/// compaction renumbering the slots under the cursor.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(from = "DumpedCursor")]
+pub(crate) struct TableCursor {
+    /// The slot to resume scanning from. Not an entry ordinal: tombstones make
+    /// it run ahead of how many entries have been yielded.
+    #[serde(rename = "index")]
+    slot: usize,
+    /// The live count pinned at construction, compared on every step.
+    expected_len: usize,
+    /// Live entries still owed, counted down per yield. CPython's `di->len`:
+    /// finding another once this hits zero means the table was renumbered.
+    remaining: usize,
+    /// Set once a step has reached the end. Mirrors CPython clearing
+    /// `di_dict`: an exhausted iterator returns `StopIteration` on every
+    /// further call and never re-checks the size, even if the container was
+    /// mutated after exhaustion.
+    exhausted: bool,
+}
+
+/// A [`TableCursor`] as any supported dump stores it.
+///
+/// Dumps from before tombstones have no `remaining`, and a set iterator's no
+/// `exhausted`. Their tables were dense, so the slot was an ordinal and the
+/// count still owed follows from it.
+#[derive(serde::Deserialize)]
+struct DumpedCursor {
+    index: usize,
+    expected_len: usize,
+    #[serde(default)]
+    remaining: Option<usize>,
+    #[serde(default)]
+    exhausted: bool,
+}
+
+impl From<DumpedCursor> for TableCursor {
+    fn from(dumped: DumpedCursor) -> Self {
+        Self {
+            slot: dumped.index,
+            expected_len: dumped.expected_len,
+            remaining: dumped
+                .remaining
+                .unwrap_or_else(|| dumped.expected_len.saturating_sub(dumped.index)),
+            exhausted: dumped.exhausted,
+        }
+    }
+}
+
+impl TableCursor {
+    /// Starts a cursor owed `expected_len` entries.
+    pub(crate) fn new(expected_len: usize) -> Self {
+        Self {
+            slot: 0,
+            expected_len,
+            remaining: expected_len,
+            exhausted: false,
+        }
     }
 
-    /// The entry index to read next, or `None` once the walk is exhausted.
+    /// Entries not yet yielded, for `__length_hint__`.
+    pub(crate) fn size_hint(&self) -> usize {
+        self.remaining
+    }
+
+    /// Validates the two guards and takes `next_live` as the next slot.
     ///
-    /// Polls the limits (amortized) and re-reads the live length first, so a
-    /// mutation from guest code between steps is caught here rather than by an
-    /// out-of-bounds index. The returned index is live only until the next call
-    /// into the VM.
-    pub(crate) fn advance(&mut self, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
-        vm.heap.tracker.check_time_every(self.index)?;
-        if self.source.table(vm).len() != self.expected_len {
-            return Err(S::changed_size_error());
-        }
-        if self.index >= self.expected_len {
+    /// `next_live` is the container's first live slot at or after `slot`. The size check fires only while the walk is live
+    /// and *before* exhaustion, so a mutation on the final entry still raises
+    /// on the terminating step. Then, having skipped tombstones to a live
+    /// slot, finding one when nothing is owed means a compaction renumbered
+    /// the table mid-walk — CPython's "keys changed" case, for the containers
+    /// that guard it.
+    fn advance<'h, S: TableSource<'h>>(
+        &mut self,
+        current_len: usize,
+        next_live: Option<usize>,
+    ) -> RunResult<Option<usize>> {
+        if self.exhausted {
             Ok(None)
+        } else if current_len != self.expected_len {
+            Err(S::changed_size_error())
         } else {
-            let index = self.index;
-            self.index += 1;
-            Ok(Some(index))
+            match next_live {
+                None => {
+                    self.exhausted = true;
+                    Ok(None)
+                }
+                Some(_) if self.remaining == 0 => {
+                    if let Some(error) = S::changed_keys_error() {
+                        Err(error)
+                    } else {
+                        // No such guard for this container: stop rather than
+                        // yield an entry the walk was never owed.
+                        self.exhausted = true;
+                        Ok(None)
+                    }
+                }
+                Some(slot) => {
+                    self.slot = slot + 1;
+                    self.remaining -= 1;
+                    Ok(Some(slot))
+                }
+            }
         }
     }
 }
