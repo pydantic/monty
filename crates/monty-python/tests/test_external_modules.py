@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import types
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -311,6 +312,20 @@ def test_a_class_instance_submodule(pool: Monty):
             snapshot("external_modules entries must have identifier keys, not 'a.b'"),
             id='dotted-key',
         ),
+        pytest.param(
+            ExternalModule({'for': ExternalModule(TOOLS)}),
+            ValueError,
+            snapshot('external_modules[\'pkg.for\']: module name "for" is not a valid identifier'),
+            id='keyword-submodule',
+        ),
+        pytest.param(
+            ExternalModule({'json': ExternalModule(TOOLS)}),
+            ValueError,
+            snapshot(
+                'external_modules[\'pkg.json\']: module "json" is provided by the sandbox or its type checker and cannot be replaced'
+            ),
+            id='sandbox-name-submodule',
+        ),
     ],
 )
 def test_invalid_submodules_are_rejected(pool: Monty, entry: ExternalModule, error: type[Exception], message: str):
@@ -318,6 +333,16 @@ def test_invalid_submodules_are_rejected(pool: Monty, entry: ExternalModule, err
         with pytest.raises(error) as exc_info:
             session.feed_run('1', external_modules={'pkg': entry})
         assert str(exc_info.value) == message
+
+
+def test_external_modules_is_any_mapping(pool: Monty):
+    with pool.checkout() as session:
+        assert session.feed_run(CODE, external_modules=types.MappingProxyType(MODULES)) == snapshot([3, 'ab', 3])
+        with pytest.raises(TypeError) as exc_info:
+            session.feed_run('1', external_modules=[('tools', MODULES['tools'])])  # pyright: ignore[reportArgumentType]
+        assert str(exc_info.value) == snapshot(
+            'external_modules must be a mapping of module name to ExternalModule, not list'
+        )
 
 
 def test_cyclic_submodules_are_rejected(pool: Monty):
@@ -547,6 +572,28 @@ async def test_async_factories_are_awaited_together_for_a_stubs_ask():
     async with AsyncMonty() as pool:
         async with pool.checkout(type_check=True) as session:
             assert await asyncio.wait_for(session.feed_run(code, external_modules=modules), 5) == snapshot(3)
+
+
+async def test_a_factory_error_closes_the_coroutines_of_a_stubs_ask():
+    """An error ends the ask, so the coroutines made for it are closed rather than left unawaited."""
+    coroutines: list[Any] = []
+
+    async def make_tools() -> ExternalModule:
+        return ExternalModule(TOOLS, stubs=ADD_STUB)
+
+    def tools() -> Awaitable[ExternalModule]:
+        coroutines.append(make_tools())
+        return coroutines[-1]
+
+    def other() -> Awaitable[ExternalModule]:
+        raise ValueError('no other')
+
+    async with AsyncMonty() as pool:
+        async with pool.checkout(type_check=True) as session:
+            with pytest.raises(MontyRuntimeError) as exc_info:
+                await session.feed_run('import tools, other', external_modules={'tools': tools, 'other': other})
+    assert str(exc_info.value) == snapshot('ValueError: no other')
+    assert [inspect.getcoroutinestate(coro) for coro in coroutines] == snapshot(['CORO_CLOSED'])
 
 
 def test_submodule_stubs_type_check_as_a_package(pool: Monty):

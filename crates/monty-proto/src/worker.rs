@@ -22,7 +22,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump, source_within_nesting_bound};
+use monty::{
+    CheckedSource, Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump,
+    source_within_nesting_bound,
+};
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
     AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
@@ -196,9 +199,6 @@ struct PendingFeed {
     repl: Box<MontyRepl>,
     code: String,
     inputs: NamedValues,
-    /// Empty keeps the session's working directory.
-    cwd: String,
-    type_checked: bool,
     /// Requested modules, in source order.
     asked: Vec<String>,
 }
@@ -567,30 +567,30 @@ impl Child {
             Ok(inputs) => inputs,
             Err(err) => return protocol_violation(&format!("invalid inputs: {err}")),
         };
-        let SessionState::Ready(repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
+        let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
         // Check nesting before the import scan, ty or the compiler parses the snippet.
-        if let Err(error) = repl.check_source(&feed.code) {
-            self.state = SessionState::Ready(repl);
-            return error_event_from(&error);
-        }
-        let mut pending = PendingFeed {
-            repl,
-            code: feed.code,
-            inputs,
-            cwd: feed.cwd,
-            type_checked: !feed.skip_type_check && self.type_check.is_some(),
-            asked: Vec::new(),
+        let code = feed.code;
+        let checked = match repl.check_source(&code) {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.state = SessionState::Ready(repl);
+                return error_event_from(&error);
+            }
         };
+        // The working directory persists in the REPL (including `os.chdir`); the parent
+        // sends one only to switch it, and the switch holds whatever the feed's outcome.
+        if !feed.cwd.is_empty() {
+            repl.set_cwd(&feed.cwd);
+        }
         // snippets fed with skip_type_check never become type-check context:
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either
-        if pending.type_checked
-            && let Some(state) = &mut self.type_check
-        {
-            let imports = scan_imports(&pending.code);
-            state.pending_snippet = Some(pending.code.clone());
+        let type_checked = !feed.skip_type_check && self.type_check.is_some();
+        if type_checked && let Some(state) = &mut self.type_check {
+            let imports = scan_imports(&code);
+            state.pending_snippet = Some(code.clone());
             state.pending_imports = imports.prelude;
             // Each answer is final for the session, even if it contains no stub.
             let unasked = |name: &str| {
@@ -599,19 +599,24 @@ impl Child {
                     && !state.asked_modules.iter().any(|asked| asked == name)
             };
             if let Some(first) = imports.modules.iter().find(|module| unasked(&module.name)) {
-                pending.asked = imports
+                let asked: Vec<String> = imports
                     .modules
                     .iter()
                     .filter(|module| unasked(&module.name))
                     .map(|module| module.name.clone())
                     .collect();
                 let position = SourceRange::new(
-                    &pending.repl.next_script_name(),
+                    &repl.next_script_name(),
                     first.range.start().to_u32(),
                     first.range.end().to_u32(),
                 );
-                let ask = OsFunctionCall::ImportStubs(pending.asked.clone());
-                self.state = SessionState::AwaitingStubs(Box::new(pending));
+                let ask = OsFunctionCall::ImportStubs(asked.clone());
+                self.state = SessionState::AwaitingStubs(Box::new(PendingFeed {
+                    repl,
+                    code,
+                    inputs,
+                    asked,
+                }));
                 return event(pb::child_event::Kind::OsCall(os_call_to_proto(
                     IMPORT_STUBS_CALL_ID,
                     ask,
@@ -620,37 +625,22 @@ impl Child {
                 )));
             }
         }
-        self.start_feed(pending, sink)
+        self.start_feed(repl, checked, inputs, type_checked, sink)
     }
 
     /// Optionally type-checks, injects inputs and executes to the turn-ending event.
-    fn start_feed(&mut self, pending: PendingFeed, sink: &mut dyn EventSink) -> pb::ChildEvent {
-        let PendingFeed {
-            mut repl,
-            code,
-            inputs,
-            cwd,
-            type_checked,
-            asked: _,
-        } = pending;
-        if type_checked && let Some(event) = self.type_check_feed(&code) {
+    fn start_feed(
+        &mut self,
+        repl: Box<MontyRepl>,
+        checked: CheckedSource<'_>,
+        inputs: NamedValues,
+        type_checked: bool,
+        sink: &mut dyn EventSink,
+    ) -> pb::ChildEvent {
+        if type_checked && let Some(event) = self.type_check_feed(checked.code()) {
             self.state = SessionState::Ready(repl);
             self.discard_pending_snippet();
             return event;
-        }
-        // already found within the bound on arrival, so this cannot fail
-        let checked = match repl.check_source(&code) {
-            Ok(checked) => checked,
-            Err(error) => {
-                self.state = SessionState::Ready(repl);
-                self.discard_pending_snippet();
-                return error_event_from(&error);
-            }
-        };
-        // The working directory persists in the REPL (including `os.chdir`);
-        // the parent sends one only to switch it, and an older parent never does.
-        if !cwd.is_empty() {
-            repl.set_cwd(&cwd);
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let result = repl.feed_start_checked(checked, inputs, PrintWriter::Callback(&mut print));
@@ -708,10 +698,25 @@ impl Child {
                 self.module_stubs.push(stub);
             }
         }
+        let PendingFeed {
+            repl,
+            code,
+            inputs,
+            asked,
+        } = *pending;
         if let Some(state) = &mut self.type_check {
-            state.asked_modules.extend(pending.asked.iter().cloned());
+            state.asked_modules.extend(asked);
         }
-        self.start_feed(*pending, sink)
+        // already found within the bound on arrival, so this cannot fail
+        let checked = match repl.check_source(&code) {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.state = SessionState::Ready(repl);
+                self.discard_pending_snippet();
+                return error_event_from(&error);
+            }
+        };
+        self.start_feed(repl, checked, inputs, true, sink)
     }
 
     /// Returns the exception and readies the session after a feed fails before execution.

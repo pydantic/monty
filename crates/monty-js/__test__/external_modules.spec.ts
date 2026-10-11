@@ -97,6 +97,22 @@ test('a ClassInstance module', async () => {
   t.is(await run('import tools\ntools.add(2, 3)', { tools: new ExternalModule(module) }), 5)
 })
 
+test('a ClassInstance module is read from each feed', async () => {
+  class Tools {
+    constructor(private readonly base: number) {}
+    add(a: number): number {
+      return this.base + a
+    }
+  }
+  await using session = await pool().checkout()
+  const feed = (base: number) => {
+    const module = new ClassInstance(new Tools(base), { allowedMethods: ['add'] })
+    return session.feedRun('import tools\ntools.add(1)', { externalModules: { tools: new ExternalModule(module) } })
+  }
+  t.is(await feed(10), 11)
+  t.is(await feed(20), 21)
+})
+
 test('name-based calls respect module exposure', async () => {
   // Forged dotted names must not expose private attributes or bypass
   // ClassInstance's UUID dispatch and method policy.
@@ -194,6 +210,16 @@ test('module stubs are fetched lazily', async () => {
   t.is(await session.feedRun('import tools\ntools.add(1, 2)', { externalModules }), 3)
   // One call for the failed feed's stub request, another for the next feed's import.
   t.is(calls, 2)
+})
+
+test('a module named __proto__ keeps its stub', async () => {
+  const externalModules: ExternalModules = { ['__proto__']: new ExternalModule(tools, { stubs: addStub }) }
+  await using session = await pool().checkout({ typeCheck: true, typeCheckFormat: 'concise' })
+  await t.throwsAsync(session.feedRun("import __proto__\n__proto__.add('x', 2)", { externalModules }), {
+    instanceOf: MontyTypingError,
+    message:
+      'TypeError: main.py:2:15: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`',
+  })
 })
 
 test('the os handler never sees a module ask', async () => {
@@ -373,6 +399,25 @@ test('invalid submodules are rejected', async () => {
   await t.throwsAsync(feed(pkg), {
     instanceOf: TypeError,
     message: 'externalModules.pkg.sub.pkg is externalModules.pkg again: modules cannot nest cyclically',
+  })
+  await t.throwsAsync(feed(new ExternalModule({ for: new ExternalModule(tools) })), {
+    instanceOf: TypeError,
+    message: 'externalModules.pkg.for is not a valid module name',
+  })
+  await t.throwsAsync(feed(new ExternalModule({ json: new ExternalModule(tools) })), {
+    instanceOf: TypeError,
+    message: 'externalModules.pkg.json is provided by the sandbox and cannot be replaced',
+  })
+})
+
+test('a getter handing back a module being imported is a cycle', async () => {
+  const module: Record<string, unknown> = {}
+  const pkg = new ExternalModule(module)
+  Object.defineProperty(module, 'sub', { enumerable: true, get: () => pkg })
+  await using session = await pool().checkout()
+  await t.throwsAsync(session.feedRun('import pkg', { externalModules: { pkg } }), {
+    instanceOf: MontyRuntimeError,
+    message: 'TypeError: externalModules.pkg.sub is externalModules.pkg again: modules cannot nest cyclically',
   })
 })
 

@@ -17,9 +17,11 @@
 //!
 //! Every suspension surfaces, OS calls included — `feed_start` never answers
 //! one for you, so a mounted file read comes back as a `FunctionSnapshot` with
-//! `is_os_function` set. The captured `external_lookup=` / `os=` and the feed's
-//! mounts are consulted only by `resume_auto`, which offers an OS call to the
-//! mounts first and falls back to `os=`. Mounts are fixed for the whole feed
+//! `is_os_function` set. The captured `external_lookup=` / `external_modules=`
+//! / `os=` and the feed's mounts are consulted only by `resume_auto`, which
+//! answers a host module's OS call (`import`, `import_stubs`) from
+//! `external_modules=` and offers any other to the mounts first, falling back
+//! to `os=`. Mounts are fixed for the whole feed
 //! (passed to `feed_start`), so `resume` takes no `mount=`. Restoring a
 //! suspended feed with `load_snapshot` re-establishes those mounts — the caller
 //! re-supplies them, as they are never part of the dump.
@@ -718,9 +720,11 @@ impl PyFunctionSnapshot {
     }
 
     /// Answers this call automatically, then drives to the next snapshot (or
-    /// [`MontyComplete`]). An OS call is offered to the feed's mounts first and
-    /// falls back to the `os=` captured at `feed_start` / `load_snapshot`; an
-    /// external call is resolved through `external_lookup=`, and a name absent
+    /// [`MontyComplete`]). A host module's OS call (`import`, `import_stubs`)
+    /// is answered from `external_modules=`; any other OS call is offered to
+    /// the feed's mounts first and falls back to the `os=` captured at
+    /// `feed_start` / `load_snapshot`; an external call is resolved through
+    /// `external_lookup=`, and a name absent
     /// from it resolves to `NotFound` so the sandbox raises `NameError` —
     /// matching `feed_run`. A coroutine external raises `RuntimeError` (async
     /// externals need `AsyncMonty`). Consumes the snapshot.

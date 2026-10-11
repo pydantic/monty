@@ -295,7 +295,7 @@ impl PyMontySession {
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyDict>>,
+        external_modules: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         cwd: Option<String>,
@@ -339,7 +339,7 @@ impl PyMontySession {
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyDict>>,
+        external_modules: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         cwd: Option<String>,
@@ -410,7 +410,7 @@ impl PyMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyDict>>,
+        external_modules: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         // extract args before committing the session, so a bad-args error
@@ -885,7 +885,7 @@ impl PyAsyncMontySession {
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyDict>>,
+        external_modules: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         cwd: Option<String>,
@@ -923,7 +923,7 @@ impl PyAsyncMontySession {
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyDict>>,
+        external_modules: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         cwd: Option<String>,
@@ -989,7 +989,7 @@ impl PyAsyncMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
-        external_modules: Option<&Bound<'_, PyDict>>,
+        external_modules: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // extract args before committing the session (a bad-args error leaves

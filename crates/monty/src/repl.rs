@@ -610,6 +610,14 @@ impl MontyRepl {
 #[derive(Debug, Clone, Copy)]
 pub struct CheckedSource<'a>(&'a str);
 
+impl<'a> CheckedSource<'a> {
+    /// The checked snippet, for the type checker and import scan that run before the feed.
+    #[must_use]
+    pub fn code(&self) -> &'a str {
+        self.0
+    }
+}
+
 impl Drop for MontyRepl {
     fn drop(&mut self) {
         self.globals.drain(..).drop_with(&mut self.heap);

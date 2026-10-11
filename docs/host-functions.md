@@ -360,7 +360,8 @@ Any other value is refused with `TypeError` when the feed is called, before anyt
 A zero-argument factory returning an `ExternalModule` runs when the feed first needs the module: for an import,
 a stub request, or a function call through a restored binding.
 The result is cached for that feed.
-For one lookup per session, memoize the factory with `functools.cache` or its JavaScript equivalent.
+For one lookup per session, memoize the factory: `functools.cache` serves a synchronous one, while an async factory
+must cache the awaited `ExternalModule` itself, since a cached coroutine cannot be awaited a second time.
 Under `AsyncMonty` it may return an awaitable, and in JavaScript a promise; the sync `Monty` raises `RuntimeError` for
 an awaitable.
 Factory exceptions and invalid return values raise at the requesting import, stub request or call.

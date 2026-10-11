@@ -346,9 +346,9 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
     not from the `checkout()` that restored it.
-    Module stubs are retained even when type checking is off; restored sessions request only previously unrequested
-    stubs.
-    Supply `external_modules` again to answer imports and function calls.
+    Module stubs are retained even when type checking is off, so a restored session requests stubs only for modules
+    it never asked about; every `import` still asks the host for the module value.
+    Supply `external_modules` again to answer those imports and function calls.
 - **Host modules follow host-object restoration rules.** Eager attributes, including functions named `tools.<attr>`,
     survive restoration; lazy attribute access and method calls fail as described below.
     An `import` after restoration asks the host again.

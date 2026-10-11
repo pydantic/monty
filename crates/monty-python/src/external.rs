@@ -22,7 +22,7 @@ use pyo3::{
     exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
-    types::{PyDict, PyString, PyTuple, PyType},
+    types::{PyDict, PyMapping, PyString, PyTuple, PyType},
 };
 
 use crate::{callback_context, exceptions::MontyConversionError, pool::lock};
@@ -135,10 +135,24 @@ pub(crate) struct HostModules {
 }
 
 impl HostModules {
-    /// Captures modules or zero-argument factories returning them. Dicts explicitly select
-    /// what crosses; module objects could expose imports. Identifier keys keep dotted
-    /// host-function names unambiguous.
-    pub(crate) fn capture(py: Python<'_>, entries: &Bound<'_, PyDict>) -> PyResult<Self> {
+    /// Captures modules or zero-argument factories returning them from any mapping
+    /// (a dict is kept, so its entries are re-read on each import). Dicts explicitly
+    /// select what crosses; module objects could expose imports. Identifier keys keep
+    /// dotted host-function names unambiguous.
+    pub(crate) fn capture(py: Python<'_>, entries: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let entries = if let Ok(dict) = entries.cast::<PyDict>() {
+            dict.clone()
+        } else {
+            let Ok(mapping) = entries.cast::<PyMapping>() else {
+                return Err(PyTypeError::new_err(format!(
+                    "external_modules must be a mapping of module name to ExternalModule, not {}",
+                    entries.get_type().name()?
+                )));
+            };
+            let dict = PyDict::new(py);
+            dict.update(mapping)?;
+            dict
+        };
         let mut stand_ins = HashMap::new();
         for (name, entry) in entries.iter() {
             let name = module_key(&name, "external_modules")?;
@@ -160,7 +174,7 @@ impl HostModules {
             }
         }
         Ok(Self {
-            entries: entries.clone().unbind(),
+            entries: entries.unbind(),
             resolved: PyDict::new(py).unbind(),
             stand_ins: Arc::new(Mutex::new(stand_ins)),
         })
@@ -192,7 +206,7 @@ impl HostNames {
     pub(crate) fn capture(
         py: Python<'_>,
         lookup: Option<&Bound<'_, PyDict>>,
-        modules: Option<&Bound<'_, PyDict>>,
+        modules: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         Ok(Self {
             lookup: lookup.map(|d| d.clone().unbind()),
@@ -549,12 +563,18 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let Some(asked) = asked_modules(args) else {
             return CallResult::Sync(ExtFunctionResult::NotFound(IMPORT_STUBS_CALL.to_owned()));
         };
-        let mut pending = Vec::new();
+        let mut pending: Vec<(String, Bound<'py, PyAny>)> = Vec::new();
         for name in &asked {
             match self.resolve_module(name) {
                 Ok(Some(Resolved::Awaitable(awaitable))) => pending.push((name.clone(), awaitable)),
                 Ok(_) => {}
-                Err(err) => return CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
+                Err(err) => {
+                    // the error ends the ask, so the coroutines already made are never awaited
+                    for (_, awaitable) in &pending {
+                        close_coroutine(awaitable);
+                    }
+                    return CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)));
+                }
             }
         }
         if pending.is_empty() {
@@ -634,15 +654,20 @@ enum Resolved<'py> {
     Awaitable(Bound<'py, PyAny>),
 }
 
-/// Rejects a factory awaitable in the sync pool. Closes coroutines to avoid unawaited
-/// warnings; other awaitables have no close protocol.
+/// Rejects a factory awaitable in the sync pool, closing it (see [`close_coroutine`]).
 pub(crate) fn sync_module_coroutine_error(name: &str, awaitable: &Bound<'_, PyAny>) -> PyErr {
-    if is_coroutine(awaitable.py(), awaitable) {
-        let _ = awaitable.call_method0("close");
-    }
+    close_coroutine(awaitable);
     PyRuntimeError::new_err(format!(
         "external_modules['{name}']() returned an awaitable; async module factories require AsyncMonty"
     ))
+}
+
+/// Closes a factory coroutine that will never be awaited, avoiding the
+/// "never awaited" warning; other awaitables have no close protocol.
+fn close_coroutine(awaitable: &Bound<'_, PyAny>) {
+    if is_coroutine(awaitable.py(), awaitable) {
+        let _ = awaitable.call_method0("close");
+    }
 }
 
 /// [`sync_module_coroutine_error`] for every awaitable of a
@@ -708,6 +733,9 @@ fn check_module_tree(
         ancestors.push((identity, path.to_owned()));
         for (name, value) in module_attrs(&module)? {
             if value.is_instance(external_module_class(entry.py())?)? {
+                // a submodule is imported by name, so it needs a module name too
+                validate_module_name(&name)
+                    .map_err(|err| PyValueError::new_err(format!("external_modules['{path}.{name}']: {err}")))?;
                 check_module_tree(&format!("{path}.{name}"), &value, stand_ins, ancestors)?;
             }
         }

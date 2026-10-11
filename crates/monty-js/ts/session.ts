@@ -662,8 +662,13 @@ class TurnAnswerer {
       if (entry === undefined) {
         return this.native.resumeNotFound(onPrint)
       }
-      value = this.modules.values.get(name) ?? moduleValue(name, entry, this.modules)
-      this.modules.values.set(name, value)
+      if (entry.module instanceof ClassInstance) {
+        value = entry.module
+      } else {
+        // a plain object's wrapper carries a fixed id, so the session keeps the first
+        value = this.modules.values.get(name) ?? moduleValue(name, entry, this.modules)
+        this.modules.values.set(name, value)
+      }
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
@@ -682,7 +687,8 @@ class TurnAnswerer {
     if (!Array.isArray(names) || !names.every((name) => typeof name === 'string')) {
       return this.native.resumeNotFound(onPrint)
     }
-    const stubs: Record<string, string | null> = {}
+    // a null prototype: a module named `__proto__` must land as an own key
+    const stubs: Record<string, string | null> = Object.create(null) as Record<string, string | null>
     try {
       const entries = await Promise.all((names as string[]).map((name) => this.module(name)))
       for (const [index, entry] of entries.entries()) {
@@ -1448,6 +1454,7 @@ export class HostModules {
     this.standIns.set(moduleUuid('instance', path), path)
     ancestors.set(entry, path)
     for (const [key, child] of dataSubmodules(module)) {
+      checkSubmoduleName(path, key)
       this.check(`${path}.${key}`, child, ancestors)
     }
     ancestors.delete(entry)
@@ -1471,6 +1478,16 @@ export class HostModules {
   /** The top-level entry for `name`, if there is one (own keys only). */
   entry(name: string): ExternalModules[string] | undefined {
     return ownEntry(this.entries, name) as ExternalModules[string] | undefined
+  }
+}
+
+/** A submodule is imported by name, so a keyword or sandbox module name cannot be one. */
+function checkSubmoduleName(path: string, key: string): void {
+  if (KEYWORDS.has(key)) {
+    throw new TypeError(`externalModules.${path}.${key} is not a valid module name`)
+  }
+  if (SANDBOX_MODULES.has(key)) {
+    throw new TypeError(`externalModules.${path}.${key} is provided by the sandbox and cannot be replaced`)
   }
 }
 
@@ -1620,23 +1637,32 @@ function collectStubs(path: string, entry: ExternalModule, stubs: Record<string,
  * IDs derive from the module path, preserving identity across imports and restores.
  * [`HostModules.values`] caches the wrapper for the session.
  */
-function moduleValue(path: string, entry: ExternalModule, modules: HostModules): unknown {
+function moduleValue(
+  path: string,
+  entry: ExternalModule,
+  modules: HostModules,
+  ancestors: Map<ExternalModule, string> = new Map(),
+): unknown {
   const module = entry.module
   if (module instanceof ClassInstance) {
     return module
   }
   const attrs: Record<string, unknown> = {}
+  ancestors.set(entry, path)
   // Filter names before reading values so private getters never run.
   for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
     const value = module[key]
     if (value instanceof ExternalModule) {
-      // Getter-produced submodules were unavailable for validation before execution.
-      modules.check(`${path}.${key}`, value, new Map())
-      attrs[key] = moduleValue(`${path}.${key}`, value, modules)
+      // Getter-produced submodules were unavailable for validation before execution;
+      // `ancestors` catches a getter handing back a module being materialized.
+      checkSubmoduleName(path, key)
+      modules.check(`${path}.${key}`, value, ancestors)
+      attrs[key] = moduleValue(`${path}.${key}`, value, modules, ancestors)
     } else {
       attrs[key] = typeof value === 'function' ? namedHostFunction(`${path}.${key}`, value as ExternalFunction) : value
     }
   }
+  ancestors.delete(entry)
   const classType = new ClassType(Object, { name: path, id: moduleUuid('class', path) })
   return new ClassInstance(attrs, { classType, eagerAttrs: 'all', id: moduleUuid('instance', path) })
 }

@@ -61,6 +61,12 @@ try:
 except ModuleNotFoundError as e:
     assert str(e) == "No module named 'math.pi'; 'math' is not a package"
 try:
+    import os.environ
+
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as e:
+    assert str(e) == "No module named 'os.environ'; 'os' is not a package"
+try:
     from os.getcwd import x
 
     assert False, 'expected ModuleNotFoundError'

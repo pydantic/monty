@@ -925,11 +925,10 @@ impl Checkout {
             cwd,
         }));
         let outcome = self.expect_turn(&request, on_print).await;
-        // The worker adopts the directory after type checking and before it
-        // parses or runs the snippet, so once the request reached it every
-        // reply but a typing rejection (a `SyntaxError` included) means it
-        // took effect; a lost worker takes the session with it.
-        if self.request_sent && !matches!(outcome, Err(PoolError::Typing(_))) {
+        // The worker adopts the directory as the request arrives, before the
+        // stubs ask and type checking, so once the request reached it every
+        // reply means it took effect; a lost worker takes the session with it.
+        if self.request_sent {
             self.cwd_set = true;
         }
         outcome

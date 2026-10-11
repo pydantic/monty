@@ -820,8 +820,9 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
         Some(Call::AsyncSystemSleep(s)) => os_call!("async_system_sleep", args.delay = s.delay),
         Some(Call::Import(i)) => os_call!("import", args.module = string_arg!(&i.module)),
         Some(Call::ImportStubs(i)) => {
-            let modules = i.modules.iter().map(String::as_str).collect::<Vec<_>>().join(",");
-            os_call!("import_stubs", args.modules = string_arg!(&modules))
+            let (modules, cut) = render_str_list(&i.modules);
+            args_cut |= cut;
+            os_call!("import_stubs", args.modules = modules)
         }
         None => os_call!(MISSING),
     });

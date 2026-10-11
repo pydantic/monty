@@ -91,7 +91,8 @@ impl VM<'_> {
 
     /// Replaces the stack top with the next submodule of a dotted import.
     /// Missing attributes raise `ModuleNotFoundError` naming `path_id`. Built-ins also
-    /// reject non-module attributes (`math.pi`) and add "is not a package" to errors.
+    /// reject non-module attributes (`math.pi`, the host-served `os.environ`) and add
+    /// "is not a package" to errors.
     pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
@@ -101,8 +102,12 @@ impl VM<'_> {
         let is_builtin = is_builtin_module(obj, this.heap);
         let attr = EitherStr::Interned(name_id);
         match obj.py_getattr(&attr, this) {
-            Ok(CallResult::Value(value)) if is_builtin && !is_builtin_module(&value, this.heap) => {
-                value.drop_with(this);
+            Ok(CallResult::Value(value)) if is_builtin && is_builtin_module(&value, this.heap) => {
+                Ok(CallResult::Value(value))
+            }
+            // a property's OS call (`os.environ`) is no more a submodule than a value
+            Ok(result) if is_builtin => {
+                result.drop_with(this);
                 Err(not_a_submodule(this.interns, path_id, is_builtin))
             }
             Ok(result) => Ok(result),

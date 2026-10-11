@@ -234,12 +234,17 @@ fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: O
 }
 
 fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    feed_with_cwd(child, code, "/")
+}
+
+/// [`feed`] with the wire `cwd`, where `""` keeps the session's working directory.
+fn feed_with_cwd(child: &mut Child, code: &str, cwd: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
         inputs: vec![].into(),
         values: None,
         skip_type_check: false,
-        cwd: "/".to_owned(),
+        cwd: cwd.to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -753,6 +758,23 @@ fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
     configure(&mut child, false);
     let (_, event) = feed(&mut child, "import tools");
     assert_eq!(expect_import(event), "tools");
+}
+
+/// The parent counts a sent directory as adopted, so the worker must switch
+/// before the stubs ask, even when the resumed check then rejects the feed.
+#[test]
+fn a_directory_switch_survives_a_typing_rejection_after_the_stubs_ask() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let (_, event) = feed_with_cwd(&mut child, "import tools\ntools.add('x', 2)", "/work");
+    assert_eq!(
+        expect_import_stubs(event, ("<python-input-0>", 0, 12)),
+        vec!["tools".to_owned()]
+    );
+    let event = answer_stubs_with(&mut child, &[("tools", Some("def add(a: int, b: int) -> int: ...\n"))]);
+    insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+    let (_, event) = feed_with_cwd(&mut child, "import os\nos.getcwd()", "");
+    assert_eq!(expect_complete(event), MontyObject::string("/work"));
 }
 
 /// Malformed answers leave the request pending; exception answers end it before execution.

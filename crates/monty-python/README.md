@@ -42,9 +42,9 @@ if __name__ == '__main__':
 
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.
-`external_modules` on `feed_run` maps import names to `ExternalModule` values or zero-argument factories.
-Factories run when first needed in each feed and may be async under `AsyncMonty`.
-An entry's `module` is a dict of public attributes or a `ClassInstance` with its own exposure policy.
+`external_modules` on `feed_run` maps import names to entries, each either an `ExternalModule` or a zero-argument
+factory returning one; factories run when first needed in each feed and may be async under `AsyncMonty`.
+An `ExternalModule`'s `module` is a dict of public attributes or a `ClassInstance` with its own exposure policy.
 Dict callables become host functions, nested `ExternalModule` values become importable submodules, and other values
 are converted normally.
 The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
