@@ -189,6 +189,14 @@ impl TableEntry for DictEntry {
     fn is_live(&self) -> bool {
         !matches!(self.key, Value::Undefined)
     }
+
+    fn changed_size_error() -> RunError {
+        ExcType::runtime_error_dict_changed_size()
+    }
+
+    fn changed_keys_error() -> Option<RunError> {
+        Some(ExcType::runtime_error_dict_changed_keys())
+    }
 }
 
 impl Dict {
@@ -363,22 +371,21 @@ impl Dict {
             .raw();
         let key_str =
             json_key_string_slice(&key, vm.heap, vm.interns).expect("json object keys are always string values");
-        let existing = self.table.find_mut(hash, |entry| {
+        let found = self.table.find(hash, |entry| {
             json_key_equals_str(&entry.key, key_str, vm.heap, vm.interns)
         });
 
-        if let Some(entry) = existing {
-            // CPython keeps the first key object and only swaps the value.
-            let old_value = mem::replace(&mut entry.value, value);
-            key.drop_with(vm);
-            Ok(Some(old_value))
+        let entry = DictEntry { key, value, hash };
+        if let Some(slot) = found {
+            let old_entry = self.table.replace(slot, entry);
+            old_entry.key.drop_with(vm);
+            Ok(Some(old_entry.value))
         } else {
             if let Err(err) = self.table.check_growth(&vm.heap.tracker) {
-                key.drop_with(vm);
-                value.drop_with(vm);
+                entry.drop_with(vm);
                 return Err(err.into());
             }
-            self.table.push(DictEntry { key, value, hash });
+            self.table.push(entry);
             Ok(None)
         }
     }
@@ -559,7 +566,7 @@ impl Dict {
 
         self.table
             .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, interns))
-            .map(|entry| &entry.value)
+            .map(|slot| &self.table.entry(&slot).value)
     }
 
     /// Sets a key-value pair in the dict.
@@ -634,8 +641,7 @@ impl<'h> HeapRead<'h, Dict> {
             if growth == GrowthCheck::Preflight
                 && let Err(err) = self.get(vm.heap).table.check_growth(&vm.heap.tracker)
             {
-                entry.key.drop_with(vm);
-                entry.value.drop_with(vm);
+                entry.drop_with(vm);
                 return Err(err.into());
             }
             self.get_mut(vm.heap).table.push(entry);
@@ -689,7 +695,7 @@ impl Dict {
     pub(crate) fn clone_next_pair(&self, cursor: &mut TableCursor, heap: &Heap) -> RunResult<Option<(Value, Value)>> {
         Ok(self
             .table
-            .step::<HeapRead<'_, Self>>(cursor)?
+            .step(cursor)?
             .map(|entry| (entry.key.clone_with_heap(heap), entry.value.clone_with_heap(heap))))
     }
 
@@ -807,14 +813,6 @@ impl<'h> TableSource<'h> for HeapRead<'h, Dict> {
 
     fn table<'r>(&self, vm: &'r VM<'h>) -> &'r PyHashTable<DictEntry> {
         &self.get(vm.heap).table
-    }
-
-    fn changed_size_error() -> RunError {
-        ExcType::runtime_error_dict_changed_size()
-    }
-
-    fn changed_keys_error() -> Option<RunError> {
-        Some(ExcType::runtime_error_dict_changed_keys())
     }
 }
 
@@ -959,8 +957,8 @@ impl ExactSizeIterator for DictIntoIter {}
 impl IntoIterator for Dict {
     type Item = (Value, Value);
     type IntoIter = DictIntoIter;
-    fn into_iter(self) -> Self::IntoIter {
-        DictIntoIter(self.table.into_entries().into_iter())
+    fn into_iter(mut self) -> Self::IntoIter {
+        DictIntoIter(self.table.take_entries().into_iter())
     }
 }
 
@@ -1636,8 +1634,8 @@ impl HeapItem for Dict {
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for Dict {
-    fn drop_with(self, heap: &mut C) {
-        self.table.into_entries().drop_with(heap);
+    fn drop_with(mut self, heap: &mut C) {
+        self.table.take_entries().drop_with(heap);
         self.kind.drop_with(heap);
     }
 }
@@ -2011,11 +2009,11 @@ impl DictIteratorState {
     ///
     /// Steps a copy of the cursor, since the cursor lives in the iterator's
     /// heap entry and `dict` is borrowed from another; the caller stores it
-    /// back with the heap borrow released.
-    fn step<'d>(&self, dict: &'d Dict) -> RunResult<(TableCursor, Option<&'d DictEntry>)> {
+    /// back with the heap borrow released, on an error too.
+    fn step<'d>(&self, dict: &'d Dict) -> (TableCursor, RunResult<Option<&'d DictEntry>>) {
         let mut cursor = self.cursor.clone();
-        let entry = dict.table.step::<HeapRead<'_, Dict>>(&mut cursor)?;
-        Ok((cursor, entry))
+        let entry = dict.table.step(&mut cursor);
+        (cursor, entry)
     }
 
     /// Returns the captured number of entries not yet yielded.
@@ -2103,11 +2101,14 @@ impl_dict_iterator!(
             let HeapData::Dict(dict) = vm.heap.get(this.get(vm.heap).source_id()) else {
                 unreachable!("dict iterator must retain a dict")
             };
-            let (cursor, entry) = this.get(vm.heap).0.step(dict)?;
-            (cursor, entry.map(|entry| entry.key.clone_with_heap(vm.heap)))
+            let (cursor, entry) = this.get(vm.heap).0.step(dict);
+            (
+                cursor,
+                entry.map(|entry| entry.map(|entry| entry.key.clone_with_heap(vm.heap))),
+            )
         };
         this.get_mut(vm.heap).0.cursor = cursor;
-        Ok(item)
+        item
     }
 );
 
@@ -2120,19 +2121,21 @@ impl_dict_iterator!(
             let HeapData::Dict(dict) = vm.heap.get(this.get(vm.heap).source_id()) else {
                 unreachable!("dict iterator must retain a dict")
             };
-            let (cursor, entry) = this.get(vm.heap).0.step(dict)?;
+            let (cursor, entry) = this.get(vm.heap).0.step(dict);
             (
                 cursor,
                 entry.map(|entry| {
-                    allocate_tuple(
-                        smallvec![entry.key.clone_with_heap(vm.heap), entry.value.clone_with_heap(vm.heap)],
-                        vm.heap,
-                    )
+                    entry.map(|entry| {
+                        allocate_tuple(
+                            smallvec![entry.key.clone_with_heap(vm.heap), entry.value.clone_with_heap(vm.heap)],
+                            vm.heap,
+                        )
+                    })
                 }),
             )
         };
         this.get_mut(vm.heap).0.cursor = cursor;
-        Ok(item)
+        item
     }
 );
 
@@ -2145,11 +2148,14 @@ impl_dict_iterator!(
             let HeapData::Dict(dict) = vm.heap.get(this.get(vm.heap).source_id()) else {
                 unreachable!("dict iterator must retain a dict")
             };
-            let (cursor, entry) = this.get(vm.heap).0.step(dict)?;
-            (cursor, entry.map(|entry| entry.value.clone_with_heap(vm.heap)))
+            let (cursor, entry) = this.get(vm.heap).0.step(dict);
+            (
+                cursor,
+                entry.map(|entry| entry.map(|entry| entry.value.clone_with_heap(vm.heap))),
+            )
         };
         this.get_mut(vm.heap).0.cursor = cursor;
-        Ok(item)
+        item
     }
 );
 

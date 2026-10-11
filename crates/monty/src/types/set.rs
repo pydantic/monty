@@ -55,6 +55,10 @@ impl TableEntry for SetEntry {
     fn is_live(&self) -> bool {
         !matches!(self.value, Value::Undefined)
     }
+
+    fn changed_size_error() -> RunError {
+        ExcType::runtime_error_set_changed_size()
+    }
 }
 
 /// Internal storage shared between Set and FrozenSet.
@@ -261,10 +265,6 @@ impl<'h> TableSource<'h> for HeapRead<'h, SetStorage> {
 
     fn table<'r>(&self, vm: &'r VM<'h>) -> &'r PyHashTable<SetEntry> {
         &self.get(vm.heap).table
-    }
-
-    fn changed_size_error() -> RunError {
-        ExcType::runtime_error_set_changed_size()
     }
 }
 
@@ -840,8 +840,8 @@ impl<'h> HeapRead<'h, Set> {
         }
 
         // Fall back to iterable
-        let temp_set = Set::from_iterable(other, vm)?;
-        self.extend_from_entries(temp_set.0.table.into_entries(), vm)
+        let mut temp_set = Set::from_iterable(other, vm)?;
+        self.extend_from_entries(temp_set.0.table.take_entries(), vm)
     }
 
     /// Inserts owned entries in order, releasing any that are left if one fails.
@@ -936,8 +936,8 @@ impl<C: ContainsHeap> DropWithContext<C> for Set {
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for SetStorage {
-    fn drop_with(self, heap: &mut C) {
-        self.table.into_entries().drop_with(heap);
+    fn drop_with(mut self, heap: &mut C) {
+        self.table.take_entries().drop_with(heap);
     }
 }
 
@@ -1681,11 +1681,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
                 _ => unreachable!("set iterator must retain set-like storage"),
             };
             let mut cursor = self.get(vm.heap).cursor.clone();
-            let entry = storage.table.step::<HeapRead<'_, SetStorage>>(&mut cursor)?;
-            (cursor, entry.map(|entry| entry.value.clone_with_heap(vm.heap)))
+            let entry = storage.table.step(&mut cursor);
+            (
+                cursor,
+                entry.map(|entry| entry.map(|entry| entry.value.clone_with_heap(vm.heap))),
+            )
         };
+        // Stored back on an error too: the error is sticky, as in CPython.
         self.get_mut(vm.heap).cursor = cursor;
-        Ok(value)
+        value
     }
 }
 

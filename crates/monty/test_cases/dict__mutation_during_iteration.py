@@ -102,6 +102,45 @@ assert list(it) == [1]
 s.add(2)
 assert list(it) == []
 
+# === a size error is sticky, even once the size is restored ===
+d = {'a': 1, 'b': 2, 'c': 3}
+it = iter(d)
+next(it)
+d['x'] = 0
+for _ in range(2):
+    try:
+        next(it)
+        assert False, 'expected RuntimeError'
+    except RuntimeError as exc:
+        assert str(exc) == 'dictionary changed size during iteration'
+    d.pop('x', None)
+
+s = {1, 2, 3}
+it = iter(s)
+next(it)
+s.add(99)
+for _ in range(2):
+    try:
+        next(it)
+        assert False, 'expected RuntimeError'
+    except RuntimeError as exc:
+        assert str(exc) == 'Set changed size during iteration'
+    s.discard(99)
+
+# === "keys changed" ends the iterator ===
+d = {'a': 1, 'b': 2}
+it = iter(d)
+next(it)
+d.pop('a')
+d['z'] = 0
+assert next(it) == 'b'
+try:
+    next(it)
+    assert False, 'expected RuntimeError'
+except RuntimeError as exc:
+    assert str(exc) == 'dictionary keys changed during iteration'
+assert list(it) == []
+
 # === a tombstoned set still reports the right length and contents ===
 s = {0, 1, 2, 3}
 s.discard(0)

@@ -74,6 +74,23 @@ pub(crate) trait TableEntry {
 
     /// Whether this slot still holds an entry.
     fn is_live(&self) -> bool;
+
+    /// The `RuntimeError` raised when the container changes size mid-walk.
+    ///
+    /// CPython words this differently for the two types, so it belongs to the
+    /// entry type rather than to the walk.
+    fn changed_size_error() -> RunError;
+
+    /// The `RuntimeError` raised when a live entry turns up after the walk has
+    /// been handed every entry it was owed — a compaction renumbered the slots
+    /// under the cursor.
+    ///
+    /// `None` for a container whose CPython iterator has no such guard, which
+    /// is the case for `set`: `dictiterobject` carries `di->len` alongside its
+    /// size check, `setiterobject` carries only the size check.
+    fn changed_keys_error() -> Option<RunError> {
+        None
+    }
 }
 
 /// An insertion-ordered hash table: buckets of indices into a dense entry vector.
@@ -217,11 +234,12 @@ impl<E: TableEntry> PyHashTable<E> {
     ///
     /// For the heap-resident iterators, which keep their cursor in a different
     /// heap object from the table and so cannot hold a [`TableWalk`]. The
-    /// cursor is advanced only on success.
-    pub(crate) fn step<'h, S: TableSource<'h, Entry = E>>(&self, cursor: &mut TableCursor) -> RunResult<Option<&E>> {
+    /// cursor changes on an error too (an error is sticky, as in CPython), so
+    /// the caller must store it back whatever the outcome.
+    pub(crate) fn step(&self, cursor: &mut TableCursor) -> RunResult<Option<&E>> {
         let next_live = self.next_live_slot(cursor.slot);
         Ok(cursor
-            .advance::<S>(self.used, next_live)?
+            .advance::<E>(self.used, next_live)?
             .map(|slot| &self.entries[slot]))
     }
 
@@ -334,12 +352,6 @@ impl<E: TableEntry> PyHashTable<E> {
         entries
     }
 
-    /// Consumes the table, yielding its live entries for the caller to release.
-    pub(crate) fn into_entries(mut self) -> Vec<E> {
-        self.entries.retain(E::is_live);
-        self.entries
-    }
-
     /// Drops every tombstone and renumbers `indices` onto the survivors.
     fn compact(&mut self) {
         self.entries.retain(E::is_live);
@@ -365,16 +377,8 @@ impl<E: TableEntry> PyHashTable<E> {
     /// A heap-resident table cannot stay borrowed across a guest callback (that
     /// needs `&mut VM`), so a probe with user `__eq__` goes through
     /// [`TableProbe::find_index`] or, for a table the caller owns, [`try_find`](Self::try_find).
-    pub(crate) fn find(&self, hash: u64, matches: impl FnMut(&E) -> bool) -> Option<&E> {
-        self.position(hash, matches).map(|slot| &self.entries[slot])
-    }
-
-    /// [`find`](Self::find), mutably, for updating the matched entry in place.
-    ///
-    /// The entry's hash and probe key must not change: the buckets are keyed on both.
-    pub(crate) fn find_mut(&mut self, hash: u64, matches: impl FnMut(&E) -> bool) -> Option<&mut E> {
-        let slot = self.position(hash, matches)?;
-        Some(&mut self.entries[slot])
+    pub(crate) fn find(&self, hash: u64, matches: impl FnMut(&E) -> bool) -> Option<Slot> {
+        self.position(hash, matches).map(Slot)
     }
 
     /// [`find`](Self::find) with a fallible comparison, stopping at the first error.
@@ -382,7 +386,11 @@ impl<E: TableEntry> PyHashTable<E> {
     /// For running user `__eq__` against a table guest code cannot reach — a
     /// set still being built, or a fresh algebra result — which therefore
     /// cannot change mid-probe. Stopping on the first error matches CPython.
-    pub(crate) fn try_find(&self, hash: u64, mut matches: impl FnMut(&E) -> RunResult<bool>) -> RunResult<Option<&E>> {
+    pub(crate) fn try_find(
+        &self,
+        hash: u64,
+        mut matches: impl FnMut(&E) -> RunResult<bool>,
+    ) -> RunResult<Option<Slot>> {
         // `HashTable::find` takes a `-> bool` predicate, so the error is parked
         // and later candidates are skipped until the walk ends.
         let mut error = None;
@@ -395,7 +403,7 @@ impl<E: TableEntry> PyHashTable<E> {
         });
         match error {
             Some(err) => Err(err),
-            None => Ok(found.map(|slot| &self.entries[slot])),
+            None => Ok(found.map(Slot)),
         }
     }
 
@@ -407,8 +415,8 @@ impl<E: TableEntry> PyHashTable<E> {
     /// Walks the bucket chain for `hash`, stopping at the first entry `matches`
     /// accepts, and returns its slot.
     ///
-    /// Private so no slot escapes a borrow of the table: the finds above return
-    /// entries, and [`TableProbe::find_index`] wraps its slot in a [`Slot`].
+    /// Private so no slot number escapes the module: every public lookup wraps
+    /// it in an opaque [`Slot`].
     #[inline]
     fn probe(&self, hash: u64, mut matches: impl FnMut(usize, &E) -> bool) -> Option<usize> {
         self.indices
@@ -483,23 +491,6 @@ pub(crate) trait TableSource<'h> {
 
     /// Re-reads the live table out of the heap.
     fn table<'r>(&self, vm: &'r VM<'h>) -> &'r PyHashTable<Self::Entry>;
-
-    /// The `RuntimeError` raised when the container changes size mid-walk.
-    ///
-    /// CPython words this differently for the two types, so it belongs to the
-    /// container rather than to the walk.
-    fn changed_size_error() -> RunError;
-
-    /// The `RuntimeError` raised when a live entry turns up after the walk has
-    /// been handed every entry it was owed — a compaction renumbered the slots
-    /// under the cursor.
-    ///
-    /// `None` for a container whose CPython iterator has no such guard, which
-    /// is the case for `set`: `dictiterobject` carries `di->len` alongside its
-    /// size check, `setiterobject` carries only the size check.
-    fn changed_keys_error() -> Option<RunError> {
-        None
-    }
 }
 
 /// The guarded probe, for every [`TableSource`].
@@ -743,7 +734,7 @@ impl<'a, 'h, S: TableSource<'h>> TableWalk<'a, 'h, S> {
     /// across anything that runs guest code.
     pub(crate) fn next<'v>(&mut self, vm: &'v VM<'h>) -> RunResult<Option<&'v S::Entry>> {
         vm.heap.tracker.check_time_every(self.cursor.slot)?;
-        self.source.table(vm).step::<S>(&mut self.cursor)
+        self.source.table(vm).step(&mut self.cursor)
     }
 }
 
@@ -795,6 +786,9 @@ pub(crate) struct TableCursor {
     /// further call and never re-checks the size, even if the container was
     /// mutated after exhaustion.
     exhausted: bool,
+    /// Set by a size-change error. CPython makes that error sticky
+    /// (`di_used = -1`), so it repeats even once the size is restored.
+    size_changed: bool,
 }
 
 /// A [`TableCursor`] as any supported dump stores it.
@@ -810,6 +804,8 @@ struct DumpedCursor {
     remaining: Option<usize>,
     #[serde(default)]
     exhausted: bool,
+    #[serde(default)]
+    size_changed: bool,
 }
 
 impl From<DumpedCursor> for TableCursor {
@@ -821,6 +817,7 @@ impl From<DumpedCursor> for TableCursor {
                 .remaining
                 .unwrap_or_else(|| dumped.expected_len.saturating_sub(dumped.index)),
             exhausted: dumped.exhausted,
+            size_changed: dumped.size_changed,
         }
     }
 }
@@ -833,6 +830,7 @@ impl TableCursor {
             expected_len,
             remaining: expected_len,
             exhausted: false,
+            size_changed: false,
         }
     }
 
@@ -849,15 +847,15 @@ impl TableCursor {
     /// slot, finding one when nothing is owed means a compaction renumbered
     /// the table mid-walk — CPython's "keys changed" case, for the containers
     /// that guard it.
-    fn advance<'h, S: TableSource<'h>>(
-        &mut self,
-        current_len: usize,
-        next_live: Option<usize>,
-    ) -> RunResult<Option<usize>> {
+    ///
+    /// Both errors leave the cursor as CPython leaves its iterator: a size
+    /// error repeats on every later step, and "keys changed" exhausts it.
+    fn advance<E: TableEntry>(&mut self, current_len: usize, next_live: Option<usize>) -> RunResult<Option<usize>> {
         if self.exhausted {
             Ok(None)
-        } else if current_len != self.expected_len {
-            Err(S::changed_size_error())
+        } else if self.size_changed || current_len != self.expected_len {
+            self.size_changed = true;
+            Err(E::changed_size_error())
         } else {
             match next_live {
                 None => {
@@ -865,14 +863,10 @@ impl TableCursor {
                     Ok(None)
                 }
                 Some(_) if self.remaining == 0 => {
-                    if let Some(error) = S::changed_keys_error() {
-                        Err(error)
-                    } else {
-                        // No such guard for this container: stop rather than
-                        // yield an entry the walk was never owed.
-                        self.exhausted = true;
-                        Ok(None)
-                    }
+                    // With no such guard for this container, stop rather than
+                    // yield an entry the walk was never owed.
+                    self.exhausted = true;
+                    E::changed_keys_error().map_or(Ok(None), Err)
                 }
                 Some(slot) => {
                     self.slot = slot + 1;
