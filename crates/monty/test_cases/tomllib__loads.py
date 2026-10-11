@@ -1,3 +1,4 @@
+import math
 import tomllib
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -57,6 +58,8 @@ assert doc['inf2'] == float('inf')
 assert doc['inf3'] == float('-inf')
 assert doc['nan1'] != doc['nan1']
 assert doc['nan2'] != doc['nan2']
+assert math.copysign(1.0, doc['nan1']) == 1.0
+assert math.copysign(1.0, doc['nan2']) == -1.0
 assert repr(tomllib.loads('x = -0.0')['x']) == '-0.0'
 assert repr(tomllib.loads('x = 1e400')['x']) == 'inf'
 assert type(tomllib.loads('x = 1e400')['x']) is float

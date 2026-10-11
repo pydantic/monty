@@ -146,7 +146,13 @@ fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// parses them. Consumes the pin on `file_id` via [`apply_buffer_store`].
 pub(crate) fn apply_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let content = apply_buffer_store(file_id, result, vm)?;
-    parse_file_content(content, vm)
+    // `resume` applies effects before `run_external` restarts the execution
+    // clock, so the parse is charged to it here; the parser's time polls need
+    // the clock running too.
+    vm.heap.tracker.on_execution_start();
+    let parsed = parse_file_content(content, vm);
+    vm.heap.tracker.on_execution_stop();
+    parsed
 }
 
 /// Decodes the `bytes` a binary `read()` produced as UTF-8 (CPython's
@@ -186,21 +192,22 @@ fn parse_document(source: &str, tracker: &ResourceTracker) -> RunResult<TomlTabl
 fn toml_error_to_run_error(error: TomlError, doc: &str) -> RunError {
     match error {
         TomlError::Decode { msg, pos } => {
-            let (index, line, column) = error_coordinates(doc, pos);
-            ExcType::toml_decode_error(&msg, doc, index, line, column)
+            let (index, line, column, at_end) = error_coordinates(doc, pos);
+            ExcType::toml_decode_error(&msg, doc, index, line, column, at_end)
         }
         TomlError::Recursion(msg) => SimpleException::new_msg(ExcType::RecursionError, msg).into(),
         TomlError::Run(error) => error,
     }
 }
 
-/// CPython's `(pos, lineno, colno)` for a byte offset into `doc`: `pos` counts
-/// characters, `lineno` is 1-based and `colno` is the character column, as
-/// `TOMLDecodeError.__init__` derives them from `doc`.
+/// CPython's `(pos, lineno, colno)` for a byte offset into `doc`, plus whether
+/// the offset is at or past the end: `pos` counts characters, `lineno` is
+/// 1-based and `colno` is the character column, as `TOMLDecodeError.__init__`
+/// derives them from `doc`.
 ///
 /// `byte_pos` may lie past the end of `doc` (an escape cut off by EOF), in
 /// which case the overshoot is kept so `pos` matches CPython's.
-fn error_coordinates(doc: &str, byte_pos: usize) -> (usize, usize, usize) {
+fn error_coordinates(doc: &str, byte_pos: usize) -> (usize, usize, usize, bool) {
     let bytes = doc.as_bytes();
     let clamped = byte_pos.min(bytes.len());
     let prefix = &bytes[..clamped];
@@ -210,7 +217,7 @@ fn error_coordinates(doc: &str, byte_pos: usize) -> (usize, usize, usize) {
         Some(newline) => pos - count_chars(&bytes[..newline]),
         None => pos + 1,
     };
-    (pos, lineno, colno)
+    (pos, lineno, colno, byte_pos >= bytes.len())
 }
 
 /// Number of characters in a UTF-8 prefix: every byte that is not a

@@ -2281,14 +2281,15 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a `tomllib.TOMLDecodeError`, formatted as CPython does:
     /// `{message} (at line {line}, column {column})`, or `(at end of document)`
-    /// once `index` reaches the end of `doc`.
+    /// when `at_end` (the caller knows from the byte offset whether `index`
+    /// reached the end of `doc`, so the document is not rescanned).
     ///
     /// `doc` is the `\r\n`-normalised source and `index` a character offset into
     /// it; the five fields travel in the same [`JsonErrorData`] payload as
     /// `json.JSONDecodeError`, since the two exceptions define the same attributes.
     #[must_use]
-    fn toml_decode_error(message: &str, doc: &str, index: usize, line: usize, column: usize) -> RunError {
-        let location = if index >= doc.chars().count() {
+    fn toml_decode_error(message: &str, doc: &str, index: usize, line: usize, column: usize, at_end: bool) -> RunError {
+        let location = if at_end {
             "end of document".to_owned()
         } else {
             format!("line {line}, column {column}")

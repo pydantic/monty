@@ -31,9 +31,10 @@ const MAX_KEY_PARTS: usize = 1000;
 
 /// Nesting depth of inline arrays and tables before `RecursionError`.
 ///
-/// CPython's recursive descent hits its own recursion limit somewhere past 400
-/// levels; the parser recurses per level too, so this bounds it at the depth
-/// `json.loads` allows, which fits a 2 MiB thread stack in debug builds.
+/// CPython's recursive descent hits its own recursion limit at about 330
+/// nested inline tables or 500 nested arrays; the parser recurses per level
+/// too, so this bounds it at the depth `json.loads` allows, which fits a 2 MiB
+/// thread stack in debug builds.
 const MAX_NESTING: usize = 200;
 
 /// `Flags::FROZEN`: an inline array or table, immutable from then on.
@@ -378,7 +379,8 @@ fn parse_value(src: &str, pos: usize, depth: usize, tracker: &ResourceTracker) -
         (b"nan", f64::NAN),
         (b"-inf", f64::NEG_INFINITY),
         (b"+inf", f64::INFINITY),
-        (b"-nan", f64::NAN),
+        // `float('-nan')` keeps the sign bit, visible through `math.copysign`.
+        (b"-nan", -f64::NAN),
         (b"+nan", f64::NAN),
     ];
     for (literal, value) in special {
@@ -445,8 +447,11 @@ fn parse_inline_table(
     if bytes.get(pos) == Some(&b'}') {
         return Ok((pos + 1, TomlValue::Table(table)));
     }
+    // Counts pairs, not root entries: dotted keys grow the tree beneath one.
+    let mut pairs = 0;
     loop {
-        check_memory_time_every(tracker, table.0.len())?;
+        check_memory_time_every(tracker, pairs)?;
+        pairs += 1;
         let (next, key, value) = parse_key_value_pair(src, pos, depth, tracker)?;
         pos = next;
         let (key_stem, key_parent) = key.split_last().expect("parse_key yields at least one part");
@@ -1011,11 +1016,12 @@ struct FlagNode {
     nested: HashMap<String, Self>,
 }
 
-impl Drop for Flags {
-    /// Drops the tree iteratively; it mirrors the table nesting, so it can be
-    /// [`MAX_KEY_PARTS`] deep.
+impl Drop for FlagNode {
+    /// Drops the subtree iteratively: it mirrors the table nesting, so it can
+    /// be [`MAX_KEY_PARTS`] deep, whether the whole tree goes or `unset_all`
+    /// removes one node.
     fn drop(&mut self) {
-        let mut pending: Vec<FlagNode> = self.root.drain().map(|(_, node)| node).collect();
+        let mut pending: Vec<Self> = self.nested.drain().map(|(_, node)| node).collect();
         while let Some(mut node) = pending.pop() {
             pending.extend(node.nested.drain().map(|(_, node)| node));
         }

@@ -106,7 +106,9 @@ impl Frame {
             }
             TomlValue::Table(table) => {
                 let entries = table.into_entries();
-                let dict = Dict::with_capacity(entries.len());
+                // No bulk reservation: `set_json_string_key` preflights each
+                // capacity doubling against the memory limit as the dict fills.
+                let dict = Dict::new();
                 return Ok(Ok(Self::Dict {
                     entries: entries.into_iter(),
                     dict,

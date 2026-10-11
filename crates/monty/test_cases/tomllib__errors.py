@@ -1,3 +1,4 @@
+import sys
 import tomllib
 
 # === TOMLDecodeError messages and positions ===
@@ -153,6 +154,13 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == 'loads() takes 1 positional argument but 2 were given'
+# `parse_float` is not implemented; CPython accepts it
+if sys.platform == 'monty':
+    try:
+        tomllib.loads('a = 1', parse_float=float)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "loads() got an unexpected keyword argument 'parse_float'"
 
 # === integer digit limit (ValueError from int(), not TOMLDecodeError) ===
 try:
@@ -180,8 +188,15 @@ assert nested == {'a': 1}
 
 # === nested containers within the shared depth ===
 depth = 100
-assert tomllib.loads('x = ' + '[' * depth + '1' + ']' * depth)['x'] != []
-assert tomllib.loads('x = ' + '{a = ' * depth + '1' + '}' * depth)['x'] != {}
+nested_list = tomllib.loads('x = ' + '[' * depth + '1' + ']' * depth)['x']
+nested_dict = tomllib.loads('x = ' + '{a = ' * depth + '1' + '}' * depth)['x']
+for _ in range(depth):
+    assert type(nested_list) is list and len(nested_list) == 1
+    assert type(nested_dict) is dict and list(nested_dict) == ['a']
+    nested_list = nested_list[0]
+    nested_dict = nested_dict['a']
+assert nested_list == 1
+assert nested_dict == 1
 try:
     tomllib.loads('x = ' + '[' * 10_000 + '1' + ']' * 10_000)
     assert False, 'expected RecursionError'
