@@ -94,7 +94,6 @@ The host's answer becomes the imported `module` object, with these differences f
     Two imports bind distinct objects: `import m as a; import m as b` leaves `a is not b`.
 - Assigning an attribute raises `AttributeError`, as on a bundled module; a function call runs the host's current
     attribute, and the next import binds the module afresh.
-- Modules are unhashable: `hash(m)` and using `m` as a dict key or set member raise `TypeError`.
 - Host exceptions are raised at the `import`.
 - Host modules are packages: a missing submodule, or `import m.x` for an attribute `x` that is not a module, raises
     `ModuleNotFoundError: No module named 'm.x'`.

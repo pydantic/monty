@@ -17,6 +17,12 @@ assert concat('x', 'y') == 'xy'
 assert add_ints is tools.add_ints
 assert t.add_ints is tools.add_ints
 
+# === a module hashes by identity ===
+assert hash(tools) == hash(tools)
+assert {tools: 'a'}[tools] == 'a'
+assert tools in {tools}
+assert tools != tools.nested
+
 # === functions are values ===
 fns = [tools.add_ints, tools.concat_strings]
 assert [f(*a) for f, a in zip(fns, [(1, 1), ('p', 'q')])] == [2, 'pq']

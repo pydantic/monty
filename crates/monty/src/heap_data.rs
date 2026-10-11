@@ -969,8 +969,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             else {
                 match self {
                     Self::Cell(value) => Ok(Some(identity_hash(value.id()))),
+                    // modules hash by identity, as CPython's do
+                    Self::Module(value) => Ok(Some(identity_hash(value.id()))),
                     Self::Exception(_)
-                    | Self::Module(_)
                     | Self::Coroutine(_)
                     | Self::GatherFuture(_)
                     | Self::ExternalFuture(_) => Ok(None),

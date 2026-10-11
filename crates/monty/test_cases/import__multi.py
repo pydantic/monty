@@ -7,6 +7,11 @@ import sys, math, re
 # name and could hide omissions from the module's registration list.
 assert base64 is not None, 'base64 import should succeed'
 
+# === modules hash by identity ===
+assert hash(sys) == hash(sys) and hash(sys) != hash(math)
+assert {sys: 'sys', math: 'math'}[math] == 'math'
+assert re in {sys, re}
+
 # === Basic multi-module import ===
 
 assert isinstance(sys.version, str)
