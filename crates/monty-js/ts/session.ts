@@ -18,6 +18,7 @@ import {
   attributeErrorMessage,
   ClassInstance,
   ClassType,
+  generateUuid,
   InstanceStore,
   prepare,
   restore,
@@ -707,13 +708,6 @@ class TurnAnswerer {
       )
     }
     if (wrapper === undefined) {
-      const standIn = this.modules.standIn(objectId)
-      if (standIn !== undefined) {
-        // Restored module wrappers retain their type even without a registered host object.
-        return call.functionName === '__call__'
-          ? this.native.resumeError('TypeError', `'${standIn}' object is not callable`, onPrint)
-          : this.native.resumeError('AttributeError', attributeErrorMessage(standIn, call.functionName), onPrint)
-      }
       // A session restored into a process that never sent the object.
       const message =
         `no host object registered for method call '${call.functionName}' (id ${objectId}) — ` +
@@ -1394,11 +1388,9 @@ export type ExternalModules = Record<string, ExternalModule | (() => ExternalMod
 export class HostModules {
   /** Factory results cached for this session. */
   readonly resolved = new Map<string, ExternalModule>()
-  /** Each module's dotted path by the id of its plain-object stand-in (see [`moduleValue`]). */
-  private readonly standIns = new Map<string, string>()
-  /** One attrs object per module path: a wrapper's id is fixed, and the instance store
-   *  takes a new wrapper only for the object it already routes to (see [`moduleValue`]). */
-  readonly attrs = new Map<string, Record<string, unknown>>()
+  /** The wrapper each plain-object module crosses as, by dotted path: one per
+   *  session, so its id and type are stable across imports. */
+  private readonly wrappers = new Map<string, HostModuleWrapper>()
 
   /** The checkout's record, kept by reference so later additions are importable. */
   private readonly entries: ExternalModules
@@ -1432,7 +1424,6 @@ export class HostModules {
     if (module instanceof ClassInstance) {
       return
     }
-    this.standIns.set(moduleUuid('instance', path), path)
     ancestors.set(entry, path)
     for (const [key, child] of dataSubmodules(module)) {
       checkSubmoduleName(path, key)
@@ -1451,27 +1442,15 @@ export class HostModules {
     return returned
   }
 
-  /**
-   * The module whose plain-object stand-in has `id`, if any. A miss registers the
-   * entries no feed has reached yet, since a restored session may call a module
-   * before importing it; an invalid entry is skipped here and refused at its import.
-   */
-  standIn(id: string): string | undefined {
-    const known = this.standIns.get(id)
-    if (known !== undefined) {
+  /** The wrapper for the plain-object module at `path`; an entry replaced in the record gets a new one. */
+  wrapper(path: string, entry: ExternalModule): HostModuleWrapper {
+    const known = this.wrappers.get(path)
+    if (known !== undefined && known.entry === entry) {
       return known
     }
-    for (const name of Object.keys(this.entries)) {
-      const entry = ownEntry(this.entries, name)
-      if (entry instanceof ExternalModule) {
-        try {
-          this.check(name, entry, new Map())
-        } catch {
-          // refused when a snippet imports it
-        }
-      }
-    }
-    return this.standIns.get(id)
+    const wrapper = new HostModuleWrapper(path, entry)
+    this.wrappers.set(path, wrapper)
+    return wrapper
   }
 
   /**
@@ -1650,11 +1629,30 @@ function collectStubs(path: string, entry: ExternalModule, stubs: Record<string,
 }
 
 /**
- * Passes ClassInstance through; wraps plain objects with eager public attributes,
- * read afresh on every import as the Python binding reads its dict.
- * Functions use dotted names for [`TurnAnswerer.hostEntry`]. Class and instance
- * IDs derive from the module path, preserving identity across imports and restores,
- * so the wrapper is rebuilt on the session's one attrs object for the path.
+ * The host object a plain-object module crosses as, one per module path and session
+ * (see [`HostModules.wrapper`]). `attrs` holds the attributes the latest import read:
+ * functions as host functions named `path.attr`, nested modules as their own wrappers.
+ * Method calls fail under the empty policy, naming the module.
+ */
+class HostModuleWrapper extends ClassInstance {
+  attrs: Record<string, unknown> = {}
+
+  constructor(
+    path: string,
+    readonly entry: ExternalModule,
+  ) {
+    super({}, { classType: new ClassType(Object, { name: path, id: generateUuid() }) })
+  }
+
+  override getEagerAttrs(): Array<[string, unknown]> {
+    return Object.entries(this.attrs).map(([name, value]) => [name, this.convertValue(name, value)])
+  }
+}
+
+/**
+ * Passes ClassInstance through; reads a plain object's public attributes into its
+ * session wrapper, afresh on every import as the Python binding reads its dict.
+ * Functions use dotted names for [`TurnAnswerer.hostEntry`].
  */
 function moduleValue(
   path: string,
@@ -1682,36 +1680,16 @@ function moduleValue(
     }
   }
   ancestors.delete(entry)
-  // committed only once every attribute was read, so a throwing getter leaves the session's object as it was
-  const attrs = modules.attrs.get(path) ?? {}
-  for (const key of Object.keys(attrs)) {
-    delete attrs[key]
-  }
-  Object.assign(attrs, fresh)
-  modules.attrs.set(path, attrs)
-  const classType = new ClassType(Object, { name: path, id: moduleUuid('class', path) })
-  return new ClassInstance(attrs, { classType, eagerAttrs: 'all', id: moduleUuid('instance', path) })
+  // committed only once every attribute was read, so a throwing getter leaves the wrapper as it was
+  const wrapper = modules.wrapper(path, entry)
+  wrapper.attrs = fresh
+  return wrapper
 }
 
 function namedHostFunction(name: string, fn: ExternalFunction): ExternalFunction {
   const proxy: ExternalFunction = (...args: unknown[]) => fn(...(args as never[]))
   Object.defineProperty(proxy, 'name', { value: name })
   return proxy
-}
-
-/** Stable across processes; uses two FNV-1a hashes like the Python binding's module class IDs. */
-function moduleUuid(kind: string, name: string): string {
-  const bytes = new TextEncoder().encode(`${kind}:${name}`)
-  const fnv = (seed: bigint): string => {
-    let hash = seed
-    for (const byte of bytes) {
-      hash ^= BigInt(byte)
-      hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn
-    }
-    return hash.toString(16).padStart(16, '0')
-  }
-  const hex = fnv(0xcbf29ce484222325n) + fnv(0x84222325cbf29ce4n)
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 /** Positional args, with kwargs appended as an object when present. */

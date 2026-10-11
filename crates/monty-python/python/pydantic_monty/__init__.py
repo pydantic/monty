@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass
 from types import EllipsisType
 from typing import Any, Callable, Literal, Protocol
 
@@ -41,7 +40,7 @@ from ._monty import (
     __version__,
     _install_telemetry,
 )
-from .class_instance import ClassInstance, ClassType
+from .class_instance import ClassInstance, ClassType, ExternalModule, ModuleValue
 from .os_access import (
     AbstractFile,
     AbstractOS,
@@ -328,25 +327,6 @@ instance or by type name), or a pending `future`."""
 
 PrintCallback: TypeAlias = Callable[[Literal['stdout', 'stderr'], str], None] | CollectStreams | CollectString
 """Print sink accepted by `feed_run` / `feed_start` / `load_snapshot`."""
-
-ModuleValue: TypeAlias = dict[str, Any] | ClassInstance
-"""A dict exposes keys not starting with `_`: callables as host functions,
-`ExternalModule`s as submodules, and other values as attributes.
-A `ClassInstance` uses its wrapper policy and has no submodules."""
-
-
-@dataclass(frozen=True)
-class ExternalModule:
-    """A host module and its optional type stub, supplied through `external_modules`.
-
-    Nest in another module's dict to expose a submodule (`import pkg.sub`).
-    """
-
-    module: ModuleValue
-    stubs: str | None = None
-    """The module's `.pyi` source; needed for type checking unless the checker supplies it.
-    Submodule stubs form a package tree."""
-
 
 TypeCheckFormat: TypeAlias = Literal[
     'full', 'concise', 'azure', 'json', 'jsonlines', 'rdjson', 'pylint', 'gitlab', 'github'

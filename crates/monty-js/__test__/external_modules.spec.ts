@@ -72,8 +72,8 @@ test('a plain-object module is not callable and has no other methods', async () 
   })
 })
 
-test('a restored plain-object module is still not callable', async () => {
-  // Stable module IDs preserve type errors after restore without registering a new wrapper.
+test('a restored plain-object module is a restored host object', async () => {
+  // Its functions still resolve by name; method calls on it fail like any restored host object.
   let blob: Buffer
   {
     await using session = await checkout(modules)
@@ -82,13 +82,15 @@ test('a restored plain-object module is still not callable', async () => {
   }
   await using session = await checkout(modules)
   await session.loadSession(blob)
+  t.is(await session.feedRun('tools.add(1, 2)'), 3)
   await t.throwsAsync(session.feedRun('tools()'), {
     instanceOf: MontyRuntimeError,
-    message: "TypeError: 'tools' object is not callable",
+    message: /^RuntimeError: no host object registered for method call '__call__'/,
   })
-  await t.throwsAsync(session.feedRun('tools.nope()'), {
+  // a fresh import is a live host object again
+  await t.throwsAsync(session.feedRun('import tools\ntools()'), {
     instanceOf: MontyRuntimeError,
-    message: "AttributeError: 'tools' object has no attribute 'nope'",
+    message: "TypeError: 'tools' object is not callable",
   })
 })
 
