@@ -358,8 +358,8 @@ fn test_reveal_types() {
 }
 
 /// ruff grows its parser stack on demand, so the type checker accepts nesting
-/// the interpreter rejects; hosts skip it for such sources
-/// (`monty::source_within_nesting_bound`) rather than rely on a limit here.
+/// the interpreter rejects; hosts reject such sources before type checking
+/// (`monty::type_check_nesting_exception`) rather than rely on a limit here.
 #[test]
 fn deeply_nested_parentheses_type_check_without_overflow() {
     let depth = 500;
