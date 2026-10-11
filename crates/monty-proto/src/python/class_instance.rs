@@ -23,7 +23,7 @@ use pyo3::{
     intern,
     prelude::*,
     sync::PyOnceLock,
-    types::{PyBytes, PyDict, PyTuple},
+    types::{PyBytes, PyDict, PyFrozenSet, PyTuple},
 };
 
 /// Checks if a Python object is a `pydantic_monty.ClassInstance` wrapper.
@@ -252,14 +252,29 @@ impl PyMontyClassProxy {
         ))
     }
 
-    /// Equal when name, dataclass-ness, and attributes all match.
+    /// Approximates the sandbox's `==`, whose `__eq__` the host cannot run:
+    /// dataclasses compare class name and attributes like the generated
+    /// `__eq__`; other instances compare by id, like the default identity `__eq__`.
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        if let Ok(other) = other.extract::<PyRef<'_, Self>>() {
-            Ok(self.class_type.name == other.class_type.name
-                && self.class_type.is_dataclass == other.class_type.is_dataclass
-                && self.attributes.bind(py).eq(other.attributes.bind(py))?)
+        let Ok(other) = other.extract::<PyRef<'_, Self>>() else {
+            return Ok(false);
+        };
+        match (self.class_type.is_dataclass, other.class_type.is_dataclass) {
+            (true, true) => Ok(self.class_type.name == other.class_type.name
+                && self.attributes.bind(py).eq(other.attributes.bind(py))?),
+            (false, false) => Ok(self.instance_id == other.instance_id),
+            _ => Ok(false),
+        }
+    }
+
+    /// Consistent with `__eq__`. A dataclass hashes its name and attribute
+    /// names only, since values may be unhashable, so its instances collide.
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        if self.class_type.is_dataclass {
+            let names = PyFrozenSet::new(py, self.attributes.bind(py).keys())?;
+            (&self.class_type.name, names).into_pyobject(py)?.hash()
         } else {
-            Ok(false)
+            hash_uuid(py, &self.instance_id)
         }
     }
 }
@@ -318,6 +333,16 @@ impl PyMontyClassTypeProxy {
             .extract::<PyRef<'_, Self>>()
             .is_ok_and(|other| self.class_type.id == other.class_type.id)
     }
+
+    /// Hashes the class id, consistent with `__eq__`.
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        hash_uuid(py, &self.class_type.id)
+    }
+}
+
+/// Hashes a proxy's wire id, so proxies can be set members and dict keys.
+fn hash_uuid(py: Python<'_>, uuid: &MontyUuid) -> PyResult<isize> {
+    PyBytes::new(py, uuid.as_bytes()).hash()
 }
 
 /// The error a routed call on an unregistered uuid raises: the store is
