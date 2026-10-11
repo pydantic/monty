@@ -363,12 +363,16 @@ str((list(di), list(si)))
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
+    let loaded = round_trip_progress(&progress);
 
-    let call = round_trip_progress(&progress)
-        .into_function_call()
-        .expect("should be at function call");
-    let result = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::string("([2, 3], [2, 3])"));
+    // Both are resumed, as in the itertools test below: an unresumed
+    // `RunProgress` leaves its globals' refs unreleased.
+    let expected = MontyObject::string("([2, 3], [2, 3])");
+    for progress in [progress, loaded] {
+        let call = progress.into_function_call().expect("should be at function call");
+        let result = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+        assert_eq!(result.into_complete().unwrap(), expected);
+    }
 }
 
 #[test]

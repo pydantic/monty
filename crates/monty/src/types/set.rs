@@ -17,7 +17,7 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     types::{
         LazyHeapSet, Type,
-        hash_table::{Live, PyHashTable, TableCursor, TableEntry, TableSource, TableWalk},
+        hash_table::{Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         list::repr_items_fmt,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -145,41 +145,20 @@ impl SetStorage {
     ///
     /// Only for storages guest code cannot reach — a set still being built, or
     /// the fresh result of an algebra op. Those cannot be mutated mid-probe,
-    /// so unlike [`TableSource::find_index`] this needs no revalidation; it does
-    /// still have to let a raising `__eq__` out, which is what the error slot
-    /// below is for. Use the `HeapRead` twin for a published set.
+    /// so unlike [`TableProbe::find_index`] this needs no revalidation. Use the
+    /// `HeapRead` twin for a published set.
     fn add_with_hash(&mut self, value: Value, hash: u64, vm: &mut VM<'_>) -> RunResult<bool> {
         let mut value_guard = DropGuard::new(value, vm);
         let (value, vm) = value_guard.as_parts_mut();
 
-        // Check if value already exists. CPython compares the stored element on
-        // the left, which an asymmetric user `__eq__` can tell apart — the
-        // mutation-safe probe (`TableSource::find_index`) does the same.
-        //
-        // `probe_raw` wants a `-> bool` closure, so an exception is parked
-        // here and re-raised once the probe has let go of the table.
-        // Stopping the probe on the first error matches CPython, which aborts
-        // the lookup as soon as a comparison raises.
-        let mut error = None;
+        // CPython compares the stored element on the left, which an asymmetric
+        // user `__eq__` can tell apart — `TableProbe::find_index` does the same.
         let existing = self
             .table
-            .probe_raw(hash, |entry| {
-                if error.is_some() {
-                    return false;
-                }
-                match entry.value.py_eq(value, vm) {
-                    Ok(eq) => eq,
-                    Err(err) => {
-                        error = Some(err);
-                        false
-                    }
-                }
-            })
+            .try_find(hash, |entry| entry.value.py_eq(value, vm))?
             .is_some();
 
-        if let Some(err) = error {
-            Err(err)
-        } else if existing {
+        if existing {
             Ok(false)
         } else {
             let (value, vm) = value_guard.into_parts();
@@ -309,8 +288,10 @@ impl SetStorage {
     }
 
     /// Collects heap IDs for reference counting cleanup.
+    ///
+    /// Only called on a set being freed, so its entries can be taken.
     fn collect_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        for entry in self.table.live_mut() {
+        for entry in &mut self.table.take_entries() {
             if let Value::Ref(id) = &entry.value {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
@@ -802,7 +783,7 @@ impl<'h> HeapRead<'h, Set> {
     /// `Ok(false)` if the element was already in the set (and the value is dropped).
     /// Returns `Err` if the element is unhashable (and the value is dropped).
     ///
-    /// Uses the mutation-safe storage lookup ([`TableSource::find_index`]) to
+    /// Uses the mutation-safe storage lookup ([`TableProbe::find_index`]) to
     /// detect duplicates, so a user `__eq__` mutating the set mid-add cannot
     /// leave the probe holding stale indices.
     pub fn add(&mut self, value: Value, vm: &mut VM<'h>) -> RunResult<bool> {

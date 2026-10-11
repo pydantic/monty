@@ -95,6 +95,13 @@ except RuntimeError as exc:
     assert str(exc) == 'Set changed size during iteration'
 assert seen == [0, 1]
 
+# === an exhausted set iterator stays exhausted when the set grows ===
+s = {1}
+it = iter(s)
+assert list(it) == [1]
+s.add(2)
+assert list(it) == []
+
 # === a tombstoned set still reports the right length and contents ===
 s = {0, 1, 2, 3}
 s.discard(0)

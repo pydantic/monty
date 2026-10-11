@@ -1,7 +1,7 @@
 //! The insertion-ordered hash table behind `dict` and `set`.
 //!
-//! Both types are a `HashTable<usize>` of buckets over a dense `Vec` of
-//! entries, and both probe that table by calling back into guest code:
+//! Both types are a `HashTable<usize>` of buckets over a `Vec` of entry
+//! slots, and both probe that table by calling back into guest code:
 //! `__eq__` decides a collision, and the object it runs on can reach the very
 //! container being probed. An index derived before such a call means nothing
 //! after it — the entry may have moved, or the vector may be shorter than the
@@ -10,10 +10,9 @@
 //! in sync".
 //!
 //! This module holds the single copy. [`PyHashTable`] owns the bucket table so
-//! no caller can desync it from the entries, and [`TableSource`] carries the
-//! probe and the walk, the two operations that run guest code. Everything that
-//! hands out an index does so only from inside a method that has already
-//! revalidated it.
+//! no caller can desync it from the entries. A container implements
+//! [`TableSource`]; the probe ([`TableProbe`]) and the walk ([`TableWalk`]),
+//! the two operations that run guest code, are written once against it.
 //!
 //! Deletion leaves a **tombstone** rather than shifting the entries down, so a
 //! slot index stays valid across one. Shifting was the second half of the same
@@ -86,7 +85,7 @@ pub(crate) trait TableEntry {
 ///
 /// Entries are read under one borrow through [`live`](Self::live), which no
 /// guest code can interrupt. Finding one goes through
-/// [`TableSource::find_index`], the only probe that survives a guest callback.
+/// [`TableProbe::find_index`], the only probe that survives a guest callback.
 ///
 /// Slots are not dense. A deletion tombstones its slot in place so the
 /// positions a walk is holding stay meaningful, which makes
@@ -177,15 +176,6 @@ impl<E: TableEntry> PyHashTable<E> {
         }
     }
 
-    /// The live entries, mutably, for changing what an entry holds.
-    ///
-    /// Must not change an entry's hash or probe key: the buckets are keyed on
-    /// both. Refcount bookkeeping is the intended use.
-    #[inline]
-    pub(crate) fn live_mut(&mut self) -> impl Iterator<Item = &mut E> {
-        self.entries.iter_mut().filter(|entry| entry.is_live())
-    }
-
     /// The entry a probe found.
     ///
     /// The slot must come from a probe of this table with no mutation since —
@@ -264,7 +254,7 @@ impl<E: TableEntry> PyHashTable<E> {
     /// grown to half the slots.
     ///
     /// The caller must have established that `entry` is absent, through
-    /// [`TableSource::find_index`] or a probe that runs no guest code — a
+    /// [`TableProbe::find_index`] or a probe that runs no guest code — a
     /// duplicate would be unreachable rather than rejected.
     ///
     /// Compacting only here mirrors CPython, which drops its dead slots in
@@ -369,25 +359,58 @@ impl<E: TableEntry> PyHashTable<E> {
         }
     }
 
+    /// Finds the live entry cached under `hash` that `matches` accepts.
+    ///
+    /// For a lookup that runs no guest code, such as comparing string contents.
+    /// A heap-resident table cannot stay borrowed across a guest callback (that
+    /// needs `&mut VM`), so a probe with user `__eq__` goes through
+    /// [`TableProbe::find_index`] or, for a table the caller owns, [`try_find`](Self::try_find).
+    pub(crate) fn find(&self, hash: u64, matches: impl FnMut(&E) -> bool) -> Option<&E> {
+        self.position(hash, matches).map(|slot| &self.entries[slot])
+    }
+
+    /// [`find`](Self::find), mutably, for updating the matched entry in place.
+    ///
+    /// The entry's hash and probe key must not change: the buckets are keyed on both.
+    pub(crate) fn find_mut(&mut self, hash: u64, matches: impl FnMut(&E) -> bool) -> Option<&mut E> {
+        let slot = self.position(hash, matches)?;
+        Some(&mut self.entries[slot])
+    }
+
+    /// [`find`](Self::find) with a fallible comparison, stopping at the first error.
+    ///
+    /// For running user `__eq__` against a table guest code cannot reach — a
+    /// set still being built, or a fresh algebra result — which therefore
+    /// cannot change mid-probe. Stopping on the first error matches CPython.
+    pub(crate) fn try_find(&self, hash: u64, mut matches: impl FnMut(&E) -> RunResult<bool>) -> RunResult<Option<&E>> {
+        // `HashTable::find` takes a `-> bool` predicate, so the error is parked
+        // and later candidates are skipped until the walk ends.
+        let mut error = None;
+        let found = self.position(hash, |entry| {
+            error.is_none()
+                && matches(entry).unwrap_or_else(|err| {
+                    error = Some(err);
+                    false
+                })
+        });
+        match error {
+            Some(err) => Err(err),
+            None => Ok(found.map(|slot| &self.entries[slot])),
+        }
+    }
+
+    /// The slot of the entry [`find`](Self::find) would return.
+    fn position(&self, hash: u64, mut matches: impl FnMut(&E) -> bool) -> Option<usize> {
+        self.probe(hash, |_, entry| entry.hash() == hash && matches(entry))
+    }
+
     /// Walks the bucket chain for `hash`, stopping at the first entry `matches`
     /// accepts, and returns its slot.
     ///
-    /// The bucket borrow is held for the whole walk, so this is only sound when
-    /// nothing can mutate the table during it. That means one of two things:
-    /// the predicate runs no guest code (a native string or int comparison), or
-    /// the table is not reachable from guest code at all (one still being
-    /// built, or the fresh result of a set operation). Probing a *published*
-    /// table with a predicate that can reach user `__eq__` must go through
-    /// [`TableSource::find_index`], which revalidates around the callback.
+    /// Private so no slot escapes a borrow of the table: the finds above return
+    /// entries, and [`TableProbe::find_index`] wraps its slot in a [`Slot`].
     #[inline]
-    pub(crate) fn probe_raw(&self, hash: u64, mut matches: impl FnMut(&E) -> bool) -> Option<Slot> {
-        self.probe_indexed(hash, |_, entry| matches(entry)).map(Slot)
-    }
-
-    /// [`probe_raw`](Self::probe_raw), handing the predicate each candidate's
-    /// slot too, for the guarded probe's snapshot of candidates.
-    #[inline]
-    fn probe_indexed(&self, hash: u64, mut matches: impl FnMut(usize, &E) -> bool) -> Option<usize> {
+    fn probe(&self, hash: u64, mut matches: impl FnMut(usize, &E) -> bool) -> Option<usize> {
         self.indices
             .find(hash, |&index| matches(index, &self.entries[index]))
             .copied()
@@ -437,7 +460,7 @@ impl<E: TableEntry> ExactSizeIterator for Live<'_, E> {}
 
 /// The outcome of the probe continuation that runs after every snapshotted
 /// candidate has been compared and missed.
-pub(crate) enum ProbeOutcome {
+enum ProbeOutcome {
     /// The key was found in this entry.
     Found(Slot),
     /// Every live candidate has been compared, none matched.
@@ -477,7 +500,14 @@ pub(crate) trait TableSource<'h> {
     fn changed_keys_error() -> Option<RunError> {
         None
     }
+}
 
+/// The guarded probe, for every [`TableSource`].
+///
+/// A blanket impl rather than a default method on [`TableSource`], so no
+/// container can override the probe; implementing the source is all a
+/// container does.
+pub(crate) trait TableProbe<'h>: TableSource<'h> {
     /// Finds the index of the entry equal to `key`, or `None` if absent.
     ///
     /// `hash` must be `key`'s hash; taking it as an argument rather than
@@ -491,6 +521,10 @@ pub(crate) trait TableSource<'h> {
     /// each callback restarts the VM's dispatch countdown.
     ///
     /// The returned slot is valid only until the next call into the VM.
+    fn find_index(&self, key: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<Slot>>;
+}
+
+impl<'h, S: TableSource<'h>> TableProbe<'h> for S {
     fn find_index(&self, key: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<Slot>> {
         // False for anything whose `__eq__` could mutate the container; when
         // true, revalidation and the miss continuation are skipped (the
@@ -510,7 +544,7 @@ pub(crate) trait TableSource<'h> {
             // that may need user code are cloned for the guarded loop below.
             // Once one is deferred, later candidates queue behind it so
             // comparisons keep CPython's probe order.
-            let found = table.probe_indexed(hash, |index, entry| {
+            let found = table.probe(hash, |index, entry| {
                 if entry.hash() != hash {
                     return false;
                 }
@@ -538,13 +572,13 @@ pub(crate) trait TableSource<'h> {
             }
 
             for (&candidate_index, candidate_key) in candidate_indices.iter().zip(candidate_keys.iter()) {
-                if !all_native && !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                if !all_native && !probe_valid(self, candidate_index, hash, candidate_key, vm) {
                     vm.heap.tracker.check_memory_time()?;
                     continue 'restart;
                 }
                 // CPython compares the stored key on the left.
                 let eq = candidate_key.py_eq(key, vm)?;
-                if !all_native && !self.probe_valid(candidate_index, hash, candidate_key, vm) {
+                if !all_native && !probe_valid(self, candidate_index, hash, candidate_key, vm) {
                     vm.heap.tracker.check_memory_time()?;
                     continue 'restart;
                 }
@@ -559,7 +593,7 @@ pub(crate) trait TableSource<'h> {
             if all_native {
                 return Ok(None);
             }
-            match self.probe_after_compare(hash, key, candidate_keys, vm)? {
+            match probe_after_compare(self, hash, key, candidate_keys, vm)? {
                 ProbeOutcome::Found(slot) => return Ok(Some(slot)),
                 ProbeOutcome::Missing => return Ok(None),
                 // a candidate moved: fall through to the next probe from scratch
@@ -567,98 +601,103 @@ pub(crate) trait TableSource<'h> {
             }
         }
     }
+}
 
-    /// Continues a probe whose comparisons all missed, in case one of them
-    /// mutated the container and added a colliding key.
-    ///
-    /// Re-reads the candidates until a pass finds nothing new, skipping keys
-    /// already compared so no user `__eq__` runs twice, as CPython's live probe
-    /// chain does. Inline-compared native pairs are deliberately left out of
-    /// the seen set: repeating one is side-effect-free, and tracking them would
-    /// put clone and identity bookkeeping on the pure-native fast path.
-    fn probe_after_compare(
-        &self,
-        hash: u64,
-        key: &Value,
-        already_compared: &[Value],
-        vm: &mut VM<'h>,
-    ) -> RunResult<ProbeOutcome> {
-        // The clones keep every compared key alive so its heap slot cannot be
-        // recycled into a new key that would then be skipped by identity.
-        let compared: SmallVec<[Value; 2]> = already_compared.iter().map(|k| k.clone_with_heap(vm.heap)).collect();
-        defer_drop_mut!(compared, vm);
-        // Identity set for O(1) seen-checks — a linear scan is quadratic over
-        // a fully colliding container, all skips, before the poll below is
-        // reached.
-        let mut compared_ids: AHashSet<Identity> = compared.iter().map(Value::id).collect();
+/// Continues a probe whose comparisons all missed, in case one of them
+/// mutated the container and added a colliding key.
+///
+/// Re-reads the candidates until a pass finds nothing new, skipping keys
+/// already compared so no user `__eq__` runs twice, as CPython's live probe
+/// chain does. Inline-compared native pairs are deliberately left out of
+/// the seen set: repeating one is side-effect-free, and tracking them would
+/// put clone and identity bookkeeping on the pure-native fast path.
+fn probe_after_compare<'h>(
+    source: &impl TableSource<'h>,
+    hash: u64,
+    key: &Value,
+    already_compared: &[Value],
+    vm: &mut VM<'h>,
+) -> RunResult<ProbeOutcome> {
+    // The clones keep every compared key alive so its heap slot cannot be
+    // recycled into a new key that would then be skipped by identity.
+    let compared: SmallVec<[Value; 2]> = already_compared.iter().map(|k| k.clone_with_heap(vm.heap)).collect();
+    defer_drop_mut!(compared, vm);
+    // Identity set for O(1) seen-checks — a linear scan is quadratic over
+    // a fully colliding container, all skips, before the poll below is
+    // reached.
+    let mut compared_ids: AHashSet<Identity> = compared.iter().map(Value::id).collect();
 
-        loop {
-            // Polled up front so every entry checks the limits at least once:
-            // the comparisons that brought us here ran user code, restarting
-            // the VM dispatch countdown, so no checkpoint fires otherwise —
-            // including on the no-mutation pass that returns `Missing`.
-            vm.heap.tracker.check_memory_time()?;
-            let (candidate_indices, candidate_keys) = self.probe_candidates(hash, vm);
-            defer_drop!(candidate_keys, vm);
-            let mut compared_any = false;
+    loop {
+        // Polled up front so every entry checks the limits at least once:
+        // the comparisons that brought us here ran user code, restarting
+        // the VM dispatch countdown, so no checkpoint fires otherwise —
+        // including on the no-mutation pass that returns `Missing`.
+        vm.heap.tracker.check_memory_time()?;
+        let (candidate_indices, candidate_keys) = probe_candidates(source, hash, vm);
+        defer_drop!(candidate_keys, vm);
+        let mut compared_any = false;
 
-            for (&candidate_index, candidate_key) in candidate_indices.iter().zip(candidate_keys.iter()) {
-                if !compared_ids.insert(candidate_key.id()) {
-                    continue;
-                }
-                if !self.probe_valid(candidate_index, hash, candidate_key, vm) {
-                    vm.heap.tracker.check_memory_time()?;
-                    return Ok(ProbeOutcome::Restart);
-                }
-                compared.push(candidate_key.clone_with_heap(vm.heap));
-                compared_any = true;
-                // CPython compares the stored key on the left.
-                let eq = candidate_key.py_eq(key, vm)?;
-                if !self.probe_valid(candidate_index, hash, candidate_key, vm) {
-                    vm.heap.tracker.check_memory_time()?;
-                    return Ok(ProbeOutcome::Restart);
-                }
-                if eq {
-                    return Ok(ProbeOutcome::Found(Slot(candidate_index)));
-                }
+        for (&candidate_index, candidate_key) in candidate_indices.iter().zip(candidate_keys.iter()) {
+            if !compared_ids.insert(candidate_key.id()) {
+                continue;
             }
-
-            if !compared_any {
-                return Ok(ProbeOutcome::Missing);
+            if !probe_valid(source, candidate_index, hash, candidate_key, vm) {
+                vm.heap.tracker.check_memory_time()?;
+                return Ok(ProbeOutcome::Restart);
+            }
+            compared.push(candidate_key.clone_with_heap(vm.heap));
+            compared_any = true;
+            // CPython compares the stored key on the left.
+            let eq = candidate_key.py_eq(key, vm)?;
+            if !probe_valid(source, candidate_index, hash, candidate_key, vm) {
+                vm.heap.tracker.check_memory_time()?;
+                return Ok(ProbeOutcome::Restart);
+            }
+            if eq {
+                return Ok(ProbeOutcome::Found(Slot(candidate_index)));
             }
         }
-    }
 
-    /// Snapshots the live entries colliding on `hash`: their indices, plus an
-    /// owned reference to each of their keys.
-    ///
-    /// Cloning the keys lets `py_eq` run without the bucket borrow held; the
-    /// caller owns the returned keys and must drop them. Only the
-    /// mutation-aware continuation calls this — [`find_index`](Self::find_index)
-    /// inlines the same collection.
-    fn probe_candidates(&self, hash: u64, vm: &VM<'h>) -> (SmallVec<[usize; 2]>, SmallVec<[Value; 2]>) {
-        let mut indices: SmallVec<[usize; 2]> = SmallVec::new();
-        let mut keys: SmallVec<[Value; 2]> = SmallVec::new();
-        let table = self.table(vm);
-        table.probe_indexed(hash, |index, entry| {
-            if entry.hash() == hash {
-                indices.push(index);
-                keys.push(entry.probe_key().clone_with_heap(vm.heap));
-            }
-            false
-        });
-        (indices, keys)
+        if !compared_any {
+            return Ok(ProbeOutcome::Missing);
+        }
     }
+}
 
-    /// Checks that a snapshotted candidate still names the same live entry.
-    ///
-    /// The caller checks before and after `py_eq`; a mismatch restarts the probe.
-    #[inline]
-    fn probe_valid(&self, index: usize, hash: u64, key: &Value, vm: &VM<'h>) -> bool {
-        self.table(vm)
-            .get_live(index)
-            .is_some_and(|entry| entry.hash() == hash && entry.probe_key().is(key))
-    }
+/// Snapshots the live entries colliding on `hash`: their indices, plus an
+/// owned reference to each of their keys.
+///
+/// Cloning the keys lets `py_eq` run without the bucket borrow held; the
+/// caller owns the returned keys and must drop them. Only the
+/// mutation-aware continuation calls this — [`find_index`](TableProbe::find_index)
+/// inlines the same collection.
+fn probe_candidates<'h>(
+    source: &impl TableSource<'h>,
+    hash: u64,
+    vm: &VM<'h>,
+) -> (SmallVec<[usize; 2]>, SmallVec<[Value; 2]>) {
+    let mut indices: SmallVec<[usize; 2]> = SmallVec::new();
+    let mut keys: SmallVec<[Value; 2]> = SmallVec::new();
+    let table = source.table(vm);
+    table.probe(hash, |index, entry| {
+        if entry.hash() == hash {
+            indices.push(index);
+            keys.push(entry.probe_key().clone_with_heap(vm.heap));
+        }
+        false
+    });
+    (indices, keys)
+}
+
+/// Checks that a snapshotted candidate still names the same live entry.
+///
+/// The caller checks before and after `py_eq`; a mismatch restarts the probe.
+#[inline]
+fn probe_valid<'h>(source: &impl TableSource<'h>, index: usize, hash: u64, key: &Value, vm: &VM<'h>) -> bool {
+    source
+        .table(vm)
+        .get_live(index)
+        .is_some_and(|entry| entry.hash() == hash && entry.probe_key().is(key))
 }
 
 /// The resize-checked step shared by the `dict` and `set` iterators.

@@ -32,7 +32,7 @@ use crate::{
     },
     types::{
         Type,
-        hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableScan, TableSource, TableWalk},
+        hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource, TableWalk},
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
@@ -361,33 +361,26 @@ impl Dict {
             .py_hash(vm)?
             .expect("json object keys are always hashable strings")
             .raw();
-        let found = self.find_json_string_key(hash, &key, vm.heap, vm.interns);
+        let key_str =
+            json_key_string_slice(&key, vm.heap, vm.interns).expect("json object keys are always string values");
+        let existing = self.table.find_mut(hash, |entry| {
+            json_key_equals_str(&entry.key, key_str, vm.heap, vm.interns)
+        });
 
-        let entry = DictEntry { key, value, hash };
-        if let Some(slot) = found {
-            let old_entry = self.table.replace(slot, entry);
-            old_entry.key.drop_with(vm);
-            Ok(Some(old_entry.value))
+        if let Some(entry) = existing {
+            // CPython keeps the first key object and only swaps the value.
+            let old_value = mem::replace(&mut entry.value, value);
+            key.drop_with(vm);
+            Ok(Some(old_value))
         } else {
             if let Err(err) = self.table.check_growth(&vm.heap.tracker) {
-                entry.key.drop_with(vm);
-                entry.value.drop_with(vm);
+                key.drop_with(vm);
+                value.drop_with(vm);
                 return Err(err.into());
             }
-            self.table.push(entry);
+            self.table.push(DictEntry { key, value, hash });
             Ok(None)
         }
-    }
-
-    /// Finds the existing entry for a JSON string key.
-    ///
-    /// The `hash` must match the Python string hash for `key`. Only string keys
-    /// participate; any non-string entry is treated as non-equal.
-    fn find_json_string_key(&self, hash: u64, key: &Value, heap: &Heap, interns: &Interns) -> Option<Slot> {
-        let key_str = json_key_string_slice(key, heap, interns).expect("json object keys are always string values");
-        self.table.probe_raw(hash, |entry| {
-            entry.hash == hash && json_key_equals_str(&entry.key, key_str, heap, interns)
-        })
     }
 }
 
@@ -564,23 +557,9 @@ impl Dict {
         key_str.hash(&mut hasher);
         let hash = hasher.finish();
 
-        // Find entry with matching hash and key
         self.table
-            .probe_raw(hash, |entry| {
-                let entry_key = &entry.key;
-                match entry_key {
-                    Value::InternString(id) => interns.get_str(*id) == key_str,
-                    Value::Ref(id) => {
-                        if let HeapData::Str(s) = heap.get(*id) {
-                            s.as_str() == key_str
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                }
-            })
-            .map(|slot| &self.table.entry(&slot).value)
+            .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, interns))
+            .map(|entry| &entry.value)
     }
 
     /// Sets a key-value pair in the dict.
@@ -844,7 +823,7 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// Callers need the hash to insert with, and a dict key that will not hash
     /// is a `TypeError` naming the dict — the only two things that distinguish
-    /// this from [`TableSource::find_index`], which does the probing.
+    /// this from [`TableProbe::find_index`], which does the probing.
     fn find_index_hash(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<Slot>, u64)> {
         let hash = key
             .py_hash(vm)?
@@ -1640,7 +1619,8 @@ impl HeapItem for Dict {
         if !self.contains_refs {
             return;
         }
-        for entry in self.table.live_mut() {
+        // Only called on a dict being freed, so its entries can be taken.
+        for entry in &mut self.table.take_entries() {
             if let Value::Ref(id) = &entry.key {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
