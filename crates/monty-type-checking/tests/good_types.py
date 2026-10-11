@@ -629,7 +629,7 @@ assert_type(json.dumps(None), str)
 
 # === tomllib ===
 assert_type(tomllib.loads('a = 1'), dict[str, Any])
-with open('pyproject.toml', 'rb') as toml_file:
+with Path('pyproject.toml').open('rb') as toml_file:
     assert_type(tomllib.load(toml_file), dict[str, Any])
 try:
     tomllib.loads('?')
