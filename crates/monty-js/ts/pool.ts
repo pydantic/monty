@@ -79,7 +79,8 @@ export interface CheckoutOptions {
   typeCheckStubs?: string
   /**
    * Importable host modules for every feed of the session (see [`ExternalModules`]); missing
-   * imports raise `ModuleNotFoundError`. A factory runs once per session, when first needed.
+   * imports raise `ModuleNotFoundError`. The record is read live, each entry validated when a
+   * snippet first imports it, so modules may be added later; a factory runs once per session.
    */
   externalModules?: ExternalModules
   /**
@@ -200,7 +201,6 @@ export class Monty {
     }
     const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
     const osPolicy = encodeOsPolicy(options.osPolicy ?? {})
-    // validated before a worker is taken, so a bad module holds none
     const modules = new HostModules(options.externalModules)
     const native = this.native.checkout({
       scriptName: options.scriptName ?? 'main.py',

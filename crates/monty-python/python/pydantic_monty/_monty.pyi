@@ -657,14 +657,11 @@ class Monty:
             os_policy: Session clock, sleep and random initialization policies;
                 see `OSPolicy`. Defaults to the worker's clock in UTC and its
                 entropy, with sleeps handled by the pool and capped at ten seconds.
-            external_modules: Modules the session's feeds may import, keyed by
-                import name: an `ExternalModule` or a zero-argument factory
-                returning one, called once per session when first needed.
-                Module stubs resolve imports for the type checker only; the
-                `module` answers the import at runtime. Stubs are never
-                star-imported. Invalid or sandbox-provided names raise
-                `ValueError`; invalid entries raise `TypeError`. An import of a
-                module absent here raises `ModuleNotFoundError`.
+            external_modules: Modules the session may import, keyed by name: an
+                `ExternalModule` or a zero-argument factory returning one, called
+                once per session when first needed. The mapping is read live and
+                each entry validated when first imported, so modules may be
+                added later.
         """
 
 @final

@@ -300,8 +300,8 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
 ## Importing host modules
 
 Imports of unknown modules ask the host for them.
-Pass `external_modules` to `checkout()` (`externalModules` in JavaScript); an imported module stays bound for the
-session, so its modules are fixed for the session too.
+Pass `external_modules` to `checkout()` (`externalModules` in JavaScript): an imported module stays bound for the
+session, and the mapping is read live, so a module added to it later is importable by later feeds.
 It maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values containing the module and its optional
 `.pyi` type stub:
 
@@ -357,7 +357,8 @@ A callable attribute becomes a host function named `<module>.<attr>`, dispatched
 JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
 Any other attribute is converted when the module is imported.
 A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
-Any other value is refused with `TypeError` at the checkout, before a worker is taken.
+Each entry is validated when a snippet first imports it: any other value is refused with `TypeError` there, a bad
+name with `ValueError`, and an entry under a sandbox module's name is never reached.
 A zero-argument factory returning an `ExternalModule` runs when a feed first needs the module: for an import,
 a stub request, or a function call through a restored binding.
 Its result stands for the module for the rest of the session, so a module no feed imports costs nothing to offer.

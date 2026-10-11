@@ -33,7 +33,7 @@ In practice that means:
 ## The three host-access mechanisms
 
 Everything the sandbox can reach outside itself goes through one of three mechanisms, and all are opt-in: host
-functions and the filesystem per feed, host modules per session.
+functions, the objects wrapped in `ClassInstance` / `ClassType`, and the filesystem per feed, host modules per session.
 
 ### Host functions
 

@@ -60,44 +60,51 @@ def test_import_binds_the_host_module(pool: Monty):
     [
         pytest.param(
             ExternalModule(tools_module()),  # pyright: ignore[reportArgumentType]
-            snapshot("external_modules['tools'].module must be a dict or a ClassInstance, not module"),
+            snapshot("TypeError: external_modules['tools'].module must be a dict or a ClassInstance, not module"),
             id='module',
         ),
         pytest.param(
             ExternalModule(types.SimpleNamespace(**TOOLS)),  # pyright: ignore[reportArgumentType]
-            snapshot("external_modules['tools'].module must be a dict or a ClassInstance, not SimpleNamespace"),
+            snapshot(
+                "TypeError: external_modules['tools'].module must be a dict or a ClassInstance, not SimpleNamespace"
+            ),
             id='namespace',
         ),
         pytest.param(
             ExternalModule(_Tools),  # pyright: ignore[reportArgumentType]
-            snapshot("external_modules['tools'].module must be a dict or a ClassInstance, not the class _Tools"),
+            snapshot(
+                "TypeError: external_modules['tools'].module must be a dict or a ClassInstance, not the class _Tools"
+            ),
             id='class',
         ),
         pytest.param(
             _Tools,
             snapshot(
-                "external_modules['tools'] must be an ExternalModule or a callable returning one, not the class _Tools"
+                "TypeError: external_modules['tools'] must be an ExternalModule or a callable returning one, not the class _Tools"
             ),
             id='class-entry',
         ),
         pytest.param(
             TOOLS,
-            snapshot("external_modules['tools'] must be an ExternalModule or a callable returning one, not dict"),
+            snapshot(
+                "TypeError: external_modules['tools'] must be an ExternalModule or a callable returning one, not dict"
+            ),
             id='bare-dict',
         ),
         pytest.param(
             ExternalModule(TOOLS, stubs=1),  # pyright: ignore[reportArgumentType]
-            snapshot("external_modules['tools'].stubs must be a str or None, not int"),
+            snapshot("TypeError: external_modules['tools'].stubs must be a str or None, not int"),
             id='stubs-not-str',
         ),
     ],
 )
 def test_other_module_shapes_are_rejected(pool: Monty, tools: Any, message: str):
     # Dicts explicitly select exports; modules and arbitrary objects could expose imports.
-    # Classes construct instances, so they are rejected as factories at the checkout.
-    with pytest.raises(TypeError) as exc_info:
-        pool.checkout(external_modules={'tools': tools})
-    assert str(exc_info.value) == message
+    # Classes construct instances, so they are rejected as factories, at the import that reaches them.
+    with pool.checkout(external_modules={'tools': tools}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import tools')
+        assert str(exc_info.value) == message
 
 
 def test_a_module_factory_runs_once_per_session_when_first_needed(pool: Monty):
@@ -274,52 +281,47 @@ def test_a_class_instance_submodule(pool: Monty):
 
 
 @pytest.mark.parametrize(
-    ('entry', 'error', 'message'),
+    ('entry', 'message'),
     [
         pytest.param(
             ExternalModule({'sub': ExternalModule(lambda: TOOLS)}),  # pyright: ignore[reportArgumentType]
-            TypeError,
-            snapshot("external_modules['pkg.sub'].module must be a dict or a ClassInstance, not function"),
+            snapshot("TypeError: external_modules['pkg.sub'].module must be a dict or a ClassInstance, not function"),
             id='nested-factory',
         ),
         pytest.param(
             ExternalModule({'1sub': ExternalModule(TOOLS)}),
-            ValueError,
-            snapshot("external_modules entries must have identifier keys, not '1sub'"),
+            snapshot("ValueError: external_modules entries must have identifier keys, not '1sub'"),
             id='nested-name',
         ),
         pytest.param(
             ExternalModule({'sub': ExternalModule(TOOLS, stubs=1)}),  # pyright: ignore[reportArgumentType]
-            TypeError,
-            snapshot("external_modules['pkg.sub'].stubs must be a str or None, not int"),
+            snapshot("TypeError: external_modules['pkg.sub'].stubs must be a str or None, not int"),
             id='nested-stubs',
         ),
         pytest.param(
             ExternalModule({'a.b': add}),
-            ValueError,
-            snapshot("external_modules entries must have identifier keys, not 'a.b'"),
+            snapshot("ValueError: external_modules entries must have identifier keys, not 'a.b'"),
             id='dotted-key',
         ),
         pytest.param(
             ExternalModule({'for': ExternalModule(TOOLS)}),
-            ValueError,
-            snapshot('external_modules[\'pkg.for\']: module name "for" is not a valid identifier'),
+            snapshot('ValueError: external_modules[\'pkg.for\']: module name "for" is not a valid identifier'),
             id='keyword-submodule',
         ),
         pytest.param(
             ExternalModule({'json': ExternalModule(TOOLS)}),
-            ValueError,
             snapshot(
-                'external_modules[\'pkg.json\']: module "json" is provided by the sandbox or its type checker and cannot be replaced'
+                'ValueError: external_modules[\'pkg.json\']: module "json" is provided by the sandbox or its type checker and cannot be replaced'
             ),
             id='sandbox-name-submodule',
         ),
     ],
 )
-def test_invalid_submodules_are_rejected(pool: Monty, entry: ExternalModule, error: type[Exception], message: str):
-    with pytest.raises(error) as exc_info:
-        pool.checkout(external_modules={'pkg': entry})
-    assert str(exc_info.value) == message
+def test_invalid_submodules_are_rejected(pool: Monty, entry: ExternalModule, message: str):
+    with pool.checkout(external_modules={'pkg': entry}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import pkg')
+        assert str(exc_info.value) == message
 
 
 def test_external_modules_is_any_mapping(pool: Monty):
@@ -333,15 +335,47 @@ def test_external_modules_is_any_mapping(pool: Monty):
 
 
 def test_cyclic_submodules_are_rejected(pool: Monty):
-    """An entry nested inside itself is refused at the checkout rather than walked forever."""
+    """An entry nested inside itself is refused at the import rather than walked forever."""
     module: dict[str, Any] = {}
     pkg = ExternalModule(module)
     module['sub'] = ExternalModule({'pkg': pkg})
-    with pytest.raises(ValueError) as exc_info:
-        pool.checkout(external_modules={'pkg': pkg})
+    with pool.checkout(external_modules={'pkg': pkg}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import pkg')
     assert str(exc_info.value) == snapshot(
-        "external_modules['pkg.sub.pkg'] is external_modules['pkg'] again: modules cannot nest cyclically"
+        "ValueError: external_modules['pkg.sub.pkg'] is external_modules['pkg'] again: modules cannot nest cyclically"
     )
+
+
+def test_a_cycle_added_after_the_checkout_is_refused_at_the_import(pool: Monty):
+    """Module dicts stay live, so the tree is checked again before each walk."""
+    module: dict[str, Any] = {'VERSION': 1}
+    pkg = ExternalModule(module)
+    with pool.checkout(type_check=True, external_modules={'pkg': pkg}) as session:
+        assert session.feed_run('import pkg\npkg.VERSION', skip_type_check=True) == snapshot(1)
+        module['sub'] = ExternalModule({'pkg': pkg})
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import pkg', skip_type_check=True)
+        assert str(exc_info.value) == snapshot(
+            "ValueError: external_modules['pkg.sub.pkg'] is external_modules['pkg'] again: modules cannot nest cyclically"
+        )
+        # the stubs ask walks the tree too
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import pkg')
+        assert str(exc_info.value) == snapshot(
+            "ValueError: external_modules['pkg.sub.pkg'] is external_modules['pkg'] again: modules cannot nest cyclically"
+        )
+
+
+def test_entries_added_after_the_checkout_are_importable(pool: Monty):
+    """The mapping is read live, so a host discovering a module mid-session can offer it."""
+    modules: dict[str, Any] = {'tools': ExternalModule(TOOLS)}
+    with pool.checkout(external_modules=modules) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('import other')
+        assert str(exc_info.value) == snapshot("ModuleNotFoundError: No module named 'other'")
+        modules['other'] = ExternalModule({'VERSION': 1})
+        assert session.feed_run('import other\nother.VERSION') == snapshot(1)
 
 
 @pytest.mark.parametrize(
@@ -633,17 +667,34 @@ def test_module_stubs_ride_in_a_dump(pool: Monty):
         assert session.feed_run('tools.add(3, 4)') == snapshot(7)
 
 
+def test_a_sandbox_module_name_is_never_looked_up(pool: Monty):
+    # the sandbox serves `json` itself, so the entry is unreachable, stub or not
+    modules = {'json': ExternalModule({'VERSION': 99}, stubs='VERSION: int\n')}
+    with pool.checkout(external_modules=modules) as session:
+        assert session.feed_run("import json\nhasattr(json, 'VERSION')") is False
+
+
 @pytest.mark.parametrize(
     ('module', 'message'),
     [
-        ('json', snapshot('module "json" is provided by the sandbox or its type checker and cannot be replaced')),
-        ('1tools', snapshot('module name "1tools" is not a valid identifier')),
+        ('1tools', snapshot('ValueError: module name "1tools" is not a valid identifier')),
+        ('for', snapshot('ValueError: module name "for" is not a valid identifier')),
+        (
+            'json',
+            snapshot('ValueError: module "json" is provided by the sandbox or its type checker and cannot be replaced'),
+        ),
     ],
 )
-def test_invalid_module_names(pool: Monty, module: str, message: str):
-    for entry in (ExternalModule({}, stubs=''), ExternalModule({})):
-        with pytest.raises(ValueError) as exc_info:
-            pool.checkout(external_modules={module: entry})
+def test_an_invalid_module_name_is_refused_when_a_call_reaches_it(pool: Monty, module: str, message: str):
+    """No import can name such an entry; a forged dotted call is the only way to reach it."""
+
+    def probe() -> str:
+        return 'hidden'
+
+    probe.__name__ = f'{module}.f'
+    with pool.checkout(external_modules={module: ExternalModule({})}) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('probe()', inputs={'probe': probe})
         assert str(exc_info.value) == message
 
 

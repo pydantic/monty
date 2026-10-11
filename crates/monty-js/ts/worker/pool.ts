@@ -89,7 +89,6 @@ export class WorkerPool {
   async checkout(config: WorkerSessionConfig = {}): Promise<MontySession> {
     if (this.closed) throw closedError()
     const configuration = prepareSession(config)
-    // validated before a worker is taken, so a bad module holds none
     const modules = new HostModules(config.externalModules)
     const slot = await this.acquire()
     if (this.closed) {

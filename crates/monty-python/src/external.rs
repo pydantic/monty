@@ -19,7 +19,7 @@ use monty_types::{
     validate_module_name,
 };
 use pyo3::{
-    exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
+    exceptions::{PyAttributeError, PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
     types::{PyDict, PyMapping, PyString, PyTuple, PyType},
@@ -119,13 +119,15 @@ pub fn resolve_object_attr(
     }
 }
 
-/// A session's validated modules and cached factory results, shared by its feeds and
-/// their `resume_auto` snapshots. A factory runs on first use and its validated result
-/// serves the rest of the session; a failure is raised there and the next use runs it again.
+/// A session's modules and cached factory results, shared by its feeds and their
+/// `resume_auto` snapshots. The checkout's mapping is read live and an entry is
+/// validated when a snippet first reaches it, so a host may add modules during the
+/// session. A factory runs on first use and its validated result serves the rest of
+/// the session; a failure is raised there and the next use runs it again.
 pub(crate) struct HostModules {
-    /// Each entry by the name the snippet imports: an `ExternalModule`, or
-    /// the factory returning one.
-    entries: Py<PyDict>,
+    /// The checkout's mapping, by the name the snippet imports: an
+    /// `ExternalModule`, or the factory returning one.
+    entries: Py<PyAny>,
     /// What each factory returned, by module name: a factory runs once per
     /// session, at the first import, call or stubs ask that needs it.
     resolved: Py<PyDict>,
@@ -136,49 +138,35 @@ pub(crate) struct HostModules {
 }
 
 impl HostModules {
-    /// Captures modules or zero-argument factories returning them from any mapping
-    /// (a dict is kept, so its entries are re-read on each import). Dicts explicitly
-    /// select what crosses; module objects could expose imports. Identifier keys keep
-    /// dotted host-function names unambiguous.
+    /// Keeps the mapping of modules or zero-argument factories returning them; only
+    /// its type is checked here, each entry when a snippet reaches it (see
+    /// [`check_entry`]).
     pub(crate) fn capture(py: Python<'_>, entries: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let entries = if let Ok(dict) = entries.cast::<PyDict>() {
-            dict.clone()
+        if entries.cast::<PyMapping>().is_err() {
+            Err(PyTypeError::new_err(format!(
+                "external_modules must be a mapping of module name to ExternalModule, not {}",
+                entries.get_type().name()?
+            )))
         } else {
-            let Ok(mapping) = entries.cast::<PyMapping>() else {
-                return Err(PyTypeError::new_err(format!(
-                    "external_modules must be a mapping of module name to ExternalModule, not {}",
-                    entries.get_type().name()?
-                )));
-            };
-            let dict = PyDict::new(py);
-            dict.update(mapping)?;
-            dict
-        };
-        let mut stand_ins = HashMap::new();
-        for (name, entry) in entries.iter() {
-            let name = module_key(&name, "external_modules")?;
-            let name = name.to_cow()?;
-            validate_module_name(&name).map_err(|err| PyValueError::new_err(err.to_string()))?;
+            Ok(Self {
+                entries: entries.clone().unbind(),
+                resolved: PyDict::new(py).unbind(),
+                stand_ins: Arc::new(Mutex::new(HashMap::new())),
+            })
+        }
+    }
+
+    /// Registers the stand-ins of every `ExternalModule` entry, for a restored
+    /// session calling a module before any feed imported it. Invalid entries are
+    /// skipped here and refused at their import.
+    fn register_stand_ins(&self, py: Python<'_>) -> PyResult<()> {
+        let mut stand_ins = lock(&self.stand_ins);
+        for (name, entry) in mapping_entries(self.entries.bind(py))? {
             if entry.is_instance(external_module_class(py)?)? {
-                check_module_tree(&name, &entry, &mut stand_ins, &mut Vec::new())?;
-            } else if let Ok(class) = entry.cast::<PyType>() {
-                // callable, but constructs an instance, never a module
-                return Err(PyTypeError::new_err(format!(
-                    "external_modules['{name}'] must be an ExternalModule or a callable returning one, not the class {}",
-                    class.name()?
-                )));
-            } else if !entry.is_callable() {
-                return Err(PyTypeError::new_err(format!(
-                    "external_modules['{name}'] must be an ExternalModule or a callable returning one, not {}",
-                    entry.get_type().name()?
-                )));
+                let _ = check_module_tree(&name, &entry, &mut stand_ins, &mut Vec::new());
             }
         }
-        Ok(Self {
-            entries: entries.unbind(),
-            resolved: PyDict::new(py).unbind(),
-            stand_ins: Arc::new(Mutex::new(stand_ins)),
-        })
+        Ok(())
     }
 
     /// A second owner of the same dicts, for a snapshot's drive context.
@@ -274,8 +262,14 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
     /// The dict module whose sandbox stand-in `object_id` identifies, if any
     /// (see [`module_uuid`]); a `ClassInstance` module keeps the wrapper's own id.
+    /// A miss registers the entries no feed has reached yet before giving up.
     fn module_stand_in(&self, object_id: &MontyUuid) -> Option<String> {
-        lock(&self.modules?.stand_ins).get(object_id).cloned()
+        let modules = self.modules?;
+        if let Some(path) = lock(&modules.stand_ins).get(object_id) {
+            return Some(path.clone());
+        }
+        modules.register_stand_ins(self.py).ok()?;
+        lock(&modules.stand_ins).get(object_id).cloned()
     }
 
     /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
@@ -426,9 +420,10 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         if let Some(entry) = modules.resolved.bind(self.py).get_item(name)? {
             return Ok(Some(Resolved::Module(entry)));
         }
-        let Some(entry) = modules.entries.bind(self.py).get_item(name)? else {
+        let Some(entry) = mapping_entry(modules.entries.bind(self.py), name)? else {
             return Ok(None);
         };
+        check_entry(name, &entry)?;
         if entry.is_instance(external_module_class(self.py)?)? {
             return Ok(Some(Resolved::Module(entry)));
         }
@@ -599,7 +594,10 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         for name in &asked {
             match self.resolve_module(name) {
                 Ok(Some(Resolved::Module(entry))) => {
-                    if let Err(err) = collect_stubs(name, &entry, &mut stubs) {
+                    if let Err(err) = self
+                        .revalidate(name, &entry)
+                        .and_then(|()| collect_stubs(name, &entry, &mut stubs))
+                    {
                         return ExtFunctionResult::Error(exc_py_to_monty(self.py, &err));
                     }
                 }
@@ -620,6 +618,20 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// Public dict items cross eagerly: callables as `path.attr`, nested modules as submodules.
     /// Path-derived UUIDs preserve identity across imports and dumps.
     fn module_value(&self, path: &str, entry: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
+        self.revalidate(path, entry)?;
+        self.module_value_checked(path, entry)
+    }
+
+    /// Checks a module tree again before walking it: its dicts are live, so a submodule
+    /// added since the checkout is validated, registered as a stand-in, and a cycle is
+    /// refused rather than recursed into.
+    fn revalidate(&self, path: &str, entry: &Bound<'py, PyAny>) -> PyResult<()> {
+        let modules = self.modules.expect("a module was resolved, so the entries exist");
+        check_module_tree(path, entry, &mut lock(&modules.stand_ins), &mut Vec::new())
+    }
+
+    /// [`module_value`](Self::module_value) for a tree [`revalidate`](Self::revalidate) accepted.
+    fn module_value_checked(&self, path: &str, entry: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
         let module = module_value_of(entry)?;
         if is_class_instance_wrapper(&module)? {
             return py_to_monty_value(&module, self.instances)
@@ -628,7 +640,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let mut attrs = Vec::new();
         for (attr, value) in module_attrs(&module)? {
             let value = if value.is_instance(external_module_class(self.py)?)? {
-                self.module_value(&format!("{path}.{attr}"), &value)?
+                self.module_value_checked(&format!("{path}.{attr}"), &value)?
             } else if value.is_callable() && !is_class_type_wrapper(&value)? {
                 MontyObject::function(format!("{path}.{attr}"), None)
             } else {
@@ -688,6 +700,50 @@ fn module_method_error(name: &str, method: &str) -> PyErr {
     } else {
         PyAttributeError::new_err(format!("'{name}' object has no attribute '{method}'"))
     }
+}
+
+/// Validates a top-level entry the first time a snippet reaches it: a module name
+/// (never a sandbox module's) mapped to an `ExternalModule` or a factory. Classes are
+/// callable but construct instances, so they are refused as factories.
+fn check_entry(name: &str, entry: &Bound<'_, PyAny>) -> PyResult<()> {
+    validate_module_name(name).map_err(|err| PyValueError::new_err(err.to_string()))?;
+    if entry.is_instance(external_module_class(entry.py())?)? {
+        Ok(())
+    } else if let Ok(class) = entry.cast::<PyType>() {
+        Err(PyTypeError::new_err(format!(
+            "external_modules['{name}'] must be an ExternalModule or a callable returning one, not the class {}",
+            class.name()?
+        )))
+    } else if !entry.is_callable() {
+        Err(PyTypeError::new_err(format!(
+            "external_modules['{name}'] must be an ExternalModule or a callable returning one, not {}",
+            entry.get_type().name()?
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// The entry under `name`, `None` when the mapping lacks it.
+fn mapping_entry<'py>(mapping: &Bound<'py, PyAny>, name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+    match mapping.get_item(name) {
+        Ok(entry) => Ok(Some(entry)),
+        Err(err) if err.is_instance_of::<PyKeyError>(mapping.py()) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+/// Every `(name, entry)` of the mapping whose key is a str; other keys are refused.
+fn mapping_entries<'py>(mapping: &Bound<'py, PyAny>) -> PyResult<Vec<(String, Bound<'py, PyAny>)>> {
+    mapping
+        .cast::<PyMapping>()?
+        .items()?
+        .iter()
+        .map(|item| {
+            let (key, entry) = item.extract::<(Bound<'py, PyAny>, Bound<'py, PyAny>)>()?;
+            Ok((module_key(&key, "external_modules")?.to_string(), entry))
+        })
+        .collect()
 }
 
 /// Validates module values, stubs and submodules, and registers dict stand-ins.

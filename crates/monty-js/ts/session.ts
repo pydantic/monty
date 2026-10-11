@@ -1381,13 +1381,14 @@ export class ExternalModule {
   }
 }
 
-/** Modules keyed by import name. Invalid identifiers, keywords and sandbox-provided names throw.
- *  Factories run at most once per session, when first needed, and may return a Promise. */
+/** Modules keyed by import name, read when a snippet first imports one: invalid identifiers, keywords
+ *  and sandbox-provided names throw there. Factories run at most once per session and may return a Promise. */
 export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
 
 /**
- * Validates a session's modules and caches factory results. Factory results are
- * validated when first needed; other entries are validated at the checkout.
+ * A session's modules and cached factory results. The checkout's record is read
+ * live and an entry is validated when a snippet first reaches it, so the host may
+ * add modules during the session.
  * @internal
  */
 export class HostModules {
@@ -1399,20 +1400,17 @@ export class HostModules {
    *  takes a new wrapper only for the object it already routes to (see [`moduleValue`]). */
   readonly attrs = new Map<string, Record<string, unknown>>()
 
-  constructor(private readonly entries: ExternalModules | undefined) {
-    for (const [name, entry] of Object.entries(entries ?? {})) {
-      if (!IDENTIFIER.test(name) || KEYWORDS.has(name)) {
-        throw new TypeError(`externalModules.${name} is not a valid module name`)
-      }
-      if (SANDBOX_MODULES.has(name)) {
-        throw new TypeError(`externalModules.${name} is provided by the sandbox and cannot be replaced`)
-      }
-      if (entry instanceof ExternalModule) {
-        this.check(name, entry, new Map())
-      } else if (typeof entry !== 'function') {
-        throw new TypeError(`externalModules.${name} must be an ExternalModule or a function returning one`)
-      }
+  /** The checkout's record, kept by reference so later additions are importable. */
+  private readonly entries: ExternalModules
+
+  constructor(entries: ExternalModules | undefined) {
+    const proto = entries !== undefined && typeof entries === 'object' ? Object.getPrototypeOf(entries) : undefined
+    if (entries !== undefined && proto !== Object.prototype && proto !== null) {
+      throw new TypeError(
+        `externalModules must be a plain object of module name to ExternalModule, got ${kindOf(entries)}`,
+      )
     }
+    this.entries = entries ?? {}
   }
 
   /**
@@ -1453,14 +1451,51 @@ export class HostModules {
     return returned
   }
 
-  /** The module whose plain-object stand-in has `id`, if any. */
+  /**
+   * The module whose plain-object stand-in has `id`, if any. A miss registers the
+   * entries no feed has reached yet, since a restored session may call a module
+   * before importing it; an invalid entry is skipped here and refused at its import.
+   */
   standIn(id: string): string | undefined {
+    const known = this.standIns.get(id)
+    if (known !== undefined) {
+      return known
+    }
+    for (const name of Object.keys(this.entries)) {
+      const entry = ownEntry(this.entries, name)
+      if (entry instanceof ExternalModule) {
+        try {
+          this.check(name, entry, new Map())
+        } catch {
+          // refused when a snippet imports it
+        }
+      }
+    }
     return this.standIns.get(id)
   }
 
-  /** The top-level entry for `name`, if there is one (own keys only). */
+  /**
+   * The top-level entry for `name` (own keys only), validated now that a snippet
+   * reaches it: a module name the sandbox does not provide, mapped to an
+   * `ExternalModule` or a factory.
+   */
   entry(name: string): ExternalModules[string] | undefined {
-    return ownEntry(this.entries, name) as ExternalModules[string] | undefined
+    const entry = ownEntry(this.entries, name) as ExternalModules[string] | undefined
+    if (entry === undefined) {
+      return undefined
+    }
+    if (!IDENTIFIER.test(name) || KEYWORDS.has(name)) {
+      throw new TypeError(`externalModules.${name} is not a valid module name`)
+    }
+    if (SANDBOX_MODULES.has(name)) {
+      throw new TypeError(`externalModules.${name} is provided by the sandbox and cannot be replaced`)
+    }
+    if (entry instanceof ExternalModule) {
+      this.check(name, entry, new Map())
+    } else if (typeof entry !== 'function') {
+      throw new TypeError(`externalModules.${name} must be an ExternalModule or a function returning one`)
+    }
+    return entry
   }
 }
 
@@ -1631,11 +1666,7 @@ function moduleValue(
   if (module instanceof ClassInstance) {
     return module
   }
-  const attrs = modules.attrs.get(path) ?? {}
-  for (const key of Object.keys(attrs)) {
-    delete attrs[key]
-  }
-  modules.attrs.set(path, attrs)
+  const fresh: Record<string, unknown> = {}
   ancestors.set(entry, path)
   // Filter names before reading values so private getters never run.
   for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
@@ -1645,12 +1676,19 @@ function moduleValue(
       // `ancestors` catches a getter handing back a module being materialized.
       checkSubmoduleName(path, key)
       modules.check(`${path}.${key}`, value, ancestors)
-      attrs[key] = moduleValue(`${path}.${key}`, value, modules, ancestors)
+      fresh[key] = moduleValue(`${path}.${key}`, value, modules, ancestors)
     } else {
-      attrs[key] = typeof value === 'function' ? namedHostFunction(`${path}.${key}`, value as ExternalFunction) : value
+      fresh[key] = typeof value === 'function' ? namedHostFunction(`${path}.${key}`, value as ExternalFunction) : value
     }
   }
   ancestors.delete(entry)
+  // committed only once every attribute was read, so a throwing getter leaves the session's object as it was
+  const attrs = modules.attrs.get(path) ?? {}
+  for (const key of Object.keys(attrs)) {
+    delete attrs[key]
+  }
+  Object.assign(attrs, fresh)
+  modules.attrs.set(path, attrs)
   const classType = new ClassType(Object, { name: path, id: moduleUuid('class', path) })
   return new ClassInstance(attrs, { classType, eagerAttrs: 'all', id: moduleUuid('instance', path) })
 }

@@ -3,7 +3,7 @@
 //! paths) *move* between the wire and the call — never clone. The one
 //! value-typed argument (`Getenv.default`) indexes the message's arena.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use monty_types::{
     GetenvArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath, MontyTimeZone,
@@ -187,10 +187,11 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::ImportStubs(i) => {
                 // the worker asks about each module once; a repeat would multiply the host's factory work
                 let modules: Vec<String> = i.modules.into_iter().collect();
-                if let Some(repeated) = modules.iter().enumerate().find(|(i, m)| modules[..*i].contains(m)) {
+                let mut seen = HashSet::with_capacity(modules.len());
+                if let Some(repeated) = modules.iter().find(|m| !seen.insert(m.as_str())) {
                     return Err(ProtoConvertError::InvalidValue {
                         field: "ImportStubs.modules",
-                        reason: format!("module {:?} is asked about twice", repeated.1),
+                        reason: format!("module {repeated:?} is asked about twice"),
                     });
                 }
                 Self::ImportStubs(modules)
