@@ -94,12 +94,13 @@ The following modules are present:
 | `re`          | [re.md](re.md)                   |
 | `sys`         | [sys.md](sys.md)                 |
 | `time`        | [time.md](time.md)               |
+| `tomllib`     | [tomllib.md](tomllib.md)         |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
-Each covers only part of its CPython surface — often a small part. `itertools`
-and `hashlib` are the exceptions: `itertools` implements every name it exports, and `hashlib` every guaranteed
-algorithm.
+Each covers only part of its CPython surface — often a small part. `itertools`,
+`hashlib` and `tomllib` are the exceptions: `itertools` implements every name it exports, `hashlib` every guaranteed
+algorithm, and `tomllib` its whole three-name surface.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 

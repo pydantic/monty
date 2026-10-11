@@ -137,6 +137,8 @@ COPY_FILES = [
     'json/__init__.pyi',
     'json/encoder.pyi',
     'json/decoder.pyi',
+    # tomllib: `loads`, `load` and `TOMLDecodeError` are all implemented
+    'tomllib.pyi',
     # ==============================
     'math.pyi',
     'datetime.pyi',
@@ -184,6 +186,7 @@ random: 3.0-
 re: 3.0-
 sys: 3.0-
 time: 3.0-
+tomllib: 3.11-
 typing: 3.5-
 typing_extensions: 3.7-
 types: 3.0-

@@ -296,10 +296,12 @@ indistinguishable from a stack overflow.
     resumes the feed budget it was dumped mid-way through; `max_turn_duration`'s
     clock is not, because a dump is only ever taken between turns.
 
-## JSON
+## JSON and TOML
 
 - `json.loads` rejects input nested deeper than 200 levels with
     `json.JSONDecodeError` (independent of the Python recursion limit).
+- `tomllib.loads` rejects inline arrays and tables nested deeper than 200 levels
+    with `RecursionError` (see [tomllib.md](tomllib.md)).
 
 ## After a terminal resource error
 

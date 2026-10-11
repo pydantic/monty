@@ -78,6 +78,7 @@ nav:
       - re: 'limitations/re.md'
       - sys: 'limitations/sys.md'
       - time: 'limitations/time.md'
+      - tomllib: 'limitations/tomllib.md'
       - unicodedata: 'limitations/unicodedata.md'
       - open() and file objects: 'limitations/open.md'
       - Filesystem and sandbox boundary: 'limitations/filesystem.md'
