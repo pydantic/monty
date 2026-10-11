@@ -74,6 +74,10 @@ impl VM<'_> {
     ///
     /// Returns an ImportError (not AttributeError) if the attribute doesn't exist,
     /// matching CPython's behavior for `from module import name`.
+    ///
+    /// Out-of-line: cold opcode; keeps `VM::run`'s dispatch loop small
+    /// (I-cache/register pressure).
+    #[inline(never)]
     pub(super) fn load_attr_import(&mut self, name_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
