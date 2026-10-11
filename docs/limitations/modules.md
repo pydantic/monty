@@ -85,14 +85,14 @@ back the vendored stubs (e.g. `@abstractmethod` on protocol members), so they
 have to resolve during type checking. Importing them type-checks clean; at
 runtime they are host modules like any other name the sandbox lacks, so the
 host may serve them, and a not-found answer raises `ModuleNotFoundError`.
-A module stub cannot be declared under these names, nor under any other module
-of the vendored typeshed, so the checker checks a host-served `abc` against
-typeshed's `abc`, not against what the host serves.
+The worker never asks the host for a stub under these names, nor under any
+other module of the vendored typeshed, so the checker checks a host-served
+`abc` against typeshed's `abc`, not against what the host serves.
 
 ## Host modules
 
 An `import` of any module the runtime does not ship, the checker-only ones above included, asks the host for it as
-the external function call `__import__` with the top-level module name as its argument.
+the OS call `import` with the top-level module name as its argument; `__import__` is not defined.
 A dotted import (`import a.b.c`, `from a.b import c`) asks for `a` and reads each further component as an attribute of
 the one before, as CPython reads a submodule out of its package; below a bundled module that is not a package
 (`import os.x`, `import math.pi`) the attribute read raises `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package` without asking the host.

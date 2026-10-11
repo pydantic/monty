@@ -583,15 +583,22 @@ impl MontyRepl {
         }
     }
 
-    /// Returns the generated filename for the next interactive execution.
+    /// The filename the next snippet will run as, which a host can name in a
+    /// [`SourceRange`] it reports ahead of that snippet.
     ///
     /// CPython labels interactive inputs as `<python-input-N>`. Snippets and
     /// host function calls share this sequence so every traceback call site
     /// can be correlated with the session's execution history.
+    #[must_use]
+    pub fn next_script_name(&self) -> String {
+        format!("<python-input-{}>", self.next_input_id)
+    }
+
+    /// Takes the next interactive execution's filename; see [`Self::next_script_name`].
     fn next_input_script_name(&mut self) -> String {
-        let input_id = self.next_input_id;
+        let name = self.next_script_name();
         self.next_input_id += 1;
-        format!("<python-input-{input_id}>")
+        name
     }
 }
 

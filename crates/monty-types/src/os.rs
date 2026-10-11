@@ -25,6 +25,20 @@ use crate::{
 // OsFunctionCall — the central public dispatch value.
 // =============================================================================
 
+/// The [`OsFunctionCall::name`] of [`OsFunctionCall::Import`]: hosts see the
+/// call by name, not its typed form, and answer it from their modules ahead
+/// of any other OS-call handler.
+pub const IMPORT_CALL: &str = "import";
+
+/// The [`OsFunctionCall::name`] of [`OsFunctionCall::ImportStubs`], answered
+/// the same way.
+pub const IMPORT_STUBS_CALL: &str = "import_stubs";
+
+/// The `call_id` of every [`OsFunctionCall::ImportStubs`]: the worker issues
+/// it before a feed runs, outside the interpreter's per-feed ids, which count
+/// up from zero.
+pub const IMPORT_STUBS_CALL_ID: u32 = u32::MAX;
+
 /// Tagged dispatch value for OS-level operations.
 ///
 /// Each variant carries the strongly-typed args/kwargs the corresponding OS
@@ -147,6 +161,20 @@ pub enum OsFunctionCall {
     /// answers with a future it resolves once the delay elapses.
     #[strum(serialize = "system.async_sleep")]
     AsyncSystemSleep(Duration),
+
+    // ---- Host modules ------------------------------------------------------
+    /// `import <name>` of a module the sandbox lacks, with the top-level name.
+    /// The host answers with the module value, `not_found` / `not_handled` (a
+    /// `ModuleNotFoundError`) or an exception; `from m import a` and
+    /// `import m.sub` are this call followed by attribute loads.
+    #[strum(serialize = "import")] // IMPORT_CALL
+    Import(String),
+    /// The worker, before type-checking a feed, asking for the `.pyi` of each
+    /// top-level module the snippet imports that it has not asked about before.
+    /// Answered with a dict of dotted module path to stub source (or `None`),
+    /// or `not_found` / `not_handled` for no stubs at all.
+    #[strum(serialize = "import_stubs")] // IMPORT_STUBS_CALL
+    ImportStubs(Vec<String>),
 }
 
 impl OsFunctionCall {
@@ -209,6 +237,8 @@ impl OsFunctionCall {
             Self::Sleep(delay) | Self::SystemSleep(delay) | Self::AsyncSleep(delay) | Self::AsyncSystemSleep(delay) => {
                 single_arg(MontyNode::Float(delay.as_secs_f64()))
             }
+            Self::Import(name) => single_arg(MontyObject::string(name)),
+            Self::ImportStubs(names) => single_arg(MontyObject::list(names.into_iter().map(MontyObject::string))),
         }
     }
 
@@ -316,7 +346,9 @@ impl OsFunctionCall {
             | Self::Sleep(_)
             | Self::SystemSleep(_)
             | Self::AsyncSleep(_)
-            | Self::AsyncSystemSleep(_) => None,
+            | Self::AsyncSystemSleep(_)
+            | Self::Import(_)
+            | Self::ImportStubs(_) => None,
         }
     }
 
@@ -363,16 +395,24 @@ impl OsFunctionCall {
             | Self::Sleep(_)
             | Self::SystemSleep(_)
             | Self::AsyncSleep(_)
-            | Self::AsyncSystemSleep(_) => (None, None),
+            | Self::AsyncSystemSleep(_)
+            | Self::Import(_)
+            | Self::ImportStubs(_) => (None, None),
         };
         primary.into_iter().chain(dst)
     }
 
     /// Exception to raise when no handler accepted this call: `PermissionError`
-    /// for FS ops (with the path), `RuntimeError` for non-FS ops.
+    /// for FS ops (with the path), `ModuleNotFoundError` for an import,
+    /// `RuntimeError` for the other non-FS ops.
     #[must_use]
     pub fn on_no_handler(&self) -> MontyException {
-        if let Some(path) = self.fs_primary_path() {
+        if let Self::Import(name) = self {
+            MontyException::new(
+                ExcType::ModuleNotFoundError,
+                Some(format!("No module named {}", StringRepr(name))),
+            )
+        } else if let Some(path) = self.fs_primary_path() {
             let path = if path.is_empty() {
                 Cow::Borrowed(path)
             } else {

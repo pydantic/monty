@@ -83,10 +83,11 @@ primitive that you wrote.
 Validate arguments in the host function as you would validate any untrusted input.
 
 An `import` of a module the sandbox does not ship is a host call too: the host decides which modules exist
-(`external_modules` on `checkout`); every public item of a module given as a dict is reachable by the sandbox, a
+(`external_modules` on each feed); every public item of a module given as a dict is reachable by the sandbox, a
 callable one running on the host like any other host function, while a module given as a `ClassInstance` exposes
 only what its wrapper policy allows.
-Sandbox code cannot name the underlying `__import__` call itself; it raises `NameError`.
+The import, and the request for a module's type stubs that precedes a type-checked feed, are OS calls the runtime
+makes, which sandbox code cannot produce by naming them (`__import__` is simply undefined).
 See [importing host modules](host-functions.md#importing-host-modules).
 
 ### Host objects and classes

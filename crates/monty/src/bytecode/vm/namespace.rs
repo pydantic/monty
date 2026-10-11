@@ -256,7 +256,8 @@ impl VM<'_> {
         }
         match globals {
             FrameGlobals::Slots if flags & NAME_CALLABLE != 0 => {
-                self.load_global_callable(slot, name_id).map(|()| None)
+                self.load_global_callable(slot, name_id);
+                Ok(None)
             }
             FrameGlobals::Slots => self.load_global(slot),
             FrameGlobals::Dict(dict) => {

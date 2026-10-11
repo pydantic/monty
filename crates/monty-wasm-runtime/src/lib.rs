@@ -393,15 +393,6 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         persistence: pb::Persistence::Unspecified.into(),
         // a relay's concern; the component is a child and has no profiles
         profile: None,
-        type_check_module_stubs: request
-            .type_check_module_stubs
-            .into_iter()
-            .map(|stub| pb::ModuleStub {
-                module: stub.module,
-                source: stub.source,
-            })
-            .collect::<Vec<_>>()
-            .into(),
     }
 }
 

@@ -27,7 +27,7 @@ export {
   NameLookupSnapshot,
   NOT_HANDLED,
   type ExternalFunction,
-  type ExternalModule,
+  ExternalModule,
   type ExternalModules,
   type ModuleValue,
   type FeedOptions,

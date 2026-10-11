@@ -95,6 +95,14 @@ pub struct TypeCheckState {
     /// the stubs' star import, which does not re-export a `.pyi`'s imports.
     #[serde(default)]
     pub committed_imports: String,
+    /// The import statements of `pending_snippet`, joining `committed_imports`
+    /// when it commits.
+    #[serde(default)]
+    pub pending_imports: String,
+    /// Every top-level module the host has been asked stubs for, with or
+    /// without an answer, so each is asked about once per session.
+    #[serde(default)]
+    pub asked_modules: Vec<String>,
 }
 
 /// A `.pyi` for one host-provided module, written for the type checker so

@@ -50,7 +50,7 @@ pub struct TypeCheckContext<'a> {
     /// `import <module>` resolves; never star-imported.
     pub module_stubs: &'a [ModuleStub],
     /// Statements injected ahead of the star import, one per line: the
-    /// imports of the committed snippets (see [`crate::top_level_imports`]).
+    /// imports of the committed snippets (see [`crate::scan_imports`]).
     pub prelude: &'a str,
 }
 

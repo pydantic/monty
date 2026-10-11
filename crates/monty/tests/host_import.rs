@@ -1,11 +1,11 @@
 //! Tests for importing a module the sandbox does not have: the import
-//! suspends as an `__import__` host call, and the host's answer is the module.
+//! suspends as an `import` OS call, and the host's answer is the module.
 
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, builtin_module_names, dump};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, IMPORT_FUNCTION, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, PrintWriter, ResourceTracker, SANDBOX_MODULE_NAMES,
+    CompileOptions, ExcType, ExtFunctionResult, IMPORT_CALL, MontyException, MontyObject, MontyUuid, NameLookupResult,
+    OsFunctionCall, PrintWriter, ResourceTracker, SANDBOX_MODULE_NAMES,
 };
 
 /// Starts `code` as a one-shot run.
@@ -26,14 +26,12 @@ fn host_object(name: &str, id: u128, attrs: Vec<(&str, MontyObject)>) -> MontyOb
     )
 }
 
-/// Answers the `__import__` call `progress` is suspended at, checking it names `module`.
+/// Answers the `import` OS call `progress` is suspended at, checking it names `module`.
 fn answer_import(progress: RunProgress, module: &str, value: MontyObject) -> RunProgress {
-    let call = progress.into_function_call().unwrap();
-    assert_eq!(call.function_name, IMPORT_FUNCTION);
-    assert_eq!(call.object_id, None);
-    let args: Vec<_> = call.args.args().map(|arg| arg.to_owned()).collect();
-    assert_eq!(args, vec![MontyObject::string(module)]);
-    assert_eq!(call.args.kwargs().len(), 0);
+    let call = progress.into_os_call().unwrap();
+    assert_eq!(call.function_call.name(), IMPORT_CALL);
+    assert!(matches!(&call.function_call, OsFunctionCall::Import(name) if name == module));
+    assert!(!call.allow_eager_await);
     call.resume(value, PrintWriter::Stdout).unwrap()
 }
 
@@ -113,14 +111,25 @@ fn a_missing_name_is_an_import_error_naming_the_module() {
     "#);
 }
 
+/// `not_found`, and a host with no handler at all, both raise `ModuleNotFoundError`.
 #[test]
 fn a_not_found_answer_is_a_module_not_found_error() {
-    let call = start("import nope").into_function_call().unwrap();
+    let call = start("import nope").into_os_call().unwrap();
     let err = call
-        .resume(
-            ExtFunctionResult::NotFound(IMPORT_FUNCTION.to_owned()),
-            PrintWriter::Stdout,
-        )
+        .resume(ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        import nope
+    ModuleNotFoundError: No module named 'nope'
+    "#);
+
+    let call = start("import nope").into_os_call().unwrap();
+    let err = call
+        .resume_with(PrintWriter::Stdout, |call| {
+            ExtFunctionResult::Error(call.on_no_handler())
+        })
         .unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
@@ -163,13 +172,13 @@ fn calling_a_host_object_suspends_as_dunder_call() {
 #[test]
 fn a_repl_import_suspends_and_the_module_persists() {
     let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
-    let ReplProgress::FunctionCall(call) = repl
+    let ReplProgress::OsCall(call) = repl
         .feed_start("import tools", Vec::<(String, MontyObject)>::new(), PrintWriter::Stdout)
         .unwrap()
     else {
         panic!("expected the import to suspend");
     };
-    assert_eq!(call.function_name, IMPORT_FUNCTION);
+    assert!(matches!(&call.function_call, OsFunctionCall::Import(name) if name == "tools"));
     let module = host_object("tools", 1, vec![("x", MontyObject::int(2))]);
     let ReplProgress::Complete { repl, .. } = call.resume(module, PrintWriter::Stdout).unwrap() else {
         panic!("expected the snippet to complete");
@@ -190,7 +199,7 @@ fn a_repl_import_suspends_and_the_module_persists() {
 #[test]
 fn a_restored_from_import_still_names_its_module() {
     let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
-    let ReplProgress::FunctionCall(call) = repl
+    let ReplProgress::OsCall(call) = repl
         .feed_start(
             "from tools import a, b",
             Vec::<(String, MontyObject)>::new(),
@@ -234,8 +243,11 @@ fn a_restored_from_import_still_names_its_module() {
 
 #[test]
 fn a_future_answer_to_an_import_is_refused() {
-    let call = start("import tools").into_function_call().unwrap();
-    let err = call.resume_pending(PrintWriter::Stdout).unwrap_err();
+    let call = start("import tools").into_os_call().unwrap();
+    let call_id = call.call_id;
+    let err = call
+        .resume(ExtFunctionResult::Future(call_id), PrintWriter::Stdout)
+        .unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
       File "test.py", line 1, in <module>
@@ -251,7 +263,7 @@ fn a_future_answer_to_an_import_is_refused() {
 #[test]
 fn a_host_exception_hides_its_caret_only_at_an_import() {
     let boom = || MontyException::new(ExcType::ImportError, Some("boom".to_owned()));
-    let call = start("import tools").into_function_call().unwrap();
+    let call = start("import tools").into_os_call().unwrap();
     let err = call
         .resume(ExtFunctionResult::Error(boom()), PrintWriter::Stdout)
         .unwrap_err();
@@ -276,11 +288,28 @@ fn a_host_exception_hides_its_caret_only_at_an_import() {
     "#);
 }
 
-/// `__import__` is reserved for the import protocol: a direct call or a bare reference
-/// is a `NameError` raised by the sandbox itself, never a host call, so code cannot
-/// reach the host's modules (or an `__import__` host function) by spelling the name.
+/// `__import__` is an ordinary undefined name: an import is an OS call the
+/// sandbox code cannot produce by spelling a name, so a direct call reaches
+/// the host as any unknown function would, and is a `NameError` once nobody
+/// serves it.
 #[test]
-fn a_direct_dunder_import_is_a_name_error_without_a_host_call() {
+fn a_direct_dunder_import_is_an_ordinary_undefined_name() {
+    let call = start("__import__('tools')").into_function_call().unwrap();
+    assert_eq!(call.function_name, "__import__");
+    let err = call
+        .resume(
+            ExtFunctionResult::NotFound("__import__".to_owned()),
+            PrintWriter::Stdout,
+        )
+        .unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        __import__('tools')
+        ~~~~~~~~~~~~~~~~~~~
+    NameError: name '__import__' is not defined
+    "#);
+
     let err = MontyRun::new(
         "__import__('tools')".to_owned(),
         "test.py",
@@ -288,7 +317,7 @@ fn a_direct_dunder_import_is_a_name_error_without_a_host_call() {
         CompileOptions::default(),
     )
     .unwrap()
-    .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+    .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
     .unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
@@ -298,14 +327,21 @@ fn a_direct_dunder_import_is_a_name_error_without_a_host_call() {
     NameError: name '__import__' is not defined
     "#);
 
-    // a REPL would otherwise ask the host to look the name up
+    // a REPL asks the host to look the bare name up, as for any other
     let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
-    let err = repl
+    let ReplProgress::NameLookup(lookup) = repl
         .feed_start(
             "f = __import__",
             Vec::<(String, MontyObject)>::new(),
             PrintWriter::Stdout,
         )
+        .unwrap()
+    else {
+        panic!("expected the name to be looked up");
+    };
+    assert_eq!(lookup.name, "__import__");
+    let err = lookup
+        .resume(NameLookupResult::Undefined, PrintWriter::Stdout)
         .unwrap_err();
     assert_snapshot!(err.error.to_string(), @r#"
     Traceback (most recent call last):

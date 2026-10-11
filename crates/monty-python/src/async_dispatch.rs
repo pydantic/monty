@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::try_join_all;
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
@@ -24,9 +25,25 @@ use crate::external::{
     AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
 };
 
+/// Answers an `import` or `import_stubs` OS call (see
+/// [`is_module_call`](crate::external::is_module_call)) from `names`,
+/// returning `CallResult::ModuleCoroutine` when a factory must be awaited first.
+pub(crate) fn dispatch_module_call(
+    function_name: &str,
+    args: &CallArgs,
+    names: &HostNames,
+    instances: &InstanceStore,
+) -> CallResult {
+    Python::attach(|py| {
+        ExternalLookup::new(py, names, instances)
+            .module_call_or_coroutine(function_name, args)
+            .expect("only a module OS call is dispatched here")
+    })
+}
+
 /// Dispatches a function call to a host-routed method (when `object_id` is
 /// set — an instance method, a classmethod, or `__call__` construction) or an
-/// external function or import (answered from `names`), returning
+/// external function (answered from `names`), returning
 /// `CallResult::Coroutine` (for the caller to spawn) when the Python result
 /// is a coroutine.
 pub(crate) fn dispatch_function_call(
@@ -83,6 +100,9 @@ impl CoroutineMode {
 /// An answer the drive loop can await or spawn.
 pub(crate) type AnswerFuture = Pin<Box<dyn Future<Output = ExtFunctionResult> + Send>>;
 
+/// A module factory's awaitable, scheduled on the caller's event loop.
+type ModuleFuture = Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send>>;
+
 /// Converts the coroutine a host callback answered `call_id` with, spawning it
 /// into `join_set` or handing it back to await outside the callback context.
 pub(crate) fn dispatch_coroutine(
@@ -96,48 +116,47 @@ pub(crate) fn dispatch_coroutine(
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
 }
 
-/// Hands a module factory's awaitable to the caller as [`Dispatched::Module`]:
-/// the caller awaits it, then installs the module and answers under its own
+/// Hands module factories' awaitables to the caller as [`Dispatched::Module`]:
+/// the caller awaits them, then installs the modules and answers under its own
 /// callback context (see [`PendingModule`]).
 pub(crate) fn dispatch_module_coroutine(
-    name: String,
-    coro: Py<PyAny>,
+    names: Vec<String>,
+    coros: Vec<Py<PyAny>>,
     then: AfterModule,
 ) -> PyResult<Dispatched<AnswerFuture>> {
-    let future = python_future(coro)?;
-    Ok(Dispatched::Module(PendingModule {
-        name,
-        then,
-        future: Box::pin(future),
-    }))
+    let futures = coros
+        .into_iter()
+        .map(|coro| python_future(coro).map(|future| Box::pin(future) as ModuleFuture))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(Dispatched::Module(PendingModule { names, then, futures }))
 }
 
-/// A module factory's awaitable in flight. The caller awaits
+/// Module factories' awaitables in flight, one per name. The caller awaits
 /// [`settle`](Self::settle) outside the GIL, then finishes the request with
 /// [`SettledModule::dispatch`] inside its callback context, so installing the
-/// module and making the call it was needed for run where host callbacks do.
+/// modules and making the call they were needed for run where host callbacks do.
 pub(crate) struct PendingModule {
-    name: String,
+    names: Vec<String>,
     then: AfterModule,
-    future: Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send>>,
+    futures: Vec<ModuleFuture>,
 }
 
 impl PendingModule {
-    /// Awaits the factory.
+    /// Awaits every factory, concurrently; the first failure is the result.
     pub(crate) async fn settle(self) -> SettledModule {
         SettledModule {
-            name: self.name,
+            names: self.names,
             then: self.then,
-            result: self.future.await,
+            result: try_join_all(self.futures).await,
         }
     }
 }
 
-/// A settled module factory, ready to install its module and answer.
+/// Settled module factories, ready to install their modules and answer.
 pub(crate) struct SettledModule {
-    name: String,
+    names: Vec<String>,
     then: AfterModule,
-    result: PyResult<Py<PyAny>>,
+    result: PyResult<Vec<Py<PyAny>>>,
 }
 
 impl SettledModule {
@@ -153,8 +172,10 @@ impl SettledModule {
         names: &HostNames,
         instances: &InstanceStore,
     ) -> PyResult<Dispatched<AnswerFuture>> {
-        let result = self.result.map(|module| module.into_bound(py));
-        match ExternalLookup::new(py, names, instances).finish_after_module(&self.name, result, &self.then) {
+        let modules = self
+            .result
+            .map(|modules| modules.into_iter().map(|module| module.into_bound(py)).collect());
+        match ExternalLookup::new(py, names, instances).finish_after_module(&self.names, modules, &self.then) {
             Staged::Done(result) => Ok(Dispatched::AsValue(Box::pin(ready(result)))),
             Staged::Coroutine(coro) => dispatch_coroutine(coro, call_id, mode, join_set, instances),
         }

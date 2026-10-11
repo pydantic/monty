@@ -809,22 +809,6 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
-    /// One `.pyi` per host-provided module, so `import <module>` resolves during
-    /// type checking. Read only when `type_check` is true, but carried in the
-    /// session's dump either way.
-    #[prost(message, repeated, tag = "14")]
-    pub type_check_module_stubs: crate::budgeted_prost::alloc::vec::Vec<ModuleStub>,
-}
-/// The `.pyi` source of one host-provided module. `module` must be an
-/// identifier and not a module the sandbox provides itself, or the runtime and
-/// the checker would disagree about the import.
-#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
-#[prost(prost_path = "crate::budgeted_prost")]
-pub struct ModuleStub {
-    #[prost(string, tag = "1")]
-    pub module: crate::budgeted_prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub source: crate::budgeted_prost::alloc::string::String,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -1101,7 +1085,7 @@ pub struct OsCall {
     pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1211,6 +1195,22 @@ pub mod os_call {
         #[prost(double, tag = "1")]
         pub delay: f64,
     }
+    /// The argument of `OsCall.import`.
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct Import {
+        #[prost(string, tag = "1")]
+        pub module: crate::budgeted_prost::alloc::string::String,
+    }
+    /// The argument of `OsCall.import_stubs`, in source order.
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct ImportStubs {
+        #[prost(string, repeated, tag = "1")]
+        pub modules: crate::budgeted_prost::alloc::vec::Vec<
+            crate::budgeted_prost::alloc::string::String,
+        >,
+    }
     #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum Call {
@@ -1304,6 +1304,18 @@ pub mod os_call {
         SystemSleep(Sleep),
         #[prost(message, tag = "30")]
         AsyncSystemSleep(AsyncSleep),
+        /// ---- Host modules ----------------------------------------------------
+        /// `import <module>` of a module the child lacks: the top-level name. The
+        /// answer is the module value; `not_found` / `not_handled` raise
+        /// `ModuleNotFoundError`.
+        #[prost(message, tag = "31")]
+        Import(Import),
+        /// Before type-checking a feed, the `.pyi` of each top-level module the
+        /// snippet imports that the session has not asked about yet. The answer is
+        /// a dict of dotted module path to stub source or None; `not_found` /
+        /// `not_handled` mean no stubs.
+        #[prost(message, tag = "32")]
+        ImportStubs(ImportStubs),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

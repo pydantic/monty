@@ -4,6 +4,7 @@ the module stubs that type-check them."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import types
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -50,8 +51,8 @@ class _Tools:
 
 
 def test_import_binds_the_host_module(pool: Monty):
-    with pool.checkout(external_modules=MODULES) as session:
-        assert session.feed_run(CODE) == snapshot([3, 'ab', 3])
+    with pool.checkout() as session:
+        assert session.feed_run(CODE, external_modules=MODULES) == snapshot([3, 'ab', 3])
 
 
 @pytest.mark.parametrize(
@@ -59,28 +60,29 @@ def test_import_binds_the_host_module(pool: Monty):
     [
         pytest.param(
             ExternalModule(tools_module()),  # pyright: ignore[reportArgumentType]
-            snapshot(
-                "external_modules['tools'].module must be a dict, a ClassInstance or a callable returning one, not module"
-            ),
+            snapshot("external_modules['tools'].module must be a dict or a ClassInstance, not module"),
             id='module',
         ),
         pytest.param(
             ExternalModule(types.SimpleNamespace(**TOOLS)),  # pyright: ignore[reportArgumentType]
-            snapshot(
-                "external_modules['tools'].module must be a dict, a ClassInstance or a callable returning one, not SimpleNamespace"
-            ),
+            snapshot("external_modules['tools'].module must be a dict or a ClassInstance, not SimpleNamespace"),
             id='namespace',
         ),
         pytest.param(
             ExternalModule(_Tools),  # pyright: ignore[reportArgumentType]
-            snapshot(
-                "external_modules['tools'].module must be a dict, a ClassInstance or a callable returning one, not the class _Tools"
-            ),
+            snapshot("external_modules['tools'].module must be a dict or a ClassInstance, not the class _Tools"),
             id='class',
         ),
         pytest.param(
+            _Tools,
+            snapshot(
+                "external_modules['tools'] must be an ExternalModule or a callable returning one, not the class _Tools"
+            ),
+            id='class-entry',
+        ),
+        pytest.param(
             TOOLS,
-            snapshot("external_modules['tools'] must be an ExternalModule, not dict"),
+            snapshot("external_modules['tools'] must be an ExternalModule or a callable returning one, not dict"),
             id='bare-dict',
         ),
         pytest.param(
@@ -94,34 +96,41 @@ def test_other_module_shapes_are_rejected(pool: Monty, tools: Any, message: str)
     # a dict names exactly what crosses; a module would also expose its imports
     # (`from os import getcwd` makes `getcwd` a module attribute), `dir()` of an
     # arbitrary object whatever it carries, and a class is callable but would
-    # construct an instance, never a module shape
-    with pytest.raises(TypeError) as exc_info:
-        pool.checkout(external_modules={'tools': tools})
-    assert str(exc_info.value) == message
+    # construct an instance, never a module; all refused at the feed, before it runs
+    with pool.checkout() as session:
+        with pytest.raises(TypeError) as exc_info:
+            session.feed_run('1', external_modules={'tools': tools})
+        assert str(exc_info.value) == message
 
 
-def test_a_module_factory_runs_once_per_session_at_the_first_import(pool: Monty):
+def test_a_module_factory_runs_once_per_feed_when_first_needed(pool: Monty):
     calls = 0
 
-    def factory() -> dict[str, Any]:
+    def factory() -> ExternalModule:
         nonlocal calls
         calls += 1
-        return TOOLS
+        return ExternalModule(TOOLS)
 
-    with pool.checkout(external_modules={'tools': ExternalModule(factory)}) as session:
-        assert session.feed_run('1') == snapshot(1)
+    modules = {'tools': factory}
+    with pool.checkout() as session:
+        assert session.feed_run('1', external_modules=modules) == snapshot(1)
         assert calls == 0
         code = 'import tools\nimport tools as t\n[tools.add(1, 2), t.VERSION]'
-        assert session.feed_run(code) == snapshot([3, 3])
+        assert session.feed_run(code, external_modules=modules) == snapshot([3, 3])
         assert calls == 1
-        # the result stands for the module for the rest of the session
-        assert session.feed_run('import tools\ntools.VERSION') == snapshot(3)
-        assert calls == 1
+        # the result stands for the module for the rest of the feed; the next feed asks again
+        assert session.feed_run('import tools\ntools.VERSION', external_modules=modules) == snapshot(3)
+        assert calls == 2
+        # a host that wants one lookup per session memoizes the factory itself
+        cached = {'tools': functools.cache(factory)}
+        for _ in range(2):
+            assert session.feed_run('import tools\ntools.VERSION', external_modules=cached) == snapshot(3)
+        assert calls == 3
 
 
-async def _async_tools() -> dict[str, Any]:
+async def _async_tools() -> ExternalModule:
     await asyncio.sleep(0)
-    return TOOLS
+    return ExternalModule(TOOLS)
 
 
 class _AwaitableTools:
@@ -146,9 +155,9 @@ def _sub(a: int, b: int) -> int:
     return a - b
 
 
-async def _async_tools_with_async_add() -> dict[str, Any]:
+async def _async_tools_with_async_add() -> ExternalModule:
     await asyncio.sleep(0)
-    return {'add': _async_add, 'sub': _sub}
+    return ExternalModule({'add': _async_add, 'sub': _sub})
 
 
 async def test_an_awaitable_factory_serves_a_call_through_a_restored_binding():
@@ -157,48 +166,51 @@ async def test_an_awaitable_factory_serves_a_call_through_a_restored_binding():
     # binding (the attributes sent with it survive the dump), so its factory is
     # awaited on the call path, and then the async function it names
     async with AsyncMonty() as pool:
-        async with pool.checkout(external_modules={'tools': ExternalModule({'add': add, 'sub': _sub})}) as session:
-            await session.feed_run('import tools')
+        async with pool.checkout() as session:
+            await session.feed_run(
+                'import tools', external_modules={'tools': ExternalModule({'add': add, 'sub': _sub})}
+            )
             blob = await session.dump()
-        async with pool.checkout(external_modules={'tools': ExternalModule(_async_tools_with_async_add)}) as session:
+        async with pool.checkout() as session:
             await session.load_session(blob)
             code = '[await tools.add(1, 2), tools.sub(5, 3), await tools.add(3, 4)]'
-            assert await asyncio.wait_for(session.feed_run(code), 5) == snapshot([3, 2, 7])
+            modules = {'tools': _async_tools_with_async_add}
+            assert await asyncio.wait_for(session.feed_run(code, external_modules=modules), 5) == snapshot([3, 2, 7])
 
 
-async def _async_pkg() -> dict[str, Any]:
+async def _async_pkg() -> ExternalModule:
     await asyncio.sleep(0)
-    return {'VERSION': 1}
+    return ExternalModule({'VERSION': 1, 'sub': ExternalModule({'add': _async_add})})
 
 
 async def test_an_awaitable_factory_serves_a_call_into_a_submodule_through_a_restored_binding():
     # as above, through a binding into a submodule: the call names
     # `pkg.sub.add`, and it is `pkg` whose factory is awaited
     async with AsyncMonty() as pool:
-        pkg = ExternalModule({'VERSION': 1}, modules={'sub': ExternalModule({'add': add})})
-        async with pool.checkout(external_modules={'pkg': pkg}) as session:
-            await session.feed_run('import pkg.sub')
+        pkg = ExternalModule({'VERSION': 1, 'sub': ExternalModule({'add': add})})
+        async with pool.checkout() as session:
+            await session.feed_run('import pkg.sub', external_modules={'pkg': pkg})
             blob = await session.dump()
-        pkg = ExternalModule(_async_pkg, modules={'sub': ExternalModule({'add': _async_add})})
-        async with pool.checkout(external_modules={'pkg': pkg}) as session:
+        async with pool.checkout() as session:
             await session.load_session(blob)
             code = '[await pkg.sub.add(1, 2), pkg.VERSION, await pkg.sub.add(3, 4)]'
-            assert await asyncio.wait_for(session.feed_run(code), 5) == snapshot([3, 1, 7])
+            modules = {'pkg': _async_pkg}
+            assert await asyncio.wait_for(session.feed_run(code, external_modules=modules), 5) == snapshot([3, 1, 7])
 
 
 @pytest.mark.parametrize('awaitable', [_async_tools, _AwaitableTools], ids=['coroutine', 'awaitable'])
-async def test_an_async_module_factory_is_awaited(awaitable: Callable[[], Awaitable[dict[str, Any]]]):
+async def test_an_async_module_factory_is_awaited(awaitable: Callable[[], Awaitable[ExternalModule]]):
     calls = 0
 
-    def factory() -> Awaitable[dict[str, Any]]:
+    def factory() -> Awaitable[ExternalModule]:
         nonlocal calls
         calls += 1
         return awaitable()
 
     code = 'import tools\nimport tools as t\n[tools.add(1, 2), t.VERSION]'
     async with AsyncMonty() as pool:
-        async with pool.checkout(external_modules={'tools': ExternalModule(factory)}) as session:
-            assert await session.feed_run(code) == snapshot([3, 3])
+        async with pool.checkout() as session:
+            assert await session.feed_run(code, external_modules={'tools': factory}) == snapshot([3, 3])
             assert calls == 1
 
 
@@ -209,28 +221,34 @@ async def test_an_async_module_factory_is_awaited(awaitable: Callable[[], Awaita
         pytest.param(
             _async_tools,
             snapshot(
-                "RuntimeError: external_modules['tools'].module() returned an awaitable; async module factories require AsyncMonty"
+                "RuntimeError: external_modules['tools']() returned an awaitable; async module factories require AsyncMonty"
             ),
             id='coroutine-on-sync-pool',
         ),
         pytest.param(
             lambda: _AwaitableTools(),
             snapshot(
-                "RuntimeError: external_modules['tools'].module() returned an awaitable; async module factories require AsyncMonty"
+                "RuntimeError: external_modules['tools']() returned an awaitable; async module factories require AsyncMonty"
             ),
             id='awaitable-on-sync-pool',
         ),
         pytest.param(
             lambda: 3,
-            snapshot("TypeError: external_modules['tools'].module() returned int, not a dict or a ClassInstance"),
+            snapshot("TypeError: external_modules['tools']() returned int, not an ExternalModule"),
             id='not-a-module',
+        ),
+        pytest.param(
+            lambda: ExternalModule({'a.b': add}),
+            snapshot("ValueError: external_modules entries must have identifier keys, not 'a.b'"),
+            id='bad-key',
         ),
     ],
 )
 def test_a_module_factory_failure_raises_at_the_import(pool: Monty, factory: Any, message: str):
-    with pool.checkout(external_modules={'tools': ExternalModule(factory)}) as session:
+    """What a factory returns meets the checks a value entry passed at the feed, at the import."""
+    with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('import tools')
+            session.feed_run('import tools', external_modules={'tools': factory})
         assert str(exc_info.value) == message
         assert _AwaitableTools.closed == 0
         # the session is still usable
@@ -238,11 +256,11 @@ def test_a_module_factory_failure_raises_at_the_import(pool: Monty, factory: Any
 
 
 def test_submodules_are_attributes_of_their_parent(pool: Monty):
-    """`modules` nests a module under its parent: reached as an attribute, and by every
-    form of dotted import."""
+    """An `ExternalModule` in a module's dict is a submodule: reached as an attribute,
+    and by every form of dotted import."""
     sub = ExternalModule({'add': add, 'VERSION': 2})
-    pkg = ExternalModule({'VERSION': 1}, modules={'sub': sub})
-    with pool.checkout(external_modules={'pkg': pkg}) as session:
+    pkg = ExternalModule({'VERSION': 1, 'sub': sub})
+    with pool.checkout() as session:
         code = (
             'import pkg.sub\n'
             'import pkg.sub as s\n'
@@ -250,16 +268,16 @@ def test_submodules_are_attributes_of_their_parent(pool: Monty):
             'from pkg.sub import add, VERSION\n'
             '[pkg.VERSION, pkg.sub.VERSION, s.add(1, 2), sub.add(3, 4), add(5, 6), VERSION, type(pkg.sub).__name__]'
         )
-        assert session.feed_run(code) == snapshot([1, 2, 3, 7, 11, 2, 'pkg.sub'])
+        assert session.feed_run(code, external_modules={'pkg': pkg}) == snapshot([1, 2, 3, 7, 11, 2, 'pkg.sub'])
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('import pkg.nope')
+            session.feed_run('import pkg.nope', external_modules={'pkg': pkg})
         assert str(exc_info.value) == snapshot("ModuleNotFoundError: No module named 'pkg.nope'")
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('from pkg.sub.deeper import x')
+            session.feed_run('from pkg.sub.deeper import x', external_modules={'pkg': pkg})
         assert str(exc_info.value) == snapshot("ModuleNotFoundError: No module named 'pkg.sub.deeper'")
         # a submodule's stand-in answers a call on itself like any module's
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('import pkg.sub\npkg.sub()')
+            session.feed_run('import pkg.sub\npkg.sub()', external_modules={'pkg': pkg})
         assert str(exc_info.value) == snapshot("TypeError: 'pkg.sub' object is not callable")
 
 
@@ -268,45 +286,31 @@ def test_a_class_instance_submodule(pool: Monty):
         def add(self, a: int, b: int) -> int:
             return a + b
 
-    pkg = ExternalModule({}, modules={'sub': ExternalModule(ClassInstance(Tools(), allowed_methods={'add'}))})
-    with pool.checkout(external_modules={'pkg': pkg}) as session:
-        assert session.feed_run('from pkg import sub\nsub.add(2, 3)') == snapshot(5)
+    pkg = ExternalModule({'sub': ExternalModule(ClassInstance(Tools(), allowed_methods={'add'}))})
+    with pool.checkout() as session:
+        assert session.feed_run('from pkg import sub\nsub.add(2, 3)', external_modules={'pkg': pkg}) == snapshot(5)
 
 
 @pytest.mark.parametrize(
     ('entry', 'error', 'message'),
     [
         pytest.param(
-            ExternalModule({}, modules={'sub': ExternalModule(lambda: TOOLS)}),
+            ExternalModule({'sub': ExternalModule(lambda: TOOLS)}),  # pyright: ignore[reportArgumentType]
             TypeError,
             snapshot("external_modules['pkg.sub'].module must be a dict or a ClassInstance, not function"),
             id='nested-factory',
         ),
         pytest.param(
-            ExternalModule({}, modules={'1sub': ExternalModule(TOOLS)}),
+            ExternalModule({'1sub': ExternalModule(TOOLS)}),
             ValueError,
-            snapshot("external_modules['pkg'].modules name '1sub' is not a valid identifier"),
+            snapshot("external_modules entries must have identifier keys, not '1sub'"),
             id='nested-name',
         ),
         pytest.param(
-            ExternalModule({'sub': 1}, modules={'sub': ExternalModule(TOOLS)}),
-            ValueError,
-            snapshot("external_modules['pkg'].module has both an item and a submodule named 'sub'"),
-            id='clash',
-        ),
-        pytest.param(
-            ExternalModule(ClassInstance(_Tools()), modules={'sub': ExternalModule(TOOLS)}),
+            ExternalModule({'sub': ExternalModule(TOOLS, stubs=1)}),  # pyright: ignore[reportArgumentType]
             TypeError,
-            snapshot(
-                "external_modules['pkg'].modules must be None when .module is a ClassInstance, whose attributes are its own"
-            ),
-            id='class-instance-parent',
-        ),
-        pytest.param(
-            ExternalModule({}, modules=[]),  # pyright: ignore[reportArgumentType]
-            TypeError,
-            snapshot("external_modules['pkg'].modules must be a dict or None, not list"),
-            id='modules-not-dict',
+            snapshot("external_modules['pkg.sub'].stubs must be a str or None, not int"),
+            id='nested-stubs',
         ),
         pytest.param(
             ExternalModule({'a.b': add}),
@@ -317,49 +321,23 @@ def test_a_class_instance_submodule(pool: Monty):
     ],
 )
 def test_invalid_submodules_are_rejected(pool: Monty, entry: ExternalModule, error: type[Exception], message: str):
-    with pytest.raises(error) as exc_info:
-        pool.checkout(external_modules={'pkg': entry})
-    assert str(exc_info.value) == message
+    with pool.checkout() as session:
+        with pytest.raises(error) as exc_info:
+            session.feed_run('1', external_modules={'pkg': entry})
+        assert str(exc_info.value) == message
 
 
 def test_cyclic_submodules_are_rejected(pool: Monty):
-    """An entry nested inside itself is refused at checkout rather than walked forever."""
-    modules: dict[str, ExternalModule] = {}
-    pkg = ExternalModule({}, modules=modules)
-    modules['sub'] = ExternalModule({}, modules={'pkg': pkg})
-    with pytest.raises(ValueError) as exc_info:
-        pool.checkout(external_modules={'pkg': pkg})
+    """An entry nested inside itself is refused at the feed rather than walked forever."""
+    module: dict[str, Any] = {}
+    pkg = ExternalModule(module)
+    module['sub'] = ExternalModule({'pkg': pkg})
+    with pool.checkout() as session:
+        with pytest.raises(ValueError) as exc_info:
+            session.feed_run('1', external_modules={'pkg': pkg})
     assert str(exc_info.value) == snapshot(
         "external_modules['pkg.sub.pkg'] is external_modules['pkg'] again: modules cannot nest cyclically"
     )
-
-
-@pytest.mark.parametrize(
-    ('factory', 'message'),
-    [
-        pytest.param(
-            lambda: ClassInstance(_Tools()),
-            snapshot(
-                "TypeError: external_modules['pkg'].module() returned a ClassInstance, which cannot carry .modules"
-            ),
-            id='class-instance',
-        ),
-        pytest.param(
-            lambda: {'sub': 1},
-            snapshot(
-                "ValueError: external_modules['pkg'].module() returned a dict with both an item and a submodule named 'sub'"
-            ),
-            id='clash',
-        ),
-    ],
-)
-def test_a_factory_result_is_checked_against_its_submodules(pool: Monty, factory: Any, message: str):
-    """What a factory returns meets the checks a value entry passed at checkout, at the import."""
-    pkg = ExternalModule(factory, modules={'sub': ExternalModule(TOOLS)})
-    with pool.checkout(external_modules={'pkg': pkg}) as session:
-        with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('import pkg')
-        assert str(exc_info.value) == message
 
 
 @pytest.mark.parametrize(
@@ -389,9 +367,11 @@ def test_name_based_calls_respect_module_exposure(pool: Monty, tools: Any, name:
         return 'hidden'
 
     probe.__name__ = name
-    with pool.checkout(external_modules={'tools': ExternalModule(tools)}) as session:
+    with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('import tools\nprobe()', inputs={'probe': probe})
+            session.feed_run(
+                'import tools\nprobe()', inputs={'probe': probe}, external_modules={'tools': ExternalModule(tools)}
+            )
         assert str(exc_info.value) == message
 
 
@@ -403,33 +383,33 @@ def test_a_forged_name_with_many_dots_is_matched_against_the_configured_modules(
         return 'hidden'
 
     probe.__name__ = 'a.' * 5000 + 'f'
-    modules = {'tools': ExternalModule(TOOLS), 'a': ExternalModule({}, modules={'a': ExternalModule(TOOLS)})}
-    with pool.checkout(external_modules=modules) as session:
+    modules = {'tools': ExternalModule(TOOLS), 'a': ExternalModule({'a': ExternalModule(TOOLS)})}
+    with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('probe()', inputs={'probe': probe})
+            session.feed_run('probe()', inputs={'probe': probe}, external_modules=modules)
         assert str(exc_info.value) == snapshot(f"NameError: name '{probe.__name__}' is not defined")
         # a configured path still matches
-        assert session.feed_run('from a.a import add\nadd(1, 2)') == snapshot(3)
+        assert session.feed_run('from a.a import add\nadd(1, 2)', external_modules=modules) == snapshot(3)
 
 
 def test_the_module_object(pool: Monty):
     code = 'import tools\nimport tools as t\n[tools.add is t.add, type(tools).__name__, hasattr(tools, "nope")]'
-    with pool.checkout(external_modules=MODULES) as session:
-        assert session.feed_run(code) == snapshot([True, 'tools', False])
+    with pool.checkout() as session:
+        assert session.feed_run(code, external_modules=MODULES) == snapshot([True, 'tools', False])
 
 
 def test_import_errors(pool: Monty):
-    with pool.checkout(external_modules=MODULES) as session:
+    with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('import nope')
+            session.feed_run('import nope', external_modules=MODULES)
         assert str(exc_info.value) == snapshot("ModuleNotFoundError: No module named 'nope'")
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('from tools import nope')
+            session.feed_run('from tools import nope', external_modules=MODULES)
         assert str(exc_info.value) == snapshot("ImportError: cannot import name 'nope' from 'tools' (unknown location)")
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run("import tools\ntools.add('x', 1)")
+            session.feed_run("import tools\ntools.add('x', 1)", external_modules=MODULES)
         assert str(exc_info.value) == snapshot('TypeError: can only concatenate str (not "int") to str')
-    with pool.checkout() as session:
+        # no modules at all
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('import tools')
         assert str(exc_info.value) == snapshot("ModuleNotFoundError: No module named 'tools'")
@@ -438,12 +418,12 @@ def test_import_errors(pool: Monty):
 def test_a_dict_module_is_not_callable_and_has_no_other_methods(pool: Monty):
     """The sandbox routes `tools()` and `tools.nope()` to the host as method calls on the module's
     stand-in, which has no host object behind it: they fail as on a value of that kind."""
-    with pool.checkout(external_modules=MODULES) as session:
+    with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('import tools\ntools()')
+            session.feed_run('import tools\ntools()', external_modules=MODULES)
         assert str(exc_info.value) == snapshot("TypeError: 'tools' object is not callable")
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.feed_run('import tools\ntools.nope()')
+            session.feed_run('import tools\ntools.nope()', external_modules=MODULES)
         assert str(exc_info.value) == snapshot("AttributeError: 'tools' object has no attribute 'nope'")
 
 
@@ -456,9 +436,11 @@ def test_a_class_type_in_a_module_dict_is_a_type(pool: Monty):
             self.key = key
 
     tools = {'Config': ClassType(Config, init=True), 'Plain': Config}
-    with pool.checkout(external_modules={'tools': ExternalModule(tools)}) as session:
+    with pool.checkout() as session:
         code = 'import tools\nc = tools.Config("k")\n[isinstance(c, tools.Config), type(c).__name__, type(tools.Plain).__name__]'
-        assert session.feed_run(code) == snapshot([True, 'Config', 'function'])
+        assert session.feed_run(code, external_modules={'tools': ExternalModule(tools)}) == snapshot(
+            [True, 'Config', 'function']
+        )
 
 
 def test_a_class_instance_module(pool: Monty):
@@ -467,16 +449,33 @@ def test_a_class_instance_module(pool: Monty):
             return a + b
 
     tools = ClassInstance(Tools(), allowed_methods={'add'})
-    with pool.checkout(external_modules={'tools': ExternalModule(tools)}) as session:
-        assert session.feed_run('import tools\ntools.add(2, 3)') == snapshot(5)
+    with pool.checkout() as session:
+        assert session.feed_run('import tools\ntools.add(2, 3)', external_modules={'tools': ExternalModule(tools)}) == (
+            snapshot(5)
+        )
 
 
 def test_resume_auto_answers_imports(pool: Monty):
-    with pool.checkout(external_modules=MODULES) as session:
-        step = session.feed_start(CODE)
+    """An import surfaces as an OS-call snapshot, which `resume_auto` answers from the
+    captured `external_modules`; so does the stubs ask of a type-checked feed."""
+    stubs = ADD_STUB + 'def concat(a: str, b: str) -> str: ...\nVERSION: int\n'
+    modules = {'tools': ExternalModule(TOOLS, stubs=stubs)}
+    with pool.checkout(type_check=True) as session:
+        step = session.feed_start(CODE, external_modules=modules)
+        calls: list[str] = []
         while not isinstance(step, MontyComplete):
+            calls.append(repr(step))
             step = step.resume_auto()
         assert step.output == snapshot([3, 'ab', 3])
+        assert calls == snapshot(
+            [
+                'FunctionSnapshot(function_name="import_stubs", is_os_function=true)',
+                'FunctionSnapshot(function_name="import", is_os_function=true)',
+                'FunctionSnapshot(function_name="import", is_os_function=true)',
+                'FunctionSnapshot(function_name="tools.add", is_os_function=false)',
+                'FunctionSnapshot(function_name="tools.concat", is_os_function=false)',
+            ]
+        )
 
 
 async def test_async_tools_run_concurrently():
@@ -493,40 +492,99 @@ async def test_async_tools_run_concurrently():
     code = 'import asyncio\nimport tools\nfrom tools import second\nawait asyncio.gather(tools.first(), second())'
     async with AsyncMonty() as pool:
         modules = {'tools': ExternalModule({'first': first, 'second': second})}
-        async with pool.checkout(external_modules=modules) as session:
-            result = await asyncio.wait_for(session.feed_run(code), 5)
+        async with pool.checkout() as session:
+            result = await asyncio.wait_for(session.feed_run(code, external_modules=modules), 5)
     assert result == snapshot([1, 2])
 
 
 def test_module_stubs_type_check_imports(pool: Monty):
     modules = {'tools': ExternalModule(TOOLS, stubs=ADD_STUB)}
-    with pool.checkout(type_check=True, type_check_format='concise', external_modules=modules) as session:
+    with pool.checkout(type_check=True, type_check_format='concise') as session:
         with pytest.raises(MontyTypingError) as exc_info:
-            session.feed_run("from tools import add\nadd('x', 2)")
+            session.feed_run("from tools import add\nadd('x', 2)", external_modules=modules)
         assert str(exc_info.value) == snapshot(
             'main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`\n'
         )
-        assert session.feed_run('import tools\ntools.add(1, 2)') == snapshot(3)
+        assert session.feed_run('import tools\ntools.add(1, 2)', external_modules=modules) == snapshot(3)
         # the import committed by that feed is still bound for the next check
-        assert session.feed_run('tools.add(3, 4)') == snapshot(7)
+        assert session.feed_run('tools.add(3, 4)', external_modules=modules) == snapshot(7)
+
+
+def test_module_stubs_are_fetched_lazily(pool: Monty):
+    """A type-checked feed asks for the stubs of the modules it imports before it is checked,
+    which runs the factory; the import then reuses the result, and later feeds ask no more."""
+    calls = 0
+
+    def factory() -> ExternalModule:
+        nonlocal calls
+        calls += 1
+        return ExternalModule(TOOLS, stubs=ADD_STUB)
+
+    modules = {'tools': factory}
+    with pool.checkout(type_check=True, type_check_format='concise') as session:
+        assert session.feed_run('1', external_modules=modules) == snapshot(1)
+        assert calls == 0
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run("import tools\ntools.add('x', 2)", external_modules=modules)
+        assert str(exc_info.value) == snapshot(
+            'main.py:2:11: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`\n'
+        )
+        assert calls == 1
+        assert session.feed_run('import tools\ntools.add(1, 2)', external_modules=modules) == snapshot(3)
+        # once for the stubs ask and the import of the failed feed, once for the import of the next
+        assert calls == 2
+
+
+def test_the_os_handler_never_sees_a_module_ask(pool: Monty):
+    def os_handler(**kwargs: Any) -> Any:
+        raise AssertionError(f'unexpected OS call {kwargs}')
+
+    modules = {'tools': ExternalModule(TOOLS, stubs=ADD_STUB)}
+    with pool.checkout(type_check=True) as session:
+        assert session.feed_run('import tools\ntools.add(1, 2)', external_modules=modules, os=os_handler) == snapshot(3)
+
+
+async def test_async_factories_are_awaited_together_for_a_stubs_ask():
+    ready = asyncio.Event()
+
+    async def tools() -> ExternalModule:
+        await ready.wait()
+        return ExternalModule(TOOLS, stubs=ADD_STUB)
+
+    async def other() -> ExternalModule:
+        ready.set()
+        return ExternalModule({'VERSION': 2}, stubs='VERSION: int\n')
+
+    modules = {'tools': tools, 'other': other}
+    code = 'import tools, other\ntools.add(other.VERSION, 1)'
+    async with AsyncMonty() as pool:
+        async with pool.checkout(type_check=True) as session:
+            assert await asyncio.wait_for(session.feed_run(code, external_modules=modules), 5) == snapshot(3)
 
 
 def test_submodule_stubs_type_check_as_a_package(pool: Monty):
     sub = ExternalModule({'add': add}, stubs=ADD_STUB)
-    pkg = ExternalModule({'VERSION': 1}, stubs='VERSION: int\n', modules={'sub': sub})
-    with pool.checkout(type_check=True, type_check_format='concise', external_modules={'pkg': pkg}) as session:
-        assert session.feed_run('import pkg.sub\nfrom pkg import VERSION\npkg.sub.add(1, VERSION)') == snapshot(2)
+    pkg = ExternalModule({'VERSION': 1, 'sub': sub}, stubs='VERSION: int\n')
+    with pool.checkout(type_check=True, type_check_format='concise') as session:
+        code = 'import pkg.sub\nfrom pkg import VERSION\npkg.sub.add(1, VERSION)'
+        assert session.feed_run(code, external_modules={'pkg': pkg}) == snapshot(2)
         with pytest.raises(MontyTypingError) as exc_info:
-            session.feed_run("from pkg.sub import add\nadd('x', 2)")
+            session.feed_run("from pkg.sub import add\nadd('x', 2)", external_modules={'pkg': pkg})
         assert str(exc_info.value) == snapshot(
             'main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`\n'
         )
 
 
 def test_a_module_without_stubs_does_not_type_check(pool: Monty):
-    with pool.checkout(type_check=True, type_check_format='concise', external_modules=MODULES) as session:
+    with pool.checkout(type_check=True, type_check_format='concise') as session:
         with pytest.raises(MontyTypingError) as exc_info:
-            session.feed_run('import tools')
+            session.feed_run('import tools', external_modules=MODULES)
+        assert str(exc_info.value) == snapshot(
+            'main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`\n'
+        )
+        # asked about once per session: a stub supplied later is not consulted
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run('import tools', external_modules={'tools': ExternalModule(TOOLS, stubs=ADD_STUB)})
         assert str(exc_info.value) == snapshot(
             'main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`\n'
         )
@@ -534,20 +592,20 @@ def test_a_module_without_stubs_does_not_type_check(pool: Monty):
 
 def test_module_stubs_ride_in_a_dump(pool: Monty):
     modules = {'tools': ExternalModule(TOOLS, stubs=ADD_STUB)}
-    with pool.checkout(type_check=True, type_check_format='concise', external_modules=modules) as session:
-        assert session.feed_run('import tools\ntools.add(1, 2)') == snapshot(3)
+    with pool.checkout(type_check=True, type_check_format='concise') as session:
+        assert session.feed_run('import tools\ntools.add(1, 2)', external_modules=modules) == snapshot(3)
         blob = session.dump()
 
     # the dump brings its own type checking, stubs and committed import; the
-    # module itself is host state, so the restoring checkout supplies it again
-    with pool.checkout(external_modules=MODULES) as session:
+    # module itself is host state, so the restored session's feeds supply it again
+    with pool.checkout() as session:
         assert session.load_session(blob) is None
         with pytest.raises(MontyTypingError) as exc_info:
-            session.feed_run("tools.add('x', 2)")
+            session.feed_run("tools.add('x', 2)", external_modules=MODULES)
         assert str(exc_info.value) == snapshot(
             'main.py:1:11: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`\n'
         )
-        assert session.feed_run('tools.add(3, 4)') == snapshot(7)
+        assert session.feed_run('tools.add(3, 4)', external_modules=MODULES) == snapshot(7)
 
 
 @pytest.mark.parametrize(
@@ -558,26 +616,24 @@ def test_module_stubs_ride_in_a_dump(pool: Monty):
     ],
 )
 def test_invalid_module_names(pool: Monty, module: str, message: str):
-    for entry in (ExternalModule({}, stubs=''), ExternalModule({})):
-        with pytest.raises(ValueError) as exc_info:
-            pool.checkout(external_modules={module: entry})
-        assert str(exc_info.value) == message
+    with pool.checkout() as session:
+        for entry in (ExternalModule({}, stubs=''), ExternalModule({})):
+            with pytest.raises(ValueError) as exc_info:
+                session.feed_run('1', external_modules={module: entry})
+            assert str(exc_info.value) == message
 
 
 def test_a_module_the_type_checker_alone_provides_is_served_without_a_stub(pool: Monty):
     # the runtime asks the host for `abc`, so a host may serve it
     abc = ExternalModule({'VERSION': 1})
-    with pool.checkout(external_modules={'abc': abc}) as session:
-        assert session.feed_run('import abc\nabc.VERSION') == snapshot(1)
-    # the checker keeps typeshed's stub for it, which the entry cannot replace
-    with pool.checkout(external_modules={'abc': abc}, type_check=True, type_check_format='concise') as session:
+    with pool.checkout() as session:
+        assert session.feed_run('import abc\nabc.VERSION', external_modules={'abc': abc}) == snapshot(1)
+    # the checker keeps typeshed's stub for it, which an entry's stub cannot replace
+    with pool.checkout(type_check=True, type_check_format='concise') as session:
         with pytest.raises(MontyTypingError) as exc_info:
-            session.feed_run('import abc\nabc.VERSION')
+            session.feed_run(
+                'import abc\nabc.VERSION', external_modules={'abc': ExternalModule({'VERSION': 1}, stubs='')}
+            )
         assert str(exc_info.value) == snapshot(
             'main.py:2:1: error[unresolved-attribute] Module `abc` has no member `VERSION`\n'
         )
-    with pytest.raises(ValueError) as exc_info:
-        pool.checkout(external_modules={'abc': ExternalModule({}, stubs='')})
-    assert str(exc_info.value) == snapshot(
-        'module "abc" is provided by the sandbox or its type checker and cannot be replaced'
-    )

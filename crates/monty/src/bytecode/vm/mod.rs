@@ -21,9 +21,7 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
-use monty_types::{
-    IMPORT_FUNCTION, InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange,
-};
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
@@ -1419,7 +1417,7 @@ impl<'h> VM<'h> {
                 Opcode::LoadGlobalCallable => {
                     let (slot, name_idx) = self.current_frame.fetch_u16_u16();
                     let name_id = StringId::from_index(name_idx);
-                    try_catch!(self, self.load_global_callable(slot, name_id));
+                    self.load_global_callable(slot, name_id);
                 }
                 Opcode::StoreGlobal => {
                     let slot = self.current_frame.fetch_u16();
@@ -2085,18 +2083,15 @@ impl<'h> VM<'h> {
     }
 
     /// Loads a built-in module, or asks the host for any other: the import
-    /// suspends as an external call of [`IMPORT_FUNCTION`] with the module
-    /// name as its argument, and the host's answer becomes the module value
-    /// (a `not_found` answer raises `ModuleNotFoundError`). The name is always
-    /// a top-level one; `LoadSubmodule` walks the rest of a dotted import.
+    /// suspends as an [`OsFunctionCall::Import`] of the module name, and the
+    /// host's answer becomes the module value (`not_found` raises
+    /// `ModuleNotFoundError`). The name is always a top-level one;
+    /// `LoadSubmodule` walks the rest of a dotted import.
     fn load_module(&mut self, module_id: u16) -> CallResult {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
             Some(module) => CallResult::Value(Value::Ref(module.create(self))),
-            None => CallResult::External(
-                EitherStr::Heap(IMPORT_FUNCTION.to_owned()),
-                ArgValues::One(Value::InternString(name_id)),
-            ),
+            None => CallResult::OsCall(OsFunctionCall::Import(self.interns.get_str(name_id).to_owned())),
         }
     }
 
@@ -2532,24 +2527,20 @@ impl<'h> VM<'h> {
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
-    /// The one undefined name that never reaches the host is [`IMPORT_FUNCTION`].
-    fn load_global_callable(&mut self, slot: u16, name_id: StringId) -> RunResult<()> {
+    fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
             if let Some(builtin) = self.builtin_for_name(name_id) {
                 self.push(builtin);
-                return Ok(());
+                return;
             }
             // A reserved module dunder (e.g. `__name__`) in call position resolves
             // to its fixed value; the subsequent call then fails with the usual
             // "object is not callable" error, matching CPython.
             if let Some(value) = self.module_dunder(name_id) {
                 self.push(value);
-                return Ok(());
-            }
-            if self.is_import_function(name_id) {
-                return Err(self.name_error(slot, Some(name_id)));
+                return;
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
@@ -2558,14 +2549,6 @@ impl<'h> VM<'h> {
         } else {
             self.push(value);
         }
-        Ok(())
-    }
-
-    /// Whether an undefined global is the reserved [`IMPORT_FUNCTION`]: an `import`
-    /// suspends under that name, so a host answering it from its modules must never
-    /// be reached by sandbox code spelling the name itself, which stays a `NameError`.
-    fn is_import_function(&self, name_id: StringId) -> bool {
-        self.interns.get_str(name_id) == IMPORT_FUNCTION
     }
 
     /// Creates an UnboundLocalError for a local variable accessed before assignment.
@@ -2672,9 +2655,6 @@ impl<'h> VM<'h> {
             if let Some(value) = self.module_dunder(name_id) {
                 self.push(value);
                 return Ok(None);
-            }
-            if self.is_import_function(name_id) {
-                return Err(self.name_error(slot, Some(name_id)));
             }
             Ok(Some(FrameExit::NameLookup {
                 name_id,

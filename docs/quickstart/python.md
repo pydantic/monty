@@ -89,17 +89,18 @@ it.
 
 A name present in both is served by the eager `inputs` binding.
 
-`external_modules` on `checkout` names the modules the sandbox may `import`, each an
+`external_modules`, beside `external_lookup`, names the modules the sandbox may `import`, each an
 [`ExternalModule`][pydantic_monty.ExternalModule] pairing a dict of the module's public items with its type stub:
 
 ```python
 from pydantic_monty import ExternalModule, Monty
 
-tools = ExternalModule({'add': lambda a, b: a + b})
+modules = {'tools': ExternalModule({'add': lambda a, b: a + b})}
+code = 'import tools\ntools.add(1, 2)'
 
 with Monty() as pool:
-    with pool.checkout(external_modules={'tools': tools}) as session:
-        print(session.feed_run('import tools\ntools.add(1, 2)'))
+    with pool.checkout() as session:
+        print(session.feed_run(code, external_modules=modules))
         #> 3
 ```
 

@@ -174,7 +174,9 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         | OsFunctionCall::Sleep(_)
         | OsFunctionCall::SystemSleep(_)
         | OsFunctionCall::AsyncSleep(_)
-        | OsFunctionCall::AsyncSystemSleep(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
+        | OsFunctionCall::AsyncSystemSleep(_)
+        | OsFunctionCall::Import(_)
+        | OsFunctionCall::ImportStubs(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
     }
 }
 

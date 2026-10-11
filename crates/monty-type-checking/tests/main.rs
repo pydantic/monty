@@ -1,7 +1,7 @@
 use std::thread;
 
 use insta::assert_snapshot;
-use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, top_level_imports};
+use monty_type_checking::{ImportedModule, SnippetImports, SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
     CHECKER_MODULE_NAMES, ModuleStub, ModuleStubError, SANDBOX_MODULE_NAMES, TypeCheckingConfig, TypeCheckingFormat,
 };
@@ -541,7 +541,7 @@ fn the_prelude_carries_a_committed_import_into_the_next_snippet() {
     let lost = render_with(&mut checker, "math.sqrt(4)\n", &without);
     assert_snapshot!(lost.unwrap(), @"main.py:1:1: error[unresolved-reference] Name `math` used when not defined");
 
-    let prelude = top_level_imports(committed.source_code);
+    let prelude = scan_imports(committed.source_code).prelude;
     let with = TypeCheckContext {
         prelude: &prelude,
         ..without
@@ -560,7 +560,7 @@ fn the_prelude_carries_a_committed_import_into_the_next_snippet() {
 #[test]
 fn an_unresolved_import_in_the_prelude_is_not_reported_again() {
     let committed = SourceFile::new("import requests\n", "repl_type_stubs.pyi");
-    let prelude = top_level_imports("import requests  # type: ignore\n");
+    let prelude = scan_imports("import requests  # type: ignore\n").prelude;
     assert_eq!(prelude, "import requests\n");
     let context = TypeCheckContext {
         stubs: Some(&committed),
@@ -577,9 +577,10 @@ fn an_unresolved_import_in_the_prelude_is_not_reported_again() {
 
 /// Imports under a module-level branch, loop, `try` or `with` are carried
 /// (the runtime may have bound them); those in a function or class body are
-/// not, as they bind locally.
+/// not, as they bind locally. Each top-level module is listed once, at its
+/// first import.
 #[test]
-fn top_level_imports_keeps_aliases_and_drops_the_rest() {
+fn scan_imports_keeps_aliases_and_drops_the_rest() {
     let source = "\
 from __future__ import annotations
 import math, json as j
@@ -609,7 +610,8 @@ match x:
     case 1:
         import asyncio
 ";
-    assert_snapshot!(top_level_imports(source), @r"
+    let imports = scan_imports(source);
+    assert_snapshot!(imports.prelude, @r"
     import math, json as j
     from tools import add, sub as minus
     import os
@@ -621,7 +623,21 @@ match x:
     import random
     import asyncio
     ");
-    assert_eq!(top_level_imports("x = (\n"), "");
+    let modules: Vec<_> = imports.modules.iter().map(|module| module.name.as_str()).collect();
+    assert_eq!(
+        modules,
+        [
+            "math", "json", "tools", "os", "sys", "time", "fast", "slow", "datetime", "random", "asyncio"
+        ]
+    );
+    assert_eq!(scan_imports("x = (\n"), SnippetImports::default());
+
+    // a dotted import names its top-level module, once, at its first statement
+    let imports = scan_imports("import a.b\nfrom a.c import d\nimport a\n");
+    assert_eq!(imports.modules.len(), 1);
+    let ImportedModule { name, range } = &imports.modules[0];
+    assert_eq!(name, "a");
+    assert_eq!(&"import a.b\nfrom a.c import d\nimport a\n"[*range], "import a.b");
 }
 
 #[test]

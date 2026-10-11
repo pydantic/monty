@@ -612,18 +612,6 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
-  // One `.pyi` per host-provided module, so `import <module>` resolves during
-  // type checking. Read only when `type_check` is true, but carried in the
-  // session's dump either way.
-  repeated ModuleStub type_check_module_stubs = 14;
-}
-
-// The `.pyi` source of one host-provided module. `module` must be an
-// identifier and not a module the sandbox provides itself, or the runtime and
-// the checker would disagree about the import.
-message ModuleStub {
-  string module = 1;
-  string source = 2;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -933,6 +921,17 @@ message OsCall {
     // waited out by the parent without invoking its OS handler.
     Sleep system_sleep = 29;
     AsyncSleep async_system_sleep = 30;
+
+    // ---- Host modules ----------------------------------------------------
+    // `import <module>` of a module the child lacks: the top-level name. The
+    // answer is the module value; `not_found` / `not_handled` raise
+    // `ModuleNotFoundError`.
+    Import import = 31;
+    // Before type-checking a feed, the `.pyi` of each top-level module the
+    // snippet imports that the session has not asked about yet. The answer is
+    // a dict of dotted module path to stub source or None; `not_found` /
+    // `not_handled` mean no stubs.
+    ImportStubs import_stubs = 32;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -1008,6 +1007,16 @@ message OsCall {
     // How long to wait, under the same constraints as `Sleep.seconds`.
     double delay = 1;
   }
+
+// The argument of `OsCall.import`.
+message Import {
+  string module = 1;
+}
+
+// The argument of `OsCall.import_stubs`, in source order.
+message ImportStubs {
+  repeated string modules = 1;
+}
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether

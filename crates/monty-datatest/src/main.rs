@@ -33,8 +33,8 @@ use monty::{Dump, MontyRepl, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, IMPORT_FUNCTION, MontyException, MontyFileHandle,
-    MontyObject, MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
+    MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
     SandboxTimeZone, dir_stat, file_stat,
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -592,17 +592,6 @@ fn dispatch_external_call(name: &str, call: &CallArgs, registry: &mut FixtureReg
             };
             DispatchResult::AsyncFail(MontyException::new(exc_type, Some(message)))
         }
-        IMPORT_FUNCTION => {
-            // `import tools` binds a host object carrying the fixture functions;
-            // any other module is not found, which the sandbox raises as `ModuleNotFoundError`.
-            assert!(args.len() == 1, "__import__ requires 1 argument");
-            let module = String::try_from(&args[0]).expect("__import__: module name must be str");
-            if module == "tools" {
-                DispatchResult::Sync(registry.make_tools_module().into())
-            } else {
-                DispatchResult::Sync(ExtFunctionResult::NotFound(name.to_owned()))
-            }
-        }
         _ => panic!("Unknown external function: {name}"),
     }
 }
@@ -1031,8 +1020,13 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 /// already carries typed args, so we destructure directly instead of going
 /// through `MontyObject` indexing.
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
-fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
+fn dispatch_os_call(call: &OsFunctionCall, registry: &mut FixtureRegistry) -> ExtFunctionResult {
     match call {
+        // `import tools` binds a host object carrying the fixture functions; any
+        // other module is not found, which the sandbox raises as `ModuleNotFoundError`.
+        OsFunctionCall::Import(module) if module == "tools" => registry.make_tools_module().into(),
+        OsFunctionCall::Import(_) => ExtFunctionResult::NotFound(call.name().to_owned()),
+        OsFunctionCall::ImportStubs(_) => unreachable!("{} is asked only by a type-checking worker", call.name()),
         // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
         // `OsPolicy::default()` answers the clock and initial random seed in the sandbox.
@@ -1821,6 +1815,7 @@ fn run_mount_fs_iter_loop(
     limits: ResourceLimits,
 ) -> Result<MontyObject, MontyException> {
     let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
+    let mut registry = FixtureRegistry::new();
 
     loop {
         // As in `run_iter_loop`: every suspension goes through the dump format,
@@ -1852,7 +1847,7 @@ fn run_mount_fs_iter_loop(
                     MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
                     MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
                     // Non-filesystem operation — dispatch to the regular handler.
-                    MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
+                    MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call, &mut registry),
                 })?;
             }
         }
@@ -1976,7 +1971,7 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
             }
             RunProgress::OsCall(call) => {
-                let result = dispatch_os_call(&call.function_call);
+                let result = dispatch_os_call(&call.function_call, &mut registry);
                 progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }

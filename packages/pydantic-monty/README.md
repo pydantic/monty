@@ -128,9 +128,9 @@ with Monty() as pool:
 
 ### Host modules
 
-`external_modules` on `checkout` names the modules the sandbox may `import`: each an `ExternalModule` pairing a
-dict of the module's public items (callables become host functions) with the `.pyi` the type checker resolves the
-import against.
+`external_modules`, beside `external_lookup`, names the modules the sandbox may `import`: each an `ExternalModule`
+pairing a dict of the module's public items (callables become host functions) with the `.pyi` the type checker
+resolves the import against, fetched when a type-checked feed first imports the module.
 
 ```python
 from pydantic_monty import ExternalModule, Monty
@@ -141,10 +141,12 @@ def add(a: int, b: int) -> int:
 
 
 tools = ExternalModule({'add': add}, stubs='def add(a: int, b: int) -> int: ...\n')
+modules = {'tools': tools}
+code = 'from tools import add\nadd(1, 2)'
 
 with Monty() as pool:
-    with pool.checkout(external_modules={'tools': tools}) as session:
-        print(session.feed_run('from tools import add\nadd(1, 2)'))
+    with pool.checkout() as session:
+        print(session.feed_run(code, external_modules=modules))
         #> 3
 ```
 

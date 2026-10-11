@@ -21,7 +21,7 @@ use monty_pool::{
     ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{CallArgs, ExtFunctionResult, ModuleStub, MontyObject, PrintStream, ResourceLimits, SourceRange};
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -2907,46 +2907,6 @@ fn position() -> SourceRange {
         start: 0,
         end: 7,
     }
-}
-
-// ---- module stubs ---------------------------------------------------------
-//
-// A serving relay reads `type_check_module_stubs` off the `Configure`.
-
-fn module_stub(module: &str, source: &str) -> ModuleStub {
-    ModuleStub::new(module, source).expect("a valid stub name")
-}
-
-/// `ReplConfig::type_check_module_stubs` crosses the wire on `Configure`,
-/// module name and source intact.
-#[tokio::test]
-async fn configure_carries_module_stubs() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
-        let request = try_read_request(&mut socket).expect("configure");
-        let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
-            panic!("expected Configure, got {request:?}");
-        };
-        let stubs: Vec<(String, String)> = configure
-            .type_check_module_stubs
-            .iter()
-            .map(|stub| (stub.module.clone(), stub.source.clone()))
-            .collect();
-        assert_eq!(stubs, vec![("tools".to_owned(), "x: int\n".to_owned())]);
-        send_kind(&mut socket, ok_event());
-        while try_read_request(&mut socket).is_some() {}
-    });
-
-    let pool = websocket_pool(port).await;
-    let repl = ReplConfig {
-        type_check_module_stubs: vec![module_stub("tools", "x: int\n")],
-        ..ReplConfig::default()
-    };
-    let checkout = pool.checkout(&repl).await.expect("checkout");
-    checkout.finish().await.expect("finish");
-    join_server(server).await;
 }
 
 /// Only a feed is type-checked, so a `TypingError` answering a `Dump` means

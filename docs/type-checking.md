@@ -116,6 +116,8 @@ A stub declares names at the top level of the snippet.
 A host-provided module the code imports needs its own stub: the `stubs` of its `external_modules` entry
 (`externalModules` in JavaScript) is the module's `.pyi` source, kept beside its implementation so the two cannot
 drift apart.
+The worker asks the host for it when a type-checked feed first imports the module, so a module the snippets never
+import is never built, and a lazy entry (a callable returning the `ExternalModule`) runs only then.
 The checker writes each one as `<module>.pyi` beside the snippet, so `import tools` resolves and `from tools import add`
 sees its declarations; module stubs are not star-imported, and a module with neither `stubs` nor a typeshed entry (see
 below) fails a type-checked import as unresolved:
@@ -131,47 +133,53 @@ below) fails a type-checked import as unresolved:
 
 
     tools = ExternalModule({'add': add}, stubs='def add(a: int, b: int) -> int: ...\n')
+    modules = {'tools': tools}
 
     with Monty() as pool:
-        with pool.checkout(type_check=True, external_modules={'tools': tools}) as session:
+        with pool.checkout(type_check=True) as session:
             try:
-                session.feed_run("from tools import add\nadd('x', 2)")
+                code = "from tools import add\nadd('x', 2)"
+                session.feed_run(code, external_modules=modules)
             except MontyTypingError as exc:
                 print('invalid-argument-type' in exc.display())
                 #> True
-            print(session.feed_run('from tools import add\nadd(1, 2)'))
+            code = 'from tools import add\nadd(1, 2)'
+            print(session.feed_run(code, external_modules=modules))
             #> 3
     ```
 
 === "TypeScript"
 
     ```ts
-    import { Monty, MontyTypingError } from '@pydantic/monty'
+    import { ExternalModule, Monty, MontyTypingError } from '@pydantic/monty'
 
-    const tools = {
-      module: { add: (a: number, b: number) => a + b },
-      stubs: 'def add(a: int, b: int) -> int: ...\n',
-    }
+    const tools = new ExternalModule(
+      { add: (a: number, b: number) => a + b },
+      { stubs: 'def add(a: int, b: int) -> int: ...\n' },
+    )
 
     await using pool = await Monty.create()
-    await using session = await pool.checkout({ typeCheck: true, externalModules: { tools } })
+    await using session = await pool.checkout({ typeCheck: true })
     try {
-      await session.feedRun("from tools import add\nadd('x', 2)")
+      await session.feedRun("from tools import add\nadd('x', 2)", { externalModules: { tools } })
     } catch (err) {
       if (!(err instanceof MontyTypingError)) throw err
       console.log(err.display().includes('invalid-argument-type')) // true
     }
-    console.log(await session.feedRun('from tools import add\nadd(1, 2)')) // 3
+    console.log(await session.feedRun('from tools import add\nadd(1, 2)', { externalModules: { tools } })) // 3
     ```
 
+A session asks about each module once: the stubs it receives are kept for the rest of the session and travel in its
+dump, so a later feed that offers a different stub, or none, for a module an earlier feed imported checks against the
+first answer.
 A submodule's `stubs` is laid out as a package beside its parent's (`pkg/__init__.pyi`, `pkg/sub.pyi`), so
 `import pkg.sub` and `from pkg import sub` resolve; a parent with no `stubs` of its own becomes an empty package.
 A module name that is not an identifier, or that the sandbox provides itself (`json`, `math`, and `gc` in a test
 build), raises `ValueError` (throws in JavaScript), since an import of it never reaches the host.
 Typeshed includes modules the checker resolves but the runtime does not, such as `abc` and `enum`: a host can serve
 those through `external_modules`, but the checker keeps typeshed's stub for them, so an entry under one of these names,
-or under any other module of the vendored typeshed (`__future__` and `__main__` included) or `ty_extensions`, cannot
-carry `stubs`; see [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
+or under any other module of the vendored typeshed (`__future__` and `__main__` included) or `ty_extensions`, is
+asked for no stub; see [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
 The runtime side of a host module is the entry's `module`; see
 [importing host modules](host-functions.md#importing-host-modules).
 

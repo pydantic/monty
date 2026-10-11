@@ -3455,6 +3455,7 @@ version = "1.1.0"
 dependencies = [
  "ahash",
  "chrono",
+ "futures-util",
  "monty-fs",
  "monty-pool",
  "monty-proto",

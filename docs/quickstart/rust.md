@@ -111,11 +111,8 @@ name, or the `await` the main task is blocked on.
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 
-[`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options,
-including `type_check_module_stubs`, one [`ModuleStub`](../api/rust/monty-types.md#modulestub) per host-provided
-module so that `import <module>` type-checks.
-`ModuleStub::new` refuses a name that is not an identifier or that the sandbox or its type checker already provides;
-`validate_module_name` checks a module name alone, which only the sandbox's own modules are refused.
+[`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options.
+A host module's `.pyi` reaches the checker through the `import_stubs` OS call below.
 `Checkout::worker_id()` identifies the worker within its pool, independent of PID reuse and transport;
 it returns `None` after the worker is released or discarded.
 `Checkout::pid()` is the subprocess-only OS diagnostic.
@@ -308,15 +305,20 @@ code can `await`, and when every task is blocked the run yields [`RunProgress::R
 When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
 result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
-An `import` of a module the sandbox does not have is a `FunctionCall` too, named
-[`IMPORT_FUNCTION`](../api/rust/monty-types.md#import_function) (`__import__`) with the top-level module name as its one
-argument; a dotted import reads the further components as attributes of the answer.
+An `import` of a module the sandbox does not have is an OS call,
+[`OsFunctionCall::Import`](../api/rust/monty-types.md#osfunctioncall) with the top-level module name; a dotted import
+reads the further components as attributes of the answer.
 The value the host resumes with is bound as the module, usually a host-backed class instance whose attributes are the
 tools.
-[`ResumeValue::NotFound`](../api/rust/monty-pool.md#resumevalue) raises `ModuleNotFoundError`; in-process,
-[`FunctionCall::resume`](../api/rust/monty.md#functioncall) with
-[`ExtFunctionResult::NotFound`](../api/rust/monty-types.md#extfunctionresult) does the same.
+[`ResumeValue::NotFound`](../api/rust/monty-pool.md#resumevalue) and `NotHandled` raise `ModuleNotFoundError`;
+in-process, [`OsCall::resume`](../api/rust/monty.md#oscall) with
+[`ExtFunctionResult::NotFound`](../api/rust/monty-types.md#extfunctionresult) does the same, as does a run with no host.
 A future answer raises `RuntimeError` at the `import`.
+Before a type-checked feed is checked, the worker raises `OsFunctionCall::ImportStubs` once with the top-level host
+modules the snippet imports that the session has not asked about; answer it with a dict of dotted module path to
+`.pyi` source (a [`ModuleStub`](../api/rust/monty-types.md#modulestub) name each, `None` for a module without one),
+or `NotHandled` for no stubs.
+The stubs are kept for the session and travel in its dump.
 
 [`FunctionCall`](../api/rust/monty.md#functioncall), [`OsCall`](../api/rust/monty.md#oscall), [`NameLookup`](../api/rust/monty.md#namelookup) and [`ResolveFutures`](../api/rust/monty.md#resolvefutures) expose `abort`, which raises a host-supplied
 [`MontyException`](../api/rust/monty-types.md#montyexception) uncatchably at the suspension point and unwinds the run with a traceback.

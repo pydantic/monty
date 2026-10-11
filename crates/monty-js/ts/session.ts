@@ -88,6 +88,17 @@ export interface FeedOptions {
    * served by the eager `inputs` binding.
    */
   externalLookup?: Record<string, unknown>
+  /**
+   * The modules the snippet may `import`, keyed by module name, each an
+   * [`ExternalModule`] pairing the module's host value with the `.pyi` stub a
+   * type-checked feed resolves `import <module>` against (never
+   * star-imported, unlike `typeCheckStubs`), or a zero-argument function
+   * returning one (or a `Promise` of one), called at most once per feed when
+   * the feed first needs the module. A name that is not an identifier, or
+   * that the sandbox provides itself, throws. Importing a module absent here
+   * raises `ModuleNotFoundError`.
+   */
+  externalModules?: ExternalModules
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -109,10 +120,10 @@ export interface FeedOptions {
 
 /**
  * Options for [`MontySession.feedStart`]. Like [`FeedOptions`], but
- * `externalLookup` (and `os`) are *not* dispatched during the initial drive —
- * external calls and name lookups are surfaced as snapshots. They are captured
- * so [`snapshot.resumeAuto()`](FunctionSnapshot#resumeAuto) can answer each
- * suspension from them, letting a caller iterate to completion by hand.
+ * `externalLookup`, `externalModules` and `os` are *not* dispatched during the
+ * initial drive — external calls, imports and name lookups are surfaced as
+ * snapshots. They are captured so [`snapshot.resumeAuto()`](FunctionSnapshot#resumeAuto)
+ * can answer each suspension from them, letting a caller iterate to completion by hand.
  */
 export interface FeedStartOptions {
   /** Values bound as globals before the snippet runs. */
@@ -123,6 +134,9 @@ export interface FeedStartOptions {
    * by a plain `snapshot.resume(...)`.
    */
   externalLookup?: Record<string, unknown>
+  /** The modules `resumeAuto()` answers the snippet's imports from, as in
+   *  [`FeedOptions.externalModules`]; not consulted by a plain `snapshot.resume(...)`. */
+  externalModules?: ExternalModules
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
@@ -151,6 +165,8 @@ export interface LoadSnapshotOptions {
    * the previous process; resolve it manually with `resume([...])`.
    */
   externalLookup?: Record<string, unknown>
+  /** The modules `resumeAuto()` answers imports from, as in [`FeedStartOptions.externalModules`]. */
+  externalModules?: ExternalModules
   /** Handler for OS calls, consulted by `resumeAuto()` as in `feedStart`. */
   os?: OsCallback
 }
@@ -192,12 +208,13 @@ export class MontySession {
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
 
+  /** The sandbox value built for each host module (see [`moduleValue`]), by
+   *  name: one wrapper per module for the session, since its id is fixed and
+   *  the instance store keeps each wrapper sent. */
+  private readonly moduleValues = new Map<string, unknown>()
+
   /** @internal — sessions are created by `Monty.checkout`. */
-  constructor(
-    native: NativeSession,
-    /** The checkout's `externalModules`, answering every feed's imports. */
-    private readonly modules: HostModules,
-  ) {
+  constructor(native: NativeSession) {
     this.native = native
     this.workerId = native.workerId ?? undefined
   }
@@ -216,8 +233,10 @@ export class MontySession {
     const printTarget = new PrintTarget(options.printCallback)
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // A fresh answerer (and its pending-future map) per feed, so promises the
-    // worker never asks about again cannot accumulate across feeds.
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
+    // worker never asks about again cannot accumulate across feeds; the feed's
+    // modules are checked before anything is sent.
+    const modules = new HostModules(options.externalModules, this.moduleValues)
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, modules, options.os)
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -387,10 +406,11 @@ export class MontySession {
   }
 
   /** Builds the per-feed snapshot driver (print target, answerer, poison). The
-   *  captured `externalLookup` / `os` and the session's modules back `snapshot.resumeAuto()`. */
-  private newDriver(options: FeedStartOptions): SnapshotDriver {
+   *  captured `externalLookup` / `externalModules` / `os` back `snapshot.resumeAuto()`. */
+  private newDriver(options: FeedStartOptions | LoadSnapshotOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
+    const modules = new HostModules(options.externalModules, this.moduleValues)
+    const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, modules, options.os)
     return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
@@ -551,14 +571,10 @@ class TurnAnswerer {
     return (await next) as NativeTurn
   }
 
-  /** Calls the matching external function and resumes with its result; an
-   *  `import` (the `__import__` call) is answered from `externalModules`. */
+  /** Calls the matching external function and resumes with its result. */
   private async answerFunctionCall(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
     if (call.objectId !== undefined && call.objectId !== null) {
       return this.answerMethodCall(call, call.objectId, onPrint)
-    }
-    if (call.functionName === IMPORT_FUNCTION) {
-      return this.answerImport(call, onPrint)
     }
     let resolved: { value: unknown } | undefined
     try {
@@ -608,20 +624,15 @@ class TurnAnswerer {
       return boxed(ownEntry(this.externalLookup, functionName))
     }
     const [top, ...rest] = functionName.slice(0, dot).split('.')
-    const resolved = await this.module(top as string)
+    let resolved = await this.module(top as string)
+    for (const part of rest) {
+      if (resolved === undefined) break
+      resolved = submodule(resolved.module, part)
+    }
     if (resolved === undefined) {
       return undefined
     }
-    let module = resolved.value
-    let path = top as string
-    for (const part of rest) {
-      const child = ownEntry(this.modules.submodules(path), part) as ExternalModule | undefined
-      if (child === undefined || typeof child.module === 'function') {
-        return undefined
-      }
-      module = child.module
-      path = `${path}.${part}`
-    }
+    const module = resolved.module
     const attr = functionName.slice(dot + 1)
     // the rule `moduleValue` sends by: a `ClassInstance` module routes by uuid
     // under its own policy, and a private name is never a module function, so a
@@ -635,42 +646,34 @@ class TurnAnswerer {
   }
 
   /**
-   * The value of the `externalModules` entry for `name`, if any. A factory is
-   * called the first time the session needs the module and its result kept in
-   * the session's `resolved` map, consulted first so every import and call of
-   * the module's functions sees one module. Only a real `Promise` it returns is
-   * awaited, and the module comes back boxed: it may carry a `then` attribute of
-   * its own, which a bare async return would await. An entry or result that is
-   * not a module shape (see [`checkedModule`]) is a `TypeError`, raised wherever
-   * the module was needed.
+   * The `externalModules` entry for `name`, if any. A factory is called the
+   * first time the feed needs the module and its result kept in the feed's
+   * `resolved` map, consulted first so every import, call and stubs ask sees
+   * one module. Only a real `Promise` it returns is awaited. A result that is
+   * not an [`ExternalModule`], or one whose value is not a module shape (see
+   * [`checkedModule`]), is a `TypeError`, raised wherever the module was needed.
    */
-  private async module(name: string): Promise<{ value: ModuleValue } | undefined> {
+  private async module(name: string): Promise<ExternalModule | undefined> {
     const resolved = this.modules.resolved.get(name)
     if (resolved !== undefined) {
-      return { value: resolved }
+      return resolved
     }
     const entry = this.modules.entry(name)
     if (entry === undefined) {
       return undefined
     }
-    if (typeof entry !== 'function') {
-      return { value: checkedModule(entry, `externalModules.${name}.module is`) }
+    if (entry instanceof ExternalModule) {
+      return entry
     }
     const returned = (entry as () => unknown)()
-    const module = checkedModule(
-      returned instanceof Promise ? await returned : returned,
-      `externalModules.${name}.module() returned`,
-    )
-    this.modules.checkResolved(name, module)
-    this.modules.resolved.set(name, module)
-    return { value: module }
+    return this.modules.install(name, returned instanceof Promise ? await returned : returned)
   }
 
   /**
    * Answers `import <module>`: the `externalModules` entry of that name as a
    * host object, or not found, which the sandbox raises as `ModuleNotFoundError`.
    */
-  private async answerImport(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
+  private async answerImport(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
     const [args] = restoreCallArgs(call, this.instances)
     const name = args[0]
     if (typeof name !== 'string') {
@@ -679,17 +682,44 @@ class TurnAnswerer {
     let value: unknown
     try {
       // a factory or getter that throws while the module is read raises at the import
-      const resolved = await this.module(name)
-      if (resolved === undefined) {
+      const entry = await this.module(name)
+      if (entry === undefined) {
         return this.native.resumeNotFound(onPrint)
       }
-      value = this.modules.values.get(name) ?? moduleValue(name, resolved.value, this.modules)
+      value = this.modules.values.get(name) ?? moduleValue(name, entry, this.modules)
       this.modules.values.set(name, value)
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
     }
     return this.resumeWithValue(value, onPrint)
+  }
+
+  /**
+   * Answers `import_stubs`, the ask that precedes a type-checked feed: the
+   * `.pyi` of every asked module `externalModules` has, submodules included,
+   * by dotted path, `null` for one without. Factories among them run now,
+   * concurrently, and their results serve the imports that follow.
+   */
+  private async answerImportStubs(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
+    const [args] = restoreCallArgs(call, this.instances)
+    const names = args[0]
+    if (!Array.isArray(names) || !names.every((name) => typeof name === 'string')) {
+      return this.native.resumeNotFound(onPrint)
+    }
+    const stubs: Record<string, string | null> = {}
+    try {
+      const entries = await Promise.all((names as string[]).map((name) => this.module(name)))
+      for (const [index, entry] of entries.entries()) {
+        if (entry !== undefined) {
+          collectStubs(names[index] as string, entry, stubs)
+        }
+      }
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      return this.native.resumeError(excType, message, onPrint)
+    }
+    return this.resumeWithValue(stubs, onPrint)
   }
 
   /**
@@ -789,9 +819,16 @@ class TurnAnswerer {
   }
 
   /**
-   * Handles system sleeps locally; other calls try mounts, `os`, then the sandbox's no-handler default.
+   * Answers the host's own module calls from `externalModules` and system
+   * sleeps locally; other calls try mounts, `os`, then the sandbox's no-handler default.
    */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
+    if (call.functionName === IMPORT_CALL) {
+      return this.answerImport(call, onPrint)
+    }
+    if (call.functionName === IMPORT_STUBS_CALL) {
+      return this.answerImportStubs(call, onPrint)
+    }
     const wait = this.systemSleepFor(call)
     if (wait !== null) {
       if (osCallAcceptsFuture(call.functionName)) {
@@ -1352,133 +1389,113 @@ export class MontyComplete {
   constructor(readonly output: unknown) {}
 }
 
-/** The host function name the sandbox calls for an `import` it cannot resolve itself. */
-const IMPORT_FUNCTION = '__import__'
+/** The OS call the sandbox makes for an `import` it cannot resolve itself. */
+const IMPORT_CALL = 'import'
+
+/** The OS call a type-checked feed makes for the stubs of the host modules it imports. */
+const IMPORT_STUBS_CALL = 'import_stubs'
 
 /** What stands for a host module in the sandbox: a plain object whose own public
- *  properties become the module's, or a [`ClassInstance`] as the module itself. */
+ *  properties become the module's (functions as host functions, [`ExternalModule`]s
+ *  as submodules), or a [`ClassInstance`] as the module itself, which has no
+ *  submodules since its attributes are its own. */
 export type ModuleValue = Record<string, unknown> | ClassInstance
 
 /**
- * A module the sandbox may `import`, an entry of `CheckoutOptions.externalModules`.
- * It pairs the module's implementation with the stub type checking sees, so
- * the two cannot drift apart: `import <name>` binds `module`, and with
- * `typeCheck` resolves against `stubs`.
+ * A module the sandbox may `import`: an entry of [`FeedOptions.externalModules`],
+ * or a property of another module's object, where it is a submodule
+ * (`import pkg.sub`). It pairs the module's implementation with the stub type
+ * checking sees, so the two cannot drift apart: `import <name>` binds `module`,
+ * and with `typeCheck` resolves against `stubs`.
  */
-export interface ExternalModule {
-  /** The module's value, or a zero-argument function returning it (or a
-   *  `Promise` of it), run when the session first needs the module and kept
-   *  for the rest of the session. A submodule's must be the value itself. */
-  module: ModuleValue | (() => ModuleValue | Promise<ModuleValue>)
+export class ExternalModule {
   /** The module's `.pyi` source for type checking; without it a type-checked
-   *  `import <name>` fails as unresolved. */
-  stubs?: string
-  /** Submodules by name, each reached as an attribute of this module and by
-   *  `import <name>.<sub>`; their stubs are laid out as a package. A
-   *  `ClassInstance` module carries none, since its attributes are its own. */
-  modules?: ExternalModules
+   *  `import <name>` fails as unresolved. A submodule's is laid out as a package. */
+  readonly stubs: string | undefined
+  constructor(
+    /** The module's value. */
+    readonly module: ModuleValue,
+    options: { stubs?: string } = {},
+  ) {
+    this.stubs = options.stubs
+  }
 }
 
-/** The `externalModules` checkout option: modules by the name the sandbox
- *  imports them as, each an identifier that is not one of the sandbox's own modules. */
-export type ExternalModules = Record<string, ExternalModule>
+/** The `externalModules` feed option: modules by the name the sandbox imports
+ *  them as (an identifier that is not one of the sandbox's own modules), each an
+ *  [`ExternalModule`] or a zero-argument function returning one, or a `Promise`
+ *  of one, called at most once per feed, when the feed first needs the module. */
+export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
 
 /**
- * A checkout's `externalModules`, shared by every feed of the session: the
- * entries as given and what each factory among them returned. Validates the
- * entries' shape up front; a `module` is checked when first needed.
+ * A feed's `externalModules`: the entries as given and what each factory among
+ * them returned. Validates the entries' shape up front; a factory's result is
+ * validated when it runs.
  * @internal
  */
 export class HostModules {
   /** What each factory entry returned, by module name. */
-  readonly resolved = new Map<string, ModuleValue>()
-  /** The sandbox value built for each module (see [`moduleValue`]): one wrapper
-   *  per module for the session, since its id is fixed and the instance store
-   *  keeps each wrapper sent. */
-  readonly values = new Map<string, unknown>()
+  readonly resolved = new Map<string, ExternalModule>()
   /** Each module's dotted path by the id of its plain-object stand-in (see [`moduleValue`]). */
   private readonly standIns = new Map<string, string>()
-  /** The `.pyi` of every module that declares one, by dotted path. */
-  private readonly stubSources: Record<string, string> = {}
 
-  constructor(private readonly entries: ExternalModules | undefined) {
+  constructor(
+    private readonly entries: ExternalModules | undefined,
+    /** The session's wrappers (see [`MontySession.moduleValues`]), shared by its feeds. */
+    readonly values: Map<string, unknown>,
+  ) {
     for (const [name, entry] of Object.entries(entries ?? {})) {
-      this.check(name, name, entry, true, new Map())
+      if (!IDENTIFIER.test(name) || KEYWORDS.has(name)) {
+        throw new TypeError(`externalModules.${name} is not a valid module name`)
+      }
+      if (SANDBOX_MODULES.has(name)) {
+        throw new TypeError(`externalModules.${name} is provided by the sandbox and cannot be replaced`)
+      }
+      if (entry instanceof ExternalModule) {
+        this.check(name, entry, new Map())
+      } else if (typeof entry !== 'function') {
+        throw new TypeError(`externalModules.${name} must be an ExternalModule or a function returning one`)
+      }
     }
   }
 
   /**
-   * Validates the entry at dotted `path` and records its stub and stand-in,
-   * then its submodules. Names are identifiers, so an import and a host
-   * function name split into them unambiguously; a submodule's `module` is
-   * its value, never a factory, since it crosses with its parent. `ancestors`
-   * maps the entries being walked to their paths, so one nested inside itself
-   * is a `TypeError` rather than a stack overflow.
+   * Validates the `ExternalModule` at dotted `path` and the submodules held as
+   * own data properties of its object (a getter's is checked at the import),
+   * and records every plain-object module's stand-in. Names are identifiers,
+   * so an import and a host function name split into them unambiguously;
+   * `ancestors` makes one nested inside itself a `TypeError` rather than a stack overflow.
    */
-  private check(
-    path: string,
-    name: string,
-    entry: ExternalModule,
-    topLevel: boolean,
-    ancestors: Map<ExternalModule, string>,
-  ): void {
+  check(path: string, entry: ExternalModule, ancestors: Map<ExternalModule, string>): void {
     const ancestor = ancestors.get(entry)
     if (ancestor !== undefined) {
       throw new TypeError(
         `externalModules.${path} is externalModules.${ancestor} again: modules cannot nest cyclically`,
       )
     }
-    if (!IDENTIFIER.test(name) || KEYWORDS.has(name)) {
-      throw new TypeError(`externalModules.${path} is not a valid module name`)
-    }
-    if (topLevel && SANDBOX_MODULES.has(name)) {
-      throw new TypeError(`externalModules.${path} is provided by the sandbox and cannot be replaced`)
-    }
-    const proto = entry !== null && typeof entry === 'object' ? Object.getPrototypeOf(entry) : undefined
-    if ((proto !== Object.prototype && proto !== null) || !Object.prototype.hasOwnProperty.call(entry, 'module')) {
-      throw new TypeError(`externalModules.${path} must be an object with a module property`)
-    }
-    if (!topLevel && typeof entry.module === 'function') {
-      throw new TypeError(`externalModules.${path}.module must be a plain object or ClassInstance, not a function`)
-    }
     if (entry.stubs !== undefined && typeof entry.stubs !== 'string') {
       throw new TypeError(`externalModules.${path}.stubs must be a string`)
     }
-    if (entry.stubs !== undefined) {
-      this.stubSources[path] = entry.stubs
+    const module = checkedModule(entry.module, `externalModules.${path}.module is`)
+    if (module instanceof ClassInstance) {
+      return
     }
     this.standIns.set(moduleUuid('instance', path), path)
-    const subs = Object.entries(entry.modules ?? {})
-    // a wrapper's attributes are its own, so nothing can be hung on it
-    if (subs.length > 0 && entry.module instanceof ClassInstance) {
-      throw new TypeError(`externalModules.${path}.modules must be absent when module is a ClassInstance`)
-    }
     ancestors.set(entry, path)
-    for (const [sub, child] of subs) {
-      if (typeof entry.module !== 'function' && ownEntry(entry.module, sub) !== undefined) {
-        throw new TypeError(`externalModules.${path}.module has both a property and a submodule named ${sub}`)
-      }
-      this.check(`${path}.${sub}`, sub, child, false, ancestors)
+    for (const [key, child] of dataSubmodules(module)) {
+      this.check(`${path}.${key}`, child, ancestors)
     }
     ancestors.delete(entry)
   }
 
-  /**
-   * Rejects what a factory returned for `name` when it cannot carry the
-   * submodules declared for it, the checks a value entry passed at checkout.
-   */
-  checkResolved(name: string, module: ModuleValue): void {
-    const subs = Object.keys(this.submodules(name))
-    if (subs.length === 0) return
-    if (module instanceof ClassInstance) {
-      throw new TypeError(`externalModules.${name}.module() returned a ClassInstance, which cannot carry modules`)
+  /** Keeps what the factory for `name` returned, checked as a given entry is. */
+  install(name: string, returned: unknown): ExternalModule {
+    if (!(returned instanceof ExternalModule)) {
+      throw new TypeError(`externalModules.${name}() returned ${kindOf(returned)}, not an ExternalModule`)
     }
-    const clash = subs.find((sub) => ownEntry(module, sub) !== undefined)
-    if (clash !== undefined) {
-      throw new TypeError(
-        `externalModules.${name}.module() returned an object with both a property and a submodule named ${clash}`,
-      )
-    }
+    this.check(name, returned, new Map())
+    this.resolved.set(name, returned)
+    return returned
   }
 
   /** The module whose plain-object stand-in has `id`, if any. */
@@ -1486,25 +1503,9 @@ export class HostModules {
     return this.standIns.get(id)
   }
 
-  /** The top-level entry's `module` for `name`, if there is one (own keys only). */
-  entry(name: string): ExternalModule['module'] | undefined {
-    const entry = ownEntry(this.entries, name) as ExternalModule | undefined
-    return entry?.module
-  }
-
-  /** The submodules of the module at dotted `path`, by name. */
-  submodules(path: string): ExternalModules {
-    let entry: ExternalModule | undefined
-    for (const part of path.split('.')) {
-      entry = ownEntry(entry === undefined ? this.entries : entry.modules, part) as ExternalModule | undefined
-      if (entry === undefined) return {}
-    }
-    return entry?.modules ?? {}
-  }
-
-  /** The `.pyi` per module the entries declare, by dotted path, for the worker's type checker. */
-  stubs(): Record<string, string> {
-    return { ...this.stubSources }
+  /** The top-level entry for `name`, if there is one (own keys only). */
+  entry(name: string): ExternalModules[string] | undefined {
+    return ownEntry(this.entries, name) as ExternalModules[string] | undefined
   }
 }
 
@@ -1609,13 +1610,50 @@ function checkedModule(value: unknown, source: string): ModuleValue {
     }
     return value as Record<string, unknown>
   }
-  const kind =
-    value === null
-      ? 'null'
-      : typeof value !== 'object'
-        ? typeof value
-        : `a ${(value as { constructor?: { name?: string } }).constructor?.name ?? 'object'}`
-  throw new TypeError(`${source} ${kind}, not a plain object or ClassInstance`)
+  throw new TypeError(`${source} ${kindOf(value)}, not a plain object or ClassInstance`)
+}
+
+/** How a `TypeError` names a value's kind: `null`, a primitive's type, or its class. */
+function kindOf(value: unknown): string {
+  return value === null
+    ? 'null'
+    : typeof value !== 'object'
+      ? typeof value
+      : `a ${(value as { constructor?: { name?: string } }).constructor?.name ?? 'object'}`
+}
+
+/** The submodule `name` of a module value: the [`ExternalModule`] a plain
+ *  object holds under that own public key, if any; a `ClassInstance` has none. */
+function submodule(module: ModuleValue, name: string): ExternalModule | undefined {
+  if (module instanceof ClassInstance || name.startsWith('_')) {
+    return undefined
+  }
+  const value = ownEntry(module, name)
+  return value instanceof ExternalModule ? value : undefined
+}
+
+/** The submodules a plain object holds as own public data properties, by key:
+ *  what a feed can check before anything runs, since no getter is read. */
+function dataSubmodules(module: Record<string, unknown>): [string, ExternalModule][] {
+  const found: [string, ExternalModule][] = []
+  for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
+    const descriptor = Object.getOwnPropertyDescriptor(module, key)
+    if (descriptor !== undefined && 'value' in descriptor && descriptor.value instanceof ExternalModule) {
+      found.push([key, descriptor.value])
+    }
+  }
+  return found
+}
+
+/** Records the `stubs` of the module at dotted `path` and of every submodule
+ *  nested in it, `null` for one without, into `stubs`. */
+function collectStubs(path: string, entry: ExternalModule, stubs: Record<string, string | null>): void {
+  stubs[path] = entry.stubs ?? null
+  if (!(entry.module instanceof ClassInstance)) {
+    for (const [key, child] of dataSubmodules(entry.module)) {
+      collectStubs(`${path}.${key}`, child, stubs)
+    }
+  }
 }
 
 /**
@@ -1628,7 +1666,8 @@ function checkedModule(value: unknown, source: string): ModuleValue {
  * a call on the module (see [`HostModules.standIn`]); the session keeps the
  * one wrapper it builds in [`HostModules.values`].
  */
-function moduleValue(path: string, module: ModuleValue, modules: HostModules): unknown {
+function moduleValue(path: string, entry: ExternalModule, modules: HostModules): unknown {
+  const module = entry.module
   if (module instanceof ClassInstance) {
     return module
   }
@@ -1636,15 +1675,14 @@ function moduleValue(path: string, module: ModuleValue, modules: HostModules): u
   // names are filtered before any value is read, so a private getter never runs
   for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
     const value = module[key]
-    attrs[key] = typeof value === 'function' ? namedHostFunction(`${path}.${key}`, value as ExternalFunction) : value
-  }
-  // each submodule is its own module value, under its own dotted path
-  for (const [sub, child] of Object.entries(modules.submodules(path))) {
-    attrs[sub] = moduleValue(
-      `${path}.${sub}`,
-      checkedModule(child.module, `externalModules.${path}.${sub}.module is`),
-      modules,
-    )
+    if (value instanceof ExternalModule) {
+      // each submodule is its own module value, under its own dotted path;
+      // one a getter produced is checked here, as the feed could not see it
+      modules.check(`${path}.${key}`, value, new Map())
+      attrs[key] = moduleValue(`${path}.${key}`, value, modules)
+    } else {
+      attrs[key] = typeof value === 'function' ? namedHostFunction(`${path}.${key}`, value as ExternalFunction) : value
+    }
   }
   const classType = new ClassType(Object, { name: path, id: moduleUuid('class', path) })
   return new ClassInstance(attrs, { classType, eagerAttrs: 'all', id: moduleUuid('instance', path) })

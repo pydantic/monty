@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-from collections.abc import Awaitable
 from dataclasses import dataclass
 from types import EllipsisType
 from typing import Any, Callable, Literal, Protocol
@@ -332,31 +331,26 @@ PrintCallback: TypeAlias = Callable[[Literal['stdout', 'stderr'], str], None] | 
 
 ModuleValue: TypeAlias = dict[str, Any] | ClassInstance
 """What stands for a host module in the sandbox: a dict's public items (keys not
-starting with `_`) become the module's, callables among them as host functions;
-a `ClassInstance` is the module itself."""
+starting with `_`) become the module's, callables among them as host functions
+and `ExternalModule`s among them as submodules; a `ClassInstance` is the module
+itself, with no submodules since its attributes are its own."""
 
 
 @dataclass(frozen=True)
 class ExternalModule:
-    """A module the sandbox may `import`, an entry of `checkout(external_modules=...)`.
+    """A module the sandbox may `import`: an entry of `feed_run(external_modules=...)`,
+    or a value of another module's dict, where it is a submodule (`import pkg.sub`).
 
     Pairs the module's implementation with the stub type checking sees, so the
     two cannot drift apart: `import <name>` binds `module`, and with
     `type_check=True` resolves against `stubs`.
     """
 
-    module: ModuleValue | Callable[[], ModuleValue | Awaitable[ModuleValue]]
-    """The module's value, or a zero-argument callable returning it (async under
-    `AsyncMonty`), run when the session first needs the module and kept for the
-    rest of the session."""
+    module: ModuleValue
+    """The module's value."""
     stubs: str | None = None
     """The module's `.pyi` source for type checking; without it a type-checked
-    `import <name>` fails as unresolved."""
-    modules: dict[str, ExternalModule] | None = None
-    """Submodules by name, each reached as an attribute of this module and by
-    `import <name>.<sub>`; their `module` must be a dict or a `ClassInstance`,
-    not a callable, and their `stubs` are laid out as a package. A `ClassInstance`
-    module carries none, since its attributes are its own."""
+    `import <name>` fails as unresolved. A submodule's is laid out as a package."""
 
 
 TypeCheckFormat: TypeAlias = Literal[

@@ -968,8 +968,7 @@ pub(crate) fn resume_with_result(
 /// Resumes a suspended `import <module>` with the host's answer: the value becomes
 /// the module, `NotFound` raises `ModuleNotFoundError`, an exception is raised without
 /// carets (as CPython renders import errors), and a future is refused since nothing
-/// awaits a module into place. A direct call of an undefined `__import__` is not
-/// suspended at a `LoadModule`, so it never lands here.
+/// awaits a module into place.
 fn resume_import(
     vm: &mut VM<'_>,
     module_id: StringId,

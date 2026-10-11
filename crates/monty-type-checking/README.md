@@ -39,7 +39,7 @@ line numbers are adjusted back to the original source.
 session accumulates: `module_stubs`, one `ModuleStub` per host-provided module,
 each written as `/<module>.pyi` so that `import <module>` resolves (never
 star-imported), and `prelude`, statements injected ahead of the star import.
-`top_level_imports` builds that prelude from the imports of the committed
+`scan_imports` builds that prelude from the imports of the committed
 snippets, so a module imported by an earlier snippet resolves in a later one.
 
 `TypeCheckingConfig` picks the output format (ty's `full`, `concise`, `json`,

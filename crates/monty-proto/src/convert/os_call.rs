@@ -116,6 +116,10 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::AsyncSystemSleep(delay) => Call::AsyncSystemSleep(os_call::AsyncSleep {
             delay: delay.as_secs_f64(),
         }),
+        OsFunctionCall::Import(module) => Call::Import(os_call::Import { module }),
+        OsFunctionCall::ImportStubs(modules) => Call::ImportStubs(os_call::ImportStubs {
+            modules: modules.into(),
+        }),
     };
     (call, values)
 }
@@ -179,6 +183,8 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::AsyncSystemSleep(s) => {
                 Self::AsyncSystemSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?)
             }
+            os_call::Call::Import(i) => Self::Import(i.module),
+            os_call::Call::ImportStubs(i) => Self::ImportStubs(i.modules.into_iter().collect()),
         })
     }
 }

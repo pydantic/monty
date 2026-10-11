@@ -51,13 +51,14 @@ mod tests;
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_coroutine,
-        wait_for_futures,
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
+        dispatch_module_coroutine, wait_for_futures,
     },
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
     external::{
-        CallResult, ExternalLookup, HostNames, resolve_object_attr, sync_module_coroutine_error, wire_call_arguments,
+        CallResult, ExternalLookup, HostNames, is_module_call, resolve_object_attr, sync_module_coroutines_error,
+        wire_call_arguments,
     },
     pool::{
         FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
@@ -739,7 +740,9 @@ impl PyFunctionSnapshot {
             context.enter(py, &native)
         })?;
         let call = &self.0.call;
-        let value = if call.is_os_function {
+        // the host's modules answer their own OS calls, ahead of mounts and `os=`
+        let module_call = call.is_os_function && is_module_call(&call.function_name);
+        let value = if call.is_os_function && !module_call {
             if let Some(event) = try_mounts_sync(py, &ctx)? {
                 return build_snapshot(py, ctx, event, false);
             }
@@ -760,13 +763,18 @@ impl PyFunctionSnapshot {
                 }
             }
         } else {
-            match dispatch_function_call(
-                &call.function_name,
-                call.object_id,
-                &call.args,
-                &ctx.names,
-                &ctx.instances,
-            ) {
+            let result = if module_call {
+                dispatch_module_call(&call.function_name, &call.args, &ctx.names, &ctx.instances)
+            } else {
+                dispatch_function_call(
+                    &call.function_name,
+                    call.object_id,
+                    &call.args,
+                    &ctx.names,
+                    &ctx.instances,
+                )
+            };
+            match result {
                 CallResult::Sync(result) => ext_result_to_resume(result),
                 CallResult::Coroutine(coro) => {
                     // Close the un-awaited coroutine so it doesn't leak a
@@ -777,8 +785,8 @@ impl PyFunctionSnapshot {
                     return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
                 }
                 // raised at the import, as the sync `feed_run` raises it
-                CallResult::ModuleCoroutine { name, coro, .. } => ext_result_to_resume(ExtFunctionResult::Error(
-                    exc_py_to_monty(py, &sync_module_coroutine_error(&name, coro.bind(py))),
+                CallResult::ModuleCoroutine { names, coros, .. } => ext_result_to_resume(ExtFunctionResult::Error(
+                    exc_py_to_monty(py, &sync_module_coroutines_error(py, &names, &coros)),
                 )),
             }
         };
@@ -893,7 +901,9 @@ impl PyAsyncFunctionSnapshot {
             // asyncio task-locals that `future_into_py`'s scope establishes.
             // Dispatch (and convert any coroutine) under the callback context;
             // only a handed-back await runs outside it.
-            let dispatched = if call.is_os_function {
+            // the host's modules answer their own OS calls, ahead of mounts and `os=`
+            let module_call = call.is_os_function && is_module_call(&call.function_name);
+            let dispatched = if call.is_os_function && !module_call {
                 // mounts get first refusal, then the captured `os=`
                 let mounted = run_turn_async(
                     &ctx.checkout,
@@ -926,19 +936,26 @@ impl PyAsyncFunctionSnapshot {
                 let mut join_set = ctx.pending_futures.lock().await;
                 Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
-                    match dispatch_function_call(
-                        &call.function_name,
-                        call.object_id,
-                        &call.args,
-                        &ctx.names,
-                        &ctx.instances,
-                    ) {
+                    let result = if module_call {
+                        dispatch_module_call(&call.function_name, &call.args, &ctx.names, &ctx.instances)
+                    } else {
+                        dispatch_function_call(
+                            &call.function_name,
+                            call.object_id,
+                            &call.args,
+                            &ctx.names,
+                            &ctx.instances,
+                        )
+                    };
+                    match result {
                         CallResult::Sync(result) => Ok(Dispatched::Done(ext_result_to_resume(result))),
                         CallResult::Coroutine(coro) => {
                             let mode = CoroutineMode::for_function_call(call.allow_eager_await);
                             dispatch_coroutine(coro, call.call_id, mode, &mut join_set, &ctx.instances)
                         }
-                        CallResult::ModuleCoroutine { name, coro, then } => dispatch_module_coroutine(name, coro, then),
+                        CallResult::ModuleCoroutine { names, coros, then } => {
+                            dispatch_module_coroutine(names, coros, then)
+                        }
                     }
                 })
             };
