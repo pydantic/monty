@@ -1,5 +1,5 @@
 # call-external
-# The host answers `__import__('nope')` with not-found.
+# The host answers the `import` OS call with not-found.
 import tools
 import nope
 

@@ -93,10 +93,8 @@ def test_import_binds_the_host_module(pool: Monty):
     ],
 )
 def test_other_module_shapes_are_rejected(pool: Monty, tools: Any, message: str):
-    # a dict names exactly what crosses; a module would also expose its imports
-    # (`from os import getcwd` makes `getcwd` a module attribute), `dir()` of an
-    # arbitrary object whatever it carries, and a class is callable but would
-    # construct an instance, never a module; all refused at the feed, before it runs
+    # Dicts explicitly select exports; modules and arbitrary objects could expose imports.
+    # Classes construct instances, so they are rejected as factories before execution.
     with pool.checkout() as session:
         with pytest.raises(TypeError) as exc_info:
             session.feed_run('1', external_modules={'tools': tools})
@@ -161,10 +159,8 @@ async def _async_tools_with_async_add() -> ExternalModule:
 
 
 async def test_an_awaitable_factory_serves_a_call_through_a_restored_binding():
-    # `tools` was bound by a feed of the dumped session, whose module is gone with
-    # it; the restored session's first use of the module is a call through that
-    # binding (the attributes sent with it survive the dump), so its factory is
-    # awaited on the call path, and then the async function it names
+    # The restored binding retains its function names, but the host module is gone.
+    # Calling it must await the new factory before awaiting the function.
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
             await session.feed_run(
@@ -245,19 +241,16 @@ async def test_an_async_module_factory_is_awaited(awaitable: Callable[[], Awaita
     ],
 )
 def test_a_module_factory_failure_raises_at_the_import(pool: Monty, factory: Any, message: str):
-    """What a factory returns meets the checks a value entry passed at the feed, at the import."""
+    """Factory results undergo the same validation as direct entries, at import time."""
     with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('import tools', external_modules={'tools': factory})
         assert str(exc_info.value) == message
         assert _AwaitableTools.closed == 0
-        # the session is still usable
         assert session.feed_run('1 + 1') == snapshot(2)
 
 
 def test_submodules_are_attributes_of_their_parent(pool: Monty):
-    """An `ExternalModule` in a module's dict is a submodule: reached as an attribute,
-    and by every form of dotted import."""
     sub = ExternalModule({'add': add, 'VERSION': 2})
     pkg = ExternalModule({'VERSION': 1, 'sub': sub})
     with pool.checkout() as session:
@@ -358,10 +351,8 @@ def test_cyclic_submodules_are_rejected(pool: Monty):
     ],
 )
 def test_name_based_calls_respect_module_exposure(pool: Monty, tools: Any, name: str, message: str):
-    """A name-based `tools.<attr>` call reaches only what `import tools` exposed: never a private name,
-    and nothing on a `ClassInstance` module, whose methods route by uuid under the wrapper's policy.
-    With the module imported, a host function input carrying such a name, as a forged frame would,
-    still finds nothing."""
+    """Forged dotted calls cannot reach private names or bypass a `ClassInstance` wrapper
+    policy; instance methods must route by UUID."""
 
     def probe() -> str:
         return 'hidden'
@@ -376,8 +367,7 @@ def test_name_based_calls_respect_module_exposure(pool: Monty, tools: Any, name:
 
 
 def test_a_forged_name_with_many_dots_is_matched_against_the_configured_modules(pool: Monty):
-    """A host function name is walked one component at a time through the configured modules:
-    a forged name of thousands of components stops at the first missing one, and finds nothing."""
+    """Resolution stops at the first missing component, even for a long forged name."""
 
     def probe() -> str:
         return 'hidden'
@@ -388,7 +378,6 @@ def test_a_forged_name_with_many_dots_is_matched_against_the_configured_modules(
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('probe()', inputs={'probe': probe}, external_modules=modules)
         assert str(exc_info.value) == snapshot(f"NameError: name '{probe.__name__}' is not defined")
-        # a configured path still matches
         assert session.feed_run('from a.a import add\nadd(1, 2)', external_modules=modules) == snapshot(3)
 
 
@@ -416,8 +405,7 @@ def test_import_errors(pool: Monty):
 
 
 def test_a_dict_module_is_not_callable_and_has_no_other_methods(pool: Monty):
-    """The sandbox routes `tools()` and `tools.nope()` to the host as method calls on the module's
-    stand-in, which has no host object behind it: they fail as on a value of that kind."""
+    """Dict-module stand-ins have no host object to answer method calls."""
     with pool.checkout() as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('import tools\ntools()', external_modules=MODULES)
@@ -456,8 +444,7 @@ def test_a_class_instance_module(pool: Monty):
 
 
 def test_resume_auto_answers_imports(pool: Monty):
-    """An import surfaces as an OS-call snapshot, which `resume_auto` answers from the
-    captured `external_modules`; so does the stubs ask of a type-checked feed."""
+    """`resume_auto` answers import and stub-request snapshots from captured modules."""
     stubs = ADD_STUB + 'def concat(a: str, b: str) -> str: ...\nVERSION: int\n'
     modules = {'tools': ExternalModule(TOOLS, stubs=stubs)}
     with pool.checkout(type_check=True) as session:
@@ -511,8 +498,8 @@ def test_module_stubs_type_check_imports(pool: Monty):
 
 
 def test_module_stubs_are_fetched_lazily(pool: Monty):
-    """A type-checked feed asks for the stubs of the modules it imports before it is checked,
-    which runs the factory; the import then reuses the result, and later feeds ask no more."""
+    """Stub requests run factories before type checking; imports reuse their results.
+    Later feeds reuse the stubs, but call the factory again for imports."""
     calls = 0
 
     def factory() -> ExternalModule:
@@ -531,7 +518,7 @@ def test_module_stubs_are_fetched_lazily(pool: Monty):
         )
         assert calls == 1
         assert session.feed_run('import tools\ntools.add(1, 2)', external_modules=modules) == snapshot(3)
-        # once for the stubs ask and the import of the failed feed, once for the import of the next
+        # Once for the failed feed's stub request, once for the next feed's import.
         assert calls == 2
 
 

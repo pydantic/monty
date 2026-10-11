@@ -94,9 +94,7 @@ impl CodeBuilder {
         self.emit_with_operand(op, Operand::U16(operand))
     }
 
-    /// Emits an instruction with two u16 operands.
-    ///
-    /// Used for `LoadSubmodule`: attribute name_id + dotted path name_id.
+    /// Emits two u16 operands, e.g. attribute and dotted-path IDs for `LoadSubmodule`.
     pub fn emit_u16_u16(&mut self, op: Opcode, operand1: u16, operand2: u16) -> Result<(), CompileError> {
         self.emit_with_operand(op, Operand::U16U16(operand1, operand2))
     }

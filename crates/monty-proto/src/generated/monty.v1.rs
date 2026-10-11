@@ -1305,15 +1305,14 @@ pub mod os_call {
         #[prost(message, tag = "30")]
         AsyncSystemSleep(AsyncSleep),
         /// ---- Host modules ----------------------------------------------------
-        /// `import <module>` of a module the child lacks: the top-level name. The
-        /// answer is the module value; `not_found` / `not_handled` raise
-        /// `ModuleNotFoundError`.
+        /// Requests a missing top-level module; answer with its value.
+        /// `not_found` / `not_handled` raise `ModuleNotFoundError`. Further import
+        /// components use eager attributes or `NameLookup` with `object_id`.
         #[prost(message, tag = "31")]
         Import(Import),
-        /// Before type-checking a feed, the `.pyi` of each top-level module the
-        /// snippet imports that the session has not asked about yet. The answer is
-        /// a dict of dotted module path to stub source or None; `not_found` /
-        /// `not_handled` mean no stubs.
+        /// Requests stubs before type checking, once per top-level module per session.
+        /// Answer with a dict of dotted module paths to `.pyi` source or None;
+        /// `not_found` / `not_handled` mean no stubs.
         #[prost(message, tag = "32")]
         ImportStubs(ImportStubs),
     }

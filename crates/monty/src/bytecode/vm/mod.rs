@@ -409,10 +409,9 @@ pub struct CallFrame<'code> {
     /// suspended initializer resumes correctly.
     is_initializer: bool,
 
-    /// The module of the `from <module> import ...` statement in progress, set
-    /// by its `LoadModule` and read by the `LoadAttrImport`s that follow for
-    /// their `ImportError` message. Frame state rather than an operand so the
-    /// opcode keeps its one-operand shape; nothing else can run in between.
+    /// Module name for `LoadAttrImport` errors, set by `LoadModule`/`LoadSubmodule`.
+    /// Keeping it on the frame avoids another opcode operand; the compiler emits
+    /// no intervening instructions that change it.
     import_from_module: Option<StringId>,
 }
 
@@ -2082,11 +2081,9 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a built-in module, or asks the host for any other: the import
-    /// suspends as an [`OsFunctionCall::Import`] of the module name, and the
-    /// host's answer becomes the module value (`not_found` raises
-    /// `ModuleNotFoundError`). The name is always a top-level one;
-    /// `LoadSubmodule` walks the rest of a dotted import.
+    /// Loads a top-level built-in or suspends with [`OsFunctionCall::Import`].
+    /// The host's value becomes the module; `NotFound` raises `ModuleNotFoundError`.
+    /// `LoadSubmodule` resolves the remaining dotted components.
     fn load_module(&mut self, module_id: u16) -> CallResult {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {

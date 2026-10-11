@@ -116,20 +116,11 @@ export abstract class BaseWrapper {
   }
 
   /**
-   * Calls a method on the wrapped instance for the sandbox. Throws
-   * [`AttrNotExposed`] when `name` is outside `allowedMethods` or absent.
-   * Under `'all'` the name must also resolve to a method the class defines
-   * (see [`isMethodUnderAll`](BaseWrapper.isMethodUnderAll)); an explicit
-   * list calls whatever the named property holds.
-   *
-   * JS functions have no keyword arguments, so a non-empty `kwargs` is
-   * appended as a final options-bag argument — the way JS hosts typically
-   * take named options. The return value passes through `convertValue`
-   * (after settling, for a promise-returning method).
-   *
-   * `__call__` (the sandbox calling the instance itself) throws `TypeError`
-   * as for any non-callable value: only [`ClassType`] accepts it, as
-   * construction, so even `allowedMethods: 'all'` cannot invoke the instance.
+   * Throws [`AttrNotExposed`] for absent or disallowed names. `'all'` requires a class-defined
+   * method (see [`isMethodUnderAll`](BaseWrapper.isMethodUnderAll)); explicit lists allow any named callable.
+   * Appends non-empty `kwargs` as an options object and applies `convertValue` after the result settles.
+   * `__call__` throws `TypeError` even with `allowedMethods: 'all'`.
+   * Only [`ClassType`] accepts it, for construction.
    */
   callMethod(name: string, args: unknown[], kwargs: Record<string, unknown>): unknown {
     if (name === '__call__') {

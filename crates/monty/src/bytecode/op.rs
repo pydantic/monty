@@ -293,10 +293,8 @@ pub enum Opcode {
     LoadAttr = 77,
     /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
     ///
-    /// Like `LoadAttr` but raises `ImportError` instead of `AttributeError` when the
-    /// attribute is missing. That message names the module from the frame's
-    /// `import_from_module`, which the statement's `LoadModule` set: a host-provided
-    /// module is whatever value the host returned, not necessarily a `Module`.
+    /// Missing attributes raise `ImportError` using the frame's `import_from_module`:
+    /// host-provided values need not be `Module`s.
     LoadAttrImport = 78,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr = 79,
@@ -430,18 +428,12 @@ pub enum Opcode {
     Nop = 105,
 
     // === Module Operations ===
-    /// Load a built-in module onto the stack. Operand: u16 module-name StringId.
-    ///
-    /// The name is resolved through the executor interner at runtime.
-    /// Creates the module on the heap and pushes a `Value::Ref` to it.
+    /// Load a top-level module. Operand: u16 module-name StringId.
+    /// Pushes a built-in module or suspends with an import OS call for the host's value.
     LoadModule = 106,
-    /// Pop a module, push its submodule for a dotted import. Operands: u16
-    /// attribute name_id, u16 name_id of the dotted path through it (`a.b`).
-    ///
-    /// Reads the attribute like `LoadAttr`, but a missing one is
-    /// `ModuleNotFoundError: No module named 'a.b'` (`; 'a' is not a package`
-    /// when the module is a built-in one), and the path becomes the frame's
-    /// `import_from_module` for the `LoadAttrImport`s of a `from a.b import`.
+    /// Pop a module, push its submodule. Operands: u16 attribute ID, u16 dotted-path ID.
+    /// Missing submodules raise `ModuleNotFoundError`; built-ins add "is not a package".
+    /// Saves the path as the frame's `import_from_module` for subsequent `LoadAttrImport`s.
     LoadSubmodule = 107,
     /// Duplicate the top two stack values, preserving order: `[a, b] -> [a, b, a, b]`.
     ///

@@ -159,9 +159,7 @@ test('method call allowed by "all"', async () => {
 })
 
 test('instance callMethod rejects __call__ even under allowedMethods "all"', () => {
-  // `__call__` routes only to ClassType construction; on an instance wrapper
-  // it is answered as calling a value that is not callable, so the instance
-  // itself is never invoked.
+  // Even a callable host value must not run through an instance wrapper.
   const invocable = Object.assign(() => 'invoked', { add: (n: number) => n })
   const wrapper = new ClassInstance(invocable, { allowedMethods: 'all' })
   const error = t.throws(() => wrapper.callMethod('__call__', [], {}))
@@ -169,8 +167,6 @@ test('instance callMethod rejects __call__ even under allowedMethods "all"', () 
 })
 
 test('calling an instance in the sandbox is not callable', async () => {
-  // the sandbox suspends `c()` as a `__call__` on the instance; the wrapper
-  // answers with CPython's message for a value that cannot be called
   const c = new Calculator(5)
   const error = await t.throwsAsync(
     () => run('c()', { inputs: { c: new ClassInstance(c, { allowedMethods: 'all' }) } }),

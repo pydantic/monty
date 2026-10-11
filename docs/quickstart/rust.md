@@ -305,20 +305,18 @@ code can `await`, and when every task is blocked the run yields [`RunProgress::R
 When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
 result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
-An `import` of a module the sandbox does not have is an OS call,
-[`OsFunctionCall::Import`](../api/rust/monty-types.md#osfunctioncall) with the top-level module name; a dotted import
-reads the further components as attributes of the answer.
-The value the host resumes with is bound as the module, usually a host-backed class instance whose attributes are the
-tools.
+Unknown imports suspend with [`OsFunctionCall::Import`](../api/rust/monty-types.md#osfunctioncall) and the top-level
+name.
+The host's answer becomes the module; dotted imports read subsequent components as attributes.
+Hosts usually return a host-backed class instance containing the module's attributes.
 [`ResumeValue::NotFound`](../api/rust/monty-pool.md#resumevalue) and `NotHandled` raise `ModuleNotFoundError`;
 in-process, [`OsCall::resume`](../api/rust/monty.md#oscall) with
 [`ExtFunctionResult::NotFound`](../api/rust/monty-types.md#extfunctionresult) does the same, as does a run with no host.
 A future answer raises `RuntimeError` at the `import`.
-Before a type-checked feed is checked, the worker raises `OsFunctionCall::ImportStubs` once with the top-level host
-modules the snippet imports that the session has not asked about; answer it with a dict of dotted module path to
-`.pyi` source (a [`ModuleStub`](../api/rust/monty-types.md#modulestub) name each, `None` for a module without one),
-or `NotHandled` for no stubs.
-The stubs are kept for the session and travel in its dump.
+Before type checking, `OsFunctionCall::ImportStubs` requests imported host modules the session has not asked about.
+Answer with a dict of [`ModuleStub`](../api/rust/monty-types.md#modulestub) names to `.pyi` sources,
+using `None` for missing stubs, or `NotHandled` for no stubs.
+The session retains these stubs in its dumps.
 
 [`FunctionCall`](../api/rust/monty.md#functioncall), [`OsCall`](../api/rust/monty.md#oscall), [`NameLookup`](../api/rust/monty.md#namelookup) and [`ResolveFutures`](../api/rust/monty.md#resolvefutures) expose `abort`, which raises a host-supplied
 [`MontyException`](../api/rust/monty-types.md#montyexception) uncatchably at the suspension point and unwinds the run with a traceback.

@@ -8,7 +8,6 @@ use monty_types::{
     OsFunctionCall, PrintWriter, ResourceTracker, SANDBOX_MODULE_NAMES,
 };
 
-/// Starts `code` as a one-shot run.
 fn start(code: &str) -> RunProgress {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
@@ -16,8 +15,7 @@ fn start(code: &str) -> RunProgress {
         .unwrap()
 }
 
-/// A host object standing in for a module: an instance of a host class
-/// `name` (uuid `id`) with `attrs` as its eager attributes.
+/// Builds a module stand-in with eager attributes.
 fn host_object(name: &str, id: u128, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
     MontyObject::class_instance(
         MontyObject::class_type(name, MontyUuid::from_u128(id), true, true, []),
@@ -54,9 +52,6 @@ fn from_import_loads_names_from_the_answer() {
     assert_eq!(done.into_complete(), Some(MontyObject::int(42)));
 }
 
-/// A dotted import loads the top-level module from the host and walks the rest
-/// as attributes: `import a.b` binds `a`, an alias binds the submodule, and
-/// `from a.b import c` reads from the submodule.
 #[test]
 fn a_dotted_import_walks_submodules_of_the_answer() {
     let nested = |id| host_object("a.b", id, vec![("c", MontyObject::int(6))]);
@@ -72,7 +67,6 @@ fn a_dotted_import_walks_submodules_of_the_answer() {
     assert_eq!(done.into_complete(), Some(MontyObject::int(6)));
 }
 
-/// A component the answer lacks is `ModuleNotFoundError` naming the path to it.
 #[test]
 fn a_missing_submodule_is_a_module_not_found_error() {
     let module = host_object("a", 1, vec![("b", MontyObject::int(1))]);
@@ -193,9 +187,7 @@ fn a_repl_import_suspends_and_the_module_persists() {
     assert_eq!(value, MontyObject::int(42));
 }
 
-/// The module a `from ... import` names travels with a suspended frame: a
-/// session dumped while the host resolves one name still raises the
-/// `ImportError` for the next, naming the module, after a restore.
+/// The frame must retain the module name across a dump between two lazy attribute lookups.
 #[test]
 fn a_restored_from_import_still_names_its_module() {
     let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
@@ -257,9 +249,6 @@ fn a_future_answer_to_an_import_is_refused() {
     "#);
 }
 
-/// A host's exception answering an `import` renders as CPython's import
-/// errors do, without carets; the same exception answering an ordinary call
-/// keeps them.
 #[test]
 fn a_host_exception_hides_its_caret_only_at_an_import() {
     let boom = || MontyException::new(ExcType::ImportError, Some("boom".to_owned()));
@@ -288,10 +277,7 @@ fn a_host_exception_hides_its_caret_only_at_an_import() {
     "#);
 }
 
-/// `__import__` is an ordinary undefined name: an import is an OS call the
-/// sandbox code cannot produce by spelling a name, so a direct call reaches
-/// the host as any unknown function would, and is a `NameError` once nobody
-/// serves it.
+/// Spelling `__import__` cannot produce an import OS call.
 #[test]
 fn a_direct_dunder_import_is_an_ordinary_undefined_name() {
     let call = start("__import__('tools')").into_function_call().unwrap();
@@ -352,9 +338,7 @@ fn a_direct_dunder_import_is_an_ordinary_undefined_name() {
     "#);
 }
 
-/// Every module the runtime provides is a reserved module name, so a host
-/// cannot register a module the runtime would never ask for. Dotted names
-/// (`os.path`) are not identifiers and so can never be module names.
+/// Dotted built-ins such as `os.path` are excluded because host module names must be identifiers.
 #[test]
 fn every_builtin_module_is_a_reserved_module_name() {
     for name in builtin_module_names() {

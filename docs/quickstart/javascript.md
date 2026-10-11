@@ -77,10 +77,8 @@ Keyword arguments from the sandbox arrive as a trailing object on the call.
 An error thrown by a host function crosses into the sandbox as a Python exception, using the error's `name` when it
 matches a Python exception type and `RuntimeError` otherwise.
 
-`externalModules`, beside `externalLookup`, names the modules the sandbox may `import`, each an `ExternalModule`
-pairing its value with an optional type stub.
-A plain object's public properties become the module's attributes, functions among them as host functions named
-`<module>.<attr>`:
+`externalModules` maps import names to `ExternalModule` values with optional type stubs.
+A plain object's public properties become module attributes; functions become host functions named `<module>.<attr>`:
 
 ```ts
 import { ExternalModule, Monty } from '@pydantic/monty'
@@ -262,8 +260,7 @@ await using session = await pool.checkout({
 console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data: () => 'data' } })) // data
 ```
 
-An `externalModules` entry's `stubs` gives the checker the `.pyi` of a module the code imports, fetched when a
-type-checked feed first imports it.
+`ExternalModule.stubs` supplies a module's `.pyi` source, fetched at its first type-checked import.
 See [type checking](../type-checking.md#declaring-what-the-host-provides).
 
 Omitted `maxMemory` / `maxFeedDurationSecs` means unlimited.

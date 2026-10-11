@@ -1,5 +1,4 @@
-//! The imports of a snippet: re-emitted for the type checks of later
-//! snippets, and the modules a worker asks the host for stubs of.
+//! Scan snippet imports for later type checks and host stub requests.
 
 use std::iter::once;
 
@@ -7,13 +6,11 @@ use ruff_python_ast::{Alias, ExceptHandler, Stmt};
 use ruff_python_parser::parse_module;
 use ruff_text_size::{Ranged, TextRange};
 
-/// What one scan of a snippet's imports yields; see [`scan_imports`].
+/// Imports collected by [`scan_imports`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SnippetImports {
-    /// The `import` / `from ... import` statements, one per line with aliases
-    /// kept, injected ahead of the `.pyi` star import of later checks: a stub
-    /// re-exports an import only as `import x as x`, so `import math` in one
-    /// snippet would otherwise be lost to the next.
+    /// Import statements with aliases, one per line, injected before later checks' `.pyi` star import.
+    /// This preserves bindings such as `import math`, which `.pyi` files do not re-export.
     pub prelude: String,
     /// Each top-level module imported, once, in source order.
     pub modules: Vec<ImportedModule>,
@@ -27,11 +24,9 @@ pub struct ImportedModule {
     pub range: TextRange,
 }
 
-/// Scans `source` for its imports outside any function or class body;
-/// `__future__` and relative imports are dropped, and source that does not
-/// parse yields nothing. Imports under a module-level `if`/`for`/`while`/
-/// `try`/`with`/`match` are kept whether or not that branch ran: the checker
-/// cannot know, and a name the runtime did bind must resolve.
+/// Collects imports outside function and class bodies, excluding `__future__` and relative imports.
+/// Invalid syntax yields no imports. All module-level branches are included because the checker
+/// cannot tell which ran, and any names bound at runtime must resolve.
 #[must_use]
 pub fn scan_imports(source: &str) -> SnippetImports {
     let Ok(parsed) = parse_module(source) else {
@@ -43,8 +38,7 @@ pub fn scan_imports(source: &str) -> SnippetImports {
 }
 
 impl SnippetImports {
-    /// Records one import statement: its prelude line, and each top-level
-    /// module it names that has not been seen.
+    /// Appends a prelude line and records each module's first import.
     fn add(&mut self, line: &str, modules: impl Iterator<Item = (String, TextRange)>) {
         self.prelude.push_str(line);
         self.prelude.push('\n');
@@ -56,8 +50,7 @@ impl SnippetImports {
     }
 }
 
-/// Appends the imports of `body`, descending into compound statements but not
-/// into function or class bodies, whose imports bind locally.
+/// Descends into compound statements, excluding function and class bodies whose imports bind locally.
 fn collect(body: &[Stmt], imports: &mut SnippetImports) {
     for statement in body {
         match statement {
@@ -111,12 +104,10 @@ fn collect(body: &[Stmt], imports: &mut SnippetImports) {
     }
 }
 
-/// `a` for `a.b.c`.
 fn top_level(dotted: &str) -> String {
     dotted.split('.').next().unwrap_or_default().to_owned()
 }
 
-/// `a, b as c`: the names of one import statement.
 fn aliases(names: &[Alias]) -> String {
     names
         .iter()

@@ -25,7 +25,7 @@ jiff = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 unicode-general-category = { workspace = true }
-# `ModuleStub` names must be identifiers, keyword-aware.
+# Validate `ModuleStub` names, including Python keywords.
 ruff_python_stdlib = { workspace = true }
 
 # `std::time::Instant` panics on `wasm32-unknown-unknown`, so the resource

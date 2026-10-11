@@ -219,8 +219,8 @@ Use host storage whose availability and side effects are acceptable for the work
 ## The `os` callback
 
 Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
-The `import` and `import_stubs` calls a [host module](host-functions.md#importing-host-modules) makes are answered
-from `external_modules` first and never reach it.
+[Host module](host-functions.md#importing-host-modules) calls (`import` and `import_stubs`) use `external_modules`
+and never reach this handler.
 It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
 Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 

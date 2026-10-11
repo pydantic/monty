@@ -89,8 +89,8 @@ it.
 
 A name present in both is served by the eager `inputs` binding.
 
-`external_modules`, beside `external_lookup`, names the modules the sandbox may `import`, each an
-[`ExternalModule`][pydantic_monty.ExternalModule] pairing a dict of the module's public items with its type stub:
+`external_modules` maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values containing the
+module's public items and an optional type stub:
 
 ```python
 from pydantic_monty import ExternalModule, Monty

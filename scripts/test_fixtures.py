@@ -575,14 +575,11 @@ class VirtualEnviron:
 os.environ = VirtualEnviron()
 
 
-# The `tools` module the `# call-external` cases import: the Rust runner answers the
-# sandbox's `__import__('tools')` with a host object carrying these functions, and
-# registering it in `sys.modules` lets every CPython case `import tools` too.
+# Register the Rust runner's host-module fixtures for CPython's `import tools`.
 tools = types.ModuleType('tools')
 for _fixture in (add_ints, concat_strings, return_value, get_list, raise_error, async_call, async_fail):
     setattr(tools, _fixture.__name__, _fixture)
-# a package (so `import tools.nested` resolves) with one submodule, as the Rust
-# runner's `tools` object carries a `nested` attribute
+# Mark tools as a package so `import tools.nested` resolves.
 tools.__path__ = []
 nested = types.ModuleType('tools.nested')
 nested.__path__ = []  # a package too, so a missing submodule of it is named plainly

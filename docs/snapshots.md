@@ -346,13 +346,12 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 
 - **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
     not from the `checkout()` that restored it.
-    The module stubs the session received travel too, whether or not it type-checks, so the restored session asks
-    the host only about modules it never asked about; the `external_modules` its feeds pass answer its imports and
-    calls as before.
-- **A host module is a host object.** `import tools` binds the value the host answered with, so the next item applies
-    to it: the attributes sent with it (values, and host functions named `tools.<attr>`) still work after the restore,
-    while a lazy attribute or a method call on it fails as on any restored host object.
-    An `import` after the restore asks the host again.
+    Module stubs are retained even when type checking is off; restored sessions request only previously unrequested
+    stubs.
+    Supply `external_modules` again to answer imports and function calls.
+- **Host modules follow host-object restoration rules.** Eager attributes, including functions named `tools.<attr>`,
+    survive restoration; lazy attribute access and method calls fail as described below.
+    An `import` after restoration asks the host again.
 - **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
     come back as [`MontyClassProxy`][pydantic_monty.MontyClassProxy] (a host class, `type(x)` included, as [`MontyClassTypeProxy`][pydantic_monty.MontyClassTypeProxy] in Python and as a plain
     `{ __monty_type__: 'Type', ... }` marker in JavaScript), method calls on them

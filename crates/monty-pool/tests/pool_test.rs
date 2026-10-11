@@ -2855,8 +2855,7 @@ fn position() -> pb::SourceRange {
 
 // ---- host-provided modules ---------------------------------------------------
 
-/// A host object standing in for a module: an instance of a host class named
-/// `name` whose eager attrs are `attrs`.
+/// Represents a module as a host class instance with eager attributes.
 fn host_module(name: &str, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
     MontyObject::class_instance(
         MontyObject::class_type(name, MontyUuid::from_u128(1), true, true, []),
@@ -2865,7 +2864,6 @@ fn host_module(name: &str, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
     )
 }
 
-/// The module an `import` OS call names, checking the event's shape.
 fn expect_import(event: TurnEvent) -> String {
     let TurnEvent::OsCall {
         function_name, args, ..
@@ -2881,7 +2879,6 @@ fn expect_import(event: TurnEvent) -> String {
     module.as_ref().as_str().expect("a module name").to_owned()
 }
 
-/// The modules an `import_stubs` OS call names, checking the event's shape.
 fn expect_import_stubs(event: TurnEvent) -> Vec<String> {
     let TurnEvent::OsCall {
         function_name, args, ..
@@ -2903,7 +2900,6 @@ fn expect_import_stubs(event: TurnEvent) -> Vec<String> {
         .collect()
 }
 
-/// A stubs answer: one `.pyi` for `tools`.
 fn tools_stubs(source: &str) -> ResumeValue {
     ResumeValue::Return(MontyObject::dict([(
         MontyObject::string("tools"),
@@ -2911,8 +2907,7 @@ fn tools_stubs(source: &str) -> ResumeValue {
     )]))
 }
 
-/// `import tools` reaches the host as an `import` OS call, the answer is
-/// bound as the module, and its attributes dispatch as ordinary host functions.
+/// Functions on the returned module dispatch as ordinary host functions.
 #[tokio::test]
 async fn an_import_is_answered_by_the_host() {
     let pool = Pool::new(config()).await.unwrap();
@@ -2939,7 +2934,6 @@ async fn an_import_is_answered_by_the_host() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::int(3));
 
-    // a module the host does not have
     let event = session
         .feed("import nope", vec![], vec![], false, &mut no_print)
         .await
@@ -2958,8 +2952,7 @@ async fn an_import_is_answered_by_the_host() {
     session.finish().await.unwrap();
 }
 
-/// A type-checked feed asks the host for the stubs of the modules it imports
-/// before it is checked, once per session, and checks against the answer.
+/// Host stubs are requested once per module per session, before type checking.
 #[tokio::test]
 async fn module_stubs_type_check_imports() {
     let pool = Pool::new(config()).await.unwrap();
@@ -3003,7 +2996,6 @@ async fn module_stubs_type_check_imports() {
     session.finish().await.unwrap();
 }
 
-/// A type-checked session with concise diagnostics.
 fn type_checked() -> ReplConfig {
     ReplConfig {
         type_check: true,
@@ -3015,16 +3007,12 @@ fn type_checked() -> ReplConfig {
     }
 }
 
-/// A worker serves one session after another, so the type checker's files
-/// from a finished session (its module stubs) must be gone before the next
-/// session checks anything: a stub left behind would let a later tenant
-/// resolve, and so learn the shape of, a module it was never given.
+/// Retained stubs would expose one tenant's module types to the next session.
 #[tokio::test]
 async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&type_checked()).await.unwrap();
     let first_id = session.worker_id().unwrap();
-    // the stub resolves the import, so the feed reaches the host
     let event = session
         .feed("import tools", vec![], vec![], false, &mut no_print)
         .await

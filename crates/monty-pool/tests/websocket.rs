@@ -2909,9 +2909,7 @@ fn position() -> SourceRange {
     }
 }
 
-/// Only a feed is type-checked, so a `TypingError` answering a `Dump` means
-/// the peer has lost sync: the worker is discarded rather than kept with the
-/// parent believing a suspended feed ended.
+/// Discard the worker so an invalid `TypingError` cannot falsely end a suspended feed.
 #[tokio::test]
 async fn a_typing_error_reply_to_dump_is_a_protocol_violation() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -2941,8 +2939,6 @@ async fn a_typing_error_reply_to_dump_is_a_protocol_violation() {
     join_server(server).await;
 }
 
-/// A feed that skips type checking cannot produce a `TypingError`, so one
-/// answering it is out of sync too, and the worker is discarded.
 #[tokio::test]
 async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");

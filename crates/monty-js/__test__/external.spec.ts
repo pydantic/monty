@@ -551,8 +551,7 @@ test('externalLookup unconvertible value rejects the turn', async () => {
 })
 
 test('a non-callable lookup value with a then is never awaited', async () => {
-  // the host-side `then` of a plain value must not run because the sandbox tried
-  // to call the value: the call fails as not callable, as any plain value would
+  // Async lookup resolution must not invoke a plain value's `then` method.
   let thenRan = false
   const value = {
     then: () => {

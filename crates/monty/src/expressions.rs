@@ -109,9 +109,7 @@ impl Identifier {
     }
 }
 
-/// One component after the first of a dotted import (`b` in `import a.b.c`):
-/// the attribute read on the module before it, and the dotted path up to it
-/// for the `ModuleNotFoundError` that names it.
+/// A dotted-import component and its full path for `ModuleNotFoundError` messages.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Submodule {
     /// The attribute name (`b`).
@@ -120,11 +118,7 @@ pub struct Submodule {
     pub path: StringId,
 }
 
-/// A single module in an `import` statement (e.g., `sys` in `import sys` or `sys as s`).
-///
-/// Each entry in `import a, b as c` becomes one `ImportName` with its own
-/// module name and binding target. A dotted name loads the top-level module and
-/// reads each further component as an attribute of the one before.
+/// One entry of an `import` statement, with its dotted components and binding target.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportName {
     /// The top-level module to load (`a` for `import a.b`).

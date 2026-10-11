@@ -585,7 +585,6 @@ fn turn_events_carry_the_suspension_budget() {
 // Host modules: `import` and `import_stubs`
 // ---------------------------------------------------------------------------
 
-/// Configures a session, type-checked or not, with concise diagnostics.
 fn configure(child: &mut Child, type_check: bool) {
     let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "main.py".to_owned(),
@@ -600,7 +599,6 @@ fn configure(child: &mut Child, type_check: bool) {
     assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
 }
 
-/// The message of the `Error` a request was refused with.
 fn expect_error_message(event: pb::child_event::Kind) -> String {
     let pb::child_event::Kind::Error(error) = event else {
         panic!("expected an Error event, got {event:?}");
@@ -608,7 +606,6 @@ fn expect_error_message(event: pb::child_event::Kind) -> String {
     error.exception.unwrap().message.unwrap()
 }
 
-/// The rendered diagnostics of a `TypingError` reply.
 fn expect_typing_error(event: pb::child_event::Kind) -> String {
     let pb::child_event::Kind::TypingError(typing) = event else {
         panic!("expected a TypingError event, got {event:?}");
@@ -616,7 +613,6 @@ fn expect_typing_error(event: pb::child_event::Kind) -> String {
     typing.diagnostics
 }
 
-/// The modules an `import_stubs` ask names, checking its id and position.
 fn expect_import_stubs(event: pb::child_event::Kind, position: (&str, u32, u32)) -> Vec<String> {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected an import_stubs ask, got {event:?}");
@@ -631,7 +627,6 @@ fn expect_import_stubs(event: pb::child_event::Kind, position: (&str, u32, u32))
     ask.modules.into_iter().collect()
 }
 
-/// The module an `import` call names.
 fn expect_import(event: pb::child_event::Kind) -> String {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected an import, got {event:?}");
@@ -642,7 +637,6 @@ fn expect_import(event: pb::child_event::Kind) -> String {
     import.module
 }
 
-/// Answers the pending `import_stubs` ask with `result`.
 fn answer_stubs(
     child: &mut Child,
     result: pb::ext_function_result::Kind,
@@ -657,7 +651,6 @@ fn answer_stubs(
     split_turn(&bytes).1
 }
 
-/// Answers the pending `import_stubs` ask with a dict of module to stub.
 fn answer_stubs_with(child: &mut Child, stubs: &[(&str, Option<&str>)]) -> pb::child_event::Kind {
     let answer = MontyObject::dict(stubs.iter().map(|(module, source)| {
         (
@@ -673,9 +666,7 @@ fn answer_stubs_with(child: &mut Child, stubs: &[(&str, Option<&str>)]) -> pb::c
     )
 }
 
-/// A type-checked feed asks for the stubs of the host modules it imports
-/// before checking, naming the first import; the answer resolves them, with a
-/// dotted key laying out a package, and the next feed asks for none of them again.
+/// The request names the first import; dotted answer keys define package stubs.
 #[test]
 fn a_type_checked_feed_asks_for_module_stubs_once() {
     let mut child = Child::default();
@@ -701,8 +692,7 @@ fn a_type_checked_feed_asks_for_module_stubs_once() {
     assert_eq!(expect_import(event), "tools");
 }
 
-/// A module answered without a stub, or an answer of no stubs at all, is not
-/// asked for again either: the import stays unresolved for the session.
+/// Missing stubs leave imports unresolved for the rest of the session.
 #[test]
 fn a_module_without_a_stub_is_asked_for_once() {
     for answer in [
@@ -734,9 +724,7 @@ fn a_module_without_a_stub_is_asked_for_once() {
     }
 }
 
-/// Neither the sandbox's own modules nor the ones its type checker resolves
-/// on its own are asked for, and a feed that skips type checking, or a
-/// session without it, never asks.
+/// Built-in and checker-provided modules need no host stubs; unchecked feeds request none.
 #[test]
 fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
     let mut child = Child::default();
@@ -767,8 +755,7 @@ fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
     assert_eq!(expect_import(event), "tools");
 }
 
-/// A malformed answer is a protocol violation that leaves the ask pending;
-/// an exception answer ends the feed before it runs.
+/// Malformed answers leave the request pending; exception answers end it before execution.
 #[test]
 fn a_bad_stubs_answer_is_refused_and_an_exception_ends_the_feed() {
     let mut child = Child::default();
@@ -799,7 +786,6 @@ fn a_bad_stubs_answer_is_refused_and_an_exception_ends_the_feed() {
     let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     insta::assert_snapshot!(expect_error_message(split_turn(&bytes).1), @"cannot dump while a feed awaits its module stubs");
-    // still pending: an exception answer ends the feed as a failing import would
     let boom = MontyException::new(ExcType::ImportError, Some("boom".to_owned()));
     let event = answer_stubs(&mut child, pb::ext_function_result::Kind::Error((&boom).into()), None);
     insta::assert_snapshot!(expect_error_message(event), @"boom");
@@ -811,7 +797,6 @@ fn a_bad_stubs_answer_is_refused_and_an_exception_ends_the_feed() {
     );
 }
 
-/// `AbortFeed` during the ask ends the feed with the parent's exception.
 #[test]
 fn abort_during_the_stubs_ask_ends_the_feed() {
     let mut child = Child::default();
@@ -831,9 +816,7 @@ fn abort_during_the_stubs_ask_ends_the_feed() {
     assert_eq!(expect_complete(event), MontyObject::int(2));
 }
 
-/// A session dumped while suspended at an import is restored with that
-/// import re-announced, and the host's answer binds the module as it would
-/// have in the original worker.
+/// Restoring a suspended import re-announces it and accepts a module value.
 #[test]
 fn load_restores_a_suspended_import() {
     let mut child = Child::default();
@@ -874,8 +857,7 @@ fn load_restores_a_suspended_import() {
     assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(41));
 }
 
-/// A dump carries the stubs the session received and the modules it asked
-/// about: the restored session resolves the dumped module without asking.
+/// Dumps preserve both received stubs and modules answered without stubs.
 #[test]
 fn load_restores_the_received_module_stubs() {
     let mut child = Child::default();
@@ -904,8 +886,7 @@ fn load_restores_the_received_module_stubs() {
     assert_eq!(expect_import(event), "tools");
 }
 
-/// The same import committed by several feeds is carried once, at its latest
-/// position, so the prelude does not grow with the number of feeds.
+/// Deduplication bounds the prelude across repeated feeds while preserving import order.
 #[test]
 fn a_repeated_import_is_carried_once() {
     let mut child = Child::default();
@@ -926,8 +907,7 @@ fn a_repeated_import_is_carried_once() {
     );
 }
 
-/// A name imported again moves to the end of the prelude, so the latest
-/// binding is the one later feeds are checked against.
+/// The latest import binding determines the type seen by later feeds.
 #[test]
 fn a_repeated_import_rebinds_its_name() {
     let mut child = Child::default();
@@ -942,7 +922,6 @@ fn a_repeated_import_rebinds_its_name() {
     insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:1: error[unresolved-attribute] Module `math` has no member `loads`");
 }
 
-/// An import committed by one feed is still bound for the next feed's check.
 #[test]
 fn a_committed_import_carries_into_the_next_feed() {
     let mut child = Child::default();

@@ -320,9 +320,7 @@ def test_private_method_not_dispatched(monty_run: RunMonty):
 
 
 def test_instance_call_method_dunder_call_rejected():
-    """`__call__` routes only to `ClassType` construction; on an instance
-    wrapper it is answered as calling a value that is not callable, even under
-    `allowed_methods='all'`, so the wrapped instance can never be invoked."""
+    """Only `ClassType` permits `__call__`, even with `allowed_methods='all'`."""
 
     class Invocable:
         def __call__(self) -> str:
@@ -335,8 +333,7 @@ def test_instance_call_method_dunder_call_rejected():
 
 
 def test_calling_an_instance_in_the_sandbox_is_not_callable(monty_run: RunMonty):
-    """The sandbox suspends `c()` as a `__call__` on the instance; the wrapper
-    answers with CPython's message for a value that cannot be called."""
+    """The wrapper rejects `__call__` requests from the sandbox."""
 
     class Invocable:
         def __call__(self) -> str:

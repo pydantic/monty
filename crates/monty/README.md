@@ -93,7 +93,9 @@ let RunProgress::Complete(result) = progress else { panic!("expected completion"
 assert_eq!(result, MontyObject::int(42));
 ```
 
-A REPL session is a self-contained snapshot of the interpreter: serialize it with `dump()`, store it in a file or database, and `Dump::load()` + keep feeding it later — in a different process or on a different machine. The dump carries the session metadata (the `dump()` arguments: script name, type-check state, module stubs) alongside the state, behind a version this build checks on load:
+Serialize a REPL session with `dump()` and restore it with `Dump::load()` to continue in another process or machine.
+The dump includes the interpreter state and the supplied script name, type-check state and module stubs.
+Loading checks the dump version:
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
@@ -120,7 +122,11 @@ Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
 
-An `import` of a module the sandbox does not have is an `OsCall`, `OsFunctionCall::Import` with the top-level module name (a dotted import reads the further components as attributes of the answer). The value the host resumes with is bound as the module, usually a host-backed class instance whose attributes are the tools; `ExtFunctionResult::NotFound` raises `ModuleNotFoundError`, as does a run with no host to ask. `OsFunctionCall::ImportStubs` is the worker's request for host modules' type stubs; the interpreter itself never raises it.
+Imports of unknown modules suspend with `OsFunctionCall::Import` and the top-level module name.
+The host's answer becomes the module; dotted imports read subsequent components as attributes of that value.
+Hosts usually return a host-backed class instance containing the module's attributes.
+`ExtFunctionResult::NotFound`, or running without a host, raises `ModuleNotFoundError`.
+The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
 
 ## Other pieces
 

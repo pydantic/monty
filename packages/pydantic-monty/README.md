@@ -128,9 +128,9 @@ with Monty() as pool:
 
 ### Host modules
 
-`external_modules`, beside `external_lookup`, names the modules the sandbox may `import`: each an `ExternalModule`
-pairing a dict of the module's public items (callables become host functions) with the `.pyi` the type checker
-resolves the import against, fetched when a type-checked feed first imports the module.
+`external_modules` maps import names to `ExternalModule` values containing the module's public items and a `.pyi` stub.
+Callables become host functions.
+Type checking fetches the stub when a feed first imports the module.
 
 ```python
 from pydantic_monty import ExternalModule, Monty

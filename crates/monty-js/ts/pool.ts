@@ -75,8 +75,7 @@ export interface CheckoutOptions {
   limits?: ResourceLimits
   /** Type-check each fed snippet before executing it (default false). */
   typeCheck?: boolean
-  /** Stub file contents used by type checking. A host module's own stub is
-   *  the `stubs` of its `ExternalModule`, passed with each feed's `externalModules`. */
+  /** Global type-checking stubs. Supply module stubs through `ExternalModule.stubs` in `externalModules`. */
   typeCheckStubs?: string
   /**
    * How `MontyTypingError` diagnostics are rendered (default `'full'`).

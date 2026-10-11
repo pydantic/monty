@@ -187,22 +187,19 @@ enum SessionState {
     /// Mid-feed, waiting for a resume request. Never holds
     /// `ReplProgress::Complete` — completion ends the turn immediately.
     Suspended(Box<ReplProgress>),
-    /// A feed received but not started: the parent is answering the
-    /// `import_stubs` ask that precedes its type check.
+    /// A feed awaiting host stubs before type checking.
     AwaitingStubs(Box<PendingFeed>),
 }
 
-/// A feed between its arrival and the start of its execution, held while the
-/// parent answers the `import_stubs` ask that precedes its type check.
+/// A feed held until the parent answers `import_stubs`.
 struct PendingFeed {
     repl: Box<MontyRepl>,
     code: String,
     inputs: NamedValues,
     /// Empty keeps the session's working directory.
     cwd: String,
-    /// Whether the feed is type-checked before it runs.
     type_checked: bool,
-    /// The modules the parent was asked stubs for, in source order.
+    /// Requested modules, in source order.
     asked: Vec<String>,
 }
 
@@ -234,9 +231,7 @@ pub struct Child {
     print_flush_interval: Duration,
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
     os_policy: OsPolicy,
-    /// The `.pyi` of every host module the parent has answered an
-    /// `import_stubs` ask with (or a `Load` restored), which the type checker
-    /// resolves imports against.
+    /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
 }
 
@@ -560,16 +555,12 @@ impl Child {
         Ok(())
     }
 
-    /// Runs a `Feed` on the ready session: scans the snippet for nesting,
-    /// asks the parent for the stubs of any host module it imports that the
-    /// session has not asked about (when it will be type-checked), then
-    /// [`start_feed`](Self::start_feed)s it.
+    /// Checks source nesting and requests missing host stubs before starting a feed.
     fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::ChildEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
         if !matches!(self.state, SessionState::Ready(_)) {
-            // ensure_repl left it un-Ready only when mid-feed
             return protocol_violation("Feed without a session ready for input");
         }
         let inputs = match named_values_from_proto(feed.inputs, feed.values) {
@@ -579,8 +570,7 @@ impl Child {
         let SessionState::Ready(repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
-        // Before anything parses the snippet: neither the import scan, ty nor
-        // the compile scan again.
+        // Check nesting before the import scan, ty or the compiler parses the snippet.
         if let Err(error) = repl.check_source(&feed.code) {
             self.state = SessionState::Ready(repl);
             return error_event_from(&error);
@@ -602,8 +592,7 @@ impl Child {
             let imports = scan_imports(&pending.code);
             state.pending_snippet = Some(pending.code.clone());
             state.pending_imports = imports.prelude;
-            // each host module once per session: the answer, with or without a
-            // stub, is final, and the sandbox's own modules are never asked for
+            // Each answer is final for the session, even if it contains no stub.
             let unasked = |name: &str| {
                 !SANDBOX_MODULE_NAMES.contains(&name)
                     && !CHECKER_MODULE_NAMES.contains(&name)
@@ -634,8 +623,7 @@ impl Child {
         self.start_feed(pending, sink)
     }
 
-    /// Type-checks a pending feed (when it is to be), injects its inputs and
-    /// drives execution to the turn-ending event.
+    /// Optionally type-checks, injects inputs and executes to the turn-ending event.
     fn start_feed(&mut self, pending: PendingFeed, sink: &mut dyn EventSink) -> pb::ChildEvent {
         let PendingFeed {
             mut repl,
@@ -671,10 +659,7 @@ impl Child {
         event
     }
 
-    /// Answers the `import_stubs` ask a pending feed is held on: records the
-    /// stubs the parent sent, marks the asked modules answered and starts the
-    /// feed. An exception answer ends the feed before it runs, as a failing
-    /// `import` would at its statement.
+    /// Records the stubs and starts the pending feed; an exception answer ends it before execution.
     fn handle_resume_stubs(&mut self, resume: pb::ResumeCall, sink: &mut dyn EventSink) -> pb::ChildEvent {
         if resume.call_id != IMPORT_STUBS_CALL_ID {
             return protocol_violation(&format!(
@@ -729,16 +714,14 @@ impl Child {
         self.start_feed(*pending, sink)
     }
 
-    /// Ends a feed that never started with `exc`, as its `Error` event; the
-    /// session is ready for the next feed.
+    /// Returns the exception and readies the session after a feed fails before execution.
     fn fail_pending_feed(&mut self, pending: PendingFeed, exc: &MontyException) -> pb::ChildEvent {
         self.state = SessionState::Ready(pending.repl);
         self.discard_pending_snippet();
         error_event_from(exc)
     }
 
-    /// Forgets the in-flight snippet of a feed that did not complete, so it
-    /// never becomes type-check context.
+    /// Excludes a failed feed from later type checks.
     fn discard_pending_snippet(&mut self) {
         if let Some(state) = &mut self.type_check {
             state.pending_snippet = None;
@@ -1013,9 +996,8 @@ impl Child {
                 if let Some(state) = &mut self.type_check
                     && let Some(snippet) = state.pending_snippet.take()
                 {
-                    // the stubs' star import does not re-export the snippet's
-                    // imports, so they are injected ahead of it, each statement
-                    // once, the latest last since it is the one that binds
+                    // The stubs' star import does not re-export imports. Keep them separately,
+                    // deduplicated and ordered so the latest binding wins.
                     let imports = mem::take(&mut state.pending_imports);
                     let mut committed: Vec<&str> = state.committed_imports.lines().collect();
                     for import in imports.lines() {
@@ -1077,9 +1059,7 @@ impl Child {
         error_event(ExcType::RuntimeError, message)
     }
 
-    /// Type-checks a snippet against the session's accumulated stubs, module
-    /// stubs and committed imports. Returns the turn-ending event if the check
-    /// fails (or errors), `None` to proceed with execution.
+    /// Checks against accumulated stubs and imports, returning an event on failure.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
         let stubs =
@@ -1173,16 +1153,15 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
     }))
 }
 
-/// The `Error` event carrying `exc` as raised, traceback included.
+/// Preserves the exception's traceback in the error event.
 fn error_event_from(exc: &MontyException) -> pb::ChildEvent {
     event(pb::child_event::Kind::Error(pb::Error {
         exception: Some(exc.into()),
     }))
 }
 
-/// The stubs an `import_stubs` answer carries: a dict of dotted module path to
-/// `.pyi` source or `None`, every path under one of the `asked` modules. The
-/// error is the protocol-violation message.
+/// Validates a dict of dotted module paths to `.pyi` source or `None`.
+/// Paths must belong to a requested module; errors are protocol-violation messages.
 fn stubs_from_answer(answer: &MontyObject, asked: &[String]) -> Result<Vec<ModuleStub>, String> {
     let answer = answer.as_ref();
     let pairs = match answer.pairs() {

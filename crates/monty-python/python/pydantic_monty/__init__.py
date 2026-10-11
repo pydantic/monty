@@ -330,27 +330,22 @@ PrintCallback: TypeAlias = Callable[[Literal['stdout', 'stderr'], str], None] | 
 """Print sink accepted by `feed_run` / `feed_start` / `load_snapshot`."""
 
 ModuleValue: TypeAlias = dict[str, Any] | ClassInstance
-"""What stands for a host module in the sandbox: a dict's public items (keys not
-starting with `_`) become the module's, callables among them as host functions
-and `ExternalModule`s among them as submodules; a `ClassInstance` is the module
-itself, with no submodules since its attributes are its own."""
+"""A dict exposes keys not starting with `_`: callables as host functions,
+`ExternalModule`s as submodules, and other values as attributes.
+A `ClassInstance` uses its wrapper policy and has no submodules."""
 
 
 @dataclass(frozen=True)
 class ExternalModule:
-    """A module the sandbox may `import`: an entry of `feed_run(external_modules=...)`,
-    or a value of another module's dict, where it is a submodule (`import pkg.sub`).
+    """A host module and its optional type stub, supplied through `external_modules`.
 
-    Pairs the module's implementation with the stub type checking sees, so the
-    two cannot drift apart: `import <name>` binds `module`, and with
-    `type_check=True` resolves against `stubs`.
+    Nest in another module's dict to expose a submodule (`import pkg.sub`).
     """
 
     module: ModuleValue
-    """The module's value."""
     stubs: str | None = None
-    """The module's `.pyi` source for type checking; without it a type-checked
-    `import <name>` fails as unresolved. A submodule's is laid out as a package."""
+    """The module's `.pyi` source; needed for type checking unless the checker supplies it.
+    Submodule stubs form a package tree."""
 
 
 TypeCheckFormat: TypeAlias = Literal[

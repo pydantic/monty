@@ -482,9 +482,7 @@ fn script_colliding_with_stubs_is_rejected() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Host module stubs and the import prelude
-// ---------------------------------------------------------------------------
 
 /// The `Concise` rendering of one snippet checked with `context`.
 fn render_with(checker: &mut TypeChecker, code: &str, context: &TypeCheckContext<'_>) -> Option<String> {
@@ -494,7 +492,6 @@ fn render_with(checker: &mut TypeChecker, code: &str, context: &TypeCheckContext
         .map(|diagnostics| diagnostics.to_string())
 }
 
-/// A stub for a host module `tools` with one async function.
 fn tools_stub() -> ModuleStub {
     ModuleStub::new("tools", "async def add(*, a: int, b: int) -> int: ...\n").unwrap()
 }
@@ -548,15 +545,13 @@ fn the_prelude_carries_a_committed_import_into_the_next_snippet() {
     };
     let ok = render_with(&mut checker, "math.sqrt(4)\nawait plus(a=1, b=2)\n", &with);
     assert!(ok.is_none(), "the prelude should bind `math` and `plus`: {ok:#?}");
-    // diagnostics still land on the snippet's own lines
+    // Diagnostics retain the snippet's original line numbers.
     let wrong = render_with(&mut checker, "x = 1\nmath.sqrt('4')\n", &with);
     assert_snapshot!(wrong.unwrap(), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
 }
 
-/// A committed import that does not resolve (suppressed with `# type: ignore`,
-/// or fed with type checking skipped) is re-emitted without its comment; the
-/// diagnostic it raises has no snippet line to land on and reports nothing the
-/// commit did not already accept, so it is dropped. The name stays bound.
+/// Replaying imports drops `# type: ignore`; suppress the resulting diagnostics while keeping names bound.
+/// Imports committed with type checking skipped also remain accepted.
 #[test]
 fn an_unresolved_import_in_the_prelude_is_not_reported_again() {
     let committed = SourceFile::new("import requests\n", "repl_type_stubs.pyi");
@@ -570,15 +565,12 @@ fn an_unresolved_import_in_the_prelude_is_not_reported_again() {
     let mut checker = TypeChecker::default();
     let ok = render_with(&mut checker, "x = 1\nrequests.get('/')\n", &context);
     assert!(ok.is_none(), "the prelude's own diagnostics must not surface: {ok:#?}");
-    // the snippet's own problems still are
+    // The snippet's own unresolved imports must still be reported.
     let wrong = render_with(&mut checker, "x = 1\nimport requests\n", &context);
     assert_snapshot!(wrong.unwrap(), @"main.py:2:8: error[unresolved-import] Cannot resolve imported module `requests`");
 }
 
-/// Imports under a module-level branch, loop, `try` or `with` are carried
-/// (the runtime may have bound them); those in a function or class body are
-/// not, as they bind locally. Each top-level module is listed once, at its
-/// first import.
+/// Module-level branches may bind globals; function and class imports only bind locally.
 #[test]
 fn scan_imports_keeps_aliases_and_drops_the_rest() {
     let source = "\
@@ -632,7 +624,7 @@ match x:
     );
     assert_eq!(scan_imports("x = (\n"), SnippetImports::default());
 
-    // a dotted import names its top-level module, once, at its first statement
+    // Dotted imports share their top-level module's first import location.
     let imports = scan_imports("import a.b\nfrom a.c import d\nimport a\n");
     assert_eq!(imports.modules.len(), 1);
     let ImportedModule { name, range } = &imports.modules[0];
@@ -653,13 +645,11 @@ fn module_stub_names_are_validated() {
     assert_snapshot!(stub("a.1b").to_string(), @r#"module name "a.1b" is not a valid identifier"#);
     assert_snapshot!(stub("json").to_string(), @r#"module "json" is provided by the sandbox or its type checker and cannot be replaced"#);
     assert_eq!(ModuleStub::new("stripe", "x: int\n").unwrap().module(), "stripe");
-    // a submodule's stub names its path; `a.json` is not the stdlib's `json`
+    // Only top-level names are reserved.
     assert_eq!(ModuleStub::new("stripe.json", "").unwrap().module(), "stripe.json");
 }
 
-/// Stubs for a dotted path form a package: `import a.b`, `from a.b import x`
-/// and `from a import b` all resolve, an ancestor without a stub of its own is
-/// an empty package, and the submodule's names are not the parent's.
+/// Missing ancestors become empty packages; submodule members stay separate from parent members.
 #[test]
 fn dotted_module_stubs_form_a_package() {
     let stubs = [
@@ -679,14 +669,12 @@ fn dotted_module_stubs_form_a_package() {
     assert_snapshot!(wrong.unwrap(), @r#"main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
     let unresolved = render_with(&mut checker, "from pkg import add\n", &context);
     assert_snapshot!(unresolved.unwrap(), @"main.py:1:17: error[unresolved-import] Module `pkg` has no member `add`");
-    // the package tree is scrubbed with the rest
     checker.reset().unwrap();
     let gone = render_with(&mut checker, "import pkg.tools\n", &TypeCheckContext::default());
     assert_snapshot!(gone.unwrap(), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `pkg.tools`");
 }
 
-/// Every module of the vendored typeshed must be reserved, or a stub could
-/// shadow it for the checker while the runtime keeps its own module.
+/// Host stubs must not shadow the checker's vendored typeshed definitions.
 #[test]
 fn reserved_names_cover_the_vendored_typeshed() {
     let versions = monty_typeshed::file_system()
@@ -703,13 +691,13 @@ fn reserved_names_cover_the_vendored_typeshed() {
             "typeshed module {top_level} is missing from SANDBOX_MODULE_NAMES and CHECKER_MODULE_NAMES"
         );
     }
-    // a name is reserved for one reason, so each list says why
+    // Keep runtime and checker-only reservations separate.
     for name in CHECKER_MODULE_NAMES {
         assert!(!SANDBOX_MODULE_NAMES.contains(name), "{name} is in both lists");
     }
 }
 
-/// Security-critical: module stubs are files too, and must not survive `reset`.
+/// Reset must remove module stubs to prevent reuse across sessions.
 #[test]
 fn reset_removes_module_stubs() {
     let stubs = [tools_stub()];

@@ -234,8 +234,8 @@ if the new session is not in the state the old one was in at the shutdown.
 The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
 A bare disconnect is never resumed, since the request may have run.
 
-A host module's `.pyi` reaches the type checker through the `import_stubs` OS call a type-checked feed raises before
-it is checked, once per module the session has not asked about; answer it with a dict of module path to stub source.
+Before type checking a feed, `import_stubs` requests host module stubs once per module per session.
+Answer with a dict of dotted module paths to `.pyi` source or `None`, or `NotHandled` for no stubs.
 
 ## Monty crates
 

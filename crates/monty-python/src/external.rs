@@ -1,16 +1,7 @@
-//! Resolving names a sandbox snippet leaves undefined against a feed's
-//! `external_lookup` dict, its imports against its `external_modules`, plus
-//! method calls and lazy attribute lookups on host class instances.
-//!
-//! [`ExternalLookup`] owns both halves of the lazy-resolution protocol — the
-//! `NameLookup` that resolves a bare name and the `FunctionCall` that invokes a
-//! resolved host function — so the callable-vs-value rule linking them lives in
-//! one place. It also answers the `import` OS call that binds a module, the
-//! `import_stubs` ask that precedes a type-checked feed, and the dotted calls
-//! (`tools.add`) into a module. Host-routed calls
-//! (`dispatch_object_call*`) and lazy attribute lookups (`resolve_object_attr`)
-//! are a separate concern: they route through the session's [`InstanceStore`]
-//! to the original wrapped object or class, not `external_lookup`.
+//! Resolves bare names and calls through `external_lookup`, and imports, stubs and
+//! dotted calls through `external_modules`. [`ExternalLookup`] applies the same
+//! callable/value rules to name lookups and subsequent calls. Object methods and
+//! lazy attributes resolve through the session's [`InstanceStore`].
 
 use std::{
     collections::HashMap,
@@ -128,11 +119,8 @@ pub fn resolve_object_attr(
     }
 }
 
-/// The `external_modules=` a feed was called with: the host side of the
-/// modules its snippet may import. Every entry is validated when captured; a
-/// factory runs, and its result is validated, the first time the feed needs
-/// the module. Held as owned references so a snapshot can keep them for
-/// `resume_auto`.
+/// A feed's validated modules and cached factory results, retained for `resume_auto`.
+/// Factories run and are validated on first use, at most once per feed.
 pub(crate) struct HostModules {
     /// Each entry by the name the snippet imports: an `ExternalModule`, or
     /// the factory returning one.
@@ -147,11 +135,9 @@ pub(crate) struct HostModules {
 }
 
 impl HostModules {
-    /// Captures `external_modules`: each entry an `ExternalModule` (checked by
-    /// [`check_module_tree`]) or a zero-argument callable returning one. A dict
-    /// names exactly what crosses, where a module or `dir()` of an arbitrary
-    /// object would also expose its imports and whatever else it carries; names
-    /// are identifiers, so an import and a host function name split unambiguously.
+    /// Captures modules or zero-argument factories returning them. Dicts explicitly select
+    /// what crosses; module objects could expose imports. Identifier keys keep dotted
+    /// host-function names unambiguous.
     pub(crate) fn capture(py: Python<'_>, entries: &Bound<'_, PyDict>) -> PyResult<Self> {
         let mut stand_ins = HashMap::new();
         for (name, entry) in entries.iter() {
@@ -223,26 +209,15 @@ impl HostNames {
     }
 }
 
-/// Whether an OS call is one the host's modules answer, ahead of its mounts
-/// and `os=` handler: the `import` of a module, or the `import_stubs` ask that
-/// precedes a type-checked feed. Only an OS call qualifies: sandbox code can
-/// spell `import_stubs` as a function name, and that call must stay its own.
+/// Identifies module OS calls, which take precedence over mounts and `os=`.
+/// Call only for OS events: an ordinary function named `import_stubs` is unrelated.
 pub(crate) fn is_module_call(function_name: &str) -> bool {
     function_name == IMPORT_CALL || function_name == IMPORT_STUBS_CALL
 }
 
-/// A feed's `external_lookup` and `external_modules` (each absent when the
-/// caller passed none) plus the `Python` token and instance store every
-/// resolution needs. Owns both halves of the lazy-resolution protocol:
-/// [`resolve_name`](Self::resolve_name) answers a `NameLookup`, and
-/// [`call`](Self::call) / [`call_or_coroutine`](Self::call_or_coroutine)
-/// answer the follow-up `FunctionCall` by invoking the current dict entry —
-/// which may have been replaced since it resolved, so calling a now
-/// non-callable entry raises `TypeError` exactly as CPython would. They also
-/// answer a dotted name (`tools.add`) as that module's attribute, and
-/// [`module_call`](Self::module_call) the `import` / `import_stubs` OS calls.
-/// `ClassInstance` wrappers in return values register in `instances`
-/// transparently.
+/// Resolves a feed's bare names, dotted module calls and module OS calls.
+/// Calls re-read the dict entry, so replacing a callable with a value raises `TypeError`.
+/// Returned `ClassInstance` wrappers register in the instance store.
 pub struct ExternalLookup<'a, 'py> {
     py: Python<'py>,
     lookup: Option<&'py Bound<'py, PyDict>>,
@@ -263,10 +238,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Answers a method call on a host object (a `FunctionCall` with an
-    /// `object_id`). A dict module's stand-in has no host object behind it, so
-    /// calling it is `TypeError` and any other method `AttributeError`, as for
-    /// a value of its kind; everything else routes through the instance store.
+    /// Dispatches through the instance store. Dict modules have no callable host object:
+    /// `__call__` raises `TypeError`; other methods raise `AttributeError`.
     pub fn call_object(&self, function_name: &str, object_id: &MontyUuid, args: &CallArgs) -> ExtFunctionResult {
         match self.module_stand_in(object_id) {
             Some(name) => {
@@ -384,10 +357,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         callback_context::call(self.py, || callable.call(&py_args_tuple, Some(&py_kwargs))).map(Some)
     }
 
-    /// The host callable `function_name` names: an entry of `external_lookup`,
-    /// or, for a dotted name, that attribute of the module the path before the
-    /// last dot walks to (a host function bound by an import is named
-    /// `<module>.<attr>`). `None` when neither has it.
+    /// Resolves a bare `external_lookup` key or a dotted module attribute; `None` if absent.
     fn callable(&self, function_name: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
         if function_name.contains('.') {
             match self.module_of(function_name)? {
@@ -436,11 +406,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// The `external_modules` entry for `name`, if any. A factory entry is
-    /// called the first time the feed needs the module and its result kept in
-    /// `resolved`, which is consulted first so every import, call and stubs
-    /// ask sees one module; an awaitable it returns is handed back for the
-    /// async loop to await and [`install_module`](Self::install_module).
+    /// Resolves a module, caching its factory result for all imports, calls and stub requests
+    /// in this feed. Returns awaitables for the async loop to await and install.
     fn resolve_module(&self, name: &str) -> PyResult<Option<Resolved<'py>>> {
         let Some(modules) = self.modules else {
             return Ok(None);
@@ -462,8 +429,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Keeps what module `name`'s factory produced for the rest of the feed,
-    /// checked as a captured entry is (see [`check_module_tree`]).
+    /// Validates and caches a factory result for the rest of the feed.
     fn install_module(&self, name: &str, module: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let modules = self.modules.expect("a module was resolved, so the entries exist");
         if !module.is_instance(external_module_class(self.py)?)? {
@@ -477,13 +443,9 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         Ok(module)
     }
 
-    /// The module a dotted `function_name` calls into, with the length of its
-    /// name within `function_name`: the path before the last dot is walked one
-    /// component at a time, the first through `external_modules` and the rest
-    /// through the submodules of the one before. A top-level factory's
-    /// awaitable comes back as such, with the top-level name's length, since
-    /// that is the module it resolves. `None` as soon as a component is
-    /// missing, so a worker-sent name costs one lookup per component.
+    /// Resolves a dotted call's module and returns its prefix length.
+    /// A pending top-level factory returns its awaitable and top-level prefix length.
+    /// Stops at the first missing component, bounding work for worker-supplied names.
     fn module_of(&self, function_name: &str) -> PyResult<Option<(usize, Resolved<'py>)>> {
         let Some((module_path, _)) = function_name.rsplit_once('.') else {
             return Ok(None);
@@ -504,9 +466,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         Ok(Some((module_path.len(), Resolved::Module(entry))))
     }
 
-    /// Finishes a request whose module factories returned awaitables, once the
-    /// async loop has awaited them to `modules`, one per name: they are
-    /// installed, then the request is answered.
+    /// Installs awaited factory results, then answers the request that needed them.
     pub(crate) fn finish_after_module(
         &self,
         names: &[String],
@@ -639,12 +599,9 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         ExtFunctionResult::Return(MontyObject::dict(stubs))
     }
 
-    /// The sandbox value `import` binds for `entry` at dotted `path`: a
-    /// `ClassInstance` crosses as itself; a dict becomes an instance of a class
-    /// named for the module, its public items sent eagerly (callables as host
-    /// functions named `path.attr`, nested `ExternalModule`s as submodules). The
-    /// uuids derive from the path, so every import, before and after a dump,
-    /// yields the same object.
+    /// Converts a `ClassInstance` directly or a dict to a module-named host instance.
+    /// Public dict items cross eagerly: callables as `path.attr`, nested modules as submodules.
+    /// Path-derived UUIDs preserve identity across imports and dumps.
     fn module_value(&self, path: &str, entry: &Bound<'py, PyAny>) -> PyResult<MontyObject> {
         let module = module_value_of(entry)?;
         if is_class_instance_wrapper(&module)? {
@@ -677,9 +634,8 @@ enum Resolved<'py> {
     Awaitable(Bound<'py, PyAny>),
 }
 
-/// The error for a factory awaitable met where nothing can await it: the sync
-/// pool. A coroutine is closed so it does not warn that it was never awaited;
-/// other awaitables have no close protocol and are left alone.
+/// Rejects a factory awaitable in the sync pool. Closes coroutines to avoid unawaited
+/// warnings; other awaitables have no close protocol.
 pub(crate) fn sync_module_coroutine_error(name: &str, awaitable: &Bound<'_, PyAny>) -> PyErr {
     if is_coroutine(awaitable.py(), awaitable) {
         let _ = awaitable.call_method0("close");
@@ -703,9 +659,7 @@ pub(crate) fn sync_module_coroutines_error(py: Python<'_>, names: &[String], cor
         .expect("a module coroutine names at least one module")
 }
 
-/// The error for a method call on a dict module's stand-in, which has no host
-/// object to call: `__call__` (calling the module) is `TypeError`, any other
-/// name `AttributeError`, both as CPython words them for a value of that kind.
+/// Dict modules have no callable host object: `__call__` raises `TypeError`, other methods `AttributeError`.
 fn module_method_error(name: &str, method: &str) -> PyErr {
     if method == "__call__" {
         PyTypeError::new_err(format!("'{name}' object is not callable"))
@@ -714,12 +668,9 @@ fn module_method_error(name: &str, method: &str) -> PyErr {
     }
 }
 
-/// Checks `entry` at dotted `path` and the submodules nested in it: `module`
-/// a dict or a `ClassInstance` (a class is refused by name here, being callable
-/// but constructing an instance, never a module), `stubs` a `str` or `None`,
-/// and a dict's keys identifiers, since a host function is named by its dotted
-/// path. Every dict module registers its stand-in in `stand_ins`; `ancestors`
-/// makes an entry nested inside itself a `ValueError` rather than a stack overflow.
+/// Validates module values, stubs and submodules, and registers dict stand-ins.
+/// Dict keys must be identifiers for dotted host-function names. Classes are rejected
+/// as module values; `ancestors` detects cycles before they can overflow the stack.
 fn check_module_tree(
     path: &str,
     entry: &Bound<'_, PyAny>,
@@ -765,8 +716,7 @@ fn check_module_tree(
     Ok(())
 }
 
-/// Appends the `stubs` of the `ExternalModule` `entry` at dotted `path` and
-/// of every submodule nested in it, as `(path, source or None)` pairs.
+/// Collects `(dotted_path, source or None)` pairs for a module and its submodules.
 fn collect_stubs(path: &str, entry: &Bound<'_, PyAny>, stubs: &mut Vec<(MontyObject, MontyObject)>) -> PyResult<()> {
     let source = entry.getattr("stubs")?;
     let source = if source.is_none() {
@@ -786,7 +736,6 @@ fn collect_stubs(path: &str, entry: &Bound<'_, PyAny>, stubs: &mut Vec<(MontyObj
     Ok(())
 }
 
-/// The `module` of an `ExternalModule`: its dict or `ClassInstance`.
 fn module_value_of<'py>(entry: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
     entry.getattr("module")
 }
@@ -821,8 +770,7 @@ fn asked_modules(args: &CallArgs) -> Option<Vec<String>> {
         .collect()
 }
 
-/// The `CallArgs` of a module call with `value` as its one argument, for
-/// re-answering it once a factory has settled.
+/// Reconstructs module-call arguments after a factory resolves.
 fn single_arg(value: MontyObject) -> CallArgs {
     let mut args = CallArgs::new();
     args.push_arg(value);
@@ -837,7 +785,6 @@ fn module_key<'py>(key: &Bound<'py, PyAny>, where_: &str) -> PyResult<Bound<'py,
         .map_err(|_| PyTypeError::new_err(format!("{where_} keys must be str")))
 }
 
-/// Cached import of the `pydantic_monty.ExternalModule` class.
 fn external_module_class(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static EXTERNAL_MODULE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
@@ -880,9 +827,8 @@ fn module_attrs<'py>(module: &Bound<'py, PyAny>) -> PyResult<Vec<(String, Bound<
     Ok(attrs)
 }
 
-/// A stable identity for the host object standing in for module `name`, so
-/// every `import` of it — including after a dump is restored — carries the
-/// same uuid: FNV-1a over `kind:name`, folded into the two uuid halves.
+/// Derives stable class/instance UUIDs from `kind:name` using two FNV-1a hashes,
+/// so imports keep their identity across dumps and processes.
 fn module_uuid(kind: &str, name: &str) -> MontyUuid {
     let fnv = |seed: u64| {
         let mut hash = seed;
@@ -903,10 +849,9 @@ pub enum CallResult {
     /// Python coroutine to convert via `pyo3_async_runtimes::into_future()` and
     /// spawn as a task.
     Coroutine(Py<PyAny>),
-    /// Module factories' awaitables, one per name, needed before `then` can
-    /// be answered: awaited together as values (an import cannot take a
-    /// future) and finished with [`ExternalLookup::finish_after_module`]. One
-    /// module for an import or a call, every pending one for a stubs ask.
+    /// Factory awaitables finished by [`ExternalLookup::finish_after_module`].
+    /// Imports require values, so await these together before answering: one for an
+    /// import or call, all pending factories for a stub request.
     ModuleCoroutine {
         names: Vec<String>,
         coros: Vec<Py<PyAny>>,

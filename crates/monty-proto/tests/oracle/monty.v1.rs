@@ -1024,19 +1024,10 @@ pub struct Print {
     #[prost(message, repeated, tag = "1")]
     pub segments: ::prost::alloc::vec::Vec<PrintSegment>,
 }
-/// Suspension: the sandbox called an external function, or — when `object_id`
-/// is set — a method on a host-backed object (the receiver is NOT included in
-/// `args`; the host routes by uuid). The receiver may be a class instance or a
-/// class type: calling either arrives as a `__call__` method call on its uuid,
-/// and the host's own policy decides whether the call (for a class, its
-/// construction) is allowed. Answer with `ResumeCall`.
-///
-/// An `import` of a module the sandbox does not have is this suspension too:
-/// `function_name` is `__import__` with the module name as its one positional
-/// argument, and the answer's `return_value` is bound as the module, usually a
-/// host-backed class instance. `not_found` raises `ModuleNotFoundError`;
-/// `from m import a` then loads `a` off that value (an eager attr, else a
-/// `NameLookup` with `object_id`).
+/// Suspension: an external function call, or a host method call when `object_id`
+/// identifies the receiver. `args` excludes the receiver. Calling a host class
+/// or instance invokes `__call__` on its uuid, subject to host policy.
+/// Answer with `ResumeCall`. Host module imports use `OsCall.import`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FunctionCall {
     #[prost(string, tag = "1")]
@@ -1301,15 +1292,14 @@ pub mod os_call {
         #[prost(message, tag = "30")]
         AsyncSystemSleep(AsyncSleep),
         /// ---- Host modules ----------------------------------------------------
-        /// `import <module>` of a module the child lacks: the top-level name. The
-        /// answer is the module value; `not_found` / `not_handled` raise
-        /// `ModuleNotFoundError`.
+        /// Requests a missing top-level module; answer with its value.
+        /// `not_found` / `not_handled` raise `ModuleNotFoundError`. Further import
+        /// components use eager attributes or `NameLookup` with `object_id`.
         #[prost(message, tag = "31")]
         Import(Import),
-        /// Before type-checking a feed, the `.pyi` of each top-level module the
-        /// snippet imports that the session has not asked about yet. The answer is
-        /// a dict of dotted module path to stub source or None; `not_found` /
-        /// `not_handled` mean no stubs.
+        /// Requests stubs before type checking, once per top-level module per session.
+        /// Answer with a dict of dotted module paths to `.pyi` source or None;
+        /// `not_found` / `not_handled` mean no stubs.
         #[prost(message, tag = "32")]
         ImportStubs(ImportStubs),
     }

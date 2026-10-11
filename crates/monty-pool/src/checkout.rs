@@ -283,13 +283,10 @@ pub enum TurnEvent {
     /// [`ResumeValue::NotHandled`]; the sandbox then raises the call's own
     /// no-handler default.
     ///
-    /// Host modules arrive here too, answered from the caller's modules ahead
-    /// of its other handlers: [`IMPORT_CALL`](monty_types::IMPORT_CALL) binds
-    /// the value resumed with as the module (`NotFound` / `NotHandled` raise
-    /// `ModuleNotFoundError`), and [`IMPORT_STUBS_CALL`](monty_types::IMPORT_STUBS_CALL)
-    /// takes a dict of dotted module path to `.pyi` source or `None`, or
-    /// `NotHandled` for no stubs. See [`OsFunctionCall::Import`] and
-    /// [`OsFunctionCall::ImportStubs`] for what each carries.
+    /// Answer host imports from the caller's modules before other handlers.
+    /// [`OsFunctionCall::Import`] takes a module value; `NotFound` / `NotHandled` raise
+    /// `ModuleNotFoundError`. [`OsFunctionCall::ImportStubs`] takes a dict of dotted
+    /// module paths to `.pyi` source or `None`, or `NotHandled` for no stubs.
     OsCall {
         function_name: String,
         /// One arena holding every positional and keyword argument.
@@ -1860,10 +1857,8 @@ impl Checkout {
                     };
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
-                    // a TypingError answers a type-checked feed, or the `import_stubs`
-                    // answer its check awaited; a child sending one otherwise has lost
-                    // sync, and keeping it would leave the parent believing a suspended
-                    // feed ended
+                    // TypingError can only end a checked feed or its pending import_stubs call.
+                    // Accepting it elsewhere would falsely mark a suspended feed complete.
                     let type_checked = match &request.kind {
                         Some(pb::parent_request::Kind::Feed(feed)) => !feed.skip_type_check,
                         Some(pb::parent_request::Kind::ResumeCall(resume)) => resume.call_id == IMPORT_STUBS_CALL_ID,

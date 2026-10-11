@@ -1954,10 +1954,9 @@ async fn async_turn_answer(
     }
 }
 
-/// Answers a call `dispatch` resolves under the callback context: a value at
-/// once, a coroutine spawned or awaited by `mode`, or module factories to
-/// settle first — outside the callback context, with the answer they unblock
-/// made back inside it.
+/// Dispatches under the callback context, scheduling coroutines by mode.
+/// Module factories resolve outside that context; installation and the resulting
+/// call run inside it.
 #[expect(clippy::too_many_arguments)]
 async fn answer_call(
     dispatch: impl FnOnce() -> CallResult,

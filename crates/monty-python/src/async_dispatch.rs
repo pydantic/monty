@@ -41,11 +41,8 @@ pub(crate) fn dispatch_module_call(
     })
 }
 
-/// Dispatches a function call to a host-routed method (when `object_id` is
-/// set — an instance method, a classmethod, or `__call__` construction) or an
-/// external function (answered from `names`), returning
-/// `CallResult::Coroutine` (for the caller to spawn) when the Python result
-/// is a coroutine.
+/// Dispatches an object method or named external function, returning coroutines for
+/// the caller to schedule and module awaitables for it to resolve first.
 pub(crate) fn dispatch_function_call(
     function_name: &str,
     object_id: Option<MontyUuid>,
@@ -116,9 +113,7 @@ pub(crate) fn dispatch_coroutine(
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
 }
 
-/// Hands module factories' awaitables to the caller as [`Dispatched::Module`]:
-/// the caller awaits them, then installs the modules and answers under its own
-/// callback context (see [`PendingModule`]).
+/// Schedules module factories for the caller to await; see [`PendingModule`].
 pub(crate) fn dispatch_module_coroutine(
     names: Vec<String>,
     coros: Vec<Py<PyAny>>,
@@ -131,10 +126,9 @@ pub(crate) fn dispatch_module_coroutine(
     Ok(Dispatched::Module(PendingModule { names, then, futures }))
 }
 
-/// Module factories' awaitables in flight, one per name. The caller awaits
-/// [`settle`](Self::settle) outside the GIL, then finishes the request with
-/// [`SettledModule::dispatch`] inside its callback context, so installing the
-/// modules and making the call they were needed for run where host callbacks do.
+/// Pending factories, one per module. Await [`settle`](Self::settle) outside the GIL,
+/// then call [`SettledModule::dispatch`] inside the callback context to install
+/// modules and invoke any waiting host function.
 pub(crate) struct PendingModule {
     names: Vec<String>,
     then: AfterModule,
@@ -160,9 +154,8 @@ pub(crate) struct SettledModule {
 }
 
 impl SettledModule {
-    /// Installs the module and answers: an import, or a sync function, as a
-    /// value; an async function's coroutine dispatched under `mode` like any
-    /// other host coroutine, since the sandbox awaits the call.
+    /// Installs modules and answers with a value, or schedules the called function's
+    /// coroutine according to `mode`.
     pub(crate) fn dispatch(
         self,
         py: Python<'_>,

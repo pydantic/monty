@@ -729,8 +729,7 @@ fn dispatch_method_call(
     let class_name = fixture.class_name;
 
     match (class_name, method_name) {
-        // Calling an instance suspends `__call__` to the host, which decides whether the
-        // object is callable; no fixture is, so answer CPython's TypeError for `point()`.
+        // The host decides callability; none of these fixtures is callable.
         (_, "__call__") => {
             let message = format!("'{class_name}' object is not callable");
             MontyException::new(ExcType::TypeError, Some(message)).into()
@@ -1022,8 +1021,7 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
 fn dispatch_os_call(call: &OsFunctionCall, registry: &mut FixtureRegistry) -> ExtFunctionResult {
     match call {
-        // `import tools` binds a host object carrying the fixture functions; any
-        // other module is not found, which the sandbox raises as `ModuleNotFoundError`.
+        // Only the tools fixture is available as a host module.
         OsFunctionCall::Import(module) if module == "tools" => registry.make_tools_module().into(),
         OsFunctionCall::Import(_) => ExtFunctionResult::NotFound(call.name().to_owned()),
         OsFunctionCall::ImportStubs(_) => unreachable!("{} is asked only by a type-checking worker", call.name()),

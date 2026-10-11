@@ -25,18 +25,13 @@ use crate::{
 // OsFunctionCall — the central public dispatch value.
 // =============================================================================
 
-/// The [`OsFunctionCall::name`] of [`OsFunctionCall::Import`]: hosts see the
-/// call by name, not its typed form, and answer it from their modules ahead
-/// of any other OS-call handler.
+/// [`OsFunctionCall::Import`]'s dispatch name. Hosts resolve it from their modules before other OS handlers.
 pub const IMPORT_CALL: &str = "import";
 
-/// The [`OsFunctionCall::name`] of [`OsFunctionCall::ImportStubs`], answered
-/// the same way.
+/// [`OsFunctionCall::ImportStubs`]'s dispatch name, handled like [`IMPORT_CALL`].
 pub const IMPORT_STUBS_CALL: &str = "import_stubs";
 
-/// The `call_id` of every [`OsFunctionCall::ImportStubs`]: the worker issues
-/// it before a feed runs, outside the interpreter's per-feed ids, which count
-/// up from zero.
+/// Reserved pre-feed [`OsFunctionCall::ImportStubs`] ID, outside the interpreter's IDs counted from zero.
 pub const IMPORT_STUBS_CALL_ID: u32 = u32::MAX;
 
 /// Tagged dispatch value for OS-level operations.
@@ -163,16 +158,14 @@ pub enum OsFunctionCall {
     AsyncSystemSleep(Duration),
 
     // ---- Host modules ------------------------------------------------------
-    /// `import <name>` of a module the sandbox lacks, with the top-level name.
-    /// The host answers with the module value, `not_found` / `not_handled` (a
-    /// `ModuleNotFoundError`) or an exception; `from m import a` and
-    /// `import m.sub` are this call followed by attribute loads.
+    /// Requests a missing module by top-level name. The host returns its value, an exception,
+    /// or `not_found` / `not_handled` to raise `ModuleNotFoundError`.
+    /// `from m import a` and `import m.sub` then load attributes from that value.
     #[strum(serialize = "import")] // IMPORT_CALL
     Import(String),
-    /// The worker, before type-checking a feed, asking for the `.pyi` of each
-    /// top-level module the snippet imports that it has not asked about before.
-    /// Answered with a dict of dotted module path to stub source (or `None`),
-    /// or `not_found` / `not_handled` for no stubs at all.
+    /// Requests stubs for previously unrequested top-level imports before type-checking a feed.
+    /// The host returns a dict of dotted module paths to stub source (or `None`),
+    /// or `not_found` / `not_handled` for no stubs.
     #[strum(serialize = "import_stubs")] // IMPORT_STUBS_CALL
     ImportStubs(Vec<String>),
 }

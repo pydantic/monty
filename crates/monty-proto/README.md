@@ -34,13 +34,10 @@ for the schema and the protocol rules documented alongside it.
   back to the parent's per-session instance store; sandbox-defined classes and
   instances carry worker-generated uuids that never reach that store. Calling a
   host-backed instance arrives as a `__call__` method call on its uuid.
-- Host modules: an `import` the worker cannot serve is an `OsCall` `import`
-  with the top-level module name as its argument, answered with the module
-  value or `not_found`; the worker reads a dotted import's further components
-  as attributes of the answer. Before type-checking a feed, the worker asks
-  for the `.pyi` of each host module it imports with the `import_stubs` OS
-  call (once per module per session), answered with a dict of dotted module
-  path to stub source.
+- Host modules: `OsCall.import` requests a missing top-level module; answer with its value or `not_found`.
+  Dotted imports read further components as attributes of that value.
+  Before type checking, `import_stubs` requests host stubs once per module per session.
+  Answer with a dict of dotted module paths to `.pyi` source or `None`.
 - `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
   version a parent declares in `Configure`, and the range a child serves.
   Versioned independently of the monty package: peers on different releases

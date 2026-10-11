@@ -39,18 +39,14 @@ impl<'a> SourceFile<'a> {
     }
 }
 
-/// What a session adds to one type check besides the snippet itself; see
-/// [`TypeChecker::run_with`].
+/// Session declarations and imports for [`TypeChecker::run_with`].
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TypeCheckContext<'a> {
-    /// Declarations star-imported into the snippet: the host's stubs and, in a
-    /// session, every snippet committed before this one.
+    /// Host stubs and committed snippets, star-imported into the snippet.
     pub stubs: Option<&'a SourceFile<'a>>,
-    /// Written as `/<module>.pyi`, one per host-provided module, so that
-    /// `import <module>` resolves; never star-imported.
+    /// Host module stubs, written as `.pyi` modules or packages and never star-imported.
     pub module_stubs: &'a [ModuleStub],
-    /// Statements injected ahead of the star import, one per line: the
-    /// imports of the committed snippets (see [`crate::scan_imports`]).
+    /// Committed imports injected before the star import; see [`crate::scan_imports`].
     pub prelude: &'a str,
 }
 
@@ -87,10 +83,9 @@ impl TypeChecker {
         self.run_with(python_source, &context, config)
     }
 
-    /// [`run`](Self::run) with everything a session adds: module stubs are
-    /// written beside the snippet so their imports resolve, and the prelude
-    /// goes ahead of the stubs' star import so a later stub binding shadows
-    /// it, as at runtime. Diagnostics are shifted back onto the snippet's lines.
+    /// [`run`](Self::run) with host module stubs and committed imports.
+    /// The prelude precedes the stubs' star import so later bindings shadow imports as at runtime.
+    /// Diagnostics use the snippet's original line numbers.
     pub fn run_with<'a>(
         &'a mut self,
         python_source: &SourceFile<'_>,
@@ -126,8 +121,7 @@ impl TypeChecker {
                 .map_or(stubs_file.path, |(before, _)| before);
             writeln!(prefix, "from {stub_stem} import *").map_err(to_string)?;
         }
-        // errors are reported against the original source, so the injected
-        // prefix is subtracted from every span below
+        // Subtract the injected prefix from diagnostic spans to preserve the original positions.
         let (main_file, code_offset): (File, u32) = if prefix.is_empty() {
             (self.write_root_file(&main_path, main_source)?, 0)
         } else {
@@ -142,9 +136,8 @@ impl TypeChecker {
         // type-check clean.
         let mut diagnostics = check_file_unwrap(&self.db, self.db.program_file(main_file));
         diagnostics.retain(filter_diagnostics);
-        // a diagnostic inside the injected prefix has no line of the snippet to land
-        // on, and reports nothing new: the prelude's imports were committed by snippets
-        // that already passed this check, e.g. `import x  # type: ignore`
+        // Suppress prefix diagnostics: committed imports may have used `# type: ignore`
+        // or skipped type checking, and have no position in this snippet.
         let prefix_offset = TextSize::new(code_offset);
         diagnostics.retain(|diagnostic| !starts_in_prefix(diagnostic, main_file, prefix_offset));
 
@@ -324,13 +317,10 @@ impl fmt::Display for TypeCheckingDiagnostics<'_> {
     }
 }
 
-/// The files the module stubs are written as, relative to the root: a plain
-/// module is `<m>.pyi`, while a dotted path (`a.b`) and the modules above it
-/// form a package tree (`a/__init__.pyi`, `a/b.pyi`), an ancestor without a
-/// stub of its own getting an empty `__init__.pyi` so the import resolves.
-/// Every component is checked to be an identifier: `ModuleStub::new` already
-/// does, but a deserialized stub skips it, and a path component here would
-/// write outside the root `reset` scrubs.
+/// Maps stubs to root-relative `.pyi` paths, creating empty ancestor packages as needed.
+/// For example, `a.b` produces `a/__init__.pyi` and `a/b.pyi`.
+/// Revalidates identifiers because deserialization bypasses `ModuleStub::new`; otherwise
+/// path components could write outside the root that `reset` clears.
 fn stub_files(stubs: &[ModuleStub]) -> Result<Vec<(String, &str)>, String> {
     let mut files: Vec<(String, &str)> = Vec::new();
     let is_package = |module: &str| {
@@ -343,7 +333,6 @@ fn stub_files(stubs: &[ModuleStub]) -> Result<Vec<(String, &str)>, String> {
         if parts.iter().any(|part| !is_identifier(part)) {
             return Err(format!("invalid module name {:?}", stub.module()));
         }
-        // ancestors with no stub of their own are empty packages
         for depth in 1..parts.len() {
             let ancestor = parts[..depth].join(".");
             if !stubs.iter().any(|other| other.module() == ancestor) {
@@ -364,8 +353,7 @@ fn stub_files(stubs: &[ModuleStub]) -> Result<Vec<(String, &str)>, String> {
     Ok(files)
 }
 
-/// Whether `diagnostic`'s primary span starts inside the first `offset` bytes
-/// of `main_file`: the injected prelude and star import, never the snippet.
+/// Whether the primary span starts in the injected prelude or star import.
 fn starts_in_prefix(diagnostic: &Diagnostic, main_file: File, offset: TextSize) -> bool {
     diagnostic.primary_span().is_some_and(|span| {
         matches!(span.file(), UnifiedFile::Ty(file) if *file == main_file)

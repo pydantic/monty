@@ -509,8 +509,6 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_w
 
 
 async def test_module_stubs_over_websocket(ws_url: str):
-    """The module stubs a feed answers for reach the far side's type checker."""
-
     def add(a: int, b: int) -> int:
         return a + b
 

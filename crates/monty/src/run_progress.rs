@@ -562,11 +562,9 @@ pub(crate) fn resume_lookup(
     vm.run_external()
 }
 
-/// The error an import raises when the host answers its attribute lookup with
-/// `AttributeError` or nothing, matching the synchronous load: `ImportError`
-/// for the name of a `from <module> import <name>`, `ModuleNotFoundError` for
-/// the component of a dotted module. Any other error, or one outside an
-/// import, passes through unchanged.
+/// Converts missing import attributes to `ImportError` for `from` imports or
+/// `ModuleNotFoundError` for dotted modules, matching synchronous loads.
+/// Other errors and non-import lookups pass through unchanged.
 fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
     let RunError::Exc(exc) = &err else {
         return err;
@@ -965,10 +963,8 @@ pub(crate) fn resume_with_result(
     }
 }
 
-/// Resumes a suspended `import <module>` with the host's answer: the value becomes
-/// the module, `NotFound` raises `ModuleNotFoundError`, an exception is raised without
-/// carets (as CPython renders import errors), and a future is refused since nothing
-/// awaits a module into place.
+/// Resumes an import with the host's module value or raises its exception without carets.
+/// `NotFound` raises `ModuleNotFoundError`; futures are rejected because imports cannot await.
 fn resume_import(
     vm: &mut VM<'_>,
     module_id: StringId,

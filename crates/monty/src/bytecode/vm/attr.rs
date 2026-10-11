@@ -70,12 +70,8 @@ impl VM<'_> {
         obj.py_getattr(&attr, this)
     }
 
-    /// Loads an attribute from a module for `from ... import` and pushes it onto the stack.
-    ///
-    /// Returns an ImportError (not AttributeError) if the attribute doesn't exist,
-    /// matching CPython's behavior for `from module import name`. `module_id` (the
-    /// frame's `import_from_module`) names the module for that message, since a
-    /// host-provided module need not be a `Module`.
+    /// Loads a `from ... import` attribute, raising `ImportError` if missing.
+    /// `module_id` supplies the error's module name because host values need not be `Module`s.
     pub(super) fn load_attr_import(&mut self, name_id: StringId, module_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
@@ -93,12 +89,9 @@ impl VM<'_> {
         }
     }
 
-    /// Loads the next component of a dotted import: pops the module so far and
-    /// pushes its attribute `name_id`. A missing attribute is
-    /// `ModuleNotFoundError` naming `path_id` (`a.b`), with `; 'a' is not a
-    /// package` when the module is a built-in one, since a built-in module has
-    /// no submodules a host could supply; so is an attribute of a built-in
-    /// module that is not itself a module (`import math.pi`), as `os.path` is.
+    /// Replaces the stack top with the next submodule of a dotted import.
+    /// Missing attributes raise `ModuleNotFoundError` naming `path_id`. Built-ins also
+    /// reject non-module attributes (`math.pi`) and add "is not a package" to errors.
     pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
@@ -120,10 +113,7 @@ impl VM<'_> {
         }
     }
 
-    /// The dotted path a suspended `LoadSubmodule` is loading (`a.b`): `Some`
-    /// while the suspended instruction is one, so a host's answer to the lazy
-    /// attribute lookup can raise the same `ModuleNotFoundError` the synchronous
-    /// load does.
+    /// Returns the suspended `LoadSubmodule` path for errors from lazy attribute lookups.
     pub(crate) fn suspended_submodule(&self) -> Option<StringId> {
         let ip = self.instruction_ip;
         let bytecode = self.current_frame.bytecode;
@@ -133,9 +123,7 @@ impl VM<'_> {
         })
     }
 
-    /// The module a suspended `from <module> import <name>` is loading from: `Some`
-    /// while the suspended instruction is its attribute load, so a host's answer to
-    /// that lookup can raise the same `ImportError` the synchronous load does.
+    /// Returns the suspended `LoadAttrImport` module for errors from lazy attribute lookups.
     pub(crate) fn suspended_import_from(&self) -> Option<StringId> {
         let frame = &self.current_frame;
         (frame.bytecode.get(self.instruction_ip) == Some(&(Opcode::LoadAttrImport as u8)))
@@ -143,9 +131,7 @@ impl VM<'_> {
             .flatten()
     }
 
-    /// The module a suspended `import <module>` is loading: `Some` while the suspended
-    /// instruction is its `LoadModule`. This is what distinguishes an import's host call
-    /// from a direct call of an undefined `__import__`.
+    /// Returns the suspended `LoadModule` name, distinguishing imports from calls to `__import__`.
     pub(crate) fn suspended_import(&self) -> Option<StringId> {
         let ip = self.instruction_ip;
         let bytecode = self.current_frame.bytecode;
@@ -170,15 +156,12 @@ impl VM<'_> {
     }
 }
 
-/// Whether `value` is one of the sandbox's own module objects, as opposed to a
-/// host-served module, which is a host object.
+/// Host-provided modules are host objects, not `HeapData::Module`s.
 fn is_builtin_module(value: &Value, heap: &Heap) -> bool {
     matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Module(_)))
 }
 
-/// The `ModuleNotFoundError` for a dotted import whose component at `path_id`
-/// (`a.b`) is not a submodule, naming the parent as spelled in the import
-/// (`os.path`, not the module's own name) when it is a built-in module.
+/// Builds a missing-submodule error using the import's spelling of a built-in parent (`os.path`).
 fn not_a_submodule(interns: &Interns, path_id: StringId, is_builtin: bool) -> RunError {
     let path = interns.get_str(path_id);
     let parent = is_builtin.then(|| path.rsplit_once('.').map_or(path, |(parent, _)| parent));

@@ -112,15 +112,13 @@ back to the original snippet — so an error points at the line the model wrote,
 Stubs are scoped to the checkout.
 A later session does not see them.
 
-A stub declares names at the top level of the snippet.
-A host-provided module the code imports needs its own stub: the `stubs` of its `external_modules` entry
-(`externalModules` in JavaScript) is the module's `.pyi` source, kept beside its implementation so the two cannot
-drift apart.
-The worker asks the host for it when a type-checked feed first imports the module, so a module the snippets never
-import is never built, and a lazy entry (a callable returning the `ExternalModule`) runs only then.
-The checker writes each one as `<module>.pyi` beside the snippet, so `import tools` resolves and `from tools import add`
-sees its declarations; module stubs are not star-imported, and a module with neither `stubs` nor a typeshed entry (see
-below) fails a type-checked import as unresolved:
+Global stubs declare names at the top level of the snippet.
+For imported host modules, supply `.pyi` source in each `external_modules` entry's `stubs` (`externalModules` in
+JavaScript).
+The worker requests it on the first type-checked import, running the entry's factory if needed.
+The checker writes `<module>.pyi` beside the snippet so imports resolve against its declarations.
+Module stubs are not star-imported.
+A module with neither `stubs` nor a typeshed entry fails a type-checked import as unresolved:
 
 === "Python"
 
@@ -169,17 +167,16 @@ below) fails a type-checked import as unresolved:
     console.log(await session.feedRun('from tools import add\nadd(1, 2)', { externalModules: { tools } })) // 3
     ```
 
-A session asks about each module once: the stubs it receives are kept for the rest of the session and travel in its
-dump, so a later feed that offers a different stub, or none, for a module an earlier feed imported checks against the
-first answer.
+The session requests each module's stub once and retains the answer in its dumps.
+Later feeds use that first answer even if they supply a different stub or none.
 A submodule's `stubs` is laid out as a package beside its parent's (`pkg/__init__.pyi`, `pkg/sub.pyi`), so
 `import pkg.sub` and `from pkg import sub` resolve; a parent with no `stubs` of its own becomes an empty package.
 A module name that is not an identifier, or that the sandbox provides itself (`json`, `math`, and `gc` in a test
 build), raises `ValueError` (throws in JavaScript), since an import of it never reaches the host.
-Typeshed includes modules the checker resolves but the runtime does not, such as `abc` and `enum`: a host can serve
-those through `external_modules`, but the checker keeps typeshed's stub for them, so an entry under one of these names,
-or under any other module of the vendored typeshed (`__future__` and `__main__` included) or `ty_extensions`, is
-asked for no stub; see [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
+Hosts can supply modules such as `abc` and `enum` that the checker resolves but the runtime does not.
+The checker retains its own stubs and never requests host stubs for vendored typeshed modules, including `__future__`
+and `__main__`, or for `ty_extensions`.
+See [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
 The runtime side of a host module is the entry's `module`; see
 [importing host modules](host-functions.md#importing-host-modules).
 
@@ -224,15 +221,14 @@ checks as one growing program:
     ```
 
 A snippet that fails the check never runs, so it never enters the accumulated context.
-A committed snippet's module-level `import` statements (outside any function or class body, a module-level `if` or
-`try` included) are carried too, so `import math` in one feed binds `math` for the next feed's check.
-They are re-emitted ahead of the committed definitions, so a later rebinding of the name wins for the checker as at
-runtime, while a name deleted after being imported stays bound for the checker.
-An import under an `if` or `try` is carried whether or not its branch ran: a later use of a name bound only in the
-branch that did not run checks clean and raises `NameError` at runtime.
-A carried import is re-emitted without its comments, so one the commit accepted under `# type: ignore` may no longer
-resolve; the checker drops the diagnostics of the carried imports themselves, since they report nothing the commit did
-not accept, and the name stays bound with an unknown type.
+Committed module-level imports are retained for later checks, including imports inside module-level `if` and `try`
+blocks.
+They precede committed definitions, so later rebindings override them; deleting an imported name leaves it bound in the
+checker.
+Conditional imports are retained even if their branch never ran, so a later use can pass checking but raise `NameError`.
+Retained imports lose their comments, including `# type: ignore`.
+The checker suppresses their diagnostics because the earlier feed accepted them; unresolved names retain an unknown
+type.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.

@@ -708,15 +708,11 @@ class MontySession:
                 returned directly when the name is read, and an absent name
                 raises `NameError`. The lazy counterpart to `inputs`; a name
                 present in both is served by the eager `inputs` binding.
-            external_modules: The modules the snippet may `import`, keyed by
-                module name, each an `ExternalModule` pairing the module's
-                host value with the `.pyi` stub a type-checked feed resolves
-                `import <module>` against (never star-imported), or a
-                zero-argument callable returning one, called at most once per
-                feed when the feed first needs the module. A name that is not
-                an identifier, or that the sandbox provides, raises
-                `ValueError`; any other entry raises `TypeError`. Importing a
-                module absent here raises `ModuleNotFoundError`.
+            external_modules: Modules keyed by import name: an `ExternalModule` or
+                zero-argument factory, called on first use at most once per feed.
+                Module stubs resolve imports; they are never star-imported.
+                Invalid or sandbox-provided names raise `ValueError`; invalid entries
+                raise `TypeError`. Missing host modules raise `ModuleNotFoundError`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -772,10 +768,8 @@ class MontySession:
             snapshot = snapshot.resume_auto()
         ```
 
-        Unlike `feed_run`, `external_lookup` and `external_modules` are *not*
-        consulted during this initial drive — external calls, imports and name
-        lookups are still surfaced as snapshots; they are only captured for
-        later `resume_auto()` calls.
+        External calls, imports and name lookups return snapshots.
+        `external_lookup` and `external_modules` are captured for `resume_auto()`.
 
         Use `snapshot.dump()` to checkpoint the worker mid-execution and
         `load_snapshot` to restore it.
@@ -792,9 +786,7 @@ class MontySession:
                 `resume_auto()` resolves external calls and undefined names
                 against (as in `feed_run`). Captured for `resume_auto()`; not
                 used by a plain `resume(...)`.
-            external_modules: The modules `resume_auto()` answers the
-                snippet's imports from (as in `feed_run`). Captured for
-                `resume_auto()`; not used by a plain `resume(...)`.
+            external_modules: As on `feed_run`, but used only by `resume_auto()`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -1210,9 +1202,7 @@ class AsyncMontySession:
                 against (as in `feed_run`). Callables may be coroutine
                 functions. Captured for `resume_auto()`; not used by a plain
                 `resume(...)`.
-            external_modules: The modules `resume_auto()` answers the
-                snippet's imports from (as in `feed_run`). Captured for
-                `resume_auto()`; not used by a plain `resume(...)`.
+            external_modules: As on `feed_run`, but used only by `resume_auto()`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -1392,14 +1382,10 @@ class FunctionSnapshot:
         """Answer this call automatically, then return the next snapshot (or
         `MontyComplete`). Resumes at most once.
 
-        An `import` (and the `import_stubs` ask of a type-checked feed) is
-        answered from the captured `external_modules=`; any other OS call is
-        offered to the feed's mounts first, falling back to the `os=` captured
-        at `feed_start` / `load_snapshot` and then to monty's unhandled
-        default. An external call is resolved through `external_lookup=`; a
-        name absent from it makes the sandbox raise `NameError` (as in
-        `feed_run`). A coroutine external raises `RuntimeError` — use
-        `AsyncMonty` for async externals."""
+        Imports and stub requests use the captured `external_modules`. Other OS calls
+        try mounts, then `os`, then Monty's unhandled default. External calls use
+        `external_lookup`; missing names raise `NameError`. Coroutine results raise
+        `RuntimeError`; use `AsyncMonty` for async externals."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""

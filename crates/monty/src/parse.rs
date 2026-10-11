@@ -45,9 +45,7 @@ pub const MAX_NESTING_DEPTH: u16 = 200;
 #[cfg(debug_assertions)]
 pub const MAX_NESTING_DEPTH: u16 = 30;
 
-/// The most components a dotted import may have (`import a.b.c` has three).
-/// Each component interns the path through it, so an unbounded chain would
-/// retain memory quadratic in its length; real packages stay well below this.
+/// Caps dotted-import components to bound quadratic storage for interned path prefixes.
 pub const MAX_IMPORT_COMPONENTS: usize = 32;
 
 /// `from __future__ import ...` features whose semantics Monty already provides,
@@ -2241,9 +2239,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         }
     }
 
-    /// Splits a dotted module name into the top-level module and the
-    /// [`Submodule`]s after it, interning each component and each prefix;
-    /// more than [`MAX_IMPORT_COMPONENTS`] of them is a `SyntaxError`.
+    /// Interns dotted-import components and prefixes; rejects more than [`MAX_IMPORT_COMPONENTS`].
     fn import_path(&mut self, dotted: &str, position: CodeRange) -> Result<(StringId, Vec<Submodule>), ParseError> {
         if dotted.split('.').nth(MAX_IMPORT_COMPONENTS).is_some() {
             return Err(ParseError::syntax(

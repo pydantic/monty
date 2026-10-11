@@ -1,5 +1,4 @@
-// `externalModules`: host modules the sandbox imports, paired with the module
-// stubs that type-check them. Shared across the native and wasm backends.
+// Host module tests shared by the native and wasm backends.
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
@@ -26,7 +25,6 @@ const code = "import tools\nfrom tools import concat\n[tools.add(1, 2), concat('
 const addStub = 'def add(a: int, b: int) -> int: ...\n'
 const modules: ExternalModules = { tools: new ExternalModule(tools) }
 
-/** Runs `code` in a fresh session, with `externalModules` on the feed. */
 async function run(code: string, externalModules: ExternalModules, options: CheckoutOptions = {}): Promise<unknown> {
   await using session = await pool().checkout(options)
   return await session.feedRun(code, { externalModules })
@@ -57,8 +55,7 @@ test('import errors', async () => {
 })
 
 test('a plain-object module is not callable and has no other methods', async () => {
-  // the sandbox routes `tools()` and `tools.nope()` to the host as method calls on
-  // the module's stand-in, which answers as a value of that kind would
+  // Both calls suspend as methods on the module wrapper.
   await using session = await pool().checkout()
   await t.throwsAsync(session.feedRun('import tools\ntools()', { externalModules: modules }), {
     instanceOf: MontyRuntimeError,
@@ -71,8 +68,7 @@ test('a plain-object module is not callable and has no other methods', async () 
 })
 
 test('a restored plain-object module is still not callable', async () => {
-  // the module's stand-in keeps the same id in every process, so a session restored
-  // from a dump answers `tools()` as a value of its kind, not as a store miss
+  // Stable module IDs preserve type errors after restore without registering a new wrapper.
   let blob: Buffer
   {
     await using session = await pool().checkout()
@@ -102,10 +98,8 @@ test('a ClassInstance module', async () => {
 })
 
 test('name-based calls respect module exposure', async () => {
-  // A `tools.<attr>` call reaches only what `import tools` exposed: never a private
-  // name, and nothing on a ClassInstance module, whose methods route by uuid under
-  // its policy. With the module imported, a host function input carrying such a
-  // name (as a forged frame would) still finds nothing.
+  // Forged dotted names must not expose private attributes or bypass
+  // ClassInstance's UUID dispatch and method policy.
   const privateProbe = () => 'hidden'
   Object.defineProperty(privateProbe, 'name', { value: 'tools._secret' })
   await using session = await pool().checkout()
@@ -123,7 +117,7 @@ test('name-based calls respect module exposure', async () => {
   }
   const instanceProbe = () => 'hidden'
   Object.defineProperty(instanceProbe, 'name', { value: 'tools.reveal' })
-  // a fresh session: the one above keeps the plain-object wrapper it built for `tools`
+  // The earlier session retains its plain-object wrapper for `tools`.
   await using instanceSession = await pool().checkout()
   await t.throwsAsync(
     instanceSession.feedRun('import tools\nassert tools.reveal() == "hidden"\nprobe()', {
@@ -152,8 +146,7 @@ test('async tools run concurrently', async () => {
 })
 
 test('resumeAuto answers imports', async () => {
-  // an import surfaces as an OS-call snapshot, which `resumeAuto` answers from the
-  // captured `externalModules`; so does the stubs ask of a type-checked feed
+  // Imports and stub requests both suspend as OS-call snapshots.
   const stubs = `${addStub}def concat(a: str, b: str) -> str: ...\nVERSION: int\n`
   const externalModules: ExternalModules = { tools: new ExternalModule(tools, { stubs }) }
   await using session = await pool().checkout({ typeCheck: true })
@@ -177,14 +170,12 @@ test('module stubs type-check imports', async () => {
       'TypeError: main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`',
   })
   t.is(await session.feedRun('import tools\ntools.add(1, 2)', { externalModules }), 3)
-  // the import committed by that feed is still bound for the next check
+  // Committed imports remain available to subsequent type checks.
   t.is(await session.feedRun('tools.add(3, 4)', { externalModules }), 7)
 })
 
 test('module stubs are fetched lazily', async () => {
-  // a type-checked feed asks for the stubs of the modules it imports before it is
-  // checked, which runs the factory; the import then reuses the result, and later
-  // feeds ask no more
+  // Stub requests run the factory before type checking; later feeds retain the stubs.
   let calls = 0
   const factory = () => {
     calls += 1
@@ -201,7 +192,7 @@ test('module stubs are fetched lazily', async () => {
   })
   t.is(calls, 1)
   t.is(await session.feedRun('import tools\ntools.add(1, 2)', { externalModules }), 3)
-  // once for the stubs ask and the import of the failed feed, once for the import of the next
+  // One call for the failed feed's stub request, another for the next feed's import.
   t.is(calls, 2)
 })
 
@@ -239,7 +230,7 @@ test('a module without stubs does not type-check', async () => {
     instanceOf: MontyTypingError,
     message: 'TypeError: main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`',
   })
-  // asked about once per session: a stub supplied later is not consulted
+  // Stub requests are cached per session, including missing stubs.
   await t.throwsAsync(
     session.feedRun('import tools', { externalModules: { tools: new ExternalModule(tools, { stubs: addStub }) } }),
     {
@@ -257,8 +248,7 @@ test('module stubs ride in a dump', async () => {
     t.is(await session.feedRun('import tools\ntools.add(1, 2)', { externalModules }), 3)
     blob = await session.dump()
   }
-  // the dump brings its own type checking, stubs and committed import; the module
-  // itself is host state, so the restored session's feeds supply it again
+  // Dumps retain type checking, stubs and imports; the host must supply module values again.
   await using session = await pool().checkout()
   await session.loadSession(blob)
   await t.throwsAsync(session.feedRun("tools.add('x', 2)", { externalModules: modules }), {
@@ -271,7 +261,7 @@ test('module stubs ride in a dump', async () => {
 
 test('invalid module names are rejected', async () => {
   await using session = await pool().checkout()
-  // a bundled module's name, with or without a stub: its import never reaches the host
+  // Bundled module imports never reach the host, even with a supplied stub.
   await t.throwsAsync(session.feedRun('1', { externalModules: { json: new ExternalModule({}, { stubs: '' }) } }), {
     instanceOf: TypeError,
     message: 'externalModules.json is provided by the sandbox and cannot be replaced',
@@ -288,12 +278,11 @@ test('invalid module names are rejected', async () => {
     instanceOf: TypeError,
     message: 'externalModules.json is provided by the sandbox and cannot be replaced',
   })
-  // the session is still usable
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
 test('every bundled module name is refused', async () => {
-  // the binding keeps its own list of the sandbox's modules, so the sandbox says what they are
+  // Compare the binding's independent list against the sandbox's actual modules.
   await using session = await pool().checkout()
   const names = (await session.feedRun('import sys\nlist(sys.builtin_module_names)')) as string[]
   t.true(names.includes('json'))
@@ -305,9 +294,8 @@ test('every bundled module name is refused', async () => {
 })
 
 test('a module the type checker alone provides is served without a stub', async () => {
-  // the runtime asks the host for `abc`, so a host may serve it
   t.is(await run('import abc\nabc.VERSION', { abc: new ExternalModule({ VERSION: 1 }) }), 1)
-  // the checker keeps typeshed's stub for it, which an entry's stub cannot replace
+  // Host stubs cannot replace typeshed's `abc` stub.
   const abc = new ExternalModule({ VERSION: 1 }, { stubs: '' })
   await t.throwsAsync(run('import abc\nabc.VERSION', { abc }, { typeCheck: true, typeCheckFormat: 'concise' }), {
     instanceOf: MontyTypingError,
@@ -316,8 +304,6 @@ test('a module the type checker alone provides is served without a stub', async 
 })
 
 test('submodules are attributes of their parent', async () => {
-  // an `ExternalModule` in a module's object is a submodule: reached as an attribute,
-  // and by every form of dotted import
   const sub = new ExternalModule({ add: tools.add, VERSION: 2 })
   const pkg = new ExternalModule({ VERSION: 1, sub })
   await using session = await pool().checkout()
@@ -337,7 +323,6 @@ test('submodules are attributes of their parent', async () => {
     instanceOf: MontyRuntimeError,
     message: "ModuleNotFoundError: No module named 'pkg.sub.deeper'",
   })
-  // a submodule's stand-in answers a call on itself like any module's
   await t.throwsAsync(session.feedRun('import pkg.sub\npkg.sub()', { externalModules: { pkg } }), {
     instanceOf: MontyRuntimeError,
     message: "TypeError: 'pkg.sub' object is not callable",
@@ -382,7 +367,6 @@ test('invalid submodules are rejected', async () => {
     instanceOf: TypeError,
     message: 'externalModules.pkg.sub.stubs must be a string',
   })
-  // an entry nested inside itself is refused rather than walked forever
   const module: Record<string, unknown> = {}
   const pkg = new ExternalModule(module)
   module.sub = new ExternalModule({ pkg })
@@ -393,8 +377,6 @@ test('invalid submodules are rejected', async () => {
 })
 
 test('a submodule behind a getter is checked at the import', async () => {
-  // a feed checks the submodules it can see without reading a getter; one a
-  // getter produces is checked when the import reads it
   const lazy = {
     get sub(): ExternalModule {
       return new ExternalModule({ '1x': 1 })
@@ -445,8 +427,7 @@ test('each module is its own class, the same on every import', async () => {
 })
 
 test('a forged name with many dots is walked through the configured modules', async () => {
-  // walked one component at a time, so a forged name of thousands of components
-  // stops at the first missing one and finds nothing
+  // Stop at the first missing component, even with thousands remaining.
   const probe = () => 'hidden'
   const name = `${'a.'.repeat(5000)}f`
   Object.defineProperty(probe, 'name', { value: name })
@@ -459,14 +440,13 @@ test('a forged name with many dots is walked through the configured modules', as
     instanceOf: MontyRuntimeError,
     message: `NameError: name '${name}' is not defined`,
   })
-  // a configured path still matches
   t.is(await session.feedRun('from a.a import add\nadd(1, 2)', { externalModules }), 3)
 })
 
 test('a getter that throws at the call raises in the sandbox', async () => {
   let reads = 0
   const flaky = {
-    // read once by the import, again by the call
+    // Read once by the import, again by the call.
     get add(): (a: number, b: number) => number {
       if (reads++ > 0) throw new Error('gone')
       return (a, b) => a + b
@@ -480,12 +460,11 @@ test('a getter that throws at the call raises in the sandbox', async () => {
       message: 'RuntimeError: gone',
     },
   )
-  // the session is still usable
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
 test('a dotted key of a plain-object module is rejected', async () => {
-  // a host function is named by its dotted path, so a key must be one component
+  // Each key must be one component of a host function's dotted path.
   await using session = await pool().checkout()
   const tools = new ExternalModule({ 'a.b': (a: number, b: number) => a + b })
   await t.throwsAsync(session.feedRun('import tools', { externalModules: { tools } }), {
@@ -507,7 +486,7 @@ test('a module factory runs once per feed, when first needed', async () => {
   const code = 'import tools\nimport tools as t\n[tools.add(1, 2), t.VERSION]'
   t.deepEqual(await session.feedRun(code, { externalModules }), [3, 3])
   t.is(calls, 1)
-  // the result stands for the module for the rest of the feed; the next feed asks again
+  // Factory results are cached only for the current feed.
   t.is(await session.feedRun('import tools\ntools.VERSION', { externalModules }), 3)
   t.is(calls, 2)
 })
@@ -525,10 +504,7 @@ test('an async module factory is awaited', async () => {
 })
 
 test('an awaited factory serves a call through a restored binding', async () => {
-  // `tools` was bound by a feed of the dumped session, whose module is gone with
-  // it; the restored session first needs the module for a call through that
-  // binding (the attributes sent with it survive the dump), so the factory is
-  // awaited on the call path
+  // Restored attributes allow a call without re-importing; the call must await the factory.
   let blob: Buffer
   {
     const first = new ExternalModule({ add: tools.add, sub: (a: number, b: number) => a - b })
@@ -547,7 +523,7 @@ test('an awaited factory serves a call through a restored binding', async () => 
 })
 
 test('a module may carry its own then attribute', async () => {
-  // only a real Promise from a factory is awaited, so `then` stays a module function
+  // Only real Promises are awaited; `then` remains a module function.
   const withThen = new ExternalModule({ add: tools.add, then: () => 'nope' })
   t.is(await run('import tools\ntools.add(1, 2)', { tools: () => withThen }), 3)
   t.is(await run('import tools\ntools.then()', { tools: () => withThen }), 'nope')
@@ -588,13 +564,11 @@ test('a module factory failure raises at the import', async () => {
     instanceOf: MontyRuntimeError,
     message: 'TypeError: externalModules.badValue.module is number, not a plain object or ClassInstance',
   })
-  // the session is still usable
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
 test('a module must be a plain object or ClassInstance', async () => {
-  // a plain object's own keys name exactly what the sandbox may reach; an instance
-  // of another class would expose whatever its prototype chain carries
+  // Class instances require an explicit exposure policy through ClassInstance.
   class Tools {
     add(a: number, b: number): number {
       return a + b
@@ -614,7 +588,7 @@ test('a module must be a plain object or ClassInstance', async () => {
     instanceOf: MontyRuntimeError,
     message: 'TypeError: externalModules.tools.module is a Tools, not a plain object or ClassInstance',
   })
-  // a null-prototype object, as a module namespace is, counts as plain
+  // Module namespaces have null prototypes.
   const bare = Object.assign(Object.create(null) as Record<string, unknown>, tools)
   t.deepEqual(await session.feedRun(code, { externalModules: { tools: new ExternalModule(bare) } }), [3, 'ab', 3])
 })

@@ -42,12 +42,12 @@ if __name__ == '__main__':
 
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.
-`external_modules` on `feed_run` (beside `external_lookup`) names the modules the snippet may `import`: each an
-`ExternalModule` whose `module` is a dict whose public items are sent with it (callables as host functions, nested
-`ExternalModule`s as submodules reached as attributes and by `import <name>.<sub>`, other values converted) or a
-`ClassInstance` sent as itself, or a zero-argument callable (async under `AsyncMonty`) returning an `ExternalModule`,
-run when the feed first needs the module. Its optional `stubs` is the `.pyi` the type checker resolves the import
-against, asked for when a type-checked feed first imports the module and kept for the session.
+`external_modules` on `feed_run` maps import names to `ExternalModule` values or zero-argument factories.
+Factories run when first needed in each feed and may be async under `AsyncMonty`.
+An entry's `module` is a dict of public attributes or a `ClassInstance` with its own exposure policy.
+Dict callables become host functions, nested `ExternalModule` values become importable submodules, and other values
+are converted normally.
+The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.

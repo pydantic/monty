@@ -91,25 +91,20 @@ pub struct TypeCheckState {
     pub pending_snippet: Option<String>,
     /// How diagnostics are rendered by whoever runs the type checker.
     pub config: TypeCheckingConfig,
-    /// The import statements of every committed snippet, re-injected ahead of
-    /// the stubs' star import, which does not re-export a `.pyi`'s imports.
+    /// Committed imports, injected before the stubs' star import to preserve bindings `.pyi` files omit.
     #[serde(default)]
     pub committed_imports: String,
-    /// The import statements of `pending_snippet`, joining `committed_imports`
-    /// when it commits.
+    /// Imports from `pending_snippet`, appended to `committed_imports` on commit.
     #[serde(default)]
     pub pending_imports: String,
-    /// Every top-level module the host has been asked stubs for, with or
-    /// without an answer, so each is asked about once per session.
+    /// Modules already requested from the host, including modules without stubs, to avoid asking twice.
     #[serde(default)]
     pub asked_modules: Vec<String>,
 }
 
-/// A `.pyi` for one host-provided module, written for the type checker so
-/// `import <module>` resolves: `/<module>.pyi`, or inside a package tree for a
-/// dotted path (`a.b` is `/a/b.pyi` beside `/a/__init__.pyi`). The path is
-/// validated on construction: identifiers, the first not one the vendored
-/// typeshed has, or the stub would shadow it for the checker alone.
+/// A host module's `.pyi`, written as a module or package tree for the type checker.
+/// Construction validates each path component and rejects top-level names reserved by the
+/// sandbox or checker, preventing stubs from shadowing their modules.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleStub {
     module: String,
@@ -117,9 +112,8 @@ pub struct ModuleStub {
 }
 
 impl ModuleStub {
-    /// A stub for `module`, a dotted path whose top-level name
-    /// [`validate_module_name`] accepts, is not in [`CHECKER_MODULE_NAMES`]
-    /// either, and whose other components are identifiers.
+    /// Validates each dotted component as an identifier and rejects top-level names reserved
+    /// by [`validate_module_name`] or [`CHECKER_MODULE_NAMES`].
     pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
         let module = module.into();
         let mut parts = module.split('.');
@@ -137,7 +131,7 @@ impl ModuleStub {
         })
     }
 
-    /// The module the stub describes.
+    /// The dotted module path.
     #[must_use]
     pub fn module(&self) -> &str {
         &self.module
@@ -150,10 +144,8 @@ impl ModuleStub {
     }
 }
 
-/// Refuses a name a host-provided module may not have: not an identifier, or
-/// one of [`SANDBOX_MODULE_NAMES`], whose import never reaches the host. A
-/// name in [`CHECKER_MODULE_NAMES`] passes, since the runtime does ask the
-/// host for it; only a stub under it is refused, by [`ModuleStub::new`].
+/// Rejects non-identifiers and [`SANDBOX_MODULE_NAMES`], whose imports never reach the host.
+/// [`CHECKER_MODULE_NAMES`] are valid runtime module names; only [`ModuleStub::new`] rejects them.
 pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
     if !is_identifier(name) {
         Err(ModuleStubError::InvalidName(name.to_owned()))
@@ -164,8 +156,7 @@ pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
     }
 }
 
-/// The error for a dotted stub path: a reserved top-level name keeps its own
-/// error, any other bad component makes the whole path invalid.
+/// Preserves reserved-name errors; other invalid components report the full dotted path.
 fn invalid_path(path: &str, part: &str) -> ModuleStubError {
     if SANDBOX_MODULE_NAMES.contains(&part) {
         ModuleStubError::ReservedName(part.to_owned())
@@ -174,7 +165,7 @@ fn invalid_path(path: &str, part: &str) -> ModuleStubError {
     }
 }
 
-/// Why a host-provided module's name was refused (see [`validate_module_name`]).
+/// An invalid or reserved host module name; see [`validate_module_name`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleStubError {
     /// Not a Python identifier, or a keyword.
@@ -197,10 +188,9 @@ impl Display for ModuleStubError {
 
 impl Error for ModuleStubError {}
 
-/// The import names of every module the sandbox provides itself, `os.path`
-/// aside (a dotted name is never an identifier). An `external_modules` entry
-/// under one would never be asked for, so a host module may not take one; keep
-/// in step with the runtime's `StandardLib`.
+/// Sandbox module names, excluding the dotted name `os.path`.
+/// Imports of these modules never reach the host, so host modules cannot use these names.
+/// Keep in sync with the runtime's `StandardLib`.
 pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "asyncio",
     "base64",
@@ -226,11 +216,9 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "unicodedata",
 ];
 
-/// The modules of the vendored typeshed beyond [`SANDBOX_MODULE_NAMES`] (the
-/// private modules its stubs import included), plus `ty_extensions`, which ty
-/// provides without a typeshed entry. The runtime asks the host for these, so
-/// a host module may take one, but a stub under it would shadow typeshed's for
-/// the checker alone, so [`ModuleStub::new`] refuses it.
+/// Vendored typeshed modules outside [`SANDBOX_MODULE_NAMES`], including private dependencies,
+/// plus ty's `ty_extensions`. Hosts may provide these modules at runtime, but
+/// [`ModuleStub::new`] rejects their stubs to prevent shadowing the checker's definitions.
 pub const CHECKER_MODULE_NAMES: &[&str] = &[
     "__future__",
     "__main__",

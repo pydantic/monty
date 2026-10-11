@@ -55,8 +55,7 @@ pub enum ExtFunctionResult {
     /// snapshot. It is used to track the pending future so it can be resolved
     /// later via `ResolveFutures::resume()`.
     Future(u32),
-    /// The function was not found, should result in a `NameError` exception
-    /// (a `ModuleNotFoundError` when the call was an `import`).
+    /// Raises `NameError`, or `ModuleNotFoundError` for an `import` call.
     NotFound(String),
 }
 

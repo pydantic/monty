@@ -31,9 +31,8 @@ pub mod worker;
 ///
 /// `Configure.persistence`, `Configure.profile` and `ChildEvent.session_id` did not bump it: a
 /// serving relay and its client act on them, children ignore them, and a
-/// child that drops them loses nothing. Version 6 moved `import` from a
-/// `FunctionCall` named `__import__` to an `OsCall` and added `import_stubs`:
-/// a version 5 parent would answer neither.
+/// child that drops them loses nothing. Version 6 added the `import` and
+/// `import_stubs` OS calls, which version 5 parents cannot answer.
 pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.

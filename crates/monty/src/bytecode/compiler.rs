@@ -1076,9 +1076,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.
-    /// Loads the top-level module and each further component as its submodule
-    /// (so a missing one raises here), then binds the last, or for an unaliased
-    /// dotted import keeps a copy of the top-level module and binds that.
+    /// Resolves every dotted component; binds the last if aliased, otherwise the top-level module.
     fn compile_import(&mut self, import: &ImportName) -> Result<(), CompileError> {
         let position = import.binding.position;
         self.code.set_location(position, None);
@@ -1094,8 +1092,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         self.compile_store(&import.binding)
     }
 
-    /// Walks the components after the first of a dotted import: each pops the
-    /// module so far and pushes the named submodule.
+    /// Replaces the stack top with each successive submodule of a dotted import.
     fn compile_submodules(&mut self, submodules: &[Submodule], position: CodeRange) -> Result<(), CompileError> {
         for submodule in submodules {
             let name_idx = check_name_index_u16(submodule.name, position)?;
@@ -1124,8 +1121,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.code.emit(Opcode::Dup)?;
             }
             let name_idx = check_name_index_u16(*import_name, position)?;
-            // the module name for an `ImportError` rides on the frame, set by the
-            // statement's `LoadModule` or its last `LoadSubmodule`
+            // LoadModule or the last LoadSubmodule saved the error's module name on the frame.
             self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
             self.compile_store(binding)?;
         }

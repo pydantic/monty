@@ -1,21 +1,16 @@
 # Standard library modules
 
-Monty ships a fixed set of built-in stdlib modules. `import` of anything
-else asks the host for the module (see [Host modules](#host-modules)) and
-raises `ModuleNotFoundError` when the host provides none: there is no
-`sys.path`, no site-packages, and no way for sandboxed code to load additional
-modules itself.
+Monty provides a fixed set of stdlib modules.
+Other imports request [host modules](#host-modules) and raise `ModuleNotFoundError` if none is provided.
+There is no `sys.path` or site-packages; sandboxed code cannot load additional modules itself.
 
 `os.path` (also importable as `posixpath`) is the only submodule.
 
-Every `import` of a bundled module builds a fresh module object; there is no
-`sys.modules` cache. So two imports of the same module are not the same object
-(`import math as a; import math as b` leaves `a is not b`), and a mutable
-attribute reverts on the next import — `sys.argv.append(...)` is not seen by a
-later `import sys`. A bundled module's attributes cannot be set at all
-(`sys.x = 1` raises `AttributeError`), so there is no way to share state
-through one. A host module is a host object, with the rules of the
-[Host modules](#host-modules) section instead.
+Every bundled import builds a fresh module object; there is no `sys.modules` cache.
+Thus `import math as a; import math as b` leaves `a is not b`, and changes such as `sys.argv.append(...)` do not
+survive the next import.
+Assigning a bundled module's attributes raises `AttributeError`, as in `sys.x = 1`.
+[Host modules](#host-modules) follow host-object rules instead.
 The one exception is `random`'s module-level generator, which is session
 state: a `random.seed(...)` is still in effect after a later `import random`,
 in the next feed, and after a dump (see [random.md](random.md)).
@@ -80,49 +75,39 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 
-`abc`, `enum`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed`
-back the vendored stubs (e.g. `@abstractmethod` on protocol members), so they
-have to resolve during type checking. Importing them type-checks clean; at
-runtime they are host modules like any other name the sandbox lacks, so the
-host may serve them, and a not-found answer raises `ModuleNotFoundError`.
-The worker never asks the host for a stub under these names, nor under any
-other module of the vendored typeshed, so the checker checks a host-served
-`abc` against typeshed's `abc`, not against what the host serves.
+`abc`, `enum`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored stubs, so their
+imports pass type checking.
+At runtime, the host must provide them or the import raises `ModuleNotFoundError`.
+The worker never requests host stubs for vendored typeshed modules: a host-provided `abc` is checked against
+typeshed's `abc` declarations.
 
 ## Host modules
 
-An `import` of any module the runtime does not ship, the checker-only ones above included, asks the host for it as
-the OS call `import` with the top-level module name as its argument; `__import__` is not defined.
-A dotted import (`import a.b.c`, `from a.b import c`) asks for `a` and reads each further component as an attribute of
-the one before, as CPython reads a submodule out of its package; below a bundled module that is not a package
-(`import os.x`, `import math.pi`) the attribute read raises `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package` without asking the host.
-The value the host answers with (in the bindings, the matching `external_modules` entry) is bound as the module, so:
+Unknown imports request the top-level name through the `import` OS call; `__import__` is undefined.
+Dotted imports such as `import a.b.c` request `a`, then read `b` and `c` as successive attributes.
+Bundled modules that are not packages never request host submodules: `import os.x` raises
+`ModuleNotFoundError: No module named 'os.x'; 'os' is not a package`.
+The host's answer becomes the imported value, with these differences from CPython:
 
-- the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr and `m.__class__`
-    that class, while `m.__name__` and `m.__dict__` raise `AttributeError`, as every other dunder attribute of a host
-    object does;
-- a missing attribute raises `AttributeError: 'm' object has no attribute 'x'`, naming the host class rather than
-    CPython's `module 'm' has no attribute 'x'`, and calling the module raises `TypeError: 'm' object is not callable`
-    where CPython says `'module' object is not callable`;
-- every `import` statement asks again, since there is no `sys.modules` cache, so two imports of one module bind two
-    objects (`import m as a; import m as b` leaves `a is not b`), and an import inside a function asks on each call;
-- an attribute can be assigned, as on any host object, but only that binding sees it: the next `import` starts
-    from the host's attributes again in the Python binding, while the JavaScript binding reuses the module value it
-    built for the first import, so a plain attribute the host changes afterwards is not seen again either (a call of
-    a module function always reads the current attribute);
-- a not-found answer raises `ModuleNotFoundError: No module named 'm'`, as in CPython, and an exception raised by the
-    host is raised at the `import`;
-- a submodule the answer lacks raises `ModuleNotFoundError: No module named 'm.x'`, the wording CPython uses for a
-    package without that submodule, since a host module is never told apart from a package, while `import m.x` binds
-    whatever attribute `x` the answer has, a plain value included, where CPython raises `ModuleNotFoundError` for an
-    attribute that is not a module;
-- `from m import x` reads `x` from the answered value, whether sent with it or looked up lazily, and raises
-    `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute;
-- in the Python binding a plain class in a module dict crosses as a host function named `m.X` (calling it constructs
-    on the host), not as a type, so `isinstance(v, m.X)` raises `TypeError`; wrap it in `ClassType` to send a type;
-- module names and the keys of a module dict are identifiers, since a host function is named by its dotted path, so
-    `getattr(m, 'a.b')` on a dict module has nothing to find, while a `ClassInstance` module answers under its
-    wrapper's attribute policy;
-- a dotted import of more than 32 components (`import a.b.c` has three) is a `SyntaxError` at compile time.
+- `type(m)`, `repr(m)` and `m.__class__` describe the host object.
+    Other dunder attributes, including `m.__name__` and `m.__dict__`, raise `AttributeError`.
+- Missing-attribute and not-callable errors name the host class (`'m' object`) rather than CPython's `module`.
+- Every `import` requests the module again, including imports inside functions.
+    Two imports bind distinct objects: `import m as a; import m as b` leaves `a is not b`.
+- Assigned attributes affect only that binding.
+    Python rereads host attributes on the next import; JavaScript reuses the first module value for the session.
+    JavaScript therefore ignores later host changes to plain attributes, but both bindings reread attributes for function
+    calls.
+- Host exceptions are raised at the `import`.
+- Host modules are treated as packages: a missing submodule raises `ModuleNotFoundError: No module named 'm.x'`.
+    `import m.x` binds any attribute `x`, including plain values that CPython would reject as non-modules.
+- `from m import x` reads eager or lazy attributes; missing names raise
+    `ImportError: cannot import name 'x' from 'm' (unknown location)`.
+- Python classes in module dicts become host functions: `m.X()` constructs on the host, but `isinstance(v, m.X)`
+    raises `TypeError`.
+    Wrap a class in `ClassType` to send it as a type.
+- Module names and dict keys must be identifiers, so `getattr(m, 'a.b')` cannot find a dict module attribute.
+    `ClassInstance` modules follow their wrapper's attribute policy.
+- Imports with more than 32 dotted components raise `SyntaxError`; `import a.b.c` has three.
 
 With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.
