@@ -113,6 +113,31 @@ test('a ClassInstance module is read from each feed', async () => {
   t.is(await feed(20), 21)
 })
 
+test('a plain-object module is read from each feed', async () => {
+  class Tools {
+    constructor(private readonly base: number) {}
+    add(a: number): number {
+      return this.base + a
+    }
+    remove(): string {
+      return 'removed'
+    }
+  }
+  const target = new Tools(10)
+  await using session = await pool().checkout()
+  const feed = (code: string, VERSION: number, allowedMethods: string[]) => {
+    const inner = new ClassInstance(target, { allowedMethods, id: '11111111-1111-4111-8111-111111111111' })
+    return session.feedRun(code, { externalModules: { tools: new ExternalModule({ VERSION, inner }) } })
+  }
+  // attributes and nested policies come from the feed that imports, not the first one
+  t.deepEqual(await feed('import tools\n[tools.VERSION, tools.inner.remove()]', 1, ['add', 'remove']), [1, 'removed'])
+  t.is(await feed('import tools\ntools.VERSION', 2, ['add']), 2)
+  await t.throwsAsync(feed('import tools\ntools.inner.remove()', 2, ['add']), {
+    instanceOf: MontyRuntimeError,
+    message: "AttributeError: 'Tools' object has no attribute 'remove'",
+  })
+})
+
 test('name-based calls respect module exposure', async () => {
   // Forged dotted names must not expose private attributes or bypass
   // ClassInstance's UUID dispatch and method policy.

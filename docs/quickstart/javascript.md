@@ -77,7 +77,8 @@ Keyword arguments from the sandbox arrive as a trailing object on the call.
 An error thrown by a host function crosses into the sandbox as a Python exception, using the error's `name` when it
 matches a Python exception type and `RuntimeError` otherwise.
 
-`externalModules` maps import names to `ExternalModule` values with optional type stubs.
+`externalModules` maps import names to `ExternalModule` values with optional type stubs, or to zero-argument
+factories returning one (a promise is awaited), run when the feed first needs the module.
 A plain object's public properties become module attributes; functions become host functions named `<module>.<attr>`:
 
 ```ts

@@ -710,7 +710,8 @@ class MontySession:
                 present in both is served by the eager `inputs` binding.
             external_modules: Modules keyed by import name: an `ExternalModule` or
                 zero-argument factory, called on first use at most once per feed.
-                Module stubs resolve imports; they are never star-imported.
+                Module stubs resolve imports for the type checker only; the
+                `module` answers the import at runtime. Stubs are never star-imported.
                 Invalid or sandbox-provided names raise `ValueError`; invalid entries
                 raise `TypeError`. Missing host modules raise `ModuleNotFoundError`.
             print_callback: Receives the sandbox's `print()` output as

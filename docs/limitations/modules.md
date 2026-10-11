@@ -95,9 +95,7 @@ The host's answer becomes the imported value, with these differences from CPytho
 - Every `import` requests the module again, including imports inside functions.
     Two imports bind distinct objects: `import m as a; import m as b` leaves `a is not b`.
 - Assigned attributes affect only that binding.
-    Python rereads host attributes on the next import; JavaScript reuses the first module value for the session.
-    JavaScript therefore ignores later host changes to plain attributes, but both bindings reread attributes for function
-    calls.
+    Both bindings reread a dict module's items on the next import and its attributes for function calls.
 - Host exceptions are raised at the `import`.
 - Host modules are treated as packages: a missing submodule raises `ModuleNotFoundError: No module named 'm.x'`.
     `import m.x` binds any attribute `x`, including plain values that CPython would reject as non-modules.

@@ -199,8 +199,9 @@ export class MontySession {
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
 
-  /** Reuse one wrapper per module: ids are fixed and the instance store retains every wrapper sent. */
-  private readonly moduleValues = new Map<string, unknown>()
+  /** One attrs object per module path: a wrapper's id is fixed, and the instance store
+   *  takes a new wrapper only for the object it already routes to (see [`moduleValue`]). */
+  private readonly moduleAttrs = new Map<string, Record<string, unknown>>()
 
   /** @internal — sessions are created by `Monty.checkout`. */
   constructor(native: NativeSession) {
@@ -222,7 +223,7 @@ export class MontySession {
     const printTarget = new PrintTarget(options.printCallback)
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // Validate modules before sending the feed; discard pending futures between feeds.
-    const modules = new HostModules(options.externalModules, this.moduleValues)
+    const modules = new HostModules(options.externalModules, this.moduleAttrs)
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, modules, options.os)
     let turn = (await this.native.feed(
       code,
@@ -395,7 +396,7 @@ export class MontySession {
   /** Captures the feed's handlers for `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions | LoadSnapshotOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    const modules = new HostModules(options.externalModules, this.moduleValues)
+    const modules = new HostModules(options.externalModules, this.moduleAttrs)
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, modules, options.os)
     return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
@@ -662,13 +663,7 @@ class TurnAnswerer {
       if (entry === undefined) {
         return this.native.resumeNotFound(onPrint)
       }
-      if (entry.module instanceof ClassInstance) {
-        value = entry.module
-      } else {
-        // a plain object's wrapper carries a fixed id, so the session keeps the first
-        value = this.modules.values.get(name) ?? moduleValue(name, entry, this.modules)
-        this.modules.values.set(name, value)
-      }
+      value = moduleValue(name, entry, this.modules)
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
@@ -1414,8 +1409,8 @@ export class HostModules {
 
   constructor(
     private readonly entries: ExternalModules | undefined,
-    /** The session's wrappers (see [`MontySession.moduleValues`]), shared by its feeds. */
-    readonly values: Map<string, unknown>,
+    /** The session's attrs objects (see [`MontySession.moduleAttrs`]), shared by its feeds. */
+    readonly attrs: Map<string, Record<string, unknown>>,
   ) {
     for (const [name, entry] of Object.entries(entries ?? {})) {
       if (!IDENTIFIER.test(name) || KEYWORDS.has(name)) {
@@ -1632,10 +1627,11 @@ function collectStubs(path: string, entry: ExternalModule, stubs: Record<string,
 }
 
 /**
- * Passes ClassInstance through; wraps plain objects with eager public attributes.
+ * Passes ClassInstance through; wraps plain objects with eager public attributes,
+ * read afresh on every import so each feed's values and policies apply.
  * Functions use dotted names for [`TurnAnswerer.hostEntry`]. Class and instance
- * IDs derive from the module path, preserving identity across imports and restores.
- * [`HostModules.values`] caches the wrapper for the session.
+ * IDs derive from the module path, preserving identity across imports and restores,
+ * so the wrapper is rebuilt on the session's one attrs object for the path.
  */
 function moduleValue(
   path: string,
@@ -1647,7 +1643,11 @@ function moduleValue(
   if (module instanceof ClassInstance) {
     return module
   }
-  const attrs: Record<string, unknown> = {}
+  const attrs = modules.attrs.get(path) ?? {}
+  for (const key of Object.keys(attrs)) {
+    delete attrs[key]
+  }
+  modules.attrs.set(path, attrs)
   ancestors.set(entry, path)
   // Filter names before reading values so private getters never run.
   for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {

@@ -370,9 +370,8 @@ An import of a module absent from `external_modules` raises `ModuleNotFoundError
 or `math`, are never looked up here.
 Every `import` statement asks again: the sandbox has no module cache, and a module bound by an earlier feed is a
 plain global.
-Python reads the module's dict on each import.
-JavaScript reuses the first module value for the session, so subsequent host changes to plain attributes are not seen.
-Both bindings read the current attribute when calling a module function.
+Both bindings read a dict module's items on each import and the current attribute when calling a module function; a
+`ClassInstance` module is sent as itself.
 The bound value is a host object, so `type(tools)` is its host class, not `module`; see
 [modules](limitations/modules.md#host-modules).
 

@@ -184,7 +184,17 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 Self::AsyncSystemSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?)
             }
             os_call::Call::Import(i) => Self::Import(i.module),
-            os_call::Call::ImportStubs(i) => Self::ImportStubs(i.modules.into_iter().collect()),
+            os_call::Call::ImportStubs(i) => {
+                // the worker asks about each module once; a repeat would multiply the host's factory work
+                let modules: Vec<String> = i.modules.into_iter().collect();
+                if let Some(repeated) = modules.iter().enumerate().find(|(i, m)| modules[..*i].contains(m)) {
+                    return Err(ProtoConvertError::InvalidValue {
+                        field: "ImportStubs.modules",
+                        reason: format!("module {:?} is asked about twice", repeated.1),
+                    });
+                }
+                Self::ImportStubs(modules)
+            }
         })
     }
 }

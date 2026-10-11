@@ -1121,6 +1121,19 @@ fn shutdown_event_round_trips() {
     assert_eq!(back, bare);
 }
 
+/// A stubs ask naming a module twice is refused: a host runs one factory per
+/// name, and a compromised child must not multiply that work.
+#[test]
+fn a_stubs_ask_repeating_a_module_is_rejected() {
+    let call = pb::os_call::Call::ImportStubs(pb::os_call::ImportStubs {
+        modules: ["tools", "other", "tools"].map(str::to_owned).into_iter().collect(),
+    });
+    assert_eq!(
+        OsFunctionCall::try_from(call).unwrap_err().to_string(),
+        "invalid value for ImportStubs.modules: module \"tools\" is asked about twice"
+    );
+}
+
 /// A child-supplied fixed offset outside `datetime.timezone`'s range is refused
 /// before it can reach a host as a `MontyTimeZone`.
 #[test]

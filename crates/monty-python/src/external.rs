@@ -120,7 +120,8 @@ pub fn resolve_object_attr(
 }
 
 /// A feed's validated modules and cached factory results, retained for `resume_auto`.
-/// Factories run and are validated on first use, at most once per feed.
+/// A factory runs on first use and its validated result serves the rest of the feed;
+/// a failure is raised there and the next use runs the factory again.
 pub(crate) struct HostModules {
     /// Each entry by the name the snippet imports: an `ExternalModule`, or
     /// the factory returning one.

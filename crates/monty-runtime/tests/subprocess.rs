@@ -16,8 +16,8 @@ use monty_proto::{
     WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
-    OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
+    CallArgs, DateTimeSource, ExtFunctionResult, IMPORT_STUBS_CALL_ID, MontyDate, MontyDateTime, MontyObject,
+    NameLookupResult, NamedValues, OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
     unstable::{self, MontyNode},
 };
 
@@ -2282,7 +2282,12 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
             ..Default::default()
         });
         let mut probe = |code: String| {
-            let (_, event) = child.feed(&code);
+            let (_, mut event) = child.feed(&code);
+            // a host module name is asked about once; the stubs are declined here
+            if matches!(&event, pb::child_event::Kind::OsCall(call) if call.call_id == IMPORT_STUBS_CALL_ID) {
+                let reply = pb::ext_function_result::Kind::NotHandled(pb::Unit {});
+                event = child.resume_call(IMPORT_STUBS_CALL_ID, reply).1;
+            }
             let pb::child_event::Kind::TypingError(typing) = event else {
                 panic!("expected TypingError for {code:?} after {script_name:?}, got {event:?}");
             };
