@@ -862,13 +862,19 @@ impl Child {
                     && let Some(snippet) = state.pending_snippet.take()
                 {
                     // the stubs' star import does not re-export the snippet's
-                    // imports, so they are injected ahead of it, each statement once
-                    for import in top_level_imports(&snippet).lines() {
-                        if !state.committed_imports.lines().any(|line| line == import) {
-                            state.committed_imports.push_str(import);
-                            state.committed_imports.push('\n');
-                        }
+                    // imports, so they are injected ahead of it, each statement
+                    // once, the latest last since it is the one that binds
+                    let imports = top_level_imports(&snippet);
+                    let mut committed: Vec<&str> = state.committed_imports.lines().collect();
+                    for import in imports.lines() {
+                        committed.retain(|line| *line != import);
+                        committed.push(import);
                     }
+                    let mut joined = committed.join("\n");
+                    if !joined.is_empty() {
+                        joined.push('\n');
+                    }
+                    state.committed_imports = joined;
                     state.committed_stubs.push('\n');
                     state.committed_stubs.push_str(&snippet);
                 }

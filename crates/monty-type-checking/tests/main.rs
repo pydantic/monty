@@ -2,7 +2,9 @@ use std::thread;
 
 use insta::assert_snapshot;
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, top_level_imports};
-use monty_types::{ModuleStub, ModuleStubError, RESERVED_MODULE_NAMES, TypeCheckingConfig, TypeCheckingFormat};
+use monty_types::{
+    CHECKER_MODULE_NAMES, ModuleStub, ModuleStubError, SANDBOX_MODULE_NAMES, TypeCheckingConfig, TypeCheckingFormat,
+};
 
 /// Type-checks one snippet with a throwaway checker, rendered in `Full`.
 fn check(code: &str, path: &str) -> Option<String> {
@@ -681,9 +683,13 @@ fn reserved_names_cover_the_vendored_typeshed() {
         };
         let top_level = module.split('.').next().unwrap_or_default();
         assert!(
-            RESERVED_MODULE_NAMES.contains(&top_level),
-            "typeshed module {top_level} is missing from RESERVED_MODULE_NAMES"
+            SANDBOX_MODULE_NAMES.contains(&top_level) || CHECKER_MODULE_NAMES.contains(&top_level),
+            "typeshed module {top_level} is missing from SANDBOX_MODULE_NAMES and CHECKER_MODULE_NAMES"
         );
+    }
+    // a name is reserved for one reason, so each list says why
+    for name in CHECKER_MODULE_NAMES {
+        assert!(!SANDBOX_MODULE_NAMES.contains(name), "{name} is in both lists");
     }
 }
 

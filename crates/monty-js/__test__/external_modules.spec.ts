@@ -214,13 +214,48 @@ test('module stubs ride in a dump', async () => {
 })
 
 test('invalid module names are rejected', async () => {
-  // a stub for a bundled module: the native binding refuses before dialing, the wasm child on `Configure`
+  // a bundled module's name, with or without a stub: its import never reaches the host
   await t.throwsAsync(pool().checkout({ externalModules: { json: { module: {}, stubs: '' } } }), {
-    message: /module "json" is provided by the sandbox or its type checker and cannot be replaced/,
+    instanceOf: TypeError,
+    message: 'externalModules.json is provided by the sandbox and cannot be replaced',
   })
   await t.throwsAsync(pool().checkout({ externalModules: { 'pkg.tools': { module: tools } } }), {
     instanceOf: TypeError,
     message: 'externalModules.pkg.tools is not a valid module name',
+  })
+  await t.throwsAsync(pool().checkout({ externalModules: { for: { module: tools } } }), {
+    instanceOf: TypeError,
+    message: 'externalModules.for is not a valid module name',
+  })
+  await t.throwsAsync(pool().checkout({ externalModules: { json: { module: tools } } }), {
+    instanceOf: TypeError,
+    message: 'externalModules.json is provided by the sandbox and cannot be replaced',
+  })
+})
+
+test('every bundled module name is refused', async () => {
+  // the binding keeps its own list of the sandbox's modules, so the sandbox says what they are
+  await using session = await pool().checkout()
+  const names = (await session.feedRun('import sys\nlist(sys.builtin_module_names)')) as string[]
+  t.true(names.includes('json'))
+  for (const name of names) {
+    await t.throwsAsync(pool().checkout({ externalModules: { [name]: { module: {} } } }), {
+      message: `externalModules.${name} is provided by the sandbox and cannot be replaced`,
+    })
+  }
+})
+
+test('a module the type checker alone provides is served without a stub', async () => {
+  // the runtime asks the host for `abc`, so a host may serve it
+  const abc = { module: { VERSION: 1 } }
+  t.is(await run('import abc\nabc.VERSION', { abc }), 1)
+  // the checker keeps typeshed's stub for it, which the entry cannot replace
+  await t.throwsAsync(run('import abc\nabc.VERSION', { abc }, { typeCheck: true, typeCheckFormat: 'concise' }), {
+    instanceOf: MontyTypingError,
+    message: 'TypeError: main.py:2:1: error[unresolved-attribute] Module `abc` has no member `VERSION`',
+  })
+  await t.throwsAsync(pool().checkout({ externalModules: { abc: { module: {}, stubs: '' } } }), {
+    message: /module "abc" is provided by the sandbox or its type checker and cannot be replaced/,
   })
 })
 

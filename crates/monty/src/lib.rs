@@ -43,7 +43,7 @@ mod virtual_path;
 
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
-/// The import names of every module the sandbox provides itself; see `RESERVED_MODULE_NAMES` in `monty_types`.
+/// The import names of every module the sandbox provides itself; see `SANDBOX_MODULE_NAMES` in `monty_types`.
 #[must_use]
 pub fn builtin_module_names() -> Vec<&'static str> {
     modules::StandardLib::names().collect()

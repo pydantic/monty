@@ -780,8 +780,8 @@ fn a_type_checked_feed_resolves_the_module_stubs() {
     assert_eq!(call.function_name, "__import__");
 }
 
-/// The same import committed by several feeds is carried once, so the
-/// prelude does not grow with the number of feeds.
+/// The same import committed by several feeds is carried once, at its latest
+/// position, so the prelude does not grow with the number of feeds.
 #[test]
 fn a_repeated_import_is_carried_once() {
     let mut child = Child::default();
@@ -801,8 +801,27 @@ fn a_repeated_import_is_carried_once() {
     let state = Dump::load(&result.state.into_inner()).expect("a dump this build wrote loads");
     assert_eq!(
         state.type_check.unwrap().committed_imports,
-        "import math\nimport json\n"
+        "import json\nimport math\n"
     );
+}
+
+/// A name imported again moves to the end of the prelude, so the latest
+/// binding is the one later feeds are checked against.
+#[test]
+fn a_repeated_import_rebinds_its_name() {
+    let mut child = Child::default();
+    assert!(matches!(
+        configure_with_module_stubs(&mut child, true, vec![]),
+        pb::child_event::Kind::Ok(_)
+    ));
+    for code in ["import math as m", "import json as m", "import math as m"] {
+        let (_, event) = feed(&mut child, code);
+        assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    }
+    let (_, event) = feed(&mut child, "m.sqrt(4)");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    let (_, event) = feed(&mut child, "m.loads('4')");
+    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:1: error[unresolved-attribute] Module `math` has no member `loads`");
 }
 
 /// An import committed by one feed is still bound for the next feed's check.

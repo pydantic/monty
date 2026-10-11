@@ -1380,7 +1380,7 @@ export interface ExternalModule {
 }
 
 /** The `externalModules` checkout option: modules by the name the sandbox
- *  imports them as, each an identifier. */
+ *  imports them as, each an identifier that is not one of the sandbox's own modules. */
 export type ExternalModules = Record<string, ExternalModule>
 
 /**
@@ -1428,8 +1428,11 @@ export class HostModules {
         `externalModules.${path} is externalModules.${ancestor} again: modules cannot nest cyclically`,
       )
     }
-    if (!IDENTIFIER.test(name)) {
+    if (!IDENTIFIER.test(name) || KEYWORDS.has(name)) {
       throw new TypeError(`externalModules.${path} is not a valid module name`)
+    }
+    if (topLevel && SANDBOX_MODULES.has(name)) {
+      throw new TypeError(`externalModules.${path} is provided by the sandbox and cannot be replaced`)
     }
     const proto = entry !== null && typeof entry === 'object' ? Object.getPrototypeOf(entry) : undefined
     if ((proto !== Object.prototype && proto !== null) || !Object.prototype.hasOwnProperty.call(entry, 'module')) {
@@ -1507,6 +1510,72 @@ export class HostModules {
 
 /** A Python identifier, the shape of every module name. */
 const IDENTIFIER = /^[\p{ID_Start}_][\p{ID_Continue}]*$/u
+
+/** Python's keywords, which the identifier pattern matches but a name cannot be. */
+const KEYWORDS = new Set([
+  'False',
+  'None',
+  'True',
+  'and',
+  'as',
+  'assert',
+  'async',
+  'await',
+  'break',
+  'class',
+  'continue',
+  'def',
+  'del',
+  'elif',
+  'else',
+  'except',
+  'finally',
+  'for',
+  'from',
+  'global',
+  'if',
+  'import',
+  'in',
+  'is',
+  'lambda',
+  'nonlocal',
+  'not',
+  'or',
+  'pass',
+  'raise',
+  'return',
+  'try',
+  'while',
+  'with',
+  'yield',
+])
+
+/** The modules the sandbox provides itself (`SANDBOX_MODULE_NAMES` in `monty-types`), whose import never
+ *  reaches the host, so a host module cannot take one of their names. */
+const SANDBOX_MODULES = new Set([
+  'asyncio',
+  'base64',
+  'binascii',
+  'collections',
+  'copy',
+  'dataclasses',
+  'datetime',
+  'functools',
+  'gc',
+  'hashlib',
+  'itertools',
+  'json',
+  'math',
+  'os',
+  'pathlib',
+  'posixpath',
+  'random',
+  're',
+  'sys',
+  'time',
+  'typing',
+  'unicodedata',
+])
 
 /** `value` wrapped so an async return cannot await it; `undefined` stays absent. */
 function boxed(value: unknown): { value: unknown } | undefined {

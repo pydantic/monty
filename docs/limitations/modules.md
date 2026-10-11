@@ -95,8 +95,7 @@ An `import` of any module the runtime does not ship, the checker-only ones above
 the external function call `__import__` with the top-level module name as its argument.
 A dotted import (`import a.b.c`, `from a.b import c`) asks for `a` and reads each further component as an attribute of
 the one before, as CPython reads a submodule out of its package; below a bundled module that is not a package
-(`import os.x`) the attribute read raises `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package`
-without asking the host.
+(`import os.x`, `import math.pi`) the attribute read raises `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package` without asking the host.
 The value the host answers with (in the bindings, the matching `external_modules` entry) is bound as the module, so:
 
 - the value is a host object, not a module: `type(m)` is its host class, `repr(m)` its host repr and `m.__class__`
@@ -108,11 +107,15 @@ The value the host answers with (in the bindings, the matching `external_modules
 - every `import` statement asks again, since there is no `sys.modules` cache, so two imports of one module bind two
     objects (`import m as a; import m as b` leaves `a is not b`), and an import inside a function asks on each call;
 - an attribute can be assigned, as on any host object, but only that binding sees it: the next `import` starts
-    from the host's attributes again;
+    from the host's attributes again in the Python binding, while the JavaScript binding reuses the module value it
+    built for the first import, so a plain attribute the host changes afterwards is not seen again either (a call of
+    a module function always reads the current attribute);
 - a not-found answer raises `ModuleNotFoundError: No module named 'm'`, as in CPython, and an exception raised by the
     host is raised at the `import`;
 - a submodule the answer lacks raises `ModuleNotFoundError: No module named 'm.x'`, the wording CPython uses for a
-    package without that submodule, since a host module is never told apart from a package;
+    package without that submodule, since a host module is never told apart from a package, while `import m.x` binds
+    whatever attribute `x` the answer has, a plain value included, where CPython raises `ModuleNotFoundError` for an
+    attribute that is not a module;
 - `from m import x` reads `x` from the answered value, whether sent with it or looked up lazily, and raises
     `ImportError: cannot import name 'x' from 'm' (unknown location)` when it has no such attribute;
 - in the Python binding a plain class in a module dict crosses as a host function named `m.X` (calling it constructs

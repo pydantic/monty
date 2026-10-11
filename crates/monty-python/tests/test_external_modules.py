@@ -166,6 +166,26 @@ async def test_an_awaitable_factory_serves_a_call_through_a_restored_binding():
             assert await asyncio.wait_for(session.feed_run(code), 5) == snapshot([3, 2, 7])
 
 
+async def _async_pkg() -> dict[str, Any]:
+    await asyncio.sleep(0)
+    return {'VERSION': 1}
+
+
+async def test_an_awaitable_factory_serves_a_call_into_a_submodule_through_a_restored_binding():
+    # as above, through a binding into a submodule: the call names
+    # `pkg.sub.add`, and it is `pkg` whose factory is awaited
+    async with AsyncMonty() as pool:
+        pkg = ExternalModule({'VERSION': 1}, modules={'sub': ExternalModule({'add': add})})
+        async with pool.checkout(external_modules={'pkg': pkg}) as session:
+            await session.feed_run('import pkg.sub')
+            blob = await session.dump()
+        pkg = ExternalModule(_async_pkg, modules={'sub': ExternalModule({'add': _async_add})})
+        async with pool.checkout(external_modules={'pkg': pkg}) as session:
+            await session.load_session(blob)
+            code = '[await pkg.sub.add(1, 2), pkg.VERSION, await pkg.sub.add(3, 4)]'
+            assert await asyncio.wait_for(session.feed_run(code), 5) == snapshot([3, 1, 7])
+
+
 @pytest.mark.parametrize('awaitable', [_async_tools, _AwaitableTools], ids=['coroutine', 'awaitable'])
 async def test_an_async_module_factory_is_awaited(awaitable: Callable[[], Awaitable[dict[str, Any]]]):
     calls = 0
@@ -542,3 +562,22 @@ def test_invalid_module_names(pool: Monty, module: str, message: str):
         with pytest.raises(ValueError) as exc_info:
             pool.checkout(external_modules={module: entry})
         assert str(exc_info.value) == message
+
+
+def test_a_module_the_type_checker_alone_provides_is_served_without_a_stub(pool: Monty):
+    # the runtime asks the host for `abc`, so a host may serve it
+    abc = ExternalModule({'VERSION': 1})
+    with pool.checkout(external_modules={'abc': abc}) as session:
+        assert session.feed_run('import abc\nabc.VERSION') == snapshot(1)
+    # the checker keeps typeshed's stub for it, which the entry cannot replace
+    with pool.checkout(external_modules={'abc': abc}, type_check=True, type_check_format='concise') as session:
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run('import abc\nabc.VERSION')
+        assert str(exc_info.value) == snapshot(
+            'main.py:2:1: error[unresolved-attribute] Module `abc` has no member `VERSION`\n'
+        )
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(external_modules={'abc': ExternalModule({}, stubs='')})
+    assert str(exc_info.value) == snapshot(
+        'module "abc" is provided by the sandbox or its type checker and cannot be replaced'
+    )

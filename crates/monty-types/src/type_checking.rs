@@ -100,8 +100,8 @@ pub struct TypeCheckState {
 /// A `.pyi` for one host-provided module, written for the type checker so
 /// `import <module>` resolves: `/<module>.pyi`, or inside a package tree for a
 /// dotted path (`a.b` is `/a/b.pyi` beside `/a/__init__.pyi`). The path is
-/// validated on construction: identifiers, the first not one the sandbox's own
-/// stdlib uses, or the runtime and the checker would disagree about the import.
+/// validated on construction: identifiers, the first not one the vendored
+/// typeshed has, or the stub would shadow it for the checker alone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleStub {
     module: String,
@@ -110,12 +110,16 @@ pub struct ModuleStub {
 
 impl ModuleStub {
     /// A stub for `module`, a dotted path whose top-level name
-    /// [`validate_module_name`] accepts and whose other components are identifiers.
+    /// [`validate_module_name`] accepts, is not in [`CHECKER_MODULE_NAMES`]
+    /// either, and whose other components are identifiers.
     pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
         let module = module.into();
         let mut parts = module.split('.');
         let top = parts.next().unwrap_or_default();
         validate_module_name(top).map_err(|_| invalid_path(&module, top))?;
+        if CHECKER_MODULE_NAMES.contains(&top) {
+            return Err(ModuleStubError::ReservedName(top.to_owned()));
+        }
         if let Some(part) = parts.find(|part| !is_identifier(part)) {
             return Err(invalid_path(&module, part));
         }
@@ -138,13 +142,14 @@ impl ModuleStub {
     }
 }
 
-/// Refuses a name a host-provided module may not have: not an identifier, or one
-/// of [`RESERVED_MODULE_NAMES`]. What [`ModuleStub::new`] checks, exported so a
-/// host can refuse a module name before building anything on it.
+/// Refuses a name a host-provided module may not have: not an identifier, or
+/// one of [`SANDBOX_MODULE_NAMES`], whose import never reaches the host. A
+/// name in [`CHECKER_MODULE_NAMES`] passes, since the runtime does ask the
+/// host for it; only a stub under it is refused, by [`ModuleStub::new`].
 pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
     if !is_identifier(name) {
         Err(ModuleStubError::InvalidName(name.to_owned()))
-    } else if RESERVED_MODULE_NAMES.contains(&name) {
+    } else if SANDBOX_MODULE_NAMES.contains(&name) {
         Err(ModuleStubError::ReservedName(name.to_owned()))
     } else {
         Ok(())
@@ -154,7 +159,7 @@ pub fn validate_module_name(name: &str) -> Result<(), ModuleStubError> {
 /// The error for a dotted stub path: a reserved top-level name keeps its own
 /// error, any other bad component makes the whole path invalid.
 fn invalid_path(path: &str, part: &str) -> ModuleStubError {
-    if RESERVED_MODULE_NAMES.contains(&part) {
+    if SANDBOX_MODULE_NAMES.contains(&part) {
         ModuleStubError::ReservedName(part.to_owned())
     } else {
         ModuleStubError::InvalidName(path.to_owned())
@@ -184,28 +189,20 @@ impl Display for ModuleStubError {
 
 impl Error for ModuleStubError {}
 
-/// Module names a [`ModuleStub`] may not use: every module of the vendored
-/// typeshed (the sandbox's stdlib and the private modules its stubs import), plus
-/// those the runtime or ty provide without a typeshed entry (`gc`, `ty_extensions`).
-/// A stub under one of these would shadow that module for the checker alone.
-pub const RESERVED_MODULE_NAMES: &[&str] = &[
-    "__future__",
-    "__main__",
-    "_collections_abc",
-    "_typeshed",
-    "abc",
+/// The import names of every module the sandbox provides itself, `os.path`
+/// aside (a dotted name is never an identifier). An `external_modules` entry
+/// under one would never be asked for, so a host module may not take one; keep
+/// in step with the runtime's `StandardLib`.
+pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "asyncio",
     "base64",
     "binascii",
-    "builtins",
     "collections",
     "copy",
     "dataclasses",
     "datetime",
-    "enum",
     "functools",
     "gc",
-    "genericpath",
     "hashlib",
     "itertools",
     "json",
@@ -217,9 +214,25 @@ pub const RESERVED_MODULE_NAMES: &[&str] = &[
     "re",
     "sys",
     "time",
+    "typing",
+    "unicodedata",
+];
+
+/// The modules of the vendored typeshed beyond [`SANDBOX_MODULE_NAMES`] (the
+/// private modules its stubs import included), plus `ty_extensions`, which ty
+/// provides without a typeshed entry. The runtime asks the host for these, so
+/// a host module may take one, but a stub under it would shadow typeshed's for
+/// the checker alone, so [`ModuleStub::new`] refuses it.
+pub const CHECKER_MODULE_NAMES: &[&str] = &[
+    "__future__",
+    "__main__",
+    "_collections_abc",
+    "_typeshed",
+    "abc",
+    "builtins",
+    "enum",
+    "genericpath",
     "ty_extensions",
     "types",
-    "typing",
     "typing_extensions",
-    "unicodedata",
 ];

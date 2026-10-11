@@ -5,7 +5,7 @@ use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, builtin_module_names, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, IMPORT_FUNCTION, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, PrintWriter, RESERVED_MODULE_NAMES, ResourceTracker,
+    NameLookupResult, PrintWriter, ResourceTracker, SANDBOX_MODULE_NAMES,
 };
 
 /// Starts `code` as a one-shot run.
@@ -316,15 +316,15 @@ fn a_direct_dunder_import_is_a_name_error_without_a_host_call() {
     "#);
 }
 
-/// Every module the runtime provides is a reserved stub name, so a host cannot
-/// give the type checker a stub the runtime would never consult. Dotted names
-/// (`os.path`) are not identifiers and so can never be stub names.
+/// Every module the runtime provides is a reserved module name, so a host
+/// cannot register a module the runtime would never ask for. Dotted names
+/// (`os.path`) are not identifiers and so can never be module names.
 #[test]
-fn every_builtin_module_is_a_reserved_stub_name() {
+fn every_builtin_module_is_a_reserved_module_name() {
     for name in builtin_module_names() {
         assert!(
-            name.contains('.') || RESERVED_MODULE_NAMES.contains(&name),
-            "built-in module {name} is missing from RESERVED_MODULE_NAMES"
+            name.contains('.') || SANDBOX_MODULE_NAMES.contains(&name),
+            "built-in module {name} is missing from SANDBOX_MODULE_NAMES"
         );
     }
 }

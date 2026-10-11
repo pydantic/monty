@@ -114,7 +114,8 @@ trusted back into the pool.
 [`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options,
 including `type_check_module_stubs`, one [`ModuleStub`](../api/rust/monty-types.md#modulestub) per host-provided
 module so that `import <module>` type-checks.
-`ModuleStub::new` refuses a name that is not an identifier or that the sandbox or its type checker already provides.
+`ModuleStub::new` refuses a name that is not an identifier or that the sandbox or its type checker already provides;
+`validate_module_name` checks a module name alone, which only the sandbox's own modules are refused.
 `Checkout::worker_id()` identifies the worker within its pool, independent of PID reuse and transport;
 it returns `None` after the worker is released or discarded.
 `Checkout::pid()` is the subprocess-only OS diagnostic.

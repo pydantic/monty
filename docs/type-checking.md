@@ -166,14 +166,12 @@ below) fails a type-checked import as unresolved:
 
 A submodule's `stubs` is laid out as a package beside its parent's (`pkg/__init__.pyi`, `pkg/sub.pyi`), so
 `import pkg.sub` and `from pkg import sub` resolve; a parent with no `stubs` of its own becomes an empty package.
-A module name that is not an identifier, or that the sandbox or its type checker already provides, raises `ValueError`
-(throws in JavaScript).
-The reserved names are the sandbox's own modules, the rest of the vendored typeshed (`__future__` and `__main__`
-included), and the few names the runtime or the checker provide without a typeshed entry, such as `gc` and
-`ty_extensions`.
+A module name that is not an identifier, or that the sandbox provides itself (`json`, `math`, and `gc` in a test
+build), raises `ValueError` (throws in JavaScript), since an import of it never reaches the host.
 Typeshed includes modules the checker resolves but the runtime does not, such as `abc` and `enum`: a host can serve
-those through `external_modules`, but the checker keeps typeshed's stub for them; see
-[modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
+those through `external_modules`, but the checker keeps typeshed's stub for them, so an entry under one of these names,
+or under any other module of the vendored typeshed (`__future__` and `__main__` included) or `ty_extensions`, cannot
+carry `stubs`; see [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
 The runtime side of a host module is the entry's `module`; see
 [importing host modules](host-functions.md#importing-host-modules).
 

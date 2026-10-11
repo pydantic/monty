@@ -512,12 +512,13 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         Ok(module)
     }
 
-    /// The module a dotted `function_name` calls into, with the index of the
-    /// dot before its attribute: the path up to that dot is walked one
-    /// component at a time, the first through `external_modules` (a factory's
-    /// awaitable comes back as such) and the rest through the submodules of
-    /// the one before. `None` as soon as a component is missing, so a
-    /// worker-sent name costs one lookup per component.
+    /// The module a dotted `function_name` calls into, with the length of its
+    /// name within `function_name`: the path before the last dot is walked one
+    /// component at a time, the first through `external_modules` and the rest
+    /// through the submodules of the one before. A top-level factory's
+    /// awaitable comes back as such, with the top-level name's length, since
+    /// that is the module it resolves. `None` as soon as a component is
+    /// missing, so a worker-sent name costs one lookup per component.
     fn module_of(&self, function_name: &str) -> PyResult<Option<(usize, Resolved<'py>)>> {
         let Some((module_path, _)) = function_name.rsplit_once('.') else {
             return Ok(None);
@@ -526,7 +527,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let top = parts.next().unwrap_or_default();
         let mut module = match self.resolve_module(top)? {
             Some(Resolved::Module(module)) => module,
-            Some(awaitable @ Resolved::Awaitable(_)) => return Ok(Some((module_path.len(), awaitable))),
+            Some(awaitable @ Resolved::Awaitable(_)) => return Ok(Some((top.len(), awaitable))),
             None => return Ok(None),
         };
         let mut path = top.to_owned();

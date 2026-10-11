@@ -5,8 +5,8 @@ use crate::{
     bytecode::{Opcode, vm::CallResult},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
-    heap::{ContainsHeap, DropWithContext, HeapData},
-    intern::StringId,
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    intern::{Interns, StringId},
     value::{EitherStr, Value},
 };
 
@@ -97,22 +97,24 @@ impl VM<'_> {
     /// pushes its attribute `name_id`. A missing attribute is
     /// `ModuleNotFoundError` naming `path_id` (`a.b`), with `; 'a' is not a
     /// package` when the module is a built-in one, since a built-in module has
-    /// no submodules a host could supply.
+    /// no submodules a host could supply; so is an attribute of a built-in
+    /// module that is not itself a module (`import math.pi`), as `os.path` is.
     pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
         let obj = this.pop();
         defer_drop!(obj, this);
 
+        let is_builtin = is_builtin_module(obj, this.heap);
         let attr = EitherStr::Interned(name_id);
         match obj.py_getattr(&attr, this) {
+            Ok(CallResult::Value(value)) if is_builtin && !is_builtin_module(&value, this.heap) => {
+                value.drop_with(this);
+                Err(not_a_submodule(this.interns, path_id, is_builtin))
+            }
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
-                let path = this.interns.get_str(path_id);
-                // the parent as spelled in the import (`os.path`), not the module's own name
-                let is_builtin = matches!(obj, Value::Ref(id) if matches!(this.heap.get(*id), HeapData::Module(_)));
-                let parent = is_builtin.then(|| path.rsplit_once('.').map_or(path, |(parent, _)| parent));
-                Err(ExcType::module_not_found_error(path, parent))
+                Err(not_a_submodule(this.interns, path_id, is_builtin))
             }
             Err(e) => Err(e),
         }
@@ -166,4 +168,19 @@ impl VM<'_> {
         // py_set_attr takes ownership of value and drops it on error
         obj.py_set_attr(&EitherStr::Interned(name_id), value, this)
     }
+}
+
+/// Whether `value` is one of the sandbox's own module objects, as opposed to a
+/// host-served module, which is a host object.
+fn is_builtin_module(value: &Value, heap: &Heap) -> bool {
+    matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Module(_)))
+}
+
+/// The `ModuleNotFoundError` for a dotted import whose component at `path_id`
+/// (`a.b`) is not a submodule, naming the parent as spelled in the import
+/// (`os.path`, not the module's own name) when it is a built-in module.
+fn not_a_submodule(interns: &Interns, path_id: StringId, is_builtin: bool) -> RunError {
+    let path = interns.get_str(path_id);
+    let parent = is_builtin.then(|| path.rsplit_once('.').map_or(path, |(parent, _)| parent));
+    ExcType::module_not_found_error(path, parent)
 }

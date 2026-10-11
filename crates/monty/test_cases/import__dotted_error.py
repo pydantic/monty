@@ -52,3 +52,23 @@ try:
     assert False, 'expected ModuleNotFoundError'
 except ModuleNotFoundError as e:
     assert str(e) == "No module named 'os.nothing'; 'os' is not a package"
+
+# === an attribute of a module that is not a package ===
+try:
+    import math.pi
+
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as e:
+    assert str(e) == "No module named 'math.pi'; 'math' is not a package"
+try:
+    from os.getcwd import x
+
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as e:
+    assert str(e) == "No module named 'os.getcwd'; 'os' is not a package"
+try:
+    import os.path.join
+
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as e:
+    assert str(e) == "No module named 'os.path.join'; 'os.path' is not a package"
