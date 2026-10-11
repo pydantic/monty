@@ -386,6 +386,24 @@ next(csv.DictReader(itertools.repeat(''), fieldnames=['a']))
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
+/// The streaming `writerows()` loops feed a non-file target from a native loop, which
+/// polls through its retained iterator view; a `write` that is a builtin never runs a
+/// frame, so nothing else would check the clock.
+#[test]
+fn time_limit_covers_csv_streaming_writerows() {
+    for code in [
+        "import csv\nimport itertools\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.writer(sink).writerows(itertools.repeat([]))\n",
+        "import csv\nimport itertools\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.DictWriter(sink, ['a']).writerows(itertools.repeat({}))\n",
+    ] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+    }
+}
+
 #[test]
 fn time_limit_not_exceeded() {
     // Simple code that runs quickly

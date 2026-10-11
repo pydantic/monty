@@ -61,7 +61,7 @@ assert rd(['a\\\r\n', 'b']) == [['a\\'], ['b']]
 
 # === QUOTE_NONNUMERIC, QUOTE_NOTNULL and QUOTE_STRINGS on read ===
 assert rd(['1,,2'], quoting=csv.QUOTE_NONNUMERIC) == [[1.0, '', 2.0]]
-assert rd([' 1.5 ,1e3,inf,-0'], quoting=csv.QUOTE_NONNUMERIC) == [[1.5, 1000.0, float('inf'), -0.0]]
+assert rd([' 1.5 ,1e3,inf,-0,1_000'], quoting=csv.QUOTE_NONNUMERIC) == [[1.5, 1000.0, float('inf'), -0.0, 1000.0]]
 assert rd(['"a\n",1'], quoting=csv.QUOTE_NONNUMERIC) == [['a\n', 1.0]]
 assert rd(['a,,"",b'], quoting=csv.QUOTE_NOTNULL) == [['a', None, '', 'b']]
 assert rd(['1,,"",2'], quoting=csv.QUOTE_STRINGS) == [[1.0, None, '', 2.0]]

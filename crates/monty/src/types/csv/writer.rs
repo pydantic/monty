@@ -136,7 +136,9 @@ pub(super) fn writerows<'h>(
     } else {
         let iterator = rows.py_iter(vm)?;
         defer_drop!(iterator, vm);
-        while let Some(row) = iterator.read(vm).py_next(vm)? {
+        // One view across the loop: its step count is what polls the time limit.
+        let mut rows = iterator.read(vm);
+        while let Some(row) = rows.py_next(vm)? {
             defer_drop!(row, vm);
             writerow_now(write, &dialect, row, vm)?;
         }

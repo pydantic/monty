@@ -22,6 +22,7 @@ use crate::{
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},
+        r#type::strip_underscores,
     },
     value::{EitherStr, Value, eq_f64},
 };
@@ -513,25 +514,6 @@ fn parse(text: &str) -> RunResult<Complex> {
     } else {
         Err(malformed())
     }
-}
-
-/// Removes digit-separator underscores, or returns `None` when one is not
-/// strictly between two digits (CPython's `_Py_string_to_number_with_underscores`).
-fn strip_underscores(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    for (i, c) in text.char_indices() {
-        if c == '_' {
-            let before = i.checked_sub(1).map(|j| bytes[j]);
-            let after = bytes.get(i + 1);
-            if !(before.is_some_and(|b| b.is_ascii_digit()) && after.is_some_and(u8::is_ascii_digit)) {
-                return None;
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
 }
 
 /// The longest float literal at the start of `s`, as CPython's

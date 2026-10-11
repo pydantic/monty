@@ -305,7 +305,9 @@ pub(super) fn writer_writerows<'h>(
     } else {
         let iterator = rowdicts.py_iter(vm)?;
         defer_drop!(iterator, vm);
-        while let Some(rowdict) = next_row(iterator, vm)? {
+        // One view across the loop: its step count is what polls the time limit.
+        let mut rows = iterator.read(vm);
+        while let Some(rowdict) = rows.py_next(vm)? {
             defer_drop!(rowdict, vm);
             let items = dict_to_list(obj, rowdict, vm)?;
             let row = Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))));
