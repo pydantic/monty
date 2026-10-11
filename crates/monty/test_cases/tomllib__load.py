@@ -55,13 +55,13 @@ with open(root / 'bad.toml', 'rb') as f:
         assert str(exc) == 'Invalid value (at line 2, column 4)'
 
 with open(root / 'latin1.toml', 'wb') as f:
-    f.write(b'a = "caf\xe9"\n')
+    f.write(b'a = "\xe9t\xe9"\n')
 with open(root / 'latin1.toml', 'rb') as f:
     try:
         tomllib.load(f)
         assert False, 'expected UnicodeDecodeError'
     except UnicodeDecodeError as exc:
-        assert str(exc) == "'utf-8' codec can't decode byte 0xe9 in position 8: invalid continuation byte"
+        assert str(exc) == "'utf-8' codec can't decode byte 0xe9 in position 5: invalid continuation byte"
 
 # text mode is rejected
 with open(toml_path) as f:
