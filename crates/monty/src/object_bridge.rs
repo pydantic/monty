@@ -465,7 +465,6 @@ impl GraphExporter {
             HeapReadOutput::Module(m) => match m.get(vm.heap).id() {
                 Some(id) => {
                     let name = m.get(vm.heap).name_str(vm.interns).to_owned();
-                    // Snapshot before recursing: attrs are mutable via `setattr`.
                     let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
                     defer_drop!(children, vm);
                     MontyNode::Module {
