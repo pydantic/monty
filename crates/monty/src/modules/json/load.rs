@@ -75,9 +75,10 @@ pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// is positional-or-keyword (`json.loads(s='1')` works) and signature errors
 /// use `style = def` wording. The additional CPython kwargs (`cls`, `object_hook`,
 /// …) are intentionally not implemented; leaving them off this struct means
-/// the macro emits the standard "unexpected keyword" error for them.
+/// the macro emits the "unexpected keyword" error for them, naming
+/// `JSONDecoder.__init__` as CPython does for a keyword the decoder rejects.
 #[derive(FromArgs)]
-#[from_args(name = "loads", style = def)]
+#[from_args(name = "loads", style = def, kwarg_error_name = "JSONDecoder.__init__")]
 struct JsonLoadsArgs {
     s: Value,
 }

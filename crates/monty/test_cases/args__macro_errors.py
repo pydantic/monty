@@ -147,6 +147,13 @@ except TypeError as e:
         'dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given'
     ), f'py-def-overflow-kwonly: {e}'
 
+# `json.loads` names the CPython decoder constructor that would have rejected the keyword.
+try:
+    json.loads('1', bogus=2)
+    assert False, 'json.loads(bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "JSONDecoder.__init__() got an unexpected keyword argument 'bogus'"
+
 # === Python: missing required positional (PyArg_UnpackKeywords wording derived from `pos_only`) ===
 try:
     'abc'.replace('a')

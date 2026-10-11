@@ -15,7 +15,9 @@ implemented (no file-object protocol).
 - Accepts `str` or `bytes` as input.
 - **No keyword arguments are accepted.** Passing any of `cls`,
     `object_hook`, `parse_float`, `parse_int`, `parse_constant`, or
-    `object_pairs_hook` raises `TypeError: ... unexpected keyword argument`.
+    `object_pairs_hook` raises
+    `TypeError: JSONDecoder.__init__() got an unexpected keyword argument '...'`,
+    the message CPython gives a keyword the decoder does not know.
 - `NaN`, `Infinity`, `-Infinity` are *always* accepted, with no toggle to
     reject them.
 - Nesting depth is capped at 200 levels; deeper inputs raise
