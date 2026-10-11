@@ -662,7 +662,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         self.read_with_effect(vm, spec, |file_id| PostConversionEffect::BufferStore { file_id })
     }
 
-    /// `json.load`'s `fp.read()`: the rest of the buffer when it is loaded,
+    /// `json.load`'s and `tomllib.load`'s `fp.read()`: the rest of the buffer when it is loaded,
     /// otherwise the host load with `effect` armed to consume the content
     /// (it must store the buffer via `apply_buffer_store`, which takes the
     /// `pending_read` recorded here).
@@ -684,17 +684,14 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         spec: ReadSpec,
         effect: fn(HeapId) -> PostConversionEffect,
     ) -> RunResult<CallResult> {
+        self.check_readable(vm)?;
+        // `eof` on a readable file is only ever flipped by a path that
+        // also populates `buffer`, so we never need to short-circuit on
+        // EOF without a loaded buffer here. Write-only files would be
+        // the only case where `eof=true && buffer=None` is possible, and
+        // they're rejected by the readable check above.
         let buffer_loaded = {
             let file = self.get(vm.heap);
-            file.ensure_open()?;
-            if !file.mode.readable() {
-                return Err(unsupported_operation("not readable"));
-            }
-            // `eof` on a readable file is only ever flipped by a path that
-            // also populates `buffer`, so we never need to short-circuit on
-            // EOF without a loaded buffer here. Write-only files would be
-            // the only case where `eof=true && buffer=None` is possible, and
-            // they're rejected by the readable check above.
             debug_assert!(!file.eof || file.buffer.is_some());
             file.buffer.is_some()
         };
@@ -707,6 +704,23 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         self.get_mut(vm.heap).pending_read = Some(spec);
         let effect = effect(self.id());
         Ok(self.buffer_load_call(vm, effect))
+    }
+
+    /// Raises what a read on this file would: `ValueError` once closed, then
+    /// `io.UnsupportedOperation` when it was not opened for reading.
+    pub(crate) fn check_readable(&self, vm: &VM<'h>) -> RunResult<()> {
+        let file = self.get(vm.heap);
+        file.ensure_open()?;
+        if file.mode.readable() {
+            Ok(())
+        } else {
+            Err(unsupported_operation("not readable"))
+        }
+    }
+
+    /// Whether reads yield `bytes` rather than `str`.
+    pub(crate) fn is_binary(&self, vm: &VM<'h>) -> bool {
+        self.get(vm.heap).mode.is_binary()
     }
 
     /// Whether an iteration step must load the buffer from the host first:
