@@ -377,7 +377,8 @@ Each import sends the entry the mapping holds at that moment, so replacing an en
 binds, while a module's own `attrs` never change after construction.
 The bound value is a module object: `type(tools)` is `module`, a missing attribute raises
 `AttributeError: module 'tools' has no attribute 'x'`, and a module returned to the host arrives as an
-`ExternalModule` with the `id` it imported with.
+`ExternalModule` with the `id` it imported with and the values the sandbox holds, a host function among them as
+its dotted name.
 See [modules](limitations/modules.md#host-modules) for the remaining differences.
 
 Module names are identifiers.

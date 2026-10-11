@@ -2855,7 +2855,7 @@ fn position() -> pb::SourceRange {
 
 // ---- host-provided modules ---------------------------------------------------
 
-/// Represents a module as a host class instance with eager attributes.
+/// The host module an import is answered with, under a fixed id.
 fn host_module(name: &str, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
     MontyObject::module(
         name,

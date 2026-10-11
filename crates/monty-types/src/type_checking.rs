@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use ruff_python_stdlib::identifiers::is_identifier;
+pub use ruff_python_stdlib::identifiers::is_identifier;
 use serde::{Deserialize, Serialize};
 use strum::VariantNames;
 

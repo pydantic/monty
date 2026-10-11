@@ -370,6 +370,18 @@ test('an invalid module name is refused when a call reaches it', async () => {
 })
 
 test('a sandbox module name is never looked up', async () => {
+  // the host's stub is never requested either: the checker knows `json` itself
+  await using typed = await checkout(
+    { json: new ExternalModule({ VERSION: 99 }, { stubs: 'VERSION: int\n' }) },
+    {
+      typeCheck: true,
+      typeCheckFormat: 'concise',
+    },
+  )
+  await t.throwsAsync(typed.feedRun('import json\njson.VERSION'), {
+    instanceOf: MontyTypingError,
+    message: 'TypeError: main.py:2:1: error[unresolved-attribute] Module `json` has no member `VERSION`',
+  })
   // Compare the binding's independent list against the sandbox's actual modules.
   await using plain = await pool().checkout()
   const names = (await plain.feedRun('import sys\nlist(sys.builtin_module_names)')) as string[]
@@ -467,10 +479,7 @@ test('invalid modules are rejected at construction', () => {
     "ExternalModule attrs key 'a.b' is not a valid identifier",
   )
   rejected(() => new ExternalModule(tools, { stubs: 1 as never }), 'ExternalModule stubs must be a string, got number')
-  rejected(
-    () => new ExternalModule({ for: new ExternalModule(tools) }),
-    'ExternalModule attrs.for is not a valid module name',
-  )
+  rejected(() => new ExternalModule({ for: tools.add }), "ExternalModule attrs key 'for' is not a valid identifier")
   rejected(
     () => new ExternalModule({ json: new ExternalModule(tools) }),
     'ExternalModule attrs.json is provided by the sandbox and cannot be replaced',
@@ -486,6 +495,11 @@ test('invalid modules are rejected at construction', () => {
 
 test('an entry must be an ExternalModule or a factory', async () => {
   await t.throwsAsync(run('import tools', { tools: tools as never }), {
+    instanceOf: MontyRuntimeError,
+    message: 'TypeError: externalModules.tools must be an ExternalModule or a function returning one',
+  })
+  // an own key holding `undefined` is a bad entry, not a missing module
+  await t.throwsAsync(run('import tools', { tools: undefined as never }), {
     instanceOf: MontyRuntimeError,
     message: 'TypeError: externalModules.tools must be an ExternalModule or a function returning one',
   })

@@ -779,7 +779,7 @@ impl<'a> ObjectRef<'a> {
             MontyNode::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             MontyNode::Function { name, .. } => write!(f, "<function '{name}' external>"),
             // a module's repr names it without listing its attrs, as CPython's does
-            MontyNode::Module { name, .. } => write!(f, "<module '{name}'>"),
+            MontyNode::Module { name, .. } => write!(f, "<module {}>", StringRepr(name)),
             MontyNode::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
             MontyNode::Cycle(placeholder) => f.write_str(placeholder),
             MontyNode::List(_)

@@ -1,10 +1,9 @@
 //! [`PyExternalModule`]: a host module as `external_modules` takes it, and
 //! as a module value crossing back out of the sandbox decodes to.
 
-use monty_types::{MontyUuid, validate_module_name};
+use monty_types::{MontyUuid, is_identifier, validate_module_name};
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
-    intern,
     prelude::*,
     sync::PyOnceLock,
     types::{PyDict, PyString},
@@ -82,7 +81,8 @@ impl PyExternalModule {
 impl PyExternalModule {
     /// Builds a module from an attrs dict, checking it as the constructor does:
     /// `str` identifier keys, and a nested module under a key that is a valid
-    /// module name (it is imported by it).
+    /// module name (it is imported by it). The copy holds plain `str` keys, so
+    /// a `str` subclass cannot bend the checks or later lookups.
     pub fn new(py: Python<'_>, attrs: &Bound<'_, PyAny>, stubs: Option<String>, id: MontyUuid) -> PyResult<Self> {
         let Ok(attrs) = attrs.cast::<PyDict>() else {
             return Err(PyTypeError::new_err(format!(
@@ -90,6 +90,7 @@ impl PyExternalModule {
                 attrs.get_type().name()?
             )));
         };
+        let copy = PyDict::new(py);
         for (key, value) in attrs.iter() {
             let Ok(key) = key.cast::<PyString>() else {
                 return Err(PyTypeError::new_err(format!(
@@ -97,7 +98,8 @@ impl PyExternalModule {
                     key.get_type().name()?
                 )));
             };
-            if !key.call_method0(intern!(py, "isidentifier"))?.is_truthy()? {
+            let name = key.to_cow()?;
+            if !is_identifier(&name) {
                 return Err(PyValueError::new_err(format!(
                     "ExternalModule attrs must have identifier keys, not {}",
                     key.repr()?
@@ -105,12 +107,13 @@ impl PyExternalModule {
             }
             if value.is_instance_of::<Self>() {
                 // a submodule is imported by its key, so that needs to be a module name too
-                validate_module_name(&key.to_cow()?)
-                    .map_err(|err| PyValueError::new_err(format!("ExternalModule attrs['{key}']: {err}")))?;
+                validate_module_name(&name)
+                    .map_err(|err| PyValueError::new_err(format!("ExternalModule attrs['{name}']: {err}")))?;
             }
+            copy.set_item(PyString::new(py, &name), value)?;
         }
         Ok(Self {
-            attrs: attrs.copy()?.unbind(),
+            attrs: copy.unbind(),
             stubs,
             id,
         })

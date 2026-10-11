@@ -1389,15 +1389,16 @@ export class HostModules {
    * `ExternalModule` or a factory.
    */
   entry(name: string): ExternalModules[string] | undefined {
-    const entry = ownEntry(this.entries, name) as ExternalModules[string] | undefined
-    if (entry === undefined) {
+    // an own key holding `undefined` is a bad entry, not an absent one
+    if (!Object.prototype.hasOwnProperty.call(this.entries, name)) {
       return undefined
     }
+    const entry = this.entries[name] as unknown
     checkModuleName(`externalModules.${name}`, name)
     if (!(entry instanceof ExternalModule) && typeof entry !== 'function') {
       throw new TypeError(`externalModules.${name} must be an ExternalModule or a function returning one`)
     }
-    return entry
+    return entry as ExternalModules[string]
   }
 }
 

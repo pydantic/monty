@@ -30,8 +30,8 @@ export class ExternalModule {
     const copy: Record<string, unknown> = Object.create(null) as Record<string, unknown>
     // filtered before any value is read, so a private getter never runs
     for (const key of Object.keys(attrs).filter((key) => !key.startsWith('_'))) {
-      // each key is one component of a host function's dotted path
-      if (!IDENTIFIER.test(key)) {
+      // each key is one component of a host function's dotted path, so a keyword cannot be one
+      if (!IDENTIFIER.test(key) || KEYWORDS.has(key)) {
         throw new TypeError(`ExternalModule attrs key '${key}' is not a valid identifier`)
       }
       const value = attrs[key]
@@ -71,8 +71,8 @@ export function kindOf(value: unknown): string {
       : `a ${(value as { constructor?: { name?: string } }).constructor?.name ?? 'object'}`
 }
 
-/** Python identifier syntax for module names. */
-const IDENTIFIER = /^[\p{ID_Start}_][\p{ID_Continue}]*$/u
+/** Python identifier syntax (XID classes, as the parser's) for module and attribute names. */
+const IDENTIFIER = /^[\p{XID_Start}_][\p{XID_Continue}]*$/u
 
 /** Keywords pass the identifier regex but cannot name modules. */
 const KEYWORDS = new Set([

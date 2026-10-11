@@ -92,10 +92,10 @@ def test_import_binds_the_host_module(pool: Monty):
             id='nested-name',
         ),
         pytest.param(
-            {'for': ExternalModule(TOOLS)},
+            {'for': add},
             {},
-            snapshot('ExternalModule attrs[\'for\']: module name "for" is not a valid identifier'),
-            id='keyword-submodule',
+            snapshot("ExternalModule attrs must have identifier keys, not 'for'"),
+            id='keyword-key',
         ),
         pytest.param(
             {'json': ExternalModule(TOOLS)},
@@ -132,6 +132,13 @@ def test_invalid_modules_are_rejected_at_construction(attrs: Any, kwargs: dict[s
                 "TypeError: external_modules['tools'] must be an ExternalModule or a callable returning one, not dict"
             ),
             id='bare-dict',
+        ),
+        pytest.param(
+            None,
+            snapshot(
+                "TypeError: external_modules['tools'] must be an ExternalModule or a callable returning one, not NoneType"
+            ),
+            id='none',
         ),
     ],
 )
@@ -414,6 +421,8 @@ def test_the_module_crosses_back_with_its_id(pool: Monty):
         assert tools.stubs is None
         assert list(tools.attrs) == snapshot(['add', 'concat', 'VERSION'])
         assert tools.attrs['VERSION'] == snapshot(3)
+        # attrs are the sandbox's values: a host function comes back as its name
+        assert tools.attrs['add'] == snapshot('tools.add')
         assert session.feed_run('import tools\nimport tools as t\ntools is t') == snapshot(False)
 
 
@@ -664,10 +673,16 @@ def test_module_stubs_ride_in_a_dump(pool: Monty):
 
 
 def test_a_sandbox_module_name_is_never_looked_up(pool: Monty):
-    # the sandbox serves `json` itself, so the entry is unreachable, stub or not
+    # the sandbox serves `json` itself, so the entry is unreachable, stub or not:
+    # the checker knows `json` and never requests the host's stub for it
     modules = {'json': ExternalModule({'VERSION': 99}, stubs='VERSION: int\n')}
-    with pool.checkout(external_modules=modules) as session:
-        assert session.feed_run("import json\nhasattr(json, 'VERSION')") is False
+    with pool.checkout(type_check=True, type_check_format='concise', external_modules=modules) as session:
+        with pytest.raises(MontyTypingError) as exc_info:
+            session.feed_run('import json\njson.VERSION')
+        assert str(exc_info.value) == snapshot(
+            'main.py:2:1: error[unresolved-attribute] Module `json` has no member `VERSION`\n'
+        )
+        assert session.feed_run("import json\nhasattr(json, 'VERSION')", skip_type_check=True) is False
 
 
 @pytest.mark.parametrize(

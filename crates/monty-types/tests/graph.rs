@@ -170,6 +170,14 @@ fn shared_nodes_equal_their_copies() {
 }
 
 #[test]
+fn module_repr_quotes_its_name() {
+    let module = |name: &str| MontyObject::module(name, MontyUuid::from_u128(3), []).to_string();
+    assert_eq!(module("pkg.sub"), "<module 'pkg.sub'>");
+    // a worker-supplied name is untrusted, so it is quoted as a Python str
+    assert_eq!(module("it's"), "<module \"it's\">");
+}
+
+#[test]
 fn cycle_leaf_renders_as_the_placeholder() {
     let mut graph = MontyGraph::new();
     let cycle = graph.push(MontyNode::Cycle("[...]".to_owned()));
