@@ -236,6 +236,7 @@ const exceptionTypes: Array<[string, string]> = [
   // Dotted names are the interesting case: they only survive if PYTHON_EXC_NAMES
   // carries them, and without that they arrive as their builtin parent's type.
   ['json.JSONDecodeError', 'json.JSONDecodeError'],
+  ['tomllib.TOMLDecodeError', 'tomllib.TOMLDecodeError'],
   ['re.PatternError', 're.PatternError'],
   ['binascii.Error', 'binascii.Error'],
   ['binascii.Incomplete', 'binascii.Incomplete'],
@@ -306,6 +307,7 @@ const dottedTypes: Array<[string, string, string]> = [
   ['binascii.Error', 'binascii', 'ValueError'],
   ['binascii.Incomplete', 'binascii', 'Exception'],
   ['json.JSONDecodeError', 'json', 'ValueError'],
+  ['tomllib.TOMLDecodeError', 'tomllib', 'ValueError'],
   ['re.PatternError', 're', 'Exception'],
 ]
 

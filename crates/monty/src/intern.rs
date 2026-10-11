@@ -1430,9 +1430,9 @@ pub enum StaticStrings {
     Ljust,
     /// `lo` in the bisect module.
     Lo,
-    /// `json.load()` function.
+    /// `json.load()` and `tomllib.load()` functions.
     Load,
-    /// `json.loads()` function.
+    /// `json.loads()` and `tomllib.loads()` functions.
     Loads,
     /// `locals` parameter of eval/exec.
     Locals,
@@ -2187,6 +2187,11 @@ pub enum StaticStrings {
     TmZone,
     /// `date.today()` / `datetime.today()` classmethod.
     Today,
+    /// `tomllib.TOMLDecodeError` exception.
+    #[strum(serialize = "TOMLDecodeError")]
+    TomlDecodeError,
+    /// Module name for `import tomllib`.
+    Tomllib,
     /// Kwarg name `top` — `os.walk(top=...)`.
     Top,
     /// Kwarg name `top_down` — `Path.walk(top_down=...)`.
