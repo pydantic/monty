@@ -33,9 +33,9 @@ const MAX_KEY_PARTS: usize = 1000;
 ///
 /// CPython's recursive descent hits its own recursion limit at about 330
 /// nested inline tables or 500 nested arrays; the parser recurses per level
-/// too, so this bounds it at the depth `json.loads` allows, which fits a 2 MiB
-/// thread stack in debug builds.
-const MAX_NESTING: usize = 200;
+/// too, with frames large enough in debug builds that this depth is what a
+/// 2 MiB thread stack comfortably holds.
+const MAX_NESTING: usize = 100;
 
 /// `Flags::FROZEN`: an inline array or table, immutable from then on.
 const FROZEN: u8 = 1;
@@ -128,7 +128,8 @@ pub(super) enum TomlError {
     /// `RecursionError`: a key with too many parts, or containers nested too deep.
     Recursion(String),
     /// An exception a conversion raised, e.g. `int()`'s digit limit (`ValueError`).
-    Run(RunError),
+    /// Boxed to keep the recursive parser's frames small.
+    Run(Box<RunError>),
 }
 
 type ParseResult<T> = Result<T, TomlError>;
@@ -395,7 +396,7 @@ fn parse_value(src: &str, pos: usize, depth: usize, tracker: &ResourceTracker) -
 fn check_memory_time_every(tracker: &ResourceTracker, i: usize) -> ParseResult<()> {
     tracker
         .check_memory_time_every(i)
-        .map_err(|error| TomlError::Run(RunError::from(error)))
+        .map_err(|error| TomlError::Run(Box::new(RunError::from(error))))
 }
 
 /// The depth for a container opened at `depth`, or `RecursionError` at the limit.
@@ -418,6 +419,11 @@ fn parse_array(src: &str, pos: usize, depth: usize, tracker: &ResourceTracker) -
     loop {
         check_memory_time_every(tracker, array.len())?;
         let (next, value) = parse_value(src, pos, depth, tracker)?;
+        // The poll above sees only what is allocated; a doubling of a long
+        // array is preflighted so it cannot jump straight past the limit.
+        tracker
+            .check_growth(array.len(), array.capacity(), mem::size_of::<TomlValue>())
+            .map_err(|error| TomlError::Run(Box::new(RunError::from(error))))?;
         array.push(value);
         pos = skip_comments_and_array_ws(bytes, next)?;
         match bytes.get(pos) {
@@ -635,7 +641,7 @@ fn parse_number(text: &str, is_float: bool, pos: usize) -> ParseResult<TomlValue
     };
     if radix == 10 {
         // `int()` refuses decimal literals past `sys.int_info.str_digits_check_threshold`.
-        check_decimal_digit_count(body.len()).map_err(TomlError::Run)?;
+        check_decimal_digit_count(body.len()).map_err(|error| TomlError::Run(Box::new(error)))?;
     }
     let magnitude = BigInt::parse_bytes(body.as_bytes(), radix).expect("match_number validated the digits");
     let value = if negative { -magnitude } else { magnitude };

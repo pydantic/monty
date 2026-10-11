@@ -300,7 +300,7 @@ indistinguishable from a stack overflow.
 
 - `json.loads` rejects input nested deeper than 200 levels with
     `json.JSONDecodeError` (independent of the Python recursion limit).
-- `tomllib.loads` rejects inline arrays and tables nested deeper than 200 levels
+- `tomllib.loads` rejects inline arrays and tables nested deeper than 100 levels
     with `RecursionError`, a fixed cap independent of the Python recursion limit
     (see [tomllib.md](tomllib.md)).
 

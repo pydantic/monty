@@ -14,7 +14,7 @@ their `(at line N, column M)` / `(at end of document)` suffix, match CPython 3.1
     parsed losslessly (`decimal` is not available either).
 - Passing `s` by keyword raises `loads() got an unexpected keyword argument 's'` where CPython reports
     `got some positional-only arguments passed as keyword arguments: 's'`.
-- Inline arrays and inline tables may nest 200 levels deep; deeper input raises
+- Inline arrays and inline tables may nest 100 levels deep; deeper input raises
     `RecursionError: maximum recursion depth exceeded`. CPython's limit depends on the interpreter
     recursion limit: at the default, nested arrays fail just under 500 levels and nested inline tables
     just over 330. Tables created by headers and dotted keys are
@@ -43,6 +43,9 @@ time, except that documents larger than 64 KiB are not carried, in which case `d
 A `TOMLDecodeError` raised manually inside the sandbox has no payload and surfaces as a plain
 `ValueError` carrying the message.
 On a host Python without `tomllib` (3.10) the exception surfaces as its `ValueError` parent.
+In the other direction, a `TOMLDecodeError` a host callback raises into the sandbox carries the five
+attributes only on Python 3.14 or later; on 3.11 to 3.13 it enters without them, so if the sandbox
+re-raises it the host receives a `ValueError`.
 
 ## Values
 

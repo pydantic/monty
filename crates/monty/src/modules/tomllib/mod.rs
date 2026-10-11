@@ -196,7 +196,7 @@ fn toml_error_to_run_error(error: TomlError, doc: &str) -> RunError {
             ExcType::toml_decode_error(&msg, doc, index, line, column, at_end)
         }
         TomlError::Recursion(msg) => SimpleException::new_msg(ExcType::RecursionError, msg).into(),
-        TomlError::Run(error) => error,
+        TomlError::Run(error) => *error,
     }
 }
 
