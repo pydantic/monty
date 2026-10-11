@@ -501,6 +501,26 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
 /// Test that `sum(range(huge))` respects the time limit.
 ///
 /// `sum()` iterates via `for_next()`, which polls the time limit every 64th step.
+/// A dict walk polls the clock by entries yielded, not by slot. With every
+/// even slot tombstoned the slot only takes even values, so a poll keyed on it
+/// never fired and nested comparisons ran unbounded past the time limit.
+#[test]
+fn timeout_in_dict_comparison_over_tombstones() {
+    let code = "
+def build(depth):
+    child = 0
+    for _ in range(depth):
+        d = {i: child for i in range(128)}
+        for i in range(0, 128, 2):
+            d.pop(i)
+        child = d
+    return child
+
+build(5) == build(5)
+";
+    assert_timeout_in_builtin(code, "dict comparison over tombstones");
+}
+
 #[test]
 fn timeout_in_sum_builtin() {
     assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");

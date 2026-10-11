@@ -237,9 +237,8 @@ impl<E: TableEntry> PyHashTable<E> {
     /// cursor changes on an error too (an error is sticky, as in CPython), so
     /// the caller must store it back whatever the outcome.
     pub(crate) fn step(&self, cursor: &mut TableCursor) -> RunResult<Option<&E>> {
-        let next_live = self.next_live_slot(cursor.slot);
         Ok(cursor
-            .advance::<E>(self.used, next_live)?
+            .advance::<E>(self.used, |from| self.next_live_slot(from))?
             .map(|slot| &self.entries[slot]))
     }
 
@@ -733,7 +732,9 @@ impl<'a, 'h, S: TableSource<'h>> TableWalk<'a, 'h, S> {
     /// `RuntimeError` here. The entry borrows `vm`, so it cannot be held
     /// across anything that runs guest code.
     pub(crate) fn next<'v>(&mut self, vm: &'v VM<'h>) -> RunResult<Option<&'v S::Entry>> {
-        vm.heap.tracker.check_time_every(self.cursor.slot)?;
+        // Keyed on entries yielded, not the slot: tombstones make the slot
+        // skip values, and a walk over odd slots alone would never poll.
+        vm.heap.tracker.check_time_every(self.cursor.yielded())?;
         self.source.table(vm).step(&mut self.cursor)
     }
 }
@@ -839,9 +840,17 @@ impl TableCursor {
         self.remaining
     }
 
+    /// Entries yielded so far: a counter that rises by one per step, unlike
+    /// the slot, so it is what an amortized time poll keys on.
+    fn yielded(&self) -> usize {
+        self.expected_len.saturating_sub(self.remaining)
+    }
+
     /// Validates the two guards and takes `next_live` as the next slot.
     ///
-    /// `next_live` is the container's first live slot at or after `slot`. The size check fires only while the walk is live
+    /// `next_live` finds the container's first live slot at or after the one
+    /// given. It runs only once the guards pass, so an exhausted or failed
+    /// cursor does not rescan a run of tombstones on every call. The size check fires only while the walk is live
     /// and *before* exhaustion, so a mutation on the final entry still raises
     /// on the terminating step. Then, having skipped tombstones to a live
     /// slot, finding one when nothing is owed means a compaction renumbered
@@ -850,14 +859,18 @@ impl TableCursor {
     ///
     /// Both errors leave the cursor as CPython leaves its iterator: a size
     /// error repeats on every later step, and "keys changed" exhausts it.
-    fn advance<E: TableEntry>(&mut self, current_len: usize, next_live: Option<usize>) -> RunResult<Option<usize>> {
+    fn advance<E: TableEntry>(
+        &mut self,
+        current_len: usize,
+        next_live: impl FnOnce(usize) -> Option<usize>,
+    ) -> RunResult<Option<usize>> {
         if self.exhausted {
             Ok(None)
         } else if self.size_changed || current_len != self.expected_len {
             self.size_changed = true;
             Err(E::changed_size_error())
         } else {
-            match next_live {
+            match next_live(self.slot) {
                 None => {
                     self.exhausted = true;
                     Ok(None)
