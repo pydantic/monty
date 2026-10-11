@@ -29,12 +29,20 @@ import pathlib
 import random
 import re
 
+def fixture_generator():
+    yield xs
+    return xs
+
+created_generator = fixture_generator()
+suspended_generator = fixture_generator()
+
 big = 2**100
 neg = -7
 f = 3.5
 s = 'héllo'
 b = b'\x00\x01bytes'
 xs = [1, 2.5, 'three', None, True]
+assert next(suspended_generator) is xs
 t = (1, 'two')
 d = {'a': 1, 'b': [2, 3], 3: 'int key'}
 st = {1, 2, 3}
@@ -161,6 +169,12 @@ const FIXTURE_CALL: &str = "Pending(xs, d, b).result + 1";
 
 /// Fed after restoring and resuming the fixture: every value must have survived.
 const FIXTURE_CHECK: &str = r"
+assert next(created_generator) is xs
+try:
+    next(suspended_generator)
+except StopIteration as finished:
+    assert finished.value is xs
+assert next(suspended_generator, 'done') == 'done'
 assert big == 2**100 and neg == -7 and f == 3.5 and s == 'héllo'
 assert b == b'\x00\x01bytes'
 assert xs == [1, 2.5, 'three', None, True] and t == (1, 'two')
@@ -221,6 +235,7 @@ fn fixture_dump_loads_and_resumes() {
         let bytes = dump("fixture.py", None, SessionRef::Suspended(&progress)).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
+        drop(progress.into_repl());
         eprintln!("updated {}", path.display());
         return;
     }

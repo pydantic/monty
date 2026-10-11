@@ -156,7 +156,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Map => map::builtin_map(vm, args),
             Self::Max => min_max::builtin_max(vm, args),
             Self::Min => min_max::builtin_min(vm, args),
-            Self::Next => next::builtin_next(vm, args),
+            Self::Next => return next::builtin_next(vm, args),
             Self::Oct => oct::builtin_oct(vm, args),
             // `open()` yields an OS call rather than a plain value.
             Self::Open => return open::builtin_open(vm, args),

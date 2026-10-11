@@ -38,16 +38,19 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 
 ## Constructor signature
 
-All exception constructors accept **zero or one string argument** only.
+Exception constructors accept **zero or one string argument** only, except `StopIteration`,
+which accepts zero or one argument of any type and exposes it as `.value`.
 Multi-argument forms used in CPython (e.g. `OSError(errno, strerror, filename)`,
 `UnicodeDecodeError(encoding, obj, start, end, reason)`) are
-not supported; passing more than one argument raises an internal error.
+not supported; passing more than one argument raises an internal error
+(`TypeError` for `StopIteration`).
 
 ## Attributes
 
 - `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
     empty.
 - `str(exc)` — returns the single message string, or `""` if none.
+    `StopIteration` converts its arbitrary value to a string.
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
     `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
@@ -66,6 +69,9 @@ not supported; passing more than one argument raises an internal error.
 `__traceback__`, `__notes__`, `add_note()`. The `raise X from Y` syntax
 parses, but the `from Y` cause is **silently dropped**: chained
 tracebacks are not preserved across `raise from`.
+When a generator lets `StopIteration` escape, Monty raises `RuntimeError` without retaining the original exception
+as `__cause__`, so its `.value` is unavailable through that error.
+Normal generator returns and custom iterator exhaustion preserve `StopIteration.value`.
 
 ## Custom subclasses
 

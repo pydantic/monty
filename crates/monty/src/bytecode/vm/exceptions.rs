@@ -1,16 +1,21 @@
 //! Exception handling helpers for the VM.
 
-use std::fmt::{self, Write};
+use std::{
+    fmt::{self, Write},
+    mem,
+};
 
 use super::VM;
 use crate::{
     builtins::Builtins,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
+    exception_private::{
+        ExcType, ExcTypeExt, ExceptionRaise, ExceptionValue, RawStackFrame, RunError, RunResult, SimpleException,
+    },
     expressions::CmpOperator,
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, allocate_string},
     value::Value,
 };
 
@@ -81,7 +86,7 @@ impl VM<'_> {
             // Exception instance on heap
             Value::Ref(heap_id) => {
                 if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    exc.clone()
+                    exc.exception.clone()
                 } else {
                     // Not an exception type
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
@@ -291,7 +296,7 @@ impl VM<'_> {
 
         // Search for handler in current and outer frames
         loop {
-            let (exc_value, this) = exc_guard.as_parts();
+            let (exc_value, this) = exc_guard.as_parts_mut();
             let frame = this.current_frame();
             let code = frame.code;
             let ip = u32::try_from(this.instruction_ip).unwrap_or(u32::MAX);
@@ -361,6 +366,34 @@ impl VM<'_> {
                 return ExceptionHandlingResult::Unhandled(error);
             }
 
+            if this.current_frame.is_yield_from && error.is_stop_iteration() {
+                let value = match exc_value {
+                    Value::Ref(id) => match this.heap.get(*id) {
+                        HeapData::Exception(exception) => exception
+                            .value
+                            .as_ref()
+                            .map_or(Value::None, |v| v.clone_with_heap(this)),
+                        _ => unreachable!("raised exception is not an exception"),
+                    },
+                    _ => unreachable!("raised exception is not a heap reference"),
+                };
+                this.pop_frame();
+                let iterator = this.pop();
+                iterator.drop_with(this);
+                this.current_frame.ip += 1;
+                this.push(value);
+                return ExceptionHandlingResult::Caught;
+            }
+
+            if this.current_frame.generator.is_some() && error.is_stop_iteration() {
+                error = this.attach_frame_to_error(
+                    SimpleException::new_msg(ExcType::RuntimeError, "generator raised StopIteration").into(),
+                );
+                let RunError::Exc(exc) = &error else { unreachable!() };
+                let replacement = this.create_exception_value(exc);
+                mem::replace(exc_value, replacement).drop_with(this);
+            }
+
             // Get the caller's call-site offset before popping frame.
             // This is where the caller invoked the function that's failing.
             let call_offset = this.current_frame().call_offset;
@@ -420,7 +453,14 @@ impl VM<'_> {
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
         let exception = exc.exc.clone();
-        let heap_id = self.heap.allocate(HeapData::Exception(exception));
+        let value = if exception.exc_type() == ExcType::StopIteration {
+            exception.arg().map(|arg| allocate_string(arg.as_str(), self.heap))
+        } else {
+            None
+        };
+        let heap_id = self
+            .heap
+            .allocate(HeapData::Exception(ExceptionValue { exception, value }));
         Value::Ref(heap_id)
     }
 

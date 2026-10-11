@@ -344,6 +344,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::CallableIterator(_)
         | HeapReadOutput::Itertools(_)
         | HeapReadOutput::Module(_)
+        | HeapReadOutput::Generator(_)
         | HeapReadOutput::Coroutine(_)
         | HeapReadOutput::GatherFuture(_)
         | HeapReadOutput::ExternalFuture(_)

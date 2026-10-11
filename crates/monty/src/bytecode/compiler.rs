@@ -144,7 +144,12 @@ fn target_position(target: &UnpackTarget) -> CodeRange {
 /// Whether an expression can resume a pushed/suspended call at its end offset.
 fn return_expr_needs_padding(expr: &ExprLoc) -> bool {
     match &expr.expr {
-        Expr::Call { .. } | Expr::AttrCall { .. } | Expr::IndirectCall { .. } | Expr::Await(_) => true,
+        Expr::Call { .. }
+        | Expr::AttrCall { .. }
+        | Expr::IndirectCall { .. }
+        | Expr::Await(_)
+        | Expr::Yield(_)
+        | Expr::YieldFrom(_) => true,
         Expr::IfElse { orelse, .. } => return_expr_needs_padding(orelse),
         Expr::Op {
             op: Operator::And | Operator::Or,
@@ -906,7 +911,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 }
             })
             .collect();
-        let function = Function::new(
+        let mut function = Function::new(
             func_def.name,
             func_def.signature.clone(),
             func_def.namespace_size,
@@ -918,6 +923,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.is_async,
             body_code,
         );
+        function.is_generator = func_def.is_generator;
+        if function.is_generator && function.is_async {
+            return Err(CompileError::new("async generators are not supported", func_pos));
+        }
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -1386,6 +1395,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 unreachable!("Expr::LambdaRaw should not exist after prepare phase")
             }
 
+            Expr::YieldFrom(value) => {
+                self.compile_expr(value)?;
+                self.code.emit(Opcode::GetIter)?;
+                self.compile_literal(&Literal::None)?;
+                self.code.emit(Opcode::YieldFrom)?;
+            }
+            Expr::Yield(value) => {
+                self.compile_expr(value)?;
+                self.code.emit(Opcode::YieldValue)?;
+            }
             Expr::Await(value) => {
                 if self.flags.forbid_await {
                     return Err(CompileError::new("'await' outside function", expr_loc.position));

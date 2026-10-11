@@ -56,6 +56,20 @@ pub(crate) enum FrameNamespace {
 }
 
 impl FrameNamespace {
+    pub(crate) fn for_each_child(&self, mut visit: impl FnMut(HeapId)) {
+        match self {
+            Self::Function { globals } => visit(*globals),
+            Self::Snippet { globals, locals } => {
+                if let FrameGlobals::Dict(id) = globals {
+                    visit(*id);
+                }
+                if let Some(id) = locals {
+                    visit(*id);
+                }
+            }
+        }
+    }
+
     /// The globals dict a function created in this frame must carry, so its
     /// own frames resolve globals the same way; `None` for slot globals.
     pub(crate) fn dict_globals(&self) -> Option<HeapId> {

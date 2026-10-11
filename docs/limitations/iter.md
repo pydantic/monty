@@ -15,3 +15,9 @@
     CPython reports `True`. Iteration itself works; only attribute lookup of the dunder differs. This covers every
     built-in iterator, including the `itertools` adaptors.
 - Iterator-specific attributes such as `__length_hint__` are not exposed.
+
+## Generator consumers
+
+Consumers that advance iterators synchronously in Rust, including `list()`, `tuple()`, `sum()`,
+`enumerate()` and `itertools` adaptors, cannot yet advance generators and raise `TypeError`.
+Generator iteration dunders are not exposed as attributes, as with other built-in iterators.

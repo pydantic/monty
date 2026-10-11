@@ -120,6 +120,16 @@ Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
 
+## Generators
+
+Calling a function containing `yield` binds its arguments and returns a lazy generator.
+`next()` and `for` resume it on the normal VM stack until it yields or finishes.
+`yield from` delegates to generators, builtin iterators and custom iterators, preserving `StopIteration.value`.
+Suspended generators own their saved frame, locals, operands and exception state in the heap;
+active frames own a reference to their generator and the pending iterator consumer.
+Both forms are included in session dumps, including suspensions at host calls.
+Generator-held references participate in reference counting and cycle collection.
+
 ## Other pieces
 
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.

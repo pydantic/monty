@@ -145,6 +145,7 @@ pub enum Type {
     CallableIterator,
     /// Coroutine type for async functions and external futures.
     Coroutine,
+    Generator,
     Module,
     /// Marker types like stdout/stderr - displays as "_io.TextIOWrapper"
     #[strum(serialize = "_io.TextIOWrapper")]
@@ -458,7 +459,8 @@ impl Type {
     pub(crate) const fn is_iterator(self) -> bool {
         matches!(
             self,
-            Self::ListIterator
+            Self::Generator
+                | Self::ListIterator
                 | Self::DequeIterator
                 | Self::TupleIterator
                 | Self::StrAsciiIterator

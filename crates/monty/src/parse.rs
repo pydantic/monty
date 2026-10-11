@@ -144,6 +144,7 @@ pub struct RawFunctionDef {
     pub body: Vec<ParseNode>,
     /// Whether this is an async function (`async def`).
     pub is_async: bool,
+    pub is_generator: bool,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -288,6 +289,7 @@ fn check_source_nesting(
 /// Holds references to the source code and the caller's string interner for names.
 /// The filename is interned once at construction and reused for all CodeRanges.
 pub struct Parser<'a, 'i> {
+    generator_scope: Option<bool>,
     code: &'a str,
     /// Interned filename ID, used for all CodeRanges created by this parser.
     filename_id: StringId,
@@ -319,6 +321,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             filename_id,
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
+            generator_scope: None,
             class_keyword_offsets,
         }
     }
@@ -825,8 +828,18 @@ impl<'a, 'i> Parser<'a, 'i> {
 
         let name = self.identifier(&function.name.id, function.name.range);
         // Parse function body recursively
-        let body = self.parse_statements(function.body)?;
+        let outer_scope = self.generator_scope.replace(false);
+        let body_result = self.parse_statements(function.body);
+        let is_generator = self.generator_scope.unwrap_or(false);
+        self.generator_scope = outer_scope;
+        let body = body_result?;
         let is_async = function.is_async;
+        if is_async && is_generator {
+            return Err(ParseError::not_implemented(
+                "async generator functions",
+                self.convert_range(function.range),
+            ));
+        }
 
         Ok((
             RawFunctionDef {
@@ -834,6 +847,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 signature,
                 body,
                 is_async,
+                is_generator,
             },
             decorators,
         ))
@@ -1049,6 +1063,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             signature: ParsedSignature::default(),
             body,
             is_async: false,
+            is_generator: false,
         };
 
         Ok(Node::ClassDef {
@@ -1387,7 +1402,11 @@ impl<'a, 'i> Parser<'a, 'i> {
                 };
 
                 // Parse the body expression
-                let body = Box::new(self.parse_expression(*body)?);
+                let outer_scope = self.generator_scope.replace(false);
+                let body_result = self.parse_expression(*body);
+                let is_generator = self.generator_scope.unwrap_or(false);
+                self.generator_scope = outer_scope;
+                let body = Box::new(body_result?);
 
                 Ok(ExprLoc::new(
                     position,
@@ -1395,6 +1414,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         name_id,
                         signature,
                         body,
+                        is_generator,
                     },
                 ))
             }
@@ -1516,14 +1536,27 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let value = self.parse_expression(*a.value)?;
                 Ok(ExprLoc::new(self.convert_range(a.range), Expr::Await(Box::new(value))))
             }
-            AstExpr::Yield(y) => Err(ParseError::not_implemented(
-                "yield expressions",
-                self.convert_range(y.range),
-            )),
-            AstExpr::YieldFrom(y) => Err(ParseError::not_implemented(
-                "yield from expressions",
-                self.convert_range(y.range),
-            )),
+            AstExpr::Yield(y) => {
+                let position = self.convert_range(y.range);
+                let Some(scope) = self.generator_scope.as_mut() else {
+                    return Err(ParseError::syntax("'yield' outside function", position));
+                };
+                *scope = true;
+                let value = match y.value {
+                    Some(value) => self.parse_expression(*value)?,
+                    None => ExprLoc::new(position, Expr::Literal(Literal::None)),
+                };
+                Ok(ExprLoc::new(position, Expr::Yield(Box::new(value))))
+            }
+            AstExpr::YieldFrom(y) => {
+                let position = self.convert_range(y.range);
+                let Some(scope) = self.generator_scope.as_mut() else {
+                    return Err(ParseError::syntax("'yield' outside function", position));
+                };
+                *scope = true;
+                let value = self.parse_expression(*y.value)?;
+                Ok(ExprLoc::new(position, Expr::YieldFrom(Box::new(value))))
+            }
             AstExpr::Compare(ast::ExprCompare {
                 ops, operands, range, ..
             }) => {

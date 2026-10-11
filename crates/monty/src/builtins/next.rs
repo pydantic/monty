@@ -2,9 +2,10 @@
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
+    bytecode::{CallResult, GeneratorConsumer, VM},
     defer_drop,
     exception_private::RunResult,
+    heap::HeapReadOutput,
     types::iter::iterator_next,
     value::Value,
 };
@@ -30,8 +31,13 @@ struct NextArgs {
 ///   `StopIteration` when the iterator is exhausted.
 /// - `next(iterator, default)` - Returns the next item from the iterator, or
 ///   `default` if the iterator is exhausted.
-pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
     defer_drop!(iterator, vm);
-    iterator_next(iterator, default, vm)
+    if let Value::Ref(id) = iterator
+        && matches!(vm.heap.read(*id), HeapReadOutput::Generator(_))
+    {
+        return vm.resume_generator(*id, GeneratorConsumer::Next(default));
+    }
+    iterator_next(iterator, default, vm).map(CallResult::Value)
 }
