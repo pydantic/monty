@@ -1,19 +1,22 @@
-//! JSON serialization support for `json.dumps()`.
+//! JSON serialization support for `json.dumps()` and `json.dump()`.
 //!
 //! This module owns encoder keyword parsing, CPython-compatible string/float
-//! formatting, and recursive serialization of Monty values.
+//! formatting, and recursive serialization of Monty values. `dump` encodes
+//! the whole document first and hands it to the file object in one write
+//! (see [`FileTarget`]).
 
 use std::{
     cmp::Ordering,
     fmt::{Display, Write},
 };
 
+use super::fp::FileTarget;
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::{ContainsVM, VM},
+    bytecode::{CallResult, ContainsVM, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -77,28 +80,22 @@ impl JsonDumpsConfig {
         self.flags & Self::SKIPKEYS != 0
     }
 
-    /// Builds the encoder config from the macro-extracted [`JsonDumpsArgs`].
+    /// Builds the encoder config from the bound keyword arguments.
     ///
-    /// `JsonDumpsArgs` already performed the positional/kwargs split, the
-    /// per-name duplicate detection, and the unknown-keyword rejection (with
-    /// the "JSONEncoder.__init__" prefix that matches CPython's error
+    /// The `FromArgs` structs already performed the positional/kwargs split,
+    /// the per-name duplicate detection, and the unknown-keyword rejection
+    /// (with the "JSONEncoder.__init__" prefix that matches CPython's error
     /// wording). This method only translates the raw `Value` slots into the
     /// concrete encoder options used by the serializer.
-    fn from_macro_args(args: JsonDumpsArgs, vm: &mut VM<'_>) -> RunResult<(Value, Self)> {
-        let JsonDumpsArgs {
-            obj,
+    fn from_kwargs(kwargs: EncoderKwargs, vm: &mut VM<'_>) -> RunResult<Self> {
+        let EncoderKwargs {
             indent,
             sort_keys,
             ensure_ascii,
             allow_nan,
             separators,
             skipkeys,
-        } = args;
-
-        // Keep `obj` alive across kwarg processing — early errors below must
-        // not leak the heap reference.
-        let mut obj_guard = DropGuard::new(obj, vm);
-        let vm = obj_guard.ctx();
+        } = kwargs;
 
         let mut config = Self::default();
 
@@ -126,8 +123,20 @@ impl JsonDumpsConfig {
             ": ".clone_into(&mut config.key_separator);
         }
 
-        Ok((obj_guard.into_inner(), config))
+        Ok(config)
     }
+}
+
+/// The encoder keyword arguments as bound by [`JsonDumpsArgs`] / [`JsonDumpArgs`],
+/// before [`JsonDumpsConfig::from_kwargs`] coerces them. Every field holds a
+/// value the config builder consumes, so it is never dropped as a whole.
+struct EncoderKwargs {
+    indent: Value,
+    sort_keys: Value,
+    ensure_ascii: Value,
+    allow_nan: Value,
+    separators: Value,
+    skipkeys: Value,
 }
 
 /// Implements `json.dumps(obj, **kwargs)`.
@@ -139,20 +148,105 @@ impl JsonDumpsConfig {
 /// CPython kwargs `cls`, `default`, and `check_circular` are intentionally
 /// unsupported and will raise `TypeError` if passed.
 pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let macro_args = JsonDumpsArgs::from_args(args, vm)?;
-    let (obj, config) = JsonDumpsConfig::from_macro_args(macro_args, vm)?;
-
+    let JsonDumpsArgs {
+        obj,
+        indent,
+        sort_keys,
+        ensure_ascii,
+        allow_nan,
+        separators,
+        skipkeys,
+    } = JsonDumpsArgs::from_args(args, vm)?;
+    // `obj` outlives kwarg processing: an early error below must not leak it.
     defer_drop!(obj, vm);
+    let kwargs = EncoderKwargs {
+        indent,
+        sort_keys,
+        ensure_ascii,
+        allow_nan,
+        separators,
+        skipkeys,
+    };
+    let config = JsonDumpsConfig::from_kwargs(kwargs, vm)?;
+    let output = encode(obj, &config, vm)?;
+    Ok(allocate_string(output, vm.heap))
+}
+
+/// Implements `json.dump(obj, fp, **kwargs)` with the same keyword subset as
+/// [`call_dumps`]: the document is encoded in full, then written to `fp` as
+/// one `write()` call, and the function evaluates to `None`.
+///
+/// An `open()` handle takes the one-shot host write (the call suspends like
+/// `fp.write` would); any other object has its `write` attribute called
+/// synchronously. CPython streams chunks instead, so it reaches `fp.write`
+/// before a bad element deep in a container raises, but after a scalar that
+/// cannot be encoded; the file object is checked first or last to match.
+pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let JsonDumpArgs {
+        obj,
+        fp,
+        indent,
+        sort_keys,
+        ensure_ascii,
+        allow_nan,
+        separators,
+        skipkeys,
+    } = JsonDumpArgs::from_args(args, vm)?;
+    defer_drop!(obj, vm);
+    defer_drop!(fp, vm);
+    let kwargs = EncoderKwargs {
+        indent,
+        sort_keys,
+        ensure_ascii,
+        allow_nan,
+        separators,
+        skipkeys,
+    };
+    let config = JsonDumpsConfig::from_kwargs(kwargs, vm)?;
+
+    let early_target = if is_container(obj, vm) {
+        Some(FileTarget::writer(fp, vm)?)
+    } else {
+        None
+    };
+    let output = match encode(obj, &config, vm) {
+        Ok(output) => output,
+        Err(err) => {
+            early_target.drop_with(vm);
+            return Err(err);
+        }
+    };
+    let target = match early_target {
+        Some(target) => target,
+        None => FileTarget::writer(fp, vm)?,
+    };
+    target.write(output, vm)
+}
+
+/// Serializes `obj` to JSON text under `config`.
+fn encode(obj: &Value, config: &JsonDumpsConfig, vm: &mut VM<'_>) -> RunResult<String> {
     let mut output = String::new();
     let mut active_containers = Vec::new();
     let mut encoder = Encoder {
         out: &mut output,
-        config: &config,
+        config,
         active_containers: &mut active_containers,
         vm,
     };
     encoder.serialize_value(obj, 0)?;
-    Ok(allocate_string(output, vm.heap))
+    Ok(output)
+}
+
+/// Whether CPython's encoder would yield a chunk of `value` (its opening
+/// bracket) before any of its elements could fail to encode.
+fn is_container(value: &Value, vm: &VM<'_>) -> bool {
+    match value {
+        Value::Ref(heap_id) => matches!(
+            vm.heap.get(*heap_id),
+            HeapData::List(_) | HeapData::Tuple(_) | HeapData::Dict(_)
+        ),
+        _ => false,
+    }
 }
 
 /// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
@@ -171,6 +265,27 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 #[from_args(name = "dumps", style = def, kwarg_error_name = "JSONEncoder.__init__")]
 struct JsonDumpsArgs {
     obj: Value,
+    #[from_args(kw_only, default = Value::None)]
+    indent: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    sort_keys: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    ensure_ascii: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    allow_nan: Value,
+    #[from_args(kw_only, default = Value::None)]
+    separators: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    skipkeys: Value,
+}
+
+/// Argument shape for `json.dump(obj, fp, *, …)`: [`JsonDumpsArgs`] with the
+/// file object as second positional, under the `dump()` descriptor.
+#[derive(FromArgs)]
+#[from_args(name = "dump", style = def, kwarg_error_name = "JSONEncoder.__init__")]
+struct JsonDumpArgs {
+    obj: Value,
+    fp: Value,
     #[from_args(kw_only, default = Value::None)]
     indent: Value,
     #[from_args(kw_only, default = Value::Bool(false))]
@@ -343,7 +458,7 @@ struct Encoder<'a, 'h> {
     vm: &'a mut VM<'h>,
 }
 
-/// Lets the encoder participate in the [`DropGuard`] / [`defer_drop_mut!`]
+/// Lets the encoder participate in the `DropGuard` / [`defer_drop_mut!`]
 /// pattern: passing the encoder as the "heap" argument re-borrows the whole
 /// encoder (including its `vm`) into the guard, which is exactly what we need
 /// so the rebound iter and the rebound encoder share a lifetime.

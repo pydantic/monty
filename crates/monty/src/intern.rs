@@ -921,6 +921,8 @@ pub enum StaticStrings {
     Dst,
     /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
     DstDirFd,
+    /// `json.dump()` function.
+    Dump,
     /// `json.dumps()` function.
     Dumps,
     /// `__args__` of a `types.GenericAlias`.
@@ -1095,6 +1097,8 @@ pub enum StaticStrings {
     Fmod,
     /// `datetime` / `time` `fold` attribute and constructor kwarg.
     Fold,
+    /// `fp` parameter of `json.load()` / `json.dump()`.
+    Fp,
     /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "foldspaces")]
     Foldspaces,
@@ -1426,6 +1430,8 @@ pub enum StaticStrings {
     Ljust,
     /// `lo` in the bisect module.
     Lo,
+    /// `json.load()` function.
+    Load,
     /// `json.loads()` function.
     Loads,
     /// `locals` parameter of eval/exec.

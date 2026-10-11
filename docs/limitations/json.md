@@ -1,14 +1,13 @@
 # `json` module
 
-Monty's `json` provides `loads`, `dumps`, and the `JSONDecodeError`
-exception. Parsing is backed by `jiter`; serialization is a hand-written
-encoder matching CPython byte-for-byte for the supported keyword set.
+Monty's `json` provides `loads`, `dumps`, `load`, `dump` and the
+`JSONDecodeError` exception. Parsing is backed by `jiter`; serialization is a
+hand-written encoder matching CPython byte-for-byte for the supported keyword set.
 
 ## What's NOT in the module
 
 `json.JSONEncoder` and `json.JSONDecoder` are not implemented, and the `cls=`
-keyword is rejected. `json.load(fp)` and `json.dump(obj, fp)` are not
-implemented (no file-object protocol).
+keyword is rejected.
 
 ## `json.loads(s, **kwargs)`
 
@@ -25,6 +24,46 @@ implemented (no file-object protocol).
 - JSON integers that would exceed Monty's BigInt digit limit are rejected
     with `ValueError` (matching CPython's `int_max_str_digits` behaviour)
     rather than `JSONDecodeError`.
+
+## `json.load(fp, **kwargs)`
+
+`json.load(fp)` is `json.loads(fp.read())` and takes the same keyword policy as
+`loads`. A file from `open()` or `Path.open()` is read to EOF through the file's
+own buffering, so `load` suspends to the host only when nothing has been read
+from the file yet and sees the same errors as `fp.read()` (`ValueError` on a
+closed file, `io.UnsupportedOperation: not readable` on a write-only one).
+
+Any other object has its `read` attribute called synchronously, with the
+restrictions of a synchronous call (see [classes.md](classes.md)): a `read`
+that calls an external function or does host I/O raises `NotImplementedError`.
+The `read` attribute of a host-backed object is not fetched; that raises
+`NotImplementedError` too.
+
+## `json.dump(obj, fp, **kwargs)`
+
+`json.dump` takes the keyword subset of `dumps` below and returns `None`.
+CPython streams the document to `fp.write()` in many small chunks; Monty
+encodes the whole document first and makes **one** `write` call, which changes
+what is observable when something fails:
+
+- A document that cannot be encoded writes nothing. CPython writes every chunk
+    up to the failing value, so `json.dump({'a': 1, 'b': {1}}, f)` leaves
+    `{"a": 1, "b": ` in the file in CPython and nothing in Monty.
+- When the file object is unusable *and* the document cannot be encoded, Monty
+    reports the file error for a `dict`, `list` or `tuple` document and the
+    encoding error for a scalar one. CPython's order depends on where in its
+    chunk stream the failure lies, which only differs from Monty's for a
+    `list` or `tuple` whose first element is a scalar that fails to encode
+    (`json.dump([float('nan')], closed_file, allow_nan=False)` raises the
+    `ValueError` for `nan` in CPython and the closed-file error in Monty).
+- A duck-typed writer sees one `write(text)` call with the whole document
+    rather than one per chunk.
+
+A file from `open()` or `Path.open()` takes a single host write, with the same
+checks as `fp.write(str)`: `TypeError: a bytes-like object is required, not 'str'` in binary mode, `ValueError` on a closed file,
+`io.UnsupportedOperation: not writable` on a read-only one. Any other object
+has its `write` attribute called synchronously, under the same restrictions as
+`load`'s `read` above.
 
 ## `json.dumps(obj, **kwargs)`
 

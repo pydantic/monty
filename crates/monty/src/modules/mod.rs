@@ -251,7 +251,7 @@ impl ModuleFunctions {
         match self {
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
             Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),
-            Self::Json(functions) => json::call(vm, functions, args).map(CallResult::Value),
+            Self::Json(functions) => json::call(vm, functions, args),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),
             Self::Os(functions) => os::call(vm, functions, args),
             Self::OsPath(functions) => os_path::call(vm, functions, args),
