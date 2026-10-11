@@ -78,6 +78,11 @@ export interface ClassInstanceNode {
   instanceId: string
   attrs: Array<NodePair>
 }
+export interface ModuleNode {
+  name: string
+  id: string
+  attrs: Array<NodePair>
+}
 export interface FunctionNode {
   name: string
   docstring?: string
@@ -114,6 +119,7 @@ export type ValueNode =
   | ValueNodeFunction
   | ValueNodeRepr
   | ValueNodeCycle
+  | ValueNodeModule
 export interface ValueNodeEllipsis {
   tag: 'ellipsis'
 }
@@ -234,6 +240,10 @@ export interface ValueNodeRepr {
 export interface ValueNodeCycle {
   tag: 'cycle'
   val: string
+}
+export interface ValueNodeModule {
+  tag: 'module'
+  val: ModuleNode
 }
 export interface Arena {
   nodes: Array<ValueNode>

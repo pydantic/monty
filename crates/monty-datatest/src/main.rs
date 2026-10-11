@@ -649,18 +649,21 @@ impl FixtureRegistry {
         value
     }
 
-    /// Registers and returns the host object `import tools` binds: its eager attrs are
-    /// the fixture functions, so `tools.add_ints(1, 2)` dispatches like a bare `add_ints(1, 2)`.
-    fn make_tools_module(&mut self) -> MontyObject {
+    /// The host module `import tools` binds: its attrs are the fixture
+    /// functions, so `tools.add_ints(1, 2)` dispatches like a bare `add_ints(1, 2)`.
+    fn make_tools_module() -> MontyObject {
         // `tools.nested`: a submodule, reached as an attribute of its parent
-        let nested = self.register(Fixture {
-            class_name: "tools.nested",
-            type_id: 6, // distinct per fixture class (real hosts pass the Python type id)
-            attrs: vec![
-                ("return_value", MontyObject::function("return_value", None)),
-                ("VERSION", MontyObject::int(7)),
+        let nested = MontyObject::module(
+            "tools.nested",
+            MontyUuid::from_u128(6),
+            [
+                (
+                    MontyObject::string("return_value"),
+                    MontyObject::function("return_value", None),
+                ),
+                (MontyObject::string("VERSION"), MontyObject::int(7)),
             ],
-        });
+        );
         let functions = [
             "add_ints",
             "concat_strings",
@@ -670,15 +673,14 @@ impl FixtureRegistry {
             "async_call",
             "async_fail",
         ];
-        self.register(Fixture {
-            class_name: "tools",
-            type_id: 5, // distinct per fixture class (real hosts pass the Python type id)
-            attrs: functions
+        MontyObject::module(
+            "tools",
+            MontyUuid::from_u128(5),
+            functions
                 .iter()
-                .map(|name| (*name, MontyObject::function(*name, None)))
-                .chain([("nested", nested)])
-                .collect(),
-        })
+                .map(|name| (MontyObject::string(*name), MontyObject::function(*name, None)))
+                .chain([(MontyObject::string("nested"), nested)]),
+        )
     }
 
     /// Registers and returns a `Point(x, y)` (type_id 1).
@@ -1019,10 +1021,10 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 /// already carries typed args, so we destructure directly instead of going
 /// through `MontyObject` indexing.
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
-fn dispatch_os_call(call: &OsFunctionCall, registry: &mut FixtureRegistry) -> ExtFunctionResult {
+fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     match call {
         // Only the tools fixture is available as a host module.
-        OsFunctionCall::Import(module) if module == "tools" => registry.make_tools_module().into(),
+        OsFunctionCall::Import(module) if module == "tools" => FixtureRegistry::make_tools_module().into(),
         OsFunctionCall::Import(_) => ExtFunctionResult::NotFound(call.name().to_owned()),
         OsFunctionCall::ImportStubs(_) => unreachable!("{} is asked only by a type-checking worker", call.name()),
         // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
@@ -1813,7 +1815,6 @@ fn run_mount_fs_iter_loop(
     limits: ResourceLimits,
 ) -> Result<MontyObject, MontyException> {
     let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
-    let mut registry = FixtureRegistry::new();
 
     loop {
         // As in `run_iter_loop`: every suspension goes through the dump format,
@@ -1845,7 +1846,7 @@ fn run_mount_fs_iter_loop(
                     MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
                     MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
                     // Non-filesystem operation — dispatch to the regular handler.
-                    MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call, &mut registry),
+                    MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
                 })?;
             }
         }
@@ -1969,7 +1970,7 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
             }
             RunProgress::OsCall(call) => {
-                let result = dispatch_os_call(&call.function_call, &mut registry);
+                let result = dispatch_os_call(&call.function_call);
                 progress = call.resume(result, PrintWriter::Stdout)?;
             }
         }

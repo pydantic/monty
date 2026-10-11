@@ -28,6 +28,7 @@ use super::{
         py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
+    external_module::PyExternalModule,
     std_type_proxy::PyMontyStdTypeProxy,
 };
 
@@ -256,6 +257,11 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         } else if let Ok(proxy) = obj.cast::<PyMontyStdTypeProxy>() {
             // a proxy handed out by decode re-enters as the builtin it stands for
             Ok(self.leaf(proxy.get().inner.to_node()))
+        } else if obj.is_instance_of::<PyExternalModule>() {
+            // a module is named by its `external_modules` path, which a value has none of
+            Err(PyTypeError::new_err(
+                "an ExternalModule enters the sandbox only through external_modules, not as a value",
+            ))
         } else if obj.is_instance(get_pure_posix_path(py)?)? {
             // pathlib.PurePosixPath and thereby pathlib.PosixPath
             Ok(self.leaf(MontyNode::Path(obj.str()?.extract()?)))

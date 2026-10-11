@@ -289,6 +289,27 @@ fn class_instance_and_function_values_round_trip() {
 }
 
 #[test]
+fn module_values_round_trip() {
+    assert_value_round_trip(&MontyObject::module("tools", MontyUuid::from_u128(7), []));
+    // a submodule is a module attr of its parent, functions are named by their dotted path
+    assert_value_round_trip(&MontyObject::module(
+        "pkg",
+        MontyUuid::from_u128(8),
+        vec![
+            (
+                MontyObject::string("add".to_owned()),
+                MontyObject::function("pkg.add".to_owned(), None),
+            ),
+            (MontyObject::string("VERSION".to_owned()), MontyObject::int(3)),
+            (
+                MontyObject::string("sub".to_owned()),
+                MontyObject::module("pkg.sub", MontyUuid::from_u128(9), []),
+            ),
+        ],
+    ));
+}
+
+#[test]
 fn repr_and_cycle_round_trip() {
     assert_value_round_trip(&MontyObject::repr("<unrepresentable>".to_owned()));
 

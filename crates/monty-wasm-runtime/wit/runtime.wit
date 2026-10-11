@@ -114,6 +114,15 @@ interface worker {
         attrs: list<node-pair>,
     }
 
+    /// A host module and indexes of its attribute keys and values.
+    record module-node {
+        /// The dotted module name, e.g. `pkg.sub`.
+        name: string,
+        /// Canonical lowercase uuid string.
+        id: string,
+        attrs: list<node-pair>,
+    }
+
     /// An external function value.
     record function-node {
         name: string,
@@ -159,6 +168,7 @@ interface worker {
         /// An output-only reference back to an enclosing container, as its
         /// placeholder text (`[...]`, `(...)`, `{...}` or `...`).
         cycle(string),
+        module(module-node),
     }
 
     /// The values of one message: a post-order node arena. Every child

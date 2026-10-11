@@ -1755,7 +1755,7 @@ impl Value {
                 // CPython names the module, not its type, for a missing module attribute.
                 if let HeapData::Module(module) = vm.heap.get(*heap_id) {
                     return Err(ExcType::attribute_error_module(
-                        vm.interns.get_str(module.name()),
+                        module.name_str(vm.interns),
                         attr.as_str(vm.interns),
                     ));
                 }

@@ -334,12 +334,15 @@ fn store_miss_error(name: &str, uuid: &MontyUuid) -> PyErr {
 /// wrapper preserves it and the host never derives ids from addresses.
 /// `kind` names the wrapper class (`ClassInstance` / `ClassType`) in the error.
 pub(super) fn wrapper_uuid(wrapper: &Bound<'_, PyAny>, kind: &str) -> PyResult<MontyUuid> {
-    let py = wrapper.py();
-    let bytes: [u8; 16] = wrapper
-        .getattr(intern!(py, "id"))?
-        .getattr(intern!(py, "bytes"))
+    py_uuid(&wrapper.getattr(intern!(wrapper.py(), "id"))?, &format!("{kind}.id"))
+}
+
+/// A `uuid.UUID` as a [`MontyUuid`]; `what` names the value in the error.
+pub(super) fn py_uuid(value: &Bound<'_, PyAny>, what: &str) -> PyResult<MontyUuid> {
+    let bytes: [u8; 16] = value
+        .getattr(intern!(value.py(), "bytes"))
         .and_then(|bytes| bytes.extract())
-        .map_err(|_| PyTypeError::new_err(format!("{kind}.id must be a uuid.UUID")))?;
+        .map_err(|_| PyTypeError::new_err(format!("{what} must be a uuid.UUID")))?;
     Ok(MontyUuid::from_bytes(bytes))
 }
 

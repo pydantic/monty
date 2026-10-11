@@ -15,7 +15,17 @@ fn start(code: &str) -> RunProgress {
         .unwrap()
 }
 
-/// Builds a module stand-in with eager attributes.
+/// Builds a host module with the given attributes.
+fn host_module(name: &str, id: u128, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
+    MontyObject::module(
+        name,
+        MontyUuid::from_u128(id),
+        attrs.into_iter().map(|(k, v)| (MontyObject::string(k), v)),
+    )
+}
+
+/// Builds a host object answering an import, whose missing attributes the
+/// sandbox looks up lazily on the host.
 fn host_object(name: &str, id: u128, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
     MontyObject::class_instance(
         MontyObject::class_type(name, MontyUuid::from_u128(id), true, true, []),
@@ -26,11 +36,21 @@ fn host_object(name: &str, id: u128, attrs: Vec<(&str, MontyObject)>) -> MontyOb
 
 /// Answers the `import` OS call `progress` is suspended at, checking it names `module`.
 fn answer_import(progress: RunProgress, module: &str, value: MontyObject) -> RunProgress {
+    try_answer_import(progress, module, value).unwrap()
+}
+
+/// The last traceback line of the error `code` raises once its import of `module` is answered.
+fn import_error(code: &str, module: &str, value: MontyObject) -> String {
+    let err = try_answer_import(start(code), module, value).unwrap_err();
+    err.to_string().lines().last().unwrap().to_owned()
+}
+
+fn try_answer_import(progress: RunProgress, module: &str, value: MontyObject) -> Result<RunProgress, MontyException> {
     let call = progress.into_os_call().unwrap();
     assert_eq!(call.function_call.name(), IMPORT_CALL);
     assert!(matches!(&call.function_call, OsFunctionCall::Import(name) if name == module));
     assert!(!call.allow_eager_await);
-    call.resume(value, PrintWriter::Stdout).unwrap()
+    call.resume(value, PrintWriter::Stdout)
 }
 
 #[test]
@@ -39,23 +59,53 @@ fn an_unknown_import_suspends_and_binds_the_answer() {
     let done = answer_import(
         progress,
         "tools",
-        host_object("tools", 1, vec![("x", MontyObject::int(41))]),
+        host_module("tools", 1, vec![("x", MontyObject::int(41))]),
     );
     assert_eq!(done.into_complete(), Some(MontyObject::int(42)));
 }
 
 #[test]
+fn a_host_module_is_a_module_object() {
+    let code = "import tools\n(type(tools).__name__, repr(tools), hasattr(tools, '__name__'))";
+    let done = answer_import(start(code), "tools", host_module("tools", 1, vec![]));
+    assert_eq!(
+        done.into_complete(),
+        Some(MontyObject::tuple([
+            MontyObject::string("module"),
+            MontyObject::string("<module 'tools'>"),
+            MontyObject::bool(false),
+        ]))
+    );
+
+    assert_eq!(
+        import_error("import tools\ntools.nope", "tools", host_module("tools", 1, vec![])),
+        "AttributeError: module 'tools' has no attribute 'nope'"
+    );
+    assert_eq!(
+        import_error("import tools\ntools()", "tools", host_module("tools", 1, vec![])),
+        "TypeError: 'module' object is not callable"
+    );
+}
+
+#[test]
+fn a_host_module_exports_with_its_id() {
+    let module = host_module("tools", 1, vec![("x", MontyObject::int(1))]);
+    let done = answer_import(start("import tools\ntools"), "tools", module.clone());
+    assert_eq!(done.into_complete(), Some(module));
+}
+
+#[test]
 fn from_import_loads_names_from_the_answer() {
     let progress = start("from tools import x, y as z\nx * z");
-    let module = host_object("tools", 1, vec![("x", MontyObject::int(6)), ("y", MontyObject::int(7))]);
+    let module = host_module("tools", 1, vec![("x", MontyObject::int(6)), ("y", MontyObject::int(7))]);
     let done = answer_import(progress, "tools", module);
     assert_eq!(done.into_complete(), Some(MontyObject::int(42)));
 }
 
 #[test]
 fn a_dotted_import_walks_submodules_of_the_answer() {
-    let nested = |id| host_object("a.b", id, vec![("c", MontyObject::int(6))]);
-    let module = |id| host_object("a", id, vec![("b", nested(id + 10))]);
+    let nested = |id| host_module("a.b", id, vec![("c", MontyObject::int(6))]);
+    let module = |id| host_module("a", id, vec![("b", nested(id + 10))]);
 
     let done = answer_import(start("import a.b\na.b.c"), "a", module(1));
     assert_eq!(done.into_complete(), Some(MontyObject::int(6)));
@@ -69,21 +119,35 @@ fn a_dotted_import_walks_submodules_of_the_answer() {
 
 #[test]
 fn a_missing_submodule_is_a_module_not_found_error() {
-    let module = host_object("a", 1, vec![("b", MontyObject::int(1))]);
+    let module = host_module("a", 1, vec![("b", MontyObject::int(1))]);
     for code in ["import a.nope.deeper", "from a.nope import x"] {
-        // the host object has no eager `nope`, so the sandbox asks for it lazily
-        let lookup = answer_import(start(code), "a", module.clone())
-            .into_name_lookup()
-            .unwrap();
-        assert_eq!(lookup.name, "nope");
-        let err = lookup
-            .resume(NameLookupResult::Undefined, PrintWriter::Stdout)
-            .unwrap_err();
         assert_eq!(
-            err.to_string().lines().last(),
-            Some("ModuleNotFoundError: No module named 'a.nope'")
+            import_error(code, "a", module.clone()),
+            "ModuleNotFoundError: No module named 'a.nope'"
         );
     }
+    // a host module is a package: an attribute that is not a module is not a submodule
+    assert_eq!(
+        import_error("import a.b", "a", module),
+        "ModuleNotFoundError: No module named 'a.b'"
+    );
+}
+
+/// A host object (not a module) answering an import keeps lazy attribute lookups.
+#[test]
+fn a_host_object_answer_looks_up_missing_submodules_lazily() {
+    let module = host_object("a", 1, vec![("b", MontyObject::int(1))]);
+    let lookup = answer_import(start("import a.nope.deeper"), "a", module)
+        .into_name_lookup()
+        .unwrap();
+    assert_eq!(lookup.name, "nope");
+    let err = lookup
+        .resume(NameLookupResult::Undefined, PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last(),
+        Some("ModuleNotFoundError: No module named 'a.nope'")
+    );
 }
 
 #[test]
@@ -173,7 +237,7 @@ fn a_repl_import_suspends_and_the_module_persists() {
         panic!("expected the import to suspend");
     };
     assert!(matches!(&call.function_call, OsFunctionCall::Import(name) if name == "tools"));
-    let module = host_object("tools", 1, vec![("x", MontyObject::int(2))]);
+    let module = host_module("tools", 1, vec![("x", MontyObject::int(2))]);
     let ReplProgress::Complete { repl, .. } = call.resume(module, PrintWriter::Stdout).unwrap() else {
         panic!("expected the snippet to complete");
     };
@@ -185,6 +249,50 @@ fn a_repl_import_suspends_and_the_module_persists() {
         panic!("expected the snippet to complete");
     };
     assert_eq!(value, MontyObject::int(42));
+}
+
+/// A host module's name and id persist in a dump: the restored object is still a
+/// module and exports back as the module that was imported.
+#[test]
+fn a_dumped_host_module_restores_as_the_same_module() {
+    let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    let ReplProgress::OsCall(call) = repl
+        .feed_start("import tools", Vec::<(String, MontyObject)>::new(), PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected the import to suspend");
+    };
+    let module = host_module("tools", 1, vec![("x", MontyObject::int(2))]);
+    let ReplProgress::Complete { repl, .. } = call.resume(module.clone(), PrintWriter::Stdout).unwrap() else {
+        panic!("expected the snippet to complete");
+    };
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped while idle");
+    };
+    let code = "(type(tools).__name__, repr(tools), tools.x, tools)";
+    let ReplProgress::Complete { repl, value } = repl
+        .feed_start(code, Vec::<(String, MontyObject)>::new(), PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected the snippet to complete");
+    };
+    assert_eq!(
+        value,
+        MontyObject::tuple([
+            MontyObject::string("module"),
+            MontyObject::string("<module 'tools'>"),
+            MontyObject::int(2),
+            module,
+        ])
+    );
+    let err = repl
+        .feed_start("tools.nope", Vec::<(String, MontyObject)>::new(), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        err.error.to_string().lines().last(),
+        Some("AttributeError: module 'tools' has no attribute 'nope'")
+    );
 }
 
 /// The frame must retain the module name across a dump between two lazy attribute lookups.

@@ -304,6 +304,20 @@ impl MontyObject {
         Self { graph, root }
     }
 
+    /// A host module named `name` with its attributes, identified by `id`;
+    /// it imports as a `module` object in the sandbox.
+    #[must_use]
+    pub fn module(name: impl Into<String>, id: MontyUuid, attrs: impl IntoIterator<Item = (Self, Self)>) -> Self {
+        let mut graph = MontyGraph::new();
+        let attrs = push_pairs(attrs, &mut graph);
+        let root = graph.push(MontyNode::Module {
+            name: name.into(),
+            id,
+            attrs,
+        });
+        Self { graph, root }
+    }
+
     /// Resolves a builtin function by its Python name (e.g. `"len"`), the
     /// name its `Display` renders.
     #[must_use]
@@ -455,12 +469,14 @@ impl<'a> ObjectRef<'a> {
         }
     }
 
-    /// The `(key, value)` pairs of a dict, or the eager attrs of a class
-    /// instance or class type object; `None` for any other value.
+    /// The `(key, value)` pairs of a dict, or the attrs of a class instance,
+    /// class type object or module; `None` for any other value.
     #[must_use]
     pub fn pairs(&self) -> Option<Vec<(Self, Self)>> {
         let pairs = match self.node() {
-            MontyNode::Dict(pairs) | MontyNode::ClassInstance { attrs: pairs, .. } => pairs,
+            MontyNode::Dict(pairs)
+            | MontyNode::ClassInstance { attrs: pairs, .. }
+            | MontyNode::Module { attrs: pairs, .. } => pairs,
             MontyNode::ClassType(class) => &class.attrs,
             _ => return None,
         };
@@ -762,6 +778,8 @@ impl<'a> ObjectRef<'a> {
             MontyNode::ClassType(class) => write!(f, "<class '{}'>", class.name),
             MontyNode::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             MontyNode::Function { name, .. } => write!(f, "<function '{name}' external>"),
+            // a module's repr names it without listing its attrs, as CPython's does
+            MontyNode::Module { name, .. } => write!(f, "<module '{name}'>"),
             MontyNode::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
             MontyNode::Cycle(placeholder) => f.write_str(placeholder),
             MontyNode::List(_)
@@ -942,6 +960,18 @@ fn nodes_eq(a: &MontyNode, b: &MontyNode, pending: &mut Vec<(NodeId, NodeId)>) -
                 queue_pairs(xs, ys, pending)
             }
         }
+        (
+            MontyNode::Module {
+                name: x_name,
+                id: x_id,
+                attrs: xs,
+            },
+            MontyNode::Module {
+                name: y_name,
+                id: y_id,
+                attrs: ys,
+            },
+        ) => x_name == y_name && x_id == y_id && queue_pairs(xs, ys, pending),
         // every other pairing is leaf against leaf, or a kind mismatch
         _ => a.is_leaf() && b.is_leaf() && a == b,
     }

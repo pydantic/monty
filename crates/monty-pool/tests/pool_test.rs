@@ -2857,8 +2857,8 @@ fn position() -> pb::SourceRange {
 
 /// Represents a module as a host class instance with eager attributes.
 fn host_module(name: &str, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
-    MontyObject::class_instance(
-        MontyObject::class_type(name, MontyUuid::from_u128(1), true, true, []),
+    MontyObject::module(
+        name,
         MontyUuid::from_u128(2),
         attrs.into_iter().map(|(k, v)| (MontyObject::string(k), v)),
     )

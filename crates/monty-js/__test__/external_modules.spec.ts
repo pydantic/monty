@@ -23,7 +23,8 @@ const tools = {
 }
 const code = "import tools\nfrom tools import concat\n[tools.add(1, 2), concat('a', b='b'), tools.VERSION]"
 const addStub = 'def add(a: int, b: int) -> int: ...\n'
-const modules: ExternalModules = { tools: new ExternalModule(tools) }
+const toolsModule = new ExternalModule(tools)
+const modules: ExternalModules = { tools: toolsModule }
 
 /** A session whose feeds may import `externalModules`. */
 function checkout(externalModules: ExternalModules, options: CheckoutOptions = {}) {
@@ -40,8 +41,43 @@ test('import binds the host module', async () => {
 })
 
 test('the module object', async () => {
-  const code = 'import tools\nimport tools as m\n[tools.add is m.add, type(tools).__name__, hasattr(tools, "nope")]'
-  t.deepEqual(await run(code, modules), [true, 'tools', false])
+  const code =
+    'import tools\nimport tools as m\n[tools.add is m.add, type(tools).__name__, hasattr(tools, "nope"), repr(tools)]'
+  t.deepEqual(await run(code, modules), [true, 'module', false, "<module 'tools'>"])
+})
+
+test('the module crosses back with its id', async () => {
+  await using session = await checkout(modules)
+  const returned = (await session.feedRun('import tools\ntools')) as ExternalModule
+  t.true(returned instanceof ExternalModule)
+  t.is(returned.id, toolsModule.id)
+  t.is(returned.stubs, undefined)
+  t.deepEqual(Object.keys(returned.attrs), ['add', 'concat', 'VERSION'])
+  t.is(returned.attrs.VERSION, 3)
+  t.is(await session.feedRun('import tools\nimport tools as m\ntools is m'), false)
+})
+
+test('a module is not a value', async () => {
+  await using session = await checkout(modules)
+  await t.throwsAsync(session.feedRun('x', { inputs: { x: new ExternalModule({}) } }), {
+    instanceOf: TypeError,
+    message: 'an ExternalModule enters the sandbox only through externalModules, not as a value',
+  })
+})
+
+test('the module object is frozen', () => {
+  const id = '0F0E0D0C-0B0A-4908-8706-050403020100'
+  const module = new ExternalModule(tools, { stubs: addStub, id })
+  t.is(module.id, id.toLowerCase())
+  t.is(module.stubs, addStub)
+  t.true(Object.isFrozen(module.attrs))
+  t.deepEqual(Object.keys(module.attrs), ['add', 'concat', 'VERSION'])
+  t.regex(new ExternalModule({}).id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  t.not(new ExternalModule({}).id, new ExternalModule({}).id)
+  t.throws(() => new ExternalModule({}, { id: 'nope' }), {
+    instanceOf: TypeError,
+    message: 'ExternalModule id must be a canonical uuid string, got "nope"',
+  })
 })
 
 test('import errors', async () => {
@@ -59,21 +95,21 @@ test('import errors', async () => {
   })
 })
 
-test('a plain-object module is not callable and has no other methods', async () => {
-  // Both calls suspend as methods on the module wrapper.
+test('a module is not callable and names missing attributes', async () => {
+  // Module errors are raised in the sandbox, as CPython's are, with no host round trip.
   await using session = await checkout(modules)
   await t.throwsAsync(session.feedRun('import tools\ntools()'), {
     instanceOf: MontyRuntimeError,
-    message: "TypeError: 'tools' object is not callable",
+    message: "TypeError: 'module' object is not callable",
   })
   await t.throwsAsync(session.feedRun('import tools\ntools.nope()'), {
     instanceOf: MontyRuntimeError,
-    message: "AttributeError: 'tools' object has no attribute 'nope'",
+    message: "AttributeError: module 'tools' has no attribute 'nope'",
   })
 })
 
-test('a restored plain-object module is a restored host object', async () => {
-  // Its functions still resolve by name; method calls on it fail like any restored host object.
+test('a restored module is a module', async () => {
+  // Its functions still resolve by name through the session's modules.
   let blob: Buffer
   {
     await using session = await checkout(modules)
@@ -85,39 +121,49 @@ test('a restored plain-object module is a restored host object', async () => {
   t.is(await session.feedRun('tools.add(1, 2)'), 3)
   await t.throwsAsync(session.feedRun('tools()'), {
     instanceOf: MontyRuntimeError,
-    message: /^RuntimeError: no host object registered for method call '__call__'/,
+    message: "TypeError: 'module' object is not callable",
   })
-  // a fresh import is a live host object again
-  await t.throwsAsync(session.feedRun('import tools\ntools()'), {
+  // the restored binding is still a module, carrying the id it was imported with
+  t.deepEqual(await session.feedRun('[type(tools).__name__, repr(tools)]'), ['module', "<module 'tools'>"])
+  const restored = (await session.feedRun('tools')) as ExternalModule
+  t.true(restored instanceof ExternalModule)
+  t.is(restored.id, toolsModule.id)
+  await t.throwsAsync(session.feedRun('tools.nope'), {
     instanceOf: MontyRuntimeError,
-    message: "TypeError: 'tools' object is not callable",
+    message: "AttributeError: module 'tools' has no attribute 'nope'",
   })
 })
 
-test('a ClassInstance module', async () => {
+test('a ClassInstance in a module', async () => {
   class Tools {
     add(a: number, b: number): number {
       return a + b
     }
   }
-  const module = new ClassInstance(new Tools(), { allowedMethods: ['add'] })
-  t.is(await run('import tools\ntools.add(2, 3)', { tools: new ExternalModule(module) }), 5)
+  const inner = new ClassInstance(new Tools(), { allowedMethods: ['add'] })
+  t.is(await run('import tools\ntools.inner.add(2, 3)', { tools: new ExternalModule({ inner }) }), 5)
 })
 
-test('a plain-object module is read on each import', async () => {
-  class Tools {
-    constructor(private readonly base: number) {}
-    add(a: number): number {
-      return this.base + a
-    }
-  }
-  const module = { VERSION: 1, inner: new ClassInstance(new Tools(10), { allowedMethods: ['add'] }) }
-  await using session = await checkout({ tools: new ExternalModule(module) })
-  t.deepEqual(await session.feedRun('import tools\n[tools.VERSION, tools.inner.add(1)]'), [1, 11])
-  // the host's current values cross with the next import, as in Python
-  module.VERSION = 2
-  module.inner = new ClassInstance(new Tools(20), { allowedMethods: ['add'] })
-  t.deepEqual(await session.feedRun('import tools\n[tools.VERSION, tools.inner.add(1)]'), [2, 21])
+test('attrs are copied at construction', async () => {
+  // A module is frozen once made, so later edits to the object given never reach the sandbox.
+  const attrs: Record<string, unknown> = { VERSION: 1 }
+  const pkg = new ExternalModule(attrs)
+  attrs.VERSION = 2
+  attrs.sub = new ExternalModule({ pkg })
+  await using session = await checkout({ pkg })
+  t.is(await session.feedRun('import pkg\npkg.VERSION'), 1)
+  await t.throwsAsync(session.feedRun('import pkg.sub'), {
+    instanceOf: MontyRuntimeError,
+    message: "ModuleNotFoundError: No module named 'pkg.sub'",
+  })
+})
+
+test('a replaced entry is seen on the next import', async () => {
+  const externalModules: ExternalModules = { tools: new ExternalModule({ VERSION: 1 }) }
+  await using session = await checkout(externalModules)
+  t.is(await session.feedRun('import tools\ntools.VERSION'), 1)
+  externalModules.tools = new ExternalModule({ VERSION: 2 })
+  t.is(await session.feedRun('import tools\ntools.VERSION'), 2)
 })
 
 test('entries added after the checkout are importable', async () => {
@@ -139,25 +185,28 @@ test('externalModules must be a plain object', async () => {
   })
 })
 
-test('a throwing getter leaves the earlier import intact', async () => {
-  let fail = false
-  const flaky = {
+test('a getter is read once, at construction', async () => {
+  let reads = 0
+  const counted = {
     get add(): (a: number, b: number) => number {
-      if (fail) throw new Error('gone')
+      reads += 1
       return (a, b) => a + b
     },
   }
-  await using session = await checkout({ flaky: new ExternalModule(flaky) })
-  await session.feedRun('import flaky')
-  fail = true
-  await t.throwsAsync(session.feedRun('import flaky'), { instanceOf: MontyRuntimeError, message: 'RuntimeError: gone' })
-  fail = false
-  t.is(await session.feedRun('flaky.add(1, 2)'), 3)
+  const module = new ExternalModule(counted)
+  t.is(reads, 1)
+  await using session = await checkout({ counted: module })
+  t.is(await session.feedRun('import counted\nimport counted\ncounted.add(1, 2)'), 3)
+  t.is(reads, 1)
+  const broken = {
+    get boom(): number {
+      throw new Error('nope')
+    },
+  }
+  t.throws(() => new ExternalModule(broken), { instanceOf: Error, message: 'nope' })
 })
 
 test('name-based calls respect module exposure', async () => {
-  // Forged dotted names must not expose private attributes or bypass
-  // ClassInstance's UUID dispatch and method policy.
   const privateProbe = () => 'hidden'
   Object.defineProperty(privateProbe, 'name', { value: 'tools._secret' })
   await using session = await checkout({ tools: new ExternalModule({ _secret: () => 'hidden' }) })
@@ -165,21 +214,6 @@ test('name-based calls respect module exposure', async () => {
     instanceOf: MontyRuntimeError,
     message: "NameError: name 'tools._secret' is not defined",
   })
-  class Tools {
-    reveal(): string {
-      return 'hidden'
-    }
-  }
-  const instanceProbe = () => 'hidden'
-  Object.defineProperty(instanceProbe, 'name', { value: 'tools.reveal' })
-  const instance = new ClassInstance(new Tools(), { allowedMethods: ['reveal'] })
-  await using instanceSession = await checkout({ tools: new ExternalModule(instance) })
-  await t.throwsAsync(
-    instanceSession.feedRun('import tools\nassert tools.reveal() == "hidden"\nprobe()', {
-      inputs: { probe: instanceProbe },
-    }),
-    { instanceOf: MontyRuntimeError, message: "NameError: name 'tools.reveal' is not defined" },
-  )
 })
 
 test('async tools run concurrently', async () => {
@@ -371,7 +405,7 @@ test('submodules are attributes of their parent', async () => {
     'from pkg.sub import add, VERSION',
     '[pkg.VERSION, pkg.sub.VERSION, s.add(1, 2), sub.add(3, 4), add(5, 6), VERSION, type(pkg.sub).__name__]',
   ].join('\n')
-  t.deepEqual(await session.feedRun(code), [1, 2, 3, 7, 11, 2, 'pkg.sub'])
+  t.deepEqual(await session.feedRun(code), [1, 2, 3, 7, 11, 2, 'module'])
   await t.throwsAsync(session.feedRun('import pkg.nope'), {
     instanceOf: MontyRuntimeError,
     message: "ModuleNotFoundError: No module named 'pkg.nope'",
@@ -382,18 +416,23 @@ test('submodules are attributes of their parent', async () => {
   })
   await t.throwsAsync(session.feedRun('import pkg.sub\npkg.sub()'), {
     instanceOf: MontyRuntimeError,
-    message: "TypeError: 'pkg.sub' object is not callable",
+    message: "TypeError: 'module' object is not callable",
+  })
+  // an attribute that is not a module is not a submodule
+  await t.throwsAsync(session.feedRun('import pkg.VERSION'), {
+    instanceOf: MontyRuntimeError,
+    message: "ModuleNotFoundError: No module named 'pkg.VERSION'",
   })
 })
 
-test('a ClassInstance submodule', async () => {
+test('a ClassInstance in a submodule', async () => {
   class Tools {
     add(a: number, b: number): number {
       return a + b
     }
   }
-  const sub = new ExternalModule(new ClassInstance(new Tools(), { allowedMethods: ['add'] }))
-  t.is(await run('from pkg import sub\nsub.add(2, 3)', { pkg: new ExternalModule({ sub }) }), 5)
+  const sub = new ExternalModule({ tools: new ClassInstance(new Tools(), { allowedMethods: ['add'] }) })
+  t.is(await run('from pkg.sub import tools\ntools.add(2, 3)', { pkg: new ExternalModule({ sub }) }), 5)
 })
 
 test('submodule stubs type-check as a package', async () => {
@@ -409,70 +448,46 @@ test('submodule stubs type-check as a package', async () => {
   })
 })
 
-test('invalid submodules are rejected at the import', async () => {
-  const withPkg = (pkg: ExternalModule) => run('import pkg', { pkg })
-  await t.throwsAsync(withPkg(new ExternalModule({ sub: new ExternalModule((() => tools) as never) })), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.pkg.sub.module is function, not a plain object or ClassInstance',
-  })
-  await t.throwsAsync(withPkg(new ExternalModule({ '1sub': new ExternalModule(tools) })), {
-    instanceOf: MontyRuntimeError,
-    message: "TypeError: externalModules.pkg.module is a plain object with a key '1sub' that is not a valid identifier",
-  })
-  await t.throwsAsync(withPkg(new ExternalModule({ sub: new ExternalModule(tools, { stubs: 1 as never }) })), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.pkg.sub.stubs must be a string',
-  })
-  const module: Record<string, unknown> = {}
-  const pkg = new ExternalModule(module)
-  module.sub = new ExternalModule({ pkg })
-  await t.throwsAsync(withPkg(pkg), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.pkg.sub.pkg is externalModules.pkg again: modules cannot nest cyclically',
-  })
-  await t.throwsAsync(withPkg(new ExternalModule({ for: new ExternalModule(tools) })), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.pkg.for is not a valid module name',
-  })
-  await t.throwsAsync(withPkg(new ExternalModule({ json: new ExternalModule(tools) })), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.pkg.json is provided by the sandbox and cannot be replaced',
-  })
-})
-
-test('a getter handing back a module being imported is a cycle', async () => {
-  const module: Record<string, unknown> = {}
-  const pkg = new ExternalModule(module)
-  Object.defineProperty(module, 'sub', { enumerable: true, get: () => pkg })
-  await using session = await checkout({ pkg })
-  await t.throwsAsync(session.feedRun('import pkg'), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.pkg.sub is externalModules.pkg again: modules cannot nest cyclically',
-  })
-})
-
-test('a submodule behind a getter is checked at the import', async () => {
+test('invalid modules are rejected at construction', () => {
+  // Attrs are checked once, when the module is made: a plain object with identifier
+  // keys, submodules under valid module names, and arbitrary objects refused since
+  // they could expose imports.
+  const rejected = (make: () => unknown, message: string) => t.throws(make, { instanceOf: TypeError, message })
+  rejected(
+    () => new ExternalModule((() => tools) as never),
+    'ExternalModule attrs must be a plain object, got function',
+  )
+  rejected(
+    () => new ExternalModule({ '1sub': new ExternalModule(tools) }),
+    "ExternalModule attrs key '1sub' is not a valid identifier",
+  )
+  // each key must be one component of a host function's dotted path
+  rejected(
+    () => new ExternalModule({ 'a.b': (a: number, b: number) => a + b }),
+    "ExternalModule attrs key 'a.b' is not a valid identifier",
+  )
+  rejected(() => new ExternalModule(tools, { stubs: 1 as never }), 'ExternalModule stubs must be a string, got number')
+  rejected(
+    () => new ExternalModule({ for: new ExternalModule(tools) }),
+    'ExternalModule attrs.for is not a valid module name',
+  )
+  rejected(
+    () => new ExternalModule({ json: new ExternalModule(tools) }),
+    'ExternalModule attrs.json is provided by the sandbox and cannot be replaced',
+  )
+  // a submodule behind a getter is made, and checked, when the getter is read
   const lazy = {
     get sub(): ExternalModule {
       return new ExternalModule({ '1x': 1 })
     },
   }
-  await using session = await checkout({ pkg: new ExternalModule(lazy) })
-  await t.throwsAsync(session.feedRun('import pkg'), {
-    instanceOf: MontyRuntimeError,
-    message:
-      "TypeError: externalModules.pkg.sub.module is a plain object with a key '1x' that is not a valid identifier",
-  })
+  rejected(() => new ExternalModule(lazy), "ExternalModule attrs key '1x' is not a valid identifier")
 })
 
 test('an entry must be an ExternalModule or a factory', async () => {
   await t.throwsAsync(run('import tools', { tools: tools as never }), {
     instanceOf: MontyRuntimeError,
     message: 'TypeError: externalModules.tools must be an ExternalModule or a function returning one',
-  })
-  await t.throwsAsync(run('import tools', { tools: new ExternalModule(tools, { stubs: 1 as never }) }), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.tools.stubs must be a string',
   })
 })
 
@@ -486,13 +501,11 @@ test('module functions keep the module as their receiver', async () => {
   t.is(await run('import counter\ncounter.inc()\ncounter.inc()', { counter: new ExternalModule(counter) }), 2)
 })
 
-test('each module is its own class, the same on every import', async () => {
-  const code =
-    'import a\nimport b\nimport a as c\n[type(a).__name__, type(b).__name__, type(a) is type(b), type(a) is type(c)]'
+test('every host module is a module', async () => {
+  const code = 'import a\nimport b\n[type(a).__name__, type(b).__name__, type(a) is type(b)]'
   t.deepEqual(await run(code, { a: new ExternalModule({ x: 1 }), b: new ExternalModule({ y: 2 }) }), [
-    'a',
-    'b',
-    false,
+    'module',
+    'module',
     true,
   ])
 })
@@ -511,33 +524,6 @@ test('a forged name with many dots is walked through the configured modules', as
     message: `NameError: name '${name}' is not defined`,
   })
   t.is(await session.feedRun('from a.a import add\nadd(1, 2)'), 3)
-})
-
-test('a getter that throws at the call raises in the sandbox', async () => {
-  let reads = 0
-  const flaky = {
-    // Read once by the import, again by the call.
-    get add(): (a: number, b: number) => number {
-      if (reads++ > 0) throw new Error('gone')
-      return (a, b) => a + b
-    },
-  }
-  await using session = await checkout({ flaky: new ExternalModule(flaky) })
-  await t.throwsAsync(session.feedRun('import flaky\nflaky.add(1, 2)'), {
-    instanceOf: MontyRuntimeError,
-    message: 'RuntimeError: gone',
-  })
-  t.is(await session.feedRun('1 + 1'), 2)
-})
-
-test('a dotted key of a plain-object module is rejected', async () => {
-  // Each key must be one component of a host function's dotted path.
-  const tools = new ExternalModule({ 'a.b': (a: number, b: number) => a + b })
-  await t.throwsAsync(run('import tools', { tools }), {
-    instanceOf: MontyRuntimeError,
-    message:
-      "TypeError: externalModules.tools.module is a plain object with a key 'a.b' that is not a valid identifier",
-  })
 })
 
 test('a module factory runs once per session, when first needed', async () => {
@@ -627,12 +613,12 @@ test('a module factory failure raises at the import', async () => {
   })
   await t.throwsAsync(session.feedRun('import badValue'), {
     instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.badValue.module is number, not a plain object or ClassInstance',
+    message: 'TypeError: ExternalModule attrs must be a plain object, got number',
   })
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
-test('a module must be a plain object or ClassInstance', async () => {
+test('attrs must be a plain object', async () => {
   // Class instances require an explicit exposure policy through ClassInstance.
   class Tools {
     add(a: number, b: number): number {
@@ -640,31 +626,19 @@ test('a module must be a plain object or ClassInstance', async () => {
     }
   }
   const asModule = (value: unknown) => new ExternalModule(value as Record<string, unknown>)
-  await t.throwsAsync(run('import tools', { tools: asModule(new Tools()) }), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.tools.module is a Tools, not a plain object or ClassInstance',
+  t.throws(() => asModule(new Tools()), {
+    instanceOf: TypeError,
+    message: 'ExternalModule attrs must be a plain object, got a Tools',
   })
-  await t.throwsAsync(run('import tools', { tools: asModule(new Map()) }), {
-    instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.tools.module is a Map, not a plain object or ClassInstance',
+  t.throws(() => asModule(new Map()), {
+    instanceOf: TypeError,
+    message: 'ExternalModule attrs must be a plain object, got a Map',
   })
   await t.throwsAsync(run('import tools', { tools: () => asModule(new Tools()) }), {
     instanceOf: MontyRuntimeError,
-    message: 'TypeError: externalModules.tools.module is a Tools, not a plain object or ClassInstance',
+    message: 'TypeError: ExternalModule attrs must be a plain object, got a Tools',
   })
   // Module namespaces have null prototypes.
   const bare = Object.assign(Object.create(null) as Record<string, unknown>, tools)
   t.deepEqual(await run(code, { tools: new ExternalModule(bare) }), [3, 'ab', 3])
-})
-
-test('a module that fails to materialize raises at the import', async () => {
-  const broken = {
-    get boom(): number {
-      throw new Error('nope')
-    },
-  }
-  await t.throwsAsync(run('import broken', { broken: new ExternalModule(broken) }), {
-    instanceOf: MontyRuntimeError,
-    message: 'RuntimeError: nope',
-  })
 })

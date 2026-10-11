@@ -8,7 +8,6 @@ from typing_extensions import Self
 
 from . import (
     AsyncSnapshot,
-    ExternalModule,
     ExternalResult,
     ExternalSettledResult,
     OsHandler,
@@ -29,6 +28,7 @@ __all__ = [
     'AsyncMontyWebsocket',
     'CollectStreams',
     'CollectString',
+    'ExternalModule',
     'Frame',
     'SourceRange',
     'Monty',
@@ -403,6 +403,35 @@ class MontyFileHandle:
     @property
     def writable(self) -> bool:
         """`True` if the mode permits `write()` (`'w'`, `'a'`, `'r+'`, `'w+'`, `'a+'`, and binary variants)."""
+
+@final
+class ExternalModule:
+    """A host module for `external_modules`: its attributes, optional `.pyi` stubs and id.
+
+    `attrs` is copied at construction: callables cross as host functions, nested
+    `ExternalModule`s as submodules (`import pkg.sub`), other values as attributes;
+    keys starting with `_` are not exposed. A module returned from the sandbox decodes
+    to an `ExternalModule` with the id it imported with.
+    """
+
+    def __new__(
+        cls, attrs: dict[str, Any], *, stubs: str | None = None, id: uuid.UUID | None = None
+    ) -> ExternalModule: ...
+    @property
+    def attrs(self) -> dict[str, Any]:
+        """A copy of the module's attributes."""
+
+    @property
+    def stubs(self) -> str | None:
+        """The module's `.pyi` source; needed for type checking unless the checker supplies it.
+        Submodule stubs form a package tree."""
+
+    @property
+    def id(self) -> uuid.UUID:
+        """Identity of the module, carried by every import of it."""
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
 
 @final
 class MontyClassProxy:

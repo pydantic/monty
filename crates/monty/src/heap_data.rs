@@ -978,7 +978,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 match self {
                     Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
                     Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
-                    Self::Module(m) => Ok(write!(f, "<module '{}'>", vm.interns.get_str(m.get(vm.heap).name()))?),
+                    Self::Module(m) => Ok(write!(f, "<module '{}'>", m.get(vm.heap).name_str(vm.interns))?),
                     Self::Coroutine(coro) => {
                         let func = vm.interns.get_function(coro.get(vm.heap).func_id);
                         let name = vm.interns.get_str(func.name.name_id);

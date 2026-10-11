@@ -17,9 +17,6 @@ inside the sandbox is the same object as a `ClassType` passed as a value.
 
 Subclass and override `convert_value` (or `call_method` / `lookup_lazy_attrs`)
 to transform values crossing the boundary.
-
-`ExternalModule` pairs a module value (a dict, or a `ClassInstance`) with its type
-stub for `external_modules`; a dict module crosses as a `_HostModule` wrapper.
 """
 
 from __future__ import annotations
@@ -31,7 +28,7 @@ from types import FunctionType
 from typing import Any, Literal, TypeAlias, cast
 from uuid import UUID, uuid4
 
-__all__ = 'ClassInstance', 'ClassType', 'ExternalModule', 'ModuleValue'
+__all__ = 'ClassInstance', 'ClassType'
 
 Policy: TypeAlias = Iterable[str] | Literal['all'] | None
 """An exposure policy as accepted by the wrappers: `None` exposes nothing,
@@ -346,70 +343,6 @@ class ClassType(BaseWrapper):
     @property
     def value_type(self) -> type[Any]:
         return self.value
-
-
-ModuleValue: TypeAlias = dict[str, Any] | ClassInstance
-"""A dict exposes keys not starting with `_`: callables as host functions,
-`ExternalModule`s as submodules, and other values as attributes.
-A `ClassInstance` uses its wrapper policy and has no submodules."""
-
-
-@dataclass(frozen=True)
-class ExternalModule:
-    """A host module and its optional type stub, supplied through `external_modules`.
-
-    Nest in another module's dict to expose a submodule (`import pkg.sub`).
-    """
-
-    module: ModuleValue
-    stubs: str | None = None
-    """The module's `.pyi` source; needed for type checking unless the checker supplies it.
-    Submodule stubs form a package tree."""
-
-
-@dataclass
-class _HostModule(ClassInstance):
-    """The host object a dict module crosses as: one per module path and session, so its
-    id and type are stable across imports. The dict's public items are read each time it
-    is sent; callables become host functions named `path.attr` and nested
-    `ExternalModule` values their own stand-ins. Method calls fail under the empty policy."""
-
-    _: KW_ONLY
-
-    path: str
-    """The dotted import path, the sandbox's name for the module's type."""
-    module: dict[str, Any]
-    """The module's dict, read each time the wrapper is sent; a replaced dict gets a new wrapper."""
-    _children: dict[str, _HostModule] = field(default_factory=dict)
-
-    @classmethod
-    def for_module(cls, path: str, module: dict[str, Any]) -> _HostModule:
-        """The wrapper for the dict `module` at the dotted `path`, with a fresh id."""
-        # a class named after the module, so `type(tools).__name__` and the errors say `tools`
-        module_type = type(path, (), {'__module__': __name__})
-        return cls(module_type(), path=path, module=module, class_type=ClassType(module_type, id=uuid4()))
-
-    def get_eager_attrs(self) -> dict[str, Any]:
-        return {
-            name: self.convert_value(name, value) for name, value in self.module.items() if not name.startswith('_')
-        }
-
-    def convert_value(self, /, name: str, value: Any) -> Any:
-        if isinstance(value, ExternalModule):
-            if not isinstance(value.module, dict):
-                return value.module
-            child = self._children.get(name)
-            if child is None or child.module is not value.module:
-                child = self._children[name] = _HostModule.for_module(f'{self.path}.{name}', value.module)
-            return child
-        if callable(value) and not isinstance(value, ClassType):
-            # a proxy carrying the dotted name the sandbox calls it by; the call itself resolves the dict
-            def proxy(*args: Any, **kwargs: Any) -> Any:
-                return value(*args, **kwargs)
-
-            proxy.__name__ = proxy.__qualname__ = f'{self.path}.{name}'
-            return proxy
-        return value
 
 
 def _normalize_policy(field_name: str, policy: Policy, collect: type[tuple[str, ...]] | type[frozenset[str]]) -> Policy:

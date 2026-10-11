@@ -302,8 +302,8 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
 Imports of unknown modules ask the host for them.
 Pass `external_modules` to `checkout()` (`externalModules` in JavaScript): an imported module stays bound for the
 session, and the mapping is read live, so a module added to it later is importable by later feeds.
-It maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values containing the module and its optional
-`.pyi` type stub:
+It maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values holding the module's attributes and
+its optional `.pyi` type stub:
 
 === "Python"
 
@@ -348,17 +348,19 @@ It maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values
     console.log(await session.feedRun(code)) // 10
     ```
 
-An entry's `module` dict (a plain object in JavaScript) becomes a host object named after the module.
-Its public items, whose keys do not start with `_`, become attributes.
+An entry's `attrs` dict (a plain object in JavaScript) is copied when the `ExternalModule` is made, and the module
+imports as a `module` object whose attributes are its public items, those whose keys do not start with `_`.
 Python module objects are rejected because they would also expose their imports; a dict explicitly selects attributes.
 In JavaScript a plain object is one whose prototype is `Object.prototype` or null, so a module namespace
 (`import * as tools`) qualifies while an instance of another class does not.
 A callable attribute becomes a host function named `<module>.<attr>`, dispatched like an `external_lookup` entry: a
 JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
-Any other attribute is converted when the module is imported.
-A [`ClassInstance`][pydantic_monty.ClassInstance] is sent as itself, so its methods route back to the wrapped object.
-Each entry is validated when a snippet first imports it: any other value is refused with `TypeError` there, a bad
-name with `ValueError`, and an entry under a sandbox module's name is never reached.
+Any other attribute is converted when the module is imported, so a [`ClassInstance`][pydantic_monty.ClassInstance]
+among them routes its methods back to the wrapped object.
+The constructor checks `attrs` (a dict with identifier keys, nested modules under valid module names) and raises
+`TypeError` or `ValueError` there.
+A mapping entry is checked when a snippet first imports it: a value that is neither an `ExternalModule` nor a factory
+is refused with `TypeError`, a bad name with `ValueError`, and an entry under a sandbox module's name is never reached.
 A zero-argument factory returning an `ExternalModule` runs when a feed first needs the module: for an import,
 a stub request, or a function call through a restored binding.
 Its result stands for the module for the rest of the session, so a module no feed imports costs nothing to offer.
@@ -371,10 +373,12 @@ An import of a module absent from `external_modules` raises `ModuleNotFoundError
 or `math`, are never looked up here.
 Every `import` statement asks again: the sandbox has no module cache, and a module bound by an earlier feed is a
 plain global.
-Both bindings read a dict module's items on each import and the current attribute when calling a module function; a
-`ClassInstance` module is sent as itself.
-The bound value is a host object, so `type(tools)` is its host class, not `module`; see
-[modules](limitations/modules.md#host-modules).
+Each import sends the entry the mapping holds at that moment, so replacing an entry changes what the next import
+binds, while a module's own `attrs` never change after construction.
+The bound value is a module object: `type(tools)` is `module`, a missing attribute raises
+`AttributeError: module 'tools' has no attribute 'x'`, and a module returned to the host arrives as an
+`ExternalModule` with the `id` it imported with.
+See [modules](limitations/modules.md#host-modules) for the remaining differences.
 
 Module names are identifiers.
 An `ExternalModule` attribute defines a submodule: `ExternalModule({'sub': ExternalModule(...)})` in Python or
@@ -383,7 +387,7 @@ It supports `import pkg.sub`, `import pkg.sub as s`, `from pkg import sub` and `
 Its host functions use dotted names such as `pkg.sub.add`.
 Missing submodules raise `ModuleNotFoundError: No module named 'pkg.nope'`.
 Submodules must be values, not factories, because they cross with their parent.
-`ClassInstance` modules use their wrapper's attributes and have no submodules.
+`import pkg.x` requires `x` to be a submodule: any other attribute raises `ModuleNotFoundError`, as in CPython.
 
 The bindings answer two [OS calls](snapshots.md#the-snapshot-kinds) from `external_modules`, before mounts or `os`:
 

@@ -87,6 +87,8 @@ mod _monty {
     // fresh session); `MontyStdTypeProxy` stands in for builtin functions and
     // type objects the host never materialises from sandbox output.
     #[pymodule_export]
+    use monty_proto::python::PyExternalModule as ExternalModule;
+    #[pymodule_export]
     use monty_proto::python::PyMontyClassProxy as MontyClassProxy;
     #[pymodule_export]
     use monty_proto::python::PyMontyClassTypeProxy as MontyClassTypeProxy;

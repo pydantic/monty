@@ -18,14 +18,16 @@ mod convert;
 mod decode;
 mod encode;
 mod exceptions;
+mod external_module;
 mod std_type_proxy;
 
 pub use class_instance::{
     InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper, is_class_type_wrapper,
     uuid_to_py,
 };
-pub use convert::PyMontyFileHandle;
+pub use convert::{PyMontyFileHandle, get_docstring};
 pub use decode::{DecodedArena, monty_to_py};
 pub use encode::{GraphEncoder, py_to_monty, py_to_monty_value};
 pub use exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_node};
+pub use external_module::PyExternalModule;
 pub use std_type_proxy::PyMontyStdTypeProxy;

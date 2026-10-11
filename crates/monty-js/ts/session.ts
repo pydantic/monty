@@ -16,9 +16,7 @@ import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from '.
 import {
   AttrNotExposed,
   attributeErrorMessage,
-  ClassInstance,
-  ClassType,
-  generateUuid,
+  HostModuleValue,
   InstanceStore,
   prepare,
   restore,
@@ -34,6 +32,7 @@ import {
   type SourceRange,
 } from './errors.js'
 import { PYTHON_EXC_NAMES } from './errors.js'
+import { checkModuleName, ExternalModule, kindOf } from './externalModule.js'
 import { mountsToNative } from './mount.js'
 import type { MountDir } from './mountDir.js'
 import {
@@ -599,27 +598,22 @@ class TurnAnswerer {
     let resolved = await this.module(top as string)
     for (const part of rest) {
       if (resolved === undefined) break
-      resolved = submodule(resolved.module, part)
+      resolved = submodule(resolved, part)
     }
     if (resolved === undefined) {
       return undefined
     }
-    const module = resolved.module
+    // a module holds no `_` name, so a forged private name finds nothing
     const attr = functionName.slice(dot + 1)
-    // Match `moduleValue` exposure, even for forged frames: private names are
-    // hidden, and ClassInstance methods require UUID dispatch and its policy.
-    if (module instanceof ClassInstance || attr.startsWith('_')) {
-      return undefined
-    }
-    const entry = ownEntry(module, attr)
+    const entry = ownEntry(resolved.attrs, attr)
     // Preserve the receiver of `module.attr(...)`.
-    return boxed(typeof entry === 'function' ? (entry as ExternalFunction).bind(module) : entry)
+    return boxed(typeof entry === 'function' ? (entry as ExternalFunction).bind(resolved.receiver) : entry)
   }
 
   /**
    * Resolves a module, caching each factory's result for the session.
    * Await only real Promises. Invalid results raise TypeError at the requesting
-   * import, call or stub request (see [`checkedModule`]).
+   * import, call or stub request (see [`HostModules.install`]).
    */
   private async module(name: string): Promise<ExternalModule | undefined> {
     const resolved = this.modules.resolved.get(name)
@@ -653,7 +647,7 @@ class TurnAnswerer {
       if (entry === undefined) {
         return this.native.resumeNotFound(onPrint)
       }
-      value = moduleValue(name, entry, this.modules)
+      value = moduleValue(name, entry)
     } catch (err) {
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeError(excType, message, onPrint)
@@ -1353,28 +1347,6 @@ const IMPORT_CALL = 'import'
 /** The OS call a type-checked feed makes for the stubs of the host modules it imports. */
 const IMPORT_STUBS_CALL = 'import_stubs'
 
-/** A plain object's own public properties become module attributes: functions
- *  become host functions and [`ExternalModule`] values become submodules.
- *  A [`ClassInstance`] uses its own exposure policy and has no submodules. */
-export type ModuleValue = Record<string, unknown> | ClassInstance
-
-/**
- * An importable host module with an optional `.pyi` stub for type checking.
- * Supply it in [`CheckoutOptions.externalModules`] or as another module's property
- * for a submodule such as `pkg.sub`.
- */
-export class ExternalModule {
-  /** `.pyi` source for imports, including package layout for submodules.
-   *  Required for type checking unless the checker already provides the module. */
-  readonly stubs: string | undefined
-  constructor(
-    readonly module: ModuleValue,
-    options: { stubs?: string } = {},
-  ) {
-    this.stubs = options.stubs
-  }
-}
-
 /** Modules keyed by import name, read when a snippet first imports one: invalid identifiers, keywords
  *  and sandbox-provided names throw there. Factories run at most once per session and may return a Promise. */
 export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
@@ -1388,9 +1360,6 @@ export type ExternalModules = Record<string, ExternalModule | (() => ExternalMod
 export class HostModules {
   /** Factory results cached for this session. */
   readonly resolved = new Map<string, ExternalModule>()
-  /** The wrapper each plain-object module crosses as, by dotted path: one per
-   *  session, so its id and type are stable across imports. */
-  private readonly wrappers = new Map<string, HostModuleWrapper>()
 
   /** The checkout's record, kept by reference so later additions are importable. */
   private readonly entries: ExternalModules
@@ -1405,52 +1374,13 @@ export class HostModules {
     this.entries = entries ?? {}
   }
 
-  /**
-   * Validates modules and records wrapper IDs without invoking getters.
-   * Getter-produced submodules are checked at import. `ancestors` rejects
-   * cycles before recursion overflows.
-   */
-  check(path: string, entry: ExternalModule, ancestors: Map<ExternalModule, string>): void {
-    const ancestor = ancestors.get(entry)
-    if (ancestor !== undefined) {
-      throw new TypeError(
-        `externalModules.${path} is externalModules.${ancestor} again: modules cannot nest cyclically`,
-      )
-    }
-    if (entry.stubs !== undefined && typeof entry.stubs !== 'string') {
-      throw new TypeError(`externalModules.${path}.stubs must be a string`)
-    }
-    const module = checkedModule(entry.module, `externalModules.${path}.module is`)
-    if (module instanceof ClassInstance) {
-      return
-    }
-    ancestors.set(entry, path)
-    for (const [key, child] of dataSubmodules(module)) {
-      checkSubmoduleName(path, key)
-      this.check(`${path}.${key}`, child, ancestors)
-    }
-    ancestors.delete(entry)
-  }
-
-  /** Validates and caches a factory result. */
+  /** Checks and caches a factory result. */
   install(name: string, returned: unknown): ExternalModule {
     if (!(returned instanceof ExternalModule)) {
       throw new TypeError(`externalModules.${name}() returned ${kindOf(returned)}, not an ExternalModule`)
     }
-    this.check(name, returned, new Map())
     this.resolved.set(name, returned)
     return returned
-  }
-
-  /** The wrapper for the plain-object module at `path`; an entry replaced in the record gets a new one. */
-  wrapper(path: string, entry: ExternalModule): HostModuleWrapper {
-    const known = this.wrappers.get(path)
-    if (known !== undefined && known.entry === entry) {
-      return known
-    }
-    const wrapper = new HostModuleWrapper(path, entry)
-    this.wrappers.set(path, wrapper)
-    return wrapper
   }
 
   /**
@@ -1463,98 +1393,13 @@ export class HostModules {
     if (entry === undefined) {
       return undefined
     }
-    if (!IDENTIFIER.test(name) || KEYWORDS.has(name)) {
-      throw new TypeError(`externalModules.${name} is not a valid module name`)
-    }
-    if (SANDBOX_MODULES.has(name)) {
-      throw new TypeError(`externalModules.${name} is provided by the sandbox and cannot be replaced`)
-    }
-    if (entry instanceof ExternalModule) {
-      this.check(name, entry, new Map())
-    } else if (typeof entry !== 'function') {
+    checkModuleName(`externalModules.${name}`, name)
+    if (!(entry instanceof ExternalModule) && typeof entry !== 'function') {
       throw new TypeError(`externalModules.${name} must be an ExternalModule or a function returning one`)
     }
     return entry
   }
 }
-
-/** A submodule is imported by name, so a keyword or sandbox module name cannot be one. */
-function checkSubmoduleName(path: string, key: string): void {
-  if (KEYWORDS.has(key)) {
-    throw new TypeError(`externalModules.${path}.${key} is not a valid module name`)
-  }
-  if (SANDBOX_MODULES.has(key)) {
-    throw new TypeError(`externalModules.${path}.${key} is provided by the sandbox and cannot be replaced`)
-  }
-}
-
-/** Python identifier syntax for module names. */
-const IDENTIFIER = /^[\p{ID_Start}_][\p{ID_Continue}]*$/u
-
-/** Keywords pass the identifier regex but cannot name modules. */
-const KEYWORDS = new Set([
-  'False',
-  'None',
-  'True',
-  'and',
-  'as',
-  'assert',
-  'async',
-  'await',
-  'break',
-  'class',
-  'continue',
-  'def',
-  'del',
-  'elif',
-  'else',
-  'except',
-  'finally',
-  'for',
-  'from',
-  'global',
-  'if',
-  'import',
-  'in',
-  'is',
-  'lambda',
-  'nonlocal',
-  'not',
-  'or',
-  'pass',
-  'raise',
-  'return',
-  'try',
-  'while',
-  'with',
-  'yield',
-])
-
-/** Keep in sync with `monty-types::SANDBOX_MODULE_NAMES`; these imports never reach the host. */
-const SANDBOX_MODULES = new Set([
-  'asyncio',
-  'base64',
-  'binascii',
-  'collections',
-  'copy',
-  'dataclasses',
-  'datetime',
-  'functools',
-  'gc',
-  'hashlib',
-  'itertools',
-  'json',
-  'math',
-  'os',
-  'pathlib',
-  'posixpath',
-  'random',
-  're',
-  'sys',
-  'time',
-  'typing',
-  'unicodedata',
-])
 
 /** `value` wrapped so an async return cannot await it; `undefined` stays absent. */
 function boxed(value: unknown): { value: unknown } | undefined {
@@ -1567,123 +1412,43 @@ function ownEntry(record: unknown, key: string): unknown {
     : undefined
 }
 
-/**
- * Accepts a [`ClassInstance`] or a plain object with identifier keys.
- * Null prototypes are allowed, including module namespaces. Invalid values
- * raise TypeError prefixed with `source`.
- */
-function checkedModule(value: unknown, source: string): ModuleValue {
-  if (value instanceof ClassInstance) {
-    return value
-  }
-  const proto = value !== null && typeof value === 'object' ? Object.getPrototypeOf(value) : undefined
-  if (proto === Object.prototype || proto === null) {
-    // Each key must be one component of a host function's dotted path.
-    const key = Object.keys(value as object).find((key) => !IDENTIFIER.test(key))
-    if (key !== undefined) {
-      throw new TypeError(`${source} a plain object with a key '${key}' that is not a valid identifier`)
-    }
-    return value as Record<string, unknown>
-  }
-  throw new TypeError(`${source} ${kindOf(value)}, not a plain object or ClassInstance`)
-}
-
-/** How a `TypeError` names a value's kind: `null`, a primitive's type, or its class. */
-function kindOf(value: unknown): string {
-  return value === null
-    ? 'null'
-    : typeof value !== 'object'
-      ? typeof value
-      : `a ${(value as { constructor?: { name?: string } }).constructor?.name ?? 'object'}`
-}
-
-/** Resolves only own public submodules; ClassInstance attributes are not submodules. */
-function submodule(module: ModuleValue, name: string): ExternalModule | undefined {
-  if (module instanceof ClassInstance || name.startsWith('_')) {
-    return undefined
-  }
-  const value = ownEntry(module, name)
+/** The submodule `name` of `module`: the `ExternalModule` under that key, if any. */
+function submodule(module: ExternalModule, name: string): ExternalModule | undefined {
+  const value = ownEntry(module.attrs, name)
   return value instanceof ExternalModule ? value : undefined
 }
 
-/** Finds own public submodules without invoking getters, for validation before execution. */
-function dataSubmodules(module: Record<string, unknown>): [string, ExternalModule][] {
-  const found: [string, ExternalModule][] = []
-  for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
-    const descriptor = Object.getOwnPropertyDescriptor(module, key)
-    if (descriptor !== undefined && 'value' in descriptor && descriptor.value instanceof ExternalModule) {
-      found.push([key, descriptor.value])
-    }
-  }
-  return found
+/** A module's attributes in order (all public: the module never holds a `_` name). */
+function publicAttrs(module: ExternalModule): [string, unknown][] {
+  return Object.keys(module.attrs).map((key) => [key, module.attrs[key]])
 }
 
 /** Collects stubs by dotted path, using `null` for modules without stubs. */
 function collectStubs(path: string, entry: ExternalModule, stubs: Record<string, string | null>): void {
   stubs[path] = entry.stubs ?? null
-  if (!(entry.module instanceof ClassInstance)) {
-    for (const [key, child] of dataSubmodules(entry.module)) {
-      collectStubs(`${path}.${key}`, child, stubs)
-    }
-  }
-}
-
-/**
- * The host object a plain-object module crosses as, one per module path and session
- * (see [`HostModules.wrapper`]). `attrs` holds the attributes the latest import read:
- * functions as host functions named `path.attr`, nested modules as their own wrappers.
- * Method calls fail under the empty policy, naming the module.
- */
-class HostModuleWrapper extends ClassInstance {
-  attrs: Record<string, unknown> = {}
-
-  constructor(
-    path: string,
-    readonly entry: ExternalModule,
-  ) {
-    super({}, { classType: new ClassType(Object, { name: path, id: generateUuid() }) })
-  }
-
-  override getEagerAttrs(): Array<[string, unknown]> {
-    return Object.entries(this.attrs).map(([name, value]) => [name, this.convertValue(name, value)])
-  }
-}
-
-/**
- * Passes ClassInstance through; reads a plain object's public attributes into its
- * session wrapper, afresh on every import as the Python binding reads its dict.
- * Functions use dotted names for [`TurnAnswerer.hostEntry`].
- */
-function moduleValue(
-  path: string,
-  entry: ExternalModule,
-  modules: HostModules,
-  ancestors: Map<ExternalModule, string> = new Map(),
-): unknown {
-  const module = entry.module
-  if (module instanceof ClassInstance) {
-    return module
-  }
-  const fresh: Record<string, unknown> = {}
-  ancestors.set(entry, path)
-  // Filter names before reading values so private getters never run.
-  for (const key of Object.keys(module).filter((key) => !key.startsWith('_'))) {
-    const value = module[key]
+  for (const [key, value] of publicAttrs(entry)) {
     if (value instanceof ExternalModule) {
-      // Getter-produced submodules were unavailable for validation before execution;
-      // `ancestors` catches a getter handing back a module being materialized.
-      checkSubmoduleName(path, key)
-      modules.check(`${path}.${key}`, value, ancestors)
-      fresh[key] = moduleValue(`${path}.${key}`, value, modules, ancestors)
-    } else {
-      fresh[key] = typeof value === 'function' ? namedHostFunction(`${path}.${key}`, value as ExternalFunction) : value
+      collectStubs(`${path}.${key}`, value, stubs)
     }
   }
-  ancestors.delete(entry)
-  // committed only once every attribute was read, so a throwing getter leaves the wrapper as it was
-  const wrapper = modules.wrapper(path, entry)
-  wrapper.attrs = fresh
-  return wrapper
+}
+
+/**
+ * The module value an import binds: the module's public attrs, with functions
+ * as host functions named by their dotted path (which [`TurnAnswerer.hostEntry`]
+ * resolves back through the module) and nested modules as submodules.
+ */
+function moduleValue(path: string, entry: ExternalModule): HostModuleValue {
+  const attrs = publicAttrs(entry).map(([key, value]): [string, unknown] => {
+    const sent =
+      value instanceof ExternalModule
+        ? moduleValue(`${path}.${key}`, value)
+        : typeof value === 'function'
+          ? namedHostFunction(`${path}.${key}`, value as ExternalFunction)
+          : value
+    return [key, sent]
+  })
+  return new HostModuleValue(path, entry.id, attrs)
 }
 
 function namedHostFunction(name: string, fn: ExternalFunction): ExternalFunction {

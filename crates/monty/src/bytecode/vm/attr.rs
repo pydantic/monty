@@ -90,23 +90,24 @@ impl VM<'_> {
     }
 
     /// Replaces the stack top with the next submodule of a dotted import.
-    /// Missing attributes raise `ModuleNotFoundError` naming `path_id`. Built-ins also
-    /// reject non-module attributes (`math.pi`, the host-served `os.environ`) and add
-    /// "is not a package" to errors.
+    /// Missing attributes raise `ModuleNotFoundError` naming `path_id`. Modules also
+    /// reject non-module attributes (`math.pi`, the host-served `os.environ`); bundled
+    /// ones add "is not a package" to errors, host modules being packages.
     pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
         let obj = this.pop();
         defer_drop!(obj, this);
 
-        let is_builtin = is_builtin_module(obj, this.heap);
+        let package = module_package(obj, this.heap);
+        let is_builtin = package == Some(false);
         let attr = EitherStr::Interned(name_id);
         match obj.py_getattr(&attr, this) {
-            Ok(CallResult::Value(value)) if is_builtin && is_builtin_module(&value, this.heap) => {
+            Ok(CallResult::Value(value)) if package.is_some() && module_package(&value, this.heap).is_some() => {
                 Ok(CallResult::Value(value))
             }
             // a property's OS call (`os.environ`) is no more a submodule than a value
-            Ok(result) if is_builtin => {
+            Ok(result) if package.is_some() => {
                 result.drop_with(this);
                 Err(not_a_submodule(this.interns, path_id, is_builtin))
             }
@@ -161,9 +162,16 @@ impl VM<'_> {
     }
 }
 
-/// Host-provided modules are host objects, not `HeapData::Module`s.
-fn is_builtin_module(value: &Value, heap: &Heap) -> bool {
-    matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Module(_)))
+/// `Some(is_package)` when `value` is a module: a host module is a package
+/// (its submodules are module attributes), a bundled one is not.
+fn module_package(value: &Value, heap: &Heap) -> Option<bool> {
+    match value {
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::Module(module) => Some(module.id().is_some()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Builds a missing-submodule error using the import's spelling of a built-in parent (`os.path`).

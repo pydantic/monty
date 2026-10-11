@@ -349,8 +349,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     Module stubs are retained even when type checking is off, so a restored session requests stubs only for modules
     it never asked about; every `import` still asks the host for the module value.
     The restoring `checkout()`'s `external_modules` answer those imports and function calls.
-- **Host modules follow host-object restoration rules.** Eager attributes, including functions named `tools.<attr>`,
-    survive restoration; lazy attribute access and method calls fail as described below.
+- **Host modules restore as module objects.** Their attributes, including functions named `tools.<attr>`, survive
+    restoration, and a function call resolves through the restoring `checkout()`'s `external_modules`.
     An `import` after restoration asks the host again.
 - **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
     come back as [`MontyClassProxy`][pydantic_monty.MontyClassProxy] (a host class, `type(x)` included, as [`MontyClassTypeProxy`][pydantic_monty.MontyClassTypeProxy] in Python and as a plain

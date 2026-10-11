@@ -10,7 +10,7 @@ Every bundled import builds a fresh module object; there is no `sys.modules` cac
 Thus `import math as a; import math as b` leaves `a is not b`, and changes such as `sys.argv.append(...)` do not
 survive the next import.
 Assigning a bundled module's attributes raises `AttributeError`, as in `sys.x = 1`.
-[Host modules](#host-modules) follow host-object rules instead.
+[Host modules](#host-modules) are module objects too, bound afresh by every import.
 The one exception is `random`'s module-level generator, which is session
 state: a `random.seed(...)` is still in effect after a later `import random`,
 in the next feed, and after a dump (see [random.md](random.md)).
@@ -87,25 +87,21 @@ Unknown imports request the top-level name through the `import` OS call; `__impo
 Dotted imports such as `import a.b.c` request `a`, then read `b` and `c` as successive attributes.
 Bundled modules that are not packages never request host submodules: `import os.x` raises
 `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package`.
-The host's answer becomes the imported value, with these differences from CPython:
+The host's answer becomes the imported `module` object, with these differences from CPython:
 
-- `type(m)`, `repr(m)` and `m.__class__` describe the host object.
-    Other dunder attributes, including `m.__name__` and `m.__dict__`, raise `AttributeError`.
-- Missing-attribute and not-callable errors name the host class (`'m' object`) rather than CPython's `module`.
+- Dunder attributes, including `m.__name__` and `m.__dict__`, raise `AttributeError`.
 - Every `import` requests the module again, including imports inside functions.
     Two imports bind distinct objects: `import m as a; import m as b` leaves `a is not b`.
-- Assigned attributes affect only that binding.
-    Both bindings reread a dict module's items on the next import and its attributes for function calls.
+- Assigned attributes affect only that binding: a function call still runs the host's current attribute, and the
+    next import binds the module afresh.
 - Host exceptions are raised at the `import`.
-- Host modules are treated as packages: a missing submodule raises `ModuleNotFoundError: No module named 'm.x'`.
-    `import m.x` binds any attribute `x`, including plain values that CPython would reject as non-modules.
-- `from m import x` reads eager or lazy attributes; missing names raise
+- Host modules are packages: a missing submodule, or `import m.x` for an attribute `x` that is not a module, raises
+    `ModuleNotFoundError: No module named 'm.x'`.
+- `from m import x` reads the module's attributes; missing names raise
     `ImportError: cannot import name 'x' from 'm' (unknown location)`.
-- Python classes in module dicts become host functions: `m.X()` constructs on the host, but `isinstance(v, m.X)`
-    raises `TypeError`.
+- Python classes among a module's attrs become host functions: `m.X()` constructs on the host, but
+    `isinstance(v, m.X)` raises `TypeError`.
     Wrap a class in `ClassType` to send it as a type.
-- Module names and dict keys must be identifiers, so `getattr(m, 'a.b')` cannot find a dict module attribute.
-    `ClassInstance` modules follow their wrapper's attribute policy.
 - Imports with more than 32 dotted components raise `SyntaxError`; `import a.b.c` has three.
 
 With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.

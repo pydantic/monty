@@ -24,7 +24,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
-        Complex, HostClass, HostClassType, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
+        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
         allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type,
@@ -460,9 +460,22 @@ impl GraphExporter {
                     imag: c.imag,
                 })
             }
-            HeapReadOutput::Module(m) => {
-                MontyNode::Repr(format!("<module '{}'>", vm.interns.get_str(m.get(vm.heap).name())))
-            }
+            // A host module crosses back with its id and attrs; a bundled one
+            // has no host identity and crosses as its repr.
+            HeapReadOutput::Module(m) => match m.get(vm.heap).id() {
+                Some(id) => {
+                    let name = m.get(vm.heap).name_str(vm.interns).to_owned();
+                    // Snapshot before recursing: attrs are mutable via `setattr`.
+                    let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
+                    defer_drop!(children, vm);
+                    MontyNode::Module {
+                        name,
+                        id,
+                        attrs: self.push_pairs(children, vm),
+                    }
+                }
+                None => MontyNode::Repr(format!("<module '{}'>", m.get(vm.heap).name_str(vm.interns))),
+            },
             HeapReadOutput::Coroutine(coro) => {
                 let func_id = coro.get(vm.heap).func_id;
                 let func = vm.interns.get_function(func_id);
@@ -1010,6 +1023,15 @@ fn import_node(
                 )))
             }
         },
+        // A host module is a real module object: attribute errors are raised
+        // in the sandbox, nothing routes back to the host by identity.
+        MontyNode::Module { name, id, attrs } => {
+            let pairs = clone_pairs(&attrs, built, vm);
+            let dict = Dict::from_pairs(pairs, vm)
+                .map_err(|_| InvalidInputError::invalid_type("unhashable module attr keys"))?;
+            let module = Module::host(name, id, dict);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::Module(Box::new(module)))))
+        }
         MontyNode::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
         MontyNode::FileHandle(handle) => {
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);

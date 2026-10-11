@@ -16,6 +16,7 @@ from ._monty import (
     AsyncNameLookupSnapshot,
     CollectStreams,
     CollectString,
+    ExternalModule,
     Frame,
     FunctionSnapshot,
     FutureSnapshot,
@@ -40,7 +41,7 @@ from ._monty import (
     __version__,
     _install_telemetry,
 )
-from .class_instance import ClassInstance, ClassType, ExternalModule, ModuleValue
+from .class_instance import ClassInstance, ClassType
 from .os_access import (
     AbstractFile,
     AbstractOS,
@@ -66,8 +67,6 @@ __all__ = (
     'ExternalFuture',
     'ExcType',
     'PrintCallback',
-    'ExternalModule',
-    'ModuleValue',
     'TypeCheckFormat',
     'OsHandler',
     'SyncSnapshot',
@@ -83,6 +82,7 @@ __all__ = (
     'AsyncMontyWebsocket',
     'CollectStreams',
     'CollectString',
+    'ExternalModule',
     'Frame',
     'SourceRange',
     'Monty',

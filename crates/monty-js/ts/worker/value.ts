@@ -207,6 +207,8 @@ export class ArenaEncoder {
         })
       case 'ClassInstance':
         return this.enterClassInstance(object)
+      case 'Module':
+        return this.enterModule(object)
       case 'FileHandle':
         return this.leaf(fileHandleNode(object))
       case 'Type':
@@ -265,6 +267,24 @@ export class ArenaEncoder {
     const children: Child[] = [{ classType: object.type as Record<string, unknown> }]
     children.push(...attrChildren(object.attrs as unknown[], 'ClassInstance'))
     return this.enter(object, { kind: 'class-instance', instanceId }, children)
+  }
+
+  /** Validates a host `Module` marker (`name`, a uuid `id`, `attrs` as ordered
+   *  `[name, value]` pairs) and opens its frame over the attrs. */
+  private enterModule(object: Record<string, unknown>): number | Frame {
+    if (typeof object.name !== 'string') {
+      throw new TypeError(
+        `Object property 'name' type mismatch. Expect value to be String, but received ${jsType(object.name)}`,
+      )
+    }
+    if (!Array.isArray(object.attrs)) {
+      throw new TypeError(
+        `Object property 'attrs' type mismatch. Expect value to be Array, but received ${jsType(object.attrs)}`,
+      )
+    }
+    const id = uuidString(object.id, 'Module id')
+    const children = attrChildren(object.attrs as unknown[], 'Module')
+    return this.enter(object, { kind: 'module', name: object.name, id }, children)
   }
 
   /**
@@ -331,6 +351,9 @@ export class ArenaEncoder {
           val: { classType: ids[0]!, instanceId: pending.instanceId, attrs: indexPairs(ids.slice(1)) },
         }
         break
+      case 'module':
+        node = { tag: 'module', val: { name: pending.name, id: pending.id, attrs: indexPairs(ids) } }
+        break
     }
     const index = this.leaf(node)
     this.memo.set(frame.key, index)
@@ -359,6 +382,8 @@ type Pending =
   | { kind: 'class-type'; header: ClassHeader }
   /** The first child is the class node, then attr name, value pairs. */
   | { kind: 'class-instance'; instanceId: string }
+  /** Children alternate attr name, value. */
+  | { kind: 'module'; name: string; id: string }
 
 /** A container mid-encoding: its children are pushed one at a time on the
  *  explicit stack, then the node is built from their indexes. */
@@ -556,6 +581,13 @@ function decodeNode(node: ValueNode, holder: number, child: (index: number, hold
     }
     case 'function':
       return node.val.name
+    case 'module':
+      return {
+        [TYPE_MARKER]: 'Module',
+        name: node.val.name,
+        id: node.val.id,
+        attrs: attrPairs(node.val.attrs, pair),
+      }
   }
 }
 
