@@ -33,23 +33,35 @@ from the notes below.
     at construction so that any consumer (`list(reader)`, `next(reader)`, a `for` loop) works;
     CPython reads lazily on the first `__next__`.
     See [open.md](open.md) for the file buffer this relies on.
+- **The file is loaded before the arguments are checked.**
+    When the reader's file is loaded at construction, a host read error is reported before a bad
+    dialect or format parameter would be; CPython validates the arguments first and never reads there.
 - **`writer.writerows()` on a file issues one write.**
     The rows are formatted and written to the file in a single host call, where CPython calls `write()`
     once per row, so a row that fails to format leaves the file untouched instead of partly written.
-    `DictWriter.writerows()` flattens every dict before writing for the same reason.
-    Any other target (an object with a `write()` method) is called once per row, but synchronously: a
-    `write()` that reaches an external function or host call raises `NotImplementedError`
+    `DictWriter.writerows()` on a file flattens every dict before writing for the same reason.
+    Any other target (an object with a `write()` method) is called once per row as the rows arrive, but
+    synchronously: a `write()` that reaches an external function or host call raises `NotImplementedError`
     (see [classes.md](classes.md) for this restriction).
     `writerow()` has no such limit, since it returns whatever the single `write()` call returns.
+- **`writerow()` reads the whole row before formatting any field.**
+    CPython formats each field as the row yields it, so with a row iterator that has side effects or
+    raises part-way, the order of a field's `str()` call and the iterator's own error can differ.
 - **`DictWriter` rows must be `dict`s.**
     `rowdict.keys()` and `rowdict.get()` are only resolved for real dicts; another mapping type raises
     the same `AttributeError` CPython raises for a non-mapping.
 - **`extrasaction='raise'` reports unknown keys in dict order.**
     CPython builds the message from a set difference, so its order varies.
-- **`DictReader` attributes other than `fieldnames`, `restkey` and `restval` are read-only.**
-    `reader.line_num = 0` or `reader.dialect = 'unix'` raise `AttributeError` where CPython allows the
-    assignment.
-    `DictWriter` attributes are all read-only.
+- **`DictReader.reader`, `DictReader.line_num` and `DictWriter.writer` are read-only.**
+    Assigning them raises `AttributeError` where CPython, whose `DictReader` and `DictWriter` are plain
+    Python classes, allows it.
+    `fieldnames`, `restkey`, `restval` and `dialect` on a `DictReader` and `fieldnames`, `restval` and
+    `extrasaction` on a `DictWriter` can be assigned.
+- **`copy.copy()` and `copy.deepcopy()` of a `DictReader` or `DictWriter` raise `TypeError`.**
+    The message is `cannot pickle 'csv.DictReader' object`; CPython copies the wrapper, sharing the
+    underlying `_csv.reader` or `_csv.writer` on a shallow copy.
+- **`repr(csv.Error('x'))` is `_csv.Error('x')`**, where CPython gives `Error('x')`, as for the other
+    dotted exception classes (see [exceptions.md](exceptions.md)).
 - **A dialect object's attributes cannot come from properties.**
     `dialect=SomeClass` reads plain attributes (`delimiter = ';'`); an attribute implemented as a `property`
     raises `NotImplementedError`.

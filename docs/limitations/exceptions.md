@@ -58,7 +58,7 @@ not supported; passing more than one argument raises an internal error.
     doesn't track, so Monty's
     `repr()` uses the generic single-message form instead.
 - The dotted exception classes — `json.JSONDecodeError`, `re.PatternError`,
-    `binascii.Error`, `binascii.Incomplete` — repr under their qualified name:
+    `binascii.Error`, `binascii.Incomplete`, `_csv.Error` — repr under their qualified name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 

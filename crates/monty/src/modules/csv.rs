@@ -26,7 +26,7 @@ use crate::{
         CsvObject, List, Module, PyTrait, Type,
         csv::{
             DIALECT_NAMES, Dialect, DictReader, DictWriter, FIELD_SIZE_LIMIT, FmtParams, Quoting, Reader, Writer,
-            has_write_method,
+            write_method,
         },
         iter::collect_iterable,
         str::allocate_string,
@@ -111,7 +111,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: CsvFunctions, args: ArgValues) -> 
 /// `csv.reader(csvfile, dialect='excel', **fmtparams)`, loading an unread file first.
 fn call_reader(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let callable = Value::ModuleFunction(ModuleFunctions::Csv(CsvFunctions::Reader));
-    match load_then_call(callable, args, vm) {
+    match load_then_call(callable, args, None, vm) {
         Ok(load) => Ok(load),
         Err(args) => reader_init(vm, args).map(CallResult::Value),
     }
@@ -120,16 +120,25 @@ fn call_reader(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `csv.DictReader(f, ...)` as called from Python, loading an unread file first.
 pub(crate) fn dict_reader_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let callable = Value::Builtin(Builtins::Type(Type::CsvDictReader));
-    match load_then_call(callable, args, vm) {
+    match load_then_call(callable, args, Some("f"), vm) {
         Ok(load) => Ok(load),
         Err(args) => dict_reader_init(vm, args).map(CallResult::Value),
     }
 }
 
-/// When the first positional argument is a readable file nobody has read, the host read
-/// that loads it, with `callable(args)` replayed on resume. Otherwise hands `args` back.
-fn load_then_call(callable: Value, args: ArgValues, vm: &mut VM<'_>) -> Result<CallResult, ArgValues> {
-    let file_id = match args.first_positional() {
+/// When the file argument (the first positional, or the keyword `file_keyword` names) is a
+/// readable file nobody has read, the host read that loads it, with `callable(args)`
+/// replayed on resume. Otherwise hands `args` back.
+fn load_then_call(
+    callable: Value,
+    args: ArgValues,
+    file_keyword: Option<&str>,
+    vm: &mut VM<'_>,
+) -> Result<CallResult, ArgValues> {
+    let file = args
+        .first_positional()
+        .or_else(|| file_keyword.and_then(|name| args.keyword(name, vm.heap, vm.interns)));
+    let file_id = match file {
         Some(Value::Ref(id))
             if let HeapReadOutput::OpenFile(file) = vm.heap.read(*id)
                 && file.needs_buffer_load(vm) =>
@@ -226,11 +235,11 @@ fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let mut target_guard = DropGuard::new(target, vm);
     let (target, vm) = target_guard.as_parts_mut();
     let dialect = Dialect::resolve(dialect.as_ref(), params, vm)?;
-    if !has_write_method(target, vm)? {
+    let Some(write) = write_method(target, vm)? else {
         return Err(ExcType::type_error("argument 1 must have a \"write\" method"));
-    }
+    };
     let (target, vm) = target_guard.into_parts();
-    Ok(CsvObject::Writer(Writer::new(target, dialect)).allocate(vm))
+    Ok(CsvObject::Writer(Writer::new(target, write, dialect)).allocate(vm))
 }
 
 /// `csv.get_dialect(name)`: one of the built-in dialects.
@@ -436,7 +445,6 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     let ((owned_values, _), vm) = owned.as_parts_mut();
     let extrasaction = check_extrasaction(&owned_values[2], vm)?;
     mem::replace(&mut owned_values[2], extrasaction).drop_with(vm);
-    let raise_on_extra = owned_values[2].to_str(vm)? == "raise";
     let ((owned_values, writer_args), vm) = owned.into_parts();
     let mut owned = DropGuard::new(owned_values, vm);
     let (_, vm) = owned.as_parts_mut();
@@ -445,14 +453,7 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     let extrasaction = owned_values.pop().expect("three values");
     let restval = owned_values.pop().expect("three values");
     let fieldnames = owned_values.pop().expect("three values");
-    Ok(CsvObject::DictWriter(DictWriter::new(
-        writer,
-        fieldnames,
-        restval,
-        extrasaction,
-        raise_on_extra,
-    ))
-    .allocate(vm))
+    Ok(CsvObject::DictWriter(DictWriter::new(writer, fieldnames, restval, extrasaction)).allocate(vm))
 }
 
 /// `extrasaction.lower()`, which must be `'raise'` or `'ignore'` and is what gets stored.

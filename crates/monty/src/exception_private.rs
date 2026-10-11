@@ -1448,7 +1448,7 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::CsvError, msg).into()
     }
 
-    /// The `_csv.Error` for a dialect name nothing registered.
+    /// The `_csv.Error` for a dialect name that is not registered.
     fn csv_unknown_dialect() -> RunError {
         Self::csv_error("unknown dialect")
     }
@@ -2875,12 +2875,10 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
-    /// The Python exception type raised, or `None` for an internal error.
-    pub(crate) fn exc_type(&self) -> Option<ExcType> {
-        match self {
-            Self::Exc(raise) | Self::UncatchableExc(raise) => Some(raise.exc.exc_type()),
-            Self::Internal(_) => None,
-        }
+    /// Whether this is a catchable `exc_type`, matching only `Exc` so an uncatchable
+    /// host or resource error is never swallowed by a guard that expects one.
+    pub(crate) fn is_catchable(&self, exc_type: ExcType) -> bool {
+        matches!(self, Self::Exc(raise) if raise.exc.exc_type() == exc_type)
     }
 
     /// Whether this is a catchable `StopIteration` from `__next__`.

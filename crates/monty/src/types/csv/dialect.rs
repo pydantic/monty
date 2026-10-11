@@ -41,7 +41,7 @@ impl Quoting {
     }
 
     /// The constant for a `quoting=` value; `None` for anything CPython rejects.
-    const fn from_int(value: i64) -> Option<Self> {
+    const fn from_int(value: i32) -> Option<Self> {
         match value {
             0 => Some(Self::Minimal),
             1 => Some(Self::All),
@@ -161,45 +161,31 @@ impl Dialect {
             Some(value) => Base::Object(value),
         };
 
-        // Explicit `quotechar=None` with no `quoting` selects QUOTE_NONE, decided on the
-        // raw values before conversion as CPython does. Both stay in the guarded `params`
-        // until converted, so an earlier parameter's error still releases them.
+        // CPython fetches every parameter the call left unset from `base` first, in this
+        // order, and converts them only afterwards. They stay in the guarded `params` until
+        // converted, so an earlier parameter's error still releases them.
+        params.delimiter = base.take(params.delimiter.take(), StaticStrings::Delimiter, vm)?;
+        params.doublequote = base.take(params.doublequote.take(), StaticStrings::Doublequote, vm)?;
+        params.escapechar = base.take(params.escapechar.take(), StaticStrings::Escapechar, vm)?;
+        params.lineterminator = base.take(params.lineterminator.take(), StaticStrings::Lineterminator, vm)?;
         params.quotechar = base.take(params.quotechar.take(), StaticStrings::Quotechar, vm)?;
         params.quoting = base.take(params.quoting.take(), StaticStrings::Quoting, vm)?;
+        params.skipinitialspace = base.take(params.skipinitialspace.take(), StaticStrings::Skipinitialspace, vm)?;
+        params.strict = base.take(params.strict.take(), StaticStrings::Strict, vm)?;
+
+        // Explicit `quotechar=None` with no `quoting` selects QUOTE_NONE, decided on the
+        // raw values before conversion as CPython does.
         let quoting_unset = params.quoting.is_none();
         let quotechar_is_none = matches!(params.quotechar, Some(Value::None));
 
-        let delimiter = set_char(
-            "delimiter",
-            base.take(params.delimiter.take(), StaticStrings::Delimiter, vm)?,
-            ',',
-            vm,
-        )?;
-        let doublequote = set_bool(
-            base.take(params.doublequote.take(), StaticStrings::Doublequote, vm)?,
-            true,
-            vm,
-        )?;
-        let escapechar = set_char_or_none(
-            "escapechar",
-            base.take(params.escapechar.take(), StaticStrings::Escapechar, vm)?,
-            None,
-            vm,
-        )?;
-        let lineterminator = set_str(
-            "lineterminator",
-            base.take(params.lineterminator.take(), StaticStrings::Lineterminator, vm)?,
-            "\r\n",
-            vm,
-        )?;
+        let delimiter = set_char("delimiter", params.delimiter.take(), ',', vm)?;
+        let doublequote = set_bool(params.doublequote.take(), true, vm)?;
+        let escapechar = set_char_or_none("escapechar", params.escapechar.take(), None, vm)?;
+        let lineterminator = set_str("lineterminator", params.lineterminator.take(), "\r\n", vm)?;
         let quotechar = set_char_or_none("quotechar", params.quotechar.take(), Some('"'), vm)?;
         let mut quoting = set_quoting(params.quoting.take(), vm)?;
-        let skipinitialspace = set_bool(
-            base.take(params.skipinitialspace.take(), StaticStrings::Skipinitialspace, vm)?,
-            false,
-            vm,
-        )?;
-        let strict = set_bool(base.take(params.strict.take(), StaticStrings::Strict, vm)?, false, vm)?;
+        let skipinitialspace = set_bool(params.skipinitialspace.take(), false, vm)?;
+        let strict = set_bool(params.strict.take(), false, vm)?;
 
         if quotechar_is_none && quoting_unset {
             quoting = Quoting::None;
@@ -300,7 +286,7 @@ impl Base<'_> {
                 match object.py_getattr(&name, vm) {
                     Ok(CallResult::Value(value)) => Ok(Some(value)),
                     // A missing attribute means "use the default", as CPython's `PyErr_Clear` does.
-                    Err(err) if err.exc_type() == Some(ExcType::AttributeError) => Ok(None),
+                    Err(err) if err.is_catchable(ExcType::AttributeError) => Ok(None),
                     Err(err) => Err(err),
                     Ok(other) => {
                         other.drop_with(vm);
@@ -399,14 +385,18 @@ fn set_str(name: &str, value: Option<Value>, default: &str, vm: &mut VM<'_>) -> 
 }
 
 /// `_set_int` plus `dialect_check_quoting`: an exact `int` naming a `QUOTE_*` constant.
+/// The conversion goes through a C `int`, so a value beyond it is an `OverflowError`.
 fn set_quoting(value: Option<Value>, vm: &mut VM<'_>) -> RunResult<Quoting> {
     let Some(value) = value else {
         return Ok(Quoting::Minimal);
     };
     let result = match value {
-        Value::Int(n) => Quoting::from_int(n).ok_or_else(|| ExcType::type_error("bad \"quoting\" value")),
+        Value::Int(n) => match i32::try_from(n) {
+            Ok(n) => Quoting::from_int(n).ok_or_else(|| ExcType::type_error("bad \"quoting\" value")),
+            Err(_) => Err(ExcType::overflow_c_int()),
+        },
         Value::Bool(_) => Err(ExcType::type_error("\"quoting\" must be an integer, not bool")),
-        _ if value.py_type(vm) == Type::Int => Err(ExcType::type_error("bad \"quoting\" value")),
+        _ if value.py_type(vm) == Type::Int => Err(ExcType::overflow_c_int()),
         _ => Err(ExcType::type_error(format!(
             "\"quoting\" must be an integer, not {}",
             value.py_type_name(vm)

@@ -71,11 +71,12 @@ pub(super) fn next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> Ru
     let (fields, vm) = fields_guard.as_parts_mut();
     let mut parser = Parser::new(&dialect);
 
-    let mut lines = 0usize;
+    // Native loops over source lines and their characters: poll the tracker so time
+    // limits still bite on one enormous line.
+    let mut polls = 0usize;
     loop {
-        // Native loop over source lines: poll the tracker so time limits still bite.
-        vm.heap.tracker.check_time_every(lines)?;
-        lines += 1;
+        vm.heap.tracker.check_time_every(polls)?;
+        polls += 1;
         let line = {
             let mut guard = vm.recursion_guard()?;
             let vm = &mut *guard;
@@ -105,6 +106,8 @@ pub(super) fn next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> Ru
         // Owned so the parser can re-enter the VM (float conversion) per character.
         let text = line.to_str(vm)?.to_owned();
         for c in text.chars() {
+            vm.heap.tracker.check_time_every(polls)?;
+            polls += 1;
             parser.process_char(Some(c), fields, vm)?;
         }
         parser.process_char(None, fields, vm)?;

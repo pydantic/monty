@@ -6,10 +6,12 @@
 //! interned-string return value that hits the `InternBytes`/empty-string
 //! materialisation branch of [`apply_buffer_store`]).
 
+use std::time::Duration;
+
 use monty::MontyRun;
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter,
-    ResourceTracker,
+    ResourceLimits, ResourceTracker,
 };
 
 /// Drives an `open()` followed by a single read/write OS call, then resumes
@@ -478,6 +480,51 @@ import csv
         result,
         MontyObject::list([MontyObject::string("2".to_owned()), MontyObject::string("4".to_owned())])
     );
+}
+
+/// `f` is positional-or-keyword on `DictReader`, so the keyword form loads the file too.
+#[test]
+fn csv_dict_reader_keyword_file_loads_file() {
+    let code = "import csv\n[row['a'] for row in csv.DictReader(f=open('/x.csv'))]\n";
+    let result = run_with_open_then_io(
+        code,
+        "Path.read_text",
+        file_handle("/x.csv", "r"),
+        MontyObject::string("a,b\n1,2\n".to_owned()).into(),
+    )
+    .expect("script should complete");
+    assert_eq!(result, MontyObject::list([MontyObject::string("1".to_owned())]));
+}
+
+/// The replayed construction runs Python (here a `fieldnames` iterator), which must
+/// count toward the time limit like any other execution.
+#[test]
+fn csv_dict_reader_replay_counts_toward_time_limit() {
+    let code = r"
+import csv
+def spin():
+    for i in range(100000000):
+        pass
+    return 'a'
+csv.DictReader(open('/x.csv'), fieldnames=iter(spin, 'stop'))
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let progress = runner
+        .start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap();
+    let open_call = progress.into_os_call().expect("expected Open OsCall");
+    let progress = open_call
+        .resume(
+            MontyObject::file_handle(file_handle("/x.csv", "r")),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let read_call = progress.into_os_call().expect("expected ReadText OsCall");
+    let err = read_call
+        .resume(MontyObject::string("1,2\n".to_owned()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::TimeoutError);
 }
 
 #[test]

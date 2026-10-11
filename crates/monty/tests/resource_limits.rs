@@ -369,6 +369,23 @@ x
     );
 }
 
+/// `DictReader` skips blank rows in a native loop over the source, which must poll the
+/// clock: an endless source of blank lines never reaches a Python-level checkpoint.
+#[test]
+fn time_limit_covers_csv_blank_row_skipping() {
+    let code = r"
+import csv
+import itertools
+next(csv.DictReader(itertools.repeat(''), fieldnames=['a']))
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
 #[test]
 fn time_limit_not_exceeded() {
     // Simple code that runs quickly

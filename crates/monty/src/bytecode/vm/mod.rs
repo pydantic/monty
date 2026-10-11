@@ -2243,7 +2243,11 @@ impl<'h> VM<'h> {
             args.drop_with(self);
             return self.resume_with_exception(err);
         }
+        // The replay runs Python (a `fieldnames` iterator, a dialect object's attributes)
+        // outside `run_external`, so it needs its own execution-clock window.
+        self.heap.tracker.on_execution_start();
         let result = self.call_function(&callable, args);
+        self.heap.tracker.on_execution_stop();
         callable.drop_with(self);
         match result {
             Ok(CallResult::Value(value)) => {

@@ -13,6 +13,22 @@ class Sink:
         return len(text)
 
 
+class Rows:
+    """An iterator of rows that raises in place of a `None` row."""
+
+    def __init__(self, rows):
+        self.rows = iter(rows)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = next(self.rows)
+        if row is None:
+            raise ValueError('boom')
+        return row
+
+
 def dr(lines, *args, **kwargs):
     reader = csv.DictReader(lines, *args, **kwargs)
     return list(reader), reader.fieldnames, reader.line_num
@@ -67,11 +83,18 @@ assert reader.dialect == 'excel'
 assert csv.DictReader([], dialect='unix').dialect == 'unix'
 assert type(dr(['a', '1'])[0][0]) is dict
 
-# fieldnames, restkey and restval can be assigned.
+# fieldnames, restkey, restval and dialect can be assigned.
 reader = csv.DictReader(['1,2', '3'])
 reader.fieldnames = ['p', 'q']
 reader.restval = 'Z'
 assert list(reader) == [{'p': '1', 'q': '2'}, {'p': '3', 'q': 'Z'}]
+reader.dialect = 'unix'
+assert reader.dialect == 'unix'
+# fieldnames = None unsets them, so the next row read is the header.
+reader = csv.DictReader(['a,b', '1,2'], fieldnames=['x', 'y'])
+reader.fieldnames = None
+assert reader.fieldnames == ['a', 'b']
+assert list(reader) == [{'a': '1', 'b': '2'}]
 try:
     list(csv.DictReader(['1,2'], fieldnames=5))
     assert False, 'expected TypeError'
@@ -143,6 +166,29 @@ assert writer.writerow({'a': 1}) == 4
 assert writer.writerows([{'b': 2}, {'a': 3, 'b': 4}]) is None
 assert writer.writerows({'a': i} for i in range(2)) is None
 assert sink.lines == ['a,b\r\n', '1,\r\n', ',2\r\n', '3,4\r\n', '0,\r\n', '1,\r\n']
+# Each dict is written as it arrives, so the rows before a failing one stay written.
+sink = Sink()
+writer = csv.DictWriter(sink, ['a'])
+try:
+    writer.writerows(Rows([{'a': 1}, None, {'a': 2}]))
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'boom'
+assert sink.lines == ['1\r\n']
+# fieldnames, restval and extrasaction are plain attributes, read at each write.
+sink = Sink()
+writer = csv.DictWriter(sink, ['a'])
+writer.fieldnames = ['a', 'b']
+writer.restval = '-'
+writer.extrasaction = 'ignore'
+assert writer.writerow({'a': 1, 'c': 3}) == 5
+assert sink.lines == ['1,-\r\n']
+# The check for keys outside fieldnames puts the names in a set, so they must be hashable.
+try:
+    csv.DictWriter(Sink(), [['a']]).writerow({'a': 1})
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'list' as a set element (unhashable type: 'list')"
 try:
     csv.DictWriter(sink)
     assert False, 'expected TypeError'

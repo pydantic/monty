@@ -2,65 +2,89 @@
 //!
 //! Formatting is a port of CPython's `join_append_data`, so quoting and escaping decisions
 //! match. A file target yields the host write (one `OsCall` per `writerow`, and one combined
-//! write per `writerows`); any other target's `write` runs as a Python call.
+//! write per `writerows`); any other target's `write`, bound at construction, runs as a
+//! Python call.
 
+use std::mem;
+
+use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapRead},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapRead},
     intern::StaticStrings,
     os_dispatch::{PendingEffect, PostConversionEffect},
+    string_builder::StringBuilder,
     types::{
         CsvObject, PyTrait, Type,
         csv::dialect::{Dialect, Quoting},
         iter::collect_owned_iterable,
-        str::allocate_string,
     },
     value::{EitherStr, Value},
 };
 
-/// A `_csv.writer`: the object whose `write()` receives each formatted line, and the dialect.
+/// A `_csv.writer`: the target, its `write` callable and the dialect.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Writer {
     /// The `csvfile` argument. Owned.
     target: Value,
+    /// `csvfile.write`, bound at construction as CPython does, so rebinding the attribute
+    /// later does not redirect writes. `None` for a file target, whose write is a host call
+    /// through `target`. Owned.
+    write: Value,
     pub(crate) dialect: Dialect,
 }
 
 impl Writer {
-    pub(crate) fn new(target: Value, dialect: Dialect) -> Self {
-        Self { target, dialect }
+    pub(crate) fn new(target: Value, write: Value, dialect: Dialect) -> Self {
+        Self { target, write, dialect }
+    }
+
+    /// Whether the target is an `open()` file, whose `write()` yields a host call.
+    pub(crate) fn targets_file(&self, vm: &VM<'_>) -> bool {
+        is_file(&self.target, vm)
+    }
+
+    /// An owned clone of the bound `write` (`None` for a file target).
+    pub(crate) fn write_method(&self, heap: &impl ContainsHeap) -> Value {
+        self.write.clone_with_heap(heap)
     }
 
     /// Invokes `on_child` for each heap id this writer owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.target {
-            on_child(*id);
+        for value in [&self.target, &self.write] {
+            if let Value::Ref(id) = value {
+                on_child(*id);
+            }
         }
     }
 
-    /// Releases the target reference (mirrors `for_each_child_id`).
+    /// Releases the owned references (mirrors `for_each_child_id`).
     pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.target.py_dec_ref_ids(stack);
+        self.write.py_dec_ref_ids(stack);
     }
 }
 
-/// Whether `target` can back a writer: CPython looks `write` up once at construction.
-pub(crate) fn has_write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
+/// `target.write`, looked up once at construction and required to be callable as CPython
+/// does: `Some(Value::None)` for a file target (its write is a host call), `None` when
+/// `target` cannot back a writer. The caller owns the returned callable.
+pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     if is_file(target, vm) {
-        return Ok(true);
+        return Ok(Some(Value::None));
     }
     let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::Write));
     match target.py_getattr(&name, vm) {
+        Ok(CallResult::Value(method)) if method.is_callable(vm.heap) => Ok(Some(method)),
         Ok(result) => {
             result.drop_with(vm);
-            Ok(true)
+            Ok(None)
         }
-        Err(err) if err.exc_type() == Some(ExcType::AttributeError) => Ok(false),
+        Err(err) if err.is_catchable(ExcType::AttributeError) => Ok(None),
         Err(err) => Err(err),
     }
 }
@@ -73,18 +97,17 @@ pub(super) fn writerow<'h>(
 ) -> RunResult<CallResult> {
     let row = args.get_one_arg("writer.writerow", vm.heap)?;
     defer_drop!(row, vm);
-    let (target, dialect) = parts(obj, vm);
+    let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
-    let items = row_items(row, vm)?;
-    defer_drop!(items, vm);
-    let line = format_row(&dialect, items, vm)?;
-    write_line(target, line, vm)
+    defer_drop!(write, vm);
+    let line = format_line(&dialect, row, vm)?;
+    write_line(target, write, line, vm)
 }
 
 /// `writer.writerows(rows)`: writes every row and returns `None`.
 ///
 /// A file target receives all the lines in one host write, since a Rust loop cannot suspend
-/// once per row; any other target's `write()` is called once per row, synchronously.
+/// once per row; any other target's `write()` is called synchronously as each row arrives.
 pub(super) fn writerows<'h>(
     obj: &mut HeapRead<'h, CsvObject>,
     args: ArgValues,
@@ -92,62 +115,64 @@ pub(super) fn writerows<'h>(
 ) -> RunResult<CallResult> {
     let rows = args.get_one_arg("writer.writerows", vm.heap)?;
     defer_drop!(rows, vm);
-    let (target, dialect) = parts(obj, vm);
+    let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
-    let rows: Vec<Value> = collect_owned_iterable(rows.clone_with_heap(vm.heap), vm)?;
-    defer_drop!(rows, vm);
+    defer_drop!(write, vm);
     if is_file(target, vm) {
-        // Bounded by the rows' own strings, which the tracker already charges.
+        let rows: Vec<Value> = collect_owned_iterable(rows.clone_with_heap(vm.heap), vm)?;
+        defer_drop!(rows, vm);
         let mut lines = String::new();
         for row in rows {
             let items = row_items(row, vm)?;
             defer_drop!(items, vm);
-            lines.push_str(&format_row(&dialect, items, vm)?);
+            format_row(&dialect, items, &mut lines, vm)?;
         }
         if rows.is_empty() {
             Ok(CallResult::Value(Value::None))
         } else {
-            write_line(target, lines, vm).map(discard_write_result)
+            let lines = StringBuilder::from_existing(lines, &vm.heap.tracker).finish(vm.heap)?;
+            write_line(target, write, lines, vm).map(discard_write_result)
         }
     } else {
-        let write = EitherStr::Interned(vm.interns.intern_static(StaticStrings::Write));
-        for row in rows {
-            let items = row_items(row, vm)?;
-            defer_drop!(items, vm);
-            let line = allocate_string(format_row(&dialect, items, vm)?, vm.heap);
-            let method = match target.py_getattr(&write, vm) {
-                Ok(CallResult::Value(method)) => method,
-                Ok(other) => {
-                    line.drop_with(vm);
-                    other.drop_with(vm);
-                    return Err(RunError::internal("writer.writerows: write attribute is not a value"));
-                }
-                Err(err) => {
-                    line.drop_with(vm);
-                    return Err(err);
-                }
-            };
-            defer_drop!(method, vm);
-            vm.evaluate_function("writer.writerows", method, ArgValues::One(line))?
-                .drop_with(vm);
+        let iterator = rows.py_iter(vm)?;
+        defer_drop!(iterator, vm);
+        while let Some(row) = iterator.read(vm).py_next(vm)? {
+            defer_drop!(row, vm);
+            writerow_now(write, &dialect, row, vm)?;
         }
         Ok(CallResult::Value(Value::None))
     }
 }
 
-/// Formats one record: `join_append` per field plus the line terminator.
+/// Formats `row` and runs the bound `write` to completion; the per-row step of `writerows`
+/// and `DictWriter.writerows` on a target that is not a file.
+pub(super) fn writerow_now(write: &Value, dialect: &Dialect, row: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+    let line = format_line(dialect, row, vm)?;
+    vm.evaluate_function("writer.writerows", write, ArgValues::One(line))?
+        .drop_with(vm);
+    Ok(())
+}
+
+/// One record as a `str`: the fields of `row` through `format_row`.
+fn format_line(dialect: &Dialect, row: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    let items = row_items(row, vm)?;
+    defer_drop!(items, vm);
+    let mut line = String::new();
+    format_row(dialect, items, &mut line, vm)?;
+    StringBuilder::from_existing(line, &vm.heap.tracker).finish(vm.heap)
+}
+
+/// Appends one record to `out`: `join_append` per field plus the line terminator.
 ///
-/// The result is bounded by twice the fields' `str()` forms plus a few characters per field,
-/// all already charged to the tracker, so a plain `String` is fine.
-pub(crate) fn format_row(dialect: &Dialect, items: &[Value], vm: &mut VM<'_>) -> RunResult<String> {
-    let mut out = String::new();
+/// `out` grows through a tracker-checked builder at each step, since a record copies its
+/// fields' `str()` forms (twice for a quote-doubled field) before the next checkpoint. The
+/// builder cannot outlive a field's `str()` call, which re-enters the VM, so it wraps `out`
+/// per step rather than owning it.
+pub(crate) fn format_row(dialect: &Dialect, items: &[Value], out: &mut String, vm: &mut VM<'_>) -> RunResult<()> {
     let mut record_len = 0usize;
     let mut field_buffer = String::new();
+    let terminator_chars = terminator_chars(&dialect.lineterminator);
     for (index, item) in items.iter().enumerate() {
-        if index > 0 {
-            out.push(dialect.delimiter);
-            record_len += 1;
-        }
         let mut quoted = match dialect.quoting {
             Quoting::Nonnumeric => !is_number(item, vm),
             Quoting::All => true,
@@ -159,31 +184,58 @@ pub(crate) fn format_row(dialect: &Dialect, items: &[Value], vm: &mut VM<'_>) ->
         if !matches!(item, Value::None) {
             let text = item.py_str(vm)?;
             defer_drop!(text, vm);
-            append_field_data(dialect, text.to_str(vm)?, &mut quoted, &mut field_buffer)?;
+            append_field_data(
+                dialect,
+                &terminator_chars,
+                text.to_str(vm)?,
+                &mut quoted,
+                &mut field_buffer,
+                &vm.heap.tracker,
+            )?;
         }
-        record_len += append_field(dialect, &field_buffer, quoted, &mut out);
+        record_len += append_field(dialect, &field_buffer, quoted, index > 0, out, &vm.heap.tracker)?;
     }
     // A lone empty field would write as an empty line, which reads back as no record at all.
     if items.len() == 1 && record_len == 0 {
         if matches!(dialect.quoting, Quoting::None | Quoting::Strings | Quoting::Notnull) {
             return Err(ExcType::csv_error("single empty field record must be quoted"));
         }
-        append_field(dialect, "", true, &mut out);
+        append_field(dialect, "", true, false, out, &vm.heap.tracker)?;
     }
-    out.push_str(&dialect.lineterminator);
-    Ok(out)
+    let mut builder = StringBuilder::from_existing(mem::take(out), &vm.heap.tracker);
+    builder.push_str(&dialect.lineterminator)?;
+    *out = builder.finish_raw()?;
+    Ok(())
+}
+
+/// The distinct characters of a line terminator, sorted for `binary_search`: membership
+/// per field character must not scan the terminator itself, which can be any length.
+fn terminator_chars(lineterminator: &str) -> Vec<char> {
+    let mut chars: Vec<char> = lineterminator.chars().collect();
+    chars.sort_unstable();
+    chars.dedup();
+    chars
 }
 
 /// Escapes or quote-doubles the characters of one field into `buffer`, as
 /// `join_append_data` does, upgrading `quoted` when a special character requires it.
-fn append_field_data(dialect: &Dialect, text: &str, quoted: &mut bool, buffer: &mut String) -> RunResult<()> {
-    for c in text.chars() {
+/// `buffer` is at most twice `text`, which is already tracked; the loop polls the clock.
+fn append_field_data(
+    dialect: &Dialect,
+    terminator_chars: &[char],
+    text: &str,
+    quoted: &mut bool,
+    buffer: &mut String,
+    tracker: &ResourceTracker,
+) -> RunResult<()> {
+    for (index, c) in text.chars().enumerate() {
+        tracker.check_time_every(index)?;
         let special = c == dialect.delimiter
             || Some(c) == dialect.escapechar
             || Some(c) == dialect.quotechar
             || c == '\n'
             || c == '\r'
-            || dialect.lineterminator.contains(c);
+            || terminator_chars.binary_search(&c).is_ok();
         if special {
             let mut want_escape = dialect.quoting == Quoting::None;
             if !want_escape {
@@ -212,19 +264,33 @@ fn append_field_data(dialect: &Dialect, text: &str, quoted: &mut bool, buffer: &
     Ok(())
 }
 
-/// Appends a prepared field, quoted when asked, returning the characters written.
-fn append_field(dialect: &Dialect, text: &str, quoted: bool, out: &mut String) -> usize {
+/// Appends a prepared field to `out`, after a delimiter when asked and quoted when asked,
+/// returning the characters written (the delimiter included).
+fn append_field(
+    dialect: &Dialect,
+    text: &str,
+    quoted: bool,
+    delimited: bool,
+    out: &mut String,
+    tracker: &ResourceTracker,
+) -> RunResult<usize> {
+    let mut builder = StringBuilder::from_existing(mem::take(out), tracker);
     let mut written = text.chars().count();
+    if delimited {
+        builder.push(dialect.delimiter)?;
+        written += 1;
+    }
     if quoted {
         let quotechar = dialect.quotechar.expect("quoting requires a quotechar");
-        out.push(quotechar);
-        out.push_str(text);
-        out.push(quotechar);
+        builder.push(quotechar)?;
+        builder.push_str(text)?;
+        builder.push(quotechar)?;
         written += 2;
     } else {
-        out.push_str(text);
+        builder.push_str(text)?;
     }
-    written
+    *out = builder.finish_raw()?;
+    Ok(written)
 }
 
 /// `PyNumber_Check`: the numeric types a `QUOTE_NONNUMERIC` writer leaves unquoted.
@@ -242,7 +308,7 @@ fn is_file(value: &Value, vm: &VM<'_>) -> bool {
 fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     let iterator = match row.py_iter(vm) {
         Ok(iterator) => iterator,
-        Err(err) if err.exc_type() == Some(ExcType::TypeError) => {
+        Err(err) if err.is_catchable(ExcType::TypeError) => {
             return Err(ExcType::csv_error(format!(
                 "iterable expected, not {}",
                 row.py_type_name(vm)
@@ -253,11 +319,14 @@ fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     collect_owned_iterable(iterator, vm)
 }
 
-/// Calls `target.write(line)`. A file target yields its host write.
-fn write_line(target: &Value, line: String, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let line = allocate_string(line, vm.heap);
-    let write = vm.interns.intern_static(StaticStrings::Write);
-    vm.call_attr(target.clone_with_heap(vm.heap), write, ArgValues::One(line))
+/// `write(line)`: the host call of a file target, otherwise the bound `write`.
+fn write_line(target: &Value, write: &Value, line: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    if is_file(target, vm) {
+        let name = vm.interns.intern_static(StaticStrings::Write);
+        vm.call_attr(target.clone_with_heap(vm.heap), name, ArgValues::One(line))
+    } else {
+        vm.call_function(write, ArgValues::One(line))
+    }
 }
 
 /// Marks a file write's pending result as `None`, which `writerows` returns.
@@ -272,10 +341,14 @@ fn discard_write_result(mut result: CallResult) -> CallResult {
     result
 }
 
-/// The owned target and dialect of a writer object, read under a short borrow.
-fn parts<'h>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>) -> (Value, Dialect) {
+/// The owned target, its `write` and the dialect of a writer object, read under a short borrow.
+fn parts<'h>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>) -> (Value, Value, Dialect) {
     let CsvObject::Writer(writer) = obj.get(vm.heap) else {
         unreachable!("dispatched on CsvObject::Writer")
     };
-    (writer.target.clone_with_heap(vm.heap), writer.dialect.clone())
+    (
+        writer.target.clone_with_heap(vm.heap),
+        writer.write.clone_with_heap(vm.heap),
+        writer.dialect.clone(),
+    )
 }

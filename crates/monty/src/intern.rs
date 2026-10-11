@@ -872,11 +872,11 @@ pub enum StaticStrings {
     DevNullString,
     /// `os.devnull` constant name.
     Devnull,
+    /// `dialect` parameter and attribute of the `csv` readers and writers.
+    Dialect,
     /// `csv.DictReader` class.
     #[strum(serialize = "DictReader")]
     DictReader,
-    /// `dialect` parameter and attribute of the `csv` readers and writers.
-    Dialect,
     /// `typing.Dict` marker.
     #[strum(serialize = "Dict")]
     DictType,
@@ -996,12 +996,12 @@ pub enum StaticStrings {
     Errors,
     /// `re.escape()` function
     Escape,
-    /// `csv.excel_tab` dialect.
-    ExcelTab,
-    /// `csv.excel` dialect.
-    Excel,
     /// `escapechar` dialect attribute and `csv` format parameter.
     Escapechar,
+    /// `csv.excel` dialect.
+    Excel,
+    /// `csv.excel_tab` dialect.
+    ExcelTab,
     /// `sys.exec_prefix` attribute.
     ExecPrefix,
     /// `sys.executable` attribute.
@@ -1755,26 +1755,26 @@ pub enum StaticStrings {
     PycachePrefix,
     /// `sys.flags.quiet` field.
     Quiet,
-    /// `quotechar` dialect attribute and `csv` format parameter.
-    Quotechar,
-    /// `csv.QUOTE_STRINGS` constant.
-    #[strum(serialize = "QUOTE_STRINGS")]
-    QuoteStrings,
-    /// `csv.QUOTE_NOTNULL` constant.
-    #[strum(serialize = "QUOTE_NOTNULL")]
-    QuoteNotnull,
-    /// `csv.QUOTE_NONNUMERIC` constant.
-    #[strum(serialize = "QUOTE_NONNUMERIC")]
-    QuoteNonnumeric,
-    /// `csv.QUOTE_NONE` constant.
-    #[strum(serialize = "QUOTE_NONE")]
-    QuoteNone,
-    /// `csv.QUOTE_MINIMAL` constant.
-    #[strum(serialize = "QUOTE_MINIMAL")]
-    QuoteMinimal,
     /// `csv.QUOTE_ALL` constant.
     #[strum(serialize = "QUOTE_ALL")]
     QuoteAll,
+    /// `csv.QUOTE_MINIMAL` constant.
+    #[strum(serialize = "QUOTE_MINIMAL")]
+    QuoteMinimal,
+    /// `csv.QUOTE_NONE` constant.
+    #[strum(serialize = "QUOTE_NONE")]
+    QuoteNone,
+    /// `csv.QUOTE_NONNUMERIC` constant.
+    #[strum(serialize = "QUOTE_NONNUMERIC")]
+    QuoteNonnumeric,
+    /// `csv.QUOTE_NOTNULL` constant.
+    #[strum(serialize = "QUOTE_NOTNULL")]
+    QuoteNotnull,
+    /// `csv.QUOTE_STRINGS` constant.
+    #[strum(serialize = "QUOTE_STRINGS")]
+    QuoteStrings,
+    /// `quotechar` dialect attribute and `csv` format parameter.
+    Quotechar,
     /// `quotetabs` parameter of `binascii.b2a_qp()`.
     #[strum(serialize = "quotetabs")]
     Quotetabs,
@@ -1852,10 +1852,10 @@ pub enum StaticStrings {
     Resolution,
     /// `Path.resolve()` method — yields a host call.
     Resolve,
-    /// `restval` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
-    Restval,
     /// `restkey` parameter and attribute of `csv.DictReader`.
     Restkey,
+    /// `restval` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
+    Restval,
     /// `result` parameter of `asyncio.sleep()`.
     #[strum(serialize = "result")]
     ResultArg,
@@ -2316,14 +2316,14 @@ pub enum StaticStrings {
     WriteBytes,
     /// `Path.write_text()` method — yields a host call.
     WriteText,
-    /// `writerows()` method of the `csv` writers.
-    Writerows,
-    /// `writerow()` method of the `csv` writers.
-    Writerow,
-    /// `csv.writer()` function and `csv.DictWriter.writer` attribute.
-    Writer,
     /// `csv.DictWriter.writeheader()` method.
     Writeheader,
+    /// `csv.writer()` function and `csv.DictWriter.writer` attribute.
+    Writer,
+    /// `writerow()` method of the `csv` writers.
+    Writerow,
+    /// `writerows()` method of the `csv` writers.
+    Writerows,
     /// `date` / `datetime` `year` attribute and constructor kwarg.
     Year,
     /// `base64.z85decode()` function.

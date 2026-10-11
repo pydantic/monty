@@ -15,6 +15,22 @@ class Sink:
         return len(text)
 
 
+class Rows:
+    """An iterator of rows that raises in place of a `None` row."""
+
+    def __init__(self, rows):
+        self.rows = iter(rows)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = next(self.rows)
+        if row is None:
+            raise ValueError('boom')
+        return row
+
+
 def wr(rows, **kw):
     sink = Sink()
     writer = csv.writer(sink, **kw)
@@ -98,6 +114,15 @@ assert writer.writerows([['c'], ['d']]) is None
 assert writer.writerows([]) is None
 assert writer.writerows(x for x in [['e']]) is None
 assert sink.lines == ['a,b\r\n', 'c\r\n', 'd\r\n', 'e\r\n']
+# Each row is written as it arrives, so the rows before a failing one stay written.
+sink = Sink()
+writer = csv.writer(sink)
+try:
+    writer.writerows(Rows([['a'], None, ['b']]))
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'boom'
+assert sink.lines == ['a\r\n']
 for row, name in ((5, 'int'), (None, 'NoneType')):
     try:
         writer.writerow(row)
@@ -126,11 +151,34 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == 'argument 1 must have a "write" method'
+
+
+# write must be callable, and is bound at construction: rebinding it later changes nothing.
+class NotCallable:
+    write = 1
+
+
+try:
+    csv.writer(NotCallable())
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'argument 1 must have a "write" method'
+sink = Sink()
+writer = csv.writer(sink)
+sink.write = lambda text: None
+assert writer.writerow(['a']) == 3
+assert sink.lines == ['a\r\n']
 try:
     csv.writer()
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == 'writer expected at least 1 argument, got 0'
+for quoting in (2**31, 2**40):
+    try:
+        csv.writer(sink, quoting=quoting)
+        assert False, 'expected OverflowError'
+    except OverflowError as exc:
+        assert str(exc) == 'Python int too large to convert to C int'
 try:
     csv.writer(sink, 'excel', 'x')
     assert False, 'expected TypeError'

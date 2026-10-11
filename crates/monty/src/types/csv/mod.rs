@@ -16,7 +16,7 @@ pub(crate) use dialect::{DIALECT_NAMES, Dialect, FmtParams, Quoting};
 pub(crate) use dict::{DictReader, DictWriter};
 pub(crate) use reader::{FIELD_SIZE_LIMIT, Reader};
 use serde::{Deserialize, Serialize};
-pub(crate) use writer::{Writer, has_write_method};
+pub(crate) use writer::{Writer, write_method};
 
 use crate::{
     args::ArgValues,
@@ -190,16 +190,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    /// `DictReader.fieldnames`, `restkey` and `restval` are plain attributes in CPython and
-    /// so assignable; everything else here is read-only.
+    /// The `DictReader` and `DictWriter` attributes that are plain Python attributes in
+    /// CPython are assignable, except the wrapped `reader` / `writer` and `line_num`;
+    /// everything on the `_csv` objects is read-only.
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let slot = match (self.get_mut(vm.heap), name.static_string(vm.interns)) {
             (CsvObject::DictReader(reader), Some(StaticStrings::Fieldnames)) => {
-                reader.fieldnames.replace(value).drop_with(vm);
+                // `None` unsets the names, so the next row read is the header again.
+                let names = match value {
+                    Value::None => None,
+                    names => Some(names),
+                };
+                mem::replace(&mut reader.fieldnames, names).drop_with(vm);
                 return Ok(());
             }
             (CsvObject::DictReader(reader), Some(StaticStrings::Restkey)) => &mut reader.restkey,
             (CsvObject::DictReader(reader), Some(StaticStrings::Restval)) => &mut reader.restval,
+            (CsvObject::DictReader(reader), Some(StaticStrings::Dialect)) => &mut reader.dialect,
+            (CsvObject::DictWriter(writer), Some(StaticStrings::Fieldnames)) => &mut writer.fieldnames,
+            (CsvObject::DictWriter(writer), Some(StaticStrings::Restval)) => &mut writer.restval,
+            (CsvObject::DictWriter(writer), Some(StaticStrings::Extrasaction)) => &mut writer.extrasaction,
             (CsvObject::Dialect(_), Some(attr)) if Dialect::is_attr(attr) => {
                 value.drop_with(vm);
                 return Err(ExcType::attribute_error_not_writable(

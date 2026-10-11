@@ -1,5 +1,4 @@
 # mount-fs
-# skip-cpython-windows — CPython on Windows writes '\r\n' for '\n' in text mode without newline=''.
 # `csv` over `open()` files: the idiomatic shapes, including the ones that consume the
 # file through a builtin rather than a `for` loop.
 import csv
@@ -23,6 +22,8 @@ with open(root / 'data.csv', newline='') as f:
     assert reader.line_num == 3
 with open(root / 'data.csv', newline='') as f:
     assert list(csv.DictReader(f)) == [{'name': 'apple', 'qty': '3'}, {'name': 'pear, green', 'qty': '5'}]
+with open(root / 'data.csv', newline='') as f:
+    assert [row['qty'] for row in csv.DictReader(f=f)] == ['3', '5']
 with open(root / 'data.csv', newline='') as f:
     reader = csv.DictReader(f)
     assert reader.fieldnames == ['name', 'qty']
