@@ -127,7 +127,12 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
 pub(super) fn exc_class_to_py(py: Python<'_>, exc_type: ExcType) -> PyResult<Py<PyAny>> {
     match exc_type {
         ExcType::JsonDecodeError => get_json_decode_error(py).map(|b| b.clone().unbind()),
-        ExcType::TomlDecodeError => get_toml_decode_error(py).map(|b| b.clone().unbind()),
+        // A host Python without `tomllib` (3.10) gets the `ValueError` parent,
+        // matching the instance fallback.
+        ExcType::TomlDecodeError => Ok(get_toml_decode_error(py).map_or_else(
+            |_| py.get_type::<exceptions::PyValueError>().into_any().unbind(),
+            |cls| cls.clone().unbind(),
+        )),
         ExcType::UnicodeDecodeError => Ok(py.get_type::<exceptions::PyUnicodeDecodeError>().into_any().unbind()),
         ExcType::UnicodeEncodeError => Ok(py.get_type::<exceptions::PyUnicodeEncodeError>().into_any().unbind()),
         _ => Ok(exc_monty_to_py(py, MontyException::new(exc_type, None))
@@ -219,8 +224,9 @@ pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     let exc = py_err.value(py);
     let exc_type = py_err_to_exc_type(exc);
     let arg = exception_arg(exc);
-    // `tomllib.TOMLDecodeError` defines the same five attributes as
-    // `json.JSONDecodeError`, so both travel as the json payload.
+    // Since Python 3.14 `tomllib.TOMLDecodeError` defines the same five
+    // attributes as `json.JSONDecodeError`, so both travel as the json payload;
+    // older versions have none, and the extraction yields no payload.
     let data = if matches!(exc_type, ExcType::JsonDecodeError | ExcType::TomlDecodeError) {
         json_data_from_py(exc)
     } else {
