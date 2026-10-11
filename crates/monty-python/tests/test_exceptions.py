@@ -5,6 +5,7 @@ from __future__ import annotations
 import binascii
 import csv
 import json
+import tomllib
 
 import pytest
 from conftest import RunMonty
@@ -120,6 +121,29 @@ def test_json_decode_error_message_only_fallback(monty_run: RunMonty):
     assert isinstance(inner, ValueError)
     assert not isinstance(inner, json.JSONDecodeError)
     assert str(inner) == snapshot('nope')
+
+
+def test_toml_decode_error(monty_run: RunMonty):
+    # `tomllib.TOMLDecodeError` carries the same five attributes as
+    # `json.JSONDecodeError`, so it surfaces through the same payload.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import tomllib\ntomllib.loads('a = 1\\nb = [1,,]')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, tomllib.TOMLDecodeError)
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('Invalid value (at line 2, column 8)')
+    assert inner.msg == snapshot('Invalid value')
+    assert (inner.lineno, inner.colno, inner.pos) == snapshot((2, 8, 13))
+    assert inner.doc == 'a = 1\nb = [1,,]'
+
+
+def test_toml_decode_error_at_end_of_document(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import tomllib\ntomllib.loads('a = \\'x')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, tomllib.TOMLDecodeError)
+    assert str(inner) == snapshot('Expected "\'" (at end of document)')
+    assert (inner.lineno, inner.colno, inner.pos) == snapshot((1, 7, 6))
 
 
 def test_binascii_error(monty_run: RunMonty):

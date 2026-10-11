@@ -1250,6 +1250,14 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import csv\nclass S:\n    def write(self, t):\n        pass\nrow = {i: None for i in range(10_000)}\ncsv.DictWriter(S(), []).writerow(row)",
             1_079_568,
         ),
+        // `tomllib` builds a tree whose elements cost far more than the source
+        // bytes each takes (`[[a]]` is a whole table), so the parser polls per
+        // array element and per statement.
+        (
+            "import tomllib\ntomllib.loads('x = [' + '1,' * 200_000 + ']')",
+            1_622_962,
+        ),
+        ("import tomllib\ntomllib.loads('[[a]]\\n' * 100_000)", 1_233_513),
     ];
 
     for (code, expected) in cases {
