@@ -113,10 +113,10 @@ pub(crate) struct PyHashTable<E> {
     /// removed from here, so a probe never reaches a dead one.
     indices: HashTable<usize>,
     /// Slots in insertion order, live entries and tombstones interleaved.
+    ///
+    /// Live entries are counted by `indices.len()`, not a field of their own:
+    /// `Dict` embeds this inline, so another word would widen every heap slot.
     entries: Vec<E>,
-    /// Live entries. `entries.len()` is the slot count, which tombstones make
-    /// larger; this is what `len()` reports.
-    used: usize,
 }
 
 impl<E> Default for PyHashTable<E> {
@@ -124,7 +124,6 @@ impl<E> Default for PyHashTable<E> {
         Self {
             indices: HashTable::new(),
             entries: Vec::new(),
-            used: 0,
         }
     }
 }
@@ -144,7 +143,6 @@ impl<'de, E: TableEntry + serde::Deserialize<'de>> serde::Deserialize<'de> for P
         let entries: Vec<E> = Vec::deserialize(deserializer)?;
         let mut table = Self {
             indices: HashTable::with_capacity(entries.len()),
-            used: entries.iter().filter(|entry| entry.is_live()).count(),
             entries,
         };
         table.reindex();
@@ -158,7 +156,6 @@ impl<E: TableEntry> PyHashTable<E> {
         Self {
             indices: HashTable::with_capacity(capacity),
             entries: Vec::with_capacity(capacity),
-            used: 0,
         }
     }
 
@@ -174,7 +171,6 @@ impl<E: TableEntry> PyHashTable<E> {
         debug_assert!(entries.iter().all(E::is_live), "from_entries takes live entries only");
         let mut table = Self {
             indices: HashTable::with_capacity(entries.len()),
-            used: entries.len(),
             entries,
         };
         table.reindex();
@@ -189,7 +185,7 @@ impl<E: TableEntry> PyHashTable<E> {
     pub(crate) fn live(&self) -> Live<'_, E> {
         Live {
             slots: self.entries.iter(),
-            remaining: self.used,
+            remaining: self.len(),
         }
     }
 
@@ -238,7 +234,7 @@ impl<E: TableEntry> PyHashTable<E> {
     /// the caller must store it back whatever the outcome.
     pub(crate) fn step(&self, cursor: &mut TableCursor) -> RunResult<Option<&E>> {
         Ok(cursor
-            .advance::<E>(self.used, |from| self.next_live_slot(from))?
+            .advance::<E>(self.len(), |from| self.next_live_slot(from))?
             .map(|slot| &self.entries[slot]))
     }
 
@@ -258,13 +254,13 @@ impl<E: TableEntry> PyHashTable<E> {
     /// The number of live entries — what `len()` reports to Python.
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.used
+        self.indices.len()
     }
 
     /// Whether the table holds no live entries.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
-        self.used == 0
+        self.indices.is_empty()
     }
 
     /// Appends a live entry, dropping accumulated tombstones first if they have
@@ -281,13 +277,12 @@ impl<E: TableEntry> PyHashTable<E> {
     #[inline]
     pub(crate) fn push(&mut self, entry: E) {
         debug_assert!(entry.is_live(), "push takes a live entry");
-        if self.entries.len() >= COMPACT_MIN_SLOTS && self.entries.len() - self.used >= self.entries.len() / 2 {
+        if self.entries.len() >= COMPACT_MIN_SLOTS && self.entries.len() - self.len() >= self.entries.len() / 2 {
             self.compact();
         }
         let index = self.entries.len();
         let hash = entry.hash();
         self.entries.push(entry);
-        self.used += 1;
         self.indices.insert_unique(hash, index, |&i| self.entries[i].hash());
     }
 
@@ -322,7 +317,6 @@ impl<E: TableEntry> PyHashTable<E> {
         if let Ok(bucket) = self.indices.find_entry(hash, |&i| i == slot) {
             bucket.remove();
         }
-        self.used -= 1;
         mem::replace(&mut self.entries[slot], E::tombstone())
     }
 
@@ -345,7 +339,6 @@ impl<E: TableEntry> PyHashTable<E> {
     /// [`DropWithContext`]: crate::heap::DropWithContext
     pub(crate) fn take_entries(&mut self) -> Vec<E> {
         self.indices.clear();
-        self.used = 0;
         let mut entries = mem::take(&mut self.entries);
         entries.retain(E::is_live);
         entries
@@ -354,7 +347,6 @@ impl<E: TableEntry> PyHashTable<E> {
     /// Drops every tombstone and renumbers `indices` onto the survivors.
     fn compact(&mut self) {
         self.entries.retain(E::is_live);
-        debug_assert_eq!(self.entries.len(), self.used);
         self.reindex();
     }
 
