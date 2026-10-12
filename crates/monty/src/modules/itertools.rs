@@ -14,6 +14,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -155,7 +156,10 @@ fn call_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Rejecting here means `py_next` can add without a defined-ness check.
     if is_number(&start, vm) && is_number(&step, vm) {
         let iter = ItertoolsIter::Count(Count::new(normalize_bool(start), normalize_bool(step)));
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+        Ok(Value::Ref(
+            HeapKind::Itertools,
+            vm.heap.allocate(HeapData::Itertools(iter)),
+        ))
     } else {
         start.drop_with(vm);
         step.drop_with(vm);
@@ -194,7 +198,10 @@ fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
     };
     let iter = ItertoolsIter::Repeat(Repeat::new(object, remaining));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Whether `value` satisfies CPython's `PyNumber_Check` for `count()`.
@@ -254,7 +261,10 @@ fn call_pairwise(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // here rather than on the first `next()`.
     let source = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Pairwise(Pairwise::new(source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape for `compress(data, selectors)`.
@@ -281,7 +291,10 @@ fn call_compress(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let selectors = selectors.into_py_iter(guard.ctx())?;
     let (data, vm) = guard.into_parts();
     let iter = ItertoolsIter::Compress(Compress::new(data, selectors));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape for `islice(iterable, [start,] stop[, step])`.
@@ -324,7 +337,10 @@ fn call_islice(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let source = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Islice(Islice::new(source, start, stop, step));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Resolves `islice`'s overloaded positional slots into `(start, stop, step)`.
@@ -406,7 +422,10 @@ fn call_chain(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Arguments are NOT resolved here: CPython calls `iter()` on each only as it
     // reaches it, so `chain([1], 5)` constructs and raises mid-consumption.
     let iter = ItertoolsIter::Chain(Chain::new(iterables));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape for `cycle(iterable)`.
@@ -426,7 +445,10 @@ fn call_cycle(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
     let source = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Cycle(Cycle::new(source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape shared by `takewhile`, `dropwhile`, `filterfalse` and
@@ -459,7 +481,10 @@ fn call_takewhile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let TakeWhileArgs { callable, iterable } = TakeWhileArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::TakeWhile(TakeWhile::new(predicate, source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// `itertools.dropwhile(predicate, iterable)` — everything past that run.
@@ -467,7 +492,10 @@ fn call_dropwhile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DropWhileArgs { callable, iterable } = DropWhileArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::DropWhile(DropWhile::new(predicate, source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// `itertools.filterfalse(predicate, iterable)` — the items it rejects.
@@ -475,7 +503,10 @@ fn call_filterfalse(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let FilterFalseArgs { callable, iterable } = FilterFalseArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::FilterFalse(FilterFalse::new(predicate, source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// `itertools.starmap(function, iterable)` — each item spread as arguments.
@@ -483,7 +514,10 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StarMapArgs { callable, iterable } = StarMapArgs::from_args(args, vm)?;
     let (function, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::StarMap(StarMap::new(function, source));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape for `accumulate(iterable, func=None, *, initial=None)`.
@@ -528,7 +562,10 @@ fn call_accumulate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         initial => Some(initial),
     };
     let iter = ItertoolsIter::Accumulate(Box::new(Accumulate::new(source, func, initial)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape for `batched(iterable, n, *, strict=False)`.
@@ -568,7 +605,10 @@ fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let source = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Batched(Batched::new(source, size, strict));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Coerces `batched`'s `n` and enforces CPython's "at least one" floor.
@@ -634,7 +674,10 @@ fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let (sources, vm) = guard.into_parts();
     let iter = ItertoolsIter::ZipLongest(ZipLongest::new(sources, fillvalue));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape for `combinations(iterable, r)` and its
@@ -704,7 +747,10 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
     }
     let (pool, vm) = pool_guard.into_parts();
     let iter = ItertoolsIter::Combinations(Box::new(Combinations::new(pool, r, replacement)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape for `permutations(iterable, r=None)`.
@@ -731,7 +777,10 @@ fn call_permutations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let r = permutations_r(r, pool.len(), vm)?;
     let (pool, vm) = pool_guard.into_parts();
     let iter = ItertoolsIter::Permutations(Box::new(Permutations::new(pool, r)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Resolves `permutations`' `r`: `None` means every item, and only a real
@@ -801,7 +850,10 @@ fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let (pools, vm) = pools_guard.into_parts();
     let iter = ItertoolsIter::Product(Box::new(Product::new(pools, slots)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// The number of slots `product` will step, rejecting a `repeat` that puts the
@@ -845,7 +897,10 @@ fn call_groupby(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let GroupbyArgs { iterable, key } = GroupbyArgs::from_args(args, vm)?;
     let (key, source) = resolve_source(key, iterable, vm)?;
     let iter = ItertoolsIter::GroupBy(Box::new(GroupBy::new(source, key)));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// `itertools.chain.from_iterable(iterable)` — the items of each of
@@ -866,7 +921,10 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
     // arguments are.
     let outer = iterable.into_py_iter(vm)?;
     let iter = ItertoolsIter::Chain(Chain::from_iterable(outer));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
+    Ok(Value::Ref(
+        HeapKind::Itertools,
+        vm.heap.allocate(HeapData::Itertools(iter)),
+    ))
 }
 
 /// Argument shape for `tee(iterable, n=2)`.

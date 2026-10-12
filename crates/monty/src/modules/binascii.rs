@@ -26,6 +26,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -402,7 +403,7 @@ fn wrapping_u32(value: &Value, vm: &VM<'_>) -> RunResult<u32> {
     match value {
         Value::Int(int) => Ok(u32::try_from(int.rem_euclid(MODULUS)).expect("reduced below 2**32")),
         Value::Bool(flag) => Ok(u32::from(*flag)),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+        Value::Ref(HeapKind::LongInt, heap_id) => match vm.heap.get(*heap_id) {
             HeapData::LongInt(long) => {
                 // `&` on a `BigInt` is two's-complement, so this is Python's
                 // own `value & 0xffffffff` for negatives as well.
@@ -507,12 +508,8 @@ fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
 
 /// Whether a value is `bytes`, which is all `hexlify` accepts as a separator
 /// besides `str` — a buffer that `encode_input` would take is still rejected.
-fn is_bytes(value: &Value, vm: &VM<'_>) -> bool {
-    match value {
-        Value::InternBytes(_) => true,
-        Value::Ref(heap_id) => matches!(vm.heap.get(*heap_id), HeapData::Bytes(_)),
-        _ => false,
-    }
+fn is_bytes(value: &Value, _vm: &VM<'_>) -> bool {
+    matches!(value, Value::InternBytes(_) | Value::Ref(HeapKind::Bytes, _))
 }
 
 /// The `ValueError`s `hexlify` raises for a malformed separator, whose

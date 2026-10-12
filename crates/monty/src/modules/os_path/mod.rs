@@ -27,6 +27,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{Heap, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::{StaticStrings, StringId},
     modules::{
         ModuleFunctions,
@@ -529,7 +530,10 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
             let a = value_to_owned_bytes(s1, vm.heap, vm.interns).expect("checked bytes");
             let b = value_to_owned_bytes(s2, vm.heap, vm.interns).expect("checked bytes");
             Ok(match a.iter().zip(&b).position(|(x, y)| x != y) {
-                Some(end) => Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(a[..end].to_vec())))),
+                Some(end) => Value::Ref(
+                    HeapKind::Bytes,
+                    vm.heap.allocate(HeapData::Bytes(Bytes::new(a[..end].to_vec()))),
+                ),
                 None => s1.clone_with_heap(vm),
             })
         }
@@ -548,7 +552,10 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
             match mismatch {
                 Some(end) => {
                     let stop = i64::try_from(end).expect("sequence index fits i64");
-                    let slice = Value::Ref(vm.heap.allocate(HeapData::Slice(Slice::new(None, Some(stop), None))));
+                    let slice = Value::Ref(
+                        HeapKind::Slice,
+                        vm.heap.allocate(HeapData::Slice(Slice::new(None, Some(stop), None))),
+                    );
                     defer_drop!(slice, vm);
                     s1.py_getitem(slice, vm)
                 }
@@ -1228,7 +1235,7 @@ impl PathText {
 /// `bytes` as a `bytes` value, or as the `str` it was sliced from.
 fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
     if is_bytes {
-        Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(bytes))))
+        Value::Ref(HeapKind::Bytes, heap.allocate(HeapData::Bytes(Bytes::new(bytes))))
     } else {
         let text = String::from_utf8(bytes).expect("path algorithms split at ASCII separators, preserving UTF-8");
         allocate_string(text, heap)

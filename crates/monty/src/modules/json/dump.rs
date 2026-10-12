@@ -14,6 +14,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap_data::HeapKind,
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -211,7 +212,7 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<String>
         Value::Bool(flag) => Ok(Some(" ".repeat(usize::from(*flag)))),
         Value::Int(count) => spaces_from_indent_count(*count),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
-        Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
+        Value::Ref(HeapKind::Str | HeapKind::LongInt, heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
             HeapReadOutput::LongInt(long_int) => {
                 spaces_from_indent_count(long_int.get(vm.heap).to_i64().ok_or_else(ExcType::overflow_c_ssize_t)?)
@@ -249,7 +250,7 @@ fn parse_separators_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<(St
     }
 
     let pair = match value {
-        Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
+        Value::Ref(HeapKind::Tuple | HeapKind::List, heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Tuple(tuple) => {
                 let items = tuple.get(vm.heap).as_slice();
                 check_separators_length(items.len())?;
@@ -310,7 +311,7 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult
     let arg_num = if role == "item_separator" { 6 } else { 5 };
     match value {
         Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned()),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+        Value::Ref(HeapKind::Str, heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(string) => Ok(string.as_str().to_owned()),
             _ => Err(ExcType::type_error(format!(
                 "make_encoder() argument {arg_num} must be str, not {}",
@@ -404,7 +405,10 @@ impl<'h> Encoder<'_, 'h> {
                 write!(self.out, "{value}").expect("writing to String cannot fail");
                 Ok(())
             }
-            Value::Ref(heap_id) => match self.vm.heap.read(*heap_id) {
+            Value::Ref(
+                HeapKind::Str | HeapKind::LongInt | HeapKind::List | HeapKind::Tuple | HeapKind::Dict,
+                heap_id,
+            ) => match self.vm.heap.read(*heap_id) {
                 HeapReadOutput::Str(string) => {
                     write_json_string(string.get(self.vm.heap).as_str(), self.out, self.config.ensure_ascii());
                     Ok(())
@@ -619,11 +623,11 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>)
 ///
 /// CPython accepts strings, integers, floats, booleans, and `None`, then
 /// coerces the non-string cases to JSON strings during output.
-fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
+fn is_json_key_allowed(value: &Value, _: &VM<'_>) -> bool {
     matches!(
         value,
         Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::InternString(_)
-    ) || matches!(value, Value::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Str(_) | HeapData::LongInt(_)))
+    ) || matches!(value, Value::Ref(HeapKind::Str | HeapKind::LongInt, _))
 }
 
 /// Serializes a dict key by applying CPython's JSON key coercions.
@@ -641,7 +645,7 @@ fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &
             serialize_float_key(*value, out, config)?;
         }
         Value::InternString(string_id) => write_json_string(vm.interns.get_str(*string_id), out, ensure_ascii),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+        Value::Ref(HeapKind::Str | HeapKind::LongInt, heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(string) => write_json_string(string.as_str(), out, ensure_ascii),
             HeapData::LongInt(long_int) => {
                 long_int.check_str_digits_limit()?;

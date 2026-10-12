@@ -9,6 +9,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings, StringId},
     modules::{
         ModuleFunctions, collections,
@@ -805,7 +806,7 @@ impl Type {
                         Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
                     }
                     Value::InternLongInt(id) => Ok(Value::Float(bigint_to_f64_checked(interns.get_long_int(*id))?)),
-                    Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                    Value::Ref(HeapKind::Str | HeapKind::LongInt, heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
                         HeapData::LongInt(value) => Ok(Value::Float(value.to_f64_checked()?)),
                         _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
@@ -907,7 +908,7 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             match x {
                 Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), base, vm.heap),
                 Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), base, vm.heap),
-                Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                Value::Ref(HeapKind::Str | HeapKind::Bytes, heap_id) => match vm.heap.get(*heap_id) {
                     HeapData::Str(s) => parse_int_from_str(s.as_str(), base, vm.heap),
                     HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), base, vm.heap),
                     _ => Err(ExcType::type_error_int_non_string_with_base()),
@@ -927,7 +928,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), 10, vm.heap),
         Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), 10, vm.heap),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+        Value::Ref(HeapKind::Str | HeapKind::Bytes | HeapKind::LongInt, heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => parse_int_from_str(s.as_str(), 10, vm.heap),
             HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), 10, vm.heap),
             HeapData::LongInt(_) => Ok(x.clone_with_heap(vm.heap)),

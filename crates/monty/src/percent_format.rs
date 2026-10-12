@@ -21,6 +21,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     fstring::{MAX_FLOAT_PRECISION, ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap_data::HeapKind,
     resource_checks::check_repeat_size,
     str_format::value_error,
     string_builder::{BytesBuilder, StringBuilder},
@@ -251,7 +252,7 @@ impl Target for BytesTarget {
     fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
         match value {
             Value::InternBytes(id) => Ok(Self::from_bytes(vm.interns.get_bytes(*id), spec.precision)),
-            Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
+            Value::Ref(HeapKind::Bytes, id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
                 Ok(Self::from_bytes(bytes.as_slice(), spec.precision))
             }
             _ => Err(ExcType::type_error(format!(
@@ -445,8 +446,12 @@ struct Arguments {
 impl Arguments {
     fn new(args: &Value, bytes_template: bool, vm: &VM<'_>) -> RunResult<Self> {
         let positional = match args {
-            Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_slice(), vm)?,
-            Value::Ref(id) if let HeapData::NamedTuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_vec(), vm)?,
+            Value::Ref(HeapKind::Tuple, id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => {
+                clone_items(tuple.as_slice(), vm)?
+            }
+            Value::Ref(HeapKind::NamedTuple, id) if let HeapData::NamedTuple(tuple) = vm.heap.get(*id) => {
+                clone_items(tuple.as_vec(), vm)?
+            }
             _ => smallvec![args.clone_with_heap(vm.heap)],
         };
         let mapping = match args.py_type(vm) {
@@ -704,7 +709,7 @@ fn star_operand(
     match value {
         Value::Int(n) => Ok(*n),
         Value::Bool(b) => Ok(i64::from(*b)),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Err(on_overflow()),
+        Value::Ref(HeapKind::LongInt, _) => Err(on_overflow()),
         _ => Err(ExcType::type_error("* wants int")),
     }
 }
@@ -769,7 +774,7 @@ fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<
     match value {
         Value::Int(_) | Value::Bool(_) => Ok(value.clone_with_heap(vm.heap)),
         Value::Float(f) if decimal => LongInt::value_from_f64(*f, vm.heap),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Ok(value.clone_with_heap(vm.heap)),
+        Value::Ref(HeapKind::LongInt, _) => Ok(value.clone_with_heap(vm.heap)),
         _ => {
             let requirement = if decimal { "a real number" } else { "an integer" };
             value.py_index_impl(vm)?.ok_or_else(|| {
@@ -788,7 +793,7 @@ fn magnitude_digits(operand: &Value, base: u32, uppercase: bool, vm: &VM<'_>) ->
     match operand {
         Value::Int(n) => Ok((*n < 0, small_digits(n.unsigned_abs(), base, uppercase))),
         Value::Bool(b) => Ok((false, u64::from(*b).to_string())),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+        Value::Ref(HeapKind::LongInt, id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
             long_digits(li, base, uppercase, &vm.heap.tracker)
         }
         _ => Err(ExcType::type_error(format!(
@@ -897,7 +902,7 @@ fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => match li.to_f64() {
+        Value::Ref(HeapKind::LongInt, id) if let HeapData::LongInt(li) = vm.heap.get(*id) => match li.to_f64() {
             Some(f) if f.is_finite() => Ok(f),
             _ => Err(T::float_overflow_error()),
         },
@@ -918,7 +923,7 @@ fn char_text(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     match value {
         Value::Int(n) => char_from_code(*n),
         Value::Bool(b) => char_from_code(i64::from(*b)),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Err(char_range_error()),
+        Value::Ref(HeapKind::LongInt, _) => Err(char_range_error()),
         _ if value.py_type(vm) == Type::Str => {
             let text = value.to_str(vm)?;
             let mut chars = text.chars();
@@ -965,9 +970,11 @@ fn byte_char(value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
     match value {
         Value::Int(n) => u8::try_from(*n).map_err(|_| byte_range_error()),
         Value::Bool(b) => Ok(u8::from(*b)),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Err(byte_range_error()),
+        Value::Ref(HeapKind::LongInt, _) => Err(byte_range_error()),
         Value::InternBytes(id) => single_byte(vm.interns.get_bytes(*id)),
-        Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => single_byte(bytes.as_slice()),
+        Value::Ref(HeapKind::Bytes, id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
+            single_byte(bytes.as_slice())
+        }
         _ => match value.py_index_impl(vm)? {
             Some(index) => {
                 defer_drop!(index, vm);

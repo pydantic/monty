@@ -22,6 +22,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -712,7 +713,10 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
             zone_name,
         ],
     );
-    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+    Value::Ref(
+        HeapKind::NamedTuple,
+        vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))),
+    )
 }
 
 /// Reads the `struct_time` (or bare 9-element tuple) that `mktime`, `asctime`
@@ -748,7 +752,7 @@ fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFiel
 /// The nine core integers of a time tuple, plus the zone an 11-field
 /// `struct_time` carries. Rejects anything else with CPython's wording.
 fn time_tuple_parts(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<([i64; 9], Option<MontyTimeZone>)> {
-    let items = match value.read_heap(vm) {
+    let items = match value.read_heap(vm, &[HeapKind::Tuple, HeapKind::NamedTuple]) {
         Some(HeapReadOutput::Tuple(tuple)) => tuple.get(vm.heap).as_slice(),
         Some(HeapReadOutput::NamedTuple(tuple)) => tuple.get(vm.heap).items(),
         _ => return Err(ExcType::type_error("Tuple or struct_time argument required".to_owned())),

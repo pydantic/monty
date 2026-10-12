@@ -24,6 +24,7 @@ use crate::{
     heap::{
         ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
     },
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_check_time, tuple::allocate_tuple},
@@ -99,13 +100,16 @@ impl Partial {
         merge_keywords(&mut partial.keywords, keywords.drain(..), vm);
 
         let (partial, vm) = guard.into_parts();
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Partial(Box::new(partial)))))
+        Ok(Value::Ref(
+            HeapKind::Partial,
+            vm.heap.allocate(HeapData::Partial(Box::new(partial))),
+        ))
     }
 
     /// Invokes `on_child` for each heap id this partial owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for value in self.owned_values() {
-            if let Value::Ref(id) = value {
+            if let Value::Ref(_, id) = value {
                 on_child(*id);
             }
         }
@@ -130,7 +134,9 @@ impl Partial {
             self.keywords.is_empty(),
             "flatten() overwrites keywords rather than merging"
         );
-        let Value::Ref(inner_id) = self.func else { return Ok(()) };
+        let Value::Ref(HeapKind::Partial, inner_id) = self.func else {
+            return Ok(());
+        };
         let HeapData::Partial(inner) = vm.heap.get(inner_id) else {
             return Ok(());
         };
@@ -443,6 +449,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
                     .collect();
                 let dict = Dict::from_pairs(pairs, vm)?;
                 Ok(Some(CallResult::Value(Value::Ref(
+                    HeapKind::Dict,
                     vm.heap.allocate(HeapData::Dict(dict)),
                 ))))
             }
@@ -459,11 +466,11 @@ impl<'h> HeapRead<'h, Partial> {
     /// partials share everything they hold.
     pub(crate) fn allocate_like(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let (func, args, keywords) = self.get(vm.heap).clone_parts(vm.heap)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Partial(Box::new(Partial {
-            func,
-            args,
-            keywords,
-        })))))
+        Ok(Value::Ref(
+            HeapKind::Partial,
+            vm.heap
+                .allocate(HeapData::Partial(Box::new(Partial { func, args, keywords }))),
+        ))
     }
 }
 
@@ -488,11 +495,14 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Partial> {
             copied.drop_with(vm);
             return Err(ExcType::partial_not_callable());
         }
-        let copy = Value::Ref(vm.heap.allocate(HeapData::Partial(Box::new(Partial {
-            func: copied,
-            args: Vec::new(),
-            keywords: Vec::new(),
-        }))));
+        let copy = Value::Ref(
+            HeapKind::Partial,
+            vm.heap.allocate(HeapData::Partial(Box::new(Partial {
+                func: copied,
+                args: Vec::new(),
+                keywords: Vec::new(),
+            }))),
+        );
         let copy_id = copy.ref_id().expect("partial is heap allocated");
 
         let mut guard = DropGuard::new(copy, vm);

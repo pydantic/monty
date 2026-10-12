@@ -19,6 +19,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
@@ -225,7 +226,7 @@ impl<'h> HeapRead<'h, ReMatch> {
             pairs.push((key, value));
         }
         let dict = Dict::from_pairs(pairs, vm)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::Ref(HeapKind::Dict, vm.heap.allocate(HeapData::Dict(dict))))
     }
 }
 
@@ -387,7 +388,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
                 let name = vm.interns.get_str(*id);
                 self.get(vm.heap).get_group_by_name(name, vm.heap)
             }
-            Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            Value::Ref(HeapKind::Str, heap_id) => match vm.heap.get(*heap_id) {
                 HeapData::Str(s) => {
                     let name = s.as_str().to_owned();
                     self.get(vm.heap).get_group_by_name(&name, vm.heap)
@@ -404,7 +405,7 @@ impl HeapItem for ReMatch {
         // Release the shared subject reference (no-op for an interned subject).
         // `dec_ref_forget` neutralises the `Ref` so the struct's own `Drop`
         // does not trip the `memory-model-checks` leak assertion.
-        if let Value::Ref(id) = &mut self.subject {
+        if let Value::Ref(_, id) = &mut self.subject {
             stack.push(*id);
             #[cfg(feature = "memory-model-checks")]
             self.subject.dec_ref_forget();
@@ -448,7 +449,7 @@ fn resolve_group_arg(m: &ReMatch, val: &Value, vm: &VM<'_>) -> RunResult<Value> 
             let name = vm.interns.get_str(*id);
             m.get_group_by_name(name, vm.heap)
         }
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+        Value::Ref(HeapKind::Str, heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => {
                 let name = s.as_str().to_owned();
                 m.get_group_by_name(&name, vm.heap)

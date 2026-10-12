@@ -9,6 +9,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     heap::{DropGuard, HeapData},
+    heap_data::HeapKind,
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
@@ -79,8 +80,10 @@ impl VM<'_> {
     pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
         let simple_exc = match exc_value {
             // Exception instance on heap
-            Value::Ref(heap_id) => {
-                if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
+            Value::Ref(kind, heap_id) => {
+                if matches!(kind, HeapKind::Exception)
+                    && let HeapData::Exception(exc) = self.heap.get(*heap_id)
+                {
                     exc.clone()
                 } else {
                     // Not an exception type
@@ -421,7 +424,7 @@ impl VM<'_> {
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
         let exception = exc.exc.clone();
         let heap_id = self.heap.allocate(HeapData::Exception(exception));
-        Value::Ref(heap_id)
+        Value::Ref(HeapKind::Exception, heap_id)
     }
 
     /// Checks if an exception matches an `except` clause's exception type.
@@ -455,8 +458,10 @@ impl VM<'_> {
             }
             // Flat tuple of exception classes. CPython does not descend into
             // nested tuples in this position, so neither do we.
-            Value::Ref(id) => {
-                if let HeapData::Tuple(tuple) = self.heap.get(*id) {
+            Value::Ref(kind, id) => {
+                if matches!(kind, HeapKind::Tuple)
+                    && let HeapData::Tuple(tuple) = self.heap.get(*id)
+                {
                     let mut matched = false;
                     for v in tuple.as_slice() {
                         match v {

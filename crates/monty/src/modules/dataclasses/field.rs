@@ -12,6 +12,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap_data::HeapKind,
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Marker, Value},
@@ -123,7 +124,7 @@ impl DataclassField {
             .into_iter()
             .flatten()
             .filter_map(|value| match value {
-                Value::Ref(id) => Some(*id),
+                Value::Ref(_, id) => Some(*id),
                 _ => None,
             })
     }
@@ -240,9 +241,9 @@ pub(super) fn field_at_id<'a>(vm: &'a VM<'_>, field_id: HeapId) -> Option<&'a Da
 
 /// The heap `Field` a class-body value is, when the body bound a `field()`
 /// result the decorator should adopt rather than treat as a plain default.
-pub(super) fn adoptable_field(bound: Option<&Value>, vm: &VM<'_>) -> Option<HeapId> {
+pub(super) fn adoptable_field(bound: Option<&Value>, _vm: &VM<'_>) -> Option<HeapId> {
     match bound {
-        Some(Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::DataclassField(_)) => Some(*id),
+        Some(Value::Ref(HeapKind::DataclassField, id)) => Some(*id),
         _ => None,
     }
 }
@@ -253,7 +254,7 @@ pub(super) fn field_at<'a>(vm: &'a VM<'_>, fields_id: HeapId, idx: usize) -> Opt
         return None;
     };
     match fields.value_at(idx) {
-        Some(Value::Ref(id)) => field_at_id(vm, *id),
+        Some(Value::Ref(HeapKind::DataclassField, id)) => field_at_id(vm, *id),
         _ => None,
     }
 }

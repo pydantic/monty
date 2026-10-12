@@ -15,6 +15,7 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadOutput, heap_read_ref_as_field_mut,
     },
+    heap_data::HeapKind,
     intern::Interns,
     modules::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
@@ -182,7 +183,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             return Ok(None);
         };
         if matches!(result, Value::Int(_) | Value::Bool(_) | Value::InternLongInt(_))
-            || matches!(&result, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)))
+            || matches!(&result, Value::Ref(HeapKind::LongInt, _))
         {
             Ok(Some(result))
         } else {
@@ -294,7 +295,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         // for the new instance.
         if attr_str == "__class__" {
             vm.heap.inc_ref(class_id);
-            let class_val = Value::Ref(class_id);
+            let class_val = Value::Ref(HeapKind::Class, class_id);
             defer_drop!(class_val, vm);
             return vm.call_function(class_val, args);
         }
@@ -425,7 +426,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                     unreachable!("Instance py_exit called with a non-exception heap id");
                 };
                 vm.heap.inc_ref(exc_id);
-                (Value::Builtin(Builtins::ExcType(e.exc_type())), Value::Ref(exc_id))
+                (
+                    Value::Builtin(Builtins::ExcType(e.exc_type())),
+                    Value::Ref(HeapKind::Exception, exc_id),
+                )
             }
             None => (Value::None, Value::None),
         };
@@ -452,7 +456,10 @@ impl<'h> HeapRead<'h, BoundMethod> {
     /// never a copy of the function, which is shared as all functions are.
     pub(crate) fn allocate_like(&self, instance: Value, vm: &mut VM<'h>) -> Value {
         let func = self.get(vm.heap).func.clone_with_heap(vm.heap);
-        Value::Ref(vm.heap.allocate(HeapData::BoundMethod(BoundMethod { instance, func })))
+        Value::Ref(
+            HeapKind::BoundMethod,
+            vm.heap.allocate(HeapData::BoundMethod(BoundMethod { instance, func })),
+        )
     }
 }
 
@@ -542,10 +549,13 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
         Some(member) if is_method_value(&member, vm) => {
             vm.heap.inc_ref(self_id);
             let bound = BoundMethod {
-                instance: Value::Ref(self_id),
+                instance: Value::Ref(HeapKind::Instance, self_id),
                 func: member,
             };
-            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+            Some(Value::Ref(
+                HeapKind::BoundMethod,
+                vm.heap.allocate(HeapData::BoundMethod(bound)),
+            ))
         }
         Some(member) => Some(member),
         // `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
@@ -553,7 +563,7 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
         // `__name__` handling on class objects.
         None if attr == "__class__" => {
             vm.heap.inc_ref(class_id);
-            Some(Value::Ref(class_id))
+            Some(Value::Ref(HeapKind::Class, class_id))
         }
         None => None,
     }
@@ -666,7 +676,7 @@ fn call_dunder_member(
     // method or other callable value is invoked without it.
     let args = if is_method_value(func, vm) {
         vm.heap.inc_ref(self_id);
-        let this = Value::Ref(self_id);
+        let this = Value::Ref(HeapKind::Instance, self_id);
         match arg {
             Some(arg) => ArgValues::Two(this, arg),
             None => ArgValues::One(this),
@@ -836,7 +846,7 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
 fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     if is_method_value(member, vm) {
         vm.heap.inc_ref(self_id);
-        vm.call_function(member, args.prepend(Value::Ref(self_id)))
+        vm.call_function(member, args.prepend(Value::Ref(HeapKind::Instance, self_id)))
     } else {
         vm.call_function(member, args)
     }
@@ -845,14 +855,14 @@ fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut 
 /// Whether a value is a user-defined function (so it should bind `self` when
 /// accessed as a method). Class variables that are not functions are returned
 /// unbound.
-fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
+fn is_method_value(value: &Value, _vm: &VM<'_>) -> bool {
     match value {
         Value::DefFunction(_) => true,
-        Value::Ref(id) => matches!(
-            vm.heap.get(*id),
+        Value::Ref(kind, _) => matches!(
+            kind,
             // `functools.partial` is a descriptor in CPython 3.14 too, and binds
             // the instance the same way: after the arguments it already carries.
-            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_)
+            HeapKind::Closure | HeapKind::FunctionDefaults | HeapKind::Partial
         ),
         _ => false,
     }

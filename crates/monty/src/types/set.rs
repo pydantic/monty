@@ -16,6 +16,7 @@ use crate::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem,
         HeapObjectRead, HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
+    heap_data::HeapKind,
     identity::Identity,
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, clone_items, deep_copy},
@@ -463,7 +464,7 @@ impl SetStorage {
     /// Collects heap IDs for reference counting cleanup.
     fn collect_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         for entry in &mut self.entries {
-            if let Value::Ref(id) = &entry.value {
+            if let Value::Ref(_, id) = &entry.value {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 entry.value.dec_ref_forget();
@@ -910,7 +911,7 @@ impl Set {
             Some(v) => Self::from_iterable(v, vm)?,
         };
         let heap_id = vm.heap.allocate(HeapData::Set(set));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::Ref(HeapKind::Set, heap_id))
     }
 
     /// Creates a set from an iterable value, adding and hashing items incrementally.
@@ -926,7 +927,7 @@ impl Set {
         let mut guard = DropGuard::new(iterable, vm);
         let (iterable, vm) = guard.as_parts();
         let storage = match iterable {
-            Value::Ref(id) => match vm.heap.get(*id) {
+            Value::Ref(HeapKind::Set | HeapKind::FrozenSet, id) => match vm.heap.get(*id) {
                 HeapData::Set(set) => Some(clone_storage_checked(&set.0, vm)?),
                 HeapData::FrozenSet(set) => Some(clone_storage_checked(&set.storage, vm)?),
                 _ => None,
@@ -1025,7 +1026,7 @@ impl<'h> HeapRead<'h, Set> {
         // Try direct extraction from Set/FrozenSet
         let entries_opt = {
             match &other {
-                Value::Ref(id) => match vm.heap.get(*id) {
+                Value::Ref(HeapKind::Set | HeapKind::FrozenSet, id) => match vm.heap.get(*id) {
                     HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
                     HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
                     _ => None,
@@ -1077,7 +1078,7 @@ impl<'h> HeapRead<'h, Set> {
         };
 
         let heap_id = vm.heap.allocate(HeapData::Set(Set(result)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::Ref(HeapKind::Set, heap_id))
     }
 
     /// Set comparison operations (issubset, issuperset, isdisjoint) via HeapRead.
@@ -1085,7 +1086,7 @@ impl<'h> HeapRead<'h, Set> {
     fn comparison_op(&self, other: &Value, op: SetComparison, vm: &mut VM<'h>) -> RunResult<bool> {
         // Get other's storage
         let entries_opt = match other {
-            Value::Ref(id) => match vm.heap.get(*id) {
+            Value::Ref(HeapKind::Set | HeapKind::FrozenSet, id) => match vm.heap.get(*id) {
                 HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
                 HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
                 _ => None,
@@ -1223,13 +1224,13 @@ impl<'h> HeapRead<'h, FrozenSet> {
         };
 
         let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(result)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::Ref(HeapKind::FrozenSet, heap_id))
     }
 
     /// Set comparison operations for frozenset via HeapRead.
     fn comparison_op(&self, other: &Value, op: SetComparison, vm: &mut VM<'h>) -> RunResult<bool> {
         let entries_opt = match other {
-            Value::Ref(id) => match vm.heap.get(*id) {
+            Value::Ref(HeapKind::Set | HeapKind::FrozenSet, id) => match vm.heap.get(*id) {
                 HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
                 HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
                 _ => None,
@@ -1291,7 +1292,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         // `set` and `frozenset` compare equal by their members, regardless of
         // mutability. `set == dict_keys`/`dict_items` is handled by the reflected
         // pass via the dict-view impls.
-        match other.read_heap(vm) {
+        match other.read_heap(vm, &[HeapKind::Set, HeapKind::FrozenSet]) {
             Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
             Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
             _ => Ok(None),
@@ -1307,7 +1308,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::Set(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::Ref(HeapKind::Set, result_id)))
     }
 
     fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1315,7 +1316,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::Set(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::Ref(HeapKind::Set, result_id)))
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1323,7 +1324,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::Set(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::Ref(HeapKind::Set, result_id)))
     }
 
     fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1331,7 +1332,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::Set(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::Ref(HeapKind::Set, result_id)))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -1370,7 +1371,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
                 args.check_zero_args("set.copy", vm.heap)?;
                 let copy = self.copy(vm);
                 let heap_id = vm.heap.allocate(HeapData::Set(copy));
-                Ok(Value::Ref(heap_id))
+                Ok(Value::Ref(HeapKind::Set, heap_id))
             }
             Some(StaticStrings::Update) => {
                 let other = args.get_one_arg("set.update", vm.heap)?;
@@ -1472,7 +1473,7 @@ impl Set {
     fn get_storage_from_value(value: Value, vm: &mut VM<'_>) -> RunResult<SetStorage> {
         // Try to get entries from a Set/FrozenSet directly
         let entries_opt = match &value {
-            Value::Ref(id) => match vm.heap.get(*id) {
+            Value::Ref(HeapKind::Set | HeapKind::FrozenSet, id) => match vm.heap.get(*id) {
                 HeapData::Set(set) => Some(set.0.clone_entries(vm.heap)),
                 HeapData::FrozenSet(set) => Some(set.storage.clone_entries(vm.heap)),
                 _ => None,
@@ -1571,7 +1572,7 @@ impl FrozenSet {
             Some(v) => Self::from_set(Set::from_iterable(v, vm)?),
         };
         let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::Ref(HeapKind::FrozenSet, heap_id))
     }
 }
 
@@ -1600,7 +1601,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         // `frozenset` and `set` compare equal by their members, regardless of
         // mutability. `frozenset == dict_keys`/`dict_items` is handled by the
         // reflected pass via the dict-view impls.
-        match other.read_heap(vm) {
+        match other.read_heap(vm, &[HeapKind::FrozenSet, HeapKind::Set]) {
             Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
             Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
             _ => Ok(None),
@@ -1637,7 +1638,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::Ref(HeapKind::FrozenSet, result_id)))
     }
 
     fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1645,7 +1646,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::Ref(HeapKind::FrozenSet, result_id)))
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1653,7 +1654,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::Ref(HeapKind::FrozenSet, result_id)))
     }
 
     fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1661,7 +1662,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::Ref(HeapKind::FrozenSet, result_id)))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -1674,7 +1675,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
                 args.check_zero_args("frozenset.copy", vm.heap)?;
                 let cloned = self.get(vm.heap).storage.clone_with_heap(vm.heap);
                 let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)));
-                Ok(Value::Ref(heap_id))
+                Ok(Value::Ref(HeapKind::FrozenSet, heap_id))
             }
             Some(StaticStrings::Union) => {
                 let other = args.get_one_arg("frozenset.union", vm.heap)?;
@@ -1728,7 +1729,8 @@ impl HeapItem for FrozenSet {
 /// only accept CPython's set-like operands (`set`, `frozenset`, `dict_keys`,
 /// and `dict_items`), while method forms accept any iterable.
 fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<SetStorage>> {
-    let Value::Ref(id) = value else {
+    let Value::Ref(HeapKind::Set | HeapKind::FrozenSet | HeapKind::DictKeysView | HeapKind::DictItemsView, id) = value
+    else {
         return Ok(None);
     };
 
@@ -1842,7 +1844,7 @@ impl SetIterator {
             expected_len,
         }));
         vm.heap.inc_ref(source_id);
-        Value::Ref(id)
+        Value::Ref(HeapKind::SetIterator, id)
     }
 }
 
@@ -1930,7 +1932,7 @@ fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
 
 /// Finds the nested value responsible for a tuple-like element being unhashable.
 fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
-    let Value::Ref(id) = value else {
+    let Value::Ref(HeapKind::Tuple | HeapKind::NamedTuple, id) = value else {
         return Ok(value.py_type_name(vm).into_owned());
     };
     let len = match vm.heap.get(*id) {
@@ -1959,7 +1961,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {
     #[inline(never)]
     fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         let copy_id = vm.heap.allocate(HeapData::Set(Set::new()));
-        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let mut guard = DropGuard::new(Value::Ref(HeapKind::Set, copy_id), vm);
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;
         // CPython reduces a set through `list(x)`, snapshotting its members before
@@ -2014,6 +2016,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, FrozenSet> {
         }
         let (built, vm) = guard.into_parts();
         Ok(Value::Ref(
+            HeapKind::FrozenSet,
             vm.heap.allocate(HeapData::FrozenSet(FrozenSet::from_set(built))),
         ))
     }

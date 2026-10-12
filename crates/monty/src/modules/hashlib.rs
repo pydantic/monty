@@ -24,6 +24,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -112,7 +113,7 @@ fn algorithm_names(vm: &mut VM<'_>) -> Value {
             .add(name, vm)
             .expect("adding an interned name to a fresh set cannot raise");
     }
-    Value::Ref(vm.heap.allocate(HeapData::Set(names)))
+    Value::Ref(HeapKind::Set, vm.heap.allocate(HeapData::Set(names)))
 }
 
 /// Dispatches a call to a `hashlib` module function.
@@ -571,7 +572,7 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
 fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Bytes, id) => match vm.heap.get(*id) {
             HeapData::Bytes(bytes) => Ok(bytes.as_slice()),
             _ => Err(not_bytes_like(value, vm)),
         },

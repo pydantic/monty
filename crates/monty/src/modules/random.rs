@@ -32,6 +32,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
@@ -245,7 +246,7 @@ fn seed_from_reply(
 fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Bytes, id) => match vm.heap.get(*id) {
             HeapData::Bytes(bytes) => Some(bytes.as_slice()),
             _ => None,
         },
@@ -407,7 +408,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         reduce_state_words(internal, vm)?
     } else {
         let tuple = match internal {
-            Value::Ref(id) => match vm.heap.get(*id) {
+            Value::Ref(HeapKind::Tuple, id) => match vm.heap.get(*id) {
                 HeapData::Tuple(tuple) => Some(tuple),
                 _ => None,
             },
@@ -759,7 +760,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     let ShuffleArgs { x } = ShuffleArgs::from_args(args, vm)?;
     defer_drop_mut!(x, vm);
     let len = len_of(x, vm)?;
-    if let Value::Ref(id) = x
+    if let Value::Ref(HeapKind::List, id) = x
         && let HeapReadOutput::List(mut list) = vm.heap.read(*id)
     {
         return target.with_generator(vm, |random, vm| {
@@ -847,7 +848,10 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
             .map(|s| bisect_right(&cum_counts, i128::try_from(s).expect("selection below total")));
         collect_items(population, indices, vm)?
     };
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(picks)))))
+    Ok(Value::Ref(
+        HeapKind::List,
+        vm.heap.allocate(HeapData::List(List::new(picks))),
+    ))
 }
 
 /// The positions `sample` picks from a population of `n` — the whole
@@ -1040,7 +1044,10 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
         }
     };
     let picks = collect_items(population, indices.into_iter(), vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(picks)))))
+    Ok(Value::Ref(
+        HeapKind::List,
+        vm.heap.allocate(HeapData::List(List::new(picks))),
+    ))
 }
 
 /// `list(accumulate(weights))` for `choices`, as floats.

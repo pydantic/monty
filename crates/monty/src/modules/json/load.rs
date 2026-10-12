@@ -14,6 +14,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, HeapData, HeapReader},
+    heap_data::HeapKind,
     types::{
         Dict, List, LongInt,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
@@ -91,7 +92,7 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let bytes: Cow<'_, [u8]> = match value {
         Value::InternString(string_id) => Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()),
         Value::InternBytes(bytes_id) => Cow::Borrowed(vm.interns.get_bytes(*bytes_id)),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+        Value::Ref(HeapKind::Str | HeapKind::Bytes, heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => Cow::Owned(s.as_str().as_bytes().to_vec()),
             HeapData::Bytes(b) => Cow::Owned(b.as_slice().to_vec()),
             _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
@@ -227,7 +228,7 @@ fn parse_json_array(
 
     let Some(mut next) = jiter.known_array()? else {
         let list_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
-        return Ok(Value::Ref(list_id));
+        return Ok(Value::Ref(HeapKind::List, list_id));
     };
 
     let values = Vec::new();
@@ -261,7 +262,7 @@ fn parse_json_array(
 
     let values = values_guard.into_inner();
     let list_id = vm.heap.allocate(HeapData::List(List::new(values)));
-    Ok(Value::Ref(list_id))
+    Ok(Value::Ref(HeapKind::List, list_id))
 }
 
 /// Parses a JSON string and immediately copies it into an owned `String`.
@@ -286,7 +287,7 @@ fn parse_json_object(
 
     let Some(mut key) = parse_first_object_key(jiter)? else {
         let dict_id = vm.heap.allocate(HeapData::Dict(Dict::new()));
-        return Ok(Value::Ref(dict_id));
+        return Ok(Value::Ref(HeapKind::Dict, dict_id));
     };
 
     let mut dict_guard = DropGuard::new(Dict::new(), vm);
@@ -309,7 +310,7 @@ fn parse_json_object(
 
     let dict = dict_guard.into_inner();
     let dict_id = vm.heap.allocate(HeapData::Dict(dict));
-    Ok(Value::Ref(dict_id))
+    Ok(Value::Ref(HeapKind::Dict, dict_id))
 }
 
 /// Parses the first key of a JSON object and copies it into owned storage.

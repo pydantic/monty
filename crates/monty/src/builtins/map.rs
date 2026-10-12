@@ -8,6 +8,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData},
+    heap_data::HeapKind,
     types::{List, iter::checked_preallocation_hint},
     value::Value,
 };
@@ -115,7 +116,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 
     let heap_id = vm.heap.allocate(HeapData::List(List::new(mem::take(out))));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::Ref(HeapKind::List, heap_id))
 }
 
 /// Argument shape for `map(function, iterable, *iterables)`.

@@ -14,6 +14,7 @@ use crate::{
     bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::{CompileInterns, FunctionId, StringId},
     prepare::SnippetNames,
     types::Dict,
@@ -218,14 +219,14 @@ impl VM<'_> {
             None if self.current_frame.function_id.is_none() => self.snapshot_globals()?,
             None => self.snapshot_locals()?,
         };
-        Ok(Value::Ref(dict_id))
+        Ok(Value::Ref(HeapKind::Dict, dict_id))
     }
 
     /// A fresh dict of the bound module globals, for `locals()` at module scope.
     fn snapshot_globals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         // Owned by the guard until every entry is in, so a failed insert frees it.
-        let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
+        let mut dict_guard = DropGuard::new(Value::Ref(HeapKind::Dict, dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
         for slot in 0..this.global_names.len() {
             if !matches!(this.globals[slot], Value::Undefined) {
@@ -310,7 +311,7 @@ impl VM<'_> {
     pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         // Owned by the guard until every entry is in, so a failed insert frees it.
-        let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
+        let mut dict_guard = DropGuard::new(Value::Ref(HeapKind::Dict, dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
         let base = this.current_frame.stack_base();
         let code = this.current_frame.code;
@@ -339,7 +340,7 @@ impl VM<'_> {
         }
         for (slot, name_id) in names.filter(|(slot, _)| cell_slots.contains(slot)) {
             let value = match &this.stack[base + slot] {
-                Value::Ref(cell_id) => match this.heap.get(*cell_id) {
+                Value::Ref(HeapKind::Cell, cell_id) => match this.heap.get(*cell_id) {
                     HeapData::Cell(cell) => cell.0.clone_with_heap(this.heap),
                     _ => Value::Undefined,
                 },

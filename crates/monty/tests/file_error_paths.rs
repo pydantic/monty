@@ -405,3 +405,24 @@ result
     assert_eq!(items.len(), 2);
     assert_eq!(items[0], MontyObject::string("type".to_owned()));
 }
+
+#[test]
+fn custom_iter_can_return_an_open_file() {
+    let code = r"
+f = open('/x.txt')
+class Iterable:
+    def __iter__(self):
+        return f
+assert iter(f) is f
+assert iter(Iterable()) is f
+next(f)
+";
+    let result = run_with_open_then_io(
+        code,
+        "Path.read_text",
+        file_handle("/x.txt", "r"),
+        MontyObject::string("alpha\nbeta\n".to_owned()).into(),
+    )
+    .unwrap();
+    assert_eq!(result, MontyObject::string("alpha\n".to_owned()));
+}

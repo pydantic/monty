@@ -6,6 +6,7 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::HeapReadOutput,
+    heap_data::HeapKind,
     os_dispatch::PostConversionEffect,
     types::iter::iterator_next,
     value::Value,
@@ -38,7 +39,7 @@ struct NextArgs {
 pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
     defer_drop!(iterator, vm);
-    if let Value::Ref(id) = iterator
+    if let Value::Ref(HeapKind::OpenFile, id) = iterator
         && let HeapReadOutput::OpenFile(file) = vm.heap.read(*id)
         && file.needs_buffer_load(vm)
     {

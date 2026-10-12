@@ -41,7 +41,7 @@ impl Repeat {
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.object {
+        if let Value::Ref(_, id) = &self.object {
             on_child(*id);
         }
     }

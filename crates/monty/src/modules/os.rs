@@ -27,6 +27,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HeapData, HeapId},
+    heap_data::HeapKind,
     intern::{StaticStrings, StringId},
     modules::{ModuleFunctions, os_path},
     object_bridge::MontyObjectExt,
@@ -91,7 +92,10 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
             Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
         ),
         // `os.path` is its own module object, like CPython's `posixpath`.
-        (StaticStrings::Path, Value::Ref(os_path::create_module(vm))),
+        (
+            StaticStrings::Path,
+            Value::Ref(HeapKind::Module, os_path::create_module(vm)),
+        ),
         // POSIX path constants — the sandbox path model is POSIX on every host.
         (StaticStrings::Sep, Value::InternString(StringId::from_ascii(b'/'))),
         (StaticStrings::Pathsep, Value::InternString(StringId::from_ascii(b':'))),
@@ -192,7 +196,10 @@ fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("getcwdb", vm.heap)?;
     let bytes = Bytes::new(vm.env.cwd.as_bytes().to_vec());
-    Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
+    Ok(CallResult::Value(Value::Ref(
+        HeapKind::Bytes,
+        vm.heap.allocate(HeapData::Bytes(bytes)),
+    )))
 }
 
 /// `os.chdir(path)` accepts a positional or keyword path, with CPython's total-count check.

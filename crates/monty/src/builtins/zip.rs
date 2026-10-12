@@ -6,6 +6,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
+    heap_data::HeapKind,
     types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
@@ -27,7 +28,7 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if iterables.is_empty() {
         // zip() with no arguments returns empty list
         let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
-        return Ok(Value::Ref(heap_id));
+        return Ok(Value::Ref(HeapKind::List, heap_id));
     }
 
     // Create iterators for each iterable
@@ -83,7 +84,7 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let (result, vm) = result_guard.into_parts();
     let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::Ref(HeapKind::List, heap_id))
 }
 
 /// Argument shape for `zip(*iterables, strict=False)`.

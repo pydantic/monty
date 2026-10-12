@@ -13,6 +13,7 @@ use crate::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
         HeapReader,
     },
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     resource_checks::{check_repeat_size, check_value_buffer_growth},
@@ -79,7 +80,7 @@ impl List {
     /// ensure refcounts are properly managed.
     #[must_use]
     pub fn new(vec: Vec<Value>) -> Self {
-        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(..)));
         Self {
             items: vec,
             contains_refs,
@@ -141,7 +142,7 @@ impl<'h> HeapRead<'h, List> {
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
         // not at mutation time.
-        let is_ref = matches!(item, Value::Ref(_));
+        let is_ref = matches!(item, Value::Ref(..));
         let this = self.get_mut(vm.heap);
         if is_ref {
             this.contains_refs = true;
@@ -180,7 +181,7 @@ impl<'h> HeapRead<'h, List> {
         };
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`.
-        if matches!(item, Value::Ref(_)) {
+        if matches!(item, Value::Ref(..)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
         // Ownership transfer - refcount was already handled by caller
@@ -205,12 +206,12 @@ impl List {
         match value {
             None => {
                 let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())));
-                Ok(Value::Ref(heap_id))
+                Ok(Value::Ref(HeapKind::List, heap_id))
             }
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
                 let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)));
-                Ok(Value::Ref(heap_id))
+                Ok(Value::Ref(HeapKind::List, heap_id))
             }
         }
     }
@@ -225,7 +226,7 @@ impl<'h> HeapRead<'h, List> {
             item.clone_with_heap(vm.heap)
         })?;
         let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::Ref(HeapKind::List, heap_id))
     }
 
     /// Clones the item at the given index with proper refcount management.
@@ -449,7 +450,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
+        if let Value::Ref(HeapKind::Slice, id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
             return self.getitem_slice(slice, vm);
@@ -485,8 +486,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         let index = match *key {
             Value::Int(i) => i,
             Value::Bool(b) => i64::from(b),
-            Value::Ref(heap_id) => {
-                if let HeapData::LongInt(li) = vm.heap.get(heap_id) {
+            Value::Ref(kind, heap_id) => {
+                if matches!(kind, HeapKind::LongInt)
+                    && let HeapData::LongInt(li) = vm.heap.get(heap_id)
+                {
                     if let Some(i) = li.to_i64() {
                         i
                     } else {
@@ -516,7 +519,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
         // Update contains_refs if storing a Ref (must check before swap,
         // since after swap `value` holds the old item)
-        if matches!(*value, Value::Ref(_)) {
+        if matches!(*value, Value::Ref(..)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
 
@@ -527,7 +530,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::List(other)) = other.read_heap(vm, &[HeapKind::List]) else {
             return Ok(None);
         };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
@@ -561,13 +564,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::List(other)) = other.read_heap(vm, &[HeapKind::List]) else {
             return Ok(None);
         };
         let mut items = self.clone_all_items(vm)?;
         items.extend(other.clone_all_items(vm)?);
         let id = vm.heap.allocate(HeapData::List(List::new(items)));
-        Ok(Some(Value::Ref(id)))
+        Ok(Some(Value::Ref(HeapKind::List, id)))
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -581,7 +584,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
             vm.heap.tracker.check_time_every(rep)?;
         }
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result))))))
+        Ok(Some(Value::Ref(
+            HeapKind::List,
+            vm.heap.allocate(HeapData::List(List::new(result))),
+        )))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -589,7 +595,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let Value::Ref(other_id) = other else {
+        let Value::Ref(HeapKind::List, other_id) = other else {
             return Ok(false);
         };
 
@@ -614,7 +620,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
                 .check_allocation(source_len.saturating_mul(2 * VALUE_SIZE))?;
             let source_items = source_list.clone_all_items(vm)?;
             // Check if new items contain refs
-            let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
+            let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(..)));
             self.get_mut(vm.heap).items.extend(source_items);
             if has_new_refs {
                 self.get_mut(vm.heap).contains_refs = true;
@@ -643,7 +649,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         let list_id = self.id();
         let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list_id)));
         vm.heap.inc_ref(list_id);
-        Ok(Value::Ref(iterator))
+        Ok(Value::Ref(HeapKind::ListIterator, iterator))
     }
 }
 
@@ -654,7 +660,7 @@ impl HeapItem for List {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
+            if let Value::Ref(_, id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 obj.dec_ref_forget();
@@ -827,7 +833,7 @@ fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
         .check_allocation(list.items.len().saturating_mul(VALUE_SIZE))?;
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
     let heap_id = heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::Ref(HeapKind::List, heap_id))
 }
 
 /// Implements Python's `list.extend(iterable)` method.
@@ -837,7 +843,7 @@ fn list_extend<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
     let iterable = args.get_one_arg("list.extend", vm.heap)?;
     let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
 
-    let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+    let has_refs = items.iter().any(|v| matches!(v, Value::Ref(..)));
     if has_refs {
         list.get_mut(vm.heap).set_contains_refs();
     }
@@ -1123,7 +1129,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
     #[inline(never)]
     fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         let copy_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
-        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let mut guard = DropGuard::new(Value::Ref(HeapKind::List, copy_id), vm);
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;
         let len = self.get(vm.heap).len();
@@ -1187,7 +1193,7 @@ mod tests {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
 
-        let key = Value::Ref(index_id);
+        let key = Value::Ref(HeapKind::LongInt, index_id);
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
@@ -1208,7 +1214,7 @@ mod tests {
         assert!(matches!(list.as_slice()[1], Value::Int(99)));
 
         // Clean up
-        Value::Ref(list_id).drop_with(&mut heap);
+        Value::Ref(HeapKind::List, list_id).drop_with(&mut heap);
     }
 
     /// Tests py_setitem with a negative LongInt index that fits in i64.
@@ -1221,7 +1227,7 @@ mod tests {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
 
-        let key = Value::Ref(index_id);
+        let key = Value::Ref(HeapKind::LongInt, index_id);
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
@@ -1241,7 +1247,7 @@ mod tests {
         };
         assert!(matches!(list.as_slice()[2], Value::Int(99)));
 
-        Value::Ref(list_id).drop_with(&mut heap);
+        Value::Ref(HeapKind::List, list_id).drop_with(&mut heap);
     }
 
     /// Tests py_setitem with i64::MAX as a LongInt index.
@@ -1252,7 +1258,7 @@ mod tests {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
 
-        let key = Value::Ref(index_id);
+        let key = Value::Ref(HeapKind::LongInt, index_id);
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
@@ -1266,6 +1272,6 @@ mod tests {
 
         assert!(result.is_err());
 
-        Value::Ref(list_id).drop_with(&mut heap);
+        Value::Ref(HeapKind::List, list_id).drop_with(&mut heap);
     }
 }

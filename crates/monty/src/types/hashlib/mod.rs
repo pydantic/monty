@@ -37,6 +37,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
@@ -364,7 +365,10 @@ impl HashObject {
     }
 
     pub(crate) fn allocate(self, heap: &Heap) -> Value {
-        Value::Ref(heap.allocate(HeapData::HashObject(Box::new(self))))
+        Value::Ref(
+            HeapKind::HashObject,
+            heap.allocate(HeapData::HashObject(Box::new(self))),
+        )
     }
 }
 
@@ -582,7 +586,7 @@ fn xof_length(length: u64, bytes_per_output: usize, vm: &VM<'_>) -> RunResult<us
 pub(crate) fn hash_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Bytes | HeapKind::Str, id) => match vm.heap.get(*id) {
             HeapData::Bytes(bytes) => Ok(bytes.as_slice()),
             HeapData::Str(_) => Err(ExcType::type_error("Strings must be encoded before hashing")),
             _ => Err(ExcType::type_error("object supporting the buffer API required")),

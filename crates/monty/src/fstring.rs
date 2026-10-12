@@ -18,6 +18,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::ExprLoc,
     heap::HeapData,
+    heap_data::HeapKind,
     intern::StringId,
     resource_checks::check_repeat_size,
     string_builder::StringBuilder,
@@ -724,7 +725,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
 
     // A complex has two checks of its own, still ahead of the precision preflight
     // below so an invalid spec raises `ValueError` whatever its precision costs.
-    if let Value::Ref(id) = value
+    if let Value::Ref(HeapKind::Complex, id) = value
         && let HeapData::Complex(_) = vm.heap.get(*id)
     {
         check_complex_spec(spec)?;
@@ -762,7 +763,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         let finite_parts = match value {
             Value::Int(_) => 1,
             Value::Float(f) => usize::from(f.is_finite()),
-            Value::Ref(id) => match vm.heap.get(*id) {
+            Value::Ref(HeapKind::LongInt | HeapKind::Complex, id) => match vm.heap.get(*id) {
                 // A big integer formatted as a float is first converted to `f64`,
                 // so an attacker-chosen precision applies to it too — guard it.
                 HeapData::LongInt(_) => 1,
@@ -789,14 +790,14 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     // paths. The validations above (grouping, precision, sign-with-`c`,
     // alternate) already ran against `value_type == Type::Int`, so only the
     // value dispatch remains.
-    if let Value::Ref(id) = value
+    if let Value::Ref(HeapKind::LongInt, id) = value
         && let HeapData::LongInt(li) = vm.heap.get(*id)
     {
         return format_long_int(li, &value_type.name(vm.heap, vm.interns), spec, &vm.heap.tracker);
     }
     // A complex formats each part through the float formatters; the checks
     // above have already validated the spec against `Type::Complex`.
-    if let Value::Ref(id) = value
+    if let Value::Ref(HeapKind::Complex, id) = value
         && let HeapData::Complex(c) = vm.heap.get(*id)
     {
         return format_complex(*c, spec, &vm.heap.tracker);

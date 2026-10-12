@@ -37,10 +37,10 @@ impl Compress {
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.data {
+        if let Value::Ref(_, id) = &self.data {
             on_child(*id);
         }
-        if let Value::Ref(id) = &self.selectors {
+        if let Value::Ref(_, id) = &self.selectors {
             on_child(*id);
         }
     }

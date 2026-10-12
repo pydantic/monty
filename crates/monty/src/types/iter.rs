@@ -11,6 +11,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData},
+    heap_data::HeapKind,
     resource_checks::check_estimated_size,
     types::{PyTrait, callable_iterator::CallableIterator},
     value::{VALUE_SIZE, Value, ValueRead},
@@ -26,7 +27,10 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if let Some(sentinel) = sentinel {
         if object.is_callable(vm.heap) {
             let iter = CallableIterator::new(object, sentinel);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::CallableIterator(iter))))
+            Ok(Value::Ref(
+                HeapKind::CallableIterator,
+                vm.heap.allocate(HeapData::CallableIterator(iter)),
+            ))
         } else {
             object.drop_with(vm);
             sentinel.drop_with(vm);
@@ -188,7 +192,7 @@ pub fn iterator_next(iter_value: &Value, default: Option<Value>, vm: &mut VM<'_>
     let mut default_guard = DropGuard::new(default, vm);
     let vm = default_guard.ctx();
 
-    let Value::Ref(iter_id) = iter_value else {
+    let Value::Ref(_, iter_id) = iter_value else {
         return Err(ExcType::type_error_not_iterator(&iter_value.py_type_name(vm)));
     };
     match vm.heap.read(*iter_id).py_next(vm)? {

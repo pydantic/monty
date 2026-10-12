@@ -6,6 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap_data::HeapKind,
     intern::{Interns, StringId},
     value::{EitherStr, Value},
 };
@@ -166,7 +167,7 @@ impl VM<'_> {
 /// (its submodules are module attributes), a bundled one is not.
 fn module_package(value: &Value, heap: &Heap) -> Option<bool> {
     match value {
-        Value::Ref(id) => match heap.get(*id) {
+        Value::Ref(HeapKind::Module, id) => match heap.get(*id) {
             HeapData::Module(module) => Some(module.id().is_some()),
             _ => None,
         },

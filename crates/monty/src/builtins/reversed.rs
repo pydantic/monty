@@ -5,6 +5,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
+    heap_data::HeapKind,
     types::{List, iter::collect_owned_iterable},
     value::Value,
 };
@@ -43,7 +44,7 @@ pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     items.reverse();
 
     let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::Ref(HeapKind::List, heap_id))
 }
 
 /// Whether `reversed()` accepts this value, mirroring CPython's requirement of
@@ -53,22 +54,22 @@ pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// rather than becoming reversible by accident. Sets and iterators are excluded
 /// (no ordering / one-shot), as are user instances — `__reversed__` is not
 /// dispatched, see `limitations/classes.md`.
-fn is_reversible(value: &Value, vm: &VM<'_>) -> bool {
+fn is_reversible(value: &Value, _vm: &VM<'_>) -> bool {
     match value {
         Value::InternString(_) | Value::InternBytes(_) => true,
-        Value::Ref(id) => matches!(
-            vm.heap.get(*id),
-            HeapData::List(_)
-                | HeapData::Tuple(_)
-                | HeapData::NamedTuple(_)
-                | HeapData::Deque(_)
-                | HeapData::Str(_)
-                | HeapData::Bytes(_)
-                | HeapData::Range(_)
-                | HeapData::Dict(_)
-                | HeapData::DictKeysView(_)
-                | HeapData::DictItemsView(_)
-                | HeapData::DictValuesView(_)
+        Value::Ref(kind, _) => matches!(
+            kind,
+            HeapKind::List
+                | HeapKind::Tuple
+                | HeapKind::NamedTuple
+                | HeapKind::Deque
+                | HeapKind::Str
+                | HeapKind::Bytes
+                | HeapKind::Range
+                | HeapKind::Dict
+                | HeapKind::DictKeysView
+                | HeapKind::DictItemsView
+                | HeapKind::DictValuesView
         ),
         _ => false,
     }

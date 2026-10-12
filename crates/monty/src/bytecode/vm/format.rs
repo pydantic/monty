@@ -12,6 +12,7 @@ use crate::{
         validate_string_spec,
     },
     heap::HeapReadOutput,
+    heap_data::HeapKind,
     string_builder::StringBuilder,
     types::{
         PyTrait, Type,
@@ -169,7 +170,7 @@ impl VM<'_> {
 
     /// Keeps temporal strftime specs out of generic mini-language parsing.
     fn try_format_temporal(&mut self, value: &Value, spec_str: &str) -> Result<Option<String>, RunError> {
-        let Value::Ref(id) = value else {
+        let Value::Ref(HeapKind::Date | HeapKind::DateTime | HeapKind::Time, id) = value else {
             return Ok(None);
         };
         let id = *id;

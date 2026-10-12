@@ -24,6 +24,7 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput,
         HeapReader,
     },
+    heap_data::HeapKind,
     intern::FunctionId,
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
@@ -58,7 +59,7 @@ impl<'h> VM<'h> {
         );
 
         match awaitable {
-            Value::Ref(heap_id) => {
+            Value::Ref(HeapKind::Coroutine | HeapKind::GatherFuture | HeapKind::ExternalFuture, heap_id) => {
                 let heap_id = *heap_id;
                 let poll = match this.heap.read(heap_id) {
                     HeapReadOutput::Coroutine(coro) => return this.await_coroutine(coro),
@@ -307,7 +308,7 @@ impl<'h> VM<'h> {
             let list_id = self.heap.allocate(HeapData::List(List::new(results)));
             gather.cache_result(self.heap, list_id);
             frame.awaiter.drop_with(self.heap);
-            Poll::Ready(Value::Ref(list_id))
+            Poll::Ready(Value::Ref(HeapKind::List, list_id))
         } else {
             gather.get_mut(self.heap).state = GatherState::Awaited(AwaitedGather {
                 awaiter: frame.awaiter,
@@ -692,7 +693,7 @@ impl<'h> VM<'h> {
         };
 
         // Ensure future cleaned up on all paths
-        let fut_val = Value::Ref(future_id);
+        let fut_val = Value::Ref(HeapKind::ExternalFuture, future_id);
         let this = self;
         defer_drop!(fut_val, this);
 
@@ -754,14 +755,14 @@ impl<'h> VM<'h> {
             match awaiter {
                 Awaiter::Task(t) => return this.deliver_value_to_task(t, value),
                 Awaiter::GatherSlot { gather, source } => {
-                    let gather_val = Value::Ref(gather);
+                    let gather_val = Value::Ref(HeapKind::GatherFuture, gather);
                     defer_drop!(gather_val, this);
                     let HeapReadOutput::GatherFuture(mut outer) = this.heap.read(gather) else {
                         panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
                     };
                     let success = outer.resolve_child(this, source, value)?;
                     awaiter = success.awaiter;
-                    value = Value::Ref(success.list_id);
+                    value = Value::Ref(HeapKind::List, success.list_id);
                 }
             }
         }
@@ -800,7 +801,7 @@ impl<'h> VM<'h> {
         let Some(future_id) = self.scheduler.take_pending_external(CallId::new(call_id)) else {
             return;
         };
-        let fut_val = Value::Ref(future_id);
+        let fut_val = Value::Ref(HeapKind::ExternalFuture, future_id);
         let this = self;
         defer_drop!(fut_val, this);
 
@@ -853,7 +854,7 @@ impl<'h> VM<'h> {
                 sleep_result,
             ))));
         self.scheduler.add_pending_external(call_id, future_id, self.heap);
-        self.push(Value::Ref(future_id));
+        self.push(Value::Ref(HeapKind::ExternalFuture, future_id));
     }
 
     /// Allocates an `ExternalFuture` already resolved with `value`, for an OS
@@ -871,7 +872,10 @@ impl<'h> VM<'h> {
             state: ExternalFutureState::Resolved(value),
             sleep_result: None,
         };
-        Value::Ref(self.heap.allocate(HeapData::ExternalFuture(Box::new(future))))
+        Value::Ref(
+            HeapKind::ExternalFuture,
+            self.heap.allocate(HeapData::ExternalFuture(Box::new(future))),
+        )
     }
 
     /// Raises `exc` uncatchably at the suspension point, for hosts enforcing
@@ -1051,7 +1055,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
     /// transition happens inside [`Self::resolve_child`].
     pub(crate) fn cache_result(&mut self, heap: &mut HeapReader<'h>, list_id: HeapId) {
         heap.inc_ref(list_id);
-        self.get_mut(heap).state = GatherState::Completed(Value::Ref(list_id));
+        self.get_mut(heap).state = GatherState::Completed(Value::Ref(HeapKind::List, list_id));
     }
 
     /// Records a child's value in its result slots, completing the gather when no children remain.

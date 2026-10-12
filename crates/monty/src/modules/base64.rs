@@ -21,6 +21,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{CmpOrder, Module, PyTrait, bytes::bytes_repr},
@@ -1015,11 +1016,7 @@ fn a85_wrapcol(wrapcol: &Value, floor: u8, vm: &mut VM<'_>) -> RunResult<usize> 
 /// past the address space is not an error — everything lands on one line.
 /// Having beaten a floor of 1, such a width can only be large and positive.
 fn a85_width(wrapcol: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
-    let long = match wrapcol {
-        Value::InternLongInt(_) => true,
-        Value::Ref(heap_id) => matches!(vm.heap.get(*heap_id), HeapData::LongInt(_)),
-        _ => false,
-    };
+    let long = matches!(wrapcol, Value::InternLongInt(_) | Value::Ref(HeapKind::LongInt, _));
     if long {
         Ok(usize::MAX)
     } else {
@@ -1222,7 +1219,7 @@ fn input_type_check<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [
 fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<Cow<'a, [u8]>> {
     match value {
         Value::InternBytes(bytes_id) => Some(Cow::Borrowed(vm.interns.get_bytes(*bytes_id))),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+        Value::Ref(HeapKind::Bytes, heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Bytes(bytes) => Some(Cow::Borrowed(bytes.as_slice())),
             _ => None,
         },
@@ -1271,7 +1268,7 @@ fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
 /// No resource preflight: every result here is bounded by a small constant
 /// multiple of an input that the heap already accounts for.
 pub(super) fn allocate_bytes(data: Vec<u8>, heap: &Heap) -> Value {
-    Value::Ref(heap.allocate(HeapData::Bytes(data.into())))
+    Value::Ref(HeapKind::Bytes, heap.allocate(HeapData::Bytes(data.into())))
 }
 
 /// `binascii.Error("Incorrect padding")` — shared by the base64 and base32

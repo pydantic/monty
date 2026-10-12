@@ -18,6 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::HeapData,
+    heap_data::HeapKind,
     os_dispatch::PostConversionEffect,
     types::{
         PyTrait, Type,
@@ -135,7 +136,7 @@ fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> 
     let opt = match value {
         Value::InternString(string_id) => Some(vm.interns.get_str(*string_id)),
         Value::InternBytes(bytes_id) => decode_utf8_path(vm.interns.get_bytes(*bytes_id))?,
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Str | HeapKind::Path | HeapKind::Bytes, id) => match vm.heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str()),
             HeapData::Path(p) => Some(p.as_str()),
             HeapData::Bytes(b) => decode_utf8_path(b.as_slice())?,
@@ -218,7 +219,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result
             } else if value.is_str(vm.heap) {
                 let s = match value {
                     Value::InternString(id) => vm.interns.get_str(*id),
-                    Value::Ref(id) => match vm.heap.get(*id) {
+                    Value::Ref(HeapKind::Str, id) => match vm.heap.get(*id) {
                         HeapData::Str(s) => s.as_str(),
                         _ => "",
                     },

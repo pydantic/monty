@@ -36,7 +36,7 @@ pub enum NameScope {
     /// - Variables captured from enclosing scopes (free variables)
     /// - Variables in this function that are captured by nested functions (cell variables)
     ///
-    /// The namespace slot contains `Value::Ref(cell_id)` pointing to a `HeapData::Cell`.
+    /// The namespace slot contains `Value::Ref(HeapKind::Cell, cell_id)` pointing to a `HeapData::Cell`.
     /// Access requires dereferencing through the cell.
     #[serde(rename = "C")]
     Cell,

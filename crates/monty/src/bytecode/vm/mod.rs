@@ -37,7 +37,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
-    heap_data::{CellValue, Closure, FunctionDefaults},
+    heap_data::{CellValue, Closure, FunctionDefaults, HeapKind},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{
         StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache, time::apply_clock_reading,
@@ -1345,7 +1345,7 @@ impl<'h> VM<'h> {
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
                 Opcode::BuildCell => {
                     let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)));
-                    self.push(Value::Ref(cell_id));
+                    self.push(Value::Ref(HeapKind::Cell, cell_id));
                 }
                 Opcode::LoadSmallInt => {
                     let n = self.current_frame.fetch_i8();
@@ -1483,8 +1483,10 @@ impl<'h> VM<'h> {
                     match value {
                         Value::Int(n) => self.push(Value::Int(!n)),
                         Value::Bool(b) => self.push(Value::Int(!i64::from(b))),
-                        Value::Ref(id) => {
-                            if let HeapData::LongInt(li) = self.heap.get(id) {
+                        Value::Ref(kind, id) => {
+                            if matches!(kind, HeapKind::LongInt)
+                                && let HeapData::LongInt(li) = self.heap.get(id)
+                            {
                                 // LongInt bitwise NOT: ~x = -(x + 1)
                                 let inverted = -(li.inner() + 1i32);
                                 value.drop_with(self);
@@ -1712,7 +1714,7 @@ impl<'h> VM<'h> {
                 Opcode::ForIter => {
                     let offset = self.current_frame.fetch_i16();
                     // Iterator implementations return heap objects from `py_iter`.
-                    let Value::Ref(heap_id) = *self.peek() else {
+                    let Value::Ref(_, heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
                     let mut iter = self.heap.read(heap_id);
@@ -1846,7 +1848,7 @@ impl<'h> VM<'h> {
                             defaults,
                             globals,
                         }));
-                        self.push(Value::Ref(heap_id));
+                        self.push(Value::Ref(HeapKind::FunctionDefaults, heap_id));
                     }
                 }
                 Opcode::MakeClosure => {
@@ -1863,7 +1865,7 @@ impl<'h> VM<'h> {
                         #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
                         let mut cell_val = self.pop();
                         match &cell_val {
-                            Value::Ref(heap_id) => {
+                            Value::Ref(_, heap_id) => {
                                 // Keep the reference - the Closure will own the HeapId
                                 cells.push(*heap_id);
                                 // Mark the Value as dereferenced since Closure takes ownership
@@ -1898,7 +1900,7 @@ impl<'h> VM<'h> {
                         defaults: defaults.into_boxed_slice(),
                         globals,
                     }));
-                    self.push(Value::Ref(heap_id));
+                    self.push(Value::Ref(HeapKind::Closure, heap_id));
                 }
                 // Exception Handling
                 Opcode::Raise => {
@@ -1907,12 +1909,11 @@ impl<'h> VM<'h> {
                     // Re-raise an instance as-is so `raise e` preserves `e`'s
                     // identity, like CPython. A bare type or non-exception has
                     // nothing to reuse and rebuilds from the error.
-                    let raised = match &exc {
-                        Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => Some(exc),
-                        _ => {
-                            exc.drop_with(self);
-                            None
-                        }
+                    let raised = if let Value::Ref(HeapKind::Exception, _) = &exc {
+                        Some(exc)
+                    } else {
+                        exc.drop_with(self);
+                        None
                     };
                     if let Some(result) = self.handle_exception_with_value(error, raised) {
                         return Err(result);
@@ -2099,7 +2100,7 @@ impl<'h> VM<'h> {
     fn load_module(&mut self, module_id: u16) -> CallResult {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
-            Some(module) => CallResult::Value(Value::Ref(module.create(self))),
+            Some(module) => CallResult::Value(Value::Ref(HeapKind::Module, module.create(self))),
             None => CallResult::OsCall(OsFunctionCall::Import(self.interns.get_str(name_id).to_owned())),
         }
     }
@@ -2623,7 +2624,7 @@ impl<'h> VM<'h> {
             "__name__" => Value::InternString(self.interns.intern_static(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
             "__file__" => allocate_string(self.env.file(), self.heap),
-            "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
+            "__annotations__" => Value::Ref(HeapKind::Dict, self.heap.allocate(HeapData::Dict(Dict::new()))),
             "__doc__" | "__spec__" | "__package__" => Value::None,
             _ => return None,
         };
@@ -2733,7 +2734,7 @@ impl<'h> VM<'h> {
     /// Loads from a closure cell and pushes onto the stack.
     ///
     /// The cell `HeapId` is read from the frame's local variable slot on the stack
-    /// (cells are stored as `Value::Ref(cell_id)` at known positions in the locals region).
+    /// (cells are stored as `Value::Ref(_, cell_id)` at known positions in the locals region).
     /// Returns a `NameError` if the cell value is undefined (free variable not bound).
     fn load_cell(&mut self, slot: u16) -> RunResult<()> {
         let cell_id = self.cell_id_from_local(slot);
@@ -2762,10 +2763,10 @@ impl<'h> VM<'h> {
 
     /// Extracts the cell `HeapId` from a local variable slot on the stack.
     ///
-    /// Cell variables are stored as `Value::Ref(cell_id)` in the frame's locals region.
+    /// Cell variables are stored as `Value::Ref(_, cell_id)` in the frame's locals region.
     fn cell_id_from_local(&self, slot: u16) -> HeapId {
         match &self.stack[self.current_frame.stack_base() + slot as usize] {
-            Value::Ref(cell_id) => *cell_id,
+            Value::Ref(_, cell_id) => *cell_id,
             other => panic!("LoadCell/StoreCell: expected cell reference in local slot {slot}, found {other:?}"),
         }
     }

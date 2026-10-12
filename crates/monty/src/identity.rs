@@ -79,7 +79,7 @@ impl Identity {
             Value::DefFunction(id) => Self::DefFunction(id.index()),
             Value::Marker(marker) => Self::Marker(*marker),
             Value::Property(property) => Self::Property(*property),
-            Value::Ref(id) => Self::Heap(id.index()),
+            Value::Ref(_, id) => Self::Heap(id.index()),
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Cannot get identity of Dereferenced object"),
         }

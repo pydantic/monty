@@ -25,7 +25,8 @@ use crate::{
     bytecode::{FrameExit, VM, VMSnapshot},
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
-    heap::{DropWithContext, Heap, HeapData, HeapReader},
+    heap::{DropWithContext, Heap, HeapReader},
+    heap_data::HeapKind,
     intern::Interns,
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
@@ -1504,14 +1505,14 @@ fn convert_args(args: CallArgs, vm: &mut VM<'_>) -> Result<ArgValues, MontyExcep
 /// Deliberately narrower than [`Value::is_callable`]: it keeps only plain
 /// function-like values and omits `Class`, `NamedTupleClass`, and `BoundMethod`,
 /// which are callable but not what a host means by "a function it can invoke".
-fn is_callable(value: &Value, heap: &Heap) -> bool {
+fn is_callable(value: &Value, _heap: &Heap) -> bool {
     match value {
         Value::Builtin(_) | Value::ModuleFunction(_) | Value::DefFunction(_) => true,
         // A `Class`, `NamedTupleClass`, or `BoundMethod` is also callable but is
         // not a function, so keep only the function-like heap variants.
-        Value::Ref(id) => matches!(
-            heap.get(*id),
-            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)
+        Value::Ref(kind, _) => matches!(
+            kind,
+            HeapKind::Closure | HeapKind::FunctionDefaults | HeapKind::ExtFunction
         ),
         _ => false,
     }

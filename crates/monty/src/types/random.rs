@@ -21,6 +21,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes, hash_python_str, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::{
         copy::{Memo, PyDeepCopy},
@@ -147,7 +148,10 @@ impl Random {
         } else {
             Self::seeded(Mt19937::from_key(&seed_key_from_value(x, SEED_VERSION_DEFAULT, vm)?))
         };
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Random(Box::new(random)))))
+        Ok(Value::Ref(
+            HeapKind::Random,
+            vm.heap.allocate(HeapData::Random(Box::new(random))),
+        ))
     }
 }
 
@@ -247,7 +251,7 @@ pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> R
         Value::InternString(id) => key_from_text(&SeedText::Str(vm.interns.get_str(*id)), version),
         Value::InternBytes(id) => key_from_text(&SeedText::Bytes(vm.interns.get_bytes(*id)), version),
         Value::InternLongInt(id) => key_from_bigint(vm.interns.get_long_int(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::LongInt | HeapKind::Str | HeapKind::Bytes, id) => match vm.heap.get(*id) {
             HeapData::LongInt(li) => key_from_bigint(li.inner()),
             HeapData::Str(s) => key_from_text(&SeedText::Str(s.as_str()), version),
             HeapData::Bytes(b) => key_from_text(&SeedText::Bytes(b.as_slice()), version),
@@ -662,7 +666,7 @@ impl<'h> HeapRead<'h, Random> {
             rng: source.rng.clone(),
             gauss_next: source.gauss_next,
         };
-        Value::Ref(vm.heap.allocate(HeapData::Random(Box::new(copy))))
+        Value::Ref(HeapKind::Random, vm.heap.allocate(HeapData::Random(Box::new(copy))))
     }
 }
 

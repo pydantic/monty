@@ -22,6 +22,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings},
     os_dispatch::{PreConversionEffect, build_path_os_call, is_path_os_method},
     types::{LazyHeapSet, List, PyTrait, Type, allocate_tuple, str::allocate_string},
@@ -298,7 +299,7 @@ impl Path {
                 fold_joinpath(base, rest, vm)?
             }
         };
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+        Ok(Value::Ref(HeapKind::Path, vm.heap.allocate(HeapData::Path(path))))
     }
 }
 
@@ -324,7 +325,7 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         });
     }
     let path = Path::new(vm.env.cwd.to_string());
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+    Ok(Value::Ref(HeapKind::Path, vm.heap.allocate(HeapData::Path(path))))
 }
 
 /// Extracts a string from a Value for use as a path.
@@ -337,7 +338,7 @@ fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
 fn value_as_path_str<'a>(val: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match val {
         Value::InternString(string_id) => Some(interns.get_str(*string_id)),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
+        Value::Ref(HeapKind::Str | HeapKind::Path, heap_id) => match heap.get(*heap_id) {
             HeapData::Str(s) => Some(s.as_str()),
             HeapData::Path(p) => Some(p.as_str()),
             _ => None,
@@ -357,14 +358,20 @@ fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path
 fn path_div(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
     let other = value_as_path_str(other, heap, interns)?;
     let result = path.joinpath(other);
-    Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))))
+    Some(Value::Ref(
+        HeapKind::Path,
+        heap.allocate(HeapData::Path(Path::new(result))),
+    ))
 }
 
 /// Prepends a path-like left operand for `Path.__rtruediv__`.
 fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
     let base = value_as_path_str(other, heap, interns)?;
     let result = Path::new(base.to_owned()).joinpath(path.as_str());
-    Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))))
+    Some(Value::Ref(
+        HeapKind::Path,
+        heap.allocate(HeapData::Path(Path::new(result))),
+    ))
 }
 
 /// Normalizes a path string to POSIX format, matching CPython's `pathlib.PurePosixPath`.
@@ -429,11 +436,11 @@ impl Path {
             StaticStrings::Parent => {
                 if let Some(parent) = self.parent() {
                     let parent_path = Self::new(parent.to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(parent_path)))
+                    Value::Ref(HeapKind::Path, heap.allocate(HeapData::Path(parent_path)))
                 } else {
                     // Return self when there's no parent (root or relative path)
                     let same_path = Self::new(self.as_str().to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(same_path)))
+                    Value::Ref(HeapKind::Path, heap.allocate(HeapData::Path(same_path)))
                 }
             }
             StaticStrings::Stem => allocate_string(self.stem(), heap),
@@ -444,7 +451,7 @@ impl Path {
                 for suffix in suffixes {
                     items.push(allocate_string(suffix, heap));
                 }
-                Value::Ref(heap.allocate(HeapData::List(List::new(items))))
+                Value::Ref(HeapKind::List, heap.allocate(HeapData::List(List::new(items))))
             }
             StaticStrings::Parts => {
                 let parts = self.parts();
@@ -471,7 +478,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Path(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::Path(other)) = other.read_heap(vm, &[HeapKind::Path]) else {
             return Ok(None);
         };
         Ok(Some(self.get(vm.heap).path == other.get(vm.heap).path))
@@ -557,7 +564,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                 let pos_args = args.into_pos_only("joinpath", vm.heap)?;
                 defer_drop!(pos_args, vm);
                 let path = fold_joinpath(self.get(vm.heap).clone(), pos_args.as_slice(), vm)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+                Ok(Value::Ref(HeapKind::Path, vm.heap.allocate(HeapData::Path(path))))
             }
             StaticStrings::WithName => {
                 let name_val = args.get_one_arg("with_name", vm.heap)?;
@@ -567,7 +574,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                     .get(vm.heap)
                     .with_name(&name)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+                Ok(Value::Ref(
+                    HeapKind::Path,
+                    vm.heap.allocate(HeapData::Path(Path::new(result))),
+                ))
             }
             StaticStrings::WithStem => {
                 let stem_val = args.get_one_arg("with_stem", vm.heap)?;
@@ -577,7 +587,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                     .get(vm.heap)
                     .with_stem(&stem)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+                Ok(Value::Ref(
+                    HeapKind::Path,
+                    vm.heap.allocate(HeapData::Path(Path::new(result))),
+                ))
             }
             StaticStrings::WithSuffix => {
                 let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
@@ -587,7 +600,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                     .get(vm.heap)
                     .with_suffix(&suffix)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+                Ok(Value::Ref(
+                    HeapKind::Path,
+                    vm.heap.allocate(HeapData::Path(Path::new(result))),
+                ))
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
                 args.check_zero_args(method.into(), vm.heap)?;

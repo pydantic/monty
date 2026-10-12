@@ -634,7 +634,7 @@ impl Executor {
             for (namespace_id, name_id) in vm.global_names.iter() {
                 let idx = namespace_id.index();
                 if idx < globals.len()
-                    && let Value::Ref(id) = &globals[idx]
+                    && let Value::Ref(_, id) = &globals[idx]
                 {
                     counts.insert(vm.interns.get_str(name_id).to_owned(), vm.heap.get_refcount(*id));
                     roots.push(*id);
@@ -642,7 +642,7 @@ impl Executor {
             }
             // The module's result is a root too: it is still owned by the pending
             // `FrameExit::Return` here, since `frame_exit_to_object` below is what drops it.
-            if let Ok(FrameExit::Return(Value::Ref(id))) = &frame_exit_result {
+            if let Ok(FrameExit::Return(Value::Ref(_, id))) = &frame_exit_result {
                 roots.push(*id);
             }
             // Those are the only roots: locals are gone once the module frame exits, so

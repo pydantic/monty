@@ -32,6 +32,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
@@ -109,8 +110,8 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
     let mut dict = Dict::new();
     dict.make_counter();
-    let value = Value::Ref(vm.heap.allocate(HeapData::Dict(dict)));
-    let Value::Ref(dict_id) = value else {
+    let value = Value::Ref(HeapKind::Dict, vm.heap.allocate(HeapData::Dict(dict)));
+    let Value::Ref(_, dict_id) = value else {
         unreachable!("just allocated a ref");
     };
     let result = {
@@ -166,7 +167,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         }
     };
 
-    let Value::Ref(dict_id) = dict_value else {
+    let Value::Ref(HeapKind::Dict, dict_id) = dict_value else {
         unreachable!("Dict::init returns a dict ref");
     };
     let HeapReadOutput::Dict(mut dict) = vm.heap.read(dict_id) else {
@@ -251,7 +252,10 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let field_names: Vec<EitherStr> = names.into_iter().map(EitherStr::Heap).collect();
     let class = NamedTupleClass::new(type_name, field_names, default_values, module);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTupleClass(Box::new(class)))))
+    Ok(Value::Ref(
+        HeapKind::NamedTupleClass,
+        vm.heap.allocate(HeapData::NamedTupleClass(Box::new(class))),
+    ))
 }
 
 /// Parses the `field_names` argument into owned strings.

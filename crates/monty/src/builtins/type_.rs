@@ -7,6 +7,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::{Class, Dict, PyTrait},
     value::Value,
@@ -59,13 +60,13 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// marker.
 fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
     defer_drop!(value, vm);
-    if let Value::Ref(id) = &value
+    if let Value::Ref(HeapKind::Instance, id) = &value
         && let HeapData::Instance(inst) = vm.heap.get(*id)
     {
         let class_id = inst.class();
         vm.heap.inc_ref(class_id);
-        Value::Ref(class_id)
-    } else if let Value::Ref(id) = &value
+        Value::Ref(HeapKind::Class, class_id)
+    } else if let Value::Ref(HeapKind::NamedTuple, id) = &value
         && let HeapData::NamedTuple(nt) = vm.heap.get(*id)
         && let Some(class_id) = nt.class_id()
     {
@@ -73,13 +74,13 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
         // `type(p) is Point` holds by identity (self-describing internal named
         // tuples like `sys.version_info` have no class and fall through).
         vm.heap.inc_ref(class_id);
-        Value::Ref(class_id)
-    } else if let Value::Ref(id) = &value
+        Value::Ref(HeapKind::NamedTupleClass, class_id)
+    } else if let Value::Ref(HeapKind::HostClass, id) = &value
         && let HeapData::HostClass(hc) = vm.heap.get(*id)
     {
         let class_id = hc.class_id();
         vm.heap.inc_ref(class_id);
-        Value::Ref(class_id)
+        Value::Ref(HeapKind::HostClassType, class_id)
     } else {
         Value::Builtin(Builtins::Type(value.py_type(vm)))
     }
@@ -113,7 +114,7 @@ fn create_class(
     };
 
     match bases {
-        Value::Ref(id) if let HeapData::Tuple(t) = vm.heap.get(*id) => {
+        Value::Ref(HeapKind::Tuple, id) if let HeapData::Tuple(t) = vm.heap.get(*id) => {
             // Monty divergence: classes cannot inherit, so even `(object,)` is
             // rejected — the parse-time equivalent (`class Foo(Bar)`) is a
             // syntax error, and this is its runtime counterpart.
@@ -127,7 +128,7 @@ fn create_class(
         }
     }
 
-    let Value::Ref(ns_id) = namespace else {
+    let Value::Ref(HeapKind::Dict, ns_id) = namespace else {
         let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 3, "dict", got));
     };
@@ -173,5 +174,5 @@ fn create_class(
     let class_id = vm
         .heap
         .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict))));
-    Ok(Value::Ref(class_id))
+    Ok(Value::Ref(HeapKind::Class, class_id))
 }

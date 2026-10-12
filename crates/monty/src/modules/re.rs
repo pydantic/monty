@@ -41,6 +41,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -204,6 +205,7 @@ fn call_compile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // Clone out of the shared cache entry: the returned `re.Pattern` is the
         // user's own object, independent of the cache.
         ResolvedPattern::Cached(compiled) => Ok(Value::Ref(
+            HeapKind::RePattern,
             vm.heap.allocate(HeapData::RePattern(Box::new((*compiled).clone()))),
         )),
         // Ownership of the extracted value transfers straight to the caller,
@@ -568,7 +570,7 @@ impl ResolvedPattern {
         match self {
             Self::Cached(pattern) => pattern,
             Self::Heap(value) => {
-                let Value::Ref(heap_id) = value else {
+                let Value::Ref(_, heap_id) = value else {
                     unreachable!("ResolvedPattern::Heap always holds a heap ref")
                 };
                 match heap.get(*heap_id) {

@@ -34,7 +34,7 @@ pub(super) fn gather(pool: &[Value], indices: &[usize], heap: &Heap) -> Value {
 /// Invokes `on_child` for each heap id the pool owns (GC trace hook).
 pub(super) fn pool_child_ids(pool: &[Value], on_child: &mut impl FnMut(HeapId)) {
     for item in pool {
-        if let Value::Ref(id) = item {
+        if let Value::Ref(_, id) = item {
             on_child(*id);
         }
     }

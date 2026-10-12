@@ -8,6 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::PyTrait,
     value::{Marker, Value},
@@ -118,8 +119,10 @@ fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<Opt
     match value {
         Value::None => Ok(None),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
-        Value::Ref(id) => {
-            if let HeapData::Str(s) = vm.heap.get(*id) {
+        Value::Ref(kind, id) => {
+            if matches!(kind, HeapKind::Str)
+                && let HeapData::Str(s) = vm.heap.get(*id)
+            {
                 return Ok(Some(s.as_str().to_owned()));
             }
             Err(SimpleException::new_msg(

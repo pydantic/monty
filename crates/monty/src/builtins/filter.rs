@@ -13,6 +13,7 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapData},
+    heap_data::HeapKind,
     predicate::call_predicate,
     types::{List, PyTrait},
     value::Value,
@@ -59,5 +60,5 @@ pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let (out, vm) = out_guard.into_parts();
     let heap_id = vm.heap.allocate(HeapData::List(List::new(out)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::Ref(HeapKind::List, heap_id))
 }

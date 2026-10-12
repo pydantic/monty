@@ -24,6 +24,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
+    heap_data::HeapKind,
     types::PyTrait,
     value::Value,
 };
@@ -271,8 +272,8 @@ fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValu
 /// must raise `OverflowError` rather than report `WrongType` — a bad-arg
 /// rewrite would produce the absurd "must be int, not int". Also used by
 /// consumer-specific int impls (e.g. `timedelta`'s component extraction).
-pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
-    long_int(value, vm).is_some()
+pub(crate) fn is_long_int(value: &Value, _vm: &VM<'_>) -> bool {
+    matches!(value, Value::InternLongInt(_) | Value::Ref(HeapKind::LongInt, _))
 }
 
 /// The big integer behind an `int` too wide for `Value::Int`, if that is
@@ -280,7 +281,7 @@ pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
 pub(crate) fn long_int<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a BigInt> {
     match value {
         Value::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::LongInt, id) => match vm.heap.get(*id) {
             HeapData::LongInt(big) => Some(big.inner()),
             _ => None,
         },

@@ -33,6 +33,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
@@ -95,7 +96,7 @@ impl Tuple {
     /// ensure refcounts are properly managed.
     #[must_use]
     fn new(items: TupleVec) -> Self {
-        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(..)));
         Self {
             items,
             contains_refs,
@@ -158,7 +159,7 @@ pub fn allocate_tuple(items: SmallVec<[Value; TUPLE_INLINE_CAPACITY]>, heap: &He
     if items.is_empty() {
         heap.get_empty_tuple()
     } else {
-        Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(items))))
+        Value::Ref(HeapKind::Tuple, heap.allocate(HeapData::Tuple(Tuple::new(items))))
     }
 }
 
@@ -315,7 +316,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(key_id) = key
+        if let Value::Ref(HeapKind::Slice, key_id) = key
             && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
         {
             let items =
@@ -340,7 +341,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A tuple equals another tuple; `tuple == namedtuple` is handled by the
         // reflected pass via `NamedTuple::py_eq_impl`.
-        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm, &[HeapKind::Tuple]) else {
             return Ok(None);
         };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
@@ -434,7 +435,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm, &[HeapKind::Tuple]) else {
             return Ok(None);
         };
         let mut items = self.clone_all_items(vm)?;
@@ -517,7 +518,7 @@ impl HeapItem for Tuple {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
+            if let Value::Ref(_, id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 obj.dec_ref_forget();
@@ -640,7 +641,7 @@ impl TupleIterator {
         };
         let id = vm.heap.allocate(HeapData::TupleIterator(Self { source, index: 0 }));
         vm.heap.inc_ref(source_id);
-        Value::Ref(id)
+        Value::Ref(HeapKind::TupleIterator, id)
     }
 }
 

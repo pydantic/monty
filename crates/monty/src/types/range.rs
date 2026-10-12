@@ -18,6 +18,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
@@ -142,7 +143,7 @@ impl Range {
             _ => return Err(ExcType::type_error_at_most("range", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Range(range))))
+        Ok(Value::Ref(HeapKind::Range, vm.heap.allocate(HeapData::Range(range))))
     }
 
     /// Handles slice-based indexing for ranges.
@@ -175,7 +176,7 @@ impl Range {
         let new_stop = i64::try_from(new_stop_i128).map_err(|_| ExcType::overflow_c_ssize_t())?;
 
         let new_range = Self::new(new_start, new_stop, new_step);
-        Ok(Value::Ref(heap.allocate(HeapData::Range(new_range))))
+        Ok(Value::Ref(HeapKind::Range, heap.allocate(HeapData::Range(new_range))))
     }
 }
 
@@ -230,7 +231,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
+        if let Value::Ref(HeapKind::Slice, id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
             let range = *self.get(vm.heap);
@@ -266,7 +267,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Range(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::Range(other)) = other.read_heap(vm, &[HeapKind::Range]) else {
             return Ok(None);
         };
         let a = self.get(vm.heap);
@@ -339,11 +340,14 @@ pub(crate) struct RangeIterator {
 impl RangeIterator {
     /// Allocates independent iteration state copied from `range`.
     fn allocate(range: Range, vm: &mut VM<'_>) -> Value {
-        Value::Ref(vm.heap.allocate(HeapData::RangeIterator(Self {
-            next: range.start,
-            step: range.step,
-            remaining: range.len(),
-        })))
+        Value::Ref(
+            HeapKind::RangeIterator,
+            vm.heap.allocate(HeapData::RangeIterator(Self {
+                next: range.start,
+                step: range.step,
+                remaining: range.len(),
+            })),
+        )
     }
 
     /// Returns the exact number of values not yet yielded.

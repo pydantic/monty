@@ -83,6 +83,7 @@ use crate::{
     heap::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
     },
+    heap_data::HeapKind,
     intern::{BytesId, StaticStrings, StringId},
     percent_format::{copy_bytes_template, percent_format_bytes},
     resource_checks::{check_repeat_size, check_replace_size},
@@ -190,7 +191,7 @@ impl Bytes {
             let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
             let encoded = codec.encode(s, errors, &vm.heap.tracker)?;
             let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(encoded)));
-            return Ok(Value::Ref(heap_id));
+            return Ok(Value::Ref(HeapKind::Bytes, heap_id));
         }
         if source_str.is_some() {
             return Err(ExcType::type_error_string_without_encoding());
@@ -220,14 +221,14 @@ impl Bytes {
                 let b = vm.interns.get_bytes(*bytes_id);
                 b.to_vec()
             }
-            Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
+            Some(v @ Value::Ref(HeapKind::Bytes, id)) => match vm.heap.get(*id) {
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
                 _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
             },
             Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
         };
         let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::Ref(HeapKind::Bytes, heap_id))
     }
 }
 
@@ -253,13 +254,19 @@ pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value,
     let mut result = Vec::with_capacity(result_len);
     result.extend_from_slice(lhs);
     result.extend_from_slice(rhs);
-    Ok(Value::Ref(heap.allocate(HeapData::Bytes(result.into()))))
+    Ok(Value::Ref(
+        HeapKind::Bytes,
+        heap.allocate(HeapData::Bytes(result.into())),
+    ))
 }
 
 /// Repeats bytes after validating the allocation against resource limits.
 pub(crate) fn repeat_bytes(value: &[u8], count: usize, heap: &Heap) -> Result<Value, ResourceError> {
     check_repeat_size(value.len(), count, &heap.tracker)?;
-    Ok(Value::Ref(heap.allocate(HeapData::Bytes(value.repeat(count).into()))))
+    Ok(Value::Ref(
+        HeapKind::Bytes,
+        heap.allocate(HeapData::Bytes(value.repeat(count).into())),
+    ))
 }
 
 impl From<Vec<u8>> for Bytes {
@@ -312,13 +319,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
+        if let Value::Ref(HeapKind::Slice, id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
             let b = self.get(vm.heap);
             let sliced_bytes = slice_collect_iterator(vm, slice, b.0.iter(), |b| *b)?;
             let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(sliced_bytes)));
-            return Ok(Value::Ref(heap_id));
+            return Ok(Value::Ref(HeapKind::Bytes, heap_id));
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
@@ -363,7 +370,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternBytes(id) => vm.interns.get_bytes(*id),
-            Value::Ref(id) if let HeapData::Bytes(value) = vm.heap.get(*id) => value.as_slice(),
+            Value::Ref(HeapKind::Bytes, id) if let HeapData::Bytes(value) = vm.heap.get(*id) => value.as_slice(),
             _ => return Ok(None),
         };
         Ok(Some(concat_bytes(self.get(vm.heap).as_slice(), other, vm.heap)?))
@@ -838,7 +845,7 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
         Value::InternString(_) => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not str"
         ))),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Bytes | HeapKind::Str | HeapKind::Tuple, id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(PrefixSuffixArg::Single(b.as_slice().to_vec())),
             HeapData::Str(_) => Err(ExcType::type_error(format!(
                 "{method_name} first arg must be bytes or a tuple of bytes, not str"
@@ -877,7 +884,7 @@ fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResu
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id).to_vec()),
         Value::InternString(_) => Err(ExcType::type_error("expected bytes, not str")),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Bytes, id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
             _ => Err(ExcType::type_error("expected bytes")),
         },
@@ -893,7 +900,7 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
         Value::InternString(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Bytes | HeapKind::Str, id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice()),
             HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
             _ => Err(ExcType::type_error("a bytes-like object is required")),
@@ -1331,7 +1338,7 @@ fn bytes_split<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
 
     let list = List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::Ref(HeapKind::List, heap_id))
 }
 
 /// Implements Python's `bytes.rsplit([sep[, maxsplit]])` method.
@@ -1372,7 +1379,7 @@ fn bytes_rsplit<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
 
     let list = List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::Ref(HeapKind::List, heap_id))
 }
 
 /// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
@@ -1631,7 +1638,7 @@ fn bytes_splitlines<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM
     let (lines, vm) = lines_guard.into_parts();
     let list = List::new(lines);
     let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::Ref(HeapKind::List, heap_id))
 }
 
 /// Parses arguments for bytes.splitlines method.
@@ -2047,8 +2054,10 @@ fn bytes_join<'h>(separator: &HeapRead<'h, [u8]>, iterable: Value, vm: &mut VM<'
             Value::InternBytes(id) => {
                 result.extend_from_slice(vm.interns.get_bytes(*id));
             }
-            Value::Ref(heap_id) => {
-                if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
+            Value::Ref(kind, heap_id) => {
+                if matches!(kind, HeapKind::Bytes)
+                    && let HeapData::Bytes(b) = vm.heap.get(*heap_id)
+                {
                     result.extend_from_slice(b.as_slice());
                 } else {
                     let t = item.py_type_name(vm);
@@ -2163,7 +2172,7 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
     let sep_bytes = match sep_value {
         Value::InternString(id) => vm.interns.get_str(*id).as_bytes(),
         Value::InternBytes(id) => vm.interns.get_bytes(*id),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+        Value::Ref(HeapKind::Str | HeapKind::Bytes, heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => s.as_bytes(),
             HeapData::Bytes(b) => b.as_slice(),
             _ => return Err(ExcType::type_error("sep must be str or bytes")),
@@ -2224,8 +2233,10 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
 
     let hex_str = match hex_value {
         Value::InternString(id) => vm.interns.get_str(*id),
-        Value::Ref(heap_id) => {
-            if let HeapData::Str(s) = vm.heap.get(*heap_id) {
+        Value::Ref(kind, heap_id) => {
+            if matches!(kind, HeapKind::Str)
+                && let HeapData::Str(s) = vm.heap.get(*heap_id)
+            {
                 s.as_str()
             } else {
                 return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
@@ -2310,7 +2321,7 @@ fn hex_char_to_value(c: char) -> Option<u8> {
 /// Allocates bytes on the heap.
 pub(crate) fn allocate_bytes(bytes: Vec<u8>, heap: &Heap) -> Value {
     let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
-    Value::Ref(heap_id)
+    Value::Ref(HeapKind::Bytes, heap_id)
 }
 
 /// Source representation retained by a bytes iterator.
@@ -2372,7 +2383,7 @@ impl BytesIterator {
         if let Some(source_id) = source_id {
             vm.heap.inc_ref(source_id);
         }
-        Value::Ref(id)
+        Value::Ref(HeapKind::BytesIterator, id)
     }
 }
 
@@ -2431,9 +2442,9 @@ pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> Run
         Value::Int(i) => Some(*i),
         Value::Bool(b) => Some(i64::from(*b)),
         Value::InternLongInt(_) => None,
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => None,
+        Value::Ref(HeapKind::LongInt, _) => None,
         // A bytes-like probe is a substring test.
-        Value::InternBytes(_) | Value::Ref(_) => {
+        Value::InternBytes(_) | Value::Ref(..) => {
             let needle = extract_bytes_only(item, vm)?;
             // An empty needle is in everything, and `find_subsequence` rejects it.
             return Ok(needle.is_empty() || find_subsequence(container, needle, vm.heap)?.is_some());

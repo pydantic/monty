@@ -19,6 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings},
     types::{
         LazyHeapSet, PyTrait, Type,
@@ -92,7 +93,7 @@ impl TimeZone {
         }
 
         let tz = Self::new(offset_seconds, name_str)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))))
+        Ok(Value::Ref(HeapKind::TimeZone, vm.heap.allocate(HeapData::TimeZone(tz))))
     }
 }
 
@@ -138,7 +139,7 @@ fn extract_offset_seconds(offset_arg: &Value, heap: &Heap, interns: &Interns) ->
             offset_arg.py_type_heap(heap).cpython_arg_name(heap, interns),
         ))
     };
-    let Value::Ref(offset_id) = offset_arg else {
+    let Value::Ref(HeapKind::TimeDelta, offset_id) = offset_arg else {
         return Err(bad_type());
     };
     let HeapData::TimeDelta(delta) = heap.get(*offset_id) else {
@@ -235,7 +236,7 @@ pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value
 /// from user input must go through [`TimeZone::new`] so the bounds are checked.
 pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
     let tz = TimeZone::new(offset_seconds, None).expect("caller guarantees an in-range offset");
-    Value::Ref(heap.allocate(HeapData::TimeZone(tz)))
+    Value::Ref(HeapKind::TimeZone, heap.allocate(HeapData::TimeZone(tz)))
 }
 
 /// Validates the `dt` argument every `tzinfo` method takes.
@@ -247,7 +248,7 @@ pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
 fn check_tzinfo_dt_arg(method: &str, dt: &Value, heap: &Heap, interns: &Interns) -> RunResult<()> {
     match dt {
         Value::None => Ok(()),
-        Value::Ref(id) if matches!(heap.get(*id), HeapData::DateTime(_)) => Ok(()),
+        Value::Ref(HeapKind::DateTime, _) => Ok(()),
         _ => Err(ExcType::type_error(format!(
             "{method}(dt) argument must be a datetime instance or None, not {}",
             dt.py_type_heap(heap).cpython_arg_name(heap, interns)
@@ -266,7 +267,7 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
 fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
     match name_arg {
         Value::InternString(id) => Ok(Some(interns.get_str(*id).to_owned())),
-        Value::Ref(id) => match heap.get(*id) {
+        Value::Ref(HeapKind::Str, id) => match heap.get(*id) {
             HeapData::Str(s) => Ok(Some(s.as_str().to_owned())),
             _ => Err(bad_name_arg(name_arg, heap, interns)),
         },
@@ -299,7 +300,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm, &[HeapKind::TimeZone]) else {
             return Ok(None);
         };
         Ok(Some(

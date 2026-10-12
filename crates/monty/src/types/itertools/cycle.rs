@@ -35,11 +35,11 @@ impl Cycle {
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Some(Value::Ref(id)) = &self.source {
+        if let Some(Value::Ref(_, id)) = &self.source {
             on_child(*id);
         }
         for item in &self.saved {
-            if let Value::Ref(id) = item {
+            if let Value::Ref(_, id) = item {
                 on_child(*id);
             }
         }

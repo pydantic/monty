@@ -5,6 +5,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StringId,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
@@ -19,7 +20,7 @@ impl VM<'_> {
         let items = self.pop_n(count);
         let list = List::new(items);
         let heap_id = self.heap.allocate(HeapData::List(list));
-        self.push(Value::Ref(heap_id));
+        self.push(Value::Ref(HeapKind::List, heap_id));
     }
 
     /// Builds a tuple from the top n stack values.
@@ -55,7 +56,7 @@ impl VM<'_> {
         }
         let (dict, this) = dict_guard.into_parts();
         let heap_id = this.heap.allocate(HeapData::Dict(dict));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::Ref(HeapKind::Dict, heap_id));
         Ok(())
     }
 
@@ -78,7 +79,7 @@ impl VM<'_> {
         }
         let (set, this) = set_guard.into_parts();
         let heap_id = this.heap.allocate(HeapData::Set(set));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::Ref(HeapKind::Set, heap_id));
         Ok(())
     }
 
@@ -102,7 +103,7 @@ impl VM<'_> {
 
         let slice = Slice::new(start, stop, step);
         let heap_id = this.heap.allocate(HeapData::Slice(slice));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::Ref(HeapKind::Slice, heap_id));
         Ok(())
     }
 
@@ -139,10 +140,10 @@ impl VM<'_> {
             defer_drop_mut!(copied_items, this);
 
             // Check if any copied items are refs (for updating contains_refs)
-            let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
+            let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(..)));
 
             // Extend the list
-            if let Value::Ref(id) = list_ref {
+            if let Value::Ref(_, id) = list_ref {
                 let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
                     panic!("list_extend: expected List on heap");
                 };
@@ -170,7 +171,7 @@ impl VM<'_> {
         let list_ref = this.pop();
         defer_drop!(list_ref, this);
 
-        let Value::Ref(id) = list_ref else {
+        let Value::Ref(HeapKind::List, id) = list_ref else {
             return Err(RunError::internal("ListToTuple: expected list ref"));
         };
         let HeapData::List(list) = this.heap.get(*id) else {
@@ -223,7 +224,7 @@ impl VM<'_> {
         let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+        let copied_items: Vec<(Value, Value)> = if let Value::Ref(HeapKind::Dict, id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
                     .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
@@ -238,7 +239,7 @@ impl VM<'_> {
         };
 
         // Merge into the dict, validating string keys
-        let dict_id = if let Value::Ref(id) = dict_ref {
+        let dict_id = if let Value::Ref(_, id) = dict_ref {
             *id
         } else {
             return Err(RunError::internal("DictMerge: expected dict ref"));
@@ -249,11 +250,7 @@ impl VM<'_> {
             defer_drop_mut!(copied_items, this);
             for (key, value) in copied_items {
                 // Validate key is a string (InternString or heap-allocated Str)
-                let is_string = match &key {
-                    Value::InternString(_) => true,
-                    Value::Ref(id) => matches!(this.heap.get(*id), HeapData::Str(_)),
-                    _ => false,
-                };
+                let is_string = matches!(&key, Value::InternString(_) | Value::Ref(HeapKind::Str, _));
                 if !is_string {
                     key.drop_with(this);
                     value.drop_with(this);
@@ -263,8 +260,10 @@ impl VM<'_> {
                 // Get the string key for error messages (needed before moving key into closure)
                 let key_str = match &key {
                     Value::InternString(id) => this.interns.get_str(*id).to_string(),
-                    Value::Ref(id) => {
-                        if let HeapData::Str(s) = this.heap.get(*id) {
+                    Value::Ref(kind, id) => {
+                        if matches!(kind, HeapKind::Str)
+                            && let HeapData::Str(s) = this.heap.get(*id)
+                        {
                             s.as_str().to_string()
                         } else {
                             "<unknown>".to_string()
@@ -312,7 +311,7 @@ impl VM<'_> {
         defer_drop!(mapping, this);
 
         // Clone all key/value pairs out of the mapping before mutating the target dict
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+        let copied_items: Vec<(Value, Value)> = if let Value::Ref(HeapKind::Dict, id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
                     .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
@@ -332,7 +331,7 @@ impl VM<'_> {
         // SAFETY: the compiler always emits BuildDict before DictUpdate, so the
         // target is always a Value::Ref.  This is a VM invariant: reaching this else
         // arm means a compiler bug.
-        let Value::Ref(dict_id) = this.stack[dict_pos] else {
+        let Value::Ref(_, dict_id) = this.stack[dict_pos] else {
             unreachable!("DictUpdate: target is always a Ref — compiler invariant")
         };
 
@@ -381,7 +380,7 @@ impl VM<'_> {
         // SAFETY: the compiler always emits BuildSet before SetExtend, so the
         // target is always a Value::Ref.  This is a VM invariant: reaching this else
         // arm means a compiler bug.
-        let Value::Ref(set_id) = this.stack[set_pos] else {
+        let Value::Ref(_, set_id) = this.stack[set_pos] else {
             unreachable!("SetExtend: target is always a Ref — compiler invariant")
         };
 
@@ -412,7 +411,7 @@ impl VM<'_> {
         let list_pos = stack_len - 1 - depth;
 
         // Get the list reference
-        let Value::Ref(list_id) = self.stack[list_pos] else {
+        let Value::Ref(HeapKind::List, list_id) = self.stack[list_pos] else {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
@@ -435,7 +434,7 @@ impl VM<'_> {
         let set_pos = stack_len - 1 - depth;
 
         // Get the set reference
-        let Value::Ref(set_id) = self.stack[set_pos] else {
+        let Value::Ref(HeapKind::Set, set_id) = self.stack[set_pos] else {
             value.drop_with(self);
             return Err(RunError::internal("SetAdd: expected set ref on stack"));
         };
@@ -461,7 +460,7 @@ impl VM<'_> {
         let dict_pos = stack_len - 1 - depth;
 
         // Get the dict reference
-        let Value::Ref(dict_id) = self.stack[dict_pos] else {
+        let Value::Ref(HeapKind::Dict, dict_id) = self.stack[dict_pos] else {
             key.drop_with(self);
             value.drop_with(self);
             return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
@@ -552,7 +551,7 @@ impl VM<'_> {
         // Middle items as a list (starred target)
         let middle_list: Vec<Value> = items.drain(before..).collect();
         let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)));
-        this.push(Value::Ref(list_id));
+        this.push(Value::Ref(HeapKind::List, list_id));
 
         // Before items
         for item in items.drain(..).rev() {
@@ -591,7 +590,7 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
     // one CPython error message, not a property types should declare, and
     // nothing may branch on it to decide *how* to iterate.
     let total = match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::List | HeapKind::Tuple | HeapKind::Dict, id) => match vm.heap.get(*id) {
             HeapData::List(list) => Some(list.len()),
             HeapData::Tuple(tuple) => Some(tuple.as_slice().len()),
             HeapData::Dict(dict) => Some(dict.len()),
@@ -672,5 +671,5 @@ fn unpack_type_error(value: &Value, vm: &VM<'_>) -> RunError {
 /// slot at all; a class opting out with `__iter__ = None` still fills the slot,
 /// so `slot_tp_iter`'s own error survives.
 fn opts_out_of_iter(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value, Value::Ref(id) if instance_defines_iter(*id, vm))
+    matches!(value, Value::Ref(_, id) if instance_defines_iter(*id, vm))
 }

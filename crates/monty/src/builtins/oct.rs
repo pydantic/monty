@@ -9,6 +9,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
+    heap_data::HeapKind,
     types::str::allocate_string_no_interning,
     value::Value,
 };
@@ -31,7 +32,7 @@ pub fn builtin_oct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let s = if *b { "0o1" } else { "0o0" };
             Ok(allocate_string_no_interning(s.to_string(), vm.heap))
         }
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+        Value::Ref(HeapKind::LongInt, id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
             let oct_str = format_bigint_oct(li.inner());
             Ok(allocate_string_no_interning(oct_str, vm.heap))
         }

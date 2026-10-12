@@ -8,6 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
+    heap_data::HeapKind,
     types::str::allocate_string_no_interning,
     value::Value,
 };
@@ -29,7 +30,7 @@ pub fn builtin_hex(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let s = if *b { "0x1" } else { "0x0" };
             s.to_string()
         }
-        Value::Ref(id) if let HeapData::LongInt(li) = heap.get(*id) => {
+        Value::Ref(HeapKind::LongInt, id) if let HeapData::LongInt(li) = heap.get(*id) => {
             let bi = li.inner();
             format!("{}0x{:x}", if bi.is_negative() { "-" } else { "" }, bi.magnitude())
         }

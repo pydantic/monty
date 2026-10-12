@@ -94,6 +94,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
     types::str::StringRepr,
@@ -113,7 +114,10 @@ impl FileName {
     fn to_value(&self, heap: &Heap) -> Value {
         match self {
             Self::Str(name) => allocate_string(name.as_str(), heap),
-            Self::Bytes(name) => Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(name.clone())))),
+            Self::Bytes(name) => Value::Ref(
+                HeapKind::Bytes,
+                heap.allocate(HeapData::Bytes(Bytes::new(name.clone()))),
+            ),
         }
     }
 }
@@ -890,7 +894,7 @@ pub(crate) fn apply_open_name(
 ) -> RunResult<Value> {
     let parsed = newline.as_deref().map_or(Some(Newline::default()), Newline::parse);
     if let Some(parsed) = parsed
-        && let Value::Ref(id) = &value
+        && let Value::Ref(HeapKind::OpenFile, id) = &value
         && let HeapReadOutput::OpenFile(mut file) = vm.heap.read(*id)
     {
         let file = file.get_mut(vm.heap);
@@ -921,7 +925,7 @@ pub(crate) fn apply_open_name(
 /// [`CallResult::OsCallWithEffect`](crate::bytecode::CallResult::OsCallWithEffect).
 ///
 /// Invariants on entry:
-/// - `result` is `Value::Ref(_)` (or an interned `String`/`Bytes`) coming
+/// - `result` is `Value::Ref(..)` (or an interned `String`/`Bytes`) coming
 ///   from `OsFunction::ReadText` / `ReadBytes`. The host boundary guarantees
 ///   one of these for the OS functions we emit.
 /// - `OpenFile::pending_read` is `Some(_)`. If it isn't (snapshot/restore
@@ -936,7 +940,7 @@ pub(crate) fn apply_open_name(
 /// exception followed by a retry sees no stale slice spec.
 pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     // Ensure `file_id` is dec_ref'd on every path at end of this function.
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let mut result_guard = DropGuard::new(result, vm);
     let (_, vm) = result_guard.as_parts_mut();
@@ -961,7 +965,7 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
 /// found the file unread can re-dispatch against the buffer. Produces no
 /// value; the pin on `file_id` is released here.
 pub(crate) fn apply_buffer_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
         result.drop_with(vm);
@@ -982,7 +986,7 @@ pub(crate) fn apply_file_next(
     result: Value,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let mut default_guard = DropGuard::new(default, vm);
     let (_, vm) = default_guard.as_parts_mut();
@@ -1023,14 +1027,18 @@ fn install_buffer<'h>(file: &mut HeapRead<'h, OpenFile>, result: Value, vm: &mut
         }
         Value::InternBytes(bytes_id) => {
             let bytes = vm.interns.get_bytes(*bytes_id).to_vec();
-            Some(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)))))
+            Some(Value::Ref(
+                HeapKind::Bytes,
+                vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes))),
+            ))
         }
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Str, id) => match vm.heap.get(*id) {
             HeapData::Str(text) if translate && text.as_str().contains('\r') => {
                 Some(allocate_string_no_interning(translate_newlines(text.as_str()), vm.heap))
             }
             _ => None,
         },
+        Value::Ref(_, _) => None,
         _ => {
             return Err(RunError::internal(
                 "install_buffer: OS result must be a string or bytes value",
@@ -1123,7 +1131,7 @@ pub(crate) fn apply_write_position(
     result: Value,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let mut result_guard = DropGuard::new(result, vm);
     let (result_ref, vm) = result_guard.as_parts_mut();
@@ -1251,7 +1259,7 @@ fn compute_slice_text<'h>(
             ReadSpec::All => {
                 let value = if byte_position == 0 {
                     vm.heap.inc_ref(buffer_id);
-                    Value::Ref(buffer_id)
+                    Value::Ref(HeapKind::Str, buffer_id)
                 } else {
                     allocate_string(tail.to_owned(), vm.heap)
                 };
@@ -1290,7 +1298,12 @@ fn compute_slice_text<'h>(
                 }
                 let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
                 // Past-EOF preservation: matches `ReadSpec::All`.
-                (Value::Ref(list_id), position.max(buffer_total), buffer.len(), true)
+                (
+                    Value::Ref(HeapKind::List, list_id),
+                    position.max(buffer_total),
+                    buffer.len(),
+                    true,
+                )
             }
             ReadSpec::Seek { offset, whence } => {
                 let target = resolve_seek_target_usize(offset, whence, position, buffer_total)?;
@@ -1347,10 +1360,10 @@ fn compute_slice_binary<'h>(
             ReadSpec::All => {
                 let value = if clamped_position == 0 {
                     vm.heap.inc_ref(buffer_id);
-                    Value::Ref(buffer_id)
+                    Value::Ref(HeapKind::Bytes, buffer_id)
                 } else {
                     let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail.to_vec())));
-                    Value::Ref(id)
+                    Value::Ref(HeapKind::Bytes, id)
                 };
                 // Preserve `position` if it was already past `buffer_total`
                 // (set there by `seek()`) — CPython's read-at-EOF leaves the
@@ -1364,7 +1377,7 @@ fn compute_slice_binary<'h>(
                 // `read(N)` (which yields no bytes) leaves `position` alone
                 // instead of snapping it back to `buffer_total`.
                 let new_pos = position + take;
-                (Value::Ref(id), new_pos, new_pos >= buffer_total)
+                (Value::Ref(HeapKind::Bytes, id), new_pos, new_pos >= buffer_total)
             }
             ReadSpec::Line => {
                 let end = tail.iter().position(|b| *b == b'\n').map_or(tail.len(), |i| i + 1);
@@ -1372,7 +1385,7 @@ fn compute_slice_binary<'h>(
                 // See `Size` above — past-EOF `readline()` returns `b''`
                 // without rewinding `position`.
                 let new_pos = position + end;
-                (Value::Ref(id), new_pos, new_pos >= buffer_total)
+                (Value::Ref(HeapKind::Bytes, id), new_pos, new_pos >= buffer_total)
             }
             ReadSpec::Lines => {
                 let mut items: Vec<Value> = Vec::new();
@@ -1381,12 +1394,12 @@ fn compute_slice_binary<'h>(
                     let rest = &tail[start..];
                     let end = rest.iter().position(|b| *b == b'\n').map_or(rest.len(), |i| i + 1);
                     let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(rest[..end].to_vec())));
-                    items.push(Value::Ref(id));
+                    items.push(Value::Ref(HeapKind::Bytes, id));
                     start += end;
                 }
                 let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
                 // Past-EOF preservation: matches `ReadSpec::All`.
-                (Value::Ref(list_id), position.max(buffer_total), true)
+                (Value::Ref(HeapKind::List, list_id), position.max(buffer_total), true)
             }
             ReadSpec::Seek { offset, whence } => {
                 // Seek resolves against the un-clamped position so
@@ -1584,7 +1597,10 @@ fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_>) -> RunResult<Re
 /// Text mode reuses the canonical empty string without a heap allocation.
 fn empty_result(binary: bool, vm: &VM<'_>) -> Value {
     if binary {
-        Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(Vec::new()))))
+        Value::Ref(
+            HeapKind::Bytes,
+            vm.heap.allocate(HeapData::Bytes(Bytes::new(Vec::new()))),
+        )
     } else {
         allocate_string("", vm.heap)
     }
@@ -1617,7 +1633,7 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_>) -> RunResult<()>
 pub(crate) fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {
     match data {
         Value::InternString(id) => Some(vm.interns.get_str(*id).to_owned()),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Str, id) => match vm.heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str().to_owned()),
             _ => None,
         },
@@ -1630,7 +1646,7 @@ pub(crate) fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {
 fn extract_bytes_payload(data: &Value, vm: &VM<'_>) -> Option<Vec<u8>> {
     match data {
         Value::InternBytes(id) => Some(vm.interns.get_bytes(*id).to_owned()),
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(HeapKind::Bytes, id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Some(b.as_slice().to_owned()),
             _ => None,
         },
@@ -1639,10 +1655,10 @@ fn extract_bytes_payload(data: &Value, vm: &VM<'_>) -> Option<Vec<u8>> {
 }
 
 /// Returns whether a value is a Python `bytes` object.
-fn is_bytes(data: &Value, heap: &Heap) -> bool {
+fn is_bytes(data: &Value, _heap: &Heap) -> bool {
     match data {
         Value::InternBytes(_) => true,
-        Value::Ref(id) => matches!(heap.get(*id), HeapData::Bytes(_)),
+        Value::Ref(kind, _) => matches!(kind, HeapKind::Bytes),
         _ => false,
     }
 }

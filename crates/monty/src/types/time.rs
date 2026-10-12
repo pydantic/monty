@@ -28,6 +28,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
@@ -202,7 +203,7 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
         vm.heap.inc_ref(tz_ref);
         time.tzinfo = Some(tz_ref);
     }
-    Value::Ref(vm.heap.allocate(HeapData::Time(time)))
+    Value::Ref(HeapKind::Time, vm.heap.allocate(HeapData::Time(time)))
 }
 
 /// `time.fromisoformat(s)` — the inverse of `isoformat()`.
@@ -234,7 +235,7 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult
         time.tzinfo = Some(allocate_tzinfo_ref(offset_seconds, None, vm.heap));
     }
 
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Time(time))))
+    Ok(Value::Ref(HeapKind::Time, vm.heap.allocate(HeapData::Time(time))))
 }
 
 /// Allocates a naive `time` from already-in-range components.
@@ -245,7 +246,7 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult
 pub(crate) fn allocate_naive(hour: i32, minute: i32, second: i32, microsecond: i32, heap: &Heap) -> Value {
     let time =
         from_components(hour, minute, second, microsecond, 0).expect("caller guarantees in-range time components");
-    Value::Ref(heap.allocate(HeapData::Time(time)))
+    Value::Ref(HeapKind::Time, heap.allocate(HeapData::Time(time)))
 }
 
 /// Argument shape for `time(hour=0, minute=0, second=0, microsecond=0,
@@ -481,7 +482,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Time(other)) = other.read_heap(vm) else {
+        let Some(HeapReadOutput::Time(other)) = other.read_heap(vm, &[HeapKind::Time]) else {
             return Ok(None);
         };
         let (a, b) = (self.get(vm.heap), other.get(vm.heap));
@@ -617,7 +618,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                     return Ok(Some(CallResult::Value(Value::None)));
                 };
                 vm.heap.inc_ref(tzinfo_ref);
-                Ok(Some(CallResult::Value(Value::Ref(tzinfo_ref))))
+                Ok(Some(CallResult::Value(Value::Ref(HeapKind::TimeZone, tzinfo_ref))))
             }
             _ => Ok(None),
         }

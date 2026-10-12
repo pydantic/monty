@@ -13,6 +13,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{HeapData, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap_data::HeapKind,
     types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
@@ -36,7 +37,7 @@ pub(crate) struct Tee {
 impl Tee {
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.block {
+        if let Value::Ref(_, id) = &self.block {
             on_child(*id);
         }
     }
@@ -78,12 +79,12 @@ impl TeeBlock {
     /// Invokes `on_child` for each heap id this block owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for value in [Some(&self.source), self.next.as_ref()].into_iter().flatten() {
-            if let Value::Ref(id) = value {
+            if let Value::Ref(_, id) = value {
                 on_child(*id);
             }
         }
         for item in &self.items {
-            if let Value::Ref(id) = item {
+            if let Value::Ref(_, id) = item {
                 on_child(*id);
             }
         }
@@ -109,7 +110,7 @@ pub(crate) fn new_group(source: Value, consumers: usize, vm: &mut VM<'_>) -> Vec
         .allocate(HeapData::Itertools(ItertoolsIter::TeeBlock(Box::new(block))));
     let tees = consumers_at(block_id, 0, consumers, vm);
     // The allocation's own reference belongs to no consumer, so it goes here.
-    Value::Ref(block_id).drop_with(vm);
+    Value::Ref(HeapKind::Itertools, block_id).drop_with(vm);
     tees
 }
 
@@ -120,7 +121,9 @@ pub(crate) fn new_group(source: Value, consumers: usize, vm: &mut VM<'_>) -> Vec
 /// `__copy__` for the same reason: the copies replay from the original's
 /// position rather than draining it.
 pub(crate) fn fork_group(tee: &Value, consumers: usize, vm: &mut VM<'_>) -> Option<Vec<Value>> {
-    let Value::Ref(id) = tee else { return None };
+    let Value::Ref(HeapKind::Itertools, id) = tee else {
+        return None;
+    };
     let HeapReadOutput::Itertools(read) = vm.heap.read(*id) else {
         return None;
     };
@@ -130,7 +133,7 @@ pub(crate) fn fork_group(tee: &Value, consumers: usize, vm: &mut VM<'_>) -> Opti
     let (block, index) = (existing.block.clone_with_heap(vm.heap), existing.index);
     drop(read);
     defer_drop!(block, vm);
-    let Value::Ref(block_id) = block else {
+    let Value::Ref(_, block_id) = block else {
         unreachable!("a tee's block is always a heap value")
     };
     Some(consumers_at(*block_id, index, consumers, vm))
@@ -144,10 +147,10 @@ fn consumers_at(block_id: HeapId, index: usize, consumers: usize, vm: &mut VM<'_
             // rather than cloned from a temporary that would need releasing.
             vm.heap.inc_ref(block_id);
             let tee = ItertoolsIter::Tee(Tee {
-                block: Value::Ref(block_id),
+                block: Value::Ref(HeapKind::Itertools, block_id),
                 index,
             });
-            Value::Ref(vm.heap.allocate(HeapData::Itertools(tee)))
+            Value::Ref(HeapKind::Itertools, vm.heap.allocate(HeapData::Itertools(tee)))
         })
         .collect()
 }
@@ -192,7 +195,7 @@ fn position<'h>(iter: &HeapObjectRead<'h, ItertoolsIter>, vm: &VM<'h>) -> (HeapI
     let ItertoolsIter::Tee(tee) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Tee")
     };
-    let Value::Ref(block_id) = tee.block else {
+    let Value::Ref(_, block_id) = tee.block else {
         unreachable!("a tee's block is always a heap value")
     };
     (block_id, tee.index)
@@ -214,17 +217,17 @@ fn set_position<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, block_id: Heap
         unreachable!("dispatched on Kind::Tee")
     };
     tee.index = index;
-    tee.block = Value::Ref(block_id);
+    tee.block = Value::Ref(HeapKind::Itertools, block_id);
     // Released after the borrow ends, since freeing a block runs cleanup that
     // needs the heap itself.
-    Value::Ref(previous).drop_with(vm);
+    Value::Ref(HeapKind::Itertools, previous).drop_with(vm);
 }
 
 /// The block after `block_id`, opening one over the same source if this is the
 /// first consumer to reach the end of this one.
 fn jump(block_id: HeapId, vm: &mut VM<'_>) -> HeapId {
     let existing = read_block(block_id, vm, |block, _| match &block.next {
-        Some(Value::Ref(id)) => Some(*id),
+        Some(Value::Ref(_, id)) => Some(*id),
         _ => None,
     });
     if let Some(next_id) = existing {
@@ -235,7 +238,9 @@ fn jump(block_id: HeapId, vm: &mut VM<'_>) -> HeapId {
     let next_id = vm
         .heap
         .allocate(HeapData::Itertools(ItertoolsIter::TeeBlock(Box::new(next))));
-    write_block(block_id, vm, |block| block.next = Some(Value::Ref(next_id)));
+    write_block(block_id, vm, |block| {
+        block.next = Some(Value::Ref(HeapKind::Itertools, next_id));
+    });
     next_id
 }
 

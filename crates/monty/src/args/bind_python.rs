@@ -24,6 +24,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
     heap::{DropGuard, DropWithContext, HeapData},
+    heap_data::HeapKind,
     intern::{Interns, StringId},
     resource_checks::check_estimated_size,
     types::{Dict, allocate_tuple},
@@ -564,7 +565,7 @@ impl Signature {
         if let Some(excess_kwargs) = excess_kwargs {
             let dict_id = vm.heap.allocate(HeapData::Dict(excess_kwargs));
             let last_slot = namespace.len() - 1;
-            namespace[last_slot] = Value::Ref(dict_id);
+            namespace[last_slot] = Value::Ref(HeapKind::Dict, dict_id);
         }
 
         Ok(())

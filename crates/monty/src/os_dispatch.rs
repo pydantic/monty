@@ -33,6 +33,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings},
     modules::{
         os::PathArgError,
@@ -725,7 +726,7 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
 pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
     match value {
         Value::InternString(id) => Some(interns.get_str(*id).to_owned()),
-        Value::Ref(id) => match heap.get(*id) {
+        Value::Ref(HeapKind::Str | HeapKind::Path, id) => match heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str().to_owned()),
             HeapData::Path(p) => Some(p.as_str().to_owned()),
             _ => None,
@@ -738,7 +739,7 @@ pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Intern
 pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
     match value {
         Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
-        Value::Ref(id) => match heap.get(*id) {
+        Value::Ref(HeapKind::Bytes, id) => match heap.get(*id) {
             HeapData::Bytes(b) => Some(b.as_slice().to_owned()),
             _ => None,
         },

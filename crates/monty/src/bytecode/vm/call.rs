@@ -18,7 +18,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
-    heap_data::CellValue,
+    heap_data::{CellValue, HeapKind},
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
@@ -357,7 +357,7 @@ impl<'h> VM<'h> {
         // actually matches a dunder; on the fall-through path the
         // original `args` is still owned here and goes into `py_call_attr`.
         let mut args_slot = Some(args);
-        if let Value::Ref(heap_id) = obj
+        if let Value::Ref(_, heap_id) = obj
             && let Some(result) = dispatch_dunder(name_id, heap_id, this, &mut args_slot)
         {
             defer_drop!(obj, this);
@@ -366,7 +366,7 @@ impl<'h> VM<'h> {
         let args = args_slot.expect("dispatch_dunder returned None without taking args");
 
         match obj {
-            Value::Ref(heap_id) => {
+            Value::Ref(_, heap_id) => {
                 defer_drop!(obj, this);
                 this.heap.read(heap_id).py_call_attr(this, &attr, args)
             }
@@ -563,7 +563,7 @@ impl<'h> VM<'h> {
                 // Defined function without defaults, captured variables or a globals dict
                 self.call_def_function(*func_id, &[], &[], None, args)
             }
-            Value::Ref(heap_id) => {
+            Value::Ref(_, heap_id) => {
                 // Could be a closure or function with defaults - check heap
                 self.call_heap_callable(*heap_id, args)
             }
@@ -663,7 +663,7 @@ impl<'h> VM<'h> {
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
     fn extract_args_tuple(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
+        let Value::Ref(HeapKind::Tuple, id) = args_tuple else {
             unreachable!("CallFunctionExtended: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
@@ -682,7 +682,7 @@ impl<'h> VM<'h> {
         defer_drop!(kwargs_ref, this);
 
         // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
+        let Value::Ref(HeapKind::Dict, id) = kwargs_ref else {
             unreachable!("CallFunctionExtended: kwargs must be a Ref")
         };
         let HeapData::Dict(dict) = this.heap.get(*id) else {
@@ -741,7 +741,7 @@ impl<'h> VM<'h> {
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
     fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
+        let Value::Ref(HeapKind::Tuple, id) = args_tuple else {
             unreachable!("CallAttrExtended: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
@@ -764,7 +764,7 @@ impl<'h> VM<'h> {
         defer_drop!(kwargs_ref, this);
 
         // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
+        let Value::Ref(HeapKind::Dict, id) = kwargs_ref else {
             unreachable!("CallAttrExtended: kwargs must be a Ref")
         };
         let HeapData::Dict(dict) = this.heap.get(*id) else {
@@ -869,7 +869,7 @@ impl<'h> VM<'h> {
 
         let coroutine = Coroutine::new(func_id, namespace, None);
         let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
-        CallResult::Value(Value::Ref(coroutine_id))
+        CallResult::Value(Value::Ref(HeapKind::Coroutine, coroutine_id))
     }
 
     /// Calls a defined function by pushing a new frame or creating a coroutine.
@@ -928,7 +928,7 @@ impl<'h> VM<'h> {
         let coroutine = Coroutine::new(func_id, namespace, globals);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
 
-        Ok(CallResult::Value(Value::Ref(coroutine_id)))
+        Ok(CallResult::Value(Value::Ref(HeapKind::Coroutine, coroutine_id)))
     }
 
     /// Installs owned cell variables and captured free-var cells into a frame's
@@ -958,12 +958,12 @@ impl<'h> VM<'h> {
                 None => Value::Undefined,
             };
             let cell_id = self.heap.allocate(HeapData::Cell(CellValue(cell_value)));
-            namespace[slot.index()] = Value::Ref(cell_id);
+            namespace[slot.index()] = Value::Ref(HeapKind::Cell, cell_id);
         }
 
         for (i, &cell_id) in cells.iter().enumerate() {
             self.heap.inc_ref(cell_id);
-            namespace[func.free_var_slots[i].index()] = Value::Ref(cell_id);
+            namespace[func.free_var_slots[i].index()] = Value::Ref(HeapKind::Cell, cell_id);
         }
     }
 
@@ -1080,13 +1080,15 @@ impl<'h> VM<'h> {
                 let HeapReadOutput::Class(class) = self.heap.read(class_id) else {
                     unreachable!("instantiate_class is only reached with a class")
                 };
-                dataclasses::dataclass_init(self, &class, Value::Ref(instance_id), args)
+                dataclasses::dataclass_init(self, &class, Value::Ref(HeapKind::Instance, instance_id), args)
             }
-            None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
+            None if matches!(args, ArgValues::Empty) => {
+                Ok(CallResult::Value(Value::Ref(HeapKind::Instance, instance_id)))
+            }
             None => {
                 args.drop_with(self);
                 let name = class_name(class_id, self.heap, self.interns);
-                Value::Ref(instance_id).drop_with(self);
+                Value::Ref(HeapKind::Instance, instance_id).drop_with(self);
                 Err(ExcType::type_error(format!("{name}() takes no arguments")))
             }
             Some(init_func) => {
@@ -1097,9 +1099,9 @@ impl<'h> VM<'h> {
                 // Bound methods already carry their own receiver, and builtins,
                 // classes and other values are called with the constructor
                 // arguments unchanged.
-                let init_args = if this.is_function_value(init_func) {
+                let init_args = if Self::is_function_value(init_func) {
                     this.heap.inc_ref(instance_id);
-                    args.prepend(Value::Ref(instance_id))
+                    args.prepend(Value::Ref(HeapKind::Instance, instance_id))
                 } else {
                     args
                 };
@@ -1107,7 +1109,7 @@ impl<'h> VM<'h> {
                     // Push the instance as the pending result (transferring the
                     // allocation's reference), then run __init__ as a real
                     // (suspendable) frame.
-                    this.push(Value::Ref(instance_id));
+                    this.push(Value::Ref(HeapKind::Instance, instance_id));
                     match this.call_function(init_func, init_args)? {
                         CallResult::FramePushed => {
                             // Mark the just-pushed frame so its return value is
@@ -1128,15 +1130,15 @@ impl<'h> VM<'h> {
                     // ...): run to completion synchronously — no pending instance is
                     // pushed — and enforce CPython's `None`-return contract.
                     match this.evaluate_function("__init__", init_func, init_args) {
-                        Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
+                        Ok(Value::None) => Ok(CallResult::Value(Value::Ref(HeapKind::Instance, instance_id))),
                         Ok(result) => {
                             let type_name = result.py_type_name(this);
                             result.drop_with(this);
-                            Value::Ref(instance_id).drop_with(this);
+                            Value::Ref(HeapKind::Instance, instance_id).drop_with(this);
                             Err(ExcType::type_error_init_return(type_name))
                         }
                         Err(e) => {
-                            Value::Ref(instance_id).drop_with(this);
+                            Value::Ref(HeapKind::Instance, instance_id).drop_with(this);
                             Err(e)
                         }
                     }
@@ -1148,12 +1150,11 @@ impl<'h> VM<'h> {
     /// Whether `value` is a plain Python function object (`def`, closure, or
     /// function-with-defaults — sync or async): the kinds that act as descriptors
     /// in CPython and therefore bind an instance when looked up as a class member.
-    fn is_function_value(&self, value: &Value) -> bool {
-        match value {
-            Value::DefFunction(_) => true,
-            Value::Ref(id) => matches!(self.heap.get(*id), HeapData::Closure(_) | HeapData::FunctionDefaults(_)),
-            _ => false,
-        }
+    fn is_function_value(value: &Value) -> bool {
+        matches!(
+            value,
+            Value::DefFunction(_) | Value::Ref(HeapKind::Closure | HeapKind::FunctionDefaults, _)
+        )
     }
 
     /// Whether calling `value` would push a regular synchronous frame
@@ -1164,14 +1165,16 @@ impl<'h> VM<'h> {
     fn is_plain_sync_function(&self, value: &Value) -> bool {
         match value {
             Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
-            Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
-                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
-                // Bound methods never wrap another bound method, so this
-                // recursion is at most one level deep.
-                HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
-                _ => false,
-            },
+            Value::Ref(HeapKind::Closure | HeapKind::FunctionDefaults | HeapKind::BoundMethod, id) => {
+                match self.heap.get(*id) {
+                    HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
+                    HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                    // Bound methods never wrap another bound method, so this
+                    // recursion is at most one level deep.
+                    HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
+                    _ => false,
+                }
+            }
             _ => false,
         }
     }
@@ -1277,7 +1280,7 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
     };
     let _ = (typ, tb);
     let exc = match val {
-        Value::Ref(id) => Some(*id),
+        Value::Ref(_, id) => Some(*id),
         _ => None,
     };
     vm.heap.read(heap_id).py_exit(vm, exc)
