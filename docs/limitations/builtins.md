@@ -57,8 +57,10 @@ These raise `NameError`:
     appended after the cursor and gets yielded. CPython places it by hash, which
     can put it behind the cursor and out of that walk's reach. Both engines raise
     `RuntimeError: Set changed size during iteration` when the size changes; this
-    is only about which walk sees a same-size replacement, and it follows from
-    the ordering difference, not from the mutation.
+    is only about which walk sees a same-size replacement.
+    Monty also stops a set walk once it has yielded the set's starting length,
+    where CPython keeps going: replacing each element as it is visited yields
+    every replacement in CPython but only the original elements in Monty.
 - **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
     hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
     `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.
