@@ -57,7 +57,8 @@ These raise `NameError`:
     where CPython leaves a tombstone in place: a key deleted from inside a user
     `__repr__` running *during that dict's repr* shifts later entries down, so
     the entry after the deleted one can be skipped from the output where CPython
-    would still print it. Insertions during repr match CPython (appended and
+    would still print it. The same deletion behaviour affects `str(d)` and
+    `print(d)`. Insertions during repr match CPython (appended and
     printed), as do list (live length, mid-repr pops truncate / appends extend),
     `set`, `collections.deque` and `collections.Counter` (all snapshot, like
     CPython).

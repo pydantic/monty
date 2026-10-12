@@ -70,6 +70,42 @@ fn print_mixed_types() {
 ");
 }
 
+/// The outer container must participate in cycle detection when `print` uses `str`.
+#[test]
+fn print_cyclic_containers() {
+    let code = "
+from collections import namedtuple
+
+items = [1]
+items.append(items)
+mapping = {'first': 1}
+mapping['self'] = mapping
+print(items)
+print(mapping)
+print([items, items])
+
+mixed = []
+nested = {'list': mixed}
+mixed.append(nested)
+print(mixed)
+print(nested)
+
+Named = namedtuple('Named', 'items')
+named_items = []
+named = Named(named_items)
+named_items.append(named)
+print(named)
+";
+    assert_snapshot!(run_and_capture(code), @r"
+    [1, [...]]
+    {'first': 1, 'self': {...}}
+    [[1, [...]], [1, [...]]]
+    [{'list': [...]}]
+    {'list': [{...}]}
+    Named(items=[Named(items=[...])])
+    ");
+}
+
 #[test]
 fn print_in_function() {
     let code = "
