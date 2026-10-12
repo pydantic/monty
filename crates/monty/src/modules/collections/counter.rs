@@ -397,22 +397,34 @@ pub(crate) fn counter_most_common<'h>(
         }
     };
 
-    let counts = counter
-        .get(vm.heap)
-        .iter()
-        .map(|(_, count)| count.clone_with_heap(vm.heap))
-        .collect();
+    // CPython's `heapq.nlargest(0, ...)` returns before comparing anything.
+    if limit == Some(0) {
+        return Ok(vm.heap.allocate_as(List::new(Vec::new())).into_value());
+    }
+    // Snapshot the entries before ordering: comparing counts can run a user
+    // `__eq__` that mutates the Counter, so the ordered indices must refer to
+    // the snapshot. CPython's `sorted(self.items(), ...)` snapshots the same way.
+    let pairs = counter.clone_all_pairs(vm)?;
+    defer_drop!(pairs, vm);
+    let counts = pairs.iter().map(|(_, count)| count.clone_with_heap(vm.heap)).collect();
     let order = counter_order(counts, vm)?;
     let take = limit.unwrap_or(order.len()).min(order.len());
-
-    let mut items: Vec<Value> = Vec::with_capacity(take);
-    for &i in &order[..take] {
-        let dict = counter.get(vm.heap);
-        let key = dict.key_at(i).expect("index in range").clone_with_heap(vm.heap);
-        let count = dict.value_at(i).expect("index in range").clone_with_heap(vm.heap);
-        let pair = allocate_tuple(smallvec![key, count], vm.heap);
-        items.push(pair);
+    // Below the length, CPython's `heapq.nlargest` compares while iterating the
+    // live dict, so a comparison that resized it raises there.
+    if take < pairs.len() && counter.get(vm.heap).len() != pairs.len() {
+        return Err(ExcType::runtime_error_dict_changed_size());
     }
+
+    let items = order[..take]
+        .iter()
+        .map(|&i| {
+            let (key, count) = &pairs[i];
+            allocate_tuple(
+                smallvec![key.clone_with_heap(vm.heap), count.clone_with_heap(vm.heap)],
+                vm.heap,
+            )
+        })
+        .collect();
     Ok(vm.heap.allocate_as(List::new(items)).into_value())
 }
 
