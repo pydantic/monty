@@ -247,6 +247,10 @@ set entries persist their hash, which is why keys without a heap identity hash b
 `FunctionId`, never by discriminant), a semantic change to a stored value, or a `sha1` / `sha2` crate upgrade that
 changes their `SerializableState` layout (`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim). `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
 change that breaks it decides between an alias, a default, or a bump plus `UPDATE_DUMP_FIXTURE=1` to regenerate.
+When the old data still holds everything the new meaning needs, an upgrade in `dump_upgrade.rs` avoids a bump: it
+runs as the first VM over a loaded heap is built, over the entries `restore_entries` records, and its module docs list
+the rules. The first is `modules/dataclasses/legacy.rs`, tested against `dataclasses_v13.bin`, a fixture the older
+build wrote that must never be regenerated.
 
 ### Compilation overlays and stable intern entries
 
