@@ -96,6 +96,12 @@ impl<'h> HeapReadMut<'h, Class> {
         self.namespace_mut().set(name, value, vm)
     }
 
+    /// [`set_attr`](Self::set_attr) without the memory preflight, for a write
+    /// that must not fail: with an interned-string `name` nothing else can.
+    pub fn set_attr_without_growth_check(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.namespace_mut().set_without_growth_check(name, value, vm)
+    }
+
     /// Removes a class attribute, returning it for the caller to drop.
     ///
     /// Only `@dataclass` needs this, to clear the `field()` object a class body

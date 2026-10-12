@@ -273,6 +273,150 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
+/// The class definitions in `dataclasses_v13.bin`, kept for reference: the
+/// fixture was written by the 1.1.0 release, before `@dataclass` generated
+/// methods. It must never be regenerated, since this build writes generated
+/// methods and the test would then check nothing.
+#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
+const LEGACY_DATACLASS_STATE: &str = r"
+import dataclasses
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Frozen:
+    x: int
+    y: int = 2
+
+
+@dataclass
+class Plain:
+    xs: list
+    n: int = 0
+
+
+@dataclass(eq=False)
+class NoEq:
+    a: int
+
+
+@dataclass
+class OwnRepr:
+    a: int
+
+    def __repr__(self):
+        return 'own'
+
+
+@dataclass(frozen=True)
+class FrozenHook:
+    x: int
+
+    def __setattr__(self, name, value):
+        pass
+
+
+def late_hook(self):
+    self.n = 100
+
+
+Plain.__post_init__ = late_hook
+f = Frozen(1)
+p = Plain([1])
+";
+
+/// Run against the upgraded classes: each behaves as its decoration said, and a
+/// `__post_init__` attached after decoration still never runs.
+const LEGACY_DATACLASS_CHECK: &str = r#"assert f == Frozen(1, 2)
+assert hash(f) == hash((1, 2))
+assert repr(f) == 'Frozen(x=1, y=2)'
+try:
+    f.x = 5
+    assert False, 'expected FrozenInstanceError'
+except dataclasses.FrozenInstanceError as e:
+    assert str(e) == "cannot assign to field 'x'"
+assert p == Plain([1])
+assert Plain([2]).n == 0
+assert p.n == 0
+assert Plain.__hash__ is None
+assert NoEq(1) != NoEq(1)
+assert repr(OwnRepr(1)) == 'own'
+assert OwnRepr(1) == OwnRepr(1)
+hooked = FrozenHook(3)
+assert hooked.x == 3
+try:
+    hooked.x = 4
+    assert False, 'expected FrozenInstanceError'
+except dataclasses.FrozenInstanceError as e:
+    assert str(e) == "cannot assign to field 'x'"
+"#;
+
+/// Dataclasses decorated by a build that generated no methods load with their
+/// methods generated (see `dataclasses::legacy`), and a re-dump of the upgraded
+/// session loads the same way.
+#[test]
+fn legacy_dataclasses_upgrade_on_load() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13.bin");
+    let mut bytes = fs::read(&path).unwrap();
+    for _ in 0..2 {
+        let loaded = Dump::load(&bytes).expect("a version 13 dataclass dump loads");
+        let Session::Idle(mut repl) = loaded.state else {
+            panic!("the fixture was dumped idle");
+        };
+        repl.feed_run(LEGACY_DATACLASS_CHECK, vec![], PrintWriter::Stdout)
+            .unwrap();
+        bytes = dump("dataclasses.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    }
+}
+
+/// A current dataclass whose generated methods were all rebound is not taken
+/// for one an older build decorated: the reload keeps its own hooks.
+#[test]
+fn rebound_dataclass_methods_survive_a_reload() {
+    let mut repl = MontyRepl::new("rebound.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r"from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class F:
+    x: int
+
+
+def setter(self, name, value):
+    pass
+
+
+def deleter(self, name):
+    pass
+
+
+F.__init__ = lambda self, x: None
+F.__repr__ = lambda self: 'own'
+F.__eq__ = lambda self, other: True
+F.__hash__ = lambda self: 1
+F.__setattr__ = setter
+F.__delattr__ = deleter
+assert F.__setattr__ is setter
+assert F.__delattr__ is deleter
+",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("rebound.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped idle");
+    };
+    repl.feed_run(
+        "assert F.__setattr__ is setter
+assert F.__delattr__ is deleter",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+}
+
 /// Dict and set entries persist their hash, so the hash of every kind of key
 /// without a heap identity is part of the dump contract: a change here needs a
 /// `DUMP_VERSION` bump.

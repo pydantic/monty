@@ -9,11 +9,13 @@
 //! See `limitations/dataclasses.md` for divergences from CPython.
 
 mod field;
+mod legacy;
 mod method;
 mod options;
 
 pub(crate) use self::{
     field::DataclassField,
+    legacy::upgrade_legacy_class,
     method::{
         DataclassMethod, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error, generated_fields,
         is_generated_init, run_init,
@@ -265,7 +267,7 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     // as attributes can be rewritten to what CPython leaves behind.
     rewrite_field_attributes(&class, fields_id, vm)?;
     store_dataclass_params(&class, options, vm)?;
-    install_generated_methods(*class_id, &class, fields_id, options, vm)?;
+    install_generated_methods(*class_id, &class, fields_id, options, InstallMode::Decorate, vm)?;
     store_match_args(&class, fields_id, vm)?;
     Ok(guard.into_inner())
 }
@@ -380,11 +382,13 @@ fn store_match_args<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapId, vm: &
 /// not define them. Frozen classes refuse a body `__setattr__`/`__delattr__`
 /// with CPython's `TypeError`. `__hash__` follows CPython's `_hash_action`
 /// table and overwrites whatever the body left, as CPython assigns it outright.
+/// [`InstallMode::Upgrade`] changes three of those choices; see its docs.
 fn install_generated_methods<'h>(
     class_id: HeapId,
     class: &HeapReadMut<'h, Class>,
     fields_id: HeapId,
     options: DataclassOptions,
+    mode: InstallMode,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
     let class_name = class.get(vm.heap).name().as_str(vm.interns).to_owned();
@@ -397,7 +401,7 @@ fn install_generated_methods<'h>(
     // inserted, not one the author wrote, so a generated hash replaces it.
     let explicit_hash = class_dunder(class_id, "__hash__", vm)
         .is_some_and(|hash| !(matches!(hash, Value::None) && class_defines(class_id, "__eq__", vm)));
-    let post_init = class_defines(class_id, "__post_init__", vm);
+    let post_init = mode == InstallMode::Decorate && class_defines(class_id, "__post_init__", vm);
 
     if !class_defines(class_id, "__init__", vm) {
         let init = DataclassMethod::init(
@@ -406,34 +410,34 @@ fn install_generated_methods<'h>(
             post_init,
             options.frozen,
         );
-        set_method(class, init, vm)?;
+        set_method(class, init, mode, vm)?;
     }
     if !class_defines(class_id, "__repr__", vm) {
         let repr = DataclassMethod::new(class_name.clone(), MethodKind::Repr(names.clone()));
-        set_method(class, repr, vm)?;
+        set_method(class, repr, mode, vm)?;
     }
     if options.eq && !class_defines(class_id, "__eq__", vm) {
         let eq = DataclassMethod::new(class_name.clone(), MethodKind::Eq(names.clone()));
-        set_method(class, eq, vm)?;
+        set_method(class, eq, mode, vm)?;
     }
     if options.frozen {
         for kind in [MethodKind::FrozenSetattr, MethodKind::FrozenDelattr] {
             let dunder: &'static str = kind.dunder().into();
-            if class_defines(class_id, dunder, vm) {
+            if mode == InstallMode::Decorate && class_defines(class_id, dunder, vm) {
                 return Err(ExcType::type_error(format!(
                     "Cannot overwrite attribute {dunder} in class {class_name}"
                 )));
             }
-            set_method(class, DataclassMethod::new(class_name.clone(), kind), vm)?;
+            set_method(class, DataclassMethod::new(class_name.clone(), kind), mode, vm)?;
         }
     }
     // CPython's `_hash_action` rows for `unsafe_hash=False`, which Monty requires.
     match (options.eq, options.frozen, explicit_hash) {
         (true, true, false) => {
             let hash = DataclassMethod::new(class_name, MethodKind::Hash(names));
-            set_method(class, hash, vm)
+            set_method(class, hash, mode, vm)
         }
-        (true, false, false) => set_member(class, StaticStrings::DunderHash, Value::None, vm),
+        (true, false, false) => set_member(class, StaticStrings::DunderHash, Value::None, mode, vm),
         _ => Ok(()),
     }
 }
@@ -455,22 +459,47 @@ fn init_fields(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, FieldInit)> {
         .collect()
 }
 
+/// Who is installing the generated methods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallMode {
+    /// `@dataclass` itself, as CPython's `_process_class` would.
+    Decorate,
+    /// A dataclass from a version 13 dump (see `legacy`), where the 1.x rules
+    /// win: no `__post_init__` is called (1.x refused one in the body, and never
+    /// ran one attached later), a body `__setattr__`/`__delattr__` is replaced
+    /// rather than refused (1.x kept the class frozen regardless), and nothing
+    /// can fail, since no Python code runs to report it to.
+    Upgrade,
+}
+
 /// Allocates `method` and stores it in the class namespace under its dunder.
-fn set_method<'h>(class: &HeapReadMut<'h, Class>, method: DataclassMethod, vm: &mut VM<'h>) -> RunResult<()> {
+fn set_method<'h>(
+    class: &HeapReadMut<'h, Class>,
+    method: DataclassMethod,
+    mode: InstallMode,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
     let dunder = method.dunder();
     let method = vm.heap.allocate_as(method).into_value();
-    set_member(class, dunder, method, vm)
+    set_member(class, dunder, method, mode, vm)
 }
 
 /// Stores `value` in the class namespace under `name`, releasing what it replaces.
+///
+/// An upgrade skips the memory preflight, which is the only way a write keyed by
+/// an interned string can fail: it adds at most six entries to a class.
 fn set_member<'h>(
     class: &HeapReadMut<'h, Class>,
     name: StaticStrings,
     value: Value,
+    mode: InstallMode,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
     let name = Value::InternString(vm.interns.intern_static(name));
-    let replaced = class.set_attr(name, value, vm)?;
+    let replaced = match mode {
+        InstallMode::Decorate => class.set_attr(name, value, vm)?,
+        InstallMode::Upgrade => class.set_attr_without_growth_check(name, value, vm)?,
+    };
     replaced.drop_with(vm);
     Ok(())
 }

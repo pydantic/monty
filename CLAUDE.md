@@ -251,6 +251,10 @@ Frozen function code is also persisted: Rust calls its captured entry signature,
 Incompatible changes to either calling convention require compatibility handling or a version bump, including changes
 to argument order or meaning.
 Compatible source-body changes do not require a bump; restored sessions retain their captured implementations.
+When the old data still holds everything the new meaning needs, an upgrade in `dump_upgrade.rs` avoids a bump: it
+runs as the first VM over a loaded heap is built, over the entries `restore_entries` records, and its module docs list
+the rules. The first is `modules/dataclasses/legacy.rs`, tested against `dataclasses_v13.bin`, a fixture the older
+build wrote that must never be regenerated.
 
 ### Compilation overlays and stable intern entries
 
