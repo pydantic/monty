@@ -883,8 +883,19 @@ pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>
 /// `None` member apart from an absent one — CPython's `has_explicit_hash` does
 /// — want this rather than either check.
 pub(crate) fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
-    match vm.heap.get(class_id) {
-        HeapData::Class(class) => class.namespace().get_by_str(dunder, vm.heap, vm.interns),
+    namespace_member(class_id, dunder, vm.heap, vm.interns)
+}
+
+/// [`class_dunder`] from a bare heap and interns, for a dump upgrade that runs
+/// before any VM exists.
+pub(crate) fn namespace_member<'v>(
+    class_id: HeapId,
+    name: &str,
+    heap: &'v Heap,
+    interns: &Interns,
+) -> Option<&'v Value> {
+    match heap.get(class_id) {
+        HeapData::Class(class) => class.namespace().get_by_str(name, heap, interns),
         _ => None,
     }
 }

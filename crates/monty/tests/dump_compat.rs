@@ -353,13 +353,13 @@ except dataclasses.FrozenInstanceError as e:
 
 /// Dataclasses decorated by a build that generated no methods load with their
 /// methods generated (see `dataclasses::legacy`), and a re-dump of the upgraded
-/// session loads the same way.
+/// session, written at the current version, loads the same way without one.
 #[test]
 fn legacy_dataclasses_upgrade_on_load() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13.bin");
     let mut bytes = fs::read(&path).unwrap();
     for _ in 0..2 {
-        let loaded = Dump::load(&bytes).expect("a version 13 dataclass dump loads");
+        let loaded = Dump::load(&bytes).expect("the fixture and its re-dump load");
         let Session::Idle(mut repl) = loaded.state else {
             panic!("the fixture was dumped idle");
         };
@@ -369,8 +369,108 @@ fn legacy_dataclasses_upgrade_on_load() {
     }
 }
 
-/// A current dataclass whose generated methods were all rebound is not taken
-/// for one an older build decorated: the reload keeps its own hooks.
+/// The snippet suspended in `dataclasses_v13_suspended.bin`, kept for reference:
+/// the 1.1.0 release ran it up to the `host_value` lookup and dumped it. The
+/// classes are the in-flight snippet's, so their names live in the executor's
+/// interns, not the session's. Never regenerate it, as with the idle fixture.
+#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
+const LEGACY_SUSPENDED_SNIPPET: &str = r#"import dataclasses
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Frozen:
+    x: int
+    y: int = 2
+
+
+@dataclass
+class Plain:
+    xs: list
+    n: int = 0
+
+
+f = Frozen(1)
+answer = host_value
+assert answer == 42
+assert f == Frozen(1, 2)
+assert hash(f) == hash((1, 2))
+assert repr(f) == 'Frozen(x=1, y=2)'
+try:
+    f.x = 5
+    assert False, 'expected FrozenInstanceError'
+except dataclasses.FrozenInstanceError as e:
+    assert str(e) == "cannot assign to field 'x'"
+assert Plain([1]) == Plain([1])
+assert repr(Plain([1])) == 'Plain(xs=[1], n=0)'
+assert Plain.__hash__ is None
+"#;
+
+/// A version 13 dump suspended mid-snippet upgrades its dataclasses too: the
+/// resumed snippet's own asserts check them.
+#[test]
+fn legacy_dataclasses_upgrade_in_a_suspended_session() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13_suspended.bin");
+    let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 13 suspended dump loads");
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("the fixture was dumped suspended");
+    };
+    let lookup = progress.into_name_lookup().expect("suspended on `host_value`");
+    let progress = lookup
+        .resume(NameLookupResult::Value(MontyObject::int(42)), PrintWriter::Stdout)
+        .unwrap();
+    assert!(progress.into_complete().is_some(), "the snippet runs to completion");
+}
+
+/// The state in `dataclasses_v13_hook_owns_class.bin`, kept for reference: the
+/// 1.1.0 release ran it and dumped it idle. `A.__delattr__` holds the only
+/// reference to `B`, a later class. Never regenerate it.
+#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
+const LEGACY_HOOK_OWNS_CLASS_STATE: &str = r"from dataclasses import dataclass
+
+
+@dataclass(frozen=True, eq=False)
+class A:
+    x: int
+
+
+def attach():
+    @dataclass
+    class B:
+        y: int
+
+    A.__delattr__ = B
+
+
+attach()
+";
+
+/// Upgrading `A` replaces the hook holding the last reference to `B`, a class
+/// still waiting for its own upgrade; the load must not touch `B` once freed.
+#[test]
+fn legacy_upgrade_survives_freeing_a_queued_class() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13_hook_owns_class.bin");
+    let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 13 dump loads");
+    let Session::Idle(mut repl) = loaded.state else {
+        panic!("the fixture was dumped idle");
+    };
+    repl.feed_run(
+        r#"import dataclasses
+a = A(1)
+assert repr(a) == 'A(x=1)'
+try:
+    A.__delattr__(a, 'x')
+    assert False, 'expected FrozenInstanceError'
+except dataclasses.FrozenInstanceError as e:
+    assert str(e) == "cannot delete field 'x'""#,
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+}
+
+/// A current-version dump runs no upgrade, so a dataclass whose generated
+/// methods were all rebound keeps its own hooks across a reload.
 #[test]
 fn rebound_dataclass_methods_survive_a_reload() {
     let mut repl = MontyRepl::new("rebound.py", ResourceTracker::default(), CompileOptions::default());

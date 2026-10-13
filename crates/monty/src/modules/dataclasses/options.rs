@@ -46,28 +46,20 @@ impl Default for DataclassOptions {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DataclassParams {
     options: DataclassOptions,
-    /// Whether the decoration generated methods. Always true when built; a
-    /// version 13 dump has no such field, so it reads back false and marks the
-    /// class for `legacy`'s upgrade.
-    #[serde(default)]
-    generated: bool,
 }
 
 impl DataclassParams {
     /// Wraps the options the decorator was called with.
     #[must_use]
     pub fn new(options: DataclassOptions) -> Self {
-        Self {
-            options,
-            generated: true,
-        }
+        Self { options }
     }
 
-    /// The options of a class an older build decorated without generating its
-    /// methods, or `None` for one this build decorated.
+    /// The options the class was decorated with, which `legacy` rebuilds the
+    /// generated methods from.
     #[must_use]
-    pub(super) fn legacy_options(&self) -> Option<DataclassOptions> {
-        (!self.generated).then_some(self.options)
+    pub(super) fn options(&self) -> DataclassOptions {
+        self.options
     }
 }
 

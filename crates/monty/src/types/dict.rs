@@ -17,9 +17,9 @@ use crate::{
     expressions::CmpOperator,
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
-        HeapReadMut, HeapReadOutput,
+        HeapReadMut, HeapReadOutput, HeapReader,
     },
-    intern::{Interns, StaticStrings},
+    intern::{Interns, StaticStrings, StringId},
     modules::{
         collections::{
             counter::{
@@ -609,6 +609,40 @@ impl<'h> HeapReadMut<'h, Dict> {
     /// for when that is the right call.
     pub fn set_without_growth_check(&self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.set_with(key, value, vm, GrowthCheck::Skip)
+    }
+
+    /// Sets an interned-string key with no VM and no memory preflight, for a dump
+    /// upgrade that runs before any VM exists. Keys match by string content alone,
+    /// so this suits only a dict whose keys are all strings, such as a class namespace.
+    /// Returns the replaced value for the caller to drop.
+    pub(crate) fn set_interned_str(
+        &self,
+        key: StringId,
+        value: Value,
+        heap: &mut HeapReader<'h>,
+        interns: &Interns,
+    ) -> Option<Value> {
+        let key_str = interns.get_str(key);
+        let hash = interns.str_hash(key).raw();
+        let found = self
+            .get(heap)
+            .table
+            .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, interns));
+        let dict = self.get_mut(heap);
+        dict.contains_refs |= matches!(value, Value::Ref(_));
+        let entry = DictEntry {
+            key: Value::InternString(key),
+            value,
+            hash,
+        };
+        if let Some(slot) = found {
+            let old = dict.table.replace(slot, entry);
+            old.key.drop_with(heap);
+            Some(old.value)
+        } else {
+            dict.table.push(entry);
+            None
+        }
     }
 
     fn set_with(&self, key: Value, value: Value, vm: &mut VM<'h>, growth: GrowthCheck) -> RunResult<Option<Value>> {
