@@ -1581,6 +1581,8 @@ pub enum StaticStrings {
     Never,
     /// Kwarg name `new` — `str.replace(new=...)`, `bytes.replace(new=...)`.
     New,
+    /// `new_limit` parameter of `csv.field_size_limit()`.
+    NewLimit,
     /// Kwarg name `newline` — `open(newline=...)`.
     Newline,
     /// `math.nextafter()` function.

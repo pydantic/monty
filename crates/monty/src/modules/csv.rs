@@ -244,7 +244,7 @@ fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `csv.get_dialect(name)`: one of the built-in dialects.
 fn call_get_dialect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let name = args.get_one_arg("get_dialect", vm.heap)?;
+    let GetDialectArgs { name } = GetDialectArgs::from_args(args, vm)?;
     defer_drop!(name, vm);
     let dialect = if name.is_str(vm.heap) {
         Dialect::by_name(name.to_str(vm)?)
@@ -266,9 +266,16 @@ fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(names)))))
 }
 
+/// `get_dialect(name)`: Argument Clinic, so `name` may be a keyword.
+#[derive(FromArgs)]
+#[from_args(name = "get_dialect", style = c_named, at_most_total)]
+struct GetDialectArgs {
+    name: Value,
+}
+
 /// `csv.field_size_limit([new_limit])`: reports CPython's default; the limit cannot change.
 fn call_field_size_limit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let limit = args.get_zero_one_arg("field_size_limit", vm.heap)?;
+    let FieldSizeLimitArgs { new_limit: limit } = FieldSizeLimitArgs::from_args(args, vm)?;
     defer_drop!(limit, vm);
     match limit {
         None => Ok(Value::Int(
@@ -279,6 +286,14 @@ fn call_field_size_limit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
         Some(_) => Err(ExcType::type_error("limit must be an integer")),
     }
+}
+
+/// `field_size_limit(new_limit=<unrepresentable>)`: Argument Clinic, so the keyword form works.
+#[derive(FromArgs)]
+#[from_args(name = "field_size_limit", style = c_named, at_most_total)]
+struct FieldSizeLimitArgs {
+    #[from_args(default)]
+    new_limit: Option<Value>,
 }
 
 /// `_csv.Dialect(dialect=None, **fmtparams)`: a resolved dialect object.

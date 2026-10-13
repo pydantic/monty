@@ -35,7 +35,8 @@ from the notes below.
     See [open.md](open.md) for the file buffer this relies on.
 - **The file is loaded before the arguments are checked.**
     When the reader's file is loaded at construction, a host read error is reported before a bad
-    dialect or format parameter would be; CPython validates the arguments first and never reads there.
+    dialect, format parameter or keyword would be; CPython validates the arguments first and never reads
+    there.
 - **`writer.writerows()` on a file issues one write.**
     The rows are formatted and written to the file in a single host call, where CPython calls `write()`
     once per row, so a row that fails to format leaves the file untouched instead of partly written.

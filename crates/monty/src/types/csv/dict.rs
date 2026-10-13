@@ -13,7 +13,10 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId, HeapRead, HeapReadOutput},
     types::{
         CsvObject, Dict, List, PyTrait, Set,
-        csv::{Dialect, writer::writerow_now},
+        csv::{
+            Dialect,
+            writer::{terminator_chars, writerow_now},
+        },
         iter::collect_iterable,
     },
     value::{VALUE_SIZE, Value},
@@ -305,6 +308,7 @@ pub(super) fn writer_writerows<'h>(
     } else {
         let iterator = rowdicts.py_iter(vm)?;
         defer_drop!(iterator, vm);
+        let terminator_chars = terminator_chars(&dialect.lineterminator);
         // One view across the loop: its step count is what polls the time limit.
         let mut rows = iterator.read(vm);
         while let Some(rowdict) = rows.py_next(vm)? {
@@ -312,7 +316,7 @@ pub(super) fn writer_writerows<'h>(
             let items = dict_to_list(obj, rowdict, vm)?;
             let row = Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))));
             defer_drop!(row, vm);
-            writerow_now(write, &dialect, row, vm)?;
+            writerow_now(write, &dialect, &terminator_chars, row, vm)?;
         }
         Ok(CallResult::Value(Value::None))
     }

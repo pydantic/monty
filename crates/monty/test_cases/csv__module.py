@@ -43,6 +43,18 @@ try:
     assert False, 'expected AttributeError'
 except AttributeError as exc:
     assert str(exc) == "'_csv.Dialect' object has no attribute 'nope'"
+assert csv.get_dialect(name='unix').quoting == csv.QUOTE_ALL
+for args, kwargs, message in (
+    ((), {}, "get_dialect() missing required argument 'name' (pos 1)"),
+    ((1, 2), {}, 'get_dialect() takes at most 1 argument (2 given)'),
+    ((), {'nope': 1}, "get_dialect() missing required argument 'name' (pos 1)"),
+    (('excel',), {'name': 'excel'}, 'get_dialect() takes at most 1 argument (2 given)'),
+):
+    try:
+        csv.get_dialect(*args, **kwargs)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message
 for name in ('nope', 5):
     try:
         csv.get_dialect(name)
@@ -74,9 +86,19 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == 'limit must be an integer'
-if is_monty:
+for args, kwargs, message in (
+    ((1, 2), {}, 'field_size_limit() takes at most 1 argument (2 given)'),
+    ((), {'nope': 1}, "field_size_limit() got an unexpected keyword argument 'nope'"),
+):
     try:
-        csv.field_size_limit(10)
-        assert False, 'expected NotImplementedError'
-    except NotImplementedError as exc:
-        assert str(exc) == 'field_size_limit(): changing the limit is not supported'
+        csv.field_size_limit(*args, **kwargs)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message
+if is_monty:
+    for args, kwargs in (((10,), {}), ((), {'new_limit': 10})):
+        try:
+            csv.field_size_limit(*args, **kwargs)
+            assert False, 'expected NotImplementedError'
+        except NotImplementedError as exc:
+            assert str(exc) == 'field_size_limit(): changing the limit is not supported'

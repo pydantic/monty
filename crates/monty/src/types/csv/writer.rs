@@ -100,7 +100,7 @@ pub(super) fn writerow<'h>(
     let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
     defer_drop!(write, vm);
-    let line = format_line(&dialect, row, vm)?;
+    let line = format_line(&dialect, &terminator_chars(&dialect.lineterminator), row, vm)?;
     write_line(target, write, line, vm)
 }
 
@@ -118,6 +118,7 @@ pub(super) fn writerows<'h>(
     let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
     defer_drop!(write, vm);
+    let terminator_chars = terminator_chars(&dialect.lineterminator);
     if is_file(target, vm) {
         let rows: Vec<Value> = collect_owned_iterable(rows.clone_with_heap(vm.heap), vm)?;
         defer_drop!(rows, vm);
@@ -125,7 +126,7 @@ pub(super) fn writerows<'h>(
         for row in rows {
             let items = row_items(row, vm)?;
             defer_drop!(items, vm);
-            format_row(&dialect, items, &mut lines, vm)?;
+            format_row(&dialect, &terminator_chars, items, &mut lines, vm)?;
         }
         if rows.is_empty() {
             Ok(CallResult::Value(Value::None))
@@ -140,7 +141,7 @@ pub(super) fn writerows<'h>(
         let mut rows = iterator.read(vm);
         while let Some(row) = rows.py_next(vm)? {
             defer_drop!(row, vm);
-            writerow_now(write, &dialect, row, vm)?;
+            writerow_now(write, &dialect, &terminator_chars, row, vm)?;
         }
         Ok(CallResult::Value(Value::None))
     }
@@ -148,19 +149,35 @@ pub(super) fn writerows<'h>(
 
 /// Formats `row` and runs the bound `write` to completion; the per-row step of `writerows`
 /// and `DictWriter.writerows` on a target that is not a file.
-pub(super) fn writerow_now(write: &Value, dialect: &Dialect, row: &Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let line = format_line(dialect, row, vm)?;
+pub(super) fn writerow_now(
+    write: &Value,
+    dialect: &Dialect,
+    terminator_chars: &[char],
+    row: &Value,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
+    let line = format_line(dialect, terminator_chars, row, vm)?;
     vm.evaluate_function("writer.writerows", write, ArgValues::One(line))?
         .drop_with(vm);
     Ok(())
 }
 
+/// The distinct characters of a line terminator, sorted for `binary_search`: membership
+/// per field character must not scan the terminator itself, which can be any length.
+/// Built once per call, since the sort is linear-logarithmic in the terminator.
+pub(super) fn terminator_chars(lineterminator: &str) -> Vec<char> {
+    let mut chars: Vec<char> = lineterminator.chars().collect();
+    chars.sort_unstable();
+    chars.dedup();
+    chars
+}
+
 /// One record as a `str`: the fields of `row` through `format_row`.
-fn format_line(dialect: &Dialect, row: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn format_line(dialect: &Dialect, terminator_chars: &[char], row: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let items = row_items(row, vm)?;
     defer_drop!(items, vm);
     let mut line = String::new();
-    format_row(dialect, items, &mut line, vm)?;
+    format_row(dialect, terminator_chars, items, &mut line, vm)?;
     StringBuilder::from_existing(line, &vm.heap.tracker).finish(vm.heap)
 }
 
@@ -170,11 +187,18 @@ fn format_line(dialect: &Dialect, row: &Value, vm: &mut VM<'_>) -> RunResult<Val
 /// fields' `str()` forms (twice for a quote-doubled field) before the next checkpoint. The
 /// builder cannot outlive a field's `str()` call, which re-enters the VM, so it wraps `out`
 /// per step rather than owning it.
-pub(crate) fn format_row(dialect: &Dialect, items: &[Value], out: &mut String, vm: &mut VM<'_>) -> RunResult<()> {
+pub(crate) fn format_row(
+    dialect: &Dialect,
+    terminator_chars: &[char],
+    items: &[Value],
+    out: &mut String,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
     let mut record_len = 0usize;
     let mut field_buffer = String::new();
-    let terminator_chars = terminator_chars(&dialect.lineterminator);
     for (index, item) in items.iter().enumerate() {
+        // A `None` field skips the polled character loop, so poll per field as well.
+        vm.heap.tracker.check_time_every(index)?;
         let mut quoted = match dialect.quoting {
             Quoting::Nonnumeric => !is_number(item, vm),
             Quoting::All => true,
@@ -188,7 +212,7 @@ pub(crate) fn format_row(dialect: &Dialect, items: &[Value], out: &mut String, v
             defer_drop!(text, vm);
             append_field_data(
                 dialect,
-                &terminator_chars,
+                terminator_chars,
                 text.to_str(vm)?,
                 &mut quoted,
                 &mut field_buffer,
@@ -208,15 +232,6 @@ pub(crate) fn format_row(dialect: &Dialect, items: &[Value], out: &mut String, v
     builder.push_str(&dialect.lineterminator)?;
     *out = builder.finish_raw()?;
     Ok(())
-}
-
-/// The distinct characters of a line terminator, sorted for `binary_search`: membership
-/// per field character must not scan the terminator itself, which can be any length.
-fn terminator_chars(lineterminator: &str) -> Vec<char> {
-    let mut chars: Vec<char> = lineterminator.chars().collect();
-    chars.sort_unstable();
-    chars.dedup();
-    chars
 }
 
 /// Escapes or quote-doubles the characters of one field into `buffer`, as
