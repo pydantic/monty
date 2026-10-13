@@ -100,8 +100,8 @@ Consequences of the shared budget that have no CPython analogue:
 `os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and `Path.rglob` read their subtree in one host call (see
 [pathlib.md](pathlib.md#glob-rglob-and-walk)).
 
-- The reply counts against the mount's memory limit, so walking or globbing a tree with millions of entries raises
-    `MemoryError` where CPython would stream it.
+- Every entry a scan reads counts against the mount's memory limit, a glob's included although it replies with only
+    its matches, so walking or globbing a tree with millions of entries raises `MemoryError` where CPython would stream it.
 - A scan may examine at most 10,000,000 entries, counting each time a glob pattern revisits a directory, then raises
     `RuntimeError: directory scan examined more than 10000000 entries`. CPython has no such cap; it bounds patterns
     like `*/**/*/**/*` whose cost multiplies with every recursive part, and walks through symlink cycles.

@@ -37,7 +37,7 @@ use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
     MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
     SandboxTimeZone, dir_stat, file_stat,
-    scan::{EntryInfo, ScanSource, collect_scan, scan_reply},
+    scan::{EntryInfo, ScanSource, collect_scan},
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -1181,7 +1181,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             }
         }
         OsFunctionCall::Scan(args) => match collect_scan(args, &mut VirtualScanSource(args.path.as_str())) {
-            Ok(Some(entries)) => scan_reply(entries).into(),
+            Ok(Some(reply)) => reply.into_object().into(),
             Ok(None) => MontyException::new(
                 ExcType::FileNotFoundError,
                 Some(format!("[Errno 2] No such file or directory: '{}'", args.path.as_str())),

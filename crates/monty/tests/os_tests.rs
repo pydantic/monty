@@ -9,7 +9,7 @@ use monty_types::{
     CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
     MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
     ResourceTracker, ScanArgs, SleepMode, dir_stat, file_stat,
-    scan::{EntryInfo, ScanEntry, scan_reply},
+    scan::{EntryInfo, ScanEntry, ScanReply, scan_reply},
 };
 
 /// Expose clock and sleep calls to the mock host.
@@ -1998,5 +1998,36 @@ fn literal_glob_needs_a_described_root() {
     assert_eq!(
         run_with_scan_reply(code, vec![entry("", 'f')]),
         MontyObject::list([MontyObject::string("r/a.txt".to_owned())])
+    );
+}
+
+/// A host that selected a glob's matches has them used as they are, spelled
+/// as `pathlib` does; only a glob accepts them.
+#[test]
+fn glob_uses_matches_the_host_selected() {
+    let matches =
+        |paths: &[&str]| ScanReply::Matches(paths.iter().map(|path| (*path).to_owned()).collect()).into_object();
+    // not re-filtered: `b.txt` would fail the pattern
+    let code = "from pathlib import Path\n[str(p) for p in Path('r').glob('**/*.py')]";
+    let (.., result) = run_oscall_with_result(code, matches(&["a.py", "pkg/c.py", "b.txt"]));
+    let expected = ["r/a.py", "r/pkg/c.py", "r/b.txt"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(result, MontyObject::list(expected));
+    // a trailing `/` from a directory match is stripped where `pathlib` strips it
+    let code = "from pathlib import Path\n[str(p) for p in Path('r').glob('**/')]";
+    let (.., result) = run_oscall_with_result(code, matches(&["", "pkg/"]));
+    let expected = ["r", "r/pkg"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(result, MontyObject::list(expected));
+
+    let call = run_to_oscall_start("import os\nos.scandir('/mnt')");
+    let err = call.resume(matches(&["a.py"]), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: os.scandir: glob matches answer only a glob scan"
+    );
+    let call = run_to_oscall_start("from pathlib import Path\nlist(Path('r').glob('*'))");
+    let err = call.resume(matches(&["../x"]), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: Path.glob: glob match \"../x\" is not relative to the scan root"
     );
 }

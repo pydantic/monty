@@ -10,7 +10,7 @@
 
 use monty_types::{
     MontyObject, ScanArgs,
-    scan::{EntryInfo, ScanSource, collect_scan, scan_reply},
+    scan::{EntryInfo, ScanSource, collect_scan},
 };
 
 use super::{
@@ -27,11 +27,12 @@ use super::{
 /// revisits a listing; bounds the work of patterns like `*/**/*/**/*`.
 const MAX_SCAN_VISITS: u64 = 10_000_000;
 
-/// Runs a scan rooted in `mounts[root]`, replying with the entries it read.
+/// Runs a scan rooted in `mounts[root]`, replying with a glob's matches or the
+/// entries it read (see [`collect_scan`]).
 ///
-/// The reply is charged to the root mount's memory limit as it grows. A
-/// missing or unreadable root raises; unreadable directories below it read as
-/// empty.
+/// The entries read are charged to the root mount's memory limit as they grow;
+/// matches, which never outnumber them, are not charged again. A missing or
+/// unreadable root raises; unreadable directories below it read as empty.
 pub(super) fn execute(args: &ScanArgs, mounts: &mut [Mount], root: usize) -> Result<MontyObject, MountError> {
     if let Some(parts) = &args.pattern {
         reject_overlong_pattern(parts)?;
@@ -52,7 +53,7 @@ pub(super) fn execute(args: &ScanArgs, mounts: &mut [Mount], root: usize) -> Res
         visits: 0,
     };
     match collect_scan(args, &mut source)? {
-        Some(entries) => Ok(scan_reply(entries)),
+        Some(reply) => Ok(reply.into_object()),
         None => Err(MountError::not_found(&args.path)),
     }
 }

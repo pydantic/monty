@@ -5,13 +5,15 @@
 //! for a whole bounded subtree in one [`OsFunctionCall::Scan`](crate::OsFunctionCall::Scan)
 //! and walks or globs the reply itself.
 //!
-//! A glob pattern rides along so the host can prune, but the contract is only
-//! that the host returns *at least* the entries the sandbox needs: every entry
+//! A glob pattern rides along so the host can prune. A host may reply with the
+//! tree, which needs only *at least* the entries the sandbox needs: every entry
 //! [`GlobSelector`] visits when run against the real tree. Extra entries are
 //! harmless because the sandbox re-runs the selector over the reply, so a host
 //! that ignores the pattern and returns everything within `max_depth` (descending
-//! symlinks when `follow_symlinks` says so) is still correct.
-//! [`collect_scan`] is the pruning implementation hosts can share.
+//! symlinks when `follow_symlinks` says so) is still correct. Or it may run the
+//! selector itself and reply with the matches ([`ScanReply::Matches`]), which
+//! the sandbox uses as they are. [`collect_scan`] is the implementation hosts
+//! can share; it replies with matches unless they outnumber the entries read.
 
 use std::{
     borrow::Cow,
@@ -123,7 +125,35 @@ pub struct ScanEntry {
     pub info: EntryInfo,
 }
 
-/// Encodes a scan reply as the host returns it: a list of
+/// What a host answers a scan with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanReply {
+    /// Entries for the sandbox to walk, list or glob itself.
+    Tree(Vec<ScanEntry>),
+    /// A glob's matches as [`GlobSelector::select`] returns them, already
+    /// selected, so the sandbox skips selection; valid only for a glob scan.
+    Matches(Vec<String>),
+}
+
+impl ScanReply {
+    /// Encodes the reply: the tree as [`scan_reply`] does, matches as
+    /// `{'matches': [path, ...]}`.
+    #[must_use]
+    pub fn into_object(self) -> MontyObject {
+        match self {
+            Self::Tree(entries) => scan_reply(entries),
+            Self::Matches(matches) => MontyObject::dict([(
+                MontyObject::string(MATCHES_KEY.to_owned()),
+                MontyObject::list(matches.into_iter().map(MontyObject::string)),
+            )]),
+        }
+    }
+}
+
+/// The key of a [`ScanReply::Matches`] reply's one-entry dict.
+const MATCHES_KEY: &str = "matches";
+
+/// Encodes a tree scan reply as the host returns it: a list of
 /// `(path, is_dir, is_file, is_symlink)` tuples, including the root as `""`.
 #[must_use]
 pub fn scan_reply(entries: impl IntoIterator<Item = ScanEntry>) -> MontyObject {
@@ -137,37 +167,88 @@ pub fn scan_reply(entries: impl IntoIterator<Item = ScanEntry>) -> MontyObject {
     }))
 }
 
-/// Decodes a host's scan reply (see [`scan_reply`]); entries may be tuples,
-/// lists or named tuples, and their paths `str` or `Path`.
+/// Decodes a host's scan reply (see [`ScanReply::into_object`]); tree entries
+/// may be tuples, lists or named tuples, and paths `str` or `Path`.
 ///
 /// The error describes what was wrong for the sandbox's `RuntimeError`. Paths
 /// are normalized, and one that is absolute or climbs above the root is refused.
-pub fn parse_scan_reply(reply: &MontyObject) -> Result<Vec<ScanEntry>, String> {
-    let MontyNode::List(ids) = unstable::root_node(reply) else {
-        return Err(format!(
+pub fn parse_scan_reply(reply: &MontyObject) -> Result<ScanReply, String> {
+    let (graph, _) = unstable::graph_parts(reply);
+    match unstable::root_node(reply) {
+        MontyNode::List(ids) => ids
+            .iter()
+            .map(|&id| parse_entry(graph, id))
+            .collect::<Result<_, _>>()
+            .map(ScanReply::Tree),
+        MontyNode::Dict(pairs) => match matches_list(graph, pairs) {
+            Some(ids) => ids
+                .iter()
+                .map(|&id| parse_match(graph, id))
+                .collect::<Result<_, _>>()
+                .map(ScanReply::Matches),
+            None => Err(format!(
+                "expected {{'{MATCHES_KEY}': [path, ...]}}, got a different dict"
+            )),
+        },
+        _ => Err(format!(
             "expected a list of (path, is_dir, is_file, is_symlink) tuples, got {}",
             reply.as_ref().type_name()
+        )),
+    }
+}
+
+/// The match list of a `{'matches': [...]}` dict, `None` for any other dict.
+fn matches_list<'g>(graph: &'g MontyGraph, pairs: &[(NodeId, NodeId)]) -> Option<&'g [NodeId]> {
+    let [(key, value)] = pairs else {
+        return None;
+    };
+    match (graph.node(*key), graph.node(*value)) {
+        (MontyNode::String(key), MontyNode::List(ids)) if key == MATCHES_KEY => Some(ids),
+        _ => None,
+    }
+}
+
+/// Decodes one match: a relative path, normalized, keeping a trailing `/`.
+fn parse_match(graph: &MontyGraph, id: NodeId) -> Result<String, String> {
+    let (MontyNode::String(path) | MontyNode::Path(path)) = graph.node(id) else {
+        return Err(format!(
+            "expected glob matches to be paths, got {}",
+            graph.type_name(id)
         ));
     };
-    let (graph, _) = unstable::graph_parts(reply);
-    ids.iter().map(|&id| parse_entry(graph, id)).collect()
+    let trimmed = path.trim_end_matches('/');
+    let normalized = if path.starts_with('/') {
+        None
+    } else {
+        normalize_relative(trimmed)
+    }
+    .ok_or_else(|| format!("glob match {path:?} is not relative to the scan root"))?;
+    let mut normalized = normalized.into_owned();
+    if trimmed.len() < path.len() && !normalized.is_empty() {
+        normalized.push('/');
+    }
+    Ok(normalized)
 }
 
 /// Bytes [`parse_scan_reply`] and [`ScanTree::new`] allocate for `reply`, roughly:
 /// each path is held three times (parsed, keyed, listed) plus per-entry overhead.
+/// A match is charged the same, which covers it being parsed and then spelled.
 ///
 /// Lets the sandbox charge its memory limit before indexing a reply, without allocating.
 #[must_use]
 pub fn indexed_size(reply: &MontyObject) -> usize {
     /// Map slots, list slots and flags per entry, generously.
     const ENTRY_OVERHEAD: usize = 160;
-    let MontyNode::List(ids) = unstable::root_node(reply) else {
-        return 0;
-    };
     let (graph, _) = unstable::graph_parts(reply);
+    let ids = match unstable::root_node(reply) {
+        MontyNode::List(ids) => ids.as_slice(),
+        MontyNode::Dict(pairs) => matches_list(graph, pairs).unwrap_or_default(),
+        _ => return 0,
+    };
     ids.iter()
         .map(|&id| {
             let path_len = match graph.node(id) {
+                MontyNode::String(path) | MontyNode::Path(path) => path.len(),
                 MontyNode::Tuple(items) | MontyNode::List(items) | MontyNode::NamedTuple { values: items, .. } => {
                     match items.first().map(|&path| graph.node(path)) {
                         Some(MontyNode::String(path) | MontyNode::Path(path)) => path.len(),
@@ -253,15 +334,23 @@ pub trait ScanSource {
     fn visit(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    /// Most matches [`GlobSelector::select`] collects from this source before
+    /// it stops collecting them; unlimited by default.
+    fn match_capacity(&self) -> usize {
+        usize::MAX
+    }
 }
 
-/// Runs a scan against `source` for a host and returns every entry it read,
-/// root included, or `None` when the root does not exist.
+/// Runs a scan against `source` for a host and returns its reply, or `None`
+/// when the root does not exist.
 ///
 /// Listings are memoized, so each directory is read at most once however many
 /// pattern states reach it. With a pattern only the entries [`GlobSelector`]
-/// visits are read; without one, the tree to `max_depth`.
-pub fn collect_scan<E>(args: &ScanArgs, source: &mut impl ScanSource<Error = E>) -> Result<Option<Vec<ScanEntry>>, E> {
+/// visits are read, and the reply is the matches, unless they outnumber those
+/// entries (`**/*/**` yields an entry once per ancestor); then it is every
+/// entry read, root included, as it is without a pattern for the tree to `max_depth`.
+pub fn collect_scan<E>(args: &ScanArgs, source: &mut impl ScanSource<Error = E>) -> Result<Option<ScanReply>, E> {
     let mut recorder = Recorder {
         source,
         listed: HashMap::new(),
@@ -273,18 +362,20 @@ pub fn collect_scan<E>(args: &ScanArgs, source: &mut impl ScanSource<Error = E>)
     if root.is_dir {
         match &args.pattern {
             Some(parts) => {
-                GlobSelector::new(parts, args.case_sensitive, args.recurse_symlinks).prune(&mut recorder)?;
+                let selector = GlobSelector::new(parts, args.case_sensitive, args.recurse_symlinks);
+                if let Some(matches) = selector.select(&mut recorder)? {
+                    return Ok(Some(ScanReply::Matches(matches)));
+                }
             }
             None => walk_to_depth(&mut recorder, args.max_depth, args.follow_symlinks)?,
         }
     }
-    Ok(Some(
-        recorder
-            .entries
-            .into_iter()
-            .map(|(path, info)| ScanEntry { path, info })
-            .collect(),
-    ))
+    let entries = recorder
+        .entries
+        .into_iter()
+        .map(|(path, info)| ScanEntry { path, info })
+        .collect();
+    Ok(Some(ScanReply::Tree(entries)))
 }
 
 /// Lists every directory shallower than `max_depth`, descending symlinked ones
@@ -309,7 +400,9 @@ fn walk_to_depth<E>(
     Ok(())
 }
 
-/// Memoizes a host source's listings and records every entry they return.
+/// Memoizes a host source's listings, sorted by name as the sandbox's
+/// [`ScanTree`] sorts them so matches come out in the same order, and records
+/// every entry they return.
 struct Recorder<'s, S> {
     source: &'s mut S,
     /// Listings by normalized directory path.
@@ -334,7 +427,10 @@ impl<E, S: ScanSource<Error = E>> ScanSource for Recorder<'_, S> {
             self.listed.insert(dir.into_owned(), None);
             return Ok(None);
         }
-        let listing = self.source.list(&dir)?;
+        let mut listing = self.source.list(&dir)?;
+        if let Some(children) = &mut listing {
+            children.sort_by(|(a, _), (b, _)| a.cmp(b));
+        }
         for (name, info) in listing.iter().flatten() {
             self.entries.insert(join(&dir, name), *info);
         }
@@ -358,6 +454,12 @@ impl<E, S: ScanSource<Error = E>> ScanSource for Recorder<'_, S> {
 
     fn visit(&mut self) -> Result<(), E> {
         self.source.visit()
+    }
+
+    /// Matches stay a smaller reply than the entries they are drawn from
+    /// unless a pattern yields an entry more than once.
+    fn match_capacity(&self) -> usize {
+        self.entries.len()
     }
 }
 
@@ -542,26 +644,20 @@ impl<'p> GlobSelector<'p> {
     /// states would multiply by the fan-out per `..`. A directory matched with
     /// more parts to come keeps a trailing `/`, which the caller strips as
     /// `pathlib` does.
-    pub fn select<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<Vec<String>, E> {
+    ///
+    /// `None` when the matches outgrew [`ScanSource::match_capacity`]: the run
+    /// then stops collecting them but still reads everything it would have, so
+    /// a host can reply with what it read instead.
+    pub fn select<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<Option<Vec<String>>, E> {
         let mut run = Run {
             stack: Vec::new(),
             out: Some(Vec::new()),
         };
         self.run(source, &mut run)?;
-        Ok(run.out.unwrap_or_default())
+        Ok(run.out)
     }
 
-    /// Reads everything [`Self::select`] would read, without collecting
-    /// matches, so a host pruning a scan does no work that grows with their number.
-    pub fn prune<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<(), E> {
-        let mut run = Run {
-            stack: Vec::new(),
-            out: None,
-        };
-        self.run(source, &mut run)
-    }
-
-    /// The selection loop behind [`Self::select`] and [`Self::prune`].
+    /// The selection loop behind [`Self::select`].
     fn run<E>(&self, source: &mut impl ScanSource<Error = E>, run: &mut Run) -> Result<(), E> {
         let mut seen = HashSet::new();
         run.push(0, String::new(), false);
@@ -576,7 +672,7 @@ impl<'p> GlobSelector<'p> {
             match step {
                 Step::Exists => {
                     if exists || lexists(&path, source)? {
-                        run.emit(path);
+                        run.emit(path, source);
                     }
                 }
                 Step::Special => {
@@ -594,7 +690,7 @@ impl<'p> GlobSelector<'p> {
                         if matcher.as_ref().is_none_or(|matcher| matcher.matches(&name)) {
                             let entry = join(&path, &name);
                             if !dir_only {
-                                run.emit(entry);
+                                run.emit(entry, source);
                             } else if info.is_dir {
                                 run.push(*next, entry + "/", true);
                             }
@@ -637,7 +733,7 @@ impl<'p> GlobSelector<'p> {
                         if dir_only {
                             run.push(next, entry.clone(), true);
                         } else {
-                            run.emit(entry.clone());
+                            run.emit(entry.clone(), source);
                         }
                     }
                     if is_dir {
@@ -654,7 +750,7 @@ impl<'p> GlobSelector<'p> {
 struct Run {
     /// States still to process: part index, normalized path so far, known to exist.
     stack: Vec<(usize, String, bool)>,
-    /// Matches, when collecting them.
+    /// Matches, until they outgrow the source's [`ScanSource::match_capacity`].
     out: Option<Vec<String>>,
 }
 
@@ -681,10 +777,14 @@ impl Run {
         self.stack.push((index, normalized, exists));
     }
 
-    /// Records a match.
-    fn emit(&mut self, path: String) {
+    /// Records a match, or stops collecting once `source` would hold one too many.
+    fn emit<E>(&mut self, path: String, source: &impl ScanSource<Error = E>) {
         if let Some(out) = &mut self.out {
-            out.push(path);
+            if out.len() < source.match_capacity() {
+                out.push(path);
+            } else {
+                self.out = None;
+            }
         }
     }
 }

@@ -14,7 +14,7 @@ use std::{borrow::Cow, fmt::Write};
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, ResourceError, ResourceTracker, ScanArgs, StringRepr,
     scan::{
-        EntryInfo, GlobSelector, ScanSource, ScanTree, indexed_size, normalize_relative, parse_scan_reply,
+        EntryInfo, GlobSelector, ScanReply, ScanSource, ScanTree, indexed_size, normalize_relative, parse_scan_reply,
         split_literal_prefix,
     },
 };
@@ -748,9 +748,17 @@ impl ScanEffect {
             self.release(vm.heap);
             return Err(err.into());
         }
-        let tree = match reply {
+        let reply = match reply {
             Ok(reply) => match parse_scan_reply(&reply) {
-                Ok(entries) => Ok(ScanTree::new(entries)),
+                Ok(ScanReply::Matches(_)) if !matches!(self, Self::Glob(_)) => {
+                    let message = format!(
+                        "invalid return type: {}: glob matches answer only a glob scan",
+                        self.operation_name()
+                    );
+                    self.release(vm.heap);
+                    return Err(SimpleException::new_msg(ExcType::RuntimeError, message).into());
+                }
+                Ok(parsed) => Ok(parsed),
                 Err(description) => {
                     let message = format!("invalid return type: {}: {description}", self.operation_name());
                     self.release(vm.heap);
@@ -767,9 +775,14 @@ impl ScanEffect {
             self.release(vm.heap);
             return Err(err.into());
         }
+        // Only a glob takes matches, as checked above; a listing indexes the tree.
+        let tree = |reply: ScanReply| match reply {
+            ScanReply::Tree(entries) => ScanTree::new(entries),
+            ScanReply::Matches(_) => ScanTree::default(),
+        };
         match self {
             Self::Scandir { spelled } => {
-                let tree = tree.map_err(RunError::from)?;
+                let tree = reply.map(tree).map_err(RunError::from)?;
                 if !tree.root().is_dir {
                     return Err(unlistable_error(tree.root(), &spelled));
                 }
@@ -782,8 +795,8 @@ impl ScanEffect {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(iter)))))
             }
             Self::Walk(setup) => {
-                let (tree, root_error) = match tree {
-                    Ok(tree) => (tree, None),
+                let (tree, root_error) = match reply {
+                    Ok(reply) => (tree(reply), None),
                     Err(exc) => (ScanTree::default(), Some(exc)),
                 };
                 let stack = if root_error.is_some() {
@@ -807,8 +820,8 @@ impl ScanEffect {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(walk)))))
             }
             Self::Glob(setup) => {
-                let matches = match tree {
-                    Ok(tree) => setup.select(tree, &vm.heap.tracker)?,
+                let matches = match reply {
+                    Ok(reply) => setup.matches(reply, &vm.heap.tracker)?,
                     Err(_) => Vec::new(),
                 };
                 vm.heap.tracker.check_time()?;
@@ -835,27 +848,35 @@ impl ScanEffect {
 }
 
 impl GlobSetup {
-    /// Runs the selector over the reply and spells each match as `pathlib` does.
+    /// The glob's matches, spelled as `pathlib` does: the host's when it
+    /// selected them, otherwise the selector's run over the tree it sent.
     ///
     /// The matches can dwarf the reply they are drawn from (`**/*/**` yields
     /// every entry once per ancestor), so the selector polls `tracker` as it
     /// reads, raising `MemoryError` as they grow rather than at the hard ceiling.
-    fn select(&self, tree: ScanTree, tracker: &ResourceTracker) -> Result<Vec<String>, ResourceError> {
-        if self.parts.is_empty() {
-            // A host that omitted the root has not shown that it exists.
-            let root = tree.described_root();
-            let exists = root.is_some_and(|info| info.is_dir || !self.require_dir);
-            return Ok(if exists { vec![self.base.clone()] } else { Vec::new() });
-        }
-        let selector = GlobSelector::new(&self.parts, self.case_sensitive, self.recurse_symlinks);
-        let mut tree = TrackedTree {
-            tree,
-            tracker,
-            visits: 0,
+    fn matches(&self, reply: ScanReply, tracker: &ResourceTracker) -> Result<Vec<String>, ResourceError> {
+        let relative = match reply {
+            ScanReply::Matches(matches) => matches,
+            ScanReply::Tree(entries) => {
+                let tree = ScanTree::new(entries);
+                if self.parts.is_empty() {
+                    // A host that omitted the root has not shown that it exists.
+                    let root = tree.described_root();
+                    let exists = root.is_some_and(|info| info.is_dir || !self.require_dir);
+                    return Ok(if exists { vec![self.base.clone()] } else { Vec::new() });
+                }
+                let selector = GlobSelector::new(&self.parts, self.case_sensitive, self.recurse_symlinks);
+                let mut tree = TrackedTree {
+                    tree,
+                    tracker,
+                    visits: 0,
+                };
+                // A tree never caps its matches.
+                selector.select(&mut tree)?.unwrap_or_default()
+            }
         };
-        let matches = selector.select(&mut tree)?;
         let base = Path::new(self.base.clone());
-        Ok(matches
+        Ok(relative
             .into_iter()
             .map(|relative| {
                 let relative = match self.last_part.as_str() {

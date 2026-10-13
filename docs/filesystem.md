@@ -272,6 +272,9 @@ Its keyword arguments are `max_depth` (`None` for the whole tree), `follow_symli
 The reply is a list of `(path, is_dir, is_file, is_symlink)` tuples, one for the scanned directory itself (`''`) and
 one per entry below it, with paths relative to the scanned directory.
 The pattern is only a hint: a handler may return entries it cannot match, because the sandbox filters the reply itself.
+A glob's handler may instead reply `{'matches': [path, ...]}`: the matches already selected, relative to the scanned directory, which the sandbox uses as they are.
+A directory matched before the pattern's last part keeps a trailing `/` there.
+Mounts reply that way unless the matches outnumber the entries they read.
 [`AbstractOS.path_scan()`][pydantic_monty.AbstractOS.path_scan] does this by default from `path_iterdir()` and the
 predicates, returning [`ScanEntry`][pydantic_monty.ScanEntry] tuples.
 A handler that declines `Path.scan` makes `glob()` return nothing and `walk()` report a `PermissionError`, since both

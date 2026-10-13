@@ -8,7 +8,7 @@ use std::{fs, iter::repeat_n};
 use monty_fs::{Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
     ExcType, MontyObject, OsFunctionCall, PathStringDataArgs, ScanArgs,
-    scan::{EntryInfo, parse_scan_reply},
+    scan::{EntryInfo, ScanReply, parse_scan_reply},
 };
 use tempfile::TempDir;
 
@@ -56,17 +56,18 @@ fn all_modes() -> [MountMode; 3] {
 
 /// Runs a scan, returning the reply decoded as `(path, kind)` pairs sorted by
 /// path, where kind is `d`(ir), `f`(ile), `D`/`F` for links to them, `l` for a
-/// dangling link and `?` for anything else.
+/// dangling link, `?` for anything else and `m` for a glob match.
 fn scan(table: &mut MountTable, args: ScanArgs) -> Result<Vec<(String, char)>, MountError> {
     let MountCallOutcome::Handled(result) = table.handle_os_call(OsFunctionCall::Scan(args)) else {
         panic!("a scan under /mnt must be handled by the mount");
     };
-    let reply = result?;
-    let mut entries: Vec<(String, char)> = parse_scan_reply(&reply)
-        .unwrap()
-        .into_iter()
-        .map(|entry| (entry.path, kind(entry.info)))
-        .collect();
+    let mut entries: Vec<(String, char)> = match parse_scan_reply(&result?).unwrap() {
+        ScanReply::Tree(entries) => entries
+            .into_iter()
+            .map(|entry| (entry.path, kind(entry.info)))
+            .collect(),
+        ScanReply::Matches(matches) => matches.into_iter().map(|path| (path, 'm')).collect(),
+    };
     entries.sort();
     Ok(entries)
 }
@@ -142,30 +143,36 @@ fn missing_and_file_roots() {
 }
 
 #[test]
-fn glob_pattern_prunes_the_reply() {
+fn glob_replies_with_its_matches() {
     for mode in all_modes() {
         let dir = create_tree();
         let mut table = mount(&dir, mode);
-        // only the root is listed: nothing below `sub` is read
         let top = scan(&mut table, glob("/mnt", &["*.txt"])).unwrap();
-        assert_eq!(top, entries(&[("", 'd'), ("a.txt", 'f'), ("b.py", 'f'), ("sub", 'd')]));
-        // `sub/c.txt` is never listed: `deep` is looked up, then listed
+        assert_eq!(top, entries(&[("a.txt", 'm')]));
+        // a directory matched before the last part keeps its `/` until spelled
         let deep = scan(&mut table, glob("/mnt", &["s*", "deep", "*"])).unwrap();
-        assert_eq!(
-            deep,
-            entries(&[
-                ("", 'd'),
-                ("a.txt", 'f'),
-                ("b.py", 'f'),
-                ("sub", 'd'),
-                ("sub/deep", 'd'),
-                ("sub/deep/d.py", 'f'),
-            ])
-        );
-        // a pattern with no match below the root reads nothing more
+        assert_eq!(deep, entries(&[("sub/deep/d.py", 'm')]));
+        let dirs = scan(&mut table, glob("/mnt", &["**", ""])).unwrap();
+        assert_eq!(dirs, entries(&[("", 'm'), ("sub/", 'm'), ("sub/deep/", 'm')]));
         let none = scan(&mut table, glob("/mnt", &["nope", "*"])).unwrap();
-        assert_eq!(none, entries(&[("", 'd')]));
+        assert_eq!(none, entries(&[]));
     }
+}
+
+/// Matches that outnumber the entries read fall back to those entries, so a
+/// pattern yielding an entry once per ancestor costs no more than its tree.
+#[test]
+fn amplifying_globs_reply_with_the_tree() {
+    let dir = create_tree();
+    fs::create_dir_all(dir.path().join("sub/deep/x/y")).unwrap();
+    fs::write(dir.path().join("sub/deep/x/y/e.py"), "e").unwrap();
+    let mut table = mount(&dir, MountMode::ReadOnly);
+    let reply = scan(&mut table, glob("/mnt", &["**", "*", "**"])).unwrap();
+    assert!(reply.iter().all(|(_, kind)| *kind != 'm'), "{reply:?}");
+    assert!(reply.contains(&("sub/deep/x/y/e.py".to_owned(), 'f')), "{reply:?}");
+    // with fewer levels the same pattern's matches are the smaller reply
+    let shallow = scan(&mut table, glob("/mnt/sub/deep/x", &["**", "*", "**"])).unwrap();
+    assert_eq!(shallow, entries(&[("y/", 'm'), ("y/e.py", 'm')]));
 }
 
 #[test]
@@ -173,9 +180,11 @@ fn dot_dot_in_a_pattern_stays_below_the_scan_root() {
     let dir = create_tree();
     let mut table = mount(&dir, MountMode::ReadWrite);
     let reply = scan(&mut table, glob("/mnt/sub", &["..", "*"])).unwrap();
-    assert_eq!(reply, entries(&[("", 'd')]));
+    assert_eq!(reply, entries(&[]));
     let reply = scan(&mut table, glob("/mnt/sub", &["*", "..", "..", "..", "*"])).unwrap();
-    assert_eq!(reply, entries(&[("", 'd'), ("c.txt", 'f'), ("deep", 'd')]));
+    assert_eq!(reply, entries(&[]));
+    let reply = scan(&mut table, glob("/mnt/sub", &["*", "..", "*"])).unwrap();
+    assert_eq!(reply, entries(&[("c.txt", 'm'), ("deep", 'm')]));
 }
 
 #[test]
@@ -198,18 +207,7 @@ fn overlay_writes_are_scanned() {
     let unlink = OsFunctionCall::Unlink("/mnt/a.txt".into());
     assert!(matches!(table.handle_os_call(unlink), MountCallOutcome::Handled(Ok(_))));
     let reply = scan(&mut table, glob("/mnt", &["**", "*.txt"])).unwrap();
-    assert_eq!(
-        reply,
-        entries(&[
-            ("", 'd'),
-            ("b.py", 'f'),
-            ("sub", 'd'),
-            ("sub/c.txt", 'f'),
-            ("sub/deep", 'd'),
-            ("sub/deep/d.py", 'f'),
-            ("sub/new.txt", 'f'),
-        ])
-    );
+    assert_eq!(reply, entries(&[("sub/c.txt", 'm'), ("sub/new.txt", 'm')]));
     // nothing reached the real directory
     assert!(!dir.path().join("sub/new.txt").exists());
 }
@@ -252,13 +250,13 @@ fn symlinks_are_described_and_followed_only_on_request() {
     let recursive = scan(&mut table, glob("/mnt", &["**", "*.py"])).unwrap();
     assert!(!recursive.iter().any(|(path, _)| path.starts_with("linkdir/")));
     let wildcard = scan(&mut table, glob("/mnt", &["*", "c.txt"])).unwrap();
-    assert!(wildcard.contains(&("linkdir/c.txt".to_owned(), 'f')));
+    assert!(wildcard.contains(&("linkdir/c.txt".to_owned(), 'm')));
     let followed_glob = scan(
         &mut table,
         ScanArgs::glob("/mnt".into(), vec!["**".to_owned(), "*.py".to_owned()], None, true),
     )
     .unwrap();
-    assert!(followed_glob.contains(&("linkdir/deep/d.py".to_owned(), 'f')));
+    assert!(followed_glob.contains(&("linkdir/deep/d.py".to_owned(), 'm')));
 
     // a literal pattern looks the name up, and finds hidden links as hidden as a listing does
     for name in ["escape", "dangling"] {
@@ -368,7 +366,7 @@ fn nested_mounts_are_scanned_through_the_table() {
     );
     // literal parts below the nested mount are looked up there too
     let found = scan(&mut table, glob("/mnt", &["*", "other.txt"])).unwrap();
-    assert!(found.contains(&("sub/other.txt".to_owned(), 'f')));
+    assert_eq!(found, entries(&[("sub/other.txt", 'm')]));
     let shadowed = scan(&mut table, glob("/mnt", &["*", "c.txt"])).unwrap();
     assert!(!shadowed.iter().any(|(path, _)| path == "sub/c.txt"), "{shadowed:?}");
 
@@ -401,8 +399,14 @@ fn a_reply_round_trips_through_its_encoding() {
         MontyObject::bool(false),
     ]);
     assert_eq!(reply.as_ref().type_name(), "list");
-    assert_eq!(parse_scan_reply(&reply).unwrap().len(), 3);
-    assert_eq!(parse_scan_reply(&MontyObject::list([first])).unwrap()[0].path, "");
+    let Ok(ScanReply::Tree(entries)) = parse_scan_reply(&reply) else {
+        panic!("a listing replies with the tree");
+    };
+    assert_eq!(entries.len(), 3);
+    let Ok(ScanReply::Tree(entries)) = parse_scan_reply(&MontyObject::list([first])) else {
+        panic!("a list of tuples is a tree");
+    };
+    assert_eq!(entries[0].path, "");
 }
 
 #[test]

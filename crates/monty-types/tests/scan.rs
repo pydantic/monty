@@ -5,8 +5,12 @@
 
 use std::{convert::Infallible, iter::repeat_n};
 
-use monty_types::scan::{
-    EntryInfo, GlobSelector, ScanEntry, ScanSource, ScanTree, SegmentPattern, split_literal_prefix,
+use monty_types::{
+    MontyObject, ScanArgs,
+    scan::{
+        EntryInfo, GlobSelector, ScanEntry, ScanReply, ScanSource, ScanTree, SegmentPattern, collect_scan,
+        parse_scan_reply, split_literal_prefix,
+    },
 };
 
 #[test]
@@ -120,11 +124,11 @@ fn long_literal_tails_compile_once() {
     parts.extend(repeat_n("a".to_owned(), 100_000));
     let mut tree = tree(&[("", 'd'), ("a", 'd'), ("a/a", 'f')]);
     for recurse_symlinks in [false, true] {
-        let Ok(matches) = GlobSelector::new(&parts, None, recurse_symlinks).select(&mut tree);
+        let matches = all_matches(&GlobSelector::new(&parts, None, recurse_symlinks), &mut tree);
         assert_eq!(matches, Vec::<String>::new());
     }
     parts.truncate(3);
-    let Ok(matches) = GlobSelector::new(&parts, None, false).select(&mut tree);
+    let matches = all_matches(&GlobSelector::new(&parts, None, false), &mut tree);
     assert_eq!(matches, ["a/a"]);
 }
 
@@ -165,10 +169,16 @@ fn tree(items: &[(&str, char)]) -> ScanTree {
     )
 }
 
+/// Selects with `selector` from a source that never caps its matches.
+fn all_matches(selector: &GlobSelector<'_>, source: &mut impl ScanSource<Error = Infallible>) -> Vec<String> {
+    let Ok(matches) = selector.select(source);
+    matches.expect("an uncapped source keeps every match")
+}
+
 /// Globs `pattern` over `tree`, sorted.
 fn select(tree: &mut ScanTree, pattern: &str, recurse_symlinks: bool) -> Vec<String> {
     let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
-    let Ok(mut matches) = GlobSelector::new(&parts, None, recurse_symlinks).select(tree);
+    let mut matches = all_matches(&GlobSelector::new(&parts, None, recurse_symlinks), tree);
     matches.sort();
     matches
 }
@@ -223,13 +233,13 @@ impl ScanSource for Counting {
 fn repeated_pattern_states_are_visited_once() {
     let mut source = Counting(tree(&[("", 'd'), ("a", 'd'), ("a/b", 'd'), ("a/b/c", 'f')]), 0);
     let parts: Vec<String> = "*/**/*/**".split('/').map(str::to_owned).collect();
-    let Ok(matches) = GlobSelector::new(&parts, None, false).select(&mut source);
+    let matches = all_matches(&GlobSelector::new(&parts, None, false), &mut source);
     assert_eq!(matches, ["a/b/c", "a/b/"]);
     assert!(source.1 < 20, "listed {} times", source.1);
 }
 
 /// States are normalized, so routes through `..` collapse into one directory
-/// whether a host prunes or the sandbox selects.
+/// whether a host or the sandbox selects.
 #[test]
 fn dot_dot_routes_collapse() {
     let names: Vec<String> = (0..3).map(|i| format!("{i:032}")).collect();
@@ -239,11 +249,11 @@ fn dot_dot_routes_collapse() {
     let mut source = Counting(tree(&entries), 0);
     let pattern = "*/../".repeat(13) + "*";
     let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
-    GlobSelector::new(&parts, None, false).prune(&mut source).unwrap();
+    all_matches(&GlobSelector::new(&parts, None, false), &mut source);
     assert!(source.1 < 100, "listed {} times", source.1);
     // CPython would spell out every route and yield 3^14 matches
     source.1 = 0;
-    let Ok(mut matches) = GlobSelector::new(&parts, None, false).select(&mut source);
+    let mut matches = all_matches(&GlobSelector::new(&parts, None, false), &mut source);
     matches.sort();
     assert_eq!(matches, names);
     assert!(source.1 < 100, "listed {} times", source.1);
@@ -255,4 +265,61 @@ fn followed_recursive_tail_matches_like_cpython() {
     let mut tree = tree(&[("", 'd'), ("a", 'd'), ("a/b", 'd'), ("a/b/f", 'f')]);
     assert_eq!(select(&mut tree, "**/a/**", true), ["a/b", "a/b/f"]);
     assert_eq!(select(&mut tree, "**/a/**", false), ["a/", "a/b", "a/b/f"]);
+}
+
+/// A host replies with a glob's matches, in the order the sandbox would select
+/// them, unless they outnumber the entries read; then with those entries.
+#[test]
+fn collect_scan_replies_with_matches_unless_they_outnumber_the_entries() {
+    let mut source = tree(&[
+        ("", 'd'),
+        ("b", 'd'),
+        ("b/x.py", 'f'),
+        ("a", 'd'),
+        ("a/y.py", 'f'),
+        ("a/z.txt", 'f'),
+        ("a/c", 'd'),
+        ("a/c/w.py", 'f'),
+    ]);
+    let parts = |pattern: &str| pattern.split('/').map(str::to_owned).collect::<Vec<_>>();
+    let selective = parts("**/*.py");
+    let Ok(reply) = collect_scan(&ScanArgs::glob("".into(), selective.clone(), None, false), &mut source);
+    let expected = all_matches(&GlobSelector::new(&selective, None, false), &mut source);
+    assert_eq!(expected.len(), 3);
+    assert_eq!(reply, Some(ScanReply::Matches(expected)));
+
+    // `**/*/**` yields each entry once per directory above it
+    let amplifying = parts("**/*/**");
+    let Ok(reply) = collect_scan(&ScanArgs::glob("".into(), amplifying, None, false), &mut source);
+    let Some(ScanReply::Tree(entries)) = reply else {
+        panic!("expected the tree, got {reply:?}");
+    };
+    assert_eq!(entries.len(), 8);
+}
+
+/// Matches round-trip through their encoding, normalized but keeping a
+/// directory's trailing `/`; one that leaves the scan root is refused.
+#[test]
+fn matches_replies_round_trip_and_stay_below_the_root() {
+    let reply = ScanReply::Matches(vec!["a/".to_owned(), "a/./b".to_owned(), String::new()]);
+    assert_eq!(
+        parse_scan_reply(&reply.into_object()),
+        Ok(ScanReply::Matches(vec![
+            "a/".to_owned(),
+            "a/b".to_owned(),
+            String::new()
+        ]))
+    );
+    for path in ["/etc", "../x", "a/../../x"] {
+        let reply = ScanReply::Matches(vec![path.to_owned()]).into_object();
+        assert_eq!(
+            parse_scan_reply(&reply),
+            Err(format!("glob match {path:?} is not relative to the scan root"))
+        );
+    }
+    let other = MontyObject::dict([(MontyObject::string("entries".to_owned()), MontyObject::list([]))]);
+    assert_eq!(
+        parse_scan_reply(&other),
+        Err("expected {'matches': [path, ...]}, got a different dict".to_owned())
+    );
 }
