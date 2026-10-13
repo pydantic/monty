@@ -17,7 +17,7 @@ import pytest
 from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess, ScanEntry
+from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess, ScanEntry, os_access
 
 # Alias for brevity in tests
 P = PurePosixPath
@@ -1125,6 +1125,59 @@ def test_path_scan_deep_tree_without_links():
             is_symlink=False,
         )
     )
+
+
+def test_path_scan_entry_limit(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(os_access, '_MAX_SCAN_ENTRIES', 8)
+    files = [MemoryFile(f'/test/{i}', content='') for i in range(8)]
+    assert len(OSAccess(files[:7]).path_scan(P('/test'), max_depth=1, follow_symlinks=False)) == 8
+    with pytest.raises(RuntimeError, match='directory scan exceeded 8 entries'):
+        OSAccess(files).path_scan(P('/test'), max_depth=1, follow_symlinks=False)
+
+
+class SymlinkCycleOS(OSAccess):
+    """Every path below `/test` is a symlinked directory holding two more, as a link cycle is."""
+
+    def path_exists(self, path: PurePosixPath) -> bool:
+        return True
+
+    def path_is_dir(self, path: PurePosixPath) -> bool:
+        return True
+
+    def path_is_file(self, path: PurePosixPath) -> bool:
+        return False
+
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
+        return path != P('/test')
+
+    def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
+        return [path / 'a', path / 'b']
+
+
+@pytest.mark.parametrize('max_depth', [None, 20])
+def test_path_scan_cycle_limit(monkeypatch: pytest.MonkeyPatch, max_depth: int | None):
+    monkeypatch.setattr(os_access, '_MAX_SCAN_ENTRIES', 8)
+    with pytest.raises(RuntimeError, match='directory scan exceeded 8 entries'):
+        SymlinkCycleOS().path_scan(P('/test'), max_depth=max_depth, follow_symlinks=True)
+
+
+def test_path_scan_path_data_limit(monkeypatch: pytest.MonkeyPatch):
+    fs = OSAccess([MemoryFile('/test/éé', content='')])
+    monkeypatch.setattr(os_access, '_MAX_SCAN_PATH_BYTES', 60)
+    assert len(fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False)) == 2
+    monkeypatch.setattr(os_access, '_MAX_SCAN_PATH_BYTES', 59)
+    with pytest.raises(RuntimeError, match='directory scan exceeded 59 bytes of path data'):
+        fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False)
+    monkeypatch.setattr(os_access, '_MAX_SCAN_PATH_BYTES', 19)
+    with pytest.raises(RuntimeError, match='directory scan exceeded 19 bytes of path data'):
+        fs.path_scan(P('/test'), max_depth=0, follow_symlinks=False)
+
+
+@pytest.mark.parametrize('operation', ["os.walk('/test')", "os.scandir('/test')", "Path('/test').glob('**')"])
+def test_scan_limit_propagates(monkeypatch: pytest.MonkeyPatch, monty_run: RunMonty, operation: str):
+    monkeypatch.setattr(os_access, '_MAX_SCAN_ENTRIES', 1)
+    with pytest.raises(MontyRuntimeError, match='RuntimeError: directory scan exceeded 1 entries'):
+        monty_run(f'import os\nfrom pathlib import Path\nlist({operation})', os=scan_tree())
 
 
 def test_path_scan_direct():

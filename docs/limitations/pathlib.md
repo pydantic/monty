@@ -76,6 +76,8 @@ Pattern semantics follow CPython 3.14's: hidden files match `*`, `**` descends o
     `generator`; both are built from the snapshot, so files created or removed while iterating are not seen.
     Iterating a huge tree still reads all of it up front, charged to the mount's memory limit
     (see [filesystem.md](filesystem.md#directory-scans)).
+    Python's default `AbstractOS.path_scan()` raises `RuntimeError` above 100,000 entries (including the root)
+    or 100 MB of accumulated path data, estimated at four bytes per character for absolute and relative paths.
 - **Pruning `dirnames` in `walk()` works** (`dirnames.remove(...)`, `dirnames.clear()`), but only saves sandbox
     work: the host has already read the pruned directories.
     Monty has no list slice assignment, so the common `dirnames[:] = [...]` raises `TypeError`.

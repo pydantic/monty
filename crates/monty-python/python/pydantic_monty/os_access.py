@@ -150,6 +150,13 @@ class StatResult(NamedTuple):
     """time of last change"""
 
 
+_MAX_SCAN_ENTRIES = 100_000
+"""Maximum entries per default scan, including the root."""
+
+_MAX_SCAN_PATH_BYTES = 100_000_000
+"""Maximum accumulated scan path data, estimated at four bytes per character for absolute and relative paths."""
+
+
 class ScanEntry(NamedTuple):
     """One entry of a `Path.scan` reply: what `os.DirEntry` would report for it.
 
@@ -548,6 +555,8 @@ class AbstractOS(ABC):
         returning entries the pattern cannot match is allowed, since Monty filters the reply itself.
         A directory below `path` that cannot be listed reads as empty, as it does for a mount.
         When following symlinks without a `max_depth`, the default stops 64 levels down so a link cycle ends.
+        The default also caps each scan at 100,000 entries, including the root, and 100 MB of path data
+        estimated at four bytes per character for both absolute and relative paths.
 
         The default walks the tree with `path_iterdir()`, `path_is_dir()`, `path_is_file()` and
         `path_is_symlink()`; override it to answer in fewer host calls.
@@ -562,11 +571,15 @@ class AbstractOS(ABC):
 
         Raises:
             FileNotFoundError: If `path` does not exist.
+            RuntimeError: If the default scan exceeds its entry or path-data limit.
         """
         if not (self.path_exists(path) or self.path_is_symlink(path)):
             raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r}')
         root = self._scan_entry('', path)
         entries = [root]
+        path_bytes = 4 * len(str(path))
+        if path_bytes > _MAX_SCAN_PATH_BYTES:
+            raise RuntimeError(f'directory scan exceeded {_MAX_SCAN_PATH_BYTES} bytes of path data')
         stack = [(path, '', 0)] if root.is_dir else []
         while stack:
             directory, relative, depth = stack.pop()
@@ -581,7 +594,13 @@ class AbstractOS(ABC):
                     raise
                 continue
             for child in children:
+                if len(entries) >= _MAX_SCAN_ENTRIES:
+                    raise RuntimeError(f'directory scan exceeded {_MAX_SCAN_ENTRIES} entries')
                 name = PurePosixPath(child).name
+                relative_len = len(relative) + bool(relative) + len(name)
+                path_bytes += 4 * (relative_len + len(str(directory)) + 1 + len(name))
+                if path_bytes > _MAX_SCAN_PATH_BYTES:
+                    raise RuntimeError(f'directory scan exceeded {_MAX_SCAN_PATH_BYTES} bytes of path data')
                 entry = self._scan_entry(f'{relative}/{name}' if relative else name, directory / name)
                 entries.append(entry)
                 if entry.is_dir and (follow_symlinks or not entry.is_symlink):

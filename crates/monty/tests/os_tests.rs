@@ -1895,6 +1895,37 @@ fn os_path_expandvars_charges_its_amplified_result() {
 }
 
 #[test]
+fn empty_walk_reports_enoent_on_iteration_without_a_host_call() {
+    let code = r#"
+import os
+assert list(os.walk('')) == []
+errors = []
+walk = os.walk('', onerror=lambda e: errors.append((type(e).__name__, str(e))))
+assert errors == []
+assert list(walk) == []
+assert errors == [('FileNotFoundError', "[Errno 2] No such file or directory: ''")]
+assert list(walk) == []
+assert len(errors) == 1
+
+def fail(error):
+    raise error
+
+walk = os.walk('', onerror=fail)
+try:
+    next(walk)
+    assert False
+except FileNotFoundError:
+    pass
+assert list(walk) == []
+"#;
+    host_runner(code)
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .expect("an empty walk must not call the host");
+}
+
+#[test]
 fn scan_rejects_malformed_replies() {
     let call = run_to_oscall_start("import os\nos.scandir('/mnt')");
     let err = call

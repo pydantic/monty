@@ -655,7 +655,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                     follow_symlinks,
                 } = PathWalkArgs::from_args(args, vm)?;
                 let top = self.get(vm.heap).as_str().to_owned();
-                return Ok(walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool()));
+                return walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool(), vm);
             }
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", vm.heap)?;

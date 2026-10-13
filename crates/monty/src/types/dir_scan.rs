@@ -919,18 +919,27 @@ pub(crate) fn walk_call(
     topdown: bool,
     onerror: Value,
     followlinks: bool,
-) -> CallResult {
-    let call = OsFunctionCall::Scan(ScanArgs::listing(MontyPath::new(top.clone()), None, followlinks));
-    CallResult::OsCallWithEffect {
-        call,
-        effect: ScanEffect::Walk(WalkSetup {
-            top,
-            path_flavor,
-            topdown,
-            followlinks,
-            onerror,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let empty = top.is_empty();
+    let effect = ScanEffect::Walk(WalkSetup {
+        top: top.clone(),
+        path_flavor,
+        topdown,
+        followlinks,
+        onerror,
+    });
+    if empty {
+        // Report ENOENT on iteration, including through `onerror`, without asking the host.
+        effect
+            .apply(Err(ExcType::file_not_found_error("")), vm)
+            .map(CallResult::Value)
+    } else {
+        let call = OsFunctionCall::Scan(ScanArgs::listing(MontyPath::new(top), None, followlinks));
+        Ok(CallResult::OsCallWithEffect {
+            call,
+            effect: effect.into(),
         })
-        .into(),
     }
 }
 

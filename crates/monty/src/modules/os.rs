@@ -221,13 +221,14 @@ fn walk(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             return Err(err);
         }
     };
-    Ok(walk_call(
+    walk_call(
         top.into_string(),
         false,
         topdown.bool(),
         onerror,
         followlinks.bool(),
-    ))
+        vm,
+    )
 }
 
 /// `os.urandom(size, /)` argument shape: clinic-parsed, positional-only.
