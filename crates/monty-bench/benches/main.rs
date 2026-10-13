@@ -350,6 +350,20 @@ const GLOB_WILDCARD: &str = include_str!("python/glob_wildcard.py");
 /// A top-down walk counting files.
 const WALK_FILES: &str = include_str!("python/walk_files.py");
 
+/// CSV formatting — how agents hand tabular results back (`writer.writerow`
+/// in a loop, `writerows` under `QUOTE_ALL`, and `DictWriter`). Fields mix
+/// plain values with ones that force quoting (commas, embedded quotes,
+/// newlines), the common shape of real data. The `write()` target is a
+/// class, since Monty has no `io.StringIO`; it counts characters written.
+const CSV_WRITE: &str = include_str!("python/csv_write.py");
+
+/// CSV parsing — reading tabular input with `reader`, `QUOTE_NONNUMERIC`
+/// float conversion and `DictReader`. The lines are formatted once up front
+/// with every string quoted, so all three readers share one input; records
+/// with embedded newlines span several source lines. Exercises the
+/// per-character parser state machine and the per-row dict construction.
+const CSV_READ: &str = include_str!("python/csv_read.py");
+
 /// Benchmarks end-to-end execution (parsing + running) using Monty.
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
@@ -582,6 +596,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("re_extract__monty", |b| run_monty(b, RE_EXTRACT, 652_500));
     #[cfg(not(feature = "codspeed"))]
     c.bench_function("re_extract__cpython", |b| run_cpython(b, RE_EXTRACT, 652_500));
+
+    c.bench_function("csv_write__monty", |b| run_monty(b, CSV_WRITE, 265_163));
+    #[cfg(not(codspeed))]
+    c.bench_function("csv_write__cpython", |b| run_cpython(b, CSV_WRITE, 265_163));
+
+    c.bench_function("csv_read__monty", |b| run_monty(b, CSV_READ, 2_629_450));
+    #[cfg(not(codspeed))]
+    c.bench_function("csv_read__cpython", |b| run_cpython(b, CSV_READ, 2_629_450));
 
     c.bench_function("gc_collect__monty", |b| run_monty(b, GC_COLLECT, 0));
     #[cfg(not(feature = "codspeed"))]
