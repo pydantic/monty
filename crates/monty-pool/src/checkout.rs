@@ -454,9 +454,8 @@ pub struct Checkout {
 }
 
 /// Parent-enforced limits from `Configure` or the first reply after `Load`.
-/// Restoring resets suspension and sleep totals, but keeps their limits as ceilings:
-/// untrusted worker replies can only tighten them. Duration budgets backstop the
-/// child's enforcement, so restoring adopts the worker's capped duration limits.
+/// Restoring resets suspension and sleep totals, but keeps every limit as a ceiling:
+/// untrusted worker replies, including the `Load` reply, can only tighten them.
 #[derive(Clone, Copy)]
 struct SessionBudget {
     /// The session's `max_feed_duration`, when configured.
@@ -503,12 +502,12 @@ impl SessionBudget {
         }
     }
 
-    /// Clears `Configure` state before adopting a dump's budget. The
-    /// suspension and sleep limits stay: they are the ceilings on the dump's.
+    /// Clears consumption before adopting a dump's budget. The limits stay:
+    /// they are the ceilings on the dump's.
     fn forget(&mut self) {
         *self = Self {
-            feed_budget: None,
-            turn_budget: None,
+            feed_budget: self.feed_budget,
+            turn_budget: self.turn_budget,
             reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
@@ -518,22 +517,16 @@ impl SessionBudget {
         };
     }
 
-    /// Adopts unknown limits and records consumption, counting suspensions in the parent.
-    /// Untrusted replies can only increase reported time and tighten suspension or sleep limits.
+    /// Tightens limits and records consumption, counting suspensions in the parent.
+    /// Untrusted replies can only increase reported time and tighten limits.
     /// Ordinary replies echo limits; a `Load` reply reports the dump's.
     fn update_from(&mut self, event: &pb::ChildEvent) {
         self.reported_feed_execution = self
             .reported_feed_execution
             .max(Duration::from_micros(event.feed_execution_micros));
-        if self.feed_budget.is_none() {
-            self.feed_budget = event.max_feed_duration_micros.map(Duration::from_micros);
-        }
-        if self.turn_budget.is_none() {
-            self.turn_budget = event.max_turn_duration_micros.map(Duration::from_micros);
-        }
-        if let Some(reported) = event.max_total_sleep_micros.map(Duration::from_micros) {
-            self.sleep_limit = Some(self.sleep_limit.map_or(reported, |limit| limit.min(reported)));
-        }
+        self.feed_budget = tighter(self.feed_budget, event.max_feed_duration_micros);
+        self.turn_budget = tighter(self.turn_budget, event.max_turn_duration_micros);
+        self.sleep_limit = tighter(self.sleep_limit, event.max_total_sleep_micros);
         if let Some(reported) = event.max_suspensions {
             self.suspension_limit = self.suspension_limit.min(reported);
         }
@@ -596,6 +589,14 @@ impl SessionBudget {
         .into_iter()
         .flatten()
         .min()
+    }
+}
+
+/// The stricter of a limit and a worker-reported one, in microseconds; `None` is unlimited.
+fn tighter(limit: Option<Duration>, reported_micros: Option<u64>) -> Option<Duration> {
+    match (limit, reported_micros.map(Duration::from_micros)) {
+        (Some(limit), Some(reported)) => Some(limit.min(reported)),
+        (limit, reported) => limit.or(reported),
     }
 }
 
@@ -799,7 +800,8 @@ impl Checkout {
     /// is that same [`TurnEvent::OsCall`] — restoring never answers it here.
     /// The worker caps snapshot resource limits at the checkout's configured limits.
     /// Stricter snapshot limits and elapsed execution time remain in effect.
-    /// The parent adopts these effective limits from the worker's reply.
+    /// The parent adopts these effective limits from the worker's reply, but keeps
+    /// its configured ones as ceilings, so a lying worker cannot loosen them.
     /// The suspension count restarts at zero.
     ///
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`

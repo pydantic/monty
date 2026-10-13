@@ -188,6 +188,7 @@ test-restore-policy: ## Verify snapshot limits with tracker, protocol, and real-
 	cargo test -p monty-types --test resource_limits
 	cargo test -p monty-proto --features worker --test dispatch restore_caps_idle_and_suspended_resource_limits
 	cargo test -p monty-pool --features telemetry --test pool_test restored_session_cannot_raise_the_destination_memory_budget
+	cargo test -p monty-pool --features telemetry --test pool_test a_load_reply_cannot_loosen_the_feed_backstop
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest

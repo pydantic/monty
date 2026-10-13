@@ -2889,6 +2889,54 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     assert_eq!(timeout, budget + grace);
 }
 
+/// A `Load` reply claiming a looser feed budget than the checkout's cannot
+/// loosen the parent's feed backstop: the configured budget stays the ceiling.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_load_reply_cannot_loosen_the_feed_backstop() {
+    let dir = tempfile::tempdir().unwrap();
+    let budget = Duration::from_millis(300);
+    let grace = Duration::from_millis(100);
+    // `Ok` answers Configure, then the Load, claiming an hour's feed budget.
+    // The feed after it goes unanswered.
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&pb::ChildEvent {
+        max_feed_duration_micros: Some(3_600_000_000),
+        ..child_event(pb::child_event::Kind::Ok(pb::Ok {}))
+    }));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let mut config = PoolConfig::subprocess(&fake);
+    config.feed_duration_limit_grace = Some(grace);
+    config.request_timeout = None;
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(budget)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let (event, _) = checkout.restore(vec![0], vec![], &mut no_print).await.unwrap();
+    assert!(event.is_none());
+
+    // Bounded so a regression fails here rather than waiting out the stand-in.
+    let outcome = timeout(
+        Duration::from_secs(5),
+        checkout.feed("x", vec![], vec![], false, &mut no_print),
+    )
+    .await;
+    let Ok(Err(PoolError::Timeout { timeout })) = outcome else {
+        panic!("the configured feed budget must backstop the restored feed, got {outcome:?}");
+    };
+    assert_eq!(timeout, budget + grace);
+}
+
 /// With the grace turned off the parent does not backstop that budget at all,
 /// so the sandbox's own `TimeoutError` is what ends the feed — the worker must
 /// still come back alive.
