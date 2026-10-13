@@ -325,14 +325,14 @@ pub(super) fn host_stat(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject
 
 /// Lists visible directory entries within the mount memory budget.
 pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
-    let names = host_list_visible_dir_entry_names(dir, rel, vpath, budget.halved())?;
-    let mut memory_usage = names.iter().fold(0_u64, |usage, name| {
+    let entries = host_list_visible_dir_entries(dir, rel, vpath, budget.halved())?;
+    let mut memory_usage = entries.iter().fold(0_u64, |usage, (name, _)| {
         usage
             .saturating_add(as_u64(name.len()))
             .saturating_add(LISTING_ENTRY_MEMORY_USAGE)
     });
     let mut result = Vec::new();
-    for name in names {
+    for (name, _) in entries {
         let path = format_child_path(vpath, &name);
         memory_usage = memory_usage
             .saturating_add(as_u64(path.len()))
@@ -361,47 +361,64 @@ pub(super) fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
     }
 }
 
-/// Returns visible real directory entry names for `iterdir()`.
+/// Returns visible real directory entries for `iterdir()` and scans, each
+/// described as [`PathInfo::from_host`] would describe it.
 ///
 /// Symlinks are only exposed when they still resolve inside the mount, so
-/// iteration does not leak the existence of outbound or broken links.
-pub(super) fn host_list_visible_dir_entry_names(
+/// iteration does not leak the existence of outbound or broken links. Types
+/// come from the listing itself, so only symlinks cost a lookup.
+pub(super) fn host_list_visible_dir_entries(
     dir: &Dir,
     rel: &str,
     vpath: &str,
     budget: MemoryBudget,
-) -> Result<Vec<String>, MountError> {
+) -> Result<Vec<(String, EntryInfo)>, MountError> {
     // `read_dir` on a missing path reports ENOTDIR, but CPython raises
     // `FileNotFoundError`, so surface the lookup failure first.
     dir.metadata(rel).map_err(|err| map_io(err, vpath))?;
     let read_dir = dir.read_dir(rel).map_err(|err| map_io(err, vpath))?;
-    let mut names = Vec::new();
+    let mut entries = Vec::new();
     let mut memory_usage = 0_u64;
 
     for entry in read_dir {
         let entry = entry.map_err(|err| map_io(err, vpath))?;
         let file_type = entry.file_type().map_err(|err| map_io(err, vpath))?;
+        let raw_name = entry.file_name();
 
-        if file_type.is_symlink() {
+        let info = if file_type.is_symlink() {
             // Join the raw name: a lossy `String` round-trip would look up a
             // different entry and silently drop this one. The lookup must stay
             // path-based so it runs through the descriptor's confinement check —
             // `entry.metadata()` resolves the link without one.
-            let child = join_mount_relative_os(rel, &entry.file_name());
-            if dir.metadata(&child).is_err() {
+            let Ok(target) = dir.metadata(join_mount_relative_os(rel, &raw_name)) else {
                 continue;
+            };
+            EntryInfo {
+                is_dir: target.is_dir(),
+                is_file: target.is_file(),
+                is_symlink: true,
             }
-        }
-
-        let name = entry.file_name().to_string_lossy().to_string();
+        } else {
+            EntryInfo {
+                is_dir: file_type.is_dir(),
+                is_file: file_type.is_file(),
+                is_symlink: false,
+            }
+        };
+        // A name that is not UTF-8 is reported lossily, and nothing answers to
+        // the lossy spelling, so it reads as a lookup of it would: none of the three.
+        let (name, info) = match raw_name.to_str() {
+            Some(name) => (name.to_owned(), info),
+            None => (raw_name.to_string_lossy().into_owned(), PathInfo::ABSENT.info),
+        };
         memory_usage = memory_usage
             .saturating_add(as_u64(name.len()))
             .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
         budget.check(memory_usage)?;
-        names.push(name);
+        entries.push((name, info));
     }
 
-    Ok(names)
+    Ok(entries)
 }
 
 /// Converts raw bytes to UTF-8 or returns the exact decode failure details

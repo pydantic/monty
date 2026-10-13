@@ -7,7 +7,9 @@
 //! Ownership matters: write payloads are *moved* through here so overlay
 //! storage can retain them without a copy.
 
-use monty_types::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path};
+use monty_types::{
+    FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path, scan::EntryInfo,
+};
 
 use super::{
     common::{MountContext, PathInfo},
@@ -212,6 +214,19 @@ pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, mode: &MountMode) ->
     match mode {
         MountMode::ReadWrite | MountMode::ReadOnly => direct::path_info(path, ctx),
         MountMode::OverlayMemory(state) => overlay::path_info(path, ctx, state),
+    }
+}
+
+/// Lists the directory `path` for a scan with each entry described as
+/// [`path_info`] on it would describe it, without a lookup per entry.
+pub(super) fn scan_list(
+    path: &str,
+    ctx: &MountContext<'_>,
+    mode: &MountMode,
+) -> Result<Vec<(String, EntryInfo)>, MountError> {
+    match mode {
+        MountMode::ReadWrite | MountMode::ReadOnly => direct::scan_list(path, ctx),
+        MountMode::OverlayMemory(state) => overlay::scan_list(path, ctx, state),
     }
 }
 

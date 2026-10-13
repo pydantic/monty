@@ -48,6 +48,10 @@ Disjoint host directories at nested virtual paths (`/data`, `/data/sub`)
 remain fine: each virtual path routes to exactly one mount. Two mounts on the
 *same* virtual path are refused because only one of them could ever be
 reached.
+A nested mount appears in its parent's listing only if the parent's host
+directory has an entry of that name; otherwise `os.listdir`, `os.walk`,
+`os.scandir` and `Path.glob` on the parent do not reach it, though its own
+path still works.
 
 The same-directory check uses the opened directory's identity on Unix, so a
 directory renamed between two mounts is still recognised; the nesting check is

@@ -14,7 +14,7 @@ use super::{
     common::{
         LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8, check_write_limit,
         commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir, host_is_file,
-        host_list_visible_dir_entry_names, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
+        host_list_visible_dir_entries, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
         read_file_limited,
     },
     dispatch::{FsRequest, file_handle_result},
@@ -379,6 +379,62 @@ pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, state: &OverlayState
     })
 }
 
+/// Lists the directory `path` for a scan, describing each entry as [`path_info`]
+/// on it would, from the listing alone: overlay entries by kind, real ones by
+/// the type their directory entry records.
+pub(super) fn scan_list(
+    path: &str,
+    ctx: &MountContext<'_>,
+    state: &OverlayState,
+) -> Result<Vec<(String, EntryInfo)>, MountError> {
+    let relative = relative_path(path, ctx)?;
+    let host_dir_to_merge = real_dir_to_merge(state, &relative, ctx, path)?;
+    let budget = available_memory(state, ctx)?;
+    let mut seen_names: AHashSet<&str> = AHashSet::new();
+    let mut entries = Vec::new();
+    let mut transient_usage = 0_u64;
+
+    let prefix = directory_prefix(&relative);
+    for (name, entry) in overlay_children(state, &prefix) {
+        // Charged for the dedup set and the listed copy.
+        transient_usage = transient_usage
+            .saturating_add(as_u64(name.len().saturating_mul(2)))
+            .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
+        budget.check(transient_usage)?;
+        seen_names.insert(name);
+        let (is_dir, is_file) = match entry {
+            OverlayEntry::Deleted => continue,
+            OverlayEntry::Directory { .. } => (true, false),
+            OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) => (false, true),
+        };
+        let info = EntryInfo {
+            is_dir,
+            is_file,
+            is_symlink: false,
+        };
+        entries.push((name.to_owned(), info));
+    }
+
+    if let Some(host_dir) = host_dir_to_merge {
+        let remaining = budget.shrink(transient_usage)?;
+        for (name, info) in host_list_visible_dir_entries(ctx.mount_dir, &host_dir, path, remaining)? {
+            if !seen_names.contains(name.as_str()) {
+                // The mode never follows a link, so one is a symlink and nothing more.
+                let info = if info.is_symlink { SYMLINK_ONLY } else { info };
+                entries.push((name, info));
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// How the mode describes a real symlink: never followed, so neither a file nor a directory.
+const SYMLINK_ONLY: EntryInfo = EntryInfo {
+    is_dir: false,
+    is_file: false,
+    is_symlink: true,
+};
+
 /// [`path_info`] for a path the overlay does not answer, in one walk of the
 /// parent chain and one `lstat` of the name, where asking each predicate would
 /// walk and stat the path again per predicate. As [`real_is_symlink`] says,
@@ -403,11 +459,7 @@ fn real_path_info(vpath: &str, ctx: &MountContext<'_>) -> PathInfo {
     };
     match classify_target(ctx.mount_dir, rel, vpath) {
         Ok(RealTarget::Symlink) => PathInfo {
-            info: EntryInfo {
-                is_dir: false,
-                is_file: false,
-                is_symlink: true,
-            },
+            info: SYMLINK_ONLY,
             exists: false,
         },
         Ok(RealTarget::Dir) => described(true, false, true),
@@ -1026,44 +1078,23 @@ fn iterdir(
     ctx: &MountContext<'_>,
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
-    let host_dir_to_merge = match state.get(relative) {
-        Some(OverlayEntry::Directory { .. }) => None,
-        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
-            return Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath));
-        }
-        Some(OverlayEntry::Deleted) => return Err(MountError::not_found(vpath)),
-        None => match resolve_real(vpath, ctx) {
-            Ok(target) if host_is_dir(ctx.mount_dir, target.for_dir_op()) => Some(target.for_dir_op().to_owned()),
-            // `resolve_virtual_path` never touches the filesystem, so a missing
-            // path arrives as `Ok` and must be told apart from a non-directory.
-            Ok(target) if !ctx.mount_dir.exists(target.for_dir_op()) => return Err(MountError::not_found(vpath)),
-            Ok(_) => return Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath)),
-            Err(err) => return Err(err),
-        },
-    };
-
+    let host_dir_to_merge = real_dir_to_merge(state, relative, ctx, vpath)?;
     let prefix = directory_prefix(relative);
     let mut seen_names: AHashSet<String> = AHashSet::new();
     let mut entries = Vec::new();
     let budget = available_memory(state, ctx)?;
     let mut transient_usage = 0_u64;
 
-    for (path, entry) in state.prefix_iter(&prefix) {
-        let rest = &path[prefix.len()..];
-        if rest.is_empty() || rest.contains('/') {
-            continue;
-        }
-
+    for (child_name, entry) in overlay_children(state, &prefix) {
         // Names are charged twice: once for the dedup set, once for the clone.
-        let child_name = rest.to_owned();
         transient_usage = transient_usage
             .saturating_add(as_u64(child_name.len().saturating_mul(2)))
             .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
         budget.check(transient_usage)?;
-        seen_names.insert(child_name.clone());
+        seen_names.insert(child_name.to_owned());
 
         if !matches!(entry, OverlayEntry::Deleted) {
-            let child_path = format_child_path(vpath, &child_name);
+            let child_path = format_child_path(vpath, child_name);
             transient_usage = transient_usage
                 .saturating_add(as_u64(child_path.len()))
                 .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
@@ -1074,27 +1105,62 @@ fn iterdir(
 
     if let Some(host_dir) = host_dir_to_merge {
         let remaining = budget.shrink(transient_usage)?;
-        let names = host_list_visible_dir_entry_names(ctx.mount_dir, &host_dir, vpath, remaining.halved())?;
-        if !names.is_empty() {
-            transient_usage = names.iter().fold(transient_usage, |usage, name| {
-                usage
-                    .saturating_add(as_u64(name.len()))
-                    .saturating_add(LISTING_ENTRY_MEMORY_USAGE)
-            });
-            for name in names {
-                if !seen_names.contains(&name) {
-                    let child_path = format_child_path(vpath, &name);
-                    transient_usage = transient_usage
-                        .saturating_add(as_u64(child_path.len()))
-                        .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
-                    budget.check(transient_usage)?;
-                    entries.push(MontyObject::path(child_path));
-                }
+        let names = host_list_visible_dir_entries(ctx.mount_dir, &host_dir, vpath, remaining.halved())?;
+        transient_usage = names.iter().fold(transient_usage, |usage, (name, _)| {
+            usage
+                .saturating_add(as_u64(name.len()))
+                .saturating_add(LISTING_ENTRY_MEMORY_USAGE)
+        });
+        for (name, _) in names {
+            if !seen_names.contains(&name) {
+                let child_path = format_child_path(vpath, &name);
+                transient_usage = transient_usage
+                    .saturating_add(as_u64(child_path.len()))
+                    .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
+                budget.check(transient_usage)?;
+                entries.push(MontyObject::path(child_path));
             }
         }
     }
 
     Ok(MontyObject::list(entries))
+}
+
+/// The real directory, mount-relative, whose entries a listing of `relative`
+/// merges; `None` when the overlay holds the directory itself.
+///
+/// Raises what listing `vpath` would: a missing or deleted path, a file, or a
+/// real path reached through a symlink.
+fn real_dir_to_merge(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+    vpath: &str,
+) -> Result<Option<String>, MountError> {
+    match state.get(relative) {
+        Some(OverlayEntry::Directory { .. }) => Ok(None),
+        Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
+            Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath))
+        }
+        Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
+        None => match resolve_real(vpath, ctx) {
+            Ok(target) if host_is_dir(ctx.mount_dir, target.for_dir_op()) => Ok(Some(target.for_dir_op().to_owned())),
+            // `resolve_virtual_path` never touches the filesystem, so a missing
+            // path arrives as `Ok` and must be told apart from a non-directory.
+            Ok(target) if !ctx.mount_dir.exists(target.for_dir_op()) => Err(MountError::not_found(vpath)),
+            Ok(_) => Err(MountError::io_err(ErrorKind::NotADirectory, "Not a directory", vpath)),
+            Err(err) => Err(err),
+        },
+    }
+}
+
+/// Overlay entries directly inside the directory `prefix` names (see
+/// [`directory_prefix`]), by name; deletions included, since they hide real entries.
+fn overlay_children<'s>(state: &'s OverlayState, prefix: &'s str) -> impl Iterator<Item = (&'s str, &'s OverlayEntry)> {
+    state.prefix_iter(prefix).filter_map(move |(path, entry)| {
+        let rest = &path[prefix.len()..];
+        (!rest.is_empty() && !rest.contains('/')).then_some((rest, entry))
+    })
 }
 
 /// Renames a path within the overlay, lazily referencing real files when needed.

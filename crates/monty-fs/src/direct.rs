@@ -6,13 +6,14 @@
 //! filesystem root.
 
 use cap_std::fs::Dir;
-use monty_types::{FileMode, MontyObject, normalize_virtual_path};
+use monty_types::{FileMode, MontyObject, normalize_virtual_path, scan::EntryInfo};
 
 use super::{
     common::{
         MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes, host_append_bytes,
-        host_append_text, host_is_dir, host_is_file, host_iterdir, host_mkdir, host_read_bytes, host_read_text,
-        host_rmdir, host_stat, host_unlink, host_write_bytes, host_write_text, map_io, reject_non_regular,
+        host_append_text, host_is_dir, host_is_file, host_iterdir, host_list_visible_dir_entries, host_mkdir,
+        host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink, host_write_bytes, host_write_text, map_io,
+        reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -93,6 +94,18 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
 pub(super) fn path_info(path: &str, ctx: &MountContext<'_>) -> Result<PathInfo, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
     Ok(PathInfo::from_host(ctx.mount_dir, target.for_dir_op()))
+}
+
+/// Lists the directory `path` for a scan, describing each entry as
+/// [`path_info`] on it would, from the listing alone.
+pub(super) fn scan_list(path: &str, ctx: &MountContext<'_>) -> Result<Vec<(String, EntryInfo)>, MountError> {
+    let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+    host_list_visible_dir_entries(
+        ctx.mount_dir,
+        target.for_dir_op(),
+        path,
+        MemoryBudget::full(ctx.memory_usage_limit),
+    )
 }
 
 /// Performs the open-time effect for `open()` and returns the file handle.

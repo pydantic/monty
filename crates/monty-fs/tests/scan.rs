@@ -371,6 +371,16 @@ fn nested_mounts_are_scanned_through_the_table() {
     assert!(found.contains(&("sub/other.txt".to_owned(), 'f')));
     let shadowed = scan(&mut table, glob("/mnt", &["*", "c.txt"])).unwrap();
     assert!(!shadowed.iter().any(|(path, _)| path == "sub/c.txt"), "{shadowed:?}");
+
+    // a mount over a parent's file is described by the nested mount, not the parent's listing
+    let over_file = TempDir::new().unwrap();
+    fs::write(over_file.path().join("x.txt"), "x").unwrap();
+    table
+        .mount("/mnt/b.py", over_file.path(), MountMode::ReadOnly, None)
+        .unwrap();
+    let tree = scan(&mut table, ScanArgs::listing("/mnt".into(), None, false)).unwrap();
+    assert!(tree.contains(&("b.py".to_owned(), 'd')), "{tree:?}");
+    assert!(tree.contains(&("b.py/x.txt".to_owned(), 'f')), "{tree:?}");
 }
 
 #[test]
