@@ -452,3 +452,22 @@ fn scan_limit_is_a_runtime_error() {
     assert_eq!(exc.exc_type(), ExcType::RuntimeError);
     assert_eq!(exc.message(), Some("directory scan examined more than 10 entries"));
 }
+
+/// A link leaving its own directory but not the mount is listed through the
+/// mount root when its parent's open handle cannot reach the target.
+#[test]
+fn links_leaving_their_directory_are_followed_within_the_mount() {
+    if !symlinks_supported() {
+        return;
+    }
+    let dir = create_tree();
+    symlink_dir("../sub/deep", dir.path().join("sub/up"));
+    for mode in [MountMode::ReadWrite, MountMode::ReadOnly] {
+        let mut table = mount(&dir, mode);
+        let walked = scan(&mut table, ScanArgs::listing("/mnt".into(), None, true)).unwrap();
+        assert!(walked.contains(&("sub/up".to_owned(), 'D')), "{walked:?}");
+        assert!(walked.contains(&("sub/up/d.py".to_owned(), 'f')), "{walked:?}");
+        let globbed = scan(&mut table, glob("/mnt", &["*", "*", "d.py"])).unwrap();
+        assert_eq!(globbed, entries(&[("sub/deep/d.py", 'm'), ("sub/up/d.py", 'm')]));
+    }
+}

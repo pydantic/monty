@@ -8,19 +8,20 @@
 //! the scan root included. A listing types its entries from the directory
 //! itself, so only symlinks and nested mount points cost a lookup each.
 
+use cap_std::fs::{Dir, ReadDir};
 use monty_types::{
     MontyObject, ScanArgs,
     scan::{EntryInfo, ScanSource, collect_scan},
 };
 
 use super::{
-    common::{LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, PathInfo, as_u64},
+    common::{LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, PathInfo, as_u64, visible_entries},
     dispatch,
     error::MountError,
     mount_mode::MountMode,
     mount_table::{Mount, find_mount},
     overlay::available_memory,
-    path_security::reject_overlong_path,
+    path_security::{reject_overlong_path, resolve_virtual_path},
 };
 
 /// Most entries one scan may examine, counting each time a pattern state
@@ -51,6 +52,7 @@ pub(super) fn execute(args: &ScanArgs, mounts: &mut [Mount], root: usize) -> Res
         budget,
         used: 0,
         visits: 0,
+        handles: DirHandles::default(),
     };
     match collect_scan(args, &mut source)? {
         Some(reply) => Ok(reply.into_object()),
@@ -86,6 +88,65 @@ fn reject_overlong_pattern(parts: &[String]) -> Result<(), MountError> {
     reject_overlong_path(&joined)
 }
 
+/// Directory handles one scan keeps open, so a directory is listed through its
+/// parent's handle instead of by resolving every component from the mount root,
+/// which cap-std does one `openat` at a time where the kernel cannot confine a
+/// lookup itself (macOS).
+///
+/// Every handle descends from the mount's descriptor through cap-std, so what
+/// is opened through it stays inside the mount. Only directories whose children
+/// are listed are kept, at most [`Self::CAPACITY`], the least recently used going first.
+#[derive(Default)]
+struct DirHandles {
+    /// `(mount index, mount-relative path, handle)`, most recently used last.
+    open: Vec<(usize, String, Dir)>,
+}
+
+impl DirHandles {
+    /// Most handles open at once; a depth-first scan revisits few ancestors.
+    const CAPACITY: usize = 32;
+
+    /// Lists mount `mount`'s directory at `rel` (`.` for its root) through its
+    /// parent's handle; `root` is the mount's descriptor, the top-level parent.
+    ///
+    /// `None` when the parent cannot reach it, as with a symlink leaving the parent.
+    fn read_dir(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<ReadDir> {
+        match rel.rsplit_once('/') {
+            None => root.read_dir(rel).ok(),
+            Some((parent, name)) => {
+                let position = self.handle(mount, parent, root)?;
+                self.open[position].2.read_dir(name).ok()
+            }
+        }
+    }
+
+    /// Where the handle of `rel` is kept, opening it below its parent's handle,
+    /// recursively, if it is not open.
+    fn handle(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<usize> {
+        if let Some(position) = self
+            .open
+            .iter()
+            .position(|(index, path, _)| *index == mount && path == rel)
+        {
+            let entry = self.open.remove(position);
+            self.open.push(entry);
+        } else {
+            let dir = match rel.rsplit_once('/') {
+                None => root.open_dir(rel).ok()?,
+                Some((parent, name)) => {
+                    let position = self.handle(mount, parent, root)?;
+                    self.open[position].2.open_dir(name).ok()?
+                }
+            };
+            if self.open.len() == Self::CAPACITY {
+                self.open.remove(0);
+            }
+            self.open.push((mount, rel.to_owned(), dir));
+        }
+        Some(self.open.len() - 1)
+    }
+}
+
 /// A directory's entries by name, each typed as a lookup of it would be.
 type Listing = Vec<(String, EntryInfo)>;
 
@@ -101,6 +162,8 @@ struct MountSource<'a> {
     used: u64,
     /// Entries examined so far (see [`MAX_SCAN_VISITS`]).
     visits: u64,
+    /// Directories of direct mounts kept open to list their descendants through.
+    handles: DirHandles,
 }
 
 impl MountSource<'_> {
@@ -136,8 +199,27 @@ impl MountSource<'_> {
         let Some(index) = find_mount(self.mounts, path) else {
             return Err(MountError::NoMountPoint(path.to_owned()));
         };
+        if let Some(listing) = self.list_through_handles(index, path) {
+            return Ok((index, listing));
+        }
         let (ctx, mode) = self.mounts[index].backend();
         dispatch::scan_list(path, &ctx, mode).map(|entries| (index, entries))
+    }
+
+    /// Lists `path` on direct mount `index` through its parent's open handle.
+    ///
+    /// `None` for an overlay mount or any failure: [`Self::scan_list`] then lists
+    /// the path from the mount root, which raises the error a listing would.
+    fn list_through_handles(&mut self, index: usize, path: &str) -> Option<Listing> {
+        let (ctx, mode) = self.mounts[index].backend();
+        if matches!(*mode, MountMode::OverlayMemory(_)) {
+            return None;
+        }
+        let target = resolve_virtual_path(path, ctx.mount_virtual).ok()?;
+        let rel = target.for_dir_op();
+        let read_dir = self.handles.read_dir(index, rel, ctx.mount_dir)?;
+        let budget = MemoryBudget::full(ctx.memory_usage_limit);
+        visible_entries(read_dir, ctx.mount_dir, rel, path, budget).ok()
     }
 
     /// Describes the entry at virtual path `path` as the four predicates would,

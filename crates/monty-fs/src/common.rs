@@ -14,7 +14,7 @@ use std::{
 #[cfg(unix)]
 use cap_std::fs::OpenOptionsExt;
 use cap_std::{
-    fs::{Dir, File, Metadata, OpenOptions},
+    fs::{Dir, File, Metadata, OpenOptions, ReadDir},
     time::SystemTime as CapSystemTime,
 };
 use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, scan::EntryInfo, utf8_error_reason};
@@ -378,6 +378,19 @@ pub(super) fn host_list_visible_dir_entries(
     let read_dir = dir
         .read_dir(rel)
         .map_err(|err| map_io(dir.metadata(rel).err().unwrap_or(err), vpath))?;
+    visible_entries(read_dir, dir, rel, vpath, budget)
+}
+
+/// The visible entries of `read_dir`, a listing of mount-relative `rel`, as
+/// [`host_list_visible_dir_entries`] returns them; symlinks are resolved from
+/// `mount_dir`, the mount's own descriptor, whatever handle produced the listing.
+pub(super) fn visible_entries(
+    read_dir: ReadDir,
+    mount_dir: &Dir,
+    rel: &str,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<Vec<(String, EntryInfo)>, MountError> {
     let mut entries = Vec::new();
     let mut memory_usage = 0_u64;
 
@@ -391,7 +404,7 @@ pub(super) fn host_list_visible_dir_entries(
             // different entry and silently drop this one. The lookup must stay
             // path-based so it runs through the descriptor's confinement check —
             // `entry.metadata()` resolves the link without one.
-            let Ok(target) = dir.metadata(join_mount_relative_os(rel, &raw_name)) else {
+            let Ok(target) = mount_dir.metadata(join_mount_relative_os(rel, &raw_name)) else {
                 continue;
             };
             EntryInfo {
