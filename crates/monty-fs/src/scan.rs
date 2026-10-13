@@ -8,7 +8,9 @@
 //! the scan root included. A listing types its entries from the directory
 //! itself, so only symlinks and nested mount points cost a lookup each.
 
-use cap_std::fs::{Dir, ReadDir};
+use std::io::{self, ErrorKind};
+
+use cap_std::fs::{Dir, Metadata, ReadDir};
 use monty_types::{
     MontyObject, ScanArgs,
     scan::{EntryInfo, ScanSource, collect_scan},
@@ -116,6 +118,19 @@ impl DirHandles {
             Some((parent, name)) => {
                 let position = self.handle(mount, parent, root)?;
                 self.open[position].2.read_dir(name).ok()
+            }
+        }
+    }
+
+    /// `lstat`s mount `mount`'s entry at `rel` through its parent's handle;
+    /// `None` for the mount root, or when the parent cannot be opened.
+    fn symlink_metadata(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<io::Result<Metadata>> {
+        match rel.rsplit_once('/') {
+            None if rel == "." => None,
+            None => Some(root.symlink_metadata(rel)),
+            Some((parent, name)) => {
+                let position = self.handle(mount, parent, root)?;
+                Some(self.open[position].2.symlink_metadata(name))
             }
         }
     }
@@ -231,11 +246,42 @@ impl MountSource<'_> {
         let Some(index) = find_mount(self.mounts, path) else {
             return Ok(PathInfo::ABSENT);
         };
+        if let Some(info) = self.info_through_handles(index, path) {
+            return Ok(info);
+        }
         let (ctx, mode) = self.mounts[index].backend();
         match dispatch::path_info(path, &ctx, mode) {
             Ok(info) => Ok(info),
             Err(err @ MountError::MemoryUsageLimitExceeded(_)) => Err(err),
             Err(_) => Ok(PathInfo::ABSENT),
+        }
+    }
+
+    /// Describes `path` on direct mount `index` with one `lstat` through its
+    /// parent's open handle, as [`PathInfo::from_host`] would.
+    ///
+    /// `None` when that cannot settle it: an overlay mount, a symlink (its target
+    /// is resolved from the mount root), or any failure but a missing name.
+    fn info_through_handles(&mut self, index: usize, path: &str) -> Option<PathInfo> {
+        let (ctx, mode) = self.mounts[index].backend();
+        if matches!(*mode, MountMode::OverlayMemory(_)) {
+            return None;
+        }
+        let target = resolve_virtual_path(path, ctx.mount_virtual).ok()?;
+        match self
+            .handles
+            .symlink_metadata(index, target.for_dir_op(), ctx.mount_dir)?
+        {
+            Ok(meta) if !meta.is_symlink() => Some(PathInfo {
+                info: EntryInfo {
+                    is_dir: meta.is_dir(),
+                    is_file: meta.is_file(),
+                    is_symlink: false,
+                },
+                exists: true,
+            }),
+            Err(err) if err.kind() == ErrorKind::NotFound => Some(PathInfo::ABSENT),
+            _ => None,
         }
     }
 
