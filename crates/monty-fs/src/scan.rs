@@ -6,7 +6,9 @@
 //! policy checks, mode rules and descriptor confinement as a sandbox
 //! `Path.iterdir()` or `Path.is_dir()` on it would — a subtree mounted below
 //! the scan root included. A listing types its entries from the directory
-//! itself, so only symlinks and nested mount points cost a lookup each.
+//! itself, so only symlinks and nested mount points cost a lookup each, and
+//! opens its directory through its parent's handle ([`DirHandles`]) rather than
+//! from the mount root.
 
 use std::io::{self, ErrorKind};
 
@@ -88,125 +90,6 @@ fn reject_overlong_pattern(parts: &[String]) -> Result<(), MountError> {
         joined.push_str(&segment[..end]);
     }
     reject_overlong_path(&joined)
-}
-
-/// Directory handles one scan keeps open, so a directory is listed through its
-/// parent's handle instead of by resolving every component from the mount root,
-/// which cap-std does one `openat` at a time where the kernel cannot confine a
-/// lookup itself (macOS).
-///
-/// Every handle descends from the mount's descriptor through cap-std, so what
-/// is opened through it stays inside the mount. Only directories whose children
-/// are listed are kept, at most [`Self::CAPACITY`], the least recently used going first.
-#[derive(Default)]
-struct DirHandles {
-    /// `(mount index, mount-relative path, handle)`, most recently used last.
-    open: Vec<(usize, String, Dir)>,
-}
-
-impl DirHandles {
-    /// Most handles open at once; a depth-first scan revisits few ancestors.
-    const CAPACITY: usize = 32;
-
-    /// Lists mount `mount`'s directory at `rel` (`.` for its root) through its
-    /// parent's handle; `root` is the mount's descriptor, the top-level parent.
-    ///
-    /// `None` when the parent cannot reach it, as with a symlink leaving the parent.
-    fn read_dir(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<ReadDir> {
-        match rel.rsplit_once('/') {
-            None => root.read_dir(rel).ok(),
-            Some((parent, name)) => {
-                let position = self.handle(mount, parent, root, false)?;
-                self.open[position].2.read_dir(name).ok()
-            }
-        }
-    }
-
-    /// Lists overlay mount `mount`'s directory at `rel` through handles opened
-    /// only on directories that are not symlinks, as the overlay's own
-    /// component walk requires; `None` when one is a link, or anything fails.
-    fn read_dir_link_free(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<ReadDir> {
-        if rel == "." {
-            return root.entries().ok();
-        }
-        let position = self.handle(mount, rel, root, true)?;
-        self.open[position].2.entries().ok()
-    }
-
-    /// Describes `path` on a direct mount with one `lstat` through its parent's
-    /// handle, as [`PathInfo::from_host`] would.
-    ///
-    /// `None` when that cannot settle it: a symlink, whose target is resolved
-    /// from the mount root, or any failure but a missing name.
-    fn direct_path_info(&mut self, mount: usize, path: &str, ctx: &MountContext<'_>) -> Option<PathInfo> {
-        let target = resolve_virtual_path(path, ctx.mount_virtual).ok()?;
-        match self.symlink_metadata(mount, target.for_dir_op(), ctx.mount_dir, false)? {
-            Ok(meta) if !meta.is_symlink() => Some(PathInfo {
-                info: EntryInfo {
-                    is_dir: meta.is_dir(),
-                    is_file: meta.is_file(),
-                    is_symlink: false,
-                },
-                exists: true,
-            }),
-            Err(err) if err.kind() == ErrorKind::NotFound => Some(PathInfo::ABSENT),
-            _ => None,
-        }
-    }
-
-    /// `lstat`s mount `mount`'s entry at `rel` through its parent's handle (see
-    /// [`Self::handle`] for `refuse_links`); `None` for the mount root, or when
-    /// the parent cannot be opened.
-    fn symlink_metadata(
-        &mut self,
-        mount: usize,
-        rel: &str,
-        root: &Dir,
-        refuse_links: bool,
-    ) -> Option<io::Result<Metadata>> {
-        match rel.rsplit_once('/') {
-            None if rel == "." => None,
-            None => Some(root.symlink_metadata(rel)),
-            Some((parent, name)) => {
-                let position = self.handle(mount, parent, root, refuse_links)?;
-                Some(self.open[position].2.symlink_metadata(name))
-            }
-        }
-    }
-
-    /// Where the handle of `rel` is kept, opening it below its parent's handle,
-    /// recursively, if it is not open.
-    ///
-    /// With `refuse_links`, a component is opened only if `lstat` finds a real
-    /// directory, as the overlay's component walk does; a mount always passes
-    /// the same value, so its handles all follow one rule.
-    fn handle(&mut self, mount: usize, rel: &str, root: &Dir, refuse_links: bool) -> Option<usize> {
-        if let Some(position) = self
-            .open
-            .iter()
-            .position(|(index, path, _)| *index == mount && path == rel)
-        {
-            let entry = self.open.remove(position);
-            self.open.push(entry);
-        } else {
-            let (parent, name) = match rel.rsplit_once('/') {
-                None => (root, rel),
-                Some((parent, name)) => {
-                    let position = self.handle(mount, parent, root, refuse_links)?;
-                    (&self.open[position].2, name)
-                }
-            };
-            if refuse_links && !parent.symlink_metadata(name).is_ok_and(|meta| meta.is_dir()) {
-                return None;
-            }
-            let dir = parent.open_dir(name).ok()?;
-            if self.open.len() == Self::CAPACITY {
-                self.open.remove(0);
-            }
-            self.open.push((mount, rel.to_owned(), dir));
-        }
-        Some(self.open.len() - 1)
-    }
 }
 
 /// A directory's entries by name, each typed as a lookup of it would be.
@@ -374,5 +257,124 @@ impl ScanSource for MountSource<'_> {
         } else {
             Ok(())
         }
+    }
+}
+
+/// Directory handles one scan keeps open, so a directory is listed through its
+/// parent's handle instead of by resolving every component from the mount root,
+/// which cap-std does one `openat` at a time where the kernel cannot confine a
+/// lookup itself (macOS).
+///
+/// Every handle descends from the mount's descriptor through cap-std, so what
+/// is opened through it stays inside the mount. Only directories whose children
+/// are listed are kept, at most [`Self::CAPACITY`], the least recently used going first.
+#[derive(Default)]
+struct DirHandles {
+    /// `(mount index, mount-relative path, handle)`, most recently used last.
+    open: Vec<(usize, String, Dir)>,
+}
+
+impl DirHandles {
+    /// Most handles open at once; a depth-first scan revisits few ancestors.
+    const CAPACITY: usize = 32;
+
+    /// Lists mount `mount`'s directory at `rel` (`.` for its root) through its
+    /// parent's handle; `root` is the mount's descriptor, the top-level parent.
+    ///
+    /// `None` when the parent cannot reach it, as with a symlink leaving the parent.
+    fn read_dir(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<ReadDir> {
+        match rel.rsplit_once('/') {
+            None => root.read_dir(rel).ok(),
+            Some((parent, name)) => {
+                let position = self.handle(mount, parent, root, false)?;
+                self.open[position].2.read_dir(name).ok()
+            }
+        }
+    }
+
+    /// Lists overlay mount `mount`'s directory at `rel` through handles opened
+    /// only on directories that are not symlinks, as the overlay's own
+    /// component walk requires; `None` when one is a link, or anything fails.
+    fn read_dir_link_free(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<ReadDir> {
+        if rel == "." {
+            return root.entries().ok();
+        }
+        let position = self.handle(mount, rel, root, true)?;
+        self.open[position].2.entries().ok()
+    }
+
+    /// Describes `path` on a direct mount with one `lstat` through its parent's
+    /// handle, as [`PathInfo::from_host`] would.
+    ///
+    /// `None` when that cannot settle it: a symlink, whose target is resolved
+    /// from the mount root, or any failure but a missing name.
+    fn direct_path_info(&mut self, mount: usize, path: &str, ctx: &MountContext<'_>) -> Option<PathInfo> {
+        let target = resolve_virtual_path(path, ctx.mount_virtual).ok()?;
+        match self.symlink_metadata(mount, target.for_dir_op(), ctx.mount_dir, false)? {
+            Ok(meta) if !meta.is_symlink() => Some(PathInfo {
+                info: EntryInfo {
+                    is_dir: meta.is_dir(),
+                    is_file: meta.is_file(),
+                    is_symlink: false,
+                },
+                exists: true,
+            }),
+            Err(err) if err.kind() == ErrorKind::NotFound => Some(PathInfo::ABSENT),
+            _ => None,
+        }
+    }
+
+    /// `lstat`s mount `mount`'s entry at `rel` through its parent's handle (see
+    /// [`Self::handle`] for `refuse_links`); `None` for the mount root, or when
+    /// the parent cannot be opened.
+    fn symlink_metadata(
+        &mut self,
+        mount: usize,
+        rel: &str,
+        root: &Dir,
+        refuse_links: bool,
+    ) -> Option<io::Result<Metadata>> {
+        match rel.rsplit_once('/') {
+            None if rel == "." => None,
+            None => Some(root.symlink_metadata(rel)),
+            Some((parent, name)) => {
+                let position = self.handle(mount, parent, root, refuse_links)?;
+                Some(self.open[position].2.symlink_metadata(name))
+            }
+        }
+    }
+
+    /// Where the handle of `rel` is kept, opening it below its parent's handle,
+    /// recursively, if it is not open.
+    ///
+    /// With `refuse_links`, a component is opened only if `lstat` finds a real
+    /// directory, as the overlay's component walk does; a mount always passes
+    /// the same value, so its handles all follow one rule.
+    fn handle(&mut self, mount: usize, rel: &str, root: &Dir, refuse_links: bool) -> Option<usize> {
+        if let Some(position) = self
+            .open
+            .iter()
+            .position(|(index, path, _)| *index == mount && path == rel)
+        {
+            let entry = self.open.remove(position);
+            self.open.push(entry);
+        } else {
+            let (parent, name) = match rel.rsplit_once('/') {
+                None => (root, rel),
+                Some((parent, name)) => {
+                    let position = self.handle(mount, parent, root, refuse_links)?;
+                    (&self.open[position].2, name)
+                }
+            };
+            if refuse_links && !parent.symlink_metadata(name).is_ok_and(|meta| meta.is_dir()) {
+                return None;
+            }
+            let dir = parent.open_dir(name).ok()?;
+            if self.open.len() == Self::CAPACITY {
+                self.open.remove(0);
+            }
+            self.open.push((mount, rel.to_owned(), dir));
+        }
+        Some(self.open.len() - 1)
     }
 }
