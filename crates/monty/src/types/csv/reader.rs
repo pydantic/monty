@@ -5,15 +5,13 @@
 //! A record may span several source lines (a quoted field containing newlines), so one
 //! `__next__` pulls lines until the machine returns to `StartRecord`.
 
-use std::mem;
-
 use serde::{Deserialize, Serialize};
 
 use crate::{
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, HeapData, HeapId, HeapRead},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{DropGuard, Heap, HeapData, HeapId, HeapRead},
     types::{
         CsvObject, List,
         csv::dialect::{Dialect, Quoting},
@@ -60,6 +58,13 @@ impl Reader {
 
 /// One record as a `list` of fields, or `None` once the source is exhausted.
 pub(super) fn next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    let fields = next_fields(obj, vm)?;
+    Ok(fields.map(|fields| Value::Ref(vm.heap.allocate(HeapData::List(List::new(fields))))))
+}
+
+/// The fields of the next record, or `None` once the source is exhausted. `DictReader`
+/// takes the fields this way, so its rows never pass through a list.
+pub(super) fn next_fields<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Vec<Value>>> {
     let (source, dialect) = {
         let CsvObject::Reader(reader) = obj.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::Reader")
@@ -88,7 +93,7 @@ pub(super) fn next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> Ru
                 if dialect.strict {
                     return Err(ExcType::csv_error("unexpected end of data"));
                 }
-                parser.save_field(fields, vm)?;
+                parser.save_field(fields, vm.heap)?;
                 break;
             }
             return Ok(None);
@@ -103,20 +108,30 @@ pub(super) fn next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> Ru
         if let CsvObject::Reader(reader) = obj.get_mut(vm.heap) {
             reader.line_num += 1;
         }
-        // Owned so the parser can re-enter the VM (float conversion) per character.
-        let text = line.to_str(vm)?.to_owned();
-        for c in text.chars() {
-            vm.heap.tracker.check_time_every(polls)?;
+        // The parser only allocates, so the line is read in place rather than copied.
+        let heap: &Heap = vm.heap;
+        let mut rest = line.to_str_heap(heap, vm.interns)?;
+        while !rest.is_empty() {
+            heap.tracker.check_time_every(polls)?;
             polls += 1;
-            parser.process_char(Some(c), fields, vm)?;
+            // Inside a field, everything up to the next character the dialect treats
+            // specially goes in as one run; any other state moves one character.
+            let run = parser.run_len(rest);
+            if run > 0 {
+                parser.add_run(&rest[..run])?;
+                rest = &rest[run..];
+            } else {
+                let c = rest.chars().next().expect("rest is not empty");
+                rest = &rest[c.len_utf8()..];
+                parser.process_char(Some(c), fields, heap)?;
+            }
         }
-        parser.process_char(None, fields, vm)?;
+        parser.process_char(None, fields, heap)?;
         if parser.state == State::StartRecord {
             break;
         }
     }
-    let (fields, vm) = fields_guard.into_parts();
-    Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(fields))))))
+    Ok(Some(fields_guard.into_inner()))
 }
 
 /// The parser states of CPython's `_csv.c`.
@@ -138,7 +153,7 @@ enum State {
 struct Parser<'d> {
     dialect: &'d Dialect,
     state: State,
-    /// The field being built.
+    /// The field being built; kept between fields so its capacity is reused.
     field: String,
     /// Characters in `field`, checked against [`FIELD_SIZE_LIMIT`].
     field_len: usize,
@@ -159,7 +174,7 @@ impl<'d> Parser<'d> {
     }
 
     /// Feeds one character, or `None` for the end of a source line.
-    fn process_char(&mut self, c: Option<char>, fields: &mut Vec<Value>, vm: &mut VM<'_>) -> RunResult<()> {
+    fn process_char(&mut self, c: Option<char>, fields: &mut Vec<Value>, heap: &Heap) -> RunResult<()> {
         let d = self.dialect;
         // The state a line break leads to: the record is complete at end of line,
         // otherwise the rest of the terminator is swallowed.
@@ -178,14 +193,14 @@ impl<'d> Parser<'d> {
                 Some('\n' | '\r') => self.state = State::EatCrNl,
                 Some(_) => {
                     self.state = State::StartField;
-                    return self.process_char(c, fields, vm);
+                    return self.process_char(c, fields, heap);
                 }
             },
             State::StartField => {
                 self.unquoted_field = true;
                 match c {
                     None | Some('\n' | '\r') => {
-                        self.save_field(fields, vm)?;
+                        self.save_field(fields, heap)?;
                         self.state = after_break(c);
                     }
                     Some(ch) if self.is_quote(ch) => {
@@ -195,7 +210,7 @@ impl<'d> Parser<'d> {
                     Some(ch) if Some(ch) == d.escapechar => self.state = State::EscapedChar,
                     // Leading spaces are skipped.
                     Some(' ') if d.skipinitialspace => {}
-                    Some(ch) if ch == d.delimiter => self.save_field(fields, vm)?,
+                    Some(ch) if ch == d.delimiter => self.save_field(fields, heap)?,
                     Some(ch) => {
                         self.add_char(ch)?;
                         self.state = State::InField;
@@ -214,17 +229,17 @@ impl<'d> Parser<'d> {
             State::AfterEscapedCrNl => {
                 if c.is_some() {
                     self.state = State::InField;
-                    return self.process_char(c, fields, vm);
+                    return self.process_char(c, fields, heap);
                 }
             }
             State::InField => match c {
                 None | Some('\n' | '\r') => {
-                    self.save_field(fields, vm)?;
+                    self.save_field(fields, heap)?;
                     self.state = after_break(c);
                 }
                 Some(ch) if Some(ch) == d.escapechar => self.state = State::EscapedChar,
                 Some(ch) if ch == d.delimiter => {
-                    self.save_field(fields, vm)?;
+                    self.save_field(fields, heap)?;
                     self.state = State::StartField;
                 }
                 Some(ch) => self.add_char(ch)?,
@@ -252,11 +267,11 @@ impl<'d> Parser<'d> {
                     self.state = State::InQuotedField;
                 }
                 Some(ch) if ch == d.delimiter => {
-                    self.save_field(fields, vm)?;
+                    self.save_field(fields, heap)?;
                     self.state = State::StartField;
                 }
                 None | Some('\n' | '\r') => {
-                    self.save_field(fields, vm)?;
+                    self.save_field(fields, heap)?;
                     self.state = after_break(c);
                 }
                 Some(_) if d.strict => {
@@ -285,17 +300,42 @@ impl<'d> Parser<'d> {
         Ok(())
     }
 
+    /// Bytes at the start of `rest` that the current field absorbs as ordinary text: up to
+    /// the next delimiter, escape or line break in a plain field, up to the next quote or
+    /// escape in a quoted one. Zero in every other state, where each character is a step.
+    fn run_len(&self, rest: &str) -> usize {
+        let d = self.dialect;
+        match self.state {
+            State::InField => {
+                rest.find(|c: char| matches!(c, '\n' | '\r') || Some(c) == d.escapechar || c == d.delimiter)
+            }
+            State::InQuotedField => rest.find(|c: char| Some(c) == d.escapechar || self.is_quote(c)),
+            _ => Some(0),
+        }
+        .unwrap_or(rest.len())
+    }
+
     /// Whether `c` opens or closes a quoted field under this dialect.
     fn is_quote(&self, c: char) -> bool {
         Some(c) == self.dialect.quotechar && self.dialect.quoting != Quoting::None
     }
 
+    /// Appends a run of ordinary characters to the current field, within the field size limit.
+    fn add_run(&mut self, run: &str) -> RunResult<()> {
+        let count = run.chars().count();
+        if self.field_len + count > FIELD_SIZE_LIMIT {
+            Err(field_limit_error())
+        } else {
+            self.field.push_str(run);
+            self.field_len += count;
+            Ok(())
+        }
+    }
+
     /// Appends a character to the current field, within the field size limit.
     fn add_char(&mut self, c: char) -> RunResult<()> {
         if self.field_len >= FIELD_SIZE_LIMIT {
-            Err(ExcType::csv_error(format!(
-                "field larger than field limit ({FIELD_SIZE_LIMIT})"
-            )))
+            Err(field_limit_error())
         } else {
             self.field.push(c);
             self.field_len += 1;
@@ -305,23 +345,27 @@ impl<'d> Parser<'d> {
 
     /// Closes the current field: an unquoted empty field is `None` under `QUOTE_NOTNULL` /
     /// `QUOTE_STRINGS`, an unquoted non-empty one a `float` under `QUOTE_NONNUMERIC` / `QUOTE_STRINGS`.
-    fn save_field(&mut self, fields: &mut Vec<Value>, vm: &mut VM<'_>) -> RunResult<()> {
+    fn save_field(&mut self, fields: &mut Vec<Value>, heap: &Heap) -> RunResult<()> {
         let quoting = self.dialect.quoting;
         let unquoted = self.unquoted_field;
-        let text = mem::take(&mut self.field);
-        let field_len = mem::take(&mut self.field_len);
-        self.unquoted_field = false;
-        let value = if unquoted && field_len == 0 && matches!(quoting, Quoting::Notnull | Quoting::Strings) {
+        let value = if unquoted && self.field_len == 0 && matches!(quoting, Quoting::Notnull | Quoting::Strings) {
             Value::None
-        } else if unquoted && field_len != 0 && matches!(quoting, Quoting::Nonnumeric | Quoting::Strings) {
-            Value::Float(parse_f64_from_str(&text)?)
+        } else if unquoted && self.field_len != 0 && matches!(quoting, Quoting::Nonnumeric | Quoting::Strings) {
+            Value::Float(parse_f64_from_str(&self.field)?)
         } else {
-            allocate_string(text, vm.heap)
+            // From the slice: one exact-size allocation, and the buffer keeps its capacity.
+            allocate_string(self.field.as_str(), heap)
         };
-        vm.heap
-            .tracker
-            .check_growth(fields.len(), fields.capacity(), VALUE_SIZE)?;
+        self.field.clear();
+        self.field_len = 0;
+        self.unquoted_field = false;
+        heap.tracker.check_growth(fields.len(), fields.capacity(), VALUE_SIZE)?;
         fields.push(value);
         Ok(())
     }
+}
+
+/// The `_csv.Error` for a field past [`FIELD_SIZE_LIMIT`].
+fn field_limit_error() -> RunError {
+    ExcType::csv_error(format!("field larger than field limit ({FIELD_SIZE_LIMIT})"))
 }

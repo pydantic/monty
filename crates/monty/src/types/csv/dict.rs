@@ -11,6 +11,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap_traits::DropWithContext,
     types::{
         CsvObject, Dict, List, PyTrait, Set,
         csv::{
@@ -141,11 +142,11 @@ pub(super) fn reader_fieldnames<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut 
         )
     };
     defer_drop!(reader, vm);
-    if unset
-        && let Some(header) = next_row(reader, vm)?
-        && let CsvObject::DictReader(dict_reader) = obj.get_mut(vm.heap)
-    {
-        dict_reader.fieldnames = Some(header);
+    if unset && let Some(header) = next_row(reader, vm)? {
+        let header = Value::Ref(vm.heap.allocate(HeapData::List(List::new(header))));
+        if let CsvObject::DictReader(dict_reader) = obj.get_mut(vm.heap) {
+            dict_reader.fieldnames = Some(header);
+        }
     }
     let line_num = reader_line_num(reader, vm);
     if let CsvObject::DictReader(dict_reader) = obj.get_mut(vm.heap) {
@@ -187,11 +188,11 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
     defer_drop!(restkey, vm);
     defer_drop!(restval, vm);
 
-    let Some(row) = next_row(reader, vm)? else {
+    let Some(items) = next_row(reader, vm)? else {
         return Ok(None);
     };
-    let mut row_guard = DropGuard::new(row, vm);
-    let (row, vm) = row_guard.as_parts_mut();
+    let mut items_guard = DropGuard::new(items, vm);
+    let (items, vm) = items_guard.as_parts_mut();
     let line_num = reader_line_num(reader, vm);
     if let CsvObject::DictReader(dict_reader) = obj.get_mut(vm.heap) {
         dict_reader.line_num = line_num;
@@ -199,13 +200,13 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
     // Blank lines yield empty rows, which CPython skips here. A native loop over the
     // source, so it polls the clock: an endless run of blank lines must still time out.
     let mut skipped = 0usize;
-    while row_len(row, vm) == 0 {
+    while items.is_empty() {
         vm.heap.tracker.check_time_every(skipped)?;
         skipped += 1;
         let Some(next) = next_row(reader, vm)? else {
             return Ok(None);
         };
-        mem::replace(row, next).drop_with(vm);
+        mem::replace(items, next).drop_with(vm);
     }
     // CPython reads `self.fieldnames` to build the dict, and the property refreshes `line_num`.
     let line_num = reader_line_num(reader, vm);
@@ -213,16 +214,13 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
         dict_reader.line_num = line_num;
     }
 
-    let names = collect_iterable(fieldnames, vm)?;
+    let names = fieldnames_items(fieldnames, vm)?;
     let mut names_guard = DropGuard::new(names, vm);
     let (names, vm) = names_guard.as_parts_mut();
-    let items = row_values(row, vm);
-    let mut items_guard = DropGuard::new(items, vm);
-    let (items, vm) = items_guard.as_parts_mut();
 
-    let mut dict_guard = DropGuard::new(Dict::new(), vm);
-    let (dict, vm) = dict_guard.as_parts_mut();
     let (name_count, item_count) = (names.len(), items.len());
+    let mut dict_guard = DropGuard::new(Dict::with_capacity(name_count), vm);
+    let (dict, vm) = dict_guard.as_parts_mut();
     // `dict(zip(fieldnames, row))`: the surplus of the longer side stays behind.
     let paired = name_count.min(item_count);
     for (name, item) in names.drain(..paired).zip(items.drain(..paired)) {
@@ -479,11 +477,32 @@ fn dict_writer_part<'h, T>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>, part: imp
     part(writer)
 }
 
-/// `next(reader)` on the wrapped `_csv.reader`, charging a recursion level for the re-entry.
-fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    let mut guard = vm.recursion_guard()?;
-    let vm = &mut *guard;
-    reader.read(vm).py_next(vm)
+/// The next record's fields from the wrapped `_csv.reader`, taken as a vector rather than
+/// through `next()` so no list is built and discarded per row.
+fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
+    let Value::Ref(reader_id) = reader else {
+        return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
+    };
+    let HeapReadOutput::Csv(mut reader_obj) = vm.heap.read(*reader_id) else {
+        return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
+    };
+    super::reader::next_fields(&mut reader_obj, vm)
+}
+
+/// `fieldnames` as owned values: the `list` the header read produced is copied directly,
+/// any other iterable is iterated as `zip` would.
+fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+    match fieldnames {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => Ok(list
+                .as_slice()
+                .iter()
+                .map(|item| item.clone_with_heap(vm.heap))
+                .collect()),
+            _ => collect_iterable(fieldnames, vm),
+        },
+        _ => collect_iterable(fieldnames, vm),
+    }
 }
 
 /// The wrapped reader's `line_num`.
@@ -497,25 +516,5 @@ fn reader_line_num(reader: &Value, vm: &VM<'_>) -> u64 {
             _ => 0,
         },
         _ => 0,
-    }
-}
-
-/// The length of a row list.
-fn row_len(row: &Value, vm: &VM<'_>) -> usize {
-    row.py_len(vm).unwrap_or(0)
-}
-
-/// Owned clones of a row list's items.
-fn row_values(row: &Value, vm: &VM<'_>) -> Vec<Value> {
-    match row {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::List(list) => list
-                .as_slice()
-                .iter()
-                .map(|item| item.clone_with_heap(vm.heap))
-                .collect(),
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
     }
 }
