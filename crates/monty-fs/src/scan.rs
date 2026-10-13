@@ -22,7 +22,7 @@ use super::{
     error::MountError,
     mount_mode::MountMode,
     mount_table::{Mount, find_mount},
-    overlay::available_memory,
+    overlay::{self, available_memory},
     path_security::{reject_overlong_path, resolve_virtual_path},
 };
 
@@ -116,10 +116,21 @@ impl DirHandles {
         match rel.rsplit_once('/') {
             None => root.read_dir(rel).ok(),
             Some((parent, name)) => {
-                let position = self.handle(mount, parent, root)?;
+                let position = self.handle(mount, parent, root, false)?;
                 self.open[position].2.read_dir(name).ok()
             }
         }
+    }
+
+    /// Lists overlay mount `mount`'s directory at `rel` through handles opened
+    /// only on directories that are not symlinks, as the overlay's own
+    /// component walk requires; `None` when one is a link, or anything fails.
+    fn read_dir_link_free(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<ReadDir> {
+        if rel == "." {
+            return root.entries().ok();
+        }
+        let position = self.handle(mount, rel, root, true)?;
+        self.open[position].2.entries().ok()
     }
 
     /// `lstat`s mount `mount`'s entry at `rel` through its parent's handle;
@@ -129,7 +140,7 @@ impl DirHandles {
             None if rel == "." => None,
             None => Some(root.symlink_metadata(rel)),
             Some((parent, name)) => {
-                let position = self.handle(mount, parent, root)?;
+                let position = self.handle(mount, parent, root, false)?;
                 Some(self.open[position].2.symlink_metadata(name))
             }
         }
@@ -137,7 +148,11 @@ impl DirHandles {
 
     /// Where the handle of `rel` is kept, opening it below its parent's handle,
     /// recursively, if it is not open.
-    fn handle(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<usize> {
+    ///
+    /// With `refuse_links`, a component is opened only if `lstat` finds a real
+    /// directory, as the overlay's component walk does; a mount always passes
+    /// the same value, so its handles all follow one rule.
+    fn handle(&mut self, mount: usize, rel: &str, root: &Dir, refuse_links: bool) -> Option<usize> {
         if let Some(position) = self
             .open
             .iter()
@@ -146,13 +161,17 @@ impl DirHandles {
             let entry = self.open.remove(position);
             self.open.push(entry);
         } else {
-            let dir = match rel.rsplit_once('/') {
-                None => root.open_dir(rel).ok()?,
+            let (parent, name) = match rel.rsplit_once('/') {
+                None => (root, rel),
                 Some((parent, name)) => {
-                    let position = self.handle(mount, parent, root)?;
-                    self.open[position].2.open_dir(name).ok()?
+                    let position = self.handle(mount, parent, root, refuse_links)?;
+                    (&self.open[position].2, name)
                 }
             };
+            if refuse_links && !parent.symlink_metadata(name).is_ok_and(|meta| meta.is_dir()) {
+                return None;
+            }
+            let dir = parent.open_dir(name).ok()?;
             if self.open.len() == Self::CAPACITY {
                 self.open.remove(0);
             }
@@ -218,7 +237,16 @@ impl MountSource<'_> {
             return Ok((index, listing));
         }
         let (ctx, mode) = self.mounts[index].backend();
-        dispatch::scan_list(path, &ctx, mode).map(|entries| (index, entries))
+        let listing = match &*mode {
+            MountMode::OverlayMemory(state) => {
+                let handles = &mut self.handles;
+                overlay::scan_list(path, &ctx, state, |rel| {
+                    handles.read_dir_link_free(index, rel, ctx.mount_dir)
+                })
+            }
+            MountMode::ReadWrite | MountMode::ReadOnly => dispatch::scan_list(path, &ctx, mode),
+        };
+        listing.map(|entries| (index, entries))
     }
 
     /// Lists `path` on direct mount `index` through its parent's open handle.

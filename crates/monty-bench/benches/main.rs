@@ -8,7 +8,7 @@ use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, 
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, SessionRef};
-use monty_fs::{MountCallOutcome, MountMode, MountTable};
+use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{CompileOptions, ExtFunctionResult, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
@@ -62,11 +62,11 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
     });
 }
 
-/// Runs a benchmark with `host_root` mounted read-only at `/data`, bound to
+/// Runs a benchmark with `host_root` mounted at `/data` in `mode`, bound to
 /// `DATA`, answering every OS call from the mount as a host would.
 ///
 /// Each iteration starts a clone of the parsed program, since `start` consumes it.
-fn run_monty_mounted(bench: &mut Bencher, code: &str, host_root: &Path, expected: i64) {
+fn run_monty_mounted(bench: &mut Bencher, code: &str, host_root: &Path, mode: MountMode, expected: i64) {
     let ex = MontyRun::new(
         code.to_owned(),
         "test.py",
@@ -75,7 +75,7 @@ fn run_monty_mounted(bench: &mut Bencher, code: &str, host_root: &Path, expected
     )
     .unwrap();
     let mut mounts = MountTable::new();
-    mounts.mount("/data", host_root, MountMode::ReadOnly, None).unwrap();
+    mounts.mount("/data", host_root, mode, None).unwrap();
     let mut run = || {
         let inputs = vec![MontyObject::string("/data".to_owned())];
         let mut progress = ex
@@ -796,21 +796,25 @@ fn criterion_benchmark(c: &mut Criterion) {
     #[cfg(not(codspeed))]
     let host_root = tree.path().to_str().expect("temporary directories have UTF-8 paths");
     c.bench_function("glob_recursive__monty", |b| {
-        run_monty_mounted(b, GLOB_RECURSIVE, tree.path(), 1_020);
+        run_monty_mounted(b, GLOB_RECURSIVE, tree.path(), MountMode::ReadOnly, 1_020);
+    });
+    c.bench_function("glob_recursive_overlay__monty", |b| {
+        let mode = MountMode::OverlayMemory(OverlayState::new());
+        run_monty_mounted(b, GLOB_RECURSIVE, tree.path(), mode, 1_020);
     });
     #[cfg(not(codspeed))]
     c.bench_function("glob_recursive__cpython", |b| {
         run_cpython_with_data(b, GLOB_RECURSIVE, host_root, 1_020);
     });
     c.bench_function("glob_wildcard__monty", |b| {
-        run_monty_mounted(b, GLOB_WILDCARD, tree.path(), 20);
+        run_monty_mounted(b, GLOB_WILDCARD, tree.path(), MountMode::ReadOnly, 20);
     });
     #[cfg(not(codspeed))]
     c.bench_function("glob_wildcard__cpython", |b| {
         run_cpython_with_data(b, GLOB_WILDCARD, host_root, 20);
     });
     c.bench_function("walk_files__monty", |b| {
-        run_monty_mounted(b, WALK_FILES, tree.path(), 4_020);
+        run_monty_mounted(b, WALK_FILES, tree.path(), MountMode::ReadOnly, 4_020);
     });
     #[cfg(not(codspeed))]
     c.bench_function("walk_files__cpython", |b| {

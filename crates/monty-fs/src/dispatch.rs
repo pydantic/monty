@@ -226,7 +226,7 @@ pub(super) fn scan_list(
 ) -> Result<Vec<(String, EntryInfo)>, MountError> {
     match mode {
         MountMode::ReadWrite | MountMode::ReadOnly => direct::scan_list(path, ctx),
-        MountMode::OverlayMemory(state) => overlay::scan_list(path, ctx, state),
+        MountMode::OverlayMemory(state) => overlay::scan_list(path, ctx, state, |_| None),
     }
 }
 

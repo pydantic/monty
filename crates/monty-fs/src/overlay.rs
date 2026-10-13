@@ -7,7 +7,7 @@
 use std::io::ErrorKind;
 
 use ahash::AHashSet;
-use cap_std::fs::Dir;
+use cap_std::fs::{Dir, ReadDir};
 use monty_types::{FileMode, MontyObject, dir_stat, file_stat, normalize_virtual_path, scan::EntryInfo};
 
 use super::{
@@ -15,7 +15,7 @@ use super::{
         LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8, check_write_limit,
         commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir, host_is_file,
         host_list_visible_dir_entries, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
-        read_file_limited,
+        read_file_limited, visible_entries,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -382,13 +382,29 @@ pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, state: &OverlayState
 /// Lists the directory `path` for a scan, describing each entry as [`path_info`]
 /// on it would, from the listing alone: overlay entries by kind, real ones by
 /// the type their directory entry records.
+///
+/// `open_real` may list a real directory the overlay does not hold, given its
+/// mount-relative path, through a chain of directories it found link-free;
+/// `None` resolves and checks the path here instead, raising what that finds.
 pub(super) fn scan_list(
     path: &str,
     ctx: &MountContext<'_>,
     state: &OverlayState,
+    open_real: impl FnOnce(&str) -> Option<ReadDir>,
 ) -> Result<Vec<(String, EntryInfo)>, MountError> {
     let relative = relative_path(path, ctx)?;
-    let host_dir_to_merge = real_dir_to_merge(state, &relative, ctx, path)?;
+    let opened = if state.get(&relative).is_none() {
+        resolve_virtual_path(path, ctx.mount_virtual).ok().and_then(|target| {
+            let rel = target.for_dir_op();
+            open_real(rel).map(|read_dir| (rel.to_owned(), Some(read_dir)))
+        })
+    } else {
+        None
+    };
+    let host_dir_to_merge = match opened {
+        Some(opened) => Some(opened),
+        None => real_dir_to_merge(state, &relative, ctx, path)?.map(|rel| (rel, None)),
+    };
     let budget = available_memory(state, ctx)?;
     let mut seen_names: AHashSet<&str> = AHashSet::new();
     let mut entries = Vec::new();
@@ -415,9 +431,13 @@ pub(super) fn scan_list(
         entries.push((name.to_owned(), info));
     }
 
-    if let Some(host_dir) = host_dir_to_merge {
+    if let Some((host_dir, read_dir)) = host_dir_to_merge {
         let remaining = budget.shrink(transient_usage)?;
-        for (name, info) in host_list_visible_dir_entries(ctx.mount_dir, &host_dir, path, remaining)? {
+        let listing = match read_dir {
+            Some(read_dir) => visible_entries(read_dir, ctx.mount_dir, &host_dir, path, remaining)?,
+            None => host_list_visible_dir_entries(ctx.mount_dir, &host_dir, path, remaining)?,
+        };
+        for (name, info) in listing {
             if !seen_names.contains(name.as_str()) {
                 // The mode never follows a link, so one is a symlink and nothing more.
                 let info = if info.is_symlink { SYMLINK_ONLY } else { info };
