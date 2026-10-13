@@ -5,7 +5,7 @@
 //! write per `writerows`); any other target's `write`, bound at construction, runs as a
 //! Python call.
 
-use std::mem;
+use std::{fmt::Write, mem};
 
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    fstring::FormatFloat,
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapRead},
     intern::StaticStrings,
     os_dispatch::{PendingEffect, PostConversionEffect},
@@ -23,8 +24,9 @@ use crate::{
         CsvObject, PyTrait, Type,
         csv::dialect::{Dialect, Quoting},
         iter::collect_owned_iterable,
+        str::allocate_string,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// A `_csv.writer`: the target, its `write` callable and the dialect.
@@ -97,10 +99,23 @@ pub(super) fn writerow<'h>(
 ) -> RunResult<CallResult> {
     let row = args.get_one_arg("writer.writerow", vm.heap)?;
     defer_drop!(row, vm);
+    let items = row_items(row, vm)?;
+    defer_drop!(items, vm);
+    write_fields(obj, items, vm)
+}
+
+/// Formats `items` as one record and writes it, returning whatever `write()` returns: the
+/// tail of `writerow`, and of the `DictWriter` methods once they have flattened their dict.
+pub(super) fn write_fields<'h>(
+    obj: &mut HeapRead<'h, CsvObject>,
+    items: &[Value],
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
     let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
     defer_drop!(write, vm);
-    let line = format_line(&dialect, &terminator_chars(&dialect.lineterminator), row, vm)?;
+    let terminator_chars = terminator_chars(&dialect.lineterminator);
+    let line = format_items(&dialect, &terminator_chars, items, &mut String::new(), vm)?;
     write_line(target, write, line, vm)
 }
 
@@ -137,26 +152,31 @@ pub(super) fn writerows<'h>(
     } else {
         let iterator = rows.py_iter(vm)?;
         defer_drop!(iterator, vm);
+        // One line buffer serves every row, so each costs a single exact-size allocation.
+        let mut line = String::new();
         // One view across the loop: its step count is what polls the time limit.
         let mut rows = iterator.read(vm);
         while let Some(row) = rows.py_next(vm)? {
             defer_drop!(row, vm);
-            writerow_now(write, &dialect, &terminator_chars, row, vm)?;
+            let items = row_items(row, vm)?;
+            defer_drop!(items, vm);
+            writerow_now(write, &dialect, &terminator_chars, items, &mut line, vm)?;
         }
         Ok(CallResult::Value(Value::None))
     }
 }
 
-/// Formats `row` and runs the bound `write` to completion; the per-row step of `writerows`
-/// and `DictWriter.writerows` on a target that is not a file.
+/// Formats `items` through `line` and runs the bound `write` to completion; the per-row step
+/// of `writerows` and `DictWriter.writerows` on a target that is not a file.
 pub(super) fn writerow_now(
     write: &Value,
     dialect: &Dialect,
     terminator_chars: &[char],
-    row: &Value,
+    items: &[Value],
+    line: &mut String,
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
-    let line = format_line(dialect, terminator_chars, row, vm)?;
+    let line = format_items(dialect, terminator_chars, items, line, vm)?;
     vm.evaluate_function("writer.writerows", write, ArgValues::One(line))?
         .drop_with(vm);
     Ok(())
@@ -172,13 +192,19 @@ pub(super) fn terminator_chars(lineterminator: &str) -> Vec<char> {
     chars
 }
 
-/// One record as a `str`: the fields of `row` through `format_row`.
-fn format_line(dialect: &Dialect, terminator_chars: &[char], row: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let items = row_items(row, vm)?;
-    defer_drop!(items, vm);
-    let mut line = String::new();
-    format_row(dialect, terminator_chars, items, &mut line, vm)?;
-    StringBuilder::from_existing(line, &vm.heap.tracker).finish(vm.heap)
+/// One record as a `str`, formatted through `line`, which is cleared first and keeps its
+/// capacity for the caller's next record.
+fn format_items(
+    dialect: &Dialect,
+    terminator_chars: &[char],
+    items: &[Value],
+    line: &mut String,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
+    line.clear();
+    format_row(dialect, terminator_chars, items, line, vm)?;
+    // From the slice: one exact-size allocation, bounded by the tracker-grown buffer.
+    Ok(allocate_string(line.as_str(), vm.heap))
 }
 
 /// Appends one record to `out`: `join_append` per field plus the line terminator.
@@ -196,6 +222,7 @@ pub(crate) fn format_row(
 ) -> RunResult<()> {
     let mut record_len = 0usize;
     let mut field_buffer = String::new();
+    let mut number = String::new();
     for (index, item) in items.iter().enumerate() {
         // A `None` field skips the polled character loop, so poll per field as well.
         vm.heap.tracker.check_time_every(index)?;
@@ -207,17 +234,40 @@ pub(crate) fn format_row(
             Quoting::Minimal | Quoting::None => false,
         };
         field_buffer.clear();
-        if !matches!(item, Value::None) {
-            let text = item.py_str(vm)?;
-            defer_drop!(text, vm);
-            append_field_data(
-                dialect,
-                terminator_chars,
-                text.to_str(vm)?,
-                &mut quoted,
-                &mut field_buffer,
-                &vm.heap.tracker,
-            )?;
+        let tracker = &vm.heap.tracker;
+        match item {
+            Value::None => {}
+            // `str()` of an int or float is written to a stack or scratch buffer: the
+            // common numeric fields cost no heap string.
+            Value::Int(v) => {
+                let mut digits = itoa::Buffer::new();
+                let text = digits.format(*v);
+                append_field_data(dialect, terminator_chars, text, &mut quoted, &mut field_buffer, tracker)?;
+            }
+            Value::Float(v) => {
+                number.clear();
+                write!(number, "{}", FormatFloat(*v))?;
+                append_field_data(
+                    dialect,
+                    terminator_chars,
+                    &number,
+                    &mut quoted,
+                    &mut field_buffer,
+                    tracker,
+                )?;
+            }
+            _ => {
+                let text = item.py_str(vm)?;
+                defer_drop!(text, vm);
+                append_field_data(
+                    dialect,
+                    terminator_chars,
+                    text.to_str(vm)?,
+                    &mut quoted,
+                    &mut field_buffer,
+                    &vm.heap.tracker,
+                )?;
+            }
         }
         record_len += append_field(dialect, &field_buffer, quoted, index > 0, out, &vm.heap.tracker)?;
     }
@@ -245,36 +295,47 @@ fn append_field_data(
     buffer: &mut String,
     tracker: &ResourceTracker,
 ) -> RunResult<()> {
-    for (index, c) in text.chars().enumerate() {
-        tracker.check_time_every(index)?;
-        let special = c == dialect.delimiter
+    let is_special = |c: char| {
+        c == dialect.delimiter
             || Some(c) == dialect.escapechar
             || Some(c) == dialect.quotechar
             || c == '\n'
             || c == '\r'
-            || terminator_chars.binary_search(&c).is_ok();
-        if special {
-            let mut want_escape = dialect.quoting == Quoting::None;
-            if !want_escape {
-                if Some(c) == dialect.quotechar {
-                    if dialect.doublequote {
-                        buffer.push(c);
-                    } else {
-                        want_escape = true;
-                    }
-                } else if Some(c) == dialect.escapechar {
+            || terminator_chars.binary_search(&c).is_ok()
+    };
+    let mut rest = text;
+    let mut polls = 0usize;
+    while !rest.is_empty() {
+        tracker.check_time_every(polls)?;
+        polls += 1;
+        // Everything up to the next special character is copied as one run.
+        let run = rest.find(is_special).unwrap_or(rest.len());
+        buffer.push_str(&rest[..run]);
+        rest = &rest[run..];
+        let Some(c) = rest.chars().next() else {
+            break;
+        };
+        rest = &rest[c.len_utf8()..];
+        let mut want_escape = dialect.quoting == Quoting::None;
+        if !want_escape {
+            if Some(c) == dialect.quotechar {
+                if dialect.doublequote {
+                    buffer.push(c);
+                } else {
                     want_escape = true;
                 }
-                if !want_escape {
-                    *quoted = true;
-                }
+            } else if Some(c) == dialect.escapechar {
+                want_escape = true;
             }
-            if want_escape {
-                let Some(escapechar) = dialect.escapechar else {
-                    return Err(ExcType::csv_error("need to escape, but no escapechar set"));
-                };
-                buffer.push(escapechar);
+            if !want_escape {
+                *quoted = true;
             }
+        }
+        if want_escape {
+            let Some(escapechar) = dialect.escapechar else {
+                return Err(ExcType::csv_error("need to escape, but no escapechar set"));
+            };
+            buffer.push(escapechar);
         }
         buffer.push(c);
     }
@@ -282,7 +343,7 @@ fn append_field_data(
 }
 
 /// Appends a prepared field to `out`, after a delimiter when asked and quoted when asked,
-/// returning the characters written (the delimiter included).
+/// returning the bytes written (the delimiter included): the caller only tests it for zero.
 fn append_field(
     dialect: &Dialect,
     text: &str,
@@ -292,7 +353,7 @@ fn append_field(
     tracker: &ResourceTracker,
 ) -> RunResult<usize> {
     let mut builder = StringBuilder::from_existing(mem::take(out), tracker);
-    let mut written = text.chars().count();
+    let mut written = text.len();
     if delimited {
         builder.push(dialect.delimiter)?;
         written += 1;
@@ -321,19 +382,33 @@ fn is_file(value: &Value, vm: &VM<'_>) -> bool {
 }
 
 /// The fields of one row, as `writerow`'s `iter(row)` sees them: a non-iterable row is
-/// `_csv.Error`, unlike `writerows`' plain `TypeError`.
+/// `_csv.Error`, unlike `writerows`' plain `TypeError`. A `list` or `tuple`, the usual row,
+/// is copied without an iterator.
 fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    let iterator = match row.py_iter(vm) {
-        Ok(iterator) => iterator,
-        Err(err) if err.is_catchable(ExcType::TypeError) => {
-            return Err(ExcType::csv_error(format!(
-                "iterable expected, not {}",
-                row.py_type_name(vm)
-            )));
-        }
-        Err(err) => return Err(err),
+    let direct = match row {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => Some(list.as_slice()),
+            HeapData::Tuple(tuple) => Some(tuple.as_slice()),
+            _ => None,
+        },
+        _ => None,
     };
-    collect_owned_iterable(iterator, vm)
+    if let Some(items) = direct {
+        vm.heap.tracker.check_allocation(items.len() * VALUE_SIZE)?;
+        Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
+    } else {
+        let iterator = match row.py_iter(vm) {
+            Ok(iterator) => iterator,
+            Err(err) if err.is_catchable(ExcType::TypeError) => {
+                return Err(ExcType::csv_error(format!(
+                    "iterable expected, not {}",
+                    row.py_type_name(vm)
+                )));
+            }
+            Err(err) => return Err(err),
+        };
+        collect_owned_iterable(iterator, vm)
+    }
 }
 
 /// `write(line)`: the host call of a file target, otherwise the bound `write`.
