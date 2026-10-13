@@ -18,7 +18,7 @@ use crate::{
     bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
-    intern::StringId,
+    intern::{Interns, StringId},
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
@@ -50,6 +50,20 @@ pub enum RunProgress {
 }
 
 impl RunProgress {
+    /// The execution heap and its interns for a dump upgrade, or `None` once
+    /// execution has completed.
+    pub(crate) fn heap_and_interns(&mut self) -> Option<(&mut Heap, &Interns)> {
+        match self {
+            Self::FunctionCall(FunctionCall { snapshot, .. })
+            | Self::OsCall(OsCall { snapshot, .. })
+            | Self::NameLookup(NameLookup { snapshot, .. }) => {
+                Some((&mut snapshot.heap, &snapshot.executor.tables.interns))
+            }
+            Self::ResolveFutures(ResolveFutures { heap, executor, .. }) => Some((heap, &executor.tables.interns)),
+            Self::Complete(_) => None,
+        }
+    }
+
     /// Consumes the progress and returns the [`FunctionCall`] struct if this is a function call.
     #[must_use]
     pub fn into_function_call(self) -> Option<FunctionCall> {

@@ -15,7 +15,7 @@ mod options;
 
 pub(crate) use self::{
     field::DataclassField,
-    legacy::upgrade_legacy_class,
+    legacy::{LEGACY_DUMP_VERSION, upgrade_legacy_classes},
     method::{
         DataclassMethod, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error, generated_fields,
         is_generated_init, run_init,
@@ -32,13 +32,13 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput},
-    intern::{StaticStrings, StringId},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput, HeapReader},
+    intern::{Interns, StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
         Class, Dict, Module, PyTrait,
         host_class::host_class_type,
-        instance::{class_defines, class_dunder},
+        instance::{class_defines, namespace_member},
     },
     value::{Marker, Value},
 };
@@ -267,7 +267,7 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     // as attributes can be rewritten to what CPython leaves behind.
     rewrite_field_attributes(&mut class, fields_id, vm)?;
     store_dataclass_params(&mut class, options, vm)?;
-    install_generated_methods(*class_id, &mut class, fields_id, options, InstallMode::Decorate, vm)?;
+    install_generated_methods(*class_id, &mut class, fields_id, options, &mut Installer::Decorate(vm))?;
     Ok(guard.into_inner())
 }
 
@@ -314,7 +314,7 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<Value>) -> RunResult<Value>
         let Some(field_id) = field_value.into_ref_id() else {
             unreachable!("collection produces only heap fields")
         };
-        let name = field_at_id(vm, field_id)
+        let name = field_at_id(vm.heap, field_id)
             .expect("collection produces only `Field`s")
             .name()
             .expect("collection adopts every field");
@@ -362,76 +362,80 @@ fn store_dataclass_params<'h>(
 /// not define them. Frozen classes refuse a body `__setattr__`/`__delattr__`
 /// with CPython's `TypeError`. `__hash__` follows CPython's `_hash_action`
 /// table and overwrites whatever the body left, as CPython assigns it outright.
-/// [`InstallMode::Upgrade`] changes three of those choices; see its docs.
+/// [`Installer::Upgrade`] changes three of those choices; see its docs.
 fn install_generated_methods<'h>(
     class_id: HeapId,
     class: &mut HeapRead<'h, Class>,
     fields_id: HeapId,
     options: DataclassOptions,
-    mode: InstallMode,
-    vm: &mut VM<'h>,
+    installer: &mut Installer<'_, 'h>,
 ) -> RunResult<()> {
-    let class_name = class.get(vm.heap).name().as_str(vm.interns).to_owned();
-    let names: Vec<StringId> = adopted_field_ids(fields_id, vm)
+    let class_name = class
+        .get(installer.heap())
+        .name()
+        .as_str(installer.interns())
+        .to_owned();
+    let names: Vec<StringId> = adopted_field_ids(fields_id, installer.heap())
         .into_iter()
         .map(|(name, _)| name)
         .collect();
     // Read before anything is added: CPython's `has_explicit_hash` sees the body
     // alone. A `__hash__ = None` beside a body `__eq__` is the opt-out `type`
     // inserted, not one the author wrote, so a generated hash replaces it.
-    let explicit_hash = class_dunder(class_id, "__hash__", vm)
-        .is_some_and(|hash| !(matches!(hash, Value::None) && class_defines(class_id, "__eq__", vm)));
-    let post_init = mode == InstallMode::Decorate && class_defines(class_id, "__post_init__", vm);
+    let explicit_hash = installer
+        .member(class_id, "__hash__")
+        .is_some_and(|hash| !(matches!(hash, Value::None) && installer.defines(class_id, "__eq__")));
+    let post_init = installer.is_decorating() && installer.defines(class_id, "__post_init__");
 
-    if !class_defines(class_id, "__init__", vm) {
+    if !installer.defines(class_id, "__init__") {
         let init = DataclassMethod::init(
             class_name.clone(),
-            init_fields(fields_id, vm),
+            init_fields(fields_id, installer.heap()),
             post_init,
             options.frozen,
         );
-        set_method(class, init, mode, vm)?;
+        installer.set_method(class, init)?;
     }
-    if !class_defines(class_id, "__repr__", vm) {
+    if !installer.defines(class_id, "__repr__") {
         let repr = DataclassMethod::new(class_name.clone(), MethodKind::Repr(names.clone()));
-        set_method(class, repr, mode, vm)?;
+        installer.set_method(class, repr)?;
     }
-    if options.eq && !class_defines(class_id, "__eq__", vm) {
+    if options.eq && !installer.defines(class_id, "__eq__") {
         let eq = DataclassMethod::new(class_name.clone(), MethodKind::Eq(names.clone()));
-        set_method(class, eq, mode, vm)?;
+        installer.set_method(class, eq)?;
     }
     if options.frozen {
         for kind in [MethodKind::FrozenSetattr, MethodKind::FrozenDelattr] {
             let dunder: &'static str = kind.dunder().into();
-            if mode == InstallMode::Decorate && class_defines(class_id, dunder, vm) {
+            if installer.is_decorating() && installer.defines(class_id, dunder) {
                 return Err(ExcType::type_error(format!(
                     "Cannot overwrite attribute {dunder} in class {class_name}"
                 )));
             }
-            set_method(class, DataclassMethod::new(class_name.clone(), kind), mode, vm)?;
+            installer.set_method(class, DataclassMethod::new(class_name.clone(), kind))?;
         }
     }
     // CPython's `_hash_action` rows for `unsafe_hash=False`, which Monty requires.
     match (options.eq, options.frozen, explicit_hash) {
         (true, true, false) => {
             let hash = DataclassMethod::new(class_name, MethodKind::Hash(names));
-            set_method(class, hash, mode, vm)
+            installer.set_method(class, hash)
         }
-        (true, false, false) => set_member(class, StaticStrings::DunderHash, Value::None, mode, vm),
+        (true, false, false) => installer.set_member(class, StaticStrings::DunderHash, Value::None),
         _ => Ok(()),
     }
 }
 
 /// Each field's `__init__` parameter: its name and the default or factory
 /// captured at decoration, as owned references for the method to hold.
-fn init_fields(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, FieldInit)> {
-    adopted_field_ids(fields_id, vm)
+fn init_fields(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, FieldInit)> {
+    adopted_field_ids(fields_id, heap)
         .into_iter()
         .map(|(name, field_id)| {
-            let field = field_at_id(vm, field_id).expect("adopted ids name fields");
+            let field = field_at_id(heap, field_id).expect("adopted ids name fields");
             let init = match (field.default(), field.default_factory()) {
-                (Some(default), _) => FieldInit::Default(default.clone_with_heap(vm.heap)),
-                (None, Some(factory)) => FieldInit::Factory(factory.clone_with_heap(vm.heap)),
+                (Some(default), _) => FieldInit::Default(default.clone_with_heap(heap)),
+                (None, Some(factory)) => FieldInit::Factory(factory.clone_with_heap(heap)),
                 (None, None) => FieldInit::Unsupplied,
             };
             (name, init)
@@ -439,49 +443,74 @@ fn init_fields(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, FieldInit)> {
         .collect()
 }
 
-/// Who is installing the generated methods.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InstallMode {
+/// Who is installing the generated methods, holding what each needs to write.
+enum Installer<'a, 'h> {
     /// `@dataclass` itself, as CPython's `_process_class` would.
-    Decorate,
-    /// A dataclass from a version 13 dump (see `legacy`), where the 1.x rules
-    /// win: no `__post_init__` is called (1.x refused one in the body, and never
-    /// ran one attached later), a body `__setattr__`/`__delattr__` is replaced
-    /// rather than refused (1.x kept the class frozen regardless), and nothing
-    /// can fail, since no Python code runs to report it to.
-    Upgrade,
+    Decorate(&'a mut VM<'h>),
+    /// A dataclass from a version 13 dump (see `legacy`), upgraded inside
+    /// `Dump::load` before any VM exists. The 1.x rules win: no `__post_init__`
+    /// is called (1.x refused one in the body, and never ran one attached later),
+    /// a body `__setattr__`/`__delattr__` is replaced rather than refused (1.x
+    /// kept the class frozen regardless), and no write can fail.
+    Upgrade {
+        heap: &'a mut HeapReader<'h>,
+        interns: &'a Interns,
+    },
 }
 
-/// Allocates `method` and stores it in the class namespace under its dunder.
-fn set_method<'h>(
-    class: &mut HeapRead<'h, Class>,
-    method: DataclassMethod,
-    mode: InstallMode,
-    vm: &mut VM<'h>,
-) -> RunResult<()> {
-    let dunder = method.dunder();
-    let method = vm.heap.allocate_as(method).into_value();
-    set_member(class, dunder, method, mode, vm)
-}
+impl<'h> Installer<'_, 'h> {
+    fn heap(&self) -> &HeapReader<'h> {
+        match self {
+            Self::Decorate(vm) => vm.heap,
+            Self::Upgrade { heap, .. } => heap,
+        }
+    }
 
-/// Stores `value` in the class namespace under `name`, releasing what it replaces.
-///
-/// An upgrade skips the memory preflight, which is the only way a write keyed by
-/// an interned string can fail: it adds at most six entries to a class.
-fn set_member<'h>(
-    class: &mut HeapRead<'h, Class>,
-    name: StaticStrings,
-    value: Value,
-    mode: InstallMode,
-    vm: &mut VM<'h>,
-) -> RunResult<()> {
-    let name = Value::InternString(vm.interns.intern_static(name));
-    let replaced = match mode {
-        InstallMode::Decorate => class.set_attr(name, value, vm)?,
-        InstallMode::Upgrade => class.set_attr_without_growth_check(name, value, vm)?,
-    };
-    replaced.drop_with(vm);
-    Ok(())
+    fn interns(&self) -> &Interns {
+        match self {
+            Self::Decorate(vm) => vm.interns,
+            Self::Upgrade { interns, .. } => interns,
+        }
+    }
+
+    fn is_decorating(&self) -> bool {
+        matches!(self, Self::Decorate(_))
+    }
+
+    /// Borrows `name` from the class's own namespace.
+    fn member(&self, class_id: HeapId, name: &str) -> Option<&Value> {
+        namespace_member(class_id, name, self.heap(), self.interns())
+    }
+
+    /// Whether the class's own namespace defines `name`.
+    fn defines(&self, class_id: HeapId, name: &str) -> bool {
+        self.member(class_id, name).is_some()
+    }
+
+    /// Allocates `method` and stores it in the class namespace under its dunder.
+    fn set_method(&mut self, class: &mut HeapRead<'h, Class>, method: DataclassMethod) -> RunResult<()> {
+        let dunder = method.dunder();
+        let method = self.heap().allocate_as(method).into_value();
+        self.set_member(class, dunder, method)
+    }
+
+    /// Stores `value` in the class namespace under `name`, releasing what it
+    /// replaces. Only the decorator's write can fail, on its memory preflight;
+    /// an upgrade adds at most six entries to a class and skips it.
+    fn set_member(&mut self, class: &mut HeapRead<'h, Class>, name: StaticStrings, value: Value) -> RunResult<()> {
+        match self {
+            Self::Decorate(vm) => {
+                let name = Value::InternString(vm.interns.intern_static(name));
+                let replaced = class.set_attr(name, value, vm)?;
+                replaced.drop_with(&mut **vm);
+            }
+            Self::Upgrade { heap, interns } => {
+                let replaced = class.set_interned_attr(interns.intern_static(name), value, heap, interns);
+                replaced.drop_with(&mut **heap);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Rewrites the class attribute each `field()` left behind, as CPython does:
@@ -490,7 +519,7 @@ fn set_member<'h>(
 ///
 /// Runs once the fields are stored, so the mapping is the list of names to fix.
 fn rewrite_field_attributes<'h>(class: &mut HeapRead<'h, Class>, fields_id: HeapId, vm: &mut VM<'h>) -> RunResult<()> {
-    for (name, field_id) in adopted_field_ids(fields_id, vm) {
+    for (name, field_id) in adopted_field_ids(fields_id, vm.heap) {
         // Only an attribute that *is* the field object needs rewriting; a plain
         // `x: int = 5` already binds the value CPython would leave behind.
         let bound = class
@@ -500,7 +529,8 @@ fn rewrite_field_attributes<'h>(class: &mut HeapRead<'h, Class>, fields_id: Heap
         if !matches!(bound, Some(Value::Ref(id)) if *id == field_id) {
             continue;
         }
-        let default = field_at_id(vm, field_id).and_then(|field| field.default().map(|v| v.clone_with_heap(vm.heap)));
+        let default =
+            field_at_id(vm.heap, field_id).and_then(|field| field.default().map(|v| v.clone_with_heap(vm.heap)));
         let name = Value::InternString(name);
         let replaced = match default {
             Some(default) => class.set_attr(name, default, vm)?,
@@ -516,14 +546,14 @@ fn rewrite_field_attributes<'h>(class: &mut HeapRead<'h, Class>, fields_id: Heap
 /// The name is the mapping **key**, not the live `Field.name`: adoption writes
 /// the name into the `field()` object itself, so one object shared by two
 /// classes ends up reporting the *second* class's name.
-fn adopted_field_ids(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, HeapId)> {
-    let HeapData::Dict(fields) = vm.heap.get(fields_id) else {
+fn adopted_field_ids(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, HeapId)> {
+    let HeapData::Dict(fields) = heap.get(fields_id) else {
         return Vec::new();
     };
     fields
         .iter()
         .filter_map(|(key, value)| match (key, value) {
-            (Value::InternString(name), Value::Ref(id)) if field_at_id(vm, *id).is_some() => Some((*name, *id)),
+            (Value::InternString(name), Value::Ref(id)) if field_at_id(heap, *id).is_some() => Some((*name, *id)),
             _ => None,
         })
         .collect()
@@ -662,7 +692,7 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
 /// three things validation needs, read before it takes the heap mutably.
 fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, String, Option<Value>)> {
     let Value::Ref(id) = field else { return None };
-    let field = field_at_id(vm, *id)?;
+    let field = field_at_id(vm.heap, *id)?;
     let annotation = field.annotation().map_or_else(String::new, |a| annotation_text(a, vm));
     Some((
         field.name().expect("collection adopts every field"),
@@ -680,7 +710,7 @@ fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(Str
     let mut last_default = None;
     fields.iter().find_map(|field| {
         let Value::Ref(id) = field else { return None };
-        let field = field_at_id(vm, *id)?;
+        let field = field_at_id(vm.heap, *id)?;
         let name = field.name().expect("collection adopts every field");
         match (field.has_default(), last_default) {
             (true, _) => {

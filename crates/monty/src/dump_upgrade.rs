@@ -1,29 +1,24 @@
-//! Upgrades applied to a loaded heap, so an older dump keeps loading without a
-//! `DUMP_VERSION` bump.
+//! Upgrades applied as `Dump::load` reads a dump older than `DUMP_VERSION`, so
+//! `MIN_SUPPORTED_DUMP_VERSION` can stay below it.
 //!
 //! An upgrade fits a change that alters what stored data *means* while the old
-//! data still holds everything needed to rebuild the new form. Bytecode, operand
-//! layouts and persisted hashes cannot be rebuilt this way and still need a bump.
+//! data still decodes and holds everything needed to rebuild the new form. A
+//! change to one value's stored shape is a `#[serde(from)]` shim on that type
+//! instead; bytecode, operand layouts and persisted hashes need the floor raised.
 //!
 //! Rules every upgrade follows:
-//! - The dump carries no version to branch on, so old data is recognised by its
-//!   shape, or by a `#[serde(default)]` marker that current builds always set
-//!   and old data reads back without; current data must be left unchanged.
-//! - It runs before any code, as the first VM over a loaded heap is built.
+//! - It branches on the header version, never on the data's shape, and current
+//!   data is never touched.
+//! - It runs inside `Dump::load`, before any code: nothing on the live heap or
+//!   VM records that a session was upgraded.
 //! - It is tested against a fixture the *older* build wrote, which must never be
 //!   regenerated (see `tests/dump_compat.rs`).
 
-use crate::{bytecode::VM, heap::HeapData, modules::dataclasses};
+use crate::{heap::Heap, intern::Interns, modules::dataclasses};
 
-/// Runs every upgrade over the entries a restore recorded (see
-/// [`Heap::take_upgrade_candidates`](crate::heap::Heap::take_upgrade_candidates)).
-///
-/// Called as each VM is built; only the first over a loaded heap finds anything.
-pub(crate) fn upgrade_restored(vm: &mut VM<'_>) {
-    // A new upgrade adds a branch for each entry type it inspects.
-    for id in vm.heap.take_upgrade_candidates() {
-        if let HeapData::Class(_) = vm.heap.get(id) {
-            dataclasses::upgrade_legacy_class(id, vm);
-        }
+/// Runs every upgrade a dump written at `version` needs over its decoded heap.
+pub(crate) fn upgrade(version: u16, heap: &mut Heap, interns: &Interns) {
+    if version <= dataclasses::LEGACY_DUMP_VERSION {
+        dataclasses::upgrade_legacy_classes(heap, interns);
     }
 }

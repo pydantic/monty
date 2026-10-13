@@ -11,7 +11,7 @@ use std::{
     fmt,
     iter::once,
     marker::PhantomData,
-    mem::{self, ManuallyDrop},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
     sync::Arc,
@@ -963,10 +963,6 @@ pub(crate) struct Heap {
     /// `boundary_index` because host and sandbox uuids are distinct namespaces.
     /// Weak like the others: cleared on free, rebuilt on restore.
     host_type_index: BTreeMap<MontyUuid, HeapId>,
-    /// The entries a restore found that a dump upgrade inspects (see
-    /// `dump_upgrade`) — today every class. Not serialized; empty on a fresh
-    /// heap and once taken.
-    upgrade_candidates: Vec<HeapId>,
 }
 
 impl serde::Serialize for Heap {
@@ -993,14 +989,11 @@ impl<'de> serde::Deserialize<'de> for Heap {
         }
         let fields = HeapFields::deserialize(deserializer)?;
         let mut entries = fields.entries;
-        let (
-            WeakIndexes {
-                ext_function_cache,
-                boundary_index,
-                host_type_index,
-            },
-            upgrade_candidates,
-        ) = restore_entries(&mut entries).map_err(D::Error::custom)?;
+        let WeakIndexes {
+            ext_function_cache,
+            boundary_index,
+            host_type_index,
+        } = restore_entries(&mut entries).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
             tracker: fields.tracker,
@@ -1012,21 +1005,17 @@ impl<'de> serde::Deserialize<'de> for Heap {
             ext_function_cache,
             boundary_index,
             host_type_index,
-            upgrade_candidates,
         })
     }
 }
 
 /// Rebuilds weak indexes and rejects transient GC states before the heap can be used.
-/// Also lists the entries a dump upgrade inspects, for [`Heap::take_upgrade_candidates`];
-/// a new upgrade adds its entry type to the match below.
 ///
 /// Snapshots are trusted for correctness, but must remain memory-safe even when invalid.
 /// Gray/White entries would bypass parts of marking/scanning, on which the collector's
 /// protection of live `HeapRead` pointers depends. Collection cannot suspend in these states.
-fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<(WeakIndexes, Vec<HeapId>), &'static str> {
+fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &'static str> {
     let mut indexes = WeakIndexes::default();
-    let mut candidates = Vec::new();
     for index in 0..entries.len() {
         let id = HeapId::from_index(index);
         let Some(mut entry) = entries.entry(id) else {
@@ -1044,7 +1033,6 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<(WeakIndexes, 
             }
             HeapData::Class(class) => {
                 indexes.index_boundary_uuid(class.uuid(), id);
-                candidates.push(id);
             }
             HeapData::HostClassType(ty) => {
                 indexes.host_type_index.insert(ty.type_id(), id);
@@ -1052,7 +1040,7 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<(WeakIndexes, 
             _ => {}
         }
     }
-    Ok((indexes, candidates))
+    Ok(indexes)
 }
 
 /// A freed object's key in one of the heap's weak indexes.
@@ -1110,7 +1098,6 @@ impl Heap {
             ext_function_cache: BTreeMap::new(),
             boundary_index: BTreeMap::new(),
             host_type_index: BTreeMap::new(),
-            upgrade_candidates: Vec::new(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -1131,10 +1118,17 @@ impl Heap {
         this
     }
 
-    /// Takes the entries a restore recorded for `dump_upgrade`, leaving the
-    /// list empty so only the first VM over a loaded heap runs the upgrades.
-    pub fn take_upgrade_candidates(&mut self) -> Vec<HeapId> {
-        mem::take(&mut self.upgrade_candidates)
+    /// The ids of the live entries `keep` accepts, in index order, for a one-off
+    /// pass over a loaded heap (`dump_upgrade`).
+    pub(crate) fn ids_where(&mut self, keep: impl Fn(&HeapData) -> bool) -> Vec<HeapId> {
+        (0..self.entries.len())
+            .map(HeapId::from_index)
+            .filter(|&id| {
+                self.entries
+                    .entry(id)
+                    .is_some_and(|mut entry| keep(entry.get_mut().data.0.get_mut()))
+            })
+            .collect()
     }
 
     /// Number of entries in the heap (including freed slots).

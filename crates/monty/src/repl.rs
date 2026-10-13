@@ -100,6 +100,11 @@ pub struct MontyRepl {
 }
 
 impl MontyRepl {
+    /// The session heap and interns, for a dump upgrade of an idle session.
+    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
+        (&mut self.heap, &self.interns)
+    }
+
     /// Creates an empty REPL session with no code parsed or executed.
     ///
     /// All code execution is driven through [`feed_run`](Self::feed_run) or [`feed_start`](Self::feed_start). This separates
@@ -668,6 +673,22 @@ pub struct ReplStartError {
 }
 
 impl ReplProgress {
+    /// The session heap and the interns its values refer to, for a dump upgrade.
+    /// While a snippet is in flight the executor holds the session's interns.
+    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
+        match self {
+            Self::FunctionCall(ReplFunctionCall { snapshot, .. })
+            | Self::OsCall(ReplOsCall { snapshot, .. })
+            | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
+                (&mut snapshot.repl.heap, &snapshot.executor.tables.interns)
+            }
+            Self::ResolveFutures(ReplResolveFutures { repl, executor, .. }) => {
+                (&mut repl.heap, &executor.tables.interns)
+            }
+            Self::Complete { repl, .. } => repl.heap_and_interns(),
+        }
+    }
+
     /// Consumes the progress and returns the [`ReplFunctionCall`] struct.
     #[must_use]
     pub fn into_function_call(self) -> Option<ReplFunctionCall> {

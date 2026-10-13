@@ -34,7 +34,7 @@ use crate::{
         code::{Code, LocationEntry},
         op::{Opcode, decode_assert_flags},
     },
-    defer_drop_mut, dump_upgrade,
+    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
@@ -939,7 +939,7 @@ impl<'h> VM<'h> {
         print_writer: PrintWriter<'h>,
     ) -> Self {
         let SessionTables { global_names, interns } = tables;
-        let mut vm = Self {
+        Self {
             stack: Vec::with_capacity(64),
             globals,
             current_frame: CallFrame::new_module(&program.module_code, 0),
@@ -962,9 +962,7 @@ impl<'h> VM<'h> {
             re_pattern_cache: RePatternCache::default(),
             random: SessionRandom::default(),
             env: program.vm_env(),
-        };
-        dump_upgrade::upgrade_restored(&mut vm);
-        vm
+        }
     }
 
     /// Reconstructs a VM from a snapshot.
@@ -1013,7 +1011,7 @@ impl<'h> VM<'h> {
             .pop()
             .unwrap_or_else(|| CallFrame::new_parked(&program.module_code));
 
-        let mut vm = Self {
+        Self {
             stack: snapshot.stack,
             globals: snapshot.globals,
             current_frame,
@@ -1041,9 +1039,7 @@ impl<'h> VM<'h> {
                 env.cwd = Cow::Owned(snapshot.cwd);
                 env
             },
-        };
-        dump_upgrade::upgrade_restored(&mut vm);
-        vm
+        }
     }
 
     /// Consumes the VM and creates a snapshot for pause/resume.

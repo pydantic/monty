@@ -11,7 +11,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Marker, Value},
@@ -231,8 +231,8 @@ struct FieldArgs {
 }
 
 /// The `Field` a heap id points at, if it is one.
-pub(super) fn field_at_id<'a>(vm: &'a VM<'_>, field_id: HeapId) -> Option<&'a DataclassField> {
-    match vm.heap.get(field_id) {
+pub(super) fn field_at_id(heap: &Heap, field_id: HeapId) -> Option<&DataclassField> {
+    match heap.get(field_id) {
         HeapData::DataclassField(field) => Some(field),
         _ => None,
     }
