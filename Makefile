@@ -148,7 +148,7 @@ lint: lint-rs lint-py lint-md ## Lint the code with ruff, clippy and mdformat
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
-	cargo test -p monty -p monty-fs
+	cargo test -p monty -p monty-fs -p monty-types
 	cargo run -p monty-datatest
 
 .PHONY: test-memory-model-checks

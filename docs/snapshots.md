@@ -348,6 +348,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     `checkout()` that restored it.
     The worker caps each restored resource limit at the restoring `checkout()` limit; stricter dump limits remain in
     effect.
+    Elapsed execution time is restored, not reset, and counts against the capped limits: a dump taken mid-feed that
+    has already used more than the restoring `max_feed_duration` raises `TimeoutError` at its next time check.
     Module stubs are retained even when type checking is off, so a restored session requests stubs only for modules
     it never asked about; every `import` still asks the host for the module value.
     The restoring `checkout()`'s `external_modules` answer those imports and function calls.

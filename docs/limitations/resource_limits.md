@@ -104,11 +104,8 @@ without one is unlimited.
     Other memory retained between sessions therefore consumes the headroom
     rather than raising the cap, and a worker whose residue outgrows it is killed
     and replaced rather than allowed to grow indefinitely.
-- **Restoring a dump is bounded by the checkout it lands in.** `load_session` and
-    `load_snapshot` cap restored limits at the `checkout()` limits.
-    Stricter dump limits remain in effect.
-    See [snapshot configuration](../snapshots.md#what-restoring-does-and-does-not-carry).
-    The load itself also runs under the limit the `checkout()` config applied.
+- **A load runs under the checkout's `max_memory`.** The limits a restored session
+    keeps are covered in [snapshot configuration](../snapshots.md#what-restoring-does-and-does-not-carry).
     Restoring a large dump into a checkout with a
     much smaller `max_memory` can therefore exceed it while loading; pass a
     comparable limit to `checkout()`.

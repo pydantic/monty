@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use monty_types::{ResourceLimits, ResourceTracker};
+use monty_types::{DEFAULT_GC_INTERVAL, ResourceLimits, ResourceTracker};
 
 /// Checks every restored allowance against both stricter and looser destination policies.
 #[test]
@@ -58,4 +58,21 @@ fn unlimited_restored_limits_inherit_the_destination_policy() {
     assert_eq!(tracker.max_turn_duration(), Some(Duration::from_secs(1)));
     assert_eq!(tracker.max_total_sleep(), Some(Duration::from_secs(1)));
     assert_eq!(tracker.gc_interval(), Some(50));
+}
+
+/// An unset `gc_interval` means the default interval, so it caps a looser snapshot
+/// interval, and a looser destination interval does not loosen an unset snapshot's.
+#[test]
+fn unset_gc_interval_is_the_default_not_unlimited() {
+    let mut tracker = ResourceTracker::new(ResourceLimits::default().gc_interval(DEFAULT_GC_INTERVAL * 10));
+    tracker.tighten_limits(&ResourceLimits::default());
+    assert_eq!(tracker.gc_interval(), Some(DEFAULT_GC_INTERVAL));
+
+    let mut tracker = ResourceTracker::default();
+    tracker.tighten_limits(&ResourceLimits::default().gc_interval(DEFAULT_GC_INTERVAL * 10));
+    assert_eq!(tracker.gc_interval(), Some(DEFAULT_GC_INTERVAL));
+
+    let mut tracker = ResourceTracker::default();
+    tracker.tighten_limits(&ResourceLimits::default());
+    assert_eq!(tracker.gc_interval(), None);
 }

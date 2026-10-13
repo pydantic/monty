@@ -66,9 +66,9 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// `sys.setrecursionlimit(N)` at the top — that hook is available on both
 /// Monty (under `test-hooks`) and CPython, so it works symmetrically.
 ///
-/// The underlying default GC interval is `DEFAULT_GC_INTERVAL` in
-/// `crates/monty/src/heap.rs`, which is 1 under `memory-model-checks` and
-/// 100_000 otherwise — tests that need a larger value to stay within the
+/// The underlying default GC interval is `GC_INTERVAL` in
+/// `crates/monty/src/heap/mod.rs`, which is 1 under `memory-model-checks` and
+/// `monty_types::DEFAULT_GC_INTERVAL` (100_000) otherwise — tests that need a larger value to stay within the
 /// timeout opt into it via `# gc-interval=<N>`.
 fn default_test_limits() -> ResourceLimits {
     ResourceLimits::default().max_recursion_depth(TEST_RECURSION_LIMIT)

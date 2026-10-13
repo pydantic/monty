@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 
-use monty_types::{MontyUuid, ResourceTracker};
+use monty_types::{DEFAULT_GC_INTERVAL, MontyUuid, ResourceTracker};
 use serde::{de::Error as _, ser::SerializeStruct};
 
 #[cfg(feature = "ref-count-return")]
@@ -1067,8 +1067,7 @@ impl WeakIndexes {
     }
 }
 
-/// Default GC interval — run cycle collection every 100 000 GC-tracked
-/// allocations unless the configured resource tracker overrides it.
+/// GC interval when the resource tracker sets none: [`DEFAULT_GC_INTERVAL`].
 ///
 /// The trial-deletion collector additionally short-circuits the trace when
 /// `purple_count == 0`, so programs that produce no cycle candidates pay no
@@ -1076,10 +1075,10 @@ impl WeakIndexes {
 ///
 /// When the `memory-model-checks` feature is enabled, this is reduced to 1 to
 /// stress-test GC behavior on every allocation.
-const DEFAULT_GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
+const GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
     1
 } else {
-    100_000
+    DEFAULT_GC_INTERVAL
 };
 
 impl Heap {
@@ -1448,7 +1447,7 @@ impl Heap {
         if self.purple_count == 0 {
             return false;
         }
-        let interval = self.tracker.gc_interval().unwrap_or(DEFAULT_GC_INTERVAL);
+        let interval = self.tracker.gc_interval().unwrap_or(GC_INTERVAL);
         (self.allocations_since_gc.get() as usize) >= interval
     }
 

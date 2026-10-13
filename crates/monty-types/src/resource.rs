@@ -167,7 +167,7 @@ pub struct ResourceLimits {
     ///
     /// Requires the executable to install and arm `monty-alloc`.
     pub max_memory: Option<usize>,
-    /// Run garbage collection every N GC-tracked allocations.
+    /// Run garbage collection every N GC-tracked allocations; `None` uses [`DEFAULT_GC_INTERVAL`].
     pub gc_interval: Option<usize>,
     /// Maximum recursion depth (function call stack depth).
     pub max_recursion_depth: usize,
@@ -183,6 +183,10 @@ pub struct ResourceLimits {
 
 /// Recommended maximum recursion depth if not otherwise specified.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
+
+/// GC-tracked allocations between cycle collections when `gc_interval` is `None`.
+/// Builds with monty's `memory-model-checks` feature collect on every allocation instead.
+pub const DEFAULT_GC_INTERVAL: usize = 100_000;
 
 /// Maximum suspensions a host services per session if not otherwise
 /// specified: a backstop against a sandbox looping on host calls while the
@@ -322,7 +326,7 @@ impl ResourceTracker {
         self.limits.max_feed_duration = tighter_limit(self.limits.max_feed_duration, ceiling.max_feed_duration);
         self.limits.max_turn_duration = tighter_limit(self.limits.max_turn_duration, ceiling.max_turn_duration);
         self.limits.max_total_sleep = tighter_limit(self.limits.max_total_sleep, ceiling.max_total_sleep);
-        self.limits.gc_interval = tighter_limit(self.limits.gc_interval, ceiling.gc_interval);
+        self.limits.gc_interval = tighter_gc_interval(self.limits.gc_interval, ceiling.gc_interval);
         self.limits.max_recursion_depth = self.limits.max_recursion_depth.min(ceiling.max_recursion_depth);
         self.limits.max_suspensions = self.limits.max_suspensions.min(ceiling.max_suspensions);
         if let Some(limit) = self.recursion_limit_override.get() {
@@ -749,6 +753,14 @@ fn tighter_limit<T: Ord>(existing: Option<T>, ceiling: Option<T>) -> Option<T> {
         (Some(existing), Some(ceiling)) => Some(existing.min(ceiling)),
         (existing, ceiling) => existing.or(ceiling),
     }
+}
+
+/// [`tighter_limit`] for `gc_interval`, where `None` is [`DEFAULT_GC_INTERVAL`], not unlimited.
+fn tighter_gc_interval(existing: Option<usize>, ceiling: Option<usize>) -> Option<usize> {
+    let effective = existing
+        .unwrap_or(DEFAULT_GC_INTERVAL)
+        .min(ceiling.unwrap_or(DEFAULT_GC_INTERVAL));
+    existing.or(ceiling).map(|_| effective)
 }
 
 /// Reports `elapsed` against one optional budget, naming `scope` in the error.
