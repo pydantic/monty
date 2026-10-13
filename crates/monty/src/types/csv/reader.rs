@@ -32,6 +32,10 @@ pub(crate) struct Reader {
     pub(crate) dialect: Dialect,
     /// Source lines consumed, including those a multi-line record spans.
     pub(crate) line_num: u64,
+    /// Fields in the last record: the capacity the next record's vector starts at, since
+    /// records of one source are nearly always the same width.
+    #[serde(skip)]
+    field_hint: usize,
 }
 
 impl Reader {
@@ -40,6 +44,7 @@ impl Reader {
             source,
             dialect,
             line_num: 0,
+            field_hint: 0,
         }
     }
 
@@ -65,14 +70,19 @@ pub(super) fn next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> Ru
 /// The fields of the next record, or `None` once the source is exhausted. `DictReader`
 /// takes the fields this way, so its rows never pass through a list.
 pub(super) fn next_fields<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Vec<Value>>> {
-    let (source, dialect) = {
+    let (source, dialect, field_hint) = {
         let CsvObject::Reader(reader) = obj.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::Reader")
         };
-        (reader.source.clone_with_heap(vm.heap), reader.dialect.clone())
+        (
+            reader.source.clone_with_heap(vm.heap),
+            reader.dialect.clone(),
+            reader.field_hint,
+        )
     };
     defer_drop!(source, vm);
-    let mut fields_guard = DropGuard::new(Vec::new(), vm);
+    vm.heap.tracker.check_allocation(field_hint * VALUE_SIZE)?;
+    let mut fields_guard = DropGuard::new(Vec::with_capacity(field_hint), vm);
     let (fields, vm) = fields_guard.as_parts_mut();
     let mut parser = Parser::new(&dialect);
 
@@ -131,7 +141,11 @@ pub(super) fn next_fields<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
             break;
         }
     }
-    Ok(Some(fields_guard.into_inner()))
+    let (fields, vm) = fields_guard.into_parts();
+    if let CsvObject::Reader(reader) = obj.get_mut(vm.heap) {
+        reader.field_hint = fields.len();
+    }
+    Ok(Some(fields))
 }
 
 /// The parser states of CPython's `_csv.c`.
