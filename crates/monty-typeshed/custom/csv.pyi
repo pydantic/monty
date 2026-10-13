@@ -1,3 +1,11 @@
+# Based on python/typeshed's `stdlib/csv.pyi` and `_csv.pyi`, folded into one
+# module and cut down to what Monty implements at runtime: `register_dialect`,
+# `unregister_dialect`, `Sniffer` and `__version__` are absent and
+# `field_size_limit` takes no argument, so type checking rejects them up front
+# instead of letting them fail at runtime. The built-in dialects are `Dialect`
+# instances rather than subclasses, since `csv.excel()` is not callable in Monty.
+# Extend in lockstep with `crates/monty/src/modules/csv.rs`.
+
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any, Final, Generic, Literal, TypeVar
 
