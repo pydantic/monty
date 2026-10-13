@@ -374,9 +374,10 @@ pub(super) fn host_list_visible_dir_entries(
     budget: MemoryBudget,
 ) -> Result<Vec<(String, EntryInfo)>, MountError> {
     // `read_dir` on a missing path reports ENOTDIR, but CPython raises
-    // `FileNotFoundError`, so surface the lookup failure first.
-    dir.metadata(rel).map_err(|err| map_io(err, vpath))?;
-    let read_dir = dir.read_dir(rel).map_err(|err| map_io(err, vpath))?;
+    // `FileNotFoundError`, so a failure reports the lookup's error if it fails too.
+    let read_dir = dir
+        .read_dir(rel)
+        .map_err(|err| map_io(dir.metadata(rel).err().unwrap_or(err), vpath))?;
     let mut entries = Vec::new();
     let mut memory_usage = 0_u64;
 
