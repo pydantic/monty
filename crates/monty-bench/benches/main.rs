@@ -598,10 +598,12 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("re_extract__cpython", |b| run_cpython(b, RE_EXTRACT, 652_500));
 
     c.bench_function("csv_write__monty", |b| run_monty(b, CSV_WRITE, 265_163));
+    c.bench_function("csv_write_limits__monty", |b| run_monty_limits(b, CSV_WRITE, 265_163));
     #[cfg(not(codspeed))]
     c.bench_function("csv_write__cpython", |b| run_cpython(b, CSV_WRITE, 265_163));
 
     c.bench_function("csv_read__monty", |b| run_monty(b, CSV_READ, 2_629_450));
+    c.bench_function("csv_read_limits__monty", |b| run_monty_limits(b, CSV_READ, 2_629_450));
     #[cfg(not(codspeed))]
     c.bench_function("csv_read__cpython", |b| run_cpython(b, CSV_READ, 2_629_450));
 
