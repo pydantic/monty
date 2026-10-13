@@ -16,12 +16,14 @@ worker-alloc = ["dep:monty-alloc"]
 [dependencies]
 monty = { workspace = true, features = ["test-hooks"] }
 monty-types = { workspace = true }
+monty-fs = { workspace = true }
 monty-alloc = { workspace = true, optional = true }
 monty-pool = { workspace = true }
 monty-proto = { workspace = true }
 # The pool benchmarks use Criterion's Tokio async executor.
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
+tempfile = { workspace = true }
 codspeed-criterion-compat = { version = "4.2.1", features = ["async_tokio"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
 

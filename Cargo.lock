@@ -2578,12 +2578,14 @@ dependencies = [
  "criterion",
  "monty",
  "monty-alloc",
+ "monty-fs",
  "monty-pool",
  "monty-proto",
  "monty-types",
  "pprof",
  "pyo3",
  "pyo3-build-config",
+ "tempfile",
  "tokio",
 ]
 

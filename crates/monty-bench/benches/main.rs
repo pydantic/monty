@@ -1,19 +1,21 @@
 // Use codspeed-criterion-compat when running on CodSpeed (CI), real criterion otherwise (for flamegraphs)
 #[cfg(not(codspeed))]
 use std::ffi::CString;
-use std::time::Duration;
+use std::{fs, path::Path, time::Duration};
 
 #[cfg(codspeed)]
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::{Dump, MontyRepl, MontyRun, SessionRef};
-use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
+use monty::{Dump, MontyRepl, MontyRun, RunProgress, SessionRef};
+use monty_fs::{MountCallOutcome, MountMode, MountTable};
+use monty_types::{CompileOptions, ExtFunctionResult, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
 #[cfg(not(codspeed))]
 use pyo3::prelude::*;
+use tempfile::TempDir;
 
 // The real worker allocator, so the interpreter benchmarks can price it:
 // `cargo bench -p monty-bench --bench main --features worker-alloc` against a
@@ -58,6 +60,66 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });
+}
+
+/// Runs a benchmark with `host_root` mounted read-only at `/data`, bound to
+/// `DATA`, answering every OS call from the mount as a host would.
+///
+/// Each iteration starts a clone of the parsed program, since `start` consumes it.
+fn run_monty_mounted(bench: &mut Bencher, code: &str, host_root: &Path, expected: i64) {
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["DATA".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let mut mounts = MountTable::new();
+    mounts.mount("/data", host_root, MountMode::ReadOnly, None).unwrap();
+    let mut run = || {
+        let inputs = vec![MontyObject::string("/data".to_owned())];
+        let mut progress = ex
+            .clone()
+            .start(inputs, ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        loop {
+            progress = match progress {
+                RunProgress::Complete(value) => break i64::try_from(value.as_ref()).unwrap(),
+                RunProgress::OsCall(call) => call
+                    .resume_with(PrintWriter::Stdout, |call| match mounts.handle_os_call(call) {
+                        MountCallOutcome::Handled(Ok(value)) => value.into(),
+                        MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
+                        MountCallOutcome::NotHandled(call) => ExtFunctionResult::from(call.on_no_handler()),
+                    })
+                    .unwrap(),
+                _ => panic!("the scan benchmarks only suspend for OS calls"),
+            };
+        }
+    };
+    assert_eq!(run(), expected);
+    bench.iter(|| black_box(run()));
+}
+
+/// Builds the tree the directory-scan benchmarks read: 20 packages, each with
+/// `src/lib.rs` and 10 module directories of 5 `.rs` and 15 `.txt` files.
+///
+/// 4,020 files and 240 directories, of which 1,020 files match `**/*.rs`.
+fn scan_tree() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    for package in 0..20 {
+        let src = dir.path().join(format!("pkg{package}/src"));
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "").unwrap();
+        for module in 0..10 {
+            let module_dir = src.join(format!("mod{module}"));
+            fs::create_dir(&module_dir).unwrap();
+            for file in 0..20 {
+                let extension = if file < 5 { "rs" } else { "txt" };
+                fs::write(module_dir.join(format!("file{file}.{extension}")), "").unwrap();
+            }
+        }
+    }
+    dir
 }
 
 /// Runs a benchmark with production-shaped resource limits armed (generous
@@ -472,6 +534,27 @@ for _ in range(1_000):
 r
 ";
 
+/// A recursive glob: every directory is listed.
+const GLOB_RECURSIVE: &str = "
+from pathlib import Path
+len(list(Path(DATA).glob('**/*.rs')))
+";
+
+/// A glob whose wildcards prune: only `src` directories below the top are listed.
+const GLOB_WILDCARD: &str = "
+from pathlib import Path
+len(list(Path(DATA).glob('*/src/*.rs')))
+";
+
+/// A top-down walk counting files.
+const WALK_FILES: &str = "
+import os
+count = 0
+for _, _, files in os.walk(DATA):
+    count += len(files)
+count
+";
+
 /// Benchmarks end-to-end execution (parsing + running) using Monty.
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
@@ -708,6 +791,31 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("gc_collect__monty", |b| run_monty(b, GC_COLLECT, 0));
     #[cfg(not(codspeed))]
     c.bench_function("gc_collect__cpython", |b| run_cpython(b, GC_COLLECT, 0));
+
+    let tree = scan_tree();
+    #[cfg(not(codspeed))]
+    let host_root = tree.path().to_str().expect("temporary directories have UTF-8 paths");
+    c.bench_function("glob_recursive__monty", |b| {
+        run_monty_mounted(b, GLOB_RECURSIVE, tree.path(), 1_020);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("glob_recursive__cpython", |b| {
+        run_cpython_with_data(b, GLOB_RECURSIVE, host_root, 1_020);
+    });
+    c.bench_function("glob_wildcard__monty", |b| {
+        run_monty_mounted(b, GLOB_WILDCARD, tree.path(), 20);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("glob_wildcard__cpython", |b| {
+        run_cpython_with_data(b, GLOB_WILDCARD, host_root, 20);
+    });
+    c.bench_function("walk_files__monty", |b| {
+        run_monty_mounted(b, WALK_FILES, tree.path(), 4_020);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("walk_files__cpython", |b| {
+        run_cpython_with_data(b, WALK_FILES, host_root, 4_020);
+    });
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
