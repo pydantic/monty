@@ -809,6 +809,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("glob_wildcard__monty", |b| {
         run_monty_mounted(b, GLOB_WILDCARD, tree.path(), MountMode::ReadOnly, 20);
     });
+    c.bench_function("glob_wildcard_overlay__monty", |b| {
+        let mode = MountMode::OverlayMemory(OverlayState::new());
+        run_monty_mounted(b, GLOB_WILDCARD, tree.path(), mode, 20);
+    });
     #[cfg(not(codspeed))]
     c.bench_function("glob_wildcard__cpython", |b| {
         run_cpython_with_data(b, GLOB_WILDCARD, host_root, 20);

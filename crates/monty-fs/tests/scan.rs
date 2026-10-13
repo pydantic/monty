@@ -281,6 +281,13 @@ fn symlinks_are_described_and_followed_only_on_request() {
     );
     let err = scan(&mut overlay, ScanArgs::listing("/mnt/linkfile".into(), Some(0), false)).unwrap_err();
     assert_eq!(err.into_exception().exc_type(), ExcType::FileNotFoundError);
+    // nor is a literal path through a linked directory, which a direct mount follows
+    let through_link = glob("/mnt", &["linkdir", "c.txt"]);
+    assert_eq!(scan(&mut overlay, through_link.clone()).unwrap(), entries(&[]));
+    assert_eq!(
+        scan(&mut table, through_link).unwrap(),
+        entries(&[("linkdir/c.txt", 'm')])
+    );
 }
 
 /// A root the mount cannot list fails the scan, as CPython's `scandir` would;

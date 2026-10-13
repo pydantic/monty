@@ -4,10 +4,10 @@
 //! filesystem when no overlay entry is present. Writes and deletions stay in
 //! memory so the real mounted directory is never modified.
 
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
 
 use ahash::AHashSet;
-use cap_std::fs::{Dir, ReadDir};
+use cap_std::fs::{Dir, Metadata, ReadDir};
 use monty_types::{FileMode, MontyObject, dir_stat, file_stat, normalize_virtual_path, scan::EntryInfo};
 
 use super::{
@@ -361,7 +361,16 @@ fn real_is_symlink(ctx: &MountContext<'_>, vpath: &str) -> bool {
 /// [`exists`], [`is_dir`], [`is_file`] and [`is_symlink`] would answer each:
 /// overlay entries are never symlinks, and a real path the mode refuses
 /// (through a symlink, say) is absent but may still be a symlink itself.
-pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, state: &OverlayState) -> Result<PathInfo, MountError> {
+///
+/// `lstat_real` may `lstat` a real path the overlay does not hold, given its
+/// mount-relative form, through a chain of directories it found link-free;
+/// `None` walks and checks the chain here instead.
+pub(super) fn path_info(
+    path: &str,
+    ctx: &MountContext<'_>,
+    state: &OverlayState,
+    lstat_real: impl FnOnce(&str) -> Option<io::Result<Metadata>>,
+) -> Result<PathInfo, MountError> {
     let relative = relative_path(path, ctx)?;
     let described = |is_dir: bool, is_file: bool| PathInfo {
         info: EntryInfo {
@@ -375,7 +384,19 @@ pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, state: &OverlayState
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => described(false, true),
         Some(OverlayEntry::Directory { .. }) => described(true, false),
         Some(OverlayEntry::Deleted) => PathInfo::ABSENT,
-        None => real_path_info(path, ctx),
+        None => match resolve_virtual_path(path, ctx.mount_virtual)
+            .ok()
+            .and_then(|target| lstat_real(target.for_dir_op()))
+        {
+            // As `real_path_info` classifies the name once its parents are known link-free.
+            Some(Ok(meta)) if meta.is_symlink() => PathInfo {
+                info: SYMLINK_ONLY,
+                exists: false,
+            },
+            Some(Ok(meta)) => described(meta.is_dir(), meta.is_file()),
+            Some(Err(_)) => PathInfo::ABSENT,
+            None => real_path_info(path, ctx),
+        },
     })
 }
 

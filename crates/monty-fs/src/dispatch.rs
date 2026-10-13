@@ -213,7 +213,7 @@ pub(super) fn execute(
 pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, mode: &MountMode) -> Result<PathInfo, MountError> {
     match mode {
         MountMode::ReadWrite | MountMode::ReadOnly => direct::path_info(path, ctx),
-        MountMode::OverlayMemory(state) => overlay::path_info(path, ctx, state),
+        MountMode::OverlayMemory(state) => overlay::path_info(path, ctx, state, |_| None),
     }
 }
 

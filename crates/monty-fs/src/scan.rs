@@ -17,7 +17,7 @@ use monty_types::{
 };
 
 use super::{
-    common::{LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, PathInfo, as_u64, visible_entries},
+    common::{LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, visible_entries},
     dispatch,
     error::MountError,
     mount_mode::MountMode,
@@ -133,14 +133,42 @@ impl DirHandles {
         self.open[position].2.entries().ok()
     }
 
-    /// `lstat`s mount `mount`'s entry at `rel` through its parent's handle;
-    /// `None` for the mount root, or when the parent cannot be opened.
-    fn symlink_metadata(&mut self, mount: usize, rel: &str, root: &Dir) -> Option<io::Result<Metadata>> {
+    /// Describes `path` on a direct mount with one `lstat` through its parent's
+    /// handle, as [`PathInfo::from_host`] would.
+    ///
+    /// `None` when that cannot settle it: a symlink, whose target is resolved
+    /// from the mount root, or any failure but a missing name.
+    fn direct_path_info(&mut self, mount: usize, path: &str, ctx: &MountContext<'_>) -> Option<PathInfo> {
+        let target = resolve_virtual_path(path, ctx.mount_virtual).ok()?;
+        match self.symlink_metadata(mount, target.for_dir_op(), ctx.mount_dir, false)? {
+            Ok(meta) if !meta.is_symlink() => Some(PathInfo {
+                info: EntryInfo {
+                    is_dir: meta.is_dir(),
+                    is_file: meta.is_file(),
+                    is_symlink: false,
+                },
+                exists: true,
+            }),
+            Err(err) if err.kind() == ErrorKind::NotFound => Some(PathInfo::ABSENT),
+            _ => None,
+        }
+    }
+
+    /// `lstat`s mount `mount`'s entry at `rel` through its parent's handle (see
+    /// [`Self::handle`] for `refuse_links`); `None` for the mount root, or when
+    /// the parent cannot be opened.
+    fn symlink_metadata(
+        &mut self,
+        mount: usize,
+        rel: &str,
+        root: &Dir,
+        refuse_links: bool,
+    ) -> Option<io::Result<Metadata>> {
         match rel.rsplit_once('/') {
             None if rel == "." => None,
             None => Some(root.symlink_metadata(rel)),
             Some((parent, name)) => {
-                let position = self.handle(mount, parent, root, false)?;
+                let position = self.handle(mount, parent, root, refuse_links)?;
                 Some(self.open[position].2.symlink_metadata(name))
             }
         }
@@ -274,42 +302,21 @@ impl MountSource<'_> {
         let Some(index) = find_mount(self.mounts, path) else {
             return Ok(PathInfo::ABSENT);
         };
-        if let Some(info) = self.info_through_handles(index, path) {
-            return Ok(info);
-        }
         let (ctx, mode) = self.mounts[index].backend();
-        match dispatch::path_info(path, &ctx, mode) {
+        let handles = &mut self.handles;
+        let info = match &*mode {
+            MountMode::OverlayMemory(state) => overlay::path_info(path, &ctx, state, |rel| {
+                handles.symlink_metadata(index, rel, ctx.mount_dir, true)
+            }),
+            MountMode::ReadWrite | MountMode::ReadOnly => match handles.direct_path_info(index, path, &ctx) {
+                Some(info) => Ok(info),
+                None => dispatch::path_info(path, &ctx, mode),
+            },
+        };
+        match info {
             Ok(info) => Ok(info),
             Err(err @ MountError::MemoryUsageLimitExceeded(_)) => Err(err),
             Err(_) => Ok(PathInfo::ABSENT),
-        }
-    }
-
-    /// Describes `path` on direct mount `index` with one `lstat` through its
-    /// parent's open handle, as [`PathInfo::from_host`] would.
-    ///
-    /// `None` when that cannot settle it: an overlay mount, a symlink (its target
-    /// is resolved from the mount root), or any failure but a missing name.
-    fn info_through_handles(&mut self, index: usize, path: &str) -> Option<PathInfo> {
-        let (ctx, mode) = self.mounts[index].backend();
-        if matches!(*mode, MountMode::OverlayMemory(_)) {
-            return None;
-        }
-        let target = resolve_virtual_path(path, ctx.mount_virtual).ok()?;
-        match self
-            .handles
-            .symlink_metadata(index, target.for_dir_op(), ctx.mount_dir)?
-        {
-            Ok(meta) if !meta.is_symlink() => Some(PathInfo {
-                info: EntryInfo {
-                    is_dir: meta.is_dir(),
-                    is_file: meta.is_file(),
-                    is_symlink: false,
-                },
-                exists: true,
-            }),
-            Err(err) if err.kind() == ErrorKind::NotFound => Some(PathInfo::ABSENT),
-            _ => None,
         }
     }
 
