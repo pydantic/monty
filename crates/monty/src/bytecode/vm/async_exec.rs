@@ -121,6 +121,9 @@ impl<'h> VM<'h> {
         let this = awaiter_guard.ctx();
         if let Some(value) = poll_settled_gather(&gather, this.heap)? {
             Ok(Poll::Ready(value))
+        } else if this.in_run_reentry() {
+            // Refused before the commit spawns any child that would outlive it.
+            Err(ExcType::await_pending_in_callback())
         } else {
             // The walk re-reads each gather by id, so hand the handle back
             // before it starts.
@@ -361,6 +364,10 @@ impl<'h> VM<'h> {
             ExternalFutureState::Failed(err) => Err(err.clone()),
             ExternalFutureState::Pending { awaiter: Some(_) } => {
                 Err(SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into())
+            }
+            // Left unawaited, so the host's answer can still reach a later await.
+            ExternalFutureState::Pending { awaiter: None } if this.in_run_reentry() => {
+                Err(ExcType::await_pending_in_callback())
             }
             ExternalFutureState::Pending { awaiter: None } => {
                 let awaiter = awaiter_guard.into_inner();

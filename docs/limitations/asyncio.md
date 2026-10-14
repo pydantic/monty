@@ -180,3 +180,15 @@ A session with `max_memory` set can therefore build a nest it cannot await: the 
 `MemoryError: memory limit exceeded`, which sandboxed code cannot catch (see [resource_limits.md](resource_limits.md)).
 The nesting is not charged against the recursion limit in either interpreter, and a session with no memory limit has
 no bound to hit.
+
+### Awaiting a gather or a pending external future inside a builtin's callback raises `NotImplementedError`
+
+Builtins such as `sorted`, `list.sort`, `min`, `max`, `map` and `functools.reduce` call their Python callbacks
+synchronously, and Monty cannot switch tasks while one is running.
+In such a callback, awaiting an `asyncio.gather()` that has not finished or an external call that is still pending
+raises `NotImplementedError: awaiting a pending future inside a builtin's callback is not yet supported` at the `await`.
+That includes a gather whose children would only compute a value, such as `await asyncio.gather(c())` where `c`
+just returns, because running them needs a task switch.
+CPython runs the nested `asyncio.run()` on a fresh event loop and returns its result.
+Other awaits work, such as `asyncio.run()` of a coroutine that only computes a value.
+No gather children are started, and a pending external future can still be awaited after the callback returns.
