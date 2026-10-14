@@ -23,7 +23,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    os_dispatch::{PreConversionEffect, build_path_os_call, is_path_os_method},
+    os_dispatch::{PreConversionEffect, build_path_os_call, is_path_os_method, value_as_path_str},
     types::{
         LazyHeapSet, List, PyTrait, Type, allocate_tuple,
         dir_scan::{glob_call, walk_call},
@@ -411,20 +411,6 @@ fn path_glob(
 fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     value_as_path_str(val, vm.heap, vm.interns)
         .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
-}
-
-/// Extracts a path-like operand (`str`, `Path` or `DirEntry`) as a string slice, `None` otherwise.
-fn value_as_path_str<'a>(val: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
-    match val {
-        Value::InternString(string_id) => Some(interns.get_str(*string_id)),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
-            HeapData::Str(s) => Some(s.as_str()),
-            HeapData::Path(p) => Some(p.as_str()),
-            HeapData::DirScan(scan) => scan.fspath(),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path> {

@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::HeapData,
-    os_dispatch::PostConversionEffect,
+    os_dispatch::{PostConversionEffect, value_as_path_str},
     types::{
         PyTrait, Type,
         file::{FileMode, FileName, extract_str_payload},
@@ -133,16 +133,9 @@ struct OpenArgs {
 /// listed above.
 fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     let opt = match value {
-        Value::InternString(string_id) => Some(vm.interns.get_str(*string_id)),
         Value::InternBytes(bytes_id) => decode_utf8_path(vm.interns.get_bytes(*bytes_id))?,
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str()),
-            HeapData::Path(p) => Some(p.as_str()),
-            HeapData::DirScan(scan) => scan.fspath(),
-            HeapData::Bytes(b) => decode_utf8_path(b.as_slice())?,
-            _ => None,
-        },
-        _ => None,
+        Value::Ref(id) if let HeapData::Bytes(b) = vm.heap.get(*id) => decode_utf8_path(b.as_slice())?,
+        _ => value_as_path_str(value, vm.heap, vm.interns),
     };
     opt.ok_or_else(|| path_type_error(value, vm))
 }

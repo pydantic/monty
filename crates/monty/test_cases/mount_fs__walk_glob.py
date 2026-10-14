@@ -209,6 +209,25 @@ except RuntimeError as e:
     assert str(e) == 'stop'
 assert list(walk) == []
 
+# advancing the walk from its own `onerror` raises, as on a running generator
+reentered = []
+
+
+def reenter(error):
+    reentered.append(next(walk, 'stop'))
+
+
+walk = os.walk(root / 'nope', onerror=reenter)
+try:
+    next(walk)
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'generator already executing'
+assert reentered == []
+assert list(walk) == []
+assert repr(os.walk(root)).startswith('<generator object walk at 0x'), 'walk repr'
+assert repr(root.walk()).startswith('<generator object Path.walk at 0x'), 'Path.walk repr'
+
 # an abandoned walk holds its last `dirnames`; one whose `onerror` refers back to it is a cycle
 walk = os.walk(root)
 dirpath, dirnames, filenames = next(walk)

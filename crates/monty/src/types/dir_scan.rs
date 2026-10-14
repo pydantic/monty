@@ -28,6 +28,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    identity::Identity,
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
     types::{
@@ -126,6 +127,10 @@ pub(crate) struct ScandirIterator {
 /// on the next step, so pruning it (`dirnames[:] = ...`) works as in CPython —
 /// it only saves sandbox work, since the host already read the whole tree.
 #[derive(Debug, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent walk options plus the running flag"
+)]
 pub(crate) struct WalkIterator {
     /// The scanned subtree.
     tree: ScanTree,
@@ -144,6 +149,9 @@ pub(crate) struct WalkIterator {
     pending: Option<PendingDirnames>,
     /// The host's error for the root, reported on the first step.
     root_error: Option<SimpleException>,
+    /// A step is in progress; `onerror` advancing the walk again is refused.
+    #[serde(default)]
+    running: bool,
 }
 
 /// A step of [`WalkIterator`], mirroring CPython's `os.walk` stack.
@@ -227,7 +235,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
                 string_repr_fmt(&entry.name, f)?;
                 Ok(f.write_char('>')?)
             }
-            DirScan::Scandir(_) | DirScan::Walk(_) => self.py_default_repr_fmt(f, vm),
+            DirScan::Scandir(_) => self.py_default_repr_fmt(f, vm),
+            DirScan::Walk(walk) => Ok(write!(
+                f,
+                "<generator object {} at 0x{:x}>",
+                walk.qualname(),
+                Identity::from_heap_id(self.id()).encoded()
+            )?),
         }
     }
 
@@ -305,7 +319,7 @@ impl DirScan {
         match self {
             Self::Entry(entry) => format!("<DirEntry {}>", StringRepr(&entry.name)),
             Self::Scandir(_) => "<posix.ScandirIterator object>".to_owned(),
-            Self::Walk(_) => "<generator object>".to_owned(),
+            Self::Walk(walk) => format!("<generator object {}>", walk.qualname()),
         }
     }
 }
@@ -389,13 +403,20 @@ struct StatArgs {
 /// Takes one step of a walk: prunes by the last `dirnames`, then pops steps
 /// until one yields, reporting listing errors to `onerror` on the way.
 ///
-/// No heap borrow is held across the `onerror` call, which re-enters Python.
+/// No heap borrow is held across the `onerror` call, which re-enters Python;
+/// a `next()` on this walk from there raises, as on a running generator.
 fn walk_next<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    let walk = walk_mut(this, vm);
+    if walk.running {
+        return Err(ExcType::generator_already_executing());
+    }
+    walk.running = true;
     let result = walk_step(this, vm);
+    let walk = walk_mut(this, vm);
+    walk.running = false;
     if result.is_err() {
         // An exception escaping a generator ends it, so a caught one must not
         // leave the remaining directories for a later `next()`.
-        let walk = walk_mut(this, vm);
         walk.stack.clear();
         let pending = walk.pending.take();
         if let Some(pending) = pending {
@@ -565,6 +586,11 @@ enum WalkAction {
 }
 
 impl WalkIterator {
+    /// The generator's `__qualname__`, as its `repr` shows it.
+    fn qualname(&self) -> &'static str {
+        if self.path_flavor { "Path.walk" } else { "walk" }
+    }
+
     /// Pops steps until one yields or fails, as CPython's `os.walk` loop does.
     fn step(&mut self) -> WalkAction {
         if let Some(exc) = self.root_error.take() {
@@ -817,6 +843,7 @@ impl ScanEffect {
                     stack,
                     pending: None,
                     root_error,
+                    running: false,
                 });
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(walk)))))
             }

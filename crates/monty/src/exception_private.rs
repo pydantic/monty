@@ -204,6 +204,13 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into()
     }
 
+    /// `ValueError: generator already executing` — a generator advanced from
+    /// inside its own step, e.g. by an `os.walk` `onerror` callback.
+    #[must_use]
+    fn generator_already_executing() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "generator already executing").into()
+    }
+
     /// Creates a TypeError for item assignment on types that don't support it.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object does not support item assignment`

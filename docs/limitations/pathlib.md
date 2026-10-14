@@ -78,6 +78,9 @@ Pattern semantics follow CPython 3.14's: hidden files match `*`, `**` descends o
     (see [filesystem.md](filesystem.md#directory-scans)).
     Python's default `AbstractOS.path_scan()` raises `RuntimeError` above 100,000 entries (including the root)
     or 100 MB of accumulated path data, estimated at four bytes per character for absolute and relative paths.
+    That default ignores the pattern, so for a `**` pattern with a wildcard before its last part (`rglob('*/x')`) it
+    descends every symlinked directory, up to 64 levels; links that loop can then exceed the entry cap where CPython,
+    whose `**` never follows a link, returns.
 - **Pruning `dirnames` in `walk()` works** (`dirnames.remove(...)`, `dirnames.clear()`), but only saves sandbox
     work: the host has already read the pruned directories.
     Monty has no list slice assignment, so the common `dirnames[:] = [...]` raises `TypeError`.

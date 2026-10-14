@@ -19,6 +19,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
+    rc::Rc,
     sync::Arc,
 };
 
@@ -502,10 +503,13 @@ impl ScanTree {
         for (path, info) in &entries {
             if !path.is_empty() {
                 let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
-                children
-                    .entry(parent.to_owned())
-                    .or_default()
-                    .push((name.to_owned(), *info));
+                let child = (name.to_owned(), *info);
+                match children.get_mut(parent) {
+                    Some(siblings) => siblings.push(child),
+                    None => {
+                        children.insert(parent.to_owned(), vec![child]);
+                    }
+                }
             }
         }
         let children = children
@@ -685,6 +689,7 @@ impl<'p> GlobSelector<'p> {
     pub fn select<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<Option<Vec<String>>, E> {
         let mut run = Run {
             stack: Vec::new(),
+            seen: HashSet::new(),
             out: Some(Vec::new()),
         };
         self.run(source, &mut run)?;
@@ -693,30 +698,25 @@ impl<'p> GlobSelector<'p> {
 
     /// The selection loop behind [`Self::select`].
     fn run<E>(&self, source: &mut impl ScanSource<Error = E>, run: &mut Run) -> Result<(), E> {
-        let mut seen = HashSet::new();
-        run.push(0, String::new(), false, source)?;
-        while let Some(state) = run.stack.pop() {
-            if !seen.insert(state.clone()) {
-                continue;
-            }
-            let (index, path, exists) = state;
+        run.push(0, "", false, source)?;
+        while let Some((index, path, exists)) = run.stack.pop() {
             let step = self.steps[index]
                 .as_ref()
                 .expect("states are only pushed by the step chain compiled from part 0");
             match step {
                 Step::Exists => {
                     if exists || lexists(&path, source)? {
-                        run.emit(path, source);
+                        run.emit(path.to_string(), source);
                     }
                 }
                 Step::Special => {
-                    let mut path = path + &self.parts[index];
+                    let mut path = format!("{path}{}", self.parts[index]);
                     if index + 1 < self.parts.len() {
                         path.push('/');
                     }
-                    run.push(index + 1, path, exists, source)?;
+                    run.push(index + 1, &path, exists, source)?;
                 }
-                Step::Literal { joined, next } => run.push(*next, path + joined, false, source)?,
+                Step::Literal { joined, next } => run.push(*next, &format!("{path}{joined}"), false, source)?,
                 Step::Wildcard { matcher, next } => {
                     let dir_only = *next < self.parts.len();
                     for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default().iter() {
@@ -726,13 +726,13 @@ impl<'p> GlobSelector<'p> {
                             if !dir_only {
                                 run.emit(entry, source);
                             } else if info.is_dir {
-                                run.push(*next, entry + "/", true, source)?;
+                                run.push(*next, &(entry + "/"), true, source)?;
                             }
                         }
                     }
                 }
                 Step::Recursive { matcher, next } => {
-                    self.select_recursive(matcher.as_ref(), *next, path, exists, source, run)?;
+                    self.select_recursive(matcher.as_ref(), *next, &path, exists, source, run)?;
                 }
             }
         }
@@ -744,7 +744,7 @@ impl<'p> GlobSelector<'p> {
         &self,
         matcher: Option<&MultiPattern>,
         next: usize,
-        path: String,
+        path: &str,
         exists: bool,
         source: &mut impl ScanSource<Error = E>,
         run: &mut Run,
@@ -752,9 +752,9 @@ impl<'p> GlobSelector<'p> {
         let dir_only = next < self.parts.len();
         let match_pos = path.len();
         if matcher.is_none_or(|matcher| matcher.matches("")) {
-            run.push(next, path.clone(), exists, source)?;
+            run.push(next, path, exists, source)?;
         }
-        let mut dirs = vec![path];
+        let mut dirs = vec![path.to_owned()];
         while let Some(dir) = dirs.pop() {
             for (name, info) in source.list(dir.trim_end_matches('/'))?.unwrap_or_default().iter() {
                 source.visit()?;
@@ -766,7 +766,7 @@ impl<'p> GlobSelector<'p> {
                     if is_dir {
                         if matched {
                             if dir_only {
-                                run.push(next, entry.clone(), true, source)?;
+                                run.push(next, &entry, true, source)?;
                             } else {
                                 run.emit(entry.clone(), source);
                             }
@@ -783,49 +783,56 @@ impl<'p> GlobSelector<'p> {
     }
 }
 
-/// Bytes a glob state holds beside its path: the tuple, plus its seen-set slot.
-const STATE_OVERHEAD: usize = 2 * size_of::<(usize, String, bool)>();
+/// A glob state: part index, normalized path so far, known to exist. The path
+/// is shared between the stack and the seen set.
+type State = (usize, Rc<str>, bool);
+
+/// Bytes a glob state holds beside its path: a slot on the stack and one in
+/// the seen set, plus the path's reference counts.
+const STATE_OVERHEAD: usize = 2 * size_of::<State>() + 2 * size_of::<usize>();
 
 /// The pending states and results of one [`GlobSelector`] run.
 struct Run {
-    /// States still to process: part index, normalized path so far, known to exist.
-    stack: Vec<(usize, String, bool)>,
+    /// States still to process.
+    stack: Vec<State>,
+    /// Every state ever queued, so each is processed once.
+    seen: HashSet<State>,
     /// Matches, until they outgrow the source's [`ScanSource::match_capacity`].
     out: Option<Vec<String>>,
 }
 
 impl Run {
-    /// Queues a state with its path normalized (keeping a trailing `/`); one
-    /// climbing above the root is dropped. A path that is already normal, the
-    /// common case, is queued as it is rather than copied.
+    /// Queues a state with its path normalized (keeping a trailing `/`) unless
+    /// it was queued before; one climbing above the root is dropped.
     ///
-    /// Each state is charged to `source` as queued: it stays held, on the stack
-    /// and then in the seen set, until the run ends, and a pattern like
-    /// `*/../*/../*` holds one per entry for every wildcard part.
+    /// Each new state is charged to `source`: it stays held in the seen set
+    /// until the run ends, and a pattern like `*/../*/../*` holds one per
+    /// entry for every wildcard part.
     fn push<E>(
         &mut self,
         index: usize,
-        mut path: String,
+        path: &str,
         exists: bool,
         source: &mut impl ScanSource<Error = E>,
     ) -> Result<(), E> {
         let trimmed_len = path.trim_end_matches('/').len();
         let dir = trimmed_len > 0 && trimmed_len < path.len();
-        let normalized = match normalize_relative(&path[..trimmed_len]) {
+        let normalized: Rc<str> = match normalize_relative(&path[..trimmed_len]) {
             None => return Ok(()),
             Some(Cow::Owned(mut normalized)) => {
                 if dir && !normalized.is_empty() {
                     normalized.push('/');
                 }
-                normalized
+                normalized.into()
             }
-            Some(Cow::Borrowed(_)) => {
-                path.truncate(trimmed_len + usize::from(dir));
-                path
-            }
+            Some(Cow::Borrowed(_)) => path[..trimmed_len + usize::from(dir)].into(),
         };
-        source.charge(STATE_OVERHEAD + normalized.len())?;
-        self.stack.push((index, normalized, exists));
+        let state = (index, normalized, exists);
+        if !self.seen.contains(&state) {
+            source.charge(STATE_OVERHEAD + state.1.len())?;
+            self.seen.insert(state.clone());
+            self.stack.push(state);
+        }
         Ok(())
     }
 
@@ -1010,25 +1017,27 @@ impl SegmentPattern {
     /// Whether `name` matches the whole pattern.
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
-        let text: Vec<char> = name.chars().collect();
+        // `t` is a byte offset into `name`, always on a character boundary.
         let (mut p, mut t) = (0, 0);
         // The last `*` seen and the text position it is currently absorbing up to.
         let mut star: Option<(usize, usize)> = None;
-        while t < text.len() {
+        while let Some(c) = name[t..].chars().next() {
             match self.tokens.get(p) {
                 Some(Token::Star) => {
                     star = Some((p, t));
                     p += 1;
                 }
-                Some(token) if self.token_matches(token, text[t]) => {
+                Some(token) if self.token_matches(token, c) => {
                     p += 1;
-                    t += 1;
+                    t += c.len_utf8();
                 }
                 _ => match star {
                     Some((star_p, star_t)) => {
+                        // The star was recorded before a character at `star_t`, so one is there.
+                        let absorbed = name[star_t..].chars().next().map_or(1, char::len_utf8);
                         p = star_p + 1;
-                        t = star_t + 1;
-                        star = Some((star_p, star_t + 1));
+                        t = star_t + absorbed;
+                        star = Some((star_p, t));
                     }
                     None => return false,
                 },
