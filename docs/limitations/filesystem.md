@@ -15,6 +15,11 @@ path `C:/Users/foo`. Path repr is always `PosixPath(...)`.
 Bytes paths are accepted but decoded as strict UTF-8 (no `surrogateescape`
 / PEP 383 round-tripping). See [open.md](open.md) for the full rationale.
 
+A host entry whose name is not valid UTF-8 (possible on Linux, not on macOS or Windows) is left out of
+`os.listdir`, `os.scandir`, `os.walk`, `Path.iterdir`, `Path.walk` and `Path.glob`.
+CPython lists it with `surrogateescape`, so `'\udcff'` stands for the byte `0xff` and opens the file.
+Monty's strings cannot hold such a name, and a lossy spelling (`'\ufffd'`) would name a different file or nothing.
+
 ## Mount modes
 
 Each mount is configured by the host as one of:

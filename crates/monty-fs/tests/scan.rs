@@ -343,18 +343,27 @@ fn names_path_policy_refuses_are_listed_as_nothing() {
     }
 }
 
-/// A name that is not UTF-8 is reported lossily and described as the entry
-/// truly named so, which a lookup of that spelling finds.
+/// A name that is not UTF-8 is left out of a scan, so it cannot shadow a real
+/// entry its lossy spelling would collide with.
 #[test]
 #[cfg(target_os = "linux")]
-fn lossy_names_read_as_their_utf8_namesake() {
+fn non_utf8_names_are_left_out() {
     let dir = create_tree();
     fs::create_dir(dir.path().join(OsStr::from_bytes(b"\xff"))).unwrap();
     fs::write(dir.path().join("\u{fffd}"), "x").unwrap();
     for mode in all_modes() {
         let mut table = mount(&dir, mode);
         let tree = scan(&mut table, ScanArgs::listing("/mnt".into(), Some(1), false)).unwrap();
-        assert!(tree.contains(&("\u{fffd}".to_owned(), 'f')), "{tree:?}");
+        assert_eq!(
+            tree,
+            entries(&[
+                ("", 'd'),
+                ("a.txt", 'f'),
+                ("b.py", 'f'),
+                ("sub", 'd'),
+                ("\u{fffd}", 'f'),
+            ])
+        );
     }
 }
 

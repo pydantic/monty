@@ -5,9 +5,7 @@
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
 use std::{
-    ffi::OsStr,
     io::{Error as IoError, ErrorKind, Read, Write},
-    path::{Path, PathBuf},
     time::SystemTime,
 };
 
@@ -365,8 +363,9 @@ pub(super) fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
 /// described as [`PathInfo::from_host`] would describe it.
 ///
 /// Symlinks are only exposed when they still resolve inside the mount, so
-/// iteration does not leak the existence of outbound or broken links. Types
-/// come from the listing itself, so only symlinks cost a lookup.
+/// iteration does not leak the existence of outbound or broken links, and
+/// names that are not UTF-8 are left out. Types come from the listing itself,
+/// so only symlinks cost a lookup.
 pub(super) fn host_list_visible_dir_entries(
     dir: &Dir,
     rel: &str,
@@ -392,21 +391,23 @@ pub(super) fn visible_entries(
     budget: MemoryBudget,
 ) -> Result<Vec<(String, EntryInfo)>, MountError> {
     let mut entries = Vec::new();
-    // Indices of the entries whose names are not UTF-8.
-    let mut lossy = Vec::new();
     let mut memory_usage = 0_u64;
 
     for entry in read_dir {
         let entry = entry.map_err(|err| map_io(err, vpath))?;
         let file_type = entry.file_type().map_err(|err| map_io(err, vpath))?;
         let raw_name = entry.file_name();
+        // Sandbox paths are strictly UTF-8, so a name that is not cannot be
+        // spelled there: its lossy spelling would open a different file or
+        // nothing. Such entries are left out (CPython lists them via `surrogateescape`).
+        let Some(name) = raw_name.to_str() else {
+            continue;
+        };
 
         let info = if file_type.is_symlink() {
-            // Join the raw name: a lossy `String` round-trip would look up a
-            // different entry and silently drop this one. The lookup must stay
-            // path-based so it runs through the descriptor's confinement check —
-            // `entry.metadata()` resolves the link without one.
-            let Ok(target) = mount_dir.metadata(join_mount_relative_os(rel, &raw_name)) else {
+            // The lookup must stay path-based so it runs through the descriptor's
+            // confinement check — `entry.metadata()` resolves the link without one.
+            let Ok(target) = mount_dir.metadata(join_mount_relative(rel, name)) else {
                 continue;
             };
             EntryInfo {
@@ -421,29 +422,13 @@ pub(super) fn visible_entries(
                 is_symlink: false,
             }
         };
-        let name = if let Some(name) = raw_name.to_str() {
-            name.to_owned()
-        } else {
-            lossy.push(entries.len());
-            raw_name.to_string_lossy().into_owned()
-        };
         memory_usage = memory_usage
             .saturating_add(as_u64(name.len()))
             .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
         budget.check(memory_usage)?;
-        entries.push((name, info));
+        entries.push((name.to_owned(), info));
     }
 
-    // A name that is not UTF-8 is reported lossily, so it reads as a lookup of
-    // that spelling would: as the sibling truly named so, or none of the three.
-    for &index in &lossy {
-        let info = entries
-            .iter()
-            .enumerate()
-            .find(|(other, (name, _))| *name == entries[index].0 && !lossy.contains(other))
-            .map_or(PathInfo::ABSENT.info, |(_, (_, info))| *info);
-        entries[index].1 = info;
-    }
     Ok(entries)
 }
 
@@ -489,18 +474,6 @@ pub(super) fn host_dir_mtime(dir: &Dir, rel: &str) -> f64 {
         .map_or_else(|_| SystemTime::now(), CapSystemTime::into_std)
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
-}
-
-/// [`join_mount_relative`] for a raw directory-entry name: the child stays an
-/// `OsStr` so a non-UTF-8 name survives the join and the resulting lookup
-/// names the entry itself — a lossy `String` round-trip would name a
-/// different path.
-pub(super) fn join_mount_relative_os(rel: &str, child: &OsStr) -> PathBuf {
-    if rel.is_empty() || rel == "." {
-        PathBuf::from(child)
-    } else {
-        Path::new(rel).join(child)
-    }
 }
 
 /// Joins a mount-relative directory path with a child name, yielding the
