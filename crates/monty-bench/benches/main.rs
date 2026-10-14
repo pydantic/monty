@@ -1,19 +1,19 @@
-// Use codspeed-criterion-compat when running on CodSpeed (CI), real criterion otherwise (for flamegraphs)
-#[cfg(not(codspeed))]
+// Use codspeed-criterion-compat under the `codspeed` feature (CI), real criterion otherwise (for flamegraphs)
+#[cfg(not(feature = "codspeed"))]
 use std::ffi::CString;
 use std::{fs, path::Path, time::Duration};
 
-#[cfg(codspeed)]
+#[cfg(feature = "codspeed")]
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, SessionRef};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{CompileOptions, ExtFunctionResult, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
-#[cfg(all(not(codspeed), unix))]
+#[cfg(all(not(feature = "codspeed"), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 use pyo3::prelude::*;
 use tempfile::TempDir;
 
@@ -143,7 +143,7 @@ fn run_monty_limits(bench: &mut Bencher, code: &str, expected: i64) {
 
 /// Runs a benchmark using CPython.
 /// Wraps code in main(), parses once, then benchmarks repeated execution.
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 fn run_cpython(bench: &mut Bencher, code: &str, expected: i64) {
     Python::attach(|py| {
         let wrapped = wrap_for_cpython(code);
@@ -168,7 +168,7 @@ fn run_cpython(bench: &mut Bencher, code: &str, expected: i64) {
 
 /// Runs a benchmark using CPython with a single string argument bound to `DATA`.
 /// Wraps code in `def main(DATA):`, parses once, then benchmarks repeated execution.
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 fn run_cpython_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i64) {
     Python::attach(|py| {
         let wrapped = wrap_for_cpython_with_param(code, "DATA");
@@ -192,7 +192,7 @@ fn run_cpython_with_data(bench: &mut Bencher, code: &str, data: &str, expected: 
 }
 
 /// Like [`wrap_for_cpython`] but produces `def main(<param>):` so a single argument can be passed.
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 fn wrap_for_cpython_with_param(code: &str, param: &str) -> String {
     let base = wrap_for_cpython(code);
     // Replace the first "def main():" header with one that takes `param`.
@@ -201,7 +201,7 @@ fn wrap_for_cpython_with_param(code: &str, param: &str) -> String {
 
 /// Wraps code in a main() function for CPython execution.
 /// Indents each line and converts the last expression to a return statement.
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 fn wrap_for_cpython(code: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut last_expr = String::new();
@@ -654,7 +654,7 @@ fn session_load(bench: &mut Bencher) {
 
 /// Benchmarks end-to-end execution (parsing + running) using CPython.
 /// This is different from other benchmarks as it includes parsing in the loop.
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 fn end_to_end_cpython(bench: &mut Bencher) {
     Python::attach(|py| {
         bench.iter(|| {
@@ -674,12 +674,12 @@ fn end_to_end_cpython(bench: &mut Bencher) {
 /// Configures all benchmarks in a single group.
 fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("add_two__monty", |b| run_monty(b, ADD_TWO, 3));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("add_two__cpython", |b| run_cpython(b, ADD_TWO, 3));
 
     c.bench_function("loop_mod_13__monty", |b| run_monty(b, LOOP_MOD_13, 77));
     c.bench_function("loop_mod_13_limits__monty", |b| run_monty_limits(b, LOOP_MOD_13, 77));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("loop_mod_13__cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
@@ -688,74 +688,74 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("repl_feed_after_2k_snippets__monty", repl_feed_after_2k_snippets);
     c.bench_function("session_dump__monty", session_dump);
     c.bench_function("session_load__monty", session_load);
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("end_to_end__cpython", end_to_end_cpython);
 
     c.bench_function("kitchen_sink__monty", |b| run_monty(b, KITCHEN_SINK, 373));
     c.bench_function("kitchen_sink_limits__monty", |b| run_monty_limits(b, KITCHEN_SINK, 373));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("kitchen_sink__cpython", |b| run_cpython(b, KITCHEN_SINK, 373));
 
     c.bench_function("func_call_kwargs__monty", |b| run_monty(b, FUNC_CALL_KWARGS, 3));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("func_call_kwargs__cpython", |b| run_cpython(b, FUNC_CALL_KWARGS, 3));
 
     c.bench_function("builtin_args__monty", |b| run_monty(b, BUILTIN_ARGS, 60_000));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("builtin_args__cpython", |b| run_cpython(b, BUILTIN_ARGS, 60_000));
 
     c.bench_function("attr_dispatch__monty", |b| run_monty(b, ATTR_DISPATCH, 50_715_000));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("attr_dispatch__cpython", |b| run_cpython(b, ATTR_DISPATCH, 50_715_000));
 
     c.bench_function("attr_dispatch_minimal__monty", |b| {
         run_monty(b, ATTR_DISPATCH_MINIMAL, 30_000);
     });
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("attr_dispatch_minimal__cpython", |b| {
         run_cpython(b, ATTR_DISPATCH_MINIMAL, 30_000);
     });
 
     c.bench_function("list_append_str__monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("list_append_str__cpython", |b| run_cpython(b, LIST_APPEND_STR, 100_000));
 
     c.bench_function("list_append_int__monty", |b| {
         run_monty(b, LIST_APPEND_INT, 4_999_950_000);
     });
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("list_append_int__cpython", |b| {
         run_cpython(b, LIST_APPEND_INT, 4_999_950_000);
     });
 
     c.bench_function("fib__monty", |b| run_monty(b, FIB_25, 75_025));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("fib__cpython", |b| run_cpython(b, FIB_25, 75_025));
 
     c.bench_function("list_comp__monty", |b| run_monty(b, LIST_COMP, 1000));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("list_comp__cpython", |b| run_cpython(b, LIST_COMP, 1000));
 
     c.bench_function("dict_comp__monty", |b| run_monty(b, DICT_COMP, 500));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("dict_comp__cpython", |b| run_cpython(b, DICT_COMP, 500));
 
     c.bench_function("empty_tuples__monty", |b| run_monty(b, EMPTY_TUPLES, 100_000));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("empty_tuples__cpython", |b| run_cpython(b, EMPTY_TUPLES, 100_000));
 
     c.bench_function("pair_tuples__monty", |b| run_monty(b, PAIR_TUPLES, 100_000));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("pair_tuples__cpython", |b| run_cpython(b, PAIR_TUPLES, 100_000));
 
     c.bench_function("container_repr__monty", |b| run_monty(b, CONTAINER_REPR, 628_320));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("container_repr__cpython", |b| run_cpython(b, CONTAINER_REPR, 628_320));
 
     c.bench_function("json_loads__monty", |b| {
         run_monty_with_data(b, JSON_LOADS, JSON_MEDIUM, 2);
     });
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("json_loads__cpython", |b| {
         run_cpython_with_data(b, JSON_LOADS, JSON_MEDIUM, 2);
     });
@@ -763,37 +763,37 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("json_dumps__monty", |b| {
         run_monty_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
     });
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("json_dumps__cpython", |b| {
         run_cpython_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
     });
 
     c.bench_function("agg_rows__monty", |b| run_monty(b, AGG_ROWS, 909_800));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("agg_rows__cpython", |b| run_cpython(b, AGG_ROWS, 909_800));
 
     c.bench_function("fstring_report__monty", |b| run_monty(b, FSTRING_REPORT, 102_017));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("fstring_report__cpython", |b| run_cpython(b, FSTRING_REPORT, 102_017));
 
     c.bench_function("str_parse__monty", |b| run_monty(b, STR_PARSE, 655_040));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("str_parse__cpython", |b| run_cpython(b, STR_PARSE, 655_040));
 
     c.bench_function("datetime_ops__monty", |b| run_monty(b, DATETIME_OPS, 360_100));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("datetime_ops__cpython", |b| run_cpython(b, DATETIME_OPS, 360_100));
 
     c.bench_function("re_extract__monty", |b| run_monty(b, RE_EXTRACT, 652_500));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("re_extract__cpython", |b| run_cpython(b, RE_EXTRACT, 652_500));
 
     c.bench_function("gc_collect__monty", |b| run_monty(b, GC_COLLECT, 0));
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("gc_collect__cpython", |b| run_cpython(b, GC_COLLECT, 0));
 
     let tree = scan_tree();
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     let host_root = tree.path().to_str().expect("temporary directories have UTF-8 paths");
     c.bench_function("glob_recursive__monty", |b| {
         run_monty_mounted(b, GLOB_RECURSIVE, tree.path(), MountMode::ReadOnly, 1_020);
@@ -802,7 +802,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         let mode = MountMode::OverlayMemory(OverlayState::new());
         run_monty_mounted(b, GLOB_RECURSIVE, tree.path(), mode, 1_020);
     });
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("glob_recursive__cpython", |b| {
         run_cpython_with_data(b, GLOB_RECURSIVE, host_root, 1_020);
     });
@@ -813,21 +813,21 @@ fn criterion_benchmark(c: &mut Criterion) {
         let mode = MountMode::OverlayMemory(OverlayState::new());
         run_monty_mounted(b, GLOB_WILDCARD, tree.path(), mode, 20);
     });
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("glob_wildcard__cpython", |b| {
         run_cpython_with_data(b, GLOB_WILDCARD, host_root, 20);
     });
     c.bench_function("walk_files__monty", |b| {
         run_monty_mounted(b, WALK_FILES, tree.path(), MountMode::ReadOnly, 4_020);
     });
-    #[cfg(not(codspeed))]
+    #[cfg(not(feature = "codspeed"))]
     c.bench_function("walk_files__cpython", |b| {
         run_cpython_with_data(b, WALK_FILES, host_root, 4_020);
     });
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
-#[cfg(all(not(codspeed), unix))]
+#[cfg(all(not(feature = "codspeed"), unix))]
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
@@ -835,7 +835,7 @@ criterion_group!(
 );
 
 // Use default config on CodSpeed or Windows (pprof is Unix-only)
-#[cfg(any(codspeed, not(unix)))]
+#[cfg(any(feature = "codspeed", not(unix)))]
 criterion_group!(benches, criterion_benchmark);
 
 criterion_main!(benches);

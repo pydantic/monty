@@ -15,13 +15,13 @@ use std::{
     sync::Once,
 };
 
-#[cfg(codspeed)]
+#[cfg(feature = "codspeed")]
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty_pool::{Checkout, Pool, PoolConfig, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
 use monty_types::{MontyObject, PrintStream};
-#[cfg(all(not(codspeed), unix))]
+#[cfg(all(not(feature = "codspeed"), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 use tokio::runtime::{Builder, Runtime};
 
@@ -254,7 +254,7 @@ fn pool_benchmark(c: &mut Criterion) {
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
-#[cfg(all(not(codspeed), unix))]
+#[cfg(all(not(feature = "codspeed"), unix))]
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
@@ -262,7 +262,7 @@ criterion_group!(
 );
 
 // Use default config on CodSpeed or Windows (pprof is Unix-only)
-#[cfg(any(codspeed, not(unix)))]
+#[cfg(any(feature = "codspeed", not(unix)))]
 criterion_group!(benches, pool_benchmark);
 
 criterion_main!(benches);

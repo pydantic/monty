@@ -33,7 +33,7 @@ salsa = { workspace = true }
 pretty_assertions = { workspace = true }
 insta = { workspace = true }
 # Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
-codspeed-criterion-compat = "4.2.1"
+codspeed-criterion-compat = "5.0.1"
 criterion = "0.5"
 
 [target.'cfg(unix)'.dev-dependencies]

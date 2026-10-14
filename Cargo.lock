@@ -678,14 +678,14 @@ dependencies = [
 
 [[package]]
 name = "codspeed"
-version = "4.7.0"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57af92d1db7f6871b7e82c79cd87f2501db66f36b0eab924be6ea83dd6b2f3f3"
+checksum = "1cade51e6e6e30e7ea2cd9599fa5d5d5f48255a6b221bbd0cab1cf32f3c23c65"
 dependencies = [
  "anyhow",
  "cc",
- "colored 2.2.0",
- "getrandom 0.2.17",
+ "colored",
+ "getrandom 0.4.3",
  "glob",
  "libc",
  "nix 0.31.3",
@@ -696,14 +696,14 @@ dependencies = [
 
 [[package]]
 name = "codspeed-criterion-compat"
-version = "4.7.0"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d31ae2e9ab23c29fa13bdfa06d012524176f5c0f4e25ec262cd829d947ebc5e"
+checksum = "b5d1640d31b122c8d754939c6ae4040709a9602f289d11e43075476a21285020"
 dependencies = [
  "clap",
  "codspeed",
  "codspeed-criterion-compat-walltime",
- "colored 2.2.0",
+ "colored",
  "futures",
  "regex",
  "tokio",
@@ -711,9 +711,9 @@ dependencies = [
 
 [[package]]
 name = "codspeed-criterion-compat-walltime"
-version = "4.7.0"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc8605e40bab5114dcb0f76268e18880082b5798dec10757b5b58d2c3bbc7a1c"
+checksum = "2a83eed387b8f84aad4cb29607758bec3ab3f53b1734af934ddae7fee626d8ce"
 dependencies = [
  "anes",
  "cast",
@@ -749,16 +749,6 @@ name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
-
-[[package]]
-name = "colored"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
-dependencies = [
- "lazy_static",
- "windows-sys 0.59.0",
-]
 
 [[package]]
 name = "colored"
@@ -5280,7 +5270,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1ac21186f9bd5a853e7f5447900081e0e46bf5288f63a35c37cab7b79c237b0"
 dependencies = [
  "camino",
- "colored 3.1.1",
+ "colored",
  "get-size2",
  "indexmap",
  "ruff_annotate_snippets",

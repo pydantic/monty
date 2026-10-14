@@ -13,7 +13,9 @@ permissions:
 jobs:
   benchmarks:
     name: Run benchmarks
-    runs-on: ubuntu-latest
+    # CodSpeed macro runners: dedicated bare-metal machines for walltime measurement,
+    # see https://codspeed.io/docs/features/macro-runners
+    runs-on: codspeed-macro
     permissions:
       contents: read
       id-token: write
@@ -47,9 +49,8 @@ jobs:
       # the workers are optimized (a debug interpreter would make the pool
       # numbers meaningless), and point the bench at it via MONTY_TEST_BIN so it
       # resolves the binary instead of shelling out to `cargo build` mid-run.
-      # (CodSpeed instruments only the bench process, so the pool benches
-      # measure parent-side spawn/checkout/wire cost; the uninstrumented worker
-      # children are not counted.)
+      # (Walltime measurement counts the worker children too, so the pool
+      # benches measure end-to-end spawn/checkout/round-trip latency.)
       - name: Build the monty worker binary
         run: cargo build -p monty-runtime --release
 
@@ -58,13 +59,15 @@ jobs:
       # `codspeed` profile (root Cargo.toml) is release codegen — fat LTO,
       # one codegen unit — with symbols kept for CodSpeed's flamegraphs, so
       # measurements reflect the optimization level users actually run.
+      # The `codspeed` feature selects codspeed-criterion-compat and drops the
+      # CPython comparisons; `cfg(codspeed)` is not set for walltime builds.
       - name: Build benchmarks
-        run: cargo codspeed build -p monty-bench --profile codspeed
+        run: cargo codspeed build -m walltime -p monty-bench --profile codspeed --features codspeed
 
       - name: Run benchmarks
         uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
         with:
-          mode: simulation
+          mode: walltime
           run: cargo codspeed run -p monty-bench
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/release/monty
