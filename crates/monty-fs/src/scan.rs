@@ -35,8 +35,8 @@ const MAX_SCAN_VISITS: u64 = 10_000_000;
 /// Runs a scan rooted in `mounts[root]`, replying with a glob's matches or the
 /// entries it read (see [`collect_scan`]).
 ///
-/// The entries read are charged to the root mount's memory limit as they grow;
-/// matches, which never outnumber them, are not charged again. A missing or
+/// The entries read and a glob's pending and seen states are charged to the root mount's memory limit as they grow; matches,
+/// which never outnumber the entries, are not charged again. A missing or
 /// unreadable root raises; unreadable directories below it read as empty.
 pub(super) fn execute(args: &ScanArgs, mounts: &mut [Mount], root: usize) -> Result<MontyObject, MountError> {
     if let Some(parts) = &args.pattern {
@@ -206,11 +206,13 @@ impl MountSource<'_> {
     }
 
     /// Charges one recorded entry whose relative path is `path_len` bytes.
-    fn charge(&mut self, path_len: usize) -> Result<(), MountError> {
-        self.used = self
-            .used
-            .saturating_add(as_u64(path_len))
-            .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
+    fn charge_entry(&mut self, path_len: usize) -> Result<(), MountError> {
+        self.charge_bytes(as_u64(path_len).saturating_add(LISTING_ENTRY_MEMORY_USAGE))
+    }
+
+    /// Adds `bytes` to what the scan holds, erroring past the budget.
+    fn charge_bytes(&mut self, bytes: u64) -> Result<(), MountError> {
+        self.used = self.used.saturating_add(bytes);
         self.budget.check(self.used)
     }
 }
@@ -227,7 +229,7 @@ impl ScanSource for MountSource<'_> {
         let mut children = Vec::with_capacity(listing.len());
         for (name, info) in listing {
             // The reply keeps the whole relative path, so that is what costs memory.
-            self.charge(dir.len() + 1 + name.len())?;
+            self.charge_entry(dir.len() + 1 + name.len())?;
             let child = format!("{dir_path}/{name}");
             // A child another mount serves, or one path policy refuses (too long,
             // a drive or a `\` on Unix), is described as a lookup of it would be.
@@ -248,9 +250,15 @@ impl ScanSource for MountSource<'_> {
         // Followed, so a link leaving the mount or dangling stays hidden, as it is from listings.
         let PathInfo { info, exists } = self.path_info(&self.virtual_path(path))?;
         if exists {
-            self.charge(path.len())?;
+            self.charge_entry(path.len())?;
         }
         Ok(exists.then_some(info))
+    }
+
+    /// Glob states share the entries' budget, so no pattern can hold more
+    /// than the mount's limit.
+    fn charge(&mut self, bytes: usize) -> Result<(), MountError> {
+        self.charge_bytes(as_u64(bytes))
     }
 
     fn visit(&mut self) -> Result<(), MountError> {

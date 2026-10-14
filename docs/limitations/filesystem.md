@@ -80,12 +80,12 @@ inode. The path is still stat-ed first, but only to phrase the error.
 
 ## Mount memory limits
 
-Each mount has a configurable `memory_usage_limit`, defaulting to 100 MB
-(100,000,000 bytes). Retained in-memory overlay entries and transient
+Each mount has a configurable `memory_usage_limit`, defaulting to
+[`DEFAULT_MEMORY_USAGE_LIMIT`](../api/rust/monty-fs.md#default_memory_usage_limit) bytes. Retained in-memory overlay entries and transient
 filesystem results share the budget. Host files are read incrementally up to
 the remaining budget without trusting file-size metadata; an operation that
 would exceed it raises
-`MemoryError: mount memory usage limit of 100 MB exceeded`. CPython has no
+`MemoryError: mount memory usage limit of <limit> exceeded`. CPython has no
 equivalent default limit.
 
 Consequences of the shared budget that have no CPython analogue:
@@ -108,6 +108,8 @@ Consequences of the shared budget that have no CPython analogue:
 
 - Every entry a scan reads counts against the mount's memory limit, including entries excluded from a glob's matches,
     so walking or globbing a tree with millions of entries raises `MemoryError` where CPython would stream it.
+- A glob also charges each directory it reaches at each wildcard part, so a pattern that returns to the same
+    directories many times (`'*/../' * 30 + '*'`) can raise `MemoryError` on a tree its single-part form reads.
 - A scan may examine at most 10,000,000 entries, counting each time a glob pattern revisits a directory, then raises
     `RuntimeError: directory scan examined more than 10000000 entries`. CPython has no such cap; it bounds patterns
     like `*/**/*/**/*` whose cost multiplies with every recursive part, and walks through symlink cycles.

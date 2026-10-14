@@ -160,13 +160,13 @@ Each feed starts with a fresh overlay.
 
 ### Options
 
-| Argument             | Default       | Meaning                                                                                  |
-| -------------------- | ------------- | ---------------------------------------------------------------------------------------- |
-| `host_path`          | required      | Real host directory; canonicalized at construction, raises if missing or not a directory |
-| `virtual_path`       | required      | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS                |
-| `mode`               | `'overlay'`   | One of the three above                                                                   |
-| `write_bytes_limit`  | `None`        | Cap on bytes written through the mount per feed; exceeding it raises `OSError`           |
-| `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
+| Argument             | Default                                                                         | Meaning                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `host_path`          | required                                                                        | Real host directory; canonicalized at construction, raises if missing or not a directory |
+| `virtual_path`       | required                                                                        | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS                |
+| `mode`               | `'overlay'`                                                                     | One of the three above                                                                   |
+| `write_bytes_limit`  | `None`                                                                          | Cap on bytes written through the mount per feed; exceeding it raises `OSError`           |
+| `memory_usage_limit` | [`DEFAULT_MEMORY_USAGE_LIMIT`](api/rust/monty-fs.md#default_memory_usage_limit) | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
 
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
 Mounts are serviced by the host, including for remote workers; the worker never receives host paths.

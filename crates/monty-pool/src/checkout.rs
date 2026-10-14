@@ -197,7 +197,7 @@ pub struct MountSpec {
 
 impl MountSpec {
     /// Opens `host_path` and creates mount configuration with the default
-    /// 100 MB memory budget and no cumulative write limit.
+    /// memory budget ([`monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`]) and no cumulative write limit.
     ///
     /// Build this once and reuse it; each call resolves the path afresh. The
     /// open is blocking filesystem I/O, so an async caller opening a directory

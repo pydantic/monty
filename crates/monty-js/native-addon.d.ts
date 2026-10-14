@@ -15,11 +15,12 @@ export interface NativeMount {
   hostPath: string
   mode?: string
   writeBytesLimit?: number
-  memoryUsageLimit: number
+  memoryUsageLimit?: number
 }
 
 export declare class NativeMountDir {
   constructor(mount: NativeMount)
+  get memoryUsageLimit(): number
   close(): void
 }
 

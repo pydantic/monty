@@ -1743,11 +1743,10 @@ fn mount_at_mnt_with_memory_limit(tmpdir: &TempDir, mode: MountMode, limit: u64)
 }
 
 #[test]
-fn mount_memory_usage_limit_defaults_to_100_mb() {
+fn mount_memory_usage_limit_defaults_to_the_constant() {
     let dir = create_test_dir();
     let mount = Mount::new("/mnt", dir.path(), MountMode::ReadOnly, None).unwrap();
 
-    assert_eq!(DEFAULT_MEMORY_USAGE_LIMIT, 100_000_000);
     assert_eq!(mount.memory_usage_limit(), DEFAULT_MEMORY_USAGE_LIMIT);
     assert_eq!(mount.memory_usage(), 0);
 }

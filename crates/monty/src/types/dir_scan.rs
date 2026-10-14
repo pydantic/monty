@@ -921,6 +921,11 @@ impl ScanSource for TrackedTree<'_> {
         self.visits += 1;
         self.tracker.check_memory_time_every(self.visits)
     }
+
+    /// Free: glob states are real allocations, which the visits' polls see.
+    fn charge(&mut self, _bytes: usize) -> Result<(), ResourceError> {
+        Ok(())
+    }
 }
 
 /// Starts `os.scandir(path)`: a depth-one scan, answered with a `ScandirIterator`.

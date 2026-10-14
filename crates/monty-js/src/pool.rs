@@ -196,8 +196,9 @@ pub struct NativeMount {
     pub mode: String,
     /// Cap on total bytes written through this mount.
     pub write_bytes_limit: Option<f64>,
-    /// Aggregate budget for retained overlay data and transient results.
-    pub memory_usage_limit: f64,
+    /// Aggregate budget for retained overlay data and transient results;
+    /// `monty_fs::DEFAULT_MEMORY_USAGE_LIMIT` when absent.
+    pub memory_usage_limit: Option<f64>,
 }
 
 /// A mount whose host directory is opened here and held until this object is
@@ -208,6 +209,8 @@ pub struct NativeMountDir {
     /// `None` once closed: the open directory is released and no later feed
     /// can mount it. A feed already running holds its own reference.
     spec: Option<MountSpec>,
+    /// The mount's memory budget, kept past `close` for the TypeScript wrapper.
+    memory_usage_limit: u64,
 }
 
 #[napi]
@@ -216,9 +219,17 @@ impl NativeMountDir {
     /// or the virtual path is not absolute.
     #[napi(constructor)]
     pub fn new(mount: NativeMount) -> Result<Self> {
+        let spec = MountSpec::try_from(mount)?;
         Ok(Self {
-            spec: Some(MountSpec::try_from(mount)?),
+            memory_usage_limit: spec.memory_usage_limit,
+            spec: Some(spec),
         })
+    }
+
+    /// The memory budget in bytes, the default's included.
+    #[napi(getter)]
+    pub fn memory_usage_limit(&self) -> f64 {
+        self.memory_usage_limit as f64
     }
 
     /// Releases the open directory. Idempotent.
@@ -1175,12 +1186,17 @@ impl TryFrom<NativeMount> for MountSpec {
             .write_bytes_limit
             .map(|limit| bytes_limit(limit, "writeBytesLimit"))
             .transpose()?;
-        let memory_usage_limit = bytes_limit(mount.memory_usage_limit, "memoryUsageLimit")?;
+        let memory_usage_limit = mount
+            .memory_usage_limit
+            .map(|limit| bytes_limit(limit, "memoryUsageLimit"))
+            .transpose()?;
         // Opens the directory: the spec carries a descriptor from here on, so
         // the host path is resolved once per mount object rather than per feed.
         let mut spec = Self::new(&mount.virtual_path, &mount.host_path, mode).map_err(pool_error)?;
         spec.write_bytes_limit = write_bytes_limit;
-        spec.memory_usage_limit = memory_usage_limit;
+        if let Some(limit) = memory_usage_limit {
+            spec.memory_usage_limit = limit;
+        }
         Ok(spec)
     }
 }

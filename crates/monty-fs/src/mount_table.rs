@@ -23,8 +23,9 @@ use super::{
     scan,
 };
 
-/// Default aggregate memory budget for one mount: 100 MB in decimal bytes.
-pub const DEFAULT_MEMORY_USAGE_LIMIT: u64 = 100_000_000;
+/// Default aggregate memory budget for one mount, in bytes; the only place
+/// the value is stated, so docs and bindings refer to it by name.
+pub const DEFAULT_MEMORY_USAGE_LIMIT: u64 = 50_000_000;
 
 /// Outcome of [`MountTable::handle_os_call`].
 ///

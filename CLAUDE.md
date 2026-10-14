@@ -1010,9 +1010,11 @@ where they are. Change one and you must change all of them:
 - **The start-latency numbers** — `ROWS` in `scripts/startup_latency_chart.py` (which renders
     `docs/img/startup-latency.svg`), `docs/index.md`, `docs/alternatives.md`, `README.md`.
     Re-measure with `scripts/startup_performance.py`, then update all four.
-- **Default resource limits** (1000 recursion frames, 1000 suspensions, 100 MB per-mount memory, 10 MiB
+- **Default resource limits** (1000 recursion frames, 1000 suspensions, 10 MiB
     print collectors, 1s duration grace) — `limitations/resource_limits.md`,
     `docs/resource-limits.md`, and the binding docstrings.
+    The per-mount memory default is the exception: its value is stated only in
+    `monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`, and everything else refers to that name.
 - **`OsPolicy` defaults** (system clock, UTC zone, host-serviced sleeps capped at 10 s, a zero `process_time`,
     OS entropy for `random`)
     and `call_host` — `limitations/time.md`, `limitations/datetime.md`,

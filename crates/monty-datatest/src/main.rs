@@ -1000,6 +1000,16 @@ impl ScanSource for VirtualScanSource<'_> {
         let exists = get_virtual_file(&path).is_some() || is_virtual_dir(&path);
         Ok(exists.then(|| virtual_entry_info(&path)))
     }
+
+    /// Unbounded: the virtual filesystem is a handful of fixed entries.
+    fn visit(&mut self) -> Result<(), Infallible> {
+        Ok(())
+    }
+
+    /// Free, as [`Self::visit`] is.
+    fn charge(&mut self, _bytes: usize) -> Result<(), Infallible> {
+        Ok(())
+    }
 }
 
 /// What the virtual filesystem holds at `path`; it has no symlinks.

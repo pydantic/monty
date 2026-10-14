@@ -215,7 +215,7 @@ caps the dump's, so a worker cannot report a looser one.
     It applies per frame, not to total host memory or subsequent host conversions.
 - **Print collectors.** [`CollectString`][pydantic_monty.CollectString] and [`CollectStreams`][pydantic_monty.CollectStreams] live in the host process, so their 10 MiB default cap is
     separate from `max_memory`.
-- **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to 100 MB, shared between
+- **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to [`DEFAULT_MEMORY_USAGE_LIMIT`](api/rust/monty-fs.md#default_memory_usage_limit), shared between
     retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
 - **Host entropy.** Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds

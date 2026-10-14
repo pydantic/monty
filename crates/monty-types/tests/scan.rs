@@ -227,6 +227,14 @@ impl ScanSource for Counting {
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
         self.0.lookup(path)
     }
+
+    fn visit(&mut self) -> Result<(), Infallible> {
+        Ok(())
+    }
+
+    fn charge(&mut self, _bytes: usize) -> Result<(), Infallible> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -257,6 +265,66 @@ fn dot_dot_routes_collapse() {
     matches.sort();
     assert_eq!(matches, names);
     assert!(source.1 < 100, "listed {} times", source.1);
+}
+
+/// A source that totals what a scan charges it and fails past `cap` bytes.
+struct Charging {
+    tree: ScanTree,
+    charged: usize,
+    cap: usize,
+}
+
+impl ScanSource for Charging {
+    type Error = usize;
+
+    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, usize> {
+        let Ok(listing) = self.tree.list(dir);
+        Ok(listing)
+    }
+
+    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, usize> {
+        let Ok(info) = self.tree.lookup(path);
+        Ok(info)
+    }
+
+    fn visit(&mut self) -> Result<(), usize> {
+        Ok(())
+    }
+
+    fn charge(&mut self, bytes: usize) -> Result<(), usize> {
+        self.charged += bytes;
+        if self.charged > self.cap {
+            Err(self.charged)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Glob states are charged to the source as they queue, so a pattern holding
+/// one per entry for every wildcard part pays for each, and a cap stops it.
+#[test]
+fn glob_states_are_charged_to_the_source() {
+    let names: Vec<String> = (0..50).map(|i| format!("{i:0200}")).collect();
+    let mut entries = vec![(String::new(), 'd')];
+    entries.extend(names.iter().map(|name| (name.clone(), 'd')));
+    let entries: Vec<(&str, char)> = entries.iter().map(|(path, kind)| (path.as_str(), *kind)).collect();
+    let charged = |pattern: &str, cap: usize| {
+        let mut source = Charging {
+            tree: tree(&entries),
+            charged: 0,
+            cap,
+        };
+        let parts = pattern.split('/').map(str::to_owned).collect();
+        let args = ScanArgs::glob("".into(), parts, None, false);
+        collect_scan(&args, &mut source).map(|_| source.charged)
+    };
+    let single = charged("*", usize::MAX).unwrap();
+    let crafted = charged(&("*/../".repeat(31) + "*"), usize::MAX).unwrap();
+    // each of the 31 wildcards with more parts to come queues a state per entry
+    assert!(crafted > 31 * 50 * 200, "charged {crafted}");
+    assert!(single < 50 * 2 * 200, "charged {single}");
+    assert!(charged(&("*/../".repeat(31) + "*"), crafted / 2).is_err());
 }
 
 /// Following symlinks, a merged trailing `**` needs a segment, as CPython's `.*` after `/` does.

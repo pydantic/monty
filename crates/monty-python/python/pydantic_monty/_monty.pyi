@@ -153,7 +153,7 @@ class MountDir:
         virtual_path: str,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
-        memory_usage_limit: int = 100_000_000,
+        memory_usage_limit: int = ...,
     ) -> MountDir:
         """Configure a mount point; validation happens here, not at feed time.
 
@@ -184,8 +184,8 @@ class MountDir:
             write_bytes_limit: Cap on cumulative bytes written through the
                 mount within one feed; exceeding it raises `OSError` in the
                 sandbox. `None` (default) means unlimited.
-            memory_usage_limit: Per-mount budget in bytes (default 100 MB,
-                matches DEFAULT_MEMORY_USAGE_LIMIT in rust) shared by retained
+            memory_usage_limit: Per-mount budget in bytes (default: monty-fs's
+                `DEFAULT_MEMORY_USAGE_LIMIT`) shared by retained
                 overlay data and transient filesystem results; an operation that
                 would exceed it raises `MemoryError` in the sandbox.
         """

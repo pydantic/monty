@@ -382,6 +382,29 @@ fn reply_is_charged_to_the_mount_memory_limit() {
     assert_eq!(err.into_exception().exc_type(), ExcType::MemoryError);
 }
 
+/// A glob's states share the mount budget with the entries it reads, so a
+/// pattern that holds one per entry for every wildcard part cannot outgrow it.
+#[test]
+fn glob_states_are_charged_to_the_mount_memory_limit() {
+    let dir = TempDir::new().unwrap();
+    for i in 0..500 {
+        fs::create_dir(dir.path().join(format!("{i:0200}"))).unwrap();
+    }
+    let mount = Mount::new("/mnt", dir.path(), MountMode::ReadOnly, None)
+        .unwrap()
+        .with_memory_usage_limit(1_000_000);
+    let mut table = MountTable::new();
+    table.push_mount(mount).unwrap();
+    // reading every entry, and matching them, fits
+    assert_eq!(scan(&mut table, glob("/mnt", &["*"])).unwrap().len(), 500);
+    assert_eq!(scan(&mut table, glob("/mnt", &["*", "..", "*"])).unwrap().len(), 500);
+    // 31 wildcards hold the 500 entries' paths 62 times over
+    let pattern = "*/../".repeat(31) + "*";
+    let parts: Vec<&str> = pattern.split('/').collect();
+    let err = scan(&mut table, glob("/mnt", &parts)).unwrap_err();
+    assert_eq!(err.into_exception().exc_type(), ExcType::MemoryError);
+}
+
 #[test]
 fn overlong_patterns_are_refused() {
     let dir = create_tree();

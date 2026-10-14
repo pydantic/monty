@@ -329,11 +329,19 @@ pub trait ScanSource {
     /// `None` when it does not exist.
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Self::Error>;
 
-    /// Charged once per entry a scan examines, so a host can cap the work a
+    /// Called once per entry a scan examines, so a host can cap the work a
     /// pathological pattern (`*/**/*/**/...`) or a symlink cycle costs.
-    fn visit(&mut self) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    ///
+    /// No default: a host-side source, or a wrapper that fails to forward
+    /// this, would leave that work unbounded without anything failing.
+    fn visit(&mut self) -> Result<(), Self::Error>;
+
+    /// Charged with the bytes of each glob state a scan holds, which a pattern
+    /// can multiply per entry read (`*/../*/../*`), so a host can bound them
+    /// with the entries.
+    ///
+    /// No default, for the same reason as [`Self::visit`].
+    fn charge(&mut self, bytes: usize) -> Result<(), Self::Error>;
 
     /// Most matches [`GlobSelector::select`] collects from this source before
     /// it stops collecting them; unlimited by default.
@@ -456,6 +464,10 @@ impl<E, S: ScanSource<Error = E>> ScanSource for Recorder<'_, S> {
         self.source.visit()
     }
 
+    fn charge(&mut self, bytes: usize) -> Result<(), E> {
+        self.source.charge(bytes)
+    }
+
     /// Matches stay a smaller reply than the entries they are drawn from
     /// unless a pattern yields an entry more than once.
     fn match_capacity(&self) -> usize {
@@ -539,6 +551,16 @@ impl ScanSource for ScanTree {
 
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
         Ok(normalize_relative(path).and_then(|path| self.get(&path)))
+    }
+
+    /// Unbounded: a reply already received, whose reader applies its own limits.
+    fn visit(&mut self) -> Result<(), Infallible> {
+        Ok(())
+    }
+
+    /// Free, as [`Self::visit`] is.
+    fn charge(&mut self, _bytes: usize) -> Result<(), Infallible> {
+        Ok(())
     }
 }
 
@@ -660,7 +682,7 @@ impl<'p> GlobSelector<'p> {
     /// The selection loop behind [`Self::select`].
     fn run<E>(&self, source: &mut impl ScanSource<Error = E>, run: &mut Run) -> Result<(), E> {
         let mut seen = HashSet::new();
-        run.push(0, String::new(), false);
+        run.push(0, String::new(), false, source)?;
         while let Some(state) = run.stack.pop() {
             if !seen.insert(state.clone()) {
                 continue;
@@ -680,9 +702,9 @@ impl<'p> GlobSelector<'p> {
                     if index + 1 < self.parts.len() {
                         path.push('/');
                     }
-                    run.push(index + 1, path, exists);
+                    run.push(index + 1, path, exists, source)?;
                 }
-                Step::Literal { joined, next } => run.push(*next, path + joined, false),
+                Step::Literal { joined, next } => run.push(*next, path + joined, false, source)?,
                 Step::Wildcard { matcher, next } => {
                     let dir_only = *next < self.parts.len();
                     for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default() {
@@ -692,7 +714,7 @@ impl<'p> GlobSelector<'p> {
                             if !dir_only {
                                 run.emit(entry, source);
                             } else if info.is_dir {
-                                run.push(*next, entry + "/", true);
+                                run.push(*next, entry + "/", true, source)?;
                             }
                         }
                     }
@@ -718,7 +740,7 @@ impl<'p> GlobSelector<'p> {
         let dir_only = next < self.parts.len();
         let match_pos = path.len();
         if matcher.is_none_or(|matcher| matcher.matches("")) {
-            run.push(next, path.clone(), exists);
+            run.push(next, path.clone(), exists, source)?;
         }
         let mut dirs = vec![path];
         while let Some(dir) = dirs.pop() {
@@ -731,7 +753,7 @@ impl<'p> GlobSelector<'p> {
                     let entry = if dir_only { entry + "/" } else { entry };
                     if matched {
                         if dir_only {
-                            run.push(next, entry.clone(), true);
+                            run.push(next, entry.clone(), true, source)?;
                         } else {
                             run.emit(entry.clone(), source);
                         }
@@ -746,6 +768,9 @@ impl<'p> GlobSelector<'p> {
     }
 }
 
+/// Bytes a glob state holds beside its path: the tuple, plus its seen-set slot.
+const STATE_OVERHEAD: usize = 2 * size_of::<(usize, String, bool)>();
+
 /// The pending states and results of one [`GlobSelector`] run.
 struct Run {
     /// States still to process: part index, normalized path so far, known to exist.
@@ -758,11 +783,21 @@ impl Run {
     /// Queues a state with its path normalized (keeping a trailing `/`); one
     /// climbing above the root is dropped. A path that is already normal, the
     /// common case, is queued as it is rather than copied.
-    fn push(&mut self, index: usize, mut path: String, exists: bool) {
+    ///
+    /// Each state is charged to `source` as queued: it stays held, on the stack
+    /// and then in the seen set, until the run ends, and a pattern like
+    /// `*/../*/../*` holds one per entry for every wildcard part.
+    fn push<E>(
+        &mut self,
+        index: usize,
+        mut path: String,
+        exists: bool,
+        source: &mut impl ScanSource<Error = E>,
+    ) -> Result<(), E> {
         let trimmed_len = path.trim_end_matches('/').len();
         let dir = trimmed_len > 0 && trimmed_len < path.len();
         let normalized = match normalize_relative(&path[..trimmed_len]) {
-            None => return,
+            None => return Ok(()),
             Some(Cow::Owned(mut normalized)) => {
                 if dir && !normalized.is_empty() {
                     normalized.push('/');
@@ -774,7 +809,9 @@ impl Run {
                 path
             }
         };
+        source.charge(STATE_OVERHEAD + normalized.len())?;
         self.stack.push((index, normalized, exists));
+        Ok(())
     }
 
     /// Records a match, or stops collecting once `source` would hold one too many.
