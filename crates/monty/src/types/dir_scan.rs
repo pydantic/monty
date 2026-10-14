@@ -14,8 +14,8 @@ use std::{borrow::Cow, fmt::Write};
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, ResourceError, ResourceTracker, ScanArgs, StringRepr,
     scan::{
-        EntryInfo, GlobSelector, ScanReply, ScanSource, ScanTree, indexed_size, normalize_relative, parse_scan_reply,
-        split_literal_prefix,
+        EntryInfo, GlobSelector, Listing, ScanReply, ScanSource, ScanTree, indexed_size, normalize_relative,
+        parse_scan_reply, split_literal_prefix,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -907,7 +907,7 @@ struct TrackedTree<'a> {
 impl ScanSource for TrackedTree<'_> {
     type Error = ResourceError;
 
-    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, ResourceError> {
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, ResourceError> {
         let Ok(listing) = self.tree.list(dir);
         Ok(listing)
     }

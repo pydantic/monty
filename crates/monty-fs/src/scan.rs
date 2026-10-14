@@ -15,7 +15,7 @@ use std::io::{self, ErrorKind};
 use cap_std::fs::{Dir, Metadata, ReadDir};
 use monty_types::{
     MontyObject, ScanArgs,
-    scan::{EntryInfo, ScanSource, collect_scan},
+    scan::{EntryInfo, Listing, ScanSource, collect_scan},
 };
 
 use super::{
@@ -93,7 +93,7 @@ fn reject_overlong_pattern(parts: &[String]) -> Result<(), MountError> {
 }
 
 /// A directory's entries by name, each typed as a lookup of it would be.
-type Listing = Vec<(String, EntryInfo)>;
+type Entries = Vec<(String, EntryInfo)>;
 
 /// Reads the mounts for [`collect_scan`] through their backends.
 struct MountSource<'a> {
@@ -125,7 +125,7 @@ impl MountSource<'_> {
     /// Lists the directory at virtual path `path`, with the index of the mount
     /// that served it; `None` when the mount cannot. The root's failure is the
     /// scan's (CPython's `scandir` would raise it), one below reads as empty.
-    fn listing(&mut self, dir: &str, path: &str) -> Result<Option<(usize, Listing)>, MountError> {
+    fn listing(&mut self, dir: &str, path: &str) -> Result<Option<(usize, Entries)>, MountError> {
         if dir.is_empty() {
             return self.scan_list(path).map(Some);
         }
@@ -140,7 +140,7 @@ impl MountSource<'_> {
     }
 
     /// Lists `path` on the mount it selects, as the table would route an `iterdir`.
-    fn scan_list(&mut self, path: &str) -> Result<(usize, Listing), MountError> {
+    fn scan_list(&mut self, path: &str) -> Result<(usize, Entries), MountError> {
         let Some(index) = find_mount(self.mounts, path) else {
             return Err(MountError::NoMountPoint(path.to_owned()));
         };
@@ -167,7 +167,7 @@ impl MountSource<'_> {
     /// `None` for an overlay mount or any failure, `budget` exceeded included:
     /// [`Self::scan_list`] then lists the path from the mount root, which
     /// raises the error a listing would.
-    fn list_through_handles(&mut self, index: usize, path: &str, budget: MemoryBudget) -> Option<Listing> {
+    fn list_through_handles(&mut self, index: usize, path: &str, budget: MemoryBudget) -> Option<Entries> {
         let (ctx, mode) = self.mounts[index].backend();
         if matches!(*mode, MountMode::OverlayMemory(_)) {
             return None;
@@ -220,30 +220,31 @@ impl MountSource<'_> {
 impl ScanSource for MountSource<'_> {
     type Error = MountError;
 
-    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, MountError> {
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, MountError> {
         let dir_path = self.virtual_path(dir);
-        let Some((index, listing)) = self.listing(dir, &dir_path)? else {
+        let Some((index, mut entries)) = self.listing(dir, &dir_path)? else {
             return Ok(None);
         };
         let nested = self.mounts.len() > 1;
-        let mut children = Vec::with_capacity(listing.len());
-        for (name, info) in listing {
+        // One buffer for every child's virtual path, rather than one per child.
+        let mut child = String::new();
+        for (name, info) in &mut entries {
             // The reply keeps the whole relative path, so that is what costs memory.
             self.charge_entry(dir.len() + 1 + name.len())?;
-            let child = format!("{dir_path}/{name}");
+            child.clear();
+            child.push_str(&dir_path);
+            child.push('/');
+            child.push_str(name);
             // A child another mount serves, or one path policy refuses (too long,
             // a drive or a `\` on Unix), is described as a lookup of it would be.
-            let info = if reject_overlong_path(&child).is_err()
-                || reject_drive_or_unc_segments(&name, &child).is_err()
+            if reject_overlong_path(&child).is_err()
+                || reject_drive_or_unc_segments(name, &child).is_err()
                 || (nested && find_mount(self.mounts, &child) != Some(index))
             {
-                self.path_info(&child)?.info
-            } else {
-                info
-            };
-            children.push((name, info));
+                *info = self.path_info(&child)?.info;
+            }
         }
-        Ok(Some(children))
+        Ok(Some(entries.into()))
     }
 
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, MountError> {

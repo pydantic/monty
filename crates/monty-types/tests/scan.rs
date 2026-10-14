@@ -8,7 +8,7 @@ use std::{convert::Infallible, iter::repeat_n};
 use monty_types::{
     MontyObject, ScanArgs,
     scan::{
-        EntryInfo, GlobSelector, ScanEntry, ScanReply, ScanSource, ScanTree, SegmentPattern, collect_scan,
+        EntryInfo, GlobSelector, Listing, ScanEntry, ScanReply, ScanSource, ScanTree, SegmentPattern, collect_scan,
         parse_scan_reply, split_literal_prefix,
     },
 };
@@ -219,7 +219,7 @@ struct Counting(ScanTree, usize);
 impl ScanSource for Counting {
     type Error = Infallible;
 
-    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, Infallible> {
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
         self.1 += 1;
         self.0.list(dir)
     }
@@ -277,7 +277,7 @@ struct Charging {
 impl ScanSource for Charging {
     type Error = usize;
 
-    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, usize> {
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, usize> {
         let Ok(listing) = self.tree.list(dir);
         Ok(listing)
     }

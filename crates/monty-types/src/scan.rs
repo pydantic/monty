@@ -19,6 +19,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     convert::Infallible,
+    sync::Arc,
 };
 
 use crate::{
@@ -323,7 +324,7 @@ pub trait ScanSource {
 
     /// Lists `dir`'s children, or `None` when it cannot be listed (missing,
     /// not a directory, unreadable) — CPython's glob skips those silently.
-    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, Self::Error>;
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Self::Error>;
 
     /// Describes `path` without following a final symlink (`os.path.lexists`),
     /// `None` when it does not exist.
@@ -349,6 +350,10 @@ pub trait ScanSource {
         usize::MAX
     }
 }
+
+/// A directory's children by name, shared so memoized and indexed listings
+/// are handed out without copying their names.
+pub type Listing = Arc<[(String, EntryInfo)]>;
 
 /// Runs a scan against `source` for a host and returns its reply, or `None`
 /// when the root does not exist.
@@ -398,10 +403,10 @@ fn walk_to_depth<E>(
         if max_depth.is_some_and(|max| depth >= max) {
             continue;
         }
-        for (name, info) in source.list(&dir)?.unwrap_or_default() {
+        for (name, info) in source.list(&dir)?.unwrap_or_default().iter() {
             source.visit()?;
             if info.is_dir && (follow_symlinks || !info.is_symlink) {
-                stack.push((join(&dir, &name), depth + 1));
+                stack.push((join(&dir, name), depth + 1));
             }
         }
     }
@@ -414,7 +419,7 @@ fn walk_to_depth<E>(
 struct Recorder<'s, S> {
     source: &'s mut S,
     /// Listings by normalized directory path.
-    listed: HashMap<String, Option<Vec<(String, EntryInfo)>>>,
+    listed: HashMap<String, Option<Listing>>,
     /// Every entry seen, by normalized path; becomes the reply.
     entries: BTreeMap<String, EntryInfo>,
 }
@@ -422,7 +427,7 @@ struct Recorder<'s, S> {
 impl<E, S: ScanSource<Error = E>> ScanSource for Recorder<'_, S> {
     type Error = E;
 
-    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, E> {
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, E> {
         let Some(dir) = normalize_relative(dir) else {
             return Ok(None);
         };
@@ -436,10 +441,13 @@ impl<E, S: ScanSource<Error = E>> ScanSource for Recorder<'_, S> {
             return Ok(None);
         }
         let mut listing = self.source.list(&dir)?;
-        if let Some(children) = &mut listing {
-            children.sort_by(|(a, _), (b, _)| a.cmp(b));
+        // Copied only if the source still shares an unsorted listing.
+        if let Some(children) = &mut listing
+            && !children.is_sorted_by(|(a, _), (b, _)| a <= b)
+        {
+            Arc::make_mut(children).sort_by(|(a, _), (b, _)| a.cmp(b));
         }
-        for (name, info) in listing.iter().flatten() {
+        for (name, info) in listing.iter().flat_map(|children| children.iter()) {
             self.entries.insert(join(&dir, name), *info);
         }
         self.listed.insert(dir.into_owned(), listing.clone());
@@ -482,7 +490,7 @@ pub struct ScanTree {
     /// Every entry by normalized relative path; the root is `""`.
     entries: HashMap<String, EntryInfo>,
     /// Children of each directory, sorted by name.
-    children: HashMap<String, Vec<(String, EntryInfo)>>,
+    children: HashMap<String, Listing>,
 }
 
 impl ScanTree {
@@ -500,9 +508,13 @@ impl ScanTree {
                     .push((name.to_owned(), *info));
             }
         }
-        for siblings in children.values_mut() {
-            siblings.sort_by(|(a, _), (b, _)| a.cmp(b));
-        }
+        let children = children
+            .into_iter()
+            .map(|(dir, mut siblings)| {
+                siblings.sort_by(|(a, _), (b, _)| a.cmp(b));
+                (dir, Listing::from(siblings))
+            })
+            .collect();
         Self { entries, children }
     }
 
@@ -525,7 +537,7 @@ impl ScanTree {
     /// The sorted children of the normalized directory `dir`.
     #[must_use]
     pub fn children(&self, dir: &str) -> &[(String, EntryInfo)] {
-        self.children.get(dir).map_or(&[], Vec::as_slice)
+        self.children.get(dir).map_or(&[], |siblings| siblings)
     }
 
     /// The entry at normalized path `path`.
@@ -542,10 +554,10 @@ impl ScanTree {
 impl ScanSource for ScanTree {
     type Error = Infallible;
 
-    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, Infallible> {
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
         let listing = normalize_relative(dir)
             .filter(|dir| self.get(dir).is_some_and(|info| info.is_dir))
-            .map(|dir| self.children(&dir).to_vec());
+            .map(|dir| self.children.get(dir.as_ref()).cloned().unwrap_or_default());
         Ok(listing)
     }
 
@@ -707,10 +719,10 @@ impl<'p> GlobSelector<'p> {
                 Step::Literal { joined, next } => run.push(*next, path + joined, false, source)?,
                 Step::Wildcard { matcher, next } => {
                     let dir_only = *next < self.parts.len();
-                    for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default() {
+                    for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default().iter() {
                         source.visit()?;
-                        if matcher.as_ref().is_none_or(|matcher| matcher.matches(&name)) {
-                            let entry = join(&path, &name);
+                        if matcher.as_ref().is_none_or(|matcher| matcher.matches(name)) {
+                            let entry = join(&path, name);
                             if !dir_only {
                                 run.emit(entry, source);
                             } else if info.is_dir {
@@ -744,22 +756,25 @@ impl<'p> GlobSelector<'p> {
         }
         let mut dirs = vec![path];
         while let Some(dir) = dirs.pop() {
-            for (name, info) in source.list(dir.trim_end_matches('/'))?.unwrap_or_default() {
+            for (name, info) in source.list(dir.trim_end_matches('/'))?.unwrap_or_default().iter() {
                 source.visit()?;
                 let is_dir = info.is_dir && (self.recurse_symlinks || !info.is_symlink);
                 if is_dir || !dir_only {
-                    let entry = join(&dir, &name);
+                    let entry = join(&dir, name);
                     let matched = matcher.is_none_or(|matcher| matcher.matches(&entry[match_pos..]));
                     let entry = if dir_only { entry + "/" } else { entry };
-                    if matched {
-                        if dir_only {
-                            run.push(next, entry.clone(), true, source)?;
-                        } else {
-                            run.emit(entry.clone(), source);
-                        }
-                    }
                     if is_dir {
+                        if matched {
+                            if dir_only {
+                                run.push(next, entry.clone(), true, source)?;
+                            } else {
+                                run.emit(entry.clone(), source);
+                            }
+                        }
                         dirs.push(entry);
+                    } else if matched {
+                        // Only a file match gets here (`dir_only` is false), so it takes the path.
+                        run.emit(entry, source);
                     }
                 }
             }

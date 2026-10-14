@@ -37,7 +37,7 @@ use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
     MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
     SandboxTimeZone, dir_stat, file_stat,
-    scan::{EntryInfo, ScanSource, collect_scan},
+    scan::{EntryInfo, Listing, ScanSource, collect_scan},
 };
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
@@ -979,7 +979,7 @@ impl VirtualScanSource<'_> {
 impl ScanSource for VirtualScanSource<'_> {
     type Error = Infallible;
 
-    fn list(&mut self, dir: &str) -> Result<Option<Vec<(String, EntryInfo)>>, Infallible> {
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
         let listing = get_virtual_dir_entries(&self.absolute(dir)).map(|entries| {
             entries
                 .into_iter()
@@ -990,7 +990,7 @@ impl ScanSource for VirtualScanSource<'_> {
                         .to_owned();
                     (name, virtual_entry_info(&entry))
                 })
-                .collect()
+                .collect::<Listing>()
         });
         Ok(listing)
     }
