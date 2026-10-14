@@ -9,8 +9,8 @@
 /// that grow unboundedly — a denial-of-service vector. Monty uses `fancy_regex`
 /// which enforces a default 1M-step backtrack limit, raising `re.PatternError`
 /// when exceeded. This is strictly better behavior for a sandbox.
-use monty::MontyRun;
-use monty_types::CompileOptions;
+use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
 /// Helper to run Python code and return the string result.
 fn run(code: &str) -> String {
@@ -105,4 +105,78 @@ assert re.findall('a{5000}', 'a' * 5000) == ['a' * 5000], 'oversize pattern find
 'ok'
 ");
     assert_eq!(result, "ok");
+}
+
+/// `finditer` searches lazily, so a match before a pathological stretch is
+/// returned and the backtrack limit only fires on the `next()` that reaches it.
+#[test]
+fn finditer_backtrack_limit_raises_on_next() {
+    let result = run(r"
+import re
+it = re.finditer(r'((a+)\2)+b|c', 'c' + 'a' * 40 + 'c')
+assert next(it).span() == (0, 1)
+try:
+    next(it)
+    result = 'no error'
+except re.PatternError as e:
+    result = str(e)
+result
+");
+    assert_eq!(
+        result,
+        "Error executing regex: Max limit for backtracking count exceeded"
+    );
+}
+
+/// An invalid pattern is reported before a bad subject, as in CPython; the
+/// message is `fancy_regex`'s, so this can't run against CPython.
+#[test]
+fn finditer_pattern_error_precedes_subject_error() {
+    let result = run(r"
+import re
+try:
+    re.finditer('(', 1)
+    result = 'no error'
+except re.PatternError as e:
+    result = str(e)
+result
+");
+    assert_eq!(
+        result,
+        "Parsing error at position 1: Opening parenthesis without closing parenthesis"
+    );
+}
+
+/// The empty-match rule documented in `limitations/re.md`: an empty match where
+/// the previous match ended is skipped, so CPython's `(2, 2)` is missing.
+#[test]
+fn finditer_skips_empty_match_at_previous_end() {
+    let result = run(r"
+import re
+str([m.span() for m in re.finditer(r'x*', 'axb')])
+");
+    assert_eq!(result, "[(0, 0), (1, 2), (3, 3)]");
+}
+
+/// A partly consumed `finditer` survives a session dump and resumes where it stopped.
+#[test]
+fn finditer_resumes_after_dump_and_load() {
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "import re\nit = re.finditer(r'\\d+', 'a1 b22 c333')\nnext(it)",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("repl.py", None, SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped an idle session, loaded something else")
+    };
+    let rest = repl
+        .feed_run("[m.group() for m in it]", vec![], PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        rest,
+        MontyObject::list(vec![MontyObject::string("22"), MontyObject::string("333")])
+    );
 }

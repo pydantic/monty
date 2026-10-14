@@ -20,7 +20,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    intern::StaticStrings,
+    intern::{Interns, StaticStrings},
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
     types::{
@@ -331,40 +331,12 @@ impl RePattern {
 
         allocate_str_list(&pieces, heap)
     }
-
-    /// `pattern.finditer(string)` — return all matches as a list.
-    ///
-    /// Eagerly collects all match objects into a list. This differs from CPython's
-    /// lazy iterator but produces the same results when iterated. The VM's `GetIter`
-    /// opcode handles iteration over the returned list.
-    pub fn finditer(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
-        // Every match shares one refcounted subject reference, not a copy each.
-        let all_ascii = text.is_ascii();
-
-        let mut results = Vec::new();
-        for caps in self.compiled.captures_iter(text) {
-            check_results_growth(&results, heap)?;
-            let caps = caps.map_err(ExcType::re_pattern_error)?;
-            results.push(self.build_match(&caps, subject, all_ascii, heap));
-        }
-
-        let list = List::new(results);
-        Ok(Value::Ref(heap.allocate(HeapData::List(list))))
-    }
 }
 
-/// Preflights the growth one more match result would cause.
+/// Preflights the growth one more borrowed match slice would cause.
 ///
-/// A match list grows as long as the subject allows with no instruction
-/// checkpoint in between, so without this the buffer's doubling can clear the
-/// allocator's hard-limit headroom and kill the worker.
-fn check_results_growth(results: &Vec<Value>, heap: &Heap) -> RunResult<()> {
-    Ok(heap
-        .tracker
-        .check_growth(results.len(), results.capacity(), VALUE_SIZE)?)
-}
-
-/// [`check_results_growth`] for a buffer of borrowed match slices.
+/// The buffer grows as long as the subject allows with no instruction checkpoint
+/// in between, so without this its doubling can clear the hard-limit headroom.
 fn check_slice_growth(slices: &Vec<&str>, heap: &Heap) -> RunResult<()> {
     Ok(heap
         .tracker
@@ -497,8 +469,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
             Some(StaticStrings::Finditer) => {
                 let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).finditer(arg, text, vm.heap)
+                let all_ascii = subject_str(arg, vm)?.is_ascii();
+                Ok(ReFinditer::allocate(
+                    self.clone_value(vm.heap),
+                    arg.clone_with_heap(vm.heap),
+                    all_ascii,
+                    vm.heap,
+                ))
             }
             _ => return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm)),
         }?;
@@ -593,6 +570,177 @@ struct PatternSplitArgs {
     string: Value,
     #[from_args(default)]
     maxsplit: Option<Value>,
+}
+
+/// The lazy iterator `finditer` returns, typed `callable_iterator` like CPython's.
+///
+/// Each `next()` runs one search from where the last match ended, resuming the
+/// way `fancy_regex`'s `captures_iter` does so results match `findall`. Owns refs
+/// to the pattern and subject, released once the iterator is exhausted.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ReFinditer {
+    /// Owned ref to a heap `re.Pattern`.
+    pattern: Value,
+    /// Owned ref to the subject `str`.
+    subject: Value,
+    /// Whether the subject is pure ASCII, computed once rather than per match.
+    all_ascii: bool,
+    /// Byte offset the next search starts from.
+    last_end: usize,
+    /// End of the previous match; an empty match there is skipped.
+    last_match: Option<usize>,
+    /// Latches on exhaustion, after which both refs are `None`.
+    done: bool,
+}
+
+impl ReFinditer {
+    /// Takes ownership of `pattern` (a heap `re.Pattern`) and the str `subject`.
+    pub(crate) fn allocate(pattern: Value, subject: Value, all_ascii: bool, heap: &Heap) -> Value {
+        let iter = Self {
+            pattern,
+            subject,
+            all_ascii,
+            last_end: 0,
+            last_match: None,
+            done: false,
+        };
+        Value::Ref(heap.allocate(HeapData::ReFinditer(iter)))
+    }
+
+    /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+        if let Value::Ref(id) = &self.pattern {
+            on_child(*id);
+        }
+        if let Value::Ref(id) = &self.subject {
+            on_child(*id);
+        }
+    }
+
+    /// Finds the next match, returning it with the `last_end` / `last_match` to resume from.
+    fn search(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<(Value, usize, usize)>> {
+        let Value::Ref(pattern_id) = &self.pattern else {
+            unreachable!("ReFinditer::pattern is a heap re.Pattern until exhausted")
+        };
+        let HeapData::RePattern(pattern) = heap.get(*pattern_id) else {
+            unreachable!("ReFinditer::pattern always points at a re.Pattern")
+        };
+        let text = self.subject.to_str_heap(heap, interns)?;
+        let mut pos = self.last_end;
+        while pos <= text.len() {
+            let Some(caps) = pattern
+                .compiled
+                .captures_from_pos(text, pos)
+                .map_err(ExcType::re_pattern_error)?
+            else {
+                break;
+            };
+            let m = caps.get(0).expect("group 0 always exists on a successful match");
+            let last_end = if m.start() == m.end() {
+                next_char_boundary(text, m.end())
+            } else {
+                m.end()
+            };
+            if m.start() == m.end() && self.last_match == Some(m.end()) {
+                pos = last_end;
+            } else {
+                let found = pattern.build_match(&caps, &self.subject, self.all_ascii, heap);
+                return Ok(Some((found, last_end, m.end())));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// The byte offset just past the character at `i`, or `i + 1` at the end of `text`.
+fn next_char_boundary(text: &str, i: usize) -> usize {
+    text[i..].chars().next().map_or(i + 1, |c| i + c.len_utf8())
+}
+
+impl HeapItem for ReFinditer {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.pattern.py_dec_ref_ids(stack);
+        self.subject.py_dec_ref_ids(stack);
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReFinditer> {
+    fn py_is_iterator(&self, _: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _: &VM<'h>) -> Type {
+        Type::CallableIterator
+    }
+
+    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.clone_value(vm.heap))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let this = self.get(vm.heap);
+        let found = if this.done {
+            None
+        } else {
+            this.search(vm.heap, vm.interns)?
+        };
+        if let Some((found, last_end, last_match)) = found {
+            let this = self.get_mut(vm.heap);
+            this.last_end = last_end;
+            this.last_match = Some(last_match);
+            Ok(Some(found))
+        } else {
+            // Drop the refs now so a spent iterator doesn't pin a large subject.
+            let (pattern, subject) = {
+                let this = self.get_mut(vm.heap);
+                this.done = true;
+                (
+                    mem::replace(&mut this.pattern, Value::None),
+                    mem::replace(&mut this.subject, Value::None),
+                )
+            };
+            pattern.drop_with(vm);
+            subject.drop_with(vm);
+            Ok(None)
+        }
+    }
+}
+
+/// Validates the `string` subject and borrows its text from the heap, zero-copy.
+/// Shared by the module-level `re` functions and `Pattern.finditer`.
+///
+/// Runs *after* binding and pattern/flags resolution — CPython's `def` binds without
+/// type checks and only the C match machinery rejects a bad subject — so arity,
+/// pattern, and flags errors always win. Monty has no bytes matching: a bytes subject
+/// gets CPython's mixed-types message, anything else the `sre` wording.
+pub(crate) fn subject_str<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
+    if value.is_str(vm.heap) {
+        value.to_str(vm)
+    } else if value.py_type_heap(vm.heap) == Type::Bytes {
+        // Monty patterns are always str, so a bytes subject is always
+        // CPython's string-pattern/bytes-subject mismatch.
+        Err(ExcType::type_error(
+            "cannot use a string pattern on a bytes-like object",
+        ))
+    } else {
+        // sre reports `type(x).__name__`, so `None` reads 'NoneType'.
+        Err(ExcType::type_error(format!(
+            "expected string or bytes-like object, got '{}'",
+            value.py_type_name(vm)
+        )))
+    }
 }
 
 /// Extracts a `maxsplit` value from an optional `Value` for [`RePattern::split`].

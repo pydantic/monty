@@ -142,6 +142,8 @@ macro_rules! heap_payloads {
             RePattern(boxed $crate::types::RePattern),
             /// A regular-expression match result.
             ReMatch(boxed $crate::types::ReMatch),
+            /// The lazy iterator returned by `re.finditer` / `Pattern.finditer`.
+            ReFinditer(inline $crate::types::ReFinditer),
             /// A reference to an external function supplied by the host.
             ExtFunction(inline $crate::types::ExtFunction),
             /// A `datetime.date` value.
@@ -271,6 +273,7 @@ impl HeapData {
             | Self::OpenFile(_)
             | Self::RePattern(_)
             | Self::ReMatch(_)
+            | Self::ReFinditer(_)
             | Self::ExtFunction(_)
             | Self::Date(_)
             | Self::DateTime(_)
@@ -364,7 +367,7 @@ impl HeapData {
             Self::DictItemIterator(_) => Type::DictItemIterator,
             Self::DictValueIterator(_) => Type::DictValueIterator,
             Self::SetIterator(_) => Type::SetIterator,
-            Self::CallableIterator(_) => Type::CallableIterator,
+            Self::CallableIterator(_) | Self::ReFinditer(_) => Type::CallableIterator,
             Self::Itertools(i) => i.py_type(),
         }
     }
@@ -656,6 +659,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::DictValueIterator($value) => $body,
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
+            Self::ReFinditer($value) => $body,
             Self::Itertools($value) => $body,
             Self::Partial($value) => $body,
             Self::Random($value) => $body,
@@ -1132,6 +1136,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DictValueIterator(value) => value.py_iter(vm),
             Self::SetIterator(value) => value.py_iter(vm),
             Self::CallableIterator(value) => value.py_iter(vm),
+            Self::ReFinditer(value) => value.py_iter(vm),
             Self::Itertools(value) => value.py_iter(vm),
             Self::Tuple(value) => value.py_iter(vm),
             Self::NamedTuple(value) => value.py_iter(vm),
@@ -1195,6 +1200,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DictValueIterator(value) => value.py_next(vm),
             Self::SetIterator(value) => value.py_next(vm),
             Self::CallableIterator(value) => value.py_next(vm),
+            Self::ReFinditer(value) => value.py_next(vm),
             Self::Itertools(value) => value.py_next(vm),
             Self::Tuple(value) => value.py_next(vm),
             Self::NamedTuple(value) => value.py_next(vm),

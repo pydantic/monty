@@ -41,6 +41,14 @@ match CPython's, with these divergences:
 - Positional `count` / `maxsplit` for `re.sub` / `re.split` do not emit
     CPython 3.13+'s `DeprecationWarning` (Monty has no warnings machinery).
 
+## Empty matches
+
+`finditer`, `findall`, `sub` and `split` follow the Rust `regex` crate's rule for empty matches, not CPython's.
+An empty match at the position where the previous match ended is skipped, and after an empty match the search
+moves on one character rather than retrying at the same position for a non-empty match.
+So `re.finditer(r'x*', 'axb')` gives spans `(0, 0), (1, 2), (3, 3)`, where CPython also yields `(2, 2)`, and
+`re.findall(r'.*?', 'ab')` gives three empty strings where CPython gives `['', 'a', '', 'b', '']`.
+
 ## Flags
 
 Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,
@@ -61,8 +69,9 @@ Not implemented: `subn`, `groups` (count), `groupindex` (named-group
 mapping), `scanner`. The `pos` / `endpos` arguments accepted by
 `Pattern.search(string, pos, endpos)` etc. in CPython are **not** supported.
 
-A non-str subject passed to a Pattern *method* raises `expected string, not {type}` rather than CPython's
-`expected string or bytes-like object, got '{type}'`. The module-level functions match CPython's wording.
+A non-str subject passed to a Pattern *method* other than `finditer` raises `expected string, not {type}` rather
+than CPython's `expected string or bytes-like object, got '{type}'`. The module-level functions and `Pattern.finditer`
+match CPython's wording.
 
 ## `re.Match` objects
 
