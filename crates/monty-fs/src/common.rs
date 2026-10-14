@@ -392,6 +392,8 @@ pub(super) fn visible_entries(
     budget: MemoryBudget,
 ) -> Result<Vec<(String, EntryInfo)>, MountError> {
     let mut entries = Vec::new();
+    // Indices of the entries whose names are not UTF-8.
+    let mut lossy = Vec::new();
     let mut memory_usage = 0_u64;
 
     for entry in read_dir {
@@ -419,11 +421,11 @@ pub(super) fn visible_entries(
                 is_symlink: false,
             }
         };
-        // A name that is not UTF-8 is reported lossily, and nothing answers to
-        // the lossy spelling, so it reads as a lookup of it would: none of the three.
-        let (name, info) = match raw_name.to_str() {
-            Some(name) => (name.to_owned(), info),
-            None => (raw_name.to_string_lossy().into_owned(), PathInfo::ABSENT.info),
+        let name = if let Some(name) = raw_name.to_str() {
+            name.to_owned()
+        } else {
+            lossy.push(entries.len());
+            raw_name.to_string_lossy().into_owned()
         };
         memory_usage = memory_usage
             .saturating_add(as_u64(name.len()))
@@ -432,6 +434,16 @@ pub(super) fn visible_entries(
         entries.push((name, info));
     }
 
+    // A name that is not UTF-8 is reported lossily, so it reads as a lookup of
+    // that spelling would: as the sibling truly named so, or none of the three.
+    for &index in &lossy {
+        let info = entries
+            .iter()
+            .enumerate()
+            .find(|(other, (name, _))| *name == entries[index].0 && !lossy.contains(other))
+            .map_or(PathInfo::ABSENT.info, |(_, (_, info))| *info);
+        entries[index].1 = info;
+    }
     Ok(entries)
 }
 

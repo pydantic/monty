@@ -25,7 +25,7 @@ use super::{
     mount_mode::MountMode,
     mount_table::{Mount, find_mount},
     overlay::{self, available_memory},
-    path_security::{reject_overlong_path, resolve_virtual_path},
+    path_security::{reject_drive_or_unc_segments, reject_overlong_path, resolve_virtual_path},
 };
 
 /// Most entries one scan may examine, counting each time a pattern state
@@ -144,27 +144,30 @@ impl MountSource<'_> {
         let Some(index) = find_mount(self.mounts, path) else {
             return Err(MountError::NoMountPoint(path.to_owned()));
         };
-        if let Some(listing) = self.list_through_handles(index, path) {
+        // The listing is built before its entries are charged, so it gets only what is left.
+        let budget = self.budget.shrink(self.used)?;
+        if let Some(listing) = self.list_through_handles(index, path, budget) {
             return Ok((index, listing));
         }
         let (ctx, mode) = self.mounts[index].backend();
         let listing = match &*mode {
             MountMode::OverlayMemory(state) => {
                 let handles = &mut self.handles;
-                overlay::scan_list(path, &ctx, state, |rel| {
+                overlay::scan_list(path, &ctx, state, budget, |rel| {
                     handles.read_dir_link_free(index, rel, ctx.mount_dir)
                 })
             }
-            MountMode::ReadWrite | MountMode::ReadOnly => dispatch::scan_list(path, &ctx, mode),
+            MountMode::ReadWrite | MountMode::ReadOnly => dispatch::scan_list(path, &ctx, mode, budget),
         };
         listing.map(|entries| (index, entries))
     }
 
     /// Lists `path` on direct mount `index` through its parent's open handle.
     ///
-    /// `None` for an overlay mount or any failure: [`Self::scan_list`] then lists
-    /// the path from the mount root, which raises the error a listing would.
-    fn list_through_handles(&mut self, index: usize, path: &str) -> Option<Listing> {
+    /// `None` for an overlay mount or any failure, `budget` exceeded included:
+    /// [`Self::scan_list`] then lists the path from the mount root, which
+    /// raises the error a listing would.
+    fn list_through_handles(&mut self, index: usize, path: &str, budget: MemoryBudget) -> Option<Listing> {
         let (ctx, mode) = self.mounts[index].backend();
         if matches!(*mode, MountMode::OverlayMemory(_)) {
             return None;
@@ -172,7 +175,6 @@ impl MountSource<'_> {
         let target = resolve_virtual_path(path, ctx.mount_virtual).ok()?;
         let rel = target.for_dir_op();
         let read_dir = self.handles.read_dir(index, rel, ctx.mount_dir)?;
-        let budget = MemoryBudget::full(ctx.memory_usage_limit);
         visible_entries(read_dir, ctx.mount_dir, rel, path, budget).ok()
     }
 
@@ -227,9 +229,10 @@ impl ScanSource for MountSource<'_> {
             // The reply keeps the whole relative path, so that is what costs memory.
             self.charge(dir.len() + 1 + name.len())?;
             let child = format!("{dir_path}/{name}");
-            // A child another mount serves, or one too long to reach, is described
-            // as a lookup of it would be rather than by its parent's listing.
+            // A child another mount serves, or one path policy refuses (too long,
+            // a drive or a `\` on Unix), is described as a lookup of it would be.
             let info = if reject_overlong_path(&child).is_err()
+                || reject_drive_or_unc_segments(&name, &child).is_err()
                 || (nested && find_mount(self.mounts, &child) != Some(index))
             {
                 self.path_info(&child)?.info

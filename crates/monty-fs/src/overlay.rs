@@ -404,13 +404,15 @@ pub(super) fn path_info(
 /// on it would, from the listing alone: overlay entries by kind, real ones by
 /// the type their directory entry records.
 ///
-/// `open_real` may list a real directory the overlay does not hold, given its
-/// mount-relative path, through a chain of directories it found link-free;
-/// `None` resolves and checks the path here instead, raising what that finds.
+/// `budget` is what is left of the scan's. `open_real` may list a real
+/// directory the overlay does not hold, given its mount-relative path, through
+/// a chain of directories it found link-free; `None` resolves and checks the
+/// path here instead, raising what that finds.
 pub(super) fn scan_list(
     path: &str,
     ctx: &MountContext<'_>,
     state: &OverlayState,
+    budget: MemoryBudget,
     open_real: impl FnOnce(&str) -> Option<ReadDir>,
 ) -> Result<Vec<(String, EntryInfo)>, MountError> {
     let relative = relative_path(path, ctx)?;
@@ -426,7 +428,6 @@ pub(super) fn scan_list(
         Some(opened) => Some(opened),
         None => real_dir_to_merge(state, &relative, ctx, path)?.map(|rel| (rel, None)),
     };
-    let budget = available_memory(state, ctx)?;
     let mut seen_names: AHashSet<&str> = AHashSet::new();
     let mut entries = Vec::new();
     let mut transient_usage = 0_u64;

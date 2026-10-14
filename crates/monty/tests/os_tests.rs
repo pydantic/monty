@@ -2002,7 +2002,7 @@ fn literal_glob_needs_a_described_root() {
 }
 
 /// A host that selected a glob's matches has them used as they are, spelled
-/// as `pathlib` does; only a glob accepts them.
+/// as `pathlib` does; only a glob with a pattern part accepts them.
 #[test]
 fn glob_uses_matches_the_host_selected() {
     let matches =
@@ -2023,6 +2023,13 @@ fn glob_uses_matches_the_host_selected() {
     assert_eq!(
         err.to_string().lines().last().unwrap_or_default(),
         "RuntimeError: invalid return type: os.scandir: glob matches answer only a glob scan"
+    );
+    // an all-literal glob is sent as a listing, so `require_dir` still applies
+    let call = run_to_oscall_start("from pathlib import Path\nlist(Path('r').glob('a/'))");
+    let err = call.resume(matches(&[""]), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: Path.glob: glob matches answer only a glob scan"
     );
     let call = run_to_oscall_start("from pathlib import Path\nlist(Path('r').glob('*'))");
     let err = call.resume(matches(&["../x"]), PrintWriter::Stdout).unwrap_err();

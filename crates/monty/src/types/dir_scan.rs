@@ -750,7 +750,8 @@ impl ScanEffect {
         }
         let reply = match reply {
             Ok(reply) => match parse_scan_reply(&reply) {
-                Ok(ScanReply::Matches(_)) if !matches!(self, Self::Glob(_)) => {
+                // An all-literal glob is sent as a listing, so it takes a tree too.
+                Ok(ScanReply::Matches(_)) if !matches!(&self, Self::Glob(setup) if !setup.parts.is_empty()) => {
                     let message = format!(
                         "invalid return type: {}: glob matches answer only a glob scan",
                         self.operation_name()
@@ -775,7 +776,7 @@ impl ScanEffect {
             self.release(vm.heap);
             return Err(err.into());
         }
-        // Only a glob takes matches, as checked above; a listing indexes the tree.
+        // Only a pattern glob takes matches, as checked above; a listing indexes the tree.
         let tree = |reply: ScanReply| match reply {
             ScanReply::Tree(entries) => ScanTree::new(entries),
             ScanReply::Matches(_) => ScanTree::default(),

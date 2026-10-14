@@ -97,15 +97,15 @@ pub(super) fn path_info(path: &str, ctx: &MountContext<'_>) -> Result<PathInfo, 
 }
 
 /// Lists the directory `path` for a scan, describing each entry as
-/// [`path_info`] on it would, from the listing alone.
-pub(super) fn scan_list(path: &str, ctx: &MountContext<'_>) -> Result<Vec<(String, EntryInfo)>, MountError> {
+/// [`path_info`] on it would, from the listing alone, within what is left of
+/// the scan's `budget`.
+pub(super) fn scan_list(
+    path: &str,
+    ctx: &MountContext<'_>,
+    budget: MemoryBudget,
+) -> Result<Vec<(String, EntryInfo)>, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    host_list_visible_dir_entries(
-        ctx.mount_dir,
-        target.for_dir_op(),
-        path,
-        MemoryBudget::full(ctx.memory_usage_limit),
-    )
+    host_list_visible_dir_entries(ctx.mount_dir, target.for_dir_op(), path, budget)
 }
 
 /// Performs the open-time effect for `open()` and returns the file handle.

@@ -12,7 +12,7 @@ use monty_types::{
 };
 
 use super::{
-    common::{MountContext, PathInfo},
+    common::{MemoryBudget, MountContext, PathInfo},
     direct,
     error::MountError,
     mount_mode::MountMode,
@@ -218,15 +218,17 @@ pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, mode: &MountMode) ->
 }
 
 /// Lists the directory `path` for a scan with each entry described as
-/// [`path_info`] on it would describe it, without a lookup per entry.
+/// [`path_info`] on it would describe it, without a lookup per entry, within
+/// what is left of the scan's `budget`.
 pub(super) fn scan_list(
     path: &str,
     ctx: &MountContext<'_>,
     mode: &MountMode,
+    budget: MemoryBudget,
 ) -> Result<Vec<(String, EntryInfo)>, MountError> {
     match mode {
-        MountMode::ReadWrite | MountMode::ReadOnly => direct::scan_list(path, ctx),
-        MountMode::OverlayMemory(state) => overlay::scan_list(path, ctx, state, |_| None),
+        MountMode::ReadWrite | MountMode::ReadOnly => direct::scan_list(path, ctx, budget),
+        MountMode::OverlayMemory(state) => overlay::scan_list(path, ctx, state, budget, |_| None),
     }
 }
 

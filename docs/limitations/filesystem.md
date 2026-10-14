@@ -49,9 +49,10 @@ remain fine: each virtual path routes to exactly one mount. Two mounts on the
 *same* virtual path are refused because only one of them could ever be
 reached.
 A nested mount appears in its parent's listing only if the parent's host
-directory has an entry of that name; otherwise `os.listdir`, `os.walk`,
-`os.scandir` and `Path.glob` on the parent do not reach it, though its own
-path still works.
+directory has an entry of that name; otherwise `os.listdir`, `os.scandir`,
+`os.walk`, `Path.walk`, `Path.rglob` and a `Path.glob` pattern that lists the
+parent do not reach it, though its own path still works, as does a pattern
+that names it literally (`glob('sub/*')`).
 
 The same-directory check uses the opened directory's identity on Unix, so a
 directory renamed between two mounts is still recognised; the nesting check is
@@ -100,8 +101,8 @@ Consequences of the shared budget that have no CPython analogue:
 `os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and `Path.rglob` read their subtree in one host call (see
 [pathlib.md](pathlib.md#glob-rglob-and-walk)).
 
-- Every entry a scan reads counts against the mount's memory limit, a glob's included although it replies with only
-    its matches, so walking or globbing a tree with millions of entries raises `MemoryError` where CPython would stream it.
+- Every entry a scan reads counts against the mount's memory limit, including entries excluded from a glob's matches,
+    so walking or globbing a tree with millions of entries raises `MemoryError` where CPython would stream it.
 - A scan may examine at most 10,000,000 entries, counting each time a glob pattern revisits a directory, then raises
     `RuntimeError: directory scan examined more than 10000000 entries`. CPython has no such cap; it bounds patterns
     like `*/**/*/**/*` whose cost multiplies with every recursive part, and walks through symlink cycles.
