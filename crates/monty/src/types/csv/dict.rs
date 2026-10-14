@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput},
     types::{
         CsvObject, Dict, List, PyTrait, Set,
         csv::{
@@ -36,6 +36,10 @@ pub(crate) struct DictReader {
     /// The `dialect` argument as passed, which is what `.dialect` reports. Owned.
     pub(crate) dialect: Value,
     pub(crate) line_num: u64,
+    /// Keys in the last row's dict: the capacity the next one starts at. Below the header
+    /// width when a name repeats, since the repeat overwrites its slot; zero before any row.
+    #[serde(skip)]
+    dict_hint: usize,
 }
 
 impl DictReader {
@@ -53,6 +57,7 @@ impl DictReader {
             restval,
             dialect,
             line_num: 0,
+            dict_hint: 0,
         }
     }
 
@@ -168,7 +173,7 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
         // Used only for its side effect of reading the header, as in CPython.
         reader_fieldnames(obj, vm)?.drop_with(vm);
     }
-    let (reader, fieldnames, restkey, restval) = {
+    let (reader, fieldnames, restkey, restval, dict_hint) = {
         let CsvObject::DictReader(dict_reader) = obj.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::DictReader")
         };
@@ -180,6 +185,7 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
                 .map_or(Value::None, |names| names.clone_with_heap(vm.heap)),
             dict_reader.restkey.clone_with_heap(vm.heap),
             dict_reader.restval.clone_with_heap(vm.heap),
+            dict_reader.dict_hint,
         )
     };
     defer_drop!(reader, vm);
@@ -218,7 +224,9 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
     let (names, vm) = names_guard.as_parts_mut();
 
     let (name_count, item_count) = (names.len(), items.len());
-    let mut dict_guard = DropGuard::new(Dict::with_capacity(name_count), vm);
+    // The last row's key count predicts this one's; the first row assumes distinct names.
+    let capacity = if dict_hint == 0 { name_count } else { dict_hint };
+    let mut dict_guard = DropGuard::new(Dict::with_capacity(capacity), vm);
     let (dict, vm) = dict_guard.as_parts_mut();
     // `dict(zip(fieldnames, row))`: the surplus of the longer side stays behind.
     let paired = name_count.min(item_count);
@@ -241,6 +249,10 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
         }
     }
     let (dict, vm) = dict_guard.into_parts();
+    let key_count = dict.len();
+    if let CsvObject::DictReader(dict_reader) = obj.get_mut(vm.heap) {
+        dict_reader.dict_hint = key_count;
+    }
     Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Dict(dict)))))
 }
 
@@ -252,9 +264,9 @@ pub(super) fn writer_writerow<'h>(
 ) -> RunResult<CallResult> {
     let rowdict = args.get_one_arg("DictWriter.writerow", vm.heap)?;
     defer_drop!(rowdict, vm);
-    let spec = row_spec(obj, vm)?;
-    defer_drop!(spec, vm);
-    let items = dict_to_list(spec, rowdict, vm)?;
+    let spec: Option<RowSpec> = None;
+    defer_drop_mut!(spec, vm);
+    let items = dict_to_list(obj, spec, rowdict, vm)?;
     defer_drop!(items, vm);
     write_items(obj, items, vm)
 }
@@ -290,15 +302,16 @@ pub(super) fn writer_writerows<'h>(
         return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
     };
     defer_drop!(write, vm);
-    let spec = row_spec(obj, vm)?;
-    defer_drop!(spec, vm);
+    // Filled by the first row and refreshed whenever an attribute changes between rows.
+    let spec: Option<RowSpec> = None;
+    defer_drop_mut!(spec, vm);
     if targets_file {
         let rows = collect_iterable(rowdicts, vm)?;
         defer_drop!(rows, vm);
         let mut lists_guard = DropGuard::new(Vec::with_capacity(rows.len()), vm);
         let (flattened, vm) = lists_guard.as_parts_mut();
         for rowdict in rows {
-            let items = dict_to_list(spec, rowdict, vm)?;
+            let items = dict_to_list(obj, spec, rowdict, vm)?;
             flattened.push(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))));
         }
         let (lists, vm) = lists_guard.into_parts();
@@ -317,7 +330,7 @@ pub(super) fn writer_writerows<'h>(
         let mut rows = iterator.read(vm);
         while let Some(rowdict) = rows.py_next(vm)? {
             defer_drop!(rowdict, vm);
-            let items = dict_to_list(spec, rowdict, vm)?;
+            let items = dict_to_list(obj, spec, rowdict, vm)?;
             defer_drop!(items, vm);
             writerow_now(write, &dialect, &terminator_chars, items, &mut line, vm)?;
         }
@@ -325,53 +338,89 @@ pub(super) fn writer_writerows<'h>(
     }
 }
 
-/// What flattening a row needs, read once per call since the attributes are assignable:
-/// `fieldnames` as a list, the set CPython subtracts them through under
-/// `extrasaction='raise'` (`None` under `'ignore'`), and `restval`.
+/// What flattening a row needs: `fieldnames` as a list, the set CPython subtracts them
+/// through under `extrasaction='raise'` (`None` under `'ignore'`), and `restval`.
+///
+/// CPython reads the attributes for every row, so a `writerows` call keeps one of these
+/// and rebuilds it when [`RowSpec::is_current`] sees an attribute change between rows.
 struct RowSpec {
+    /// The attribute objects the spec was read from, kept to detect reassignment.
+    fieldnames: Value,
+    restval: Value,
+    extrasaction: Value,
     names: Vec<Value>,
     known: Option<Value>,
-    restval: Value,
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for RowSpec {
     fn drop_with(self, ctx: &mut C) {
+        self.fieldnames.drop_with(ctx);
+        self.restval.drop_with(ctx);
+        self.extrasaction.drop_with(ctx);
         self.names.drop_with(ctx);
         self.known.drop_with(ctx);
-        self.restval.drop_with(ctx);
     }
 }
 
-/// Reads the [`RowSpec`] off the `DictWriter`.
-fn row_spec<'h>(obj: &HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<RowSpec> {
-    let (fieldnames, restval, extrasaction) = {
-        let CsvObject::DictWriter(writer) = obj.get(vm.heap) else {
-            unreachable!("dispatched on CsvObject::DictWriter")
+impl RowSpec {
+    /// Reads the spec off the writer for `rowdict`. Under `'raise'` CPython reaches
+    /// `rowdict.keys()` before it hashes the names, so a row that is not a dict fails here
+    /// first; under `'ignore'` it iterates `fieldnames` before `rowdict.get()`.
+    fn read<'h>(obj: &HeapRead<'h, CsvObject>, rowdict: &Value, vm: &mut VM<'h>) -> RunResult<Self> {
+        let (fieldnames, restval, extrasaction) = dict_writer_part(obj, vm, |writer| {
+            (
+                writer.fieldnames.clone_with_heap(vm.heap),
+                writer.restval.clone_with_heap(vm.heap),
+                writer.extrasaction.clone_with_heap(vm.heap),
+            )
+        });
+        defer_drop!(fieldnames, vm);
+        defer_drop!(restval, vm);
+        defer_drop!(extrasaction, vm);
+        let raise_on_extra = extrasaction.is_str(vm.heap) && extrasaction.to_str(vm)? == "raise";
+        if raise_on_extra && row_dict(rowdict, vm).is_none() {
+            return Err(dict_method_missing(rowdict, raise_on_extra, vm));
+        }
+        let mut names_guard = DropGuard::new(fieldnames_items(fieldnames, vm)?, vm);
+        let (names, vm) = names_guard.as_parts_mut();
+        let known = if raise_on_extra {
+            Some(known_names(names, vm)?)
+        } else {
+            None
         };
-        (
-            writer.fieldnames.clone_with_heap(vm.heap),
-            writer.restval.clone_with_heap(vm.heap),
-            writer.extrasaction.clone_with_heap(vm.heap),
-        )
-    };
-    defer_drop!(fieldnames, vm);
-    defer_drop!(restval, vm);
-    defer_drop!(extrasaction, vm);
-    // `self.extrasaction == "raise"`, read at each write since the attribute is assignable.
-    let raise_on_extra = extrasaction.is_str(vm.heap) && extrasaction.to_str(vm)? == "raise";
-    let mut names_guard = DropGuard::new(fieldnames_items(fieldnames, vm)?, vm);
-    let (names, vm) = names_guard.as_parts_mut();
-    let known = if raise_on_extra {
-        Some(known_names(names, vm)?)
-    } else {
-        None
-    };
-    let (names, vm) = names_guard.into_parts();
-    Ok(RowSpec {
-        names,
-        known,
-        restval: restval.clone_with_heap(vm.heap),
-    })
+        let (names, vm) = names_guard.into_parts();
+        Ok(Self {
+            fieldnames: fieldnames.clone_with_heap(vm.heap),
+            restval: restval.clone_with_heap(vm.heap),
+            extrasaction: extrasaction.clone_with_heap(vm.heap),
+            names,
+            known,
+        })
+    }
+
+    /// Whether the attributes still describe this spec: the same three objects, and for a
+    /// `fieldnames` list the same items, since the list can be mutated in place between
+    /// rows. A mutable iterable of any other kind (a set, a dict view) is reread per row.
+    fn is_current(&self, fieldnames: &Value, restval: &Value, extrasaction: &Value, vm: &VM<'_>) -> bool {
+        self.fieldnames.is(fieldnames)
+            && self.restval.is(restval)
+            && self.extrasaction.is(extrasaction)
+            && match fieldnames {
+                Value::Ref(id) => match vm.heap.get(*id) {
+                    HeapData::List(list) => {
+                        let items = list.as_slice();
+                        items.len() == self.names.len() && items.iter().zip(&self.names).all(|(a, b)| a.is(b))
+                    }
+                    HeapData::Tuple(_)
+                    | HeapData::Str(_)
+                    | HeapData::Bytes(_)
+                    | HeapData::Range(_)
+                    | HeapData::FrozenSet(_) => true,
+                    _ => false,
+                },
+                _ => true,
+            }
+    }
 }
 
 /// `set(fieldnames)`, which the `extrasaction='raise'` check subtracts the row's keys
@@ -388,12 +437,28 @@ fn known_names(names: &[Value], vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// `DictWriter._dict_to_list`: `rowdict.get(key, restval)` for each field name, after the
 /// `extrasaction='raise'` check for keys outside `fieldnames`.
-fn dict_to_list(spec: &RowSpec, rowdict: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+///
+/// `spec` is the caller's cache across rows, filled or refreshed here when the
+/// attributes it was read from changed; the attributes are untouched until a row arrives.
+fn dict_to_list<'h>(
+    obj: &HeapRead<'h, CsvObject>,
+    spec: &mut Option<RowSpec>,
+    rowdict: &Value,
+    vm: &mut VM<'h>,
+) -> RunResult<Vec<Value>> {
+    let current = dict_writer_part(obj, vm, |writer| {
+        spec.as_ref()
+            .is_some_and(|spec| spec.is_current(&writer.fieldnames, &writer.restval, &writer.extrasaction, vm))
+    });
+    if !current {
+        if let Some(stale) = spec.take() {
+            stale.drop_with(vm);
+        }
+        *spec = Some(RowSpec::read(obj, rowdict, vm)?);
+    }
+    let Some(spec) = spec else { unreachable!("filled above") };
     let raise_on_extra = spec.known.is_some();
-    let Value::Ref(dict_id) = rowdict else {
-        return Err(dict_method_missing(rowdict, raise_on_extra, vm));
-    };
-    let HeapReadOutput::Dict(dict) = vm.heap.read(*dict_id) else {
+    let Some(dict) = row_dict(rowdict, vm) else {
         return Err(dict_method_missing(rowdict, raise_on_extra, vm));
     };
     if let Some(known) = &spec.known {
@@ -412,6 +477,17 @@ fn dict_to_list(spec: &RowSpec, rowdict: &Value, vm: &mut VM<'_>) -> RunResult<V
         items.push(value);
     }
     Ok(items_guard.into_inner())
+}
+
+/// The row as a dict, or `None` when it is anything else (see [`dict_method_missing`]).
+fn row_dict<'h>(rowdict: &Value, vm: &VM<'h>) -> Option<HeapObjectRead<'h, Dict>> {
+    match rowdict {
+        Value::Ref(id) => match vm.heap.read(*id) {
+            HeapReadOutput::Dict(dict) => Some(dict),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The `AttributeError` CPython raises for a row that is not a mapping: `.keys()` is

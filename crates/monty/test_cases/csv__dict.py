@@ -60,6 +60,7 @@ assert dr(['', 'a,b', '1,2']) == ([{None: ['a', 'b']}, {None: ['1', '2']}], [], 
 assert dr([]) == ([], None, 0)
 # Duplicate names keep the last value.
 assert dr(['a,a', '1,2']) == ([{'a': '2'}], ['a', 'a'], 2)
+assert dr(['a,a', '1,2', '3,4']) == ([{'a': '2'}, {'a': '4'}], ['a', 'a'], 3)
 
 reader = csv.DictReader(['a,b', '', '1,2'])
 assert iter(reader) is reader
@@ -183,6 +184,54 @@ writer.restval = '-'
 writer.extrasaction = 'ignore'
 assert writer.writerow({'a': 1, 'c': 3}) == 5
 assert sink.lines == ['1,-\r\n']
+
+
+# writerows reads them again for each row, so the row iterator can change them, even by
+# mutating the fieldnames list in place.
+class Changing:
+    """Rows that widen, then replace, the writer's fieldnames between rows."""
+
+    def __init__(self, writer):
+        self.writer = writer
+        self.n = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.n += 1
+        if self.n == 1:
+            return {'a': 1}
+        if self.n == 2:
+            self.writer.fieldnames.append('b')
+            return {'a': 2, 'b': 3}
+        if self.n == 3:
+            self.writer.fieldnames = ['b']
+            self.writer.restval = '-'
+            self.writer.extrasaction = 'ignore'
+            return {'a': 4}
+        raise StopIteration
+
+
+sink = Sink()
+writer = csv.DictWriter(sink, ['a'])
+writer.writerows(Changing(writer))
+assert sink.lines == ['1\r\n', '2,3\r\n', '-\r\n']
+# Nothing is read from fieldnames until a row needs it.
+writer = csv.DictWriter(Sink(), [['a']])
+assert writer.writerows([]) is None
+# A row that is not a dict fails before the names are hashed under 'raise' ...
+try:
+    writer.writerow(1)
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "'int' object has no attribute 'keys'"
+# ... and after fieldnames is iterated under 'ignore'.
+try:
+    csv.DictWriter(Sink(), 5, extrasaction='ignore').writerow(1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
 # The check for keys outside fieldnames puts the names in a set, so they must be hashable.
 try:
     csv.DictWriter(Sink(), [['a']]).writerow({'a': 1})
