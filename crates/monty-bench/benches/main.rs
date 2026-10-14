@@ -234,6 +234,78 @@ for _ in range(10_000):
 r
 ";
 
+const INSTANCE_ATTR_READ: &str = "
+class Point:
+    def __init__(self):
+        self.x = 1
+        self.y = 2
+
+p = Point()
+total = 0
+for _ in range(100_000):
+    total += p.x
+total
+";
+
+const INSTANCE_ATTR_POLYMORPHIC: &str = "
+class Point:
+    pass
+a = Point()
+a.x = 1
+b = Point()
+b.y = 0
+b.x = 2
+total = 0
+for _ in range(50_000):
+    for obj in (a, b):
+        total += obj.x
+total
+";
+
+const INSTANCE_ATTR_WRITE_READ: &str = "
+class Point:
+    pass
+p = Point()
+p.x = 0
+total = 0
+for i in range(100_000):
+    p.x = i
+    total += p.x
+total
+";
+
+const INSTANCE_ATTR_CLASS_FALLBACK: &str = "
+class Point:
+    x = 3
+p = Point()
+total = 0
+for _ in range(100_000):
+    total += p.x
+total
+";
+
+const INSTANCE_ATTR_NEW_OBJECTS: &str = "
+class Point:
+    pass
+total = 0
+for _ in range(10_000):
+    p = Point()
+    p.x = 1
+    p.y = 2
+    total += p.x
+total
+";
+
+#[cfg(feature = "baseline-attr-lookup")]
+const ATTR_BENCH_VARIANT: &str = "baseline";
+#[cfg(not(feature = "baseline-attr-lookup"))]
+const ATTR_BENCH_VARIANT: &str = "shape";
+
+fn bench_instance_attr(c: &mut Criterion, name: &str, code: &str, expected: i64) {
+    let name = format!("{name}__{ATTR_BENCH_VARIANT}");
+    c.bench_function(&name, |b| run_monty(b, code, expected));
+}
+
 const LIST_APPEND_STR: &str = "
 a = []
 for i in range(100_000):
@@ -628,6 +700,11 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("attr_dispatch_minimal__monty", |b| {
         run_monty(b, ATTR_DISPATCH_MINIMAL, 30_000);
     });
+    bench_instance_attr(c, "instance_attr_read", INSTANCE_ATTR_READ, 100_000);
+    bench_instance_attr(c, "instance_attr_polymorphic", INSTANCE_ATTR_POLYMORPHIC, 150_000);
+    bench_instance_attr(c, "instance_attr_write_read", INSTANCE_ATTR_WRITE_READ, 4_999_950_000);
+    bench_instance_attr(c, "instance_attr_class_fallback", INSTANCE_ATTR_CLASS_FALLBACK, 300_000);
+    bench_instance_attr(c, "instance_attr_new_objects", INSTANCE_ATTR_NEW_OBJECTS, 10_000);
     #[cfg(not(codspeed))]
     c.bench_function("attr_dispatch_minimal__cpython", |b| {
         run_cpython(b, ATTR_DISPATCH_MINIMAL, 30_000);

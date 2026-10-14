@@ -9,6 +9,8 @@ description = "Benchmarks for the Monty interpreter — compares Monty vs CPytho
 publish = false
 
 [features]
+baseline-attr-lookup = ["monty/baseline-attr-lookup"]
+simple-attr-cache = ["monty/simple-attr-cache"]
 # Runs the `main` bench under the worker's global allocator (`monty-alloc`)
 # instead of `System`, to price the hard memory ceiling on real workloads.
 worker-alloc = ["dep:monty-alloc"]

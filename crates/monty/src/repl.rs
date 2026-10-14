@@ -35,6 +35,7 @@ use crate::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
+    shape::ShapeRegistry,
     source_nesting::source_within_nesting_bound,
     types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
@@ -67,6 +68,9 @@ pub struct MontyRepl {
     ///
     /// Same ownership hand-off as `global_names`.
     interns: Interns,
+    /// Derived instance layouts shared across feeds.
+    #[serde(skip)]
+    shapes: ShapeRegistry,
     /// Source text of every snippet that has been fed, keyed by its
     /// generated script name (`<python-input-N>`).
     ///
@@ -114,6 +118,7 @@ impl MontyRepl {
             next_input_id: 0,
             global_names: NameMap::new(),
             interns: Interns::default(),
+            shapes: ShapeRegistry::default(),
             sources: AHashMap::new(),
             options,
             os_policy: Arc::new(OsPolicy::default()),
@@ -259,6 +264,7 @@ impl MontyRepl {
             &input_script_name,
             &mut this.global_names,
             &mut this.interns,
+            &mut this.shapes,
             &input_names,
             this.options,
             session,
@@ -354,6 +360,7 @@ impl MontyRepl {
             &input_script_name,
             &mut self.global_names,
             &mut self.interns,
+            &mut self.shapes,
             &input_names,
             self.options,
             session,
@@ -446,6 +453,7 @@ impl MontyRepl {
             &input_script_name,
             self.global_names.clone(),
             &mut self.interns,
+            &mut self.shapes,
             self.options,
             ReplSession {
                 script_name: &self.script_name,
@@ -568,9 +576,14 @@ impl MontyRepl {
     /// tables while globals still hold `FunctionId`/`StringId` values from
     /// the snippet.
     fn commit_executor(&mut self, executor: Executor) {
-        let SessionTables { global_names, interns } = executor.tables;
+        let SessionTables {
+            global_names,
+            interns,
+            shapes,
+        } = executor.tables;
         self.global_names = global_names;
         self.interns = interns;
+        self.shapes = shapes;
     }
 
     /// Grows the globals vector to at least `size` slots.

@@ -26,6 +26,7 @@ use crate::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
         resume_with_result,
     },
+    shape::ShapeRegistry,
     types::str::StringRepr,
     value::Value,
     virtual_path::{canonical_cwd, posix_join},
@@ -247,6 +248,9 @@ pub(crate) struct SessionTables {
     pub(crate) global_names: NameMap,
     /// Interned strings and compiled functions used during execution.
     pub(crate) interns: Interns,
+    /// Derived instance layouts shared across code bodies in this session.
+    #[serde(skip)]
+    pub(crate) shapes: ShapeRegistry,
 }
 
 /// The module code, source and environment, borrowed immutably during execution.
@@ -381,6 +385,7 @@ impl Executor {
             tables: SessionTables {
                 global_names: globals,
                 interns,
+                shapes: ShapeRegistry::default(),
             },
             program: Program {
                 module_code: Arc::new(module_code),
@@ -411,6 +416,7 @@ impl Executor {
         script_name: &str,
         globals: &mut NameMap,
         interns: &mut Interns,
+        shapes: &mut ShapeRegistry,
         input_names: &[String],
         options: CompileOptions,
         session: ReplSession<'_>,
@@ -436,6 +442,7 @@ impl Executor {
             tables: SessionTables {
                 global_names: mem::take(globals),
                 interns: interns.take(),
+                shapes: mem::take(shapes),
             },
             program: Program {
                 module_code: Arc::new(module_code),
@@ -471,6 +478,7 @@ impl Executor {
         script_name: &str,
         mut existing_globals: NameMap,
         interns: &mut Interns,
+        shapes: &mut ShapeRegistry,
         options: CompileOptions,
         session: ReplSession<'_>,
     ) -> Result<Self, MontyException> {
@@ -514,6 +522,7 @@ impl Executor {
         let tables = SessionTables {
             global_names: existing_globals,
             interns: interns.take(),
+            shapes: mem::take(shapes),
         };
 
         Ok(Self {
