@@ -1232,6 +1232,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import csv\nclass S:\n    def write(self, t):\n        pass\ns = 'x' * 400_000\ncsv.writer(S()).writerow([s, s])",
             1_250_723,
         ),
+        // A `DictReader` row's dict is sized from `fieldnames` up front, preflighted like a
+        // dict copy.
+        (
+            "import csv\nnames = list(range(30_000))\nnext(csv.DictReader(['x'], fieldnames=names))",
+            1_965_832,
+        ),
     ];
 
     for (code, expected) in cases {

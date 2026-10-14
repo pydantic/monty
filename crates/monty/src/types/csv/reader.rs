@@ -5,6 +5,8 @@
 //! A record may span several source lines (a quoted field containing newlines), so one
 //! `__next__` pulls lines until the machine returns to `StartRecord`.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -29,7 +31,8 @@ pub(crate) const FIELD_SIZE_LIMIT: usize = 131_072;
 pub(crate) struct Reader {
     /// The iterator lines come from (`iter(csvfile)` at construction). Owned.
     source: Value,
-    pub(crate) dialect: Dialect,
+    /// Shared with each record read, so a row costs no copy of the dialect's strings.
+    pub(crate) dialect: Arc<Dialect>,
     /// Source lines consumed, including those a multi-line record spans.
     pub(crate) line_num: u64,
     /// Fields in the last record: the capacity the next record's vector starts at, since
@@ -42,7 +45,7 @@ impl Reader {
     pub(crate) fn new(source: Value, dialect: Dialect) -> Self {
         Self {
             source,
-            dialect,
+            dialect: Arc::new(dialect),
             line_num: 0,
             field_hint: 0,
         }
@@ -76,7 +79,7 @@ pub(super) fn next_fields<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
         };
         (
             reader.source.clone_with_heap(vm.heap),
-            reader.dialect.clone(),
+            Arc::clone(&reader.dialect),
             reader.field_hint,
         )
     };

@@ -132,6 +132,18 @@ assert csv.reader([], dialect='excel-tab').dialect.delimiter == '\t'
 assert csv.reader([], 'excel-tab').dialect.delimiter == '\t'
 assert csv.reader([], dialect=csv.excel_tab).dialect.delimiter == '\t'
 assert csv.reader([], dialect=csv.get_dialect('excel-tab'), delimiter=';').dialect.delimiter == ';'
+# The reader's attributes are read-only, and it takes no new ones.
+for name in ('line_num', 'dialect'):
+    try:
+        setattr(r, name, 1)
+        assert False, 'expected AttributeError'
+    except AttributeError as exc:
+        assert str(exc) == 'readonly attribute'
+try:
+    r.nope = 1
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "'_csv.reader' object has no attribute 'nope' and no __dict__ for setting new attributes"
 
 
 # Any object with the attributes serves as a dialect; missing ones take the defaults.

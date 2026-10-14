@@ -24,7 +24,12 @@ from the notes below.
 
 - **The built-in dialects are `_csv.Dialect` objects, not classes.**
     `csv.excel.delimiter` and `dialect=csv.excel` work, but `csv.excel()` and subclassing it do not.
-    `csv.Dialect` is `_csv.Dialect`, the resolved-dialect type, rather than CPython's Python base class.
+    `csv.Dialect` is `_csv.Dialect`, the resolved-dialect type, rather than CPython's Python base class:
+    it takes a dialect and the format parameters (`csv.Dialect(delimiter=';')`), and `csv.Dialect()`
+    is the `excel` dialect where CPython raises for its unset `delimiter`.
+- **`reader(f, 'excel', dialect='unix')` numbers the clashing position differently.**
+    The message is `argument for function given by name ('dialect') and position (2)`; CPython
+    forwards the keyword to `Dialect()` and reports position 1.
 - **`reader.dialect` and `writer.dialect` are fresh objects.**
     Each access builds a new `_csv.Dialect` holding the resolved parameters, so `r.dialect is r.dialect` is
     `False`, where CPython returns the object stored at construction.

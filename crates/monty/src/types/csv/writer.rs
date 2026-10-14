@@ -5,7 +5,7 @@
 //! write per `writerows`); any other target's `write`, bound at construction, runs as a
 //! Python call.
 
-use std::{fmt::Write, mem};
+use std::{fmt::Write, mem, sync::Arc};
 
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
@@ -38,12 +38,17 @@ pub(crate) struct Writer {
     /// later does not redirect writes. `None` for a file target, whose write is a host call
     /// through `target`. Owned.
     write: Value,
-    pub(crate) dialect: Dialect,
+    /// Shared with each record written, so a row costs no copy of the dialect's strings.
+    pub(crate) dialect: Arc<Dialect>,
 }
 
 impl Writer {
     pub(crate) fn new(target: Value, write: Value, dialect: Dialect) -> Self {
-        Self { target, write, dialect }
+        Self {
+            target,
+            write,
+            dialect: Arc::new(dialect),
+        }
     }
 
     /// Whether the target is an `open()` file, whose `write()` yields a host call.
@@ -434,13 +439,13 @@ fn discard_write_result(mut result: CallResult) -> CallResult {
 }
 
 /// The owned target, its `write` and the dialect of a writer object, read under a short borrow.
-fn parts<'h>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>) -> (Value, Value, Dialect) {
+fn parts<'h>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>) -> (Value, Value, Arc<Dialect>) {
     let CsvObject::Writer(writer) = obj.get(vm.heap) else {
         unreachable!("dispatched on CsvObject::Writer")
     };
     (
         writer.target.clone_with_heap(vm.heap),
         writer.write.clone_with_heap(vm.heap),
-        writer.dialect.clone(),
+        Arc::clone(&writer.dialect),
     )
 }

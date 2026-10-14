@@ -157,11 +157,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         };
         let value = match (self.get(vm.heap), name) {
             (CsvObject::Reader(reader), StaticStrings::Dialect) => {
-                CsvObject::Dialect(reader.dialect.clone()).allocate(vm)
+                CsvObject::Dialect(Dialect::clone(&reader.dialect)).allocate(vm)
             }
             (CsvObject::Reader(reader), StaticStrings::LineNum) => line_num_value(reader.line_num)?,
             (CsvObject::Writer(writer), StaticStrings::Dialect) => {
-                CsvObject::Dialect(writer.dialect.clone()).allocate(vm)
+                CsvObject::Dialect(Dialect::clone(&writer.dialect)).allocate(vm)
             }
             (CsvObject::DictReader(_), StaticStrings::Fieldnames) => {
                 // Reading the header mutates the object, which needs its own handle.
@@ -192,9 +192,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
 
     /// The `DictReader` and `DictWriter` attributes that are plain Python attributes in
     /// CPython are assignable, except the wrapped `reader` / `writer` and `line_num`;
-    /// everything on the `_csv` objects is read-only.
+    /// everything on the `_csv` objects is read-only, with CPython's two wordings for a
+    /// member and a getset descriptor.
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let slot = match (self.get_mut(vm.heap), name.static_string(vm.interns)) {
+            (CsvObject::Reader(_), Some(StaticStrings::Dialect | StaticStrings::LineNum))
+            | (CsvObject::Writer(_), Some(StaticStrings::Dialect)) => {
+                value.drop_with(vm);
+                return Err(ExcType::attribute_error_readonly());
+            }
             (CsvObject::DictReader(reader), Some(StaticStrings::Fieldnames)) => {
                 // `None` unsets the names, so the next row read is the header again.
                 let names = match value {

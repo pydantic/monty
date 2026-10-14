@@ -66,7 +66,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     for (name, type_) in [
         (StaticStrings::DictReader, Type::CsvDictReader),
         (StaticStrings::DictWriter, Type::CsvDictWriter),
-        (StaticStrings::Dialect, Type::CsvDialect),
+        (StaticStrings::DialectClass, Type::CsvDialect),
     ] {
         module.set_attr(name, Value::Builtin(Builtins::Type(type_)), vm);
     }
@@ -389,12 +389,7 @@ pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         vm,
     );
     let (([fieldnames, ..], _), vm) = owned.as_parts_mut();
-    // `iter(fieldnames) is fieldnames`: an iterator is read once into a list.
-    if fieldnames.py_is_iterator(vm) {
-        let names = collect_iterable(fieldnames, vm)?;
-        let list = Value::Ref(vm.heap.allocate(HeapData::List(List::new(names))));
-        mem::replace(fieldnames, list).drop_with(vm);
-    }
+    materialize_fieldnames(fieldnames, vm)?;
     let ((owned_values, reader_args), vm) = owned.into_parts();
     let mut owned = DropGuard::new(owned_values, vm);
     let (_, vm) = owned.as_parts_mut();
@@ -454,7 +449,8 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         ),
         vm,
     );
-    let (([.., extrasaction], _), vm) = owned.as_parts_mut();
+    let (([fieldnames, _, extrasaction], _), vm) = owned.as_parts_mut();
+    materialize_fieldnames(fieldnames, vm)?;
     let lowered = check_extrasaction(extrasaction, vm)?;
     mem::replace(extrasaction, lowered).drop_with(vm);
     let ((owned_values, writer_args), vm) = owned.into_parts();
@@ -463,6 +459,23 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     let writer = call_writer(vm, writer_args)?;
     let ([fieldnames, restval, extrasaction], vm) = owned.into_parts();
     Ok(CsvObject::DictWriter(DictWriter::new(writer, fieldnames, restval, extrasaction)).allocate(vm))
+}
+
+/// `if fieldnames is not None and iter(fieldnames) is fieldnames: fieldnames = list(fieldnames)`,
+/// as both constructors open: an iterator is read once into a list, and a `fieldnames`
+/// that is not iterable at all is rejected here rather than at the first row.
+fn materialize_fieldnames(fieldnames: &mut Value, vm: &mut VM<'_>) -> RunResult<()> {
+    if matches!(fieldnames, Value::None) {
+        return Ok(());
+    }
+    let iterator = fieldnames.py_iter(vm)?;
+    defer_drop!(iterator, vm);
+    if iterator.is(fieldnames) {
+        let names = collect_iterable(fieldnames, vm)?;
+        let list = Value::Ref(vm.heap.allocate(HeapData::List(List::new(names))));
+        mem::replace(fieldnames, list).drop_with(vm);
+    }
+    Ok(())
 }
 
 /// `extrasaction.lower()`, which must be `'raise'` or `'ignore'` and is what gets stored.

@@ -108,6 +108,17 @@ assert repr(writer).startswith('<_csv.writer object at 0x')
 assert writer.dialect.lineterminator == '\r\n'
 assert csv.writer(sink, delimiter=';').dialect.delimiter == ';'
 assert csv.writer(sink, 'unix').dialect.lineterminator == '\n'
+# The writer's dialect is read-only, and it takes no new attributes.
+try:
+    writer.dialect = csv.excel
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == 'readonly attribute'
+try:
+    writer.nope = 1
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "'_csv.writer' object has no attribute 'nope' and no __dict__ for setting new attributes"
 # writerow returns what write() returned; writerows returns None and calls write() per row.
 assert writer.writerow(['a', 'b']) == 5
 assert writer.writerows([['c'], ['d']]) is None

@@ -96,11 +96,13 @@ reader = csv.DictReader(['a,b', '1,2'], fieldnames=['x', 'y'])
 reader.fieldnames = None
 assert reader.fieldnames == ['a', 'b']
 assert list(reader) == [{'a': '1', 'b': '2'}]
+# A non-iterable fieldnames is rejected at construction; an explicit None is the header-to-come.
 try:
-    list(csv.DictReader(['1,2'], fieldnames=5))
+    csv.DictReader(['1,2'], fieldnames=5)
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "'int' object is not iterable"
+assert csv.DictReader(['a,b', '1,2'], fieldnames=None).fieldnames == ['a', 'b']
 try:
     next(csv.DictReader([], fieldnames=['a']))
     assert False, 'expected StopIteration'
@@ -226,18 +228,65 @@ try:
     assert False, 'expected AttributeError'
 except AttributeError as exc:
     assert str(exc) == "'int' object has no attribute 'keys'"
+
+
 # ... and after fieldnames is iterated under 'ignore'.
+class OnceNames:
+    """Iterable once (at construction), then refuses."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        self.calls += 1
+        if self.calls > 1:
+            raise TypeError('names gone')
+        return iter(['a'])
+
+
 try:
-    csv.DictWriter(Sink(), 5, extrasaction='ignore').writerow(1)
+    csv.DictWriter(Sink(), OnceNames(), extrasaction='ignore').writerow(1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "'int' object is not iterable"
+    assert str(exc) == 'names gone'
 # The check for keys outside fieldnames puts the names in a set, so they must be hashable.
 try:
     csv.DictWriter(Sink(), [['a']]).writerow({'a': 1})
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "cannot use 'list' as a set element (unhashable type: 'list')"
+# writeheader builds a dict of the names first, which rejects an unhashable one under
+# either extrasaction and collapses a repeated name.
+for extrasaction in ('raise', 'ignore'):
+    try:
+        csv.DictWriter(Sink(), [['a']], extrasaction=extrasaction).writeheader()
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "cannot use 'list' as a dict key (unhashable type: 'list')"
+sink = Sink()
+csv.DictWriter(sink, ['a', 'a', 'b']).writeheader()
+assert sink.lines == ['a,a,b\r\n']
+# An iterator of names is read once into a list at construction, so every row sees it ...
+sink = Sink()
+writer = csv.DictWriter(sink, iter(['a', 'b']))
+writer.writeheader()
+writer.writerow({'a': 1, 'b': 2})
+writer.writerow({'a': 3, 'b': 4})
+assert sink.lines == ['a,b\r\n', '1,2\r\n', '3,4\r\n']
+assert writer.fieldnames == ['a', 'b']
+# ... a non-iterable is rejected there, and an explicit None only fails once a row needs it.
+try:
+    csv.DictWriter(Sink(), 5)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+writer = csv.DictWriter(Sink(), None)
+assert writer.fieldnames is None
+try:
+    writer.writeheader()
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'NoneType' object is not iterable"
 try:
     csv.DictWriter(sink)
     assert False, 'expected TypeError'

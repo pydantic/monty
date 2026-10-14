@@ -1,7 +1,7 @@
 //! `csv.DictReader` and `csv.DictWriter`: the pure-Python wrappers of CPython's `csv.py`,
 //! mapping rows to and from dicts keyed by `fieldnames`.
 
-use std::mem;
+use std::{mem, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -226,6 +226,11 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
     let (name_count, item_count) = (names.len(), items.len());
     // The last row's key count predicts this one's; the first row assumes distinct names.
     let capacity = if dict_hint == 0 { name_count } else { dict_hint };
+    // The table is sized up front from a width the caller controls, so charge it as a
+    // dict copy does before it exists.
+    vm.heap
+        .tracker
+        .check_allocation(capacity.saturating_mul(2 * VALUE_SIZE))?;
     let mut dict_guard = DropGuard::new(Dict::with_capacity(capacity), vm);
     let (dict, vm) = dict_guard.as_parts_mut();
     // `dict(zip(fieldnames, row))`: the surplus of the longer side stays behind.
@@ -271,7 +276,9 @@ pub(super) fn writer_writerow<'h>(
     write_items(obj, items, vm)
 }
 
-/// `DictWriter.writeheader()`: writes `fieldnames` as a row, returning what `write()` did.
+/// `DictWriter.writeheader()`: `self.writerow(dict(zip(self.fieldnames, self.fieldnames)))`,
+/// returning what `write()` did. The dict is what rejects an unhashable name, and a repeated
+/// name collapses in it, so the row goes through it as in CPython.
 pub(super) fn writer_writeheader<'h>(
     obj: &mut HeapRead<'h, CsvObject>,
     args: ArgValues,
@@ -280,7 +287,21 @@ pub(super) fn writer_writeheader<'h>(
     args.check_zero_args("DictWriter.writeheader", vm.heap)?;
     let fieldnames = dict_writer_part(obj, vm, |writer| writer.fieldnames.clone_with_heap(vm.heap));
     defer_drop!(fieldnames, vm);
-    let items = fieldnames_items(fieldnames, vm)?;
+    let names = fieldnames_items(fieldnames, vm)?;
+    defer_drop!(names, vm);
+    let mut header_guard = DropGuard::new(Dict::with_capacity(names.len()), vm);
+    let (header, vm) = header_guard.as_parts_mut();
+    for name in names {
+        if let Some(old) = header.set(name.clone_with_heap(vm.heap), name.clone_with_heap(vm.heap), vm)? {
+            old.drop_with(vm);
+        }
+    }
+    let (header, vm) = header_guard.into_parts();
+    let header = Value::Ref(vm.heap.allocate(HeapData::Dict(header)));
+    defer_drop!(header, vm);
+    let spec: Option<RowSpec> = None;
+    defer_drop_mut!(spec, vm);
+    let items = dict_to_list(obj, spec, header, vm)?;
     defer_drop!(items, vm);
     write_items(obj, items, vm)
 }
@@ -561,14 +582,14 @@ fn with_writer<'h, T>(
 
 /// Whether the wrapped `_csv.writer` targets a file, with its bound `write` and dialect;
 /// `None` if `writer` is not one.
-fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Dialect)> {
+fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Arc<Dialect>)> {
     match writer {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Csv(csv) => match &**csv {
                 CsvObject::Writer(writer) => Some((
                     writer.targets_file(vm),
                     writer.write_method(vm.heap),
-                    writer.dialect.clone(),
+                    Arc::clone(&writer.dialect),
                 )),
                 _ => None,
             },

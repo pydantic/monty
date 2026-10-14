@@ -874,6 +874,9 @@ pub enum StaticStrings {
     Devnull,
     /// `dialect` parameter and attribute of the `csv` readers and writers.
     Dialect,
+    /// `csv.Dialect`, the `_csv.Dialect` class.
+    #[strum(serialize = "Dialect")]
+    DialectClass,
     /// `csv.DictReader` class.
     #[strum(serialize = "DictReader")]
     DictReader,
