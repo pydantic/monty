@@ -1238,6 +1238,16 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import csv\nnames = list(range(30_000))\nnext(csv.DictReader(['x'], fieldnames=names))",
             1_965_832,
         ),
+        // A list `fieldnames` is copied per row, and the keys of a row dict are copied for
+        // the `extrasaction='raise'` check: both bulk copies are preflighted.
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\nnames = [None] * 40_000\ncsv.DictWriter(S(), names).writerow({})",
+            1_331_169,
+        ),
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\nrow = {i: None for i in range(10_000)}\ncsv.DictWriter(S(), []).writerow(row)",
+            1_079_568,
+        ),
     ];
 
     for (code, expected) in cases {

@@ -11,6 +11,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput},
+    string_builder::StringBuilder,
     types::{
         CsvObject, Dict, List, PyTrait, Set,
         csv::{
@@ -527,32 +528,39 @@ fn check_extra_keys<'h>(dict: &HeapRead<'h, Dict>, known: &Value, vm: &mut VM<'h
     let HeapReadOutput::Set(known) = vm.heap.read(*known_id) else {
         unreachable!("known_names allocates a set")
     };
-    let keys = dict_keys(dict, vm);
+    let keys = dict_keys(dict, vm)?;
     defer_drop!(keys, vm);
-    let mut wrong = Vec::new();
-    for key in keys {
+    // The reprs of the offending keys outlive the keys' own tracked reprs, so the message
+    // grows through the tracker; a wide row allocates per key, so the loop also polls.
+    let mut wrong = String::new();
+    for (i, key) in keys.iter().enumerate() {
+        vm.heap.tracker.check_memory_time_every(i)?;
         if !known.contains(key, vm)? {
             let repr = key.py_repr(vm)?;
             defer_drop!(repr, vm);
-            wrong.push(repr.to_str(vm)?.to_owned());
+            let separator = if wrong.is_empty() { "" } else { ", " };
+            let mut builder = StringBuilder::from_existing(mem::take(&mut wrong), &vm.heap.tracker);
+            builder.push_str(separator)?;
+            builder.push_str(repr.to_str(vm)?)?;
+            wrong = builder.finish_raw()?;
         }
     }
     if wrong.is_empty() {
         Ok(())
     } else {
         Err(ExcType::value_error(format!(
-            "dict contains fields not in fieldnames: {}",
-            wrong.join(", ")
+            "dict contains fields not in fieldnames: {wrong}"
         )))
     }
 }
 
-/// Owned clones of a dict's keys, in insertion order.
-fn dict_keys<'h>(dict: &HeapRead<'h, Dict>, vm: &VM<'h>) -> Vec<Value> {
-    dict.get(vm.heap)
-        .iter()
-        .map(|(key, _)| key.clone_with_heap(vm.heap))
-        .collect()
+/// Owned clones of a dict's keys, in insertion order: a bulk copy, preflighted as one.
+fn dict_keys<'h>(dict: &HeapRead<'h, Dict>, vm: &VM<'h>) -> RunResult<Vec<Value>> {
+    let dict = dict.get(vm.heap);
+    vm.heap
+        .tracker
+        .check_allocation(dict.len().saturating_mul(VALUE_SIZE))?;
+    Ok(dict.iter().map(|(key, _)| key.clone_with_heap(vm.heap)).collect())
 }
 
 /// Formats `items` and writes them through the wrapped `_csv.writer`.
@@ -620,15 +628,17 @@ fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
 }
 
 /// `fieldnames` as owned values: a `list` (what a header read produces) is copied directly,
-/// any other iterable is iterated as `zip` or `list()` would.
+/// preflighted as a bulk copy; any other iterable is iterated as `zip` or `list()` would.
 fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     match fieldnames {
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::List(list) => Ok(list
-                .as_slice()
-                .iter()
-                .map(|item| item.clone_with_heap(vm.heap))
-                .collect()),
+            HeapData::List(list) => {
+                let items = list.as_slice();
+                vm.heap
+                    .tracker
+                    .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
+                Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
+            }
             _ => collect_iterable(fieldnames, vm),
         },
         _ => collect_iterable(fieldnames, vm),
