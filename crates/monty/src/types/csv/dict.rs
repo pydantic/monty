@@ -528,10 +528,9 @@ fn check_extra_keys<'h>(dict: &HeapRead<'h, Dict>, known: &Value, vm: &mut VM<'h
 
 /// Owned clones of a dict's keys, in insertion order.
 fn dict_keys<'h>(dict: &HeapRead<'h, Dict>, vm: &VM<'h>) -> Vec<Value> {
-    let dict = dict.get(vm.heap);
-    (0..dict.len())
-        .filter_map(|index| dict.key_at(index))
-        .map(|key| key.clone_with_heap(vm.heap))
+    dict.get(vm.heap)
+        .iter()
+        .map(|(key, _)| key.clone_with_heap(vm.heap))
         .collect()
 }
 
