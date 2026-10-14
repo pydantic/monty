@@ -6,7 +6,7 @@ use std::time::Duration;
 #[cfg(codspeed)]
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
-use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Bencher, Criterion, SamplingMode, black_box, criterion_group, criterion_main};
 use monty::{Dump, MontyRepl, MontyRun, SessionRef};
 use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(codspeed), unix))]
@@ -645,6 +645,26 @@ fn criterion_benchmark(c: &mut Criterion) {
         run_cpython(b, LIST_APPEND_INT, 4_999_950_000);
     });
 
+    for (name, code, expected) in [
+        ("fannkuch", include_str!("pyperformance/fannkuch.py"), 10),
+        ("spectral_norm", include_str!("pyperformance/spectral_norm.py"), 0),
+        ("nbody", include_str!("pyperformance/nbody.py"), 0),
+        ("barnes_hut", include_str!("pyperformance/barnes_hut.py"), 0),
+        ("float", include_str!("pyperformance/float.py"), 0),
+        ("unpack_sequence", include_str!("pyperformance/unpack_sequence.py"), 90),
+        ("json_dumps", include_str!("pyperformance/json_dumps.py"), 312),
+        ("json_loads", include_str!("pyperformance/json_loads.py"), 0),
+        ("gc_traversal", include_str!("pyperformance/gc_traversal.py"), 0),
+    ] {
+        let mut group = c.benchmark_group(format!("pyperformance/{name}"));
+        #[cfg(not(codspeed))]
+        group.sampling_mode(SamplingMode::Flat);
+        group.bench_function(format!("{name}__monty"), |b| run_monty(b, code, expected));
+        #[cfg(not(codspeed))]
+        group.bench_function(format!("{name}__cpython"), |b| run_cpython(b, code, expected));
+        group.finish();
+    }
+
     c.bench_function("fib__monty", |b| run_monty(b, FIB_25, 75_025));
     #[cfg(not(codspeed))]
     c.bench_function("fib__cpython", |b| run_cpython(b, FIB_25, 75_025));
@@ -710,16 +730,27 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("gc_collect__cpython", |b| run_cpython(b, GC_COLLECT, 0));
 }
 
+fn benchmark_config() -> Criterion {
+    Criterion::default()
+        .sample_size(10)
+        .warm_up_time(Duration::from_millis(100))
+        .measurement_time(Duration::from_secs(1))
+}
+
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
 #[cfg(all(not(codspeed), unix))]
 criterion_group!(
     name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+    config = benchmark_config().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
     targets = criterion_benchmark
 );
 
-// Use default config on CodSpeed or Windows (pprof is Unix-only)
+// pprof is unavailable on CodSpeed and Windows.
 #[cfg(any(codspeed, not(unix)))]
-criterion_group!(benches, criterion_benchmark);
+criterion_group!(
+    name = benches;
+    config = benchmark_config();
+    targets = criterion_benchmark
+);
 
 criterion_main!(benches);
