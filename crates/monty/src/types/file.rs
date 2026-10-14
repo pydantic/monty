@@ -658,17 +658,50 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// [`CallResult::OsCallWithEffect`] so the host loads the full content
     /// and the resume hook completes the operation.
     fn read_with_spec(&mut self, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
+        let file_id = self.id();
+        self.read_with_effect(vm, spec, PostConversionEffect::BufferStore { file_id })
+    }
+
+    /// `tomllib.load(fp)`'s `fp.read()`: the whole remaining content as one
+    /// value. `effect` answers the host load on resume and must go through
+    /// [`apply_buffer_store`] so the stashed spec is consumed.
+    pub(crate) fn read_all(&mut self, vm: &mut VM<'h>, effect: PostConversionEffect) -> RunResult<CallResult> {
+        self.read_with_effect(vm, ReadSpec::All, effect)
+    }
+
+    /// Raises what a read on this file would: `ValueError` once closed, then
+    /// `io.UnsupportedOperation` when it was not opened for reading.
+    pub(crate) fn check_readable(&self, vm: &VM<'h>) -> RunResult<()> {
+        let file = self.get(vm.heap);
+        file.ensure_open()?;
+        if file.mode.readable() {
+            Ok(())
+        } else {
+            Err(unsupported_operation("not readable"))
+        }
+    }
+
+    /// Whether reads yield `bytes` rather than `str`.
+    pub(crate) fn is_binary(&self, vm: &VM<'h>) -> bool {
+        self.get(vm.heap).mode.is_binary()
+    }
+
+    /// [`read_with_spec`](Self::read_with_spec) with the caller's choice of
+    /// resume effect; `effect` must apply the buffer store before anything else.
+    fn read_with_effect(
+        &mut self,
+        vm: &mut VM<'h>,
+        spec: ReadSpec,
+        effect: PostConversionEffect,
+    ) -> RunResult<CallResult> {
+        self.check_readable(vm)?;
+        // `eof` on a readable file is only ever flipped by a path that
+        // also populates `buffer`, so we never need to short-circuit on
+        // EOF without a loaded buffer here. Write-only files would be
+        // the only case where `eof=true && buffer=None` is possible, and
+        // they're rejected by the readable check above.
         let buffer_loaded = {
             let file = self.get(vm.heap);
-            file.ensure_open()?;
-            if !file.mode.readable() {
-                return Err(unsupported_operation("not readable"));
-            }
-            // `eof` on a readable file is only ever flipped by a path that
-            // also populates `buffer`, so we never need to short-circuit on
-            // EOF without a loaded buffer here. Write-only files would be
-            // the only case where `eof=true && buffer=None` is possible, and
-            // they're rejected by the readable check above.
             debug_assert!(!file.eof || file.buffer.is_some());
             file.buffer.is_some()
         };
@@ -679,8 +712,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
 
         // First buffered op: stash spec, yield to host for the full content.
         self.get_mut(vm.heap).pending_read = Some(spec);
-        let file_id = self.id();
-        Ok(self.buffer_load_call(vm, PostConversionEffect::BufferStore { file_id }))
+        Ok(self.buffer_load_call(vm, effect))
     }
 
     /// Whether an iteration step must load the buffer from the host first:

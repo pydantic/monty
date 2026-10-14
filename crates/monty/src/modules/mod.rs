@@ -34,6 +34,7 @@ pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod sys;
 pub(crate) mod time;
+pub(crate) mod tomllib;
 pub(crate) mod typing;
 pub(crate) mod unicodedata;
 
@@ -87,6 +88,8 @@ pub(crate) enum StandardLib {
     Time,
     /// The `hashlib` module: the guaranteed algorithms, `new()` and `pbkdf2_hmac()`.
     Hashlib,
+    /// The `tomllib` module: `loads()`, `load()` and `TOMLDecodeError`.
+    Tomllib,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -119,6 +122,7 @@ impl StandardLib {
             StaticStrings::Copy => Some(Self::Copy),
             StaticStrings::Time => Some(Self::Time),
             StaticStrings::Hashlib => Some(Self::Hashlib),
+            StaticStrings::Tomllib => Some(Self::Tomllib),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -157,6 +161,7 @@ impl StandardLib {
             Self::Copy => copy::create_module(vm),
             Self::Time => time::create_module(vm),
             Self::Hashlib => hashlib::create_module(vm),
+            Self::Tomllib => tomllib::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -186,6 +191,7 @@ pub(crate) enum ModuleFunctions {
     Copy(copy::CopyFunctions),
     Time(time::TimeFunctions),
     Hashlib(hashlib::HashlibFunctions),
+    Tomllib(tomllib::TomllibFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -219,6 +225,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Copy(func) => write!(f, "{func}"),
             Self::Time(func) => write!(f, "{func}"),
             Self::Hashlib(func) => write!(f, "{func}"),
+            Self::Tomllib(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -251,6 +258,7 @@ impl ModuleFunctions {
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
             Self::Time(functions) => time::call(vm, functions, args),
             Self::Hashlib(functions) => hashlib::call(vm, functions, args).map(CallResult::Value),
+            Self::Tomllib(functions) => tomllib::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

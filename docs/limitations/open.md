@@ -141,6 +141,8 @@ Everything else raises `AttributeError`, including: `truncate()`,
     loops and are unaffected, so `list(x for x in f)` reads an unread file.
 - `close()` releases the cached buffer (matching CPython), returning its memory
     when no other value, such as `data = f.read()`, retains it.
+- Reading a closed file always raises `ValueError: I/O operation on closed file.`,
+    CPython's text-mode wording; CPython's binary files say `read of closed file`.
 - File I/O is rejected inside callbacks the interpreter evaluates in a
     synchronous context that cannot suspend to the host — the `key` of
     `sorted()`/`list.sort()`/`min()`/`max()`, `map()`/`filter()` functions,

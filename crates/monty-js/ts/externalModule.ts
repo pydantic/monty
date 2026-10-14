@@ -135,6 +135,7 @@ const SANDBOX_MODULES = new Set([
   're',
   'sys',
   'time',
+  'tomllib',
   'typing',
   'unicodedata',
 ])

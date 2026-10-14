@@ -82,6 +82,8 @@ mccabe = { max-complexity = 14 }
 [tool.ruff.lint.isort]
 combine-as-imports = true
 known-first-party = ["pydantic_monty"]
+# stdlib since 3.11, which the 3.10 floor hides from ruff's classification
+extra-standard-library = ["tomllib"]
 
 [tool.ruff.lint.per-file-ignores]
 "crates/monty/test_cases/{str,bytes}__percent_format.py" = [

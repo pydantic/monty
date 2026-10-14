@@ -41,6 +41,7 @@ use crate::{
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{
         StandardLib, json::JsonStringCache, random::apply_seed_random, re::RePatternCache, time::apply_clock_reading,
+        tomllib,
     },
     name_map::NameMap,
     object_bridge::MontyObjectExt,
@@ -2178,6 +2179,9 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::FileNext { file_id, default })) => {
                 apply_file_next(file_id, default, value, self).map(Some)
             }
+            Some(PendingEffect::Post(PostConversionEffect::TomlLoad { file_id })) => {
+                tomllib::apply_load(file_id, value, self).map(Some)
+            }
             Some(PendingEffect::Post(PostConversionEffect::WritePosition {
                 file_id, text_length, ..
             })) => apply_write_position(file_id, text_length, value, self).map(Some),
@@ -2239,7 +2243,9 @@ impl<'h> VM<'h> {
     pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
         if let Some(effect) = self.pending_effect.take() {
             match effect {
-                PendingEffect::Post(PostConversionEffect::BufferStore { file_id }) => {
+                PendingEffect::Post(
+                    PostConversionEffect::BufferStore { file_id } | PostConversionEffect::TomlLoad { file_id },
+                ) => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap).clear_pending_read();
                         drop(file);

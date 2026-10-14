@@ -60,6 +60,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
         ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => unicode_error_to_py(py, exc_type, exc_data, msg),
         ExcType::JsonDecodeError => json_decode_error_to_py(py, exc_data, msg),
+        ExcType::TomlDecodeError => toml_decode_error_to_py(py, exc_data, msg),
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
         ExcType::OSError => exceptions::PyOSError::new_err(msg),
@@ -111,11 +112,17 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
 }
 
 /// The host class for an exception type: the class its instances decode to,
-/// except the three whose instances need a payload, which resolve directly
+/// except the four whose instances need a payload, which resolve directly
 /// so the class never degrades to the payload-less `ValueError` fallback.
 pub(super) fn exc_class_to_py(py: Python<'_>, exc_type: ExcType) -> PyResult<Py<PyAny>> {
     match exc_type {
         ExcType::JsonDecodeError => get_json_decode_error(py).map(|b| b.clone().unbind()),
+        // A host Python without `tomllib` (3.10) gets the `ValueError` parent,
+        // matching the instance fallback.
+        ExcType::TomlDecodeError => Ok(get_toml_decode_error(py).map_or_else(
+            |_| py.get_type::<exceptions::PyValueError>().into_any().unbind(),
+            |cls| cls.clone().unbind(),
+        )),
         ExcType::UnicodeDecodeError => Ok(py.get_type::<exceptions::PyUnicodeDecodeError>().into_any().unbind()),
         ExcType::UnicodeEncodeError => Ok(py.get_type::<exceptions::PyUnicodeEncodeError>().into_any().unbind()),
         _ => Ok(exc_monty_to_py(py, MontyException::new(exc_type, None))
@@ -177,6 +184,29 @@ fn json_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> Py
     }
 }
 
+/// Builds a real `tomllib.TOMLDecodeError` from the `msg` / `doc` / `pos`
+/// payload, which it shares with `json.JSONDecodeError`. Every attribute is
+/// set explicitly: before Python 3.14 the constructor stores only `args`, and
+/// on 3.14 it derives `lineno` / `colno` from `doc`, which is wrong for a
+/// dropped (oversized) document, as is the message it formats. Absent the
+/// module (Python 3.10) this degrades to the `ValueError` parent.
+fn toml_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> PyErr {
+    if let ExcData::Json(data) = exc_data
+        && let Ok(exc_cls) = get_toml_decode_error(py)
+        && let Ok(exc_instance) = exc_cls.call1((&data.msg, data.doc.as_deref().unwrap_or(""), data.pos))
+        && exc_instance.setattr("msg", &data.msg).is_ok()
+        && exc_instance.setattr("doc", data.doc.as_deref().unwrap_or("")).is_ok()
+        && exc_instance.setattr("pos", data.pos).is_ok()
+        && exc_instance.setattr("lineno", data.lineno).is_ok()
+        && exc_instance.setattr("colno", data.colno).is_ok()
+        && exc_instance.setattr("args", (PyString::new(py, &msg),)).is_ok()
+    {
+        PyErr::from_value(exc_instance)
+    } else {
+        exceptions::PyValueError::new_err(msg)
+    }
+}
+
 /// Converts a python exception to monty.
 ///
 /// Used when resuming execution with an exception from Python.
@@ -184,7 +214,10 @@ pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     let exc = py_err.value(py);
     let exc_type = py_err_to_exc_type(exc);
     let arg = exception_arg(exc);
-    let data = if exc_type == ExcType::JsonDecodeError {
+    // Since Python 3.14 `tomllib.TOMLDecodeError` defines the same five
+    // attributes as `json.JSONDecodeError`, so both travel as the json payload;
+    // older versions have none, and the extraction yields no payload.
+    let data = if matches!(exc_type, ExcType::JsonDecodeError | ExcType::TomlDecodeError) {
         json_data_from_py(exc)
     } else {
         ExcData::None
@@ -255,6 +288,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         } else if exceptions::PyValueError::type_check(exc) {
             if is_json_decode_error(exc) {
                 ExcType::JsonDecodeError
+            } else if is_toml_decode_error(exc) {
+                ExcType::TomlDecodeError
             } else if is_binascii_error(exc) {
                 ExcType::BinasciiError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
@@ -382,6 +417,22 @@ fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     } else {
         false
     }
+}
+
+/// Checks if an exception is a `tomllib.TOMLDecodeError` (a stdlib class, not
+/// a PyO3 built-in, so looked up lazily and cached).
+fn is_toml_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(toml_decode_error_cls) = get_toml_decode_error(exc.py()) {
+        exc.is_instance(toml_decode_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `tomllib.TOMLDecodeError` class.
+fn get_toml_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static TOML_DECODE_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    TOML_DECODE_ERROR.import(py, "tomllib", "TOMLDecodeError")
 }
 
 /// Checks if an exception is a `binascii.Error` (a stdlib class, not a

@@ -95,6 +95,8 @@ impl PendingEffect {
             Self::Post(PostConversionEffect::BufferLoad { .. } | PostConversionEffect::FileNext { .. }) => {
                 Some("file iteration")
             }
+            // The bytes still have to be parsed into the dict the call returns.
+            Self::Post(PostConversionEffect::TomlLoad { .. }) => Some("tomllib.load"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
             // `asyncio.sleep` wants the future: `resume_with_result` moves the
@@ -304,6 +306,9 @@ pub(crate) enum PostConversionEffect {
     /// `next(file, default)`: the first line, `default` at EOF, or
     /// `StopIteration`. Owns `default`'s reference across the yield.
     FileNext { file_id: HeapId, default: Option<Value> },
+    /// Store a full-file read result into the file buffer, then parse the
+    /// whole content as TOML for `tomllib.load(fp)`.
+    TomlLoad { file_id: HeapId },
     /// Advance the file's logical position by the successful write result.
     WritePosition {
         /// File whose position is updated.
@@ -353,7 +358,10 @@ impl PostConversionEffect {
     /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
-            Self::BufferStore { file_id } | Self::BufferLoad { file_id } | Self::WritePosition { file_id, .. } => {
+            Self::BufferStore { file_id }
+            | Self::BufferLoad { file_id }
+            | Self::TomlLoad { file_id }
+            | Self::WritePosition { file_id, .. } => {
                 heap.heap_mut().dec_ref(file_id);
             }
             Self::FileNext { file_id, default } => {

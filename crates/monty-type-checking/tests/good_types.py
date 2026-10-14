@@ -8,6 +8,7 @@ import os
 import random
 import re
 import sys
+import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -624,6 +625,15 @@ assert_type(tz, datetime.timezone)
 
 assert_type(json.loads('null'), Any)
 assert_type(json.dumps(None), str)
+
+# === tomllib ===
+assert_type(tomllib.loads('a = 1'), dict[str, Any])
+with Path('pyproject.toml').open('rb') as toml_file:
+    assert_type(tomllib.load(toml_file), dict[str, Any])
+try:
+    tomllib.loads('?')
+except tomllib.TOMLDecodeError as toml_exc:
+    check_str(str(toml_exc))
 
 # === iter() / next() ===
 # Element types must survive the `Iterator` protocol: `Iterator.__next__` is

@@ -97,12 +97,13 @@ fn sanitize_json_data(data: pb::JsonErrorData) -> Option<Box<JsonErrorData>> {
     let lineno = usize::try_from(data.lineno).ok()?;
     let colno = usize::try_from(data.colno).ok()?;
     // CPython's lineno/colno are 1-based; pos is a character index into doc
-    // and may equal its length (errors at end of input).
+    // and may equal its length (errors at end of input) or exceed it by one
+    // (`tomllib` reports an escape cut off by the end of input one past it).
     if lineno == 0 || colno == 0 {
         return None;
     }
     if let Some(doc) = &data.doc
-        && pos > doc.chars().count()
+        && pos > doc.chars().count() + 1
     {
         return None;
     }

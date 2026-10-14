@@ -250,6 +250,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'UnicodeDecodeError',
   'UnicodeEncodeError',
   'json.JSONDecodeError',
+  'tomllib.TOMLDecodeError',
   'ImportError',
   'ModuleNotFoundError',
   'OSError',

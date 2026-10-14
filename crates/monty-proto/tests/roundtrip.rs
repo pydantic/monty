@@ -561,8 +561,8 @@ fn bogus_json_payloads_are_dropped_not_trusted() {
         // 0 is not a valid 1-based line/column
         json_exception("msg".to_owned(), None, 0, 0, 1),
         json_exception("msg".to_owned(), None, 0, 1, 0),
-        // pos beyond the document
-        json_exception("msg".to_owned(), Some("[]".to_owned()), 3, 1, 1),
+        // pos more than one past the end of the document
+        json_exception("msg".to_owned(), Some("[]".to_owned()), 4, 1, 1),
     ];
     for proto in bogus {
         let back = MontyException::try_from(proto).expect("malformed payload must not block conversion");
@@ -580,6 +580,17 @@ fn bogus_json_payloads_are_dropped_not_trusted() {
     ))
     .unwrap();
     assert!(matches!(back.data(), ExcData::Json(data) if data.pos == 3 && data.colno == 4));
+
+    // `tomllib` reports an escape cut off by the end of input one past it.
+    let back = MontyException::try_from(json_exception(
+        "Unescaped '\\' in a string".to_owned(),
+        Some("a = \"\\".to_owned()),
+        7,
+        1,
+        8,
+    ))
+    .unwrap();
+    assert!(matches!(back.data(), ExcData::Json(data) if data.pos == 7));
 }
 
 #[test]

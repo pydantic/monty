@@ -1365,7 +1365,9 @@ pub enum StaticStrings {
     Little,
     /// `ljust()` method, shared by `str` and `bytes`.
     Ljust,
-    /// `json.loads()` function.
+    /// `tomllib.load()` function.
+    Load,
+    /// `json.loads()` and `tomllib.loads()` functions.
     Loads,
     /// `locals` parameter of eval/exec.
     Locals,
@@ -2069,6 +2071,11 @@ pub enum StaticStrings {
     TmZone,
     /// `date.today()` / `datetime.today()` classmethod.
     Today,
+    /// `tomllib.TOMLDecodeError` exception.
+    #[strum(serialize = "TOMLDecodeError")]
+    TomlDecodeError,
+    /// Module name for `import tomllib`.
+    Tomllib,
     /// `Counter.total()` method.
     Total,
     /// `timedelta.total_seconds()` method.

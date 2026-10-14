@@ -2213,6 +2213,46 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates a `tomllib.TOMLDecodeError`, formatted as CPython does:
+    /// `{message} (at line {line}, column {column})`, or `(at end of document)`
+    /// when `at_end` (the caller knows from the byte offset whether `index`
+    /// reached the end of `doc`, so the document is not rescanned).
+    ///
+    /// `doc` is the `\r\n`-normalised source and `index` a character offset into
+    /// it; the five fields travel in the same [`JsonErrorData`] payload as
+    /// `json.JSONDecodeError`, since the two exceptions define the same attributes.
+    #[must_use]
+    fn toml_decode_error(message: &str, doc: &str, index: usize, line: usize, column: usize, at_end: bool) -> RunError {
+        let location = if at_end {
+            "end of document".to_owned()
+        } else {
+            format!("line {line}, column {column}")
+        };
+        SimpleException::new_msg(ExcType::TomlDecodeError, format!("{message} (at {location})"))
+            .with_data(JsonErrorData::build(message, doc.as_bytes(), index, line, column))
+            .into()
+    }
+
+    /// Creates the `TypeError` used by `tomllib.loads()` for non-`str` input.
+    ///
+    /// Matches CPython's format: `Expected str object, not '{type}'`
+    #[must_use]
+    fn toml_loads_type_error(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("Expected str object, not '{type_}'")).into()
+    }
+
+    /// Creates the `TypeError` used by `tomllib.load()` for a text-mode file.
+    ///
+    /// Matches CPython's message: ``File must be opened in binary mode, e.g. use `open('foo.toml', 'rb')` ``
+    #[must_use]
+    fn toml_load_text_mode_error() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "File must be opened in binary mode, e.g. use `open('foo.toml', 'rb')`",
+        )
+        .into()
+    }
+
     /// Creates the `TypeError` used by `json.loads()` for unsupported input types.
     ///
     /// Matches CPython's format:

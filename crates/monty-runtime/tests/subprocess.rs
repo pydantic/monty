@@ -1705,6 +1705,36 @@ fn batched_without_a_size_hint_is_refused_before_the_hard_limit() {
     child.shutdown();
 }
 
+/// `tomllib` turns a couple of source bytes into a tree node (`[[a]]` into a
+/// whole table), so a document that fits can build a tree that does not. Only
+/// the parser's per-element / per-statement poll stops it, and where that
+/// lands depends on the tree's growth, so this pins the property rather than
+/// a byte figure.
+#[test]
+fn tomllib_documents_are_refused_before_the_hard_limit() {
+    const SOFT_LIMIT: u64 = 1024 * 1024;
+    const HARD_CEILING: u64 = SOFT_LIMIT + 4 * 1024 * 1024;
+
+    for code in [
+        "import tomllib\ntomllib.loads('x = [' + '1,' * 200_000 + ']')",
+        "import tomllib\ntomllib.loads('[[a]]\\n' * 100_000)",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(SOFT_LIMIT));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        let message = error.message.expect("MemoryError should have a message");
+        let used = reported_usage(&message, code);
+        assert!(
+            (SOFT_LIMIT..HARD_CEILING).contains(&used),
+            "{code}: reported {used} bytes, expected a refusal between {SOFT_LIMIT} and {HARD_CEILING}"
+        );
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
+}
+
 /// A small `n` caps a batch however long the source, so batching a huge
 /// exact-hint iterable must not trip the `batched` preflight — the memory
 /// really is bounded by `n`, not by the source.

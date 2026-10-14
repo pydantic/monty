@@ -212,6 +212,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "re",
     "sys",
     "time",
+    "tomllib",
     "typing",
     "unicodedata",
 ];
