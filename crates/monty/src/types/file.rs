@@ -1094,7 +1094,8 @@ fn next_line<'h>(file: &mut HeapRead<'h, OpenFile>, vm: &mut VM<'h>) -> RunResul
 /// read (`list(f)`, `enumerate(f)`, …); only `for` and `next()` issue it.
 ///
 /// TODO: `enumerate`, `zip`, `map`, `filter` and `sorted` go away from this
-/// list once they are bytecode, since they then iterate through `ForIter`.
+/// list once they are bytecode, since they then iterate through `ForIter`
+/// (<https://github.com/pydantic/monty/issues/1041>).
 /// The Rust-side consumers that remain (`list(f)`, `''.join(f)`, `sum(f)`, …)
 /// need the `LoadThenCall` effect `csv.reader(f)` uses: yield the load with
 /// the call stashed, replay the call on resume.

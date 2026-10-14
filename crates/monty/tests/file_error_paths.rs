@@ -527,6 +527,50 @@ csv.DictReader(open('/x.csv'), fieldnames=iter(spin, 'stop'))
     assert_eq!(err.exc_type(), ExcType::TimeoutError);
 }
 
+/// A replayed construction that raises uncaught still ends the turn through the
+/// resource-limit epilogue, so a limit the turn blew out-ranks the call's own error.
+/// The over-budget `repr()` truncates, swallowing the timeout, and the raise ends the
+/// replay before any dispatch checkpoint can fire.
+#[test]
+fn csv_dict_reader_replay_error_still_hits_limits_at_exit() {
+    let code = r"
+import csv
+x = ['abcdefghij'] * 1_000_000
+f = open('/x.csv')
+def names():
+    s = repr(x)
+    raise ValueError(s[:3])
+interrupt()
+csv.DictReader(f, fieldnames=iter(names, 'stop'))
+";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["interrupt".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let open_call = progress.into_os_call().expect("expected Open OsCall");
+    let progress = open_call
+        .resume(
+            MontyObject::file_handle(file_handle("/x.csv", "r")),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    // The budget starts once the list exists, so only the replay's `repr()` spends it.
+    let mut pause = progress.into_function_call().expect("expected interrupt() call");
+    pause.tracker_mut().set_max_feed_duration(Duration::from_millis(20));
+    let progress = pause.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+    let read_call = progress.into_os_call().expect("expected ReadText OsCall");
+    let err = read_call
+        .resume(MontyObject::string("1,2\n".to_owned()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::TimeoutError);
+}
+
 #[test]
 fn csv_reader_load_rejects_future_reply() {
     let err = run_with_open_then_io(

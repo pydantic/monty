@@ -1177,8 +1177,9 @@ impl<'h> VM<'h> {
         self.finish_host_turn(result)
     }
 
-    /// Epilogue for every host-boundary execution window (here and
-    /// `MontyRepl::call_function`): re-checks both resource limits so an
+    /// Epilogue for every host-boundary execution window (here, and the
+    /// uncaught branch of `resume_with_exception`, which ends a turn without
+    /// entering the loop): re-checks both resource limits so an
     /// overshoot that arose after the run loop's last amortized check — or
     /// was swallowed by a truncating caller (repr's `...[timeout]`) — cannot
     /// escape as a successful result. Consumes a discarded success so its
@@ -2357,7 +2358,9 @@ impl<'h> VM<'h> {
         // Use the normal exception handling mechanism
         // handle_exception returns None if caught, Some(error) if not caught
         if let Some(uncaught_error) = self.handle_exception(error) {
-            return Err(uncaught_error);
+            // The turn ends here without entering the run loop, so this is its
+            // only chance at the limit re-check every host turn ends with.
+            return self.finish_host_turn(Err(uncaught_error));
         }
         yield_if_parked!(self);
         // Exception was caught, continue execution
