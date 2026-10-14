@@ -1001,7 +1001,8 @@ impl ScanSource for VirtualScanSource<'_> {
         Ok(exists.then(|| virtual_entry_info(&path)))
     }
 
-    /// Unbounded: the virtual filesystem is a handful of fixed entries.
+    /// Unbounded: the harness runs only checked-in fixtures, whose writes the
+    /// test resets, so a scan never sees more than a test created.
     fn visit(&mut self) -> Result<(), Infallible> {
         Ok(())
     }
