@@ -383,27 +383,24 @@ pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     let dialect_arg = dialect.clone_with_heap(vm.heap);
     let mut owned = DropGuard::new(
         (
-            vec![fieldnames, restkey, restval, dialect],
+            [fieldnames, restkey, restval, dialect],
             forwarded_args(f, dialect_arg, args, kwds),
         ),
         vm,
     );
-    let ((owned_values, _), vm) = owned.as_parts_mut();
+    let (([fieldnames, ..], _), vm) = owned.as_parts_mut();
     // `iter(fieldnames) is fieldnames`: an iterator is read once into a list.
-    if owned_values[0].py_is_iterator(vm) {
-        let names = collect_iterable(&owned_values[0], vm)?;
+    if fieldnames.py_is_iterator(vm) {
+        let names = collect_iterable(fieldnames, vm)?;
         let list = Value::Ref(vm.heap.allocate(HeapData::List(List::new(names))));
-        mem::replace(&mut owned_values[0], list).drop_with(vm);
+        mem::replace(fieldnames, list).drop_with(vm);
     }
     let ((owned_values, reader_args), vm) = owned.into_parts();
     let mut owned = DropGuard::new(owned_values, vm);
     let (_, vm) = owned.as_parts_mut();
     let reader = reader_init(vm, reader_args)?;
-    let (mut owned_values, vm) = owned.into_parts();
-    let dialect = owned_values.pop().expect("four values");
-    let restval = owned_values.pop().expect("four values");
-    let restkey = owned_values.pop().expect("four values");
-    let fieldnames = match owned_values.pop().expect("four values") {
+    let ([fieldnames, restkey, restval, dialect], vm) = owned.into_parts();
+    let fieldnames = match fieldnames {
         Value::None => None,
         names => Some(names),
     };
@@ -452,22 +449,19 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     let dialect_arg = dialect.clone_with_heap(vm.heap);
     let mut owned = DropGuard::new(
         (
-            vec![fieldnames, restval, extrasaction],
+            [fieldnames, restval, extrasaction],
             forwarded_args(f, dialect_arg, args, kwds),
         ),
         vm,
     );
-    let ((owned_values, _), vm) = owned.as_parts_mut();
-    let extrasaction = check_extrasaction(&owned_values[2], vm)?;
-    mem::replace(&mut owned_values[2], extrasaction).drop_with(vm);
+    let (([.., extrasaction], _), vm) = owned.as_parts_mut();
+    let lowered = check_extrasaction(extrasaction, vm)?;
+    mem::replace(extrasaction, lowered).drop_with(vm);
     let ((owned_values, writer_args), vm) = owned.into_parts();
     let mut owned = DropGuard::new(owned_values, vm);
     let (_, vm) = owned.as_parts_mut();
     let writer = call_writer(vm, writer_args)?;
-    let (mut owned_values, vm) = owned.into_parts();
-    let extrasaction = owned_values.pop().expect("three values");
-    let restval = owned_values.pop().expect("three values");
-    let fieldnames = owned_values.pop().expect("three values");
+    let ([fieldnames, restval, extrasaction], vm) = owned.into_parts();
     Ok(CsvObject::DictWriter(DictWriter::new(writer, fieldnames, restval, extrasaction)).allocate(vm))
 }
 

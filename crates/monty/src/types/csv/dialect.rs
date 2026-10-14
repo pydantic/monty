@@ -16,41 +16,40 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// The `csv.QUOTE_*` constants, in their CPython numbering (`as_int`).
+/// The `csv.QUOTE_*` constants; the discriminants are CPython's values, which the module
+/// exports and `dialect.quoting` reports. Serialized by name, so the numbering is not persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i64)]
 pub(crate) enum Quoting {
-    Minimal,
-    All,
-    Nonnumeric,
-    None,
-    Strings,
-    Notnull,
+    Minimal = 0,
+    All = 1,
+    Nonnumeric = 2,
+    None = 3,
+    Strings = 4,
+    Notnull = 5,
 }
 
 impl Quoting {
-    /// The constant's value, as the module exports it and `dialect.quoting` reports it.
+    /// Every constant, indexed by its value.
+    const ALL: [Self; 6] = [
+        Self::Minimal,
+        Self::All,
+        Self::Nonnumeric,
+        Self::None,
+        Self::Strings,
+        Self::Notnull,
+    ];
+
+    /// The constant's value.
     pub(crate) const fn as_int(self) -> i64 {
-        match self {
-            Self::Minimal => 0,
-            Self::All => 1,
-            Self::Nonnumeric => 2,
-            Self::None => 3,
-            Self::Strings => 4,
-            Self::Notnull => 5,
-        }
+        self as i64
     }
 
     /// The constant for a `quoting=` value; `None` for anything CPython rejects.
-    const fn from_int(value: i32) -> Option<Self> {
-        match value {
-            0 => Some(Self::Minimal),
-            1 => Some(Self::All),
-            2 => Some(Self::Nonnumeric),
-            3 => Some(Self::None),
-            4 => Some(Self::Strings),
-            5 => Some(Self::Notnull),
-            _ => Option::None,
-        }
+    fn from_int(value: i32) -> Option<Self> {
+        usize::try_from(value)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
     }
 }
 
