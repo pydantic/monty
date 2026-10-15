@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
 use monty_types::ResourceError;
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -1020,7 +1021,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
 
 pub(crate) struct PyListImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyListImpl {
     type Receiver = MutHeap<List>;
 

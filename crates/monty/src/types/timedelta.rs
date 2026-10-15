@@ -12,6 +12,7 @@ use std::{
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
+use monty_macros::pyattrs;
 use smallvec::smallvec;
 
 use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
@@ -557,7 +558,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
 
 pub(crate) struct PyTimeDeltaImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyTimeDeltaImpl {
     type Receiver = MutHeap<TimeDelta>;
 
