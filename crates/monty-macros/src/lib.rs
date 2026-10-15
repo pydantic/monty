@@ -11,7 +11,23 @@
 use proc_macro::TokenStream;
 
 mod from_args;
+mod pyattrs;
 mod to_args;
+
+/// Collects Python attributes from an implementation of Monty's internal `PyAttrs` trait.
+/// Functions retain their explicit native receiver and argument signatures.
+#[proc_macro_attribute]
+pub fn pyattrs(args: TokenStream, input: TokenStream) -> TokenStream {
+    if !args.is_empty() {
+        return syn::Error::new(proc_macro2::Span::call_site(), "#[pyattrs] does not take arguments")
+            .into_compile_error()
+            .into();
+    }
+    let input = syn::parse_macro_input!(input as syn::ItemImpl);
+    pyattrs::expand(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
 
 /// Derive `FromArgs::from_args`. Each struct field becomes a Python
 /// parameter; the generated body parses an `ArgValues` and populates the
