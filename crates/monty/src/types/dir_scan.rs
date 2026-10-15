@@ -517,12 +517,12 @@ fn descend_into_dirnames<'h>(
         total = total.saturating_add(step);
     }
     vm.heap.tracker.check_allocation(total)?;
-    let names: Vec<String> = list
-        .as_slice()
-        .iter()
-        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns))
-        .map(str::to_owned)
-        .collect();
+    let mut names = Vec::with_capacity(list.len());
+    for item in list.as_slice() {
+        if let Some(name) = value_as_path_str(item, vm.heap, vm.interns) {
+            names.push(name.to_owned());
+        }
+    }
     let walk = walk_mut(this, vm);
     for name in names.iter().rev() {
         let child = normalized_child(&relative, name);
@@ -620,10 +620,11 @@ impl WalkIterator {
             if !info.is_dir {
                 return WalkAction::Error(unlistable_error(info, &spelled));
             }
+            let children = self.tree.children(&relative);
             let mut dirs = Vec::new();
-            let mut files = Vec::new();
+            let mut files = Vec::with_capacity(children.len());
             let mut walk_into = Vec::new();
-            for (name, info) in self.tree.children(&relative) {
+            for (name, info) in children {
                 // `Path.walk` without `follow_symlinks` lists links to directories as files.
                 let is_dir = info.is_dir && !(self.path_flavor && !self.followlinks && info.is_symlink);
                 if is_dir {
