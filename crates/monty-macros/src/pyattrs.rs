@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn preserves_native_method_and_generates_table_and_lookup() {
         let input: ItemImpl = parse_quote! {
-            impl PyAttrs for ListImpl {
+            impl PyAttrs for PyListImpl {
                 type Receiver = MutHeap<List>;
 
                 /// Sorting can call Python code.
@@ -420,14 +420,14 @@ mod tests {
         assert!(output.contains("const ATTRS"));
         assert!(output.contains("const fn lookup_attr"));
         assert!(output.contains("HeapReadOutput :: List (mut value)"));
-        assert!(output.contains("< ListImpl > :: sort"));
+        assert!(output.contains("< PyListImpl > :: sort"));
         assert!(!output.contains("pymethod"));
     }
 
     #[test]
     fn receiver_modes_and_attribute_kinds() {
         let shared = expand(parse_quote! {
-            impl PyAttrs for TupleImpl {
+            impl PyAttrs for PyTupleImpl {
                 type Receiver = Heap<Tuple>;
                 #[pymethod]
                 fn count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> { todo!() }
@@ -437,7 +437,7 @@ mod tests {
         assert!(!shared.contains("mut value"));
 
         let immediate = expand(parse_quote! {
-            impl PyAttrs for FloatImpl {
+            impl PyAttrs for PyFloatImpl {
                 type Receiver = Immediate<f64>;
                 #[pymethod]
                 fn is_integer(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> { todo!() }
@@ -449,8 +449,8 @@ mod tests {
         }).unwrap().to_string();
         assert!(immediate.contains("Value :: Float (value)"));
         assert!(immediate.contains("StaticStrings :: IsInteger"));
-        assert!(immediate.contains("AttrDef :: ClassMethod (< FloatImpl > :: from_number)"));
-        assert!(immediate.contains("AttrDef :: Value (< FloatImpl > :: min)"));
+        assert!(immediate.contains("AttrDef :: ClassMethod (< PyFloatImpl > :: from_number)"));
+        assert!(immediate.contains("AttrDef :: Value (< PyFloatImpl > :: min)"));
     }
 
     #[test]
