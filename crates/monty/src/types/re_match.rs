@@ -11,6 +11,7 @@
 
 use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
+use monty_macros::pyattrs;
 use smallvec::smallvec;
 
 use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
@@ -457,7 +458,7 @@ struct GroupdictArgs {
 
 pub(crate) struct PyReMatchImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyReMatchImpl {
     type Receiver = MutHeap<ReMatch>;
 
