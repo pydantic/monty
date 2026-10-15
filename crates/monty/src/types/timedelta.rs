@@ -14,7 +14,7 @@ use std::{
 use chrono::TimeDelta as ChronoTimeDelta;
 use smallvec::smallvec;
 
-use super::builtin_attr::{AttrDef, builtin_attrs};
+use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
@@ -538,7 +538,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(timedelta_lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(TimeDeltaImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -555,35 +555,35 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 }
 
-fn timedelta_total_seconds<'h>(
-    value: &mut HeapObjectRead<'h, TimeDelta>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
-    let td = *value.get(vm.heap);
-    args.check_zero_args("timedelta.total_seconds", vm.heap)?;
-    Ok(Value::Float(total_seconds(&td)))
-}
+pub(crate) struct TimeDeltaImpl;
 
-fn timedelta_min(vm: &mut VM<'_>) -> Value {
-    allocate_micros((MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS, vm.heap)
-}
+#[monty_macros::pyattrs]
+impl PyAttrs for TimeDeltaImpl {
+    type Receiver = MutHeap<TimeDelta>;
 
-fn timedelta_max(vm: &mut VM<'_>) -> Value {
-    allocate_micros(((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1, vm.heap)
-}
+    #[pymethod]
+    fn total_seconds<'h>(
+        value: &mut HeapObjectRead<'h, TimeDelta>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        let td = *value.get(vm.heap);
+        args.check_zero_args("timedelta.total_seconds", vm.heap)?;
+        Ok(Value::Float(total_seconds(&td)))
+    }
 
-fn timedelta_resolution(vm: &mut VM<'_>) -> Value {
-    allocate_micros(1, vm.heap)
-}
+    #[pyvalue]
+    fn min(vm: &mut VM<'_>) -> Value {
+        allocate_micros(i128::from(MIN_TIMEDELTA_DAYS) * DAY_MICROSECONDS, vm.heap)
+    }
 
-builtin_attrs! {
-    for TimeDelta: mut heap(TimeDelta);
-    pub(crate) const TIMEDELTA_ATTRS: &[(StaticStrings, AttrDef)] = &[
-        TotalSeconds => method(timedelta_total_seconds),
-        Min => value(timedelta_min),
-        Max => value(timedelta_max),
-        Resolution => value(timedelta_resolution),
-    ];
-    pub(crate) const fn timedelta_lookup_attr;
+    #[pyvalue]
+    fn max(vm: &mut VM<'_>) -> Value {
+        allocate_micros((i128::from(MAX_TIMEDELTA_DAYS) + 1) * DAY_MICROSECONDS - 1, vm.heap)
+    }
+
+    #[pyvalue]
+    fn resolution(vm: &mut VM<'_>) -> Value {
+        allocate_micros(1, vm.heap)
+    }
 }

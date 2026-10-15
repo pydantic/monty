@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    builtin_attr::{AttrDef, builtin_attrs},
+    builtin_attr::{AttrDef, MutHeap, PyAttrs},
     iter::{collect_owned_iterable, collect_python_iterator},
 };
 use crate::{
@@ -17,7 +17,6 @@ use crate::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
         HeapReader,
     },
-    intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_value_buffer_growth},
@@ -695,7 +694,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(list_lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(ListImpl::lookup_attr) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
@@ -724,257 +723,6 @@ impl HeapItem for List {
                 obj.dec_ref_forget();
             }
         }
-    }
-}
-
-fn list_append<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let item = args.get_one_arg("list.append", vm.heap)?;
-    list.append(vm, item)?;
-    Ok(Value::None)
-}
-
-fn list_reverse<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    args.check_zero_args("list.reverse", vm.heap)?;
-    list.get_mut(vm.heap).items.reverse();
-    Ok(Value::None)
-}
-
-/// Implements Python's `list.insert(index, item)` method.
-fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
-    defer_drop!(index_obj, vm);
-    let mut item_guard = DropGuard::new(item, vm);
-    let vm = item_guard.ctx();
-    // Python's insert() handles negative indices by adding len
-    // If still negative after adding len, clamps to 0
-    // If >= len, appends to end
-    let index_i64 = index_obj.as_int(vm)?;
-    let len = list.get(vm.heap).items.len();
-    let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
-    let index = if index_i64 < 0 {
-        // Negative index: add length, clamp to 0 if still negative
-        let adjusted = index_i64 + len_i64;
-        usize::try_from(adjusted).unwrap_or(0)
-    } else {
-        // Positive index: clamp to len if too large
-        usize::try_from(index_i64).unwrap_or(len)
-    };
-    let (item, heap) = item_guard.into_parts();
-    list.insert(heap, index, item)?;
-    Ok(Value::None)
-}
-
-/// Implements Python's `list.pop([index])` method.
-///
-/// Removes the item at the given index (default: -1) and returns it.
-/// Raises IndexError if the list is empty or the index is out of range.
-fn list_pop<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
-
-    // Validate index type FIRST (if provided), matching Python's validation order.
-    // Python raises TypeError for bad index type even on empty list.
-    let index_i64 = if let Some(v) = index_arg {
-        let result = v.as_int(vm);
-        v.drop_with(vm);
-        result?
-    } else {
-        -1
-    };
-
-    // THEN check empty list
-    if list.get(vm.heap).items.is_empty() {
-        return Err(ExcType::index_error_pop_empty_list());
-    }
-
-    // Normalize index
-    let len = list.get(vm.heap).items.len();
-    let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
-    let normalized = if index_i64 < 0 { index_i64 + len_i64 } else { index_i64 };
-
-    // Bounds check
-    if normalized < 0 || normalized >= len_i64 {
-        return Err(ExcType::index_error_pop_out_of_range());
-    }
-
-    // Remove and return the item
-    let idx = usize::try_from(normalized).expect("index validated non-negative");
-    Ok(list.get_mut(vm.heap).items.remove(idx))
-}
-
-/// Implements Python's `list.remove(value)` method.
-///
-/// Removes the first occurrence of value. Raises ValueError if not found.
-fn list_remove<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = args.get_one_arg("list.remove", vm.heap)?;
-    defer_drop!(value, vm);
-
-    let mut found_idx = None;
-    {
-        let iter = list.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((i, item)) = iter.next_with_index(vm)? {
-            if value.py_eq(item, vm)? {
-                found_idx = Some(i);
-                break;
-            }
-        }
-    }
-
-    match found_idx {
-        Some(idx) => {
-            // A matching user `__eq__` may itself have shrunk the list, leaving
-            // `idx` stale; CPython clamps the deletion (`list_ass_slice`), so a
-            // gone index removes nothing rather than panicking.
-            let this = list.get_mut(vm.heap);
-            if idx < this.items.len() {
-                let removed = this.items.remove(idx);
-                removed.drop_with(vm.heap);
-            }
-            Ok(Value::None)
-        }
-        None => Err(ExcType::value_error_remove_not_in_list()),
-    }
-}
-
-/// Implements Python's `list.clear()` method.
-///
-/// Removes all items from the list.
-fn list_clear<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    args.check_zero_args("list.clear", vm.heap)?;
-    mem::take(&mut list.get_mut(vm.heap).items).drop_with(vm);
-    // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
-    Ok(Value::None)
-}
-
-/// Implements Python's `list.copy()` method.
-///
-/// Returns a shallow copy of the list, preflighting the slot bytes like
-/// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
-fn list_copy<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    args.check_zero_args("list.copy", vm.heap)?;
-    let heap = &*vm.heap;
-    let list = list.get(heap);
-    heap.tracker
-        .check_allocation(list.items.len().saturating_mul(VALUE_SIZE))?;
-    let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
-    let heap_id = heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
-}
-
-/// Implements Python's `list.extend(iterable)` method.
-///
-/// Extends the list by appending all items from the iterable.
-fn list_extend<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let iterable = args.get_one_arg("list.extend", vm.heap)?;
-    let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
-
-    let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
-    if has_refs {
-        list.get_mut(vm.heap).set_contains_refs();
-    }
-    list.get_mut(vm.heap).as_vec_mut().extend(items);
-
-    Ok(Value::None)
-}
-
-/// Implements Python's `list.index(value[, start[, end]])` method.
-///
-/// Returns the index of the first occurrence of value.
-/// Raises ValueError if the value is not found.
-fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let pos_args = args.into_pos_only("list.index", vm.heap)?;
-    defer_drop!(pos_args, vm);
-
-    // Bounds are coerced before the length is read: the coercion may dispatch a
-    // user `__index__` that mutates this list, and CPython normalizes against the
-    // length *after* argument parsing. Reading it first would resolve a negative
-    // bound against a stale length and search the wrong window.
-    let (value, start_arg, end_arg) = match pos_args.as_slice() {
-        [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
-        [value] => (value, None, None),
-        [value, start_arg] => (value, Some(value_to_i64_bound(start_arg, vm)?), None),
-        [value, start_arg, end_arg] => (
-            value,
-            Some(value_to_i64_bound(start_arg, vm)?),
-            Some(value_to_i64_bound(end_arg, vm)?),
-        ),
-        other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
-    };
-
-    let len = list.get(vm.heap).items.len();
-    let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
-    let end = end_arg.map_or(len, |i| normalize_sequence_index(i, len)).max(start);
-
-    // Search for the value in the specified range
-    let iter = list.iter(vm)?;
-    defer_drop_mut!(iter, vm);
-    while let Some((idx, item)) = iter.next_with_index(vm)? {
-        if idx >= end {
-            // No further matches possible inside [start, end).
-            break;
-        }
-        if idx >= start && value.py_eq(item, vm)? {
-            let i64_idx = i64::try_from(idx).expect("index exceeds i64::MAX");
-            return Ok(Value::Int(i64_idx));
-        }
-    }
-    Err(ExcType::value_error_not_in_list())
-}
-
-/// Implements Python's `list.count(value)` method.
-///
-/// Returns the number of occurrences of value in the list.
-fn list_count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = args.get_one_arg("list.count", vm.heap)?;
-    defer_drop!(value, vm);
-
-    let mut count: usize = 0;
-    let iter = list.iter(vm)?;
-    defer_drop_mut!(iter, vm);
-    while let Some(item) = iter.next(vm)? {
-        if value.py_eq(item, vm)? {
-            count += 1;
-        }
-    }
-
-    let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
-    Ok(Value::Int(count_i64))
-}
-
-/// Performs an in-place sort on a list with optional key function and reverse flag.
-///
-/// To safely support user-supplied `key` callbacks (and rich-comparison `__lt__`
-/// methods) that may reentrantly mutate the same list, we follow CPython's
-/// strategy: the list's `items` vector is **detached** for the duration of the
-/// sort so the list looks empty to any reentrant code. All sort work is then
-/// performed on the detached buffer, which is always swapped back into the
-/// list afterwards. If the user mutated the live (empty) list during the
-/// sort, we additionally raise `ValueError: list modified during sort`,
-/// matching CPython exactly.
-fn list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    // Detach the list's items so reentrant access via the list's heap id sees
-    // an empty list. The detached buffer is always swapped back into the list
-    // when we're done. Done *before* parsing args so the reentrancy guard is
-    // in place if parsing somehow allocates or drops user values that run
-    // arbitrary code.
-    let items = mem::take(&mut list.get_mut(vm.heap).items);
-    defer_drop_mut!(items, vm);
-
-    let sort_result = parse_and_sort("sort() key argument", items, args, vm);
-
-    // Swap our (sorted) buffer back into the list. Whatever the user placed
-    // on the live empty list during the sort ends up in `items`; if
-    // it's not empty, the user mutated the list. The `contains_refs` flag
-    // survives `mem::take`, so it still describes the buffer being swapped
-    // back.
-    mem::swap(list.get_mut(vm.heap).as_vec_mut(), items);
-
-    // Surface any sort error first; otherwise the modification error (if any).
-    sort_result?;
-    if items.is_empty() {
-        Ok(Value::None)
-    } else {
-        Err(SimpleException::new_msg(ExcType::ValueError, "list modified during sort").into())
     }
 }
 
@@ -1182,22 +930,273 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
     }
 }
 
-builtin_attrs! {
-    for List: mut heap(List);
-    pub(crate) const LIST_ATTRS: &[(StaticStrings, AttrDef)] = &[
-        Append => method(list_append),
-        Insert => method(list_insert),
-        Pop => method(list_pop),
-        Remove => method(list_remove),
-        Clear => method(list_clear),
-        Copy => method(list_copy),
-        Extend => method(list_extend),
-        Index => method(list_index),
-        Count => method(list_count),
-        Reverse => method(list_reverse),
-        Sort => method(list_sort),
-    ];
-    pub(crate) const fn list_lookup_attr;
+pub(crate) struct ListImpl;
+
+#[monty_macros::pyattrs]
+impl PyAttrs for ListImpl {
+    type Receiver = MutHeap<List>;
+
+    #[pymethod]
+    fn append<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let item = args.get_one_arg("list.append", vm.heap)?;
+        list.append(vm, item)?;
+        Ok(Value::None)
+    }
+
+    /// Implements Python's `list.insert(index, item)` method.
+    #[pymethod]
+    fn insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
+        defer_drop!(index_obj, vm);
+        let mut item_guard = DropGuard::new(item, vm);
+        let vm = item_guard.ctx();
+        // Python's insert() handles negative indices by adding len
+        // If still negative after adding len, clamps to 0
+        // If >= len, appends to end
+        let index_i64 = index_obj.as_int(vm)?;
+        let len = list.get(vm.heap).items.len();
+        let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
+        let index = if index_i64 < 0 {
+            // Negative index: add length, clamp to 0 if still negative
+            let adjusted = index_i64 + len_i64;
+            usize::try_from(adjusted).unwrap_or(0)
+        } else {
+            // Positive index: clamp to len if too large
+            usize::try_from(index_i64).unwrap_or(len)
+        };
+        let (item, heap) = item_guard.into_parts();
+        list.insert(heap, index, item)?;
+        Ok(Value::None)
+    }
+
+    /// Implements Python's `list.pop([index])` method.
+    ///
+    /// Removes the item at the given index (default: -1) and returns it.
+    /// Raises IndexError if the list is empty or the index is out of range.
+    #[pymethod]
+    fn pop<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
+
+        // Validate index type FIRST (if provided), matching Python's validation order.
+        // Python raises TypeError for bad index type even on empty list.
+        let index_i64 = if let Some(v) = index_arg {
+            let result = v.as_int(vm);
+            v.drop_with(vm);
+            result?
+        } else {
+            -1
+        };
+
+        // THEN check empty list
+        if list.get(vm.heap).items.is_empty() {
+            return Err(ExcType::index_error_pop_empty_list());
+        }
+
+        // Normalize index
+        let len = list.get(vm.heap).items.len();
+        let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
+        let normalized = if index_i64 < 0 { index_i64 + len_i64 } else { index_i64 };
+
+        // Bounds check
+        if normalized < 0 || normalized >= len_i64 {
+            return Err(ExcType::index_error_pop_out_of_range());
+        }
+
+        // Remove and return the item
+        let idx = usize::try_from(normalized).expect("index validated non-negative");
+        Ok(list.get_mut(vm.heap).items.remove(idx))
+    }
+
+    /// Implements Python's `list.remove(value)` method.
+    ///
+    /// Removes the first occurrence of value. Raises ValueError if not found.
+    #[pymethod]
+    fn remove<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let value = args.get_one_arg("list.remove", vm.heap)?;
+        defer_drop!(value, vm);
+
+        let mut found_idx = None;
+        {
+            let iter = list.iter(vm)?;
+            defer_drop_mut!(iter, vm);
+            while let Some((i, item)) = iter.next_with_index(vm)? {
+                if value.py_eq(item, vm)? {
+                    found_idx = Some(i);
+                    break;
+                }
+            }
+        }
+
+        match found_idx {
+            Some(idx) => {
+                // A matching user `__eq__` may itself have shrunk the list, leaving
+                // `idx` stale; CPython clamps the deletion (`list_ass_slice`), so a
+                // gone index removes nothing rather than panicking.
+                let this = list.get_mut(vm.heap);
+                if idx < this.items.len() {
+                    let removed = this.items.remove(idx);
+                    removed.drop_with(vm.heap);
+                }
+                Ok(Value::None)
+            }
+            None => Err(ExcType::value_error_remove_not_in_list()),
+        }
+    }
+
+    /// Implements Python's `list.clear()` method.
+    ///
+    /// Removes all items from the list.
+    #[pymethod]
+    fn clear<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("list.clear", vm.heap)?;
+        mem::take(&mut list.get_mut(vm.heap).items).drop_with(vm);
+        // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
+        Ok(Value::None)
+    }
+
+    /// Implements Python's `list.copy()` method.
+    ///
+    /// Returns a shallow copy of the list, preflighting the slot bytes like
+    /// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
+    #[pymethod]
+    fn copy<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("list.copy", vm.heap)?;
+        let heap = &*vm.heap;
+        let list = list.get(heap);
+        heap.tracker
+            .check_allocation(list.items.len().saturating_mul(VALUE_SIZE))?;
+        let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
+        let heap_id = heap.allocate(HeapData::List(List::new(items)));
+        Ok(Value::Ref(heap_id))
+    }
+
+    /// Implements Python's `list.extend(iterable)` method.
+    ///
+    /// Extends the list by appending all items from the iterable.
+    #[pymethod]
+    fn extend<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let iterable = args.get_one_arg("list.extend", vm.heap)?;
+        let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
+
+        let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        if has_refs {
+            list.get_mut(vm.heap).set_contains_refs();
+        }
+        list.get_mut(vm.heap).as_vec_mut().extend(items);
+
+        Ok(Value::None)
+    }
+
+    /// Implements Python's `list.index(value[, start[, end]])` method.
+    ///
+    /// Returns the index of the first occurrence of value.
+    /// Raises ValueError if the value is not found.
+    #[pymethod]
+    fn index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let pos_args = args.into_pos_only("list.index", vm.heap)?;
+        defer_drop!(pos_args, vm);
+
+        // Bounds are coerced before the length is read: the coercion may dispatch a
+        // user `__index__` that mutates this list, and CPython normalizes against the
+        // length *after* argument parsing. Reading it first would resolve a negative
+        // bound against a stale length and search the wrong window.
+        let (value, start_arg, end_arg) = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("list.index", 1, 0)),
+            [value] => (value, None, None),
+            [value, start_arg] => (value, Some(value_to_i64_bound(start_arg, vm)?), None),
+            [value, start_arg, end_arg] => (
+                value,
+                Some(value_to_i64_bound(start_arg, vm)?),
+                Some(value_to_i64_bound(end_arg, vm)?),
+            ),
+            other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
+        };
+
+        let len = list.get(vm.heap).items.len();
+        let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
+        let end = end_arg.map_or(len, |i| normalize_sequence_index(i, len)).max(start);
+
+        // Search for the value in the specified range
+        let iter = list.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((idx, item)) = iter.next_with_index(vm)? {
+            if idx >= end {
+                // No further matches possible inside [start, end).
+                break;
+            }
+            if idx >= start && value.py_eq(item, vm)? {
+                let i64_idx = i64::try_from(idx).expect("index exceeds i64::MAX");
+                return Ok(Value::Int(i64_idx));
+            }
+        }
+        Err(ExcType::value_error_not_in_list())
+    }
+
+    /// Implements Python's `list.count(value)` method.
+    ///
+    /// Returns the number of occurrences of value in the list.
+    #[pymethod]
+    fn count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let value = args.get_one_arg("list.count", vm.heap)?;
+        defer_drop!(value, vm);
+
+        let mut count: usize = 0;
+        let iter = list.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(item) = iter.next(vm)? {
+            if value.py_eq(item, vm)? {
+                count += 1;
+            }
+        }
+
+        let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
+        Ok(Value::Int(count_i64))
+    }
+
+    #[pymethod]
+    fn reverse<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("list.reverse", vm.heap)?;
+        list.get_mut(vm.heap).items.reverse();
+        Ok(Value::None)
+    }
+
+    /// Performs an in-place sort on a list with optional key function and reverse flag.
+    ///
+    /// To safely support user-supplied `key` callbacks (and rich-comparison `__lt__`
+    /// methods) that may reentrantly mutate the same list, we follow CPython's
+    /// strategy: the list's `items` vector is **detached** for the duration of the
+    /// sort so the list looks empty to any reentrant code. All sort work is then
+    /// performed on the detached buffer, which is always swapped back into the
+    /// list afterwards. If the user mutated the live (empty) list during the
+    /// sort, we additionally raise `ValueError: list modified during sort`,
+    /// matching CPython exactly.
+    #[pymethod]
+    fn sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        // Detach the list's items so reentrant access via the list's heap id sees
+        // an empty list. The detached buffer is always swapped back into the list
+        // when we're done. Done *before* parsing args so the reentrancy guard is
+        // in place if parsing somehow allocates or drops user values that run
+        // arbitrary code.
+        let items = mem::take(&mut list.get_mut(vm.heap).items);
+        defer_drop_mut!(items, vm);
+
+        let sort_result = parse_and_sort("sort() key argument", items, args, vm);
+
+        // Swap our (sorted) buffer back into the list. Whatever the user placed
+        // on the live empty list during the sort ends up in `items`; if
+        // it's not empty, the user mutated the list. The `contains_refs` flag
+        // survives `mem::take`, so it still describes the buffer being swapped
+        // back.
+        mem::swap(list.get_mut(vm.heap).as_vec_mut(), items);
+
+        // Surface any sort error first; otherwise the modification error (if any).
+        sort_result?;
+        if items.is_empty() {
+            Ok(Value::None)
+        } else {
+            Err(SimpleException::new_msg(ExcType::ValueError, "list modified during sort").into())
+        }
+    }
 }
 
 #[cfg(test)]

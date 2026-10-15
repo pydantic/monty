@@ -13,7 +13,7 @@ use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
 use smallvec::smallvec;
 
-use super::builtin_attr::{AttrDef, builtin_attrs};
+use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -350,7 +350,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(re_match_lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(ReMatchImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -387,61 +387,6 @@ impl HeapItem for ReMatch {
             self.subject.dec_ref_forget();
         }
     }
-}
-
-/// Handles `m.group(...)` calls, supporting zero, one, or multiple arguments.
-///
-/// - `m.group()` → equivalent to `m.group(0)`, returns full match string
-/// - `m.group(n)` → returns the nth group (integer or named string)
-/// - `m.group(n1, n2, ...)` → returns a tuple of groups
-fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    match args {
-        ArgValues::Empty => m.get(vm.heap).get_group(0, vm.heap),
-        ArgValues::One(v) => {
-            let result = resolve_group_arg(m.get(vm.heap), &v, vm);
-            v.drop_with(vm);
-            result
-        }
-        other => {
-            let pos = other.into_pos_only("re.Match.group", vm.heap)?;
-            defer_drop_mut!(pos, vm);
-            let mut elements_guard = DropGuard::new(smallvec::smallvec![], vm);
-            let (elements, vm) = elements_guard.as_parts_mut();
-            for val in pos.as_slice() {
-                elements.push(resolve_group_arg(m.get(vm.heap), val, vm)?);
-            }
-            let (elements, vm) = elements_guard.into_parts();
-            Ok(allocate_tuple(elements, vm.heap))
-        }
-    }
-}
-
-fn match_groups<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    args.check_zero_args("re.Match.groups", vm.heap)?;
-    Ok(m.get(vm.heap).get_groups(vm.heap))
-}
-
-fn match_groupdict<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
-    let default = default.unwrap_or(Value::None);
-    let result = m.get_groupdict(&default, vm)?;
-    default.drop_with(vm);
-    Ok(result)
-}
-
-fn match_start<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
-    m.get(vm.heap).get_start(n, vm)
-}
-
-fn match_end<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
-    m.get(vm.heap).get_end(n, vm)
-}
-
-fn match_span<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
-    m.get(vm.heap).get_span(n, vm)
 }
 
 /// Resolves a single group argument — integer, bool, or string (named group).
@@ -521,15 +466,70 @@ struct GroupdictArgs {
     default: Option<Value>,
 }
 
-builtin_attrs! {
-    for ReMatch: mut heap(ReMatch);
-    pub(crate) const RE_MATCH_ATTRS: &[(StaticStrings, AttrDef)] = &[
-        Group => method(call_group),
-        Groups => method(match_groups),
-        Groupdict => method(match_groupdict),
-        Start => method(match_start),
-        End => method(match_end),
-        Span => method(match_span),
-    ];
-    pub(crate) const fn re_match_lookup_attr;
+pub(crate) struct ReMatchImpl;
+
+#[monty_macros::pyattrs]
+impl PyAttrs for ReMatchImpl {
+    type Receiver = MutHeap<ReMatch>;
+
+    /// Handles `m.group(...)` calls, supporting zero, one, or multiple arguments.
+    ///
+    /// - `m.group()` → equivalent to `m.group(0)`, returns full match string
+    /// - `m.group(n)` → returns the nth group (integer or named string)
+    /// - `m.group(n1, n2, ...)` → returns a tuple of groups
+    #[pymethod]
+    fn group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        match args {
+            ArgValues::Empty => m.get(vm.heap).get_group(0, vm.heap),
+            ArgValues::One(v) => {
+                let result = resolve_group_arg(m.get(vm.heap), &v, vm);
+                v.drop_with(vm);
+                result
+            }
+            other => {
+                let pos = other.into_pos_only("re.Match.group", vm.heap)?;
+                defer_drop_mut!(pos, vm);
+                let mut elements_guard = DropGuard::new(smallvec::smallvec![], vm);
+                let (elements, vm) = elements_guard.as_parts_mut();
+                for val in pos.as_slice() {
+                    elements.push(resolve_group_arg(m.get(vm.heap), val, vm)?);
+                }
+                let (elements, vm) = elements_guard.into_parts();
+                Ok(allocate_tuple(elements, vm.heap))
+            }
+        }
+    }
+
+    #[pymethod]
+    fn groups<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("re.Match.groups", vm.heap)?;
+        Ok(m.get(vm.heap).get_groups(vm.heap))
+    }
+
+    #[pymethod]
+    fn groupdict<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
+        let default = default.unwrap_or(Value::None);
+        let result = m.get_groupdict(&default, vm)?;
+        default.drop_with(vm);
+        Ok(result)
+    }
+
+    #[pymethod]
+    fn start<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
+        m.get(vm.heap).get_start(n, vm)
+    }
+
+    #[pymethod]
+    fn end<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
+        m.get(vm.heap).get_end(n, vm)
+    }
+
+    #[pymethod]
+    fn span<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
+        m.get(vm.heap).get_span(n, vm)
+    }
 }

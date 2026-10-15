@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    builtin_attr::{AttrDef, builtin_attrs},
+    builtin_attr::{self, AttrDef, PyAttrs},
     iter::collect_owned_iterable,
 };
 use crate::{
@@ -37,7 +37,6 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::check_repeat_size,
     types::{
@@ -472,7 +471,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(tuple_lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(TupleImpl::lookup_attr) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)));
         };
@@ -525,66 +524,6 @@ impl HeapItem for Tuple {
             }
         }
     }
-}
-
-/// Implements Python's `tuple.index(value[, start[, end]])` method.
-///
-/// Returns the index of the first occurrence of value.
-/// Raises ValueError if the value is not found.
-fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
-    defer_drop!(pos_args, vm);
-
-    let len = tuple.get(vm.heap).as_slice().len();
-    let (value, start, end) = match pos_args.as_slice() {
-        [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
-        [value] => (value, 0, len),
-        [value, start_arg] => {
-            let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-            (value, start, len)
-        }
-        [value, start_arg, end_arg] => {
-            let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-            let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
-            (value, start, end)
-        }
-        other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
-    };
-
-    let iter = tuple.iter(vm)?;
-    defer_drop_mut!(iter, vm);
-    while let Some((idx, item)) = iter.next_with_index(vm)? {
-        if idx >= end {
-            // No further matches possible inside [start, end).
-            break;
-        }
-        if idx >= start && value.py_eq(item, vm)? {
-            let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
-            return Ok(Value::Int(idx_i64));
-        }
-    }
-
-    Err(ExcType::value_error_not_in_tuple())
-}
-
-/// Implements Python's `tuple.count(value)` method.
-///
-/// Returns the number of occurrences of value in the tuple.
-fn tuple_count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = args.get_one_arg("tuple.count", vm.heap)?;
-    defer_drop!(value, vm);
-
-    let mut count = 0usize;
-    let iter = tuple.iter(vm)?;
-    defer_drop_mut!(iter, vm);
-    while let Some(item) = iter.next(vm)? {
-        if value.py_eq(item, vm)? {
-            count += 1;
-        }
-    }
-
-    let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
-    Ok(Value::Int(count_i64))
 }
 
 /// Iterator over tuple and named-tuple storage.
@@ -723,11 +662,71 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
     }
 }
 
-builtin_attrs! {
-    for Tuple: heap(Tuple);
-    pub(crate) const TUPLE_ATTRS: &[(StaticStrings, AttrDef)] = &[
-        Index => method(tuple_index),
-        Count => method(tuple_count),
-    ];
-    pub(crate) const fn tuple_lookup_attr;
+pub(crate) struct TupleImpl;
+
+#[monty_macros::pyattrs]
+impl PyAttrs for TupleImpl {
+    type Receiver = builtin_attr::Heap<Tuple>;
+
+    /// Implements Python's `tuple.index(value[, start[, end]])` method.
+    ///
+    /// Returns the index of the first occurrence of value.
+    /// Raises ValueError if the value is not found.
+    #[pymethod]
+    fn index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
+        defer_drop!(pos_args, vm);
+
+        let len = tuple.get(vm.heap).as_slice().len();
+        let (value, start, end) = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
+            [value] => (value, 0, len),
+            [value, start_arg] => {
+                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
+                (value, start, len)
+            }
+            [value, start_arg, end_arg] => {
+                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
+                let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
+                (value, start, end)
+            }
+            other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
+        };
+
+        let iter = tuple.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((idx, item)) = iter.next_with_index(vm)? {
+            if idx >= end {
+                // No further matches possible inside [start, end).
+                break;
+            }
+            if idx >= start && value.py_eq(item, vm)? {
+                let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
+                return Ok(Value::Int(idx_i64));
+            }
+        }
+
+        Err(ExcType::value_error_not_in_tuple())
+    }
+
+    /// Implements Python's `tuple.count(value)` method.
+    ///
+    /// Returns the number of occurrences of value in the tuple.
+    #[pymethod]
+    fn count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let value = args.get_one_arg("tuple.count", vm.heap)?;
+        defer_drop!(value, vm);
+
+        let mut count = 0usize;
+        let iter = tuple.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(item) = iter.next(vm)? {
+            if value.py_eq(item, vm)? {
+                count += 1;
+            }
+        }
+
+        let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
+        Ok(Value::Int(count_i64))
+    }
 }
