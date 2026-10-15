@@ -538,7 +538,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(TimeDeltaImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyTimeDeltaImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -555,10 +555,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 }
 
-pub(crate) struct TimeDeltaImpl;
+pub(crate) struct PyTimeDeltaImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for TimeDeltaImpl {
+impl PyAttrs for PyTimeDeltaImpl {
     type Receiver = MutHeap<TimeDelta>;
 
     #[pymethod]
