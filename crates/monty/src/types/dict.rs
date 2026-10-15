@@ -12,9 +12,9 @@ use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, a
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    expressions::CmpOperator,
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadOutput,
@@ -23,7 +23,7 @@ use crate::{
     modules::{
         collections::{
             counter::{
-                CounterCmp, CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
+                CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
                 counter_most_common, counter_order, counter_total, counter_unary_op, counter_update_method,
             },
             defaultdict::defaultdict_missing,
@@ -504,34 +504,18 @@ impl<'h> HeapRead<'h, Dict> {
     /// to [`eq_dict`](Self::eq_dict), where a zero count *is* a real entry — so
     /// `Counter(a=1, b=0) == {'a': 1}` stays `False`.
     pub(crate) fn eq_counter(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
-        // Every count in `self` must match the other side's, missing reading as 0.
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((key, value)) = iter.next(vm)? {
-            let other_value = other.dict_get(key, vm)?;
-            let eq = match &other_value {
-                Some(other_value) => value.py_eq(other_value, vm),
-                None => value.py_eq(&Value::Int(0), vm),
-            };
-            if let Some(other_value) = other_value {
-                other_value.drop_with(vm);
-            }
-            if !eq? {
-                return Ok(false);
-            }
-        }
-
-        // Keys only in `other` were not visited above, and must themselves be 0.
-        let other_iter = other.iter(vm)?;
-        defer_drop_mut!(other_iter, vm);
-        while let Some((key, value)) = other_iter.next(vm)? {
-            match self.dict_get(key, vm)? {
-                // Already compared in the first pass.
-                Some(existing) => existing.drop_with(vm),
-                None => {
-                    if !value.py_eq(&Value::Int(0), vm)? {
-                        return Ok(false);
-                    }
+        // Counter's Python implementation uses direct ==, including duplicate
+        // keys across the two passes; unlike dict equality it has no identity shortcut.
+        for keys in [self, other] {
+            let iter = keys.iter(vm)?;
+            defer_drop_mut!(iter, vm);
+            while let Some((key, _)) = iter.next(vm)? {
+                let left = self.dict_get(key, vm)?.unwrap_or(Value::Int(0));
+                defer_drop!(left, vm);
+                let right = other.dict_get(key, vm)?.unwrap_or(Value::Int(0));
+                defer_drop!(right, vm);
+                if !left.py_eq_operator(right, vm)? {
+                    return Ok(false);
                 }
             }
         }
@@ -1296,26 +1280,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         Ok(!self.get(vm.heap).is_empty())
     }
 
-    /// Two Counters compare as multisets; every other pairing defers to `py_cmp`,
-    /// which has no dict ordering and so raises `TypeError` — CPython's
-    /// `Counter.__lt__` likewise returns `NotImplemented` for a non-Counter,
-    /// which is why `Counter(a=1) < {'a': 2}` never becomes a dict comparison.
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let cmp = match op {
-            CmpOperator::Lt => CounterCmp::Lt,
-            CmpOperator::LtE => CounterCmp::Le,
-            CmpOperator::Gt => CounterCmp::Gt,
-            CmpOperator::GtE => CounterCmp::Ge,
-            // Only the four ordering operators reach `py_cmp_op`.
-            _ => return Ok(None),
-        };
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.py_eq_impl(other, vm)?));
+        }
         let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
-            return Ok(None);
+            return Ok(Value::NotImplemented);
         };
         if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
-            Ok(Some(counter_compare(self, &other, cmp, vm)?))
+            Ok(Value::Bool(counter_compare(self, &other, op, vm)?))
         } else {
-            Ok(None)
+            Ok(Value::NotImplemented)
         }
     }
 

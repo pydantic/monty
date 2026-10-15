@@ -900,7 +900,8 @@ pub enum Operator {
     Or,
 }
 
-/// Defined separately since these operators always return a bool.
+/// Comparison, identity and membership operators. Rich comparisons may return
+/// arbitrary Python values; identity and membership always return a bool.
 ///
 /// The strum `serialize` attribute on each variant is the source-level symbol,
 /// and drives both `Display` and [`as_str`](Self::as_str).

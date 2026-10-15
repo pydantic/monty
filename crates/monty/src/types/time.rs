@@ -24,13 +24,14 @@ use monty_types::ResourceTracker;
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
+        LazyHeapSet, PyTrait, TimeZone, Type,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
@@ -135,7 +136,7 @@ impl Time {
     ///
     /// The offset is passed in rather than read here because it lives on the
     /// referenced `timezone`; this is why `Time` has no `PartialEq`/`Hash` of its
-    /// own, and `py_eq_impl`, `py_hash` and `py_cmp` share this instead.
+    /// own, and equality, hashing and rich comparison share this instead.
     fn adjusted_micros(&self, offset_seconds: Option<i32>) -> i64 {
         let local = i64::from(self.hour) * 3_600_000_000
             + i64::from(self.minute) * 60_000_000
@@ -502,17 +503,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        let (a, b) = (self.get(vm.heap), other.get(vm.heap));
-        if a.tzinfo.is_some() != b.tzinfo.is_some() {
-            // CPython raises `TypeError` rather than ordering aware against naive.
-            return Ok(CmpOrder::Incomparable);
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.py_eq_impl(other, vm)?));
         }
-        let (a_micros, b_micros) = (
-            a.adjusted_micros(attached_offset(a, vm.heap)),
-            b.adjusted_micros(attached_offset(b, vm.heap)),
-        );
-        Ok(CmpOrder::Ordered(a_micros.cmp(&b_micros)))
+        let Some(HeapReadOutput::Time(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
+        let (a, b) = (self.get(vm.heap), other.get(vm.heap));
+        if a.tzinfo.is_some() == b.tzinfo.is_some() {
+            let a_micros = a.adjusted_micros(attached_offset(a, vm.heap));
+            let b_micros = b.adjusted_micros(attached_offset(b, vm.heap));
+            Ok(op.apply(Some(a_micros.cmp(&b_micros))))
+        } else {
+            Err(ExcType::type_error("can't compare offset-naive and offset-aware times"))
+        }
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {

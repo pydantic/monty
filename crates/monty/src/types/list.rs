@@ -1,15 +1,16 @@
-use std::{cmp::Ordering, fmt::Write, mem};
+use std::{fmt::Write, mem};
 
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use super::{
-    CmpOrder, PyTrait,
+    PyTrait,
     iter::{collect_owned_iterable, collect_python_iterator},
 };
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
@@ -328,51 +329,27 @@ impl<'h> HeapRead<'h, List> {
             .map(|item| item.clone_with_heap(vm.heap))
     }
 
-    /// Lexicographic comparison for lists — the ordering behind `<`/`<=`/`>`/`>=`.
-    ///
-    /// Element-by-element left-to-right; the first non-equal pair decides. If all
-    /// compared elements are equal, the shorter list is less (`[1] < [1, 2]`).
-    /// The first differing pair's [`CmpOrder`] propagates: a `NaN` element makes
-    /// the list [`CmpOrder::Unordered`] (`[nan] < [1]` is `False`), a
-    /// type-mismatched element makes it [`CmpOrder::Incomparable`] (`[1] < ['a']`
-    /// raises `TypeError`). Mirrors [`Tuple::py_cmp`](super::Tuple) — the
-    /// `ListIter` holds the recursion token that bounds nested-container depth.
-    pub(crate) fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        let a_len = self.get(vm.heap).items.len();
-        let b_len = other.get(vm.heap).items.len();
-        let min_len = a_len.min(b_len);
+    /// Lexicographic ordering: skip identical or equal elements, then preserve
+    /// the first unequal pair's rich result. The iterator bounds recursion.
+    fn compare_items(&self, other: &Self, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some((i, av)) = iter.next_with_index(vm)? {
-            if i >= min_len {
-                break;
-            }
             // `other` may have been shrunk past `i` by a user comparison on a
             // previous iteration; CPython stops at whichever list ran out.
             let Some(bv) = other.try_clone_item(i, vm) else {
                 break;
             };
             defer_drop!(bv, vm);
-            match av.py_cmp(bv, vm)? {
-                CmpOrder::Ordered(Ordering::Equal) => {}
-                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
-                // A `NaN` element is never `==`-equal, so it is the first
-                // differing pair and the list is unordered (yields `False`).
-                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
-                // CPython checks `__eq__` first and only orders non-equal pairs, so
-                // equal-but-unorderable elements (e.g. `None == None`) don't block.
-                CmpOrder::Incomparable => {
-                    if !av.py_eq(bv, vm)? {
-                        return Ok(CmpOrder::Incomparable);
-                    }
-                }
+            if !av.py_eq(bv, vm)? {
+                return av.py_richcompare(bv, op, vm);
             }
         }
         // Re-read: a user comparison may have resized either list, and CPython
         // settles an all-equal prefix on the lengths as they are now.
         let a_len = self.get(vm.heap).items.len();
         let b_len = other.get(vm.heap).items.len();
-        Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
+        Ok(op.apply(Some(a_len.cmp(&b_len))))
     }
 
     /// Clones all items from this list with proper refcount management.
@@ -422,7 +399,7 @@ impl<'h> HeapRead<'h, List> {
 /// [`defer_drop_mut!`] so the token (and any in-flight item) is released on
 /// every exit path (success, early `return`, error via `?`). The token is
 /// intentionally non-optional — every iteration of a Python container can
-/// transitively trigger `py_eq` / `py_hash` / `py_repr` / `py_cmp` /
+/// transitively trigger `py_eq` / `py_hash` / `py_repr` / `py_richcompare` /
 /// dict-or-set membership, all of which recurse on cyclic structures.
 ///
 /// **Mutation safety.** The list length is re-read on every call to `next`,
@@ -521,8 +498,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Some(self.get(vm.heap).items.len())
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        HeapRead::py_cmp(self, other, vm)
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            Ok(op.equality_result(self.py_eq_impl(other, vm)?))
+        } else if let Some(HeapReadOutput::List(other)) = other.read_heap(vm) {
+            self.compare_items(&other, op, vm)
+        } else {
+            Ok(Value::NotImplemented)
+        }
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {

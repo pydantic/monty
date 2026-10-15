@@ -20,13 +20,14 @@ use monty_types::{
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
+        LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         time::{self, Time, TimeSpec},
@@ -1229,19 +1230,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.py_eq_impl(other, vm)?));
+        }
+        let Some(HeapReadOutput::DateTime(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         if is_aware(a) != is_aware(b) {
-            // Comparing offset-naive and offset-aware datetimes has no ordering
-            // in CPython (it raises `TypeError`), so report it as incomparable.
-            return Ok(CmpOrder::Incomparable);
+            Err(ExcType::type_error(
+                "can't compare offset-naive and offset-aware datetimes",
+            ))
+        } else if is_aware(a) {
+            Ok(op.apply(Some(utc_micros(a).cmp(&utc_micros(b)))))
+        } else {
+            Ok(op.apply(Some(local_micros(a).cmp(&local_micros(b)))))
         }
-        // Both sides compare on an integer microsecond count — always ordered.
-        if is_aware(a) {
-            return Ok(CmpOrder::Ordered(utc_micros(a).cmp(&utc_micros(b))));
-        }
-        Ok(CmpOrder::Ordered(local_micros(a).cmp(&local_micros(b))))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {

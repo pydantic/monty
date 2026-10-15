@@ -1,7 +1,7 @@
 # Classes
 
 Sandboxed Python code in Monty can define simple classes. A `class`
-statement with instance methods, `__init__`, `__eq__`, `__repr__`/`__str__`,
+statement with instance methods, `__init__`, rich comparisons, `__repr__`/`__str__`,
 and class variables works. The class body has a real scope (like CPython's
 class-body code object), so class variables may be arbitrary expressions
 and may reference earlier class variables:
@@ -36,7 +36,7 @@ shapes), instance and class attribute get/set (including `setattr(Foo, ...)`
 and function-attributes-become-methods), bound methods, class variables
 (arbitrary expressions, evaluated in a real suspendable class-body scope),
 **class decorators** (`@deco class Foo`),
-`__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
+`__repr__`/`__str__`/`__enter__`/`__exit__`/`__hash__` and all six rich comparison dunders,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (ordered; values stringized and provisional, see
 [typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
@@ -82,11 +82,6 @@ order and error wording, but with these divergences:
 - **Bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
-- **Ordering comparisons on instances raise, but a user `__lt__`/`__gt__`/… is
-    not dispatched.** `a < b` on instances of a class with no comparison dunders
-    raises `TypeError: '<' not supported between instances of 'Foo' and 'Foo'`
-    (matching CPython). A class that *defines* `__lt__` etc. still raises: those
-    dunders are not dispatched (see the not-dispatched dunder list below).
 - **`__repr__`/`__str__` cannot suspend**: they are run to completion
     synchronously, so a `__repr__`/`__str__` that calls an external/OS function
     raises rather than yielding to the host. `__init__` and regular methods
@@ -98,13 +93,10 @@ order and error wording, but with these divergences:
     runs to completion synchronously, so it cannot yield to the host, and an
     external-function `__init__` raises `NotImplementedError` rather than
     suspending.
-- **`__eq__`/`__hash__`/`__index__` cannot suspend**: like `__repr__`/`__str__`
-    they run to completion synchronously, so one that calls an external/OS
-    function raises rather than yielding to the host. An exception raised by
-    `__eq__` terminates the run instead of being catchable by a `try` around the
-    comparison.
-- **Ordering dunders are still not dispatched**; see the entry above.
-    Instances are always truthy (no `__bool__`/`__len__` dispatch).
+- **Rich comparison dunders, `__hash__` and `__index__` cannot suspend**: like `__repr__`/`__str__`,
+    they run synchronously, so calling an external/OS function raises rather than yielding to the host.
+- **Instances are always truthy**: `__bool__` and `__len__` are not dispatched,
+    including when truth-testing an instance returned by a comparison dunder.
 - **Bound methods compare and hash by identity**: each `obj.method` access
     creates a fresh object, so `obj.method == obj.method` is `False` and two
     accesses hash differently. CPython compares/hashes bound methods by
@@ -373,11 +365,9 @@ every construction request. Divergences:
     Every decorator in a stack reports that same location; only the callee frame
     identifies which one raised.
 - Dunder protocols other than `__init__`, `__repr__`, `__str__`,
-    `__enter__`, `__exit__`, `__iter__`, `__next__`, `__contains__`, `__eq__`,
-    `__hash__`, and `__index__`: `__new__`, `__call__`, `__getitem__`,
-    `__setitem__`, `__add__`, `__ne__`, `__bool__`, etc. are not dispatched for
-    user-defined instances. `__ne__` is always the negation of `__eq__`, as
-    CPython derives it by default, so a custom `__ne__` is ignored.
+    `__enter__`, `__exit__`, `__iter__`, `__next__`, `__contains__`, `__eq__`, `__ne__`,
+    `__lt__`, `__le__`, `__gt__`, `__ge__`, `__hash__`, and `__index__`: `__new__`, `__call__`,
+    `__getitem__`, `__setitem__`, `__add__`, `__bool__`, etc. are not dispatched for user-defined instances.
 - **`__index__` is dispatched for indexing, but not for arithmetic
     operators.** A class defining it works as a subscript *read* (`seq[obj]`), as
     a slice bound (`seq[obj:]`, `slice(obj)`), and as an integer argument

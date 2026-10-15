@@ -17,13 +17,12 @@ use smallvec::smallvec;
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
+    comparison::RichCompareOp,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{
-        CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, long_int, str::allocate_string, tuple::allocate_tuple,
-    },
+    types::{LazyHeapSet, PyTrait, Type, date, datetime, long_int, str::allocate_string, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -379,10 +378,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(
-            total_microseconds(self.get(vm.heap)).cmp(&total_microseconds(other.get(vm.heap))),
-        ))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) {
+            Ok(op.apply(Some(
+                total_microseconds(self.get(vm.heap)).cmp(&total_microseconds(other.get(vm.heap))),
+            )))
+        } else {
+            Ok(Value::NotImplemented)
+        }
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

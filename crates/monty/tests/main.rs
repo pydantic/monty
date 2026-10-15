@@ -1,5 +1,6 @@
 use std::mem;
 
+use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_types::{
     CompileOptions, ExcType, MontyObject, MontyUuid,
@@ -326,6 +327,38 @@ fn not_implemented_in_list_sort_key_names_sort() {
         err.to_string(),
         "Traceback (most recent call last):\n  File \"test.py\", line 1, in <lambda>\n    [1, 2].sort(key=lambda x: ext_fn())\n                              ~~~~~~~~\nNotImplementedError: sort() key argument: external function 'ext_fn' is not yet supported in this context"
     );
+}
+
+/// Comparison dunders reject suspension synchronously and leave outer exception handlers usable.
+#[test]
+fn rich_comparison_external_calls_cannot_suspend() {
+    let mut messages = Vec::new();
+    for (method, op) in [
+        ("__eq__", "=="),
+        ("__ne__", "!="),
+        ("__lt__", "<"),
+        ("__le__", "<="),
+        ("__gt__", ">"),
+        ("__ge__", ">="),
+    ] {
+        let code = format!(
+            "class Compare:\n    def {method}(self, other):\n        return ext_fn()\n\
+             try:\n    Compare() {op} 0\nexcept NotImplementedError as exc:\n    message = str(exc)\nmessage"
+        );
+        let mut run = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
+        let result = run
+            .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
+            .unwrap();
+        messages.push(result.as_ref().as_str().unwrap().to_owned());
+    }
+    assert_snapshot!(messages.join("\n"), @"
+    __eq__: external function 'ext_fn' is not yet supported in this context
+    __ne__: external function 'ext_fn' is not yet supported in this context
+    __lt__: external function 'ext_fn' is not yet supported in this context
+    __le__: external function 'ext_fn' is not yet supported in this context
+    __gt__: external function 'ext_fn' is not yet supported in this context
+    __ge__: external function 'ext_fn' is not yet supported in this context
+    ");
 }
 
 /// The `itertools` adaptors that apply a callable drive it through

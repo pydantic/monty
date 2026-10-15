@@ -1,30 +1,26 @@
-//! Shared sorting utilities for `sorted()` and `list.sort()`.
+//! Stable sorting through Python's fallible `<` protocol.
 //!
-//! Both `sorted()` and `list.sort()` use index-based sorting: they build
-//! a vector of indices `[0, 1, 2, ...]`, sort the indices by comparing the
-//! corresponding items (or key values), then rearrange items according to
-//! the sorted indices.
-//!
-//! This module provides [`sort_indices`] for the comparison step and
-//! [`apply_permutation`] for the in-place rearrangement step.
+//! Comparisons only reorder indices; values stay owned by the caller until a
+//! successful sort applies the permutation. No total-order contract is imposed
+//! on user comparisons, which may be inconsistent, mutate objects, or raise.
 
-use std::cmp::Ordering;
+use std::mem::size_of_val;
+
+use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    types::{CmpOrder, PyTrait},
+    exception_private::RunResult,
     value::Value,
 };
 
-/// Argument shape for `list.sort(*, key=None, reverse=False)` and, by
-/// extension, the kwargs accepted by the `sorted()` builtin. Both fields
-/// are keyword-only (CPython rejects positional `key`/`reverse`). `key` is
-/// held as a raw `Option<Value>` so callers can normalise `key=None` to
-/// "no key"; `reverse` uses [`LaxBool`] to match CPython's `bool()`-style
-/// truth test (so `reverse=[]` is `False`, not a `TypeError`).
+/// Maximum sort length using inline indices and no merge scratch buffer.
+const INSERTION_SORT_THRESHOLD: usize = 8;
+
+/// Shared `sorted`/`list.sort` keywords. The `sort` name matches CPython's
+/// argument errors, and `LaxBool` truth-tests rather than type-checks `reverse`.
 #[derive(FromArgs)]
 #[from_args(name = "sort")]
 struct ListSortArgs {
@@ -34,13 +30,8 @@ struct ListSortArgs {
     reverse: LaxBool,
 }
 
-/// Parses `key`/`reverse` kwargs and sorts `items` in place. The single
-/// entry point for sorting used by both `list.sort` and the `sorted()`
-/// builtin — sharing here is what makes unknown-kwarg errors uniformly
-/// read `sort() got an unexpected keyword argument 'X'` (matching
-/// CPython, whose `sorted` delegates to `list.sort` internally).
-///
-/// `key_context` names the calling builtin in rejected-suspension errors.
+/// Parses sorting keywords and sorts detached items in place.
+/// `key_context` names the caller in rejected-suspension errors.
 pub fn parse_and_sort(
     key_context: &'static str,
     items: &mut [Value],
@@ -49,18 +40,15 @@ pub fn parse_and_sort(
 ) -> RunResult<()> {
     let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
     let key_fn = match key {
-        Some(v) if matches!(v, Value::None) => {
-            v.drop_with(vm);
-            None
-        }
+        Some(Value::None) => None,
         other => other,
     };
     defer_drop!(key_fn, vm);
     sort_values(key_context, items, key_fn.as_ref(), reverse.bool(), vm)
 }
 
-/// Sorts a vector of values, with optional key function.
-/// `key_context` names the calling builtin — see [`parse_and_sort`].
+/// Sorts values stably, evaluating each optional key once in input order.
+/// Comparisons and key calls may fail without losing any owned values.
 pub fn sort_values(
     key_context: &'static str,
     values: &mut [Value],
@@ -68,69 +56,102 @@ pub fn sort_values(
     reverse: bool,
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
+    if values.len() > INSERTION_SORT_THRESHOLD {
+        vm.heap
+            .tracker
+            .check_allocation(values.len().saturating_mul(size_of::<usize>()))?;
+    }
+    let mut indices = SmallVec::<[usize; INSERTION_SORT_THRESHOLD]>::with_capacity(values.len());
+    indices.extend(0..values.len());
     if let Some(f) = key_fn {
-        // Sort by key function: compute all the keys, sort an index buffer, then
-        // rearrange the original values in-place according to the sorted indices.
-        let mut indices = (0..values.len()).collect::<Vec<_>>();
         let keys: Vec<Value> = Vec::with_capacity(values.len());
         defer_drop_mut!(keys, vm);
-
-        // Each key call re-enters `run()` with a fresh dispatch countdown, so a
-        // short key reaches no checkpoint: this is the pass's only clock poll.
         for (i, item) in values.iter().enumerate() {
+            // Re-entry restarts the VM countdown, so short keys need this poll.
             vm.heap.tracker.check_time_every(i)?;
             let item = item.clone_with_heap(vm);
             keys.push(vm.evaluate_function(key_context, f, ArgValues::One(item))?);
         }
-
-        // 2. Sort indices by comparing key values (or values themselves if no key)
         sort_indices(&mut indices, keys, reverse, vm)?;
-
-        // 3. Rearrange values in-place in the detached buffer.
-        apply_permutation(values, &mut indices);
-
-        Ok(())
     } else {
-        // With no key function can sort directly on the original array
-        let mut sort_result: RunResult<()> = Ok(());
-        let mut n = 0usize;
-        values.sort_by(|a, b| {
-            n += 1;
-            compare_values(n, a, b, reverse, &mut sort_result, vm)
-        });
-        sort_result
+        sort_indices(&mut indices, values, reverse, vm)?;
     }
+    apply_permutation(values, &mut indices);
+    Ok(())
 }
 
-/// Sorts a vector of indices by comparing items at those positions.
-///
-/// Compares `values[a]` vs `values[b]` using `py_cmp`, optionally reversing
-/// the ordering. If any comparison fails (type error or runtime error), the
-/// sort finishes early and the error is returned.
-///
-/// The `values` slice is typically either the items themselves (no key function)
-/// or the pre-computed key values.
-pub fn sort_indices(indices: &mut [usize], values: &[Value], reverse: bool, vm: &mut VM<'_>) -> Result<(), RunError> {
-    let mut sort_result: RunResult<()> = Ok(());
-    let mut n = 0usize;
-    indices.sort_by(|&a, &b| {
-        n += 1;
-        compare_values(n, &values[a], &values[b], reverse, &mut sort_result, vm)
-    });
-    sort_result
+/// Sorts indices using only truth-tested `<`, stopping on the first exception.
+/// Reversing input and output keeps descending ties stable without calling `>`.
+pub fn sort_indices(indices: &mut [usize], values: &[Value], reverse: bool, vm: &mut VM<'_>) -> RunResult<()> {
+    if indices.len() < 2 {
+        return Ok(());
+    }
+    if reverse {
+        indices.reverse();
+    }
+    if indices.len() <= INSERTION_SORT_THRESHOLD {
+        insertion_sort_indices(indices, values, vm)?;
+    } else {
+        merge_sort_indices(indices, values, vm)?;
+    }
+    if reverse {
+        indices.reverse();
+    }
+    Ok(())
 }
 
-/// Rearranges `items` in-place according to a permutation of indices.
-///
-/// After calling this, `items[i]` will hold the element that was originally at
-/// `items[indices[i]]`. The algorithm chases permutation cycles and swaps
-/// elements into their final positions, using O(1) extra memory beyond the
-/// `indices` slice (which is mutated to track visited positions).
-///
-/// The helper is generic so callers can avoid allocating a second buffer when
-/// reordering either raw `Value`s or compound structures that already own their
-/// contents. Each element is moved at most twice (one swap = two moves), so
-/// the total work is O(n) moves while preserving the target permutation.
+/// Insertion-sorts small index buffers without allocating or moving owned values.
+fn insertion_sort_indices(indices: &mut [usize], values: &[Value], vm: &mut VM<'_>) -> RunResult<()> {
+    for unsorted in 1..indices.len() {
+        let mut current = unsorted;
+        while current > 0 && values[indices[current]].py_lt_operator(&values[indices[current - 1]], vm)? {
+            indices.swap(current, current - 1);
+            current -= 1;
+        }
+    }
+    Ok(())
+}
+
+/// Merge-sorts larger index buffers with periodic time checks during comparisons.
+fn merge_sort_indices(indices: &mut [usize], values: &[Value], vm: &mut VM<'_>) -> RunResult<()> {
+    vm.heap.tracker.check_allocation(size_of_val(indices))?;
+    let mut scratch = indices.to_vec();
+    let mut comparisons = 0;
+    let mut width = 1;
+    while width < indices.len() {
+        for start in (0..indices.len()).step_by(width.saturating_mul(2)) {
+            let mid = (start + width).min(indices.len());
+            let end = mid.saturating_add(width).min(indices.len());
+            let (mut left, mut right) = (start, mid);
+            for slot in &mut scratch[start..end] {
+                let take_right = if left == mid {
+                    true
+                } else if right == end {
+                    false
+                } else {
+                    comparisons += 1;
+                    vm.heap.tracker.check_time_every(comparisons)?;
+                    values[indices[right]].py_lt_operator(&values[indices[left]], vm)?
+                };
+                *slot = if take_right {
+                    let index = indices[right];
+                    right += 1;
+                    index
+                } else {
+                    let index = indices[left];
+                    left += 1;
+                    index
+                };
+            }
+        }
+        indices.copy_from_slice(&scratch);
+        width = width.saturating_mul(2);
+    }
+    Ok(())
+}
+
+/// Applies a permutation in place, mutating the index buffer into the identity.
+/// Swaps preserve ownership even when items carry interpreter references.
 pub fn apply_permutation<T>(items: &mut [T], indices: &mut [usize]) {
     for i in 0..items.len() {
         if indices[i] == i {
@@ -147,39 +168,4 @@ pub fn apply_permutation<T>(items: &mut [T], indices: &mut [usize]) {
             current = target;
         }
     }
-}
-
-/// Helper for the sort functions which compares two values, handling any exceptions and timeouts.
-/// `n` is the caller's running comparison count, keying the amortized time check.
-fn compare_values(
-    n: usize,
-    a: &Value,
-    b: &Value,
-    reverse: bool,
-    sort_result: &mut RunResult<()>,
-    vm: &mut VM<'_>,
-) -> Ordering {
-    if sort_result.is_err() {
-        // short-circuit if we've already encountered an error in a previous comparison
-        return Ordering::Equal;
-    }
-    if let Err(e) = vm.heap.tracker.check_time_every(n) {
-        *sort_result = Err(e.into());
-        return Ordering::Equal;
-    }
-    let err = match a.py_cmp(b, vm) {
-        Ok(CmpOrder::Ordered(ord)) => return if reverse { ord.reverse() } else { ord },
-        // A `NaN` (or `NaN`-carrying container) has no ordering but must not
-        // raise: CPython's `sorted`/`list.sort` leave such elements wherever the
-        // comparisons happen to place them. Treat it as "equal" — no swap.
-        Ok(CmpOrder::Unordered) => return Ordering::Equal,
-        Ok(CmpOrder::Incomparable) => ExcType::type_error(format!(
-            "'<' not supported between instances of '{}' and '{}'",
-            a.py_type_name(vm),
-            b.py_type_name(vm)
-        )),
-        Err(e) => e,
-    };
-    *sort_result = Err(err);
-    Ordering::Equal
 }

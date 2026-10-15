@@ -5,7 +5,7 @@ pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
 
 use super::{
-    Bytes, CmpOrder, PyTrait,
+    Bytes, PyTrait,
     unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
     unicode_type_data::TypeRecord,
 };
@@ -13,6 +13,7 @@ use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
+    comparison::{RichCompareOp, compare_str},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
@@ -315,8 +316,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         Ok(!self.get(vm.heap).0.is_empty())
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(compare_str(self.get(vm.heap).as_str(), other, op, vm))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

@@ -180,38 +180,29 @@ attribute tagging for later discovery all have no equivalent.
 
 ## Ordering comparisons
 
-`<`, `<=`, `>`, `>=` on operands with no defined ordering raise
-`TypeError: '<' not supported between instances of '{a}' and '{b}'`, matching
-CPython (int vs str, `None` vs `None`, user-class instances without comparison
-dunders, etc.). Lists and tuples order lexicographically as in CPython. A `NaN`
-operand is *unordered* rather than incomparable, so `float('nan') < 1` (and
-every operator/direction, including two NaNs) returns `False` without raising,
-also matching CPython, and likewise inside `sorted`/`min`/`max`.
+### Float identity
 
-One message divergence: when a **list or tuple** compares unequal only because
-an *inner element* pair is unorderable (e.g. `(1, 2) < (1, 'a')`), Monty names
-the outer container types (`'tuple' and 'tuple'`) where CPython names the inner
-element pair (`'int' and 'str'`). Both raise `TypeError`; only the message text
-differs.
+Monty identifies floats by their IEEE-754 bits rather than by object identity.
+Separately created floats with identical bits therefore have the same `id()` and compare identical with `is`.
+For NaNs, this also changes container operations that check identity before equality.
 
-One value divergence: whenever CPython compares elements *inside* a container it
-shortcuts equality by **object identity** (`x is x` ⇒ equal) before falling back
-to `==`. Monty has no object identity for immediate floats, so it asks `==`, and
-a `NaN` is never equal to itself. Every container operation built on element
-comparison therefore differs when the *same* `NaN` object appears on both sides:
+With `a = float('nan')` and a separate `b = float('nan')`:
 
-| with `x = float('nan')`      | CPython | Monty        |
-| ---------------------------- | ------- | ------------ |
-| `(x,) == (x,)`, `[x] == [x]` | `True`  | `False`      |
-| `x in [x]`                   | `True`  | `False`      |
-| `[x].count(x)`               | `1`     | `0`          |
-| `[x].index(x)`               | `0`     | `ValueError` |
-| `[1, x] < [1, x, 3]`         | `True`  | `False`      |
+| Expression        | CPython      | Monty  |
+| ----------------- | ------------ | ------ |
+| `a is b`          | `False`      | `True` |
+| `id(a) == id(b)`  | `False`      | `True` |
+| `[a] == [b]`      | `False`      | `True` |
+| `a in [b]`        | `False`      | `True` |
+| `[a].count(b)`    | `0`          | `1`    |
+| `[a].index(b)`    | `ValueError` | `0`    |
+| `[a, 0] < [b, 1]` | `False`      | `True` |
+| `[a] <= [b]`      | `False`      | `True` |
 
-`NaN` is the only practical way to reach this, being the one built-in value
-unequal to itself. *Distinct* `NaN` objects agree on both
-(`[1, float('nan')] < [1, float('nan'), 3]` is `False` either way), as does a
-direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`.
+Lists, tuples, named tuples and deques can skip distinct NaNs as if they were the same object,
+then decide ordering from later elements or sequence lengths.
+This can also affect `sorted`, `min` and `max` when their operands contain NaNs.
+Distinct same-bit NaN keys likewise collapse to one entry in a dict or set.
 
 ## What *does* work
 

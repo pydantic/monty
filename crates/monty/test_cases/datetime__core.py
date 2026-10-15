@@ -101,23 +101,19 @@ assert datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.timezone.utc) == dat
     2024, 1, 1, 13, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=1))
 )
 
-# TODO(datetime): restore once compare/subtract error semantics are finalized without VM-specific branching.
-# try:
-#     aware < naive
-#     assert False, 'aware < naive should raise TypeError'
-# except TypeError as e:
-#     assert str(e) == "can't compare offset-naive and offset-aware datetimes", (
-#         'aware/naive ordering message should match CPython'
-#     )
-#
-# try:
-#     1 > 'x'
-#     assert False, 'int > str should raise TypeError'
-# except TypeError as e:
-#     assert str(e) == "'>' not supported between instances of 'int' and 'str'", (
-#         'ordering TypeError should include the actual operator'
-#     )
-#
+try:
+    aware < naive
+    assert False, 'aware < naive should raise TypeError'
+except TypeError as e:
+    assert str(e) == "can't compare offset-naive and offset-aware datetimes"
+
+try:
+    1 > 'x'
+    assert False, 'int > str should raise TypeError'
+except TypeError as e:
+    assert str(e) == "'>' not supported between instances of 'int' and 'str'"
+
+# TODO(datetime): restore once subtraction errors match CPython.
 # try:
 #     aware - naive
 #     assert False, 'aware - naive should raise TypeError'
@@ -1062,7 +1058,7 @@ assert repr(aware_rep_result) == 'datetime.datetime(2025, 6, 15, 12, 30, tzinfo=
 assert bool(datetime.date(2024, 1, 1))
 assert bool(datetime.date(1, 1, 1))
 
-# === date ordering comparisons (date.rs py_cmp) ===
+# === date ordering comparisons ===
 
 assert datetime.date(2024, 1, 1) < datetime.date(2024, 1, 2)
 assert datetime.date(2024, 1, 2) > datetime.date(2024, 1, 1)
@@ -1257,7 +1253,7 @@ assert str(datetime.timedelta(seconds=1, microseconds=500)) == '0:00:01.000500'
 assert str(datetime.timedelta(microseconds=1)) == '0:00:00.000001'
 assert str(datetime.timedelta(days=1, microseconds=123456)) == '1 day, 0:00:00.123456'
 
-# === timedelta ordering comparisons (timedelta.rs py_cmp) ===
+# === timedelta ordering comparisons ===
 
 assert datetime.timedelta(days=1) < datetime.timedelta(days=2)
 assert datetime.timedelta(days=2) > datetime.timedelta(days=1)
