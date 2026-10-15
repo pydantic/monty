@@ -146,6 +146,76 @@ except TypeError as e:
         'dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given'
     ), f'py-def-overflow-kwonly: {e}'
 
+# `json.load` / `json.dump` bind like `loads` / `dumps` with the file object
+# as an extra positional; unknown keywords name the CPython decoder / encoder
+# constructor that would have rejected them.
+try:
+    json.load()
+    assert False, 'json.load() should raise missing'
+except TypeError as e:
+    assert str(e) == "load() missing 1 required positional argument: 'fp'"
+
+try:
+    json.load(1, 2)
+    assert False, 'json.load(1, 2) should raise overflow'
+except TypeError as e:
+    assert str(e) == 'load() takes 1 positional argument but 2 were given'
+
+try:
+    json.load(1, fp=2)
+    assert False, 'json.load(1, fp=2) should raise multiple-values'
+except TypeError as e:
+    assert str(e) == "load() got multiple values for argument 'fp'"
+
+
+# CPython reads `fp` before `loads` rejects the keyword, so the object needs a `read`.
+class _JsonReader:
+    def read(self):
+        return '1'
+
+
+try:
+    json.load(_JsonReader(), bogus=2)
+    assert False, 'json.load(bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "JSONDecoder.__init__() got an unexpected keyword argument 'bogus'"
+
+try:
+    json.loads('1', bogus=2)
+    assert False, 'json.loads(bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "JSONDecoder.__init__() got an unexpected keyword argument 'bogus'"
+
+try:
+    json.dump()
+    assert False, 'json.dump() should raise missing'
+except TypeError as e:
+    assert str(e) == "dump() missing 2 required positional arguments: 'obj' and 'fp'"
+
+try:
+    json.dump(1)
+    assert False, 'json.dump(1) should raise missing'
+except TypeError as e:
+    assert str(e) == "dump() missing 1 required positional argument: 'fp'"
+
+try:
+    json.dump(1, 2, 3)
+    assert False, 'json.dump(1, 2, 3) should raise overflow'
+except TypeError as e:
+    assert str(e) == 'dump() takes 2 positional arguments but 3 were given'
+
+try:
+    json.dump(1, 2, obj=3)
+    assert False, 'json.dump(1, 2, obj=3) should raise multiple-values'
+except TypeError as e:
+    assert str(e) == "dump() got multiple values for argument 'obj'"
+
+try:
+    json.dump(1, 2, bogus=3)
+    assert False, 'json.dump(bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "JSONEncoder.__init__() got an unexpected keyword argument 'bogus'"
+
 # === Python: missing required positional (PyArg_UnpackKeywords wording derived from `pos_only`) ===
 try:
     'abc'.replace('a')

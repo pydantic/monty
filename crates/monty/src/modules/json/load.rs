@@ -1,21 +1,24 @@
-//! JSON parsing support for `json.loads()`.
+//! JSON parsing support for `json.loads()` and `json.load()`.
 //!
 //! This module owns conversion from JSON bytes into Monty runtime values,
-//! including CPython-compatible `JSONDecodeError` construction.
+//! including CPython-compatible `JSONDecodeError` construction. `load` reads
+//! the file object (see [`FileTarget`]) and parses what it returns.
 
 use std::{borrow::Cow, mem};
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
 
-use super::JsonStringCache;
+use super::{JsonStringCache, fp::FileTarget};
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
-    defer_drop_mut,
+    bytecode::{CallResult, VM},
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, HeapData, HeapReader},
+    heap::{ContainsHeap, DropGuard, HeapData, HeapId, HeapReadOutput, HeapReader},
+    os_dispatch::PostConversionEffect,
     types::{
         Dict, List, LongInt,
+        file::apply_buffer_store,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
         str::allocate_string,
     },
@@ -75,11 +78,60 @@ pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// is positional-or-keyword (`json.loads(s='1')` works) and signature errors
 /// use `style = def` wording. The additional CPython kwargs (`cls`, `object_hook`,
 /// …) are intentionally not implemented; leaving them off this struct means
-/// the macro emits the standard "unexpected keyword" error for them.
+/// the macro emits the "unexpected keyword" error for them, naming
+/// `JSONDecoder.__init__` as CPython does for a keyword the decoder rejects.
 #[derive(FromArgs)]
-#[from_args(name = "loads", style = def)]
+#[from_args(name = "loads", style = def, kwarg_error_name = "JSONDecoder.__init__")]
 struct JsonLoadsArgs {
     s: Value,
+}
+
+/// Implements `json.load(fp)`: `fp.read()`, then [`call_loads`] on the result.
+///
+/// An unread `open()` handle suspends for the host's full-file read with
+/// [`PostConversionEffect::JsonLoad`] armed, so the parse runs on resume; a
+/// loaded one parses the rest of its buffer at once. Any other object has
+/// its `read` attribute called synchronously.
+pub(super) fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let JsonLoadArgs { fp } = JsonLoadArgs::from_args(args, vm)?;
+    defer_drop!(fp, vm);
+    match FileTarget::reader(fp, vm)? {
+        FileTarget::OpenFile(file_id) => {
+            let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+                unreachable!("FileTarget::OpenFile points to an OpenFile")
+            };
+            match file.read_all_with(vm, |file_id| PostConversionEffect::JsonLoad { file_id })? {
+                CallResult::Value(text) => parse_owned(text, vm).map(CallResult::Value),
+                suspended => Ok(suspended),
+            }
+        }
+        FileTarget::Method(read) => {
+            defer_drop!(read, vm);
+            let text = vm.evaluate_function("json.load()", read, ArgValues::Empty)?;
+            parse_owned(text, vm).map(CallResult::Value)
+        }
+    }
+}
+
+/// `JsonLoad` resume: installs the host's content as the file buffer, exactly
+/// as `fp.read()` would, then parses it.
+pub(crate) fn apply_json_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    let text = apply_buffer_store(file_id, result, vm)?;
+    parse_owned(text, vm)
+}
+
+/// Parses what `fp.read()` returned, releasing it afterwards.
+fn parse_owned(text: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    defer_drop!(text, vm);
+    parse_json_input(text, vm)
+}
+
+/// Argument shape for `json.load(fp)`, a pure-Python `def` like [`JsonLoadsArgs`]
+/// with the same keyword policy.
+#[derive(FromArgs)]
+#[from_args(name = "load", style = def, kwarg_error_name = "JSONDecoder.__init__")]
+struct JsonLoadArgs {
+    fp: Value,
 }
 
 /// Parses a `json.loads()` input value and converts it into a Monty value.

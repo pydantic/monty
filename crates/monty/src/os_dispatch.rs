@@ -87,6 +87,8 @@ impl PendingEffect {
             Self::Pre(effect) => Some(effect.operation_name()),
             Self::Scan(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
+            // The parse answers the `json.load` call; a future would hand Python the text.
+            Self::Post(PostConversionEffect::JsonLoad { .. }) => Some("json.load"),
             Self::Post(PostConversionEffect::SeedRandom { .. }) => Some("os.urandom"),
             // `time.sleep` blocks by definition, so a future would leave the
             // sandbox running before the wait it asked for finished.
@@ -308,6 +310,9 @@ pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
     /// pending read/seek slice (see `types/file.rs`).
     BufferStore { file_id: HeapId },
+    /// [`BufferStore`](Self::BufferStore), then parse the rest of the file as
+    /// JSON: `json.load(fp)` on a file whose buffer is not loaded yet.
+    JsonLoad { file_id: HeapId },
     /// Store a full-file read result into the file buffer and push nothing:
     /// the `ForIter` that found the file unloaded re-dispatches against it.
     BufferLoad { file_id: HeapId },
@@ -328,6 +333,9 @@ pub(crate) enum PostConversionEffect {
         /// lengthened the payload: CPython reports that, not what reached the file.
         #[serde(default)]
         text_length: Option<u64>,
+        /// Answer `None` instead of the count: the write came from `json.dump`.
+        #[serde(default)]
+        discard_count: bool,
     },
     /// Preserve `open()`'s filename while the returned handle supplies the I/O target,
     /// and apply the `newline` argument, whose value CPython validates after the open.
@@ -364,7 +372,10 @@ impl PostConversionEffect {
     /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
-            Self::BufferStore { file_id } | Self::BufferLoad { file_id } | Self::WritePosition { file_id, .. } => {
+            Self::BufferStore { file_id }
+            | Self::JsonLoad { file_id }
+            | Self::BufferLoad { file_id }
+            | Self::WritePosition { file_id, .. } => {
                 heap.heap_mut().dec_ref(file_id);
             }
             Self::FileNext { file_id, default } => {
