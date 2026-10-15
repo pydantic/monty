@@ -106,6 +106,36 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::AttributeError, "readonly attribute").into()
     }
 
+    /// The `AttributeError` for reading a `property` that has no getter.
+    ///
+    /// Matches CPython's format: `property 'x' of 'C' object has no getter`, with no
+    /// caret, like other attribute GET errors.
+    #[must_use]
+    fn attribute_error_property_no_getter(attr: &str, class_name: &str) -> RunError {
+        let exc = SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("property '{attr}' of '{class_name}' object has no getter"),
+        );
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            snippet_frame: None,
+            hide_caret: true,
+        })
+    }
+
+    /// The `AttributeError` for assigning to a `property` that has no setter.
+    ///
+    /// Matches CPython's format: `property 'x' of 'C' object has no setter`.
+    #[must_use]
+    fn attribute_error_property_no_setter(attr: &str, class_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("property '{attr}' of '{class_name}' object has no setter"),
+        )
+        .into()
+    }
+
     /// Creates an AttributeError for a missing module attribute.
     ///
     /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`

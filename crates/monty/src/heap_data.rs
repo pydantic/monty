@@ -160,6 +160,8 @@ macro_rules! heap_payloads {
             Time(inline $crate::types::time::Time),
             /// A `functools.partial` object.
             Partial(boxed $crate::types::Partial),
+            /// A `property`, `staticmethod` or `classmethod` object.
+            Descriptor(boxed $crate::types::Descriptor),
             /// A `types.GenericAlias` such as `list[int]`.
             GenericAlias(inline $crate::types::GenericAlias),
             /// A `typing.Union` such as `int | None`.
@@ -255,6 +257,7 @@ impl HeapData {
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_)
             | Self::Partial(_)
+            | Self::Descriptor(_)
             | Self::GenericAlias(_)
             | Self::Union(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
@@ -303,7 +306,7 @@ impl HeapData {
                 | Self::ExtFunction(_)
                 | Self::Partial(_)
                 | Self::GenericAlias(_)
-        )
+        ) || matches!(self, Self::Descriptor(d) if d.is_callable())
     }
 
     /// Returns the Python `Type` for this heap data without requiring VM access.
@@ -322,6 +325,7 @@ impl HeapData {
             Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
             Self::Partial(_) => Type::Partial,
+            Self::Descriptor(d) => d.py_type(),
             Self::Random(_) => Type::Random,
             Self::HashObject(hash) => hash.algorithm().py_type(),
             Self::GenericAlias(_) => Type::GenericAlias,
@@ -663,6 +667,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Itertools($value) => $body,
             Self::DirScan($value) => $body,
             Self::Partial($value) => $body,
+            Self::Descriptor($value) => $body,
             Self::Random($value) => $body,
             Self::HashObject($value) => $body,
             Self::GenericAlias($value) => $body,
@@ -1170,6 +1175,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)
             | Self::Partial(_)
+            | Self::Descriptor(_)
             | Self::Random(_)
             | Self::HashObject(_)
             | Self::GenericAlias(_)

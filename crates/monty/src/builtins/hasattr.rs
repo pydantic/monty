@@ -47,7 +47,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
     };
 
     // important: we must own the returned value if py_get_attr succeeds to drop it
-    let has_attr = match object.py_getattr(&name, vm) {
+    let has_attr = match object.py_getattr_sync(&name, vm) {
         Ok(CallResult::Value(value)) => {
             value.drop_with(vm);
             true

@@ -25,8 +25,7 @@ These raise `NameError`:
 - **Code objects and imports**: `compile`, `__import__`.
 - **Namespace introspection**: `globals`, `vars`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
-- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
-    `super`. (`@property` on functions is not recognized; use a method.)
+- **Inheritance**: `super`.
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 

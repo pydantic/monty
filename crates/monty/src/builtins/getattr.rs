@@ -48,7 +48,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         );
     };
 
-    match object.py_getattr(&attr, vm) {
+    match object.py_getattr_sync(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(CallResult::Value(value)),
         Ok(CallResult::AttrLookup {
             name,

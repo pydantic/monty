@@ -55,6 +55,10 @@ fresh iterator in CPython and raises here.
 The type named in the message is Monty's, so it can differ from CPython's name
 for the same object (see [classes.md](classes.md)).
 
+`staticmethod` and `classmethod` objects are the reverse case: CPython refuses
+to pickle them, so both functions raise `TypeError`, while Monty returns the
+same object, as it does (and CPython does) for a `property`.
+
 ## Immutable values are shared rather than rebuilt
 
 Both `copy.copy` and `copy.deepcopy` return the same object for `datetime`,

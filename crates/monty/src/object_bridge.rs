@@ -764,6 +764,8 @@ impl MontyTypeExt for MontyType {
             Type::GenericAlias => Self::GenericAlias,
             Type::Union => Self::Union,
             Type::Random
+            | Type::StaticMethod
+            | Type::ClassMethod
             | Type::HashlibHash
             | Type::HashlibHashXof
             | Type::Blake2b
