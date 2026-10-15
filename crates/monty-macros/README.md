@@ -133,9 +133,11 @@ The macro moves the functions into an inherent implementation and generates `PyA
 Native object structs, method bodies, and serialization stay unchanged.
 
 ```rust,ignore
+use monty_macros::pyattrs;
+
 pub(crate) struct PyListImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyListImpl {
     type Receiver = MutHeap<List>;
 

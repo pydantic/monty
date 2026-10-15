@@ -1,5 +1,6 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -12,7 +13,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
         HeapReader,
@@ -932,7 +933,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
 
 pub(crate) struct PyListImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyListImpl {
     type Receiver = MutHeap<List>;
 

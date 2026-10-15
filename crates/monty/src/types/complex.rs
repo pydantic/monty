@@ -9,6 +9,7 @@
 
 use std::fmt::Write;
 
+use monty_macros::pyattrs;
 use monty_types::FormatComplex;
 
 use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
@@ -756,7 +757,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
 
 pub(crate) struct PyComplexImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyComplexImpl {
     type Receiver = MutHeap<Complex>;
 

@@ -19,6 +19,7 @@ use std::{
 };
 
 use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
+use monty_macros::pyattrs;
 use monty_types::ResourceTracker;
 
 use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
@@ -660,7 +661,7 @@ struct TimeReplaceArgs {
 
 pub(crate) struct PyTimeImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyTimeImpl {
     type Receiver = MutHeap<Time>;
 

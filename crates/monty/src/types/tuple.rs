@@ -7,6 +7,7 @@ use std::{
     mem,
 };
 
+use monty_macros::pyattrs;
 /// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
@@ -664,7 +665,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
 
 pub(crate) struct PyTupleImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyTupleImpl {
     type Receiver = builtin_attr::Heap<Tuple>;
 

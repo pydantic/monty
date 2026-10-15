@@ -11,6 +11,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
+use monty_macros::pyattrs;
 use monty_types::{OsFunctionCall, ResourceTracker};
 
 use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
@@ -478,7 +479,7 @@ struct DateReplaceArgs {
 
 pub(crate) struct PyDateImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyDateImpl {
     type Receiver = MutHeap<Date>;
 

@@ -12,6 +12,7 @@
 use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
+use monty_macros::pyattrs;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
@@ -809,7 +810,7 @@ impl<'de> Deserialize<'de> for RePattern {
 
 pub(crate) struct PyRePatternImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyRePatternImpl {
     type Receiver = MutHeap<RePattern>;
 

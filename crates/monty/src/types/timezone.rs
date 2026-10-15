@@ -8,6 +8,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::pyattrs;
 // The bounds live in `monty-types` so the wire decoder shares them; re-exported
 // here because this is where the sandbox-side constructor enforces them.
 pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
@@ -364,7 +365,7 @@ fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -
 
 pub(crate) struct PyTimeZoneImpl;
 
-#[monty_macros::pyattrs]
+#[pyattrs]
 impl PyAttrs for PyTimeZoneImpl {
     type Receiver = MutHeap<TimeZone>;
 
