@@ -21,7 +21,7 @@ use std::{
 use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
 use monty_types::ResourceTracker;
 
-use super::builtin_attr::{AttrDef, builtin_attrs};
+use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -558,7 +558,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(time_lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(TimeImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::Time, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -658,80 +658,80 @@ struct TimeReplaceArgs {
     fold: Option<i32>,
 }
 
-fn time_isoformat<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let IsoformatArgs { timespec } = IsoformatArgs::from_args(args, vm)?;
-    defer_drop!(timespec, vm);
-    let spec = match timespec {
-        Some(timespec) => TimeSpec::parse(timespec.as_str(vm))?,
-        None => TimeSpec::Auto,
-    };
-    let time = value.get(vm.heap);
-    let s = format_isoformat(time, attached_offset(time, vm.heap), spec);
-    Ok(allocate_string_no_interning(s, vm.heap))
-}
+pub(crate) struct TimeImpl;
 
-fn time_strftime<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-    defer_drop!(format, vm);
-    let time = value.get(vm.heap).clone();
-    let tz = attached_timezone(&time, vm.heap);
-    let formatted = format_time_strftime(&time, tz.as_ref(), format.as_str(vm), &vm.heap.tracker)?;
-    Ok(allocate_string(formatted, vm.heap))
-}
+#[monty_macros::pyattrs]
+impl PyAttrs for TimeImpl {
+    type Receiver = MutHeap<Time>;
 
-fn time_replace<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    value.replace(vm, args)
-}
+    #[pymethod]
+    fn isoformat<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let IsoformatArgs { timespec } = IsoformatArgs::from_args(args, vm)?;
+        defer_drop!(timespec, vm);
+        let spec = match timespec {
+            Some(timespec) => TimeSpec::parse(timespec.as_str(vm))?,
+            None => TimeSpec::Auto,
+        };
+        let time = value.get(vm.heap);
+        let s = format_isoformat(time, attached_offset(time, vm.heap), spec);
+        Ok(allocate_string_no_interning(s, vm.heap))
+    }
 
-fn time_utcoffset<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    args.check_zero_args("time.utcoffset", vm.heap)?;
-    let offset_seconds = attached_offset(value.get(vm.heap), vm.heap);
-    Ok(timezone::utcoffset_value(offset_seconds, vm.heap))
-}
+    #[pymethod]
+    fn strftime<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
+        defer_drop!(format, vm);
+        let time = value.get(vm.heap).clone();
+        let tz = attached_timezone(&time, vm.heap);
+        let formatted = format_time_strftime(&time, tz.as_ref(), format.as_str(vm), &vm.heap.tracker)?;
+        Ok(allocate_string(formatted, vm.heap))
+    }
 
-fn time_tzname<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    args.check_zero_args("time.tzname", vm.heap)?;
-    let Some(tz) = attached_timezone(value.get(vm.heap), vm.heap) else {
-        return Ok(Value::None);
-    };
-    let name = timezone::tzname_string(tz.offset_seconds, tz.name.as_deref());
-    Ok(allocate_string(name, vm.heap))
-}
+    #[pymethod]
+    fn replace<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        value.replace(vm, args)
+    }
 
-fn time_dst<'h>(_: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    args.check_zero_args("time.dst", vm.heap)?;
-    Ok(Value::None)
-}
+    #[pymethod]
+    fn utcoffset<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("time.utcoffset", vm.heap)?;
+        let offset_seconds = attached_offset(value.get(vm.heap), vm.heap);
+        Ok(timezone::utcoffset_value(offset_seconds, vm.heap))
+    }
 
-fn time_fromisoformat(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    class_fromisoformat(vm, args).map(CallResult::Value)
-}
+    #[pymethod]
+    fn tzname<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("time.tzname", vm.heap)?;
+        let Some(tz) = attached_timezone(value.get(vm.heap), vm.heap) else {
+            return Ok(Value::None);
+        };
+        let name = timezone::tzname_string(tz.offset_seconds, tz.name.as_deref());
+        Ok(allocate_string(name, vm.heap))
+    }
 
-fn time_min(vm: &mut VM<'_>) -> Value {
-    allocate_naive(0, 0, 0, 0, vm.heap)
-}
+    #[pymethod]
+    fn dst<'h>(_: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("time.dst", vm.heap)?;
+        Ok(Value::None)
+    }
 
-fn time_max(vm: &mut VM<'_>) -> Value {
-    allocate_naive(23, 59, 59, 999_999, vm.heap)
-}
+    #[pyclassmethod]
+    fn fromisoformat(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_fromisoformat(vm, args).map(CallResult::Value)
+    }
 
-fn time_resolution(vm: &mut VM<'_>) -> Value {
-    timedelta::allocate_micros(1, vm.heap)
-}
+    #[pyvalue]
+    fn min(vm: &mut VM<'_>) -> Value {
+        allocate_naive(0, 0, 0, 0, vm.heap)
+    }
 
-builtin_attrs! {
-    for Time: mut heap(Time);
-    pub(crate) const TIME_ATTRS: &[(StaticStrings, AttrDef)] = &[
-        Isoformat => method(time_isoformat),
-        Strftime => method(time_strftime),
-        Replace => method(time_replace),
-        Utcoffset => method(time_utcoffset),
-        Tzname => method(time_tzname),
-        Dst => method(time_dst),
-        Fromisoformat => class_method(time_fromisoformat),
-        Min => value(time_min),
-        Max => value(time_max),
-        Resolution => value(time_resolution),
-    ];
-    pub(crate) const fn time_lookup_attr;
+    #[pyvalue]
+    fn max(vm: &mut VM<'_>) -> Value {
+        allocate_naive(23, 59, 59, 999_999, vm.heap)
+    }
+
+    #[pyvalue]
+    fn resolution(vm: &mut VM<'_>) -> Value {
+        timedelta::allocate_micros(1, vm.heap)
+    }
 }

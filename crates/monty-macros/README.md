@@ -125,6 +125,47 @@ unit tests for every attribute-validation error.
 Projects a struct into the `CallArgs` a host callback takes, reusing the `#[from_args(...)]` field attributes.
 `varargs` fields contribute one positional argument per element.
 
+## `#[pyattrs]`
+
+Collects Python-visible functions on a zero-sized namespace implementing `PyAttrs` inside `monty`.
+The macro moves the functions into an inherent implementation and generates `PyAttrs::ATTRS` and a const
+`lookup_attr(StaticStrings)` match that returns entries from that table.
+Native object structs, method bodies, and serialization stay unchanged.
+
+```rust,ignore
+pub(crate) struct ListImpl;
+
+#[monty_macros::pyattrs]
+impl PyAttrs for ListImpl {
+    type Receiver = MutHeap<List>;
+
+    #[pymethod]
+    fn sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        todo!()
+    }
+}
+```
+
+`#[pymethod]` registers `AttrDef::Method`; it takes a native receiver, `ArgValues`, and `&mut VM`, returning
+`RunResult<Value>`.
+`MutHeap<T>` lends a mutable heap handle, which also accepts methods taking a shared handle.
+`Heap<T>` lends only a shared handle.
+`Immediate<T>` passes an `f64`, `i64`, or `bool` value from the corresponding `Value` variant.
+Both `HeapRead<'h, T>` and `HeapObjectRead<'h, T>` signatures are supported.
+
+`#[pyclassmethod]` registers `AttrDef::ClassMethod` with the existing signature
+`(StaticStrings, Type, Value, ArgValues, &mut VM) -> RunResult<CallResult>`.
+`#[pyvalue]` registers `AttrDef::Value` with `(&mut VM) -> Value`.
+Names map from Rust snake case to `StaticStrings` variants: `sort` becomes `Sort`, `total_seconds` becomes
+`TotalSeconds`, and `r#match` becomes `Match`.
+Declaration order determines table order.
+
+Functions keep their visibility, lifetime parameters, documentation, and bodies.
+Unannotated helper functions are preserved without registration.
+Annotations take no arguments; conditional attributes, `self` parameters, async functions, and type or const
+parameters on registered functions are rejected.
+Implementation namespaces must be concrete types, and Rust rejects multiple `PyAttrs` implementations for one type.
+
 ## Not a standalone crate
 
 Generated code emits `crate::...` paths: `FromArgs` compiles inside `monty`, and `ToArgs` inside `monty-types`.
