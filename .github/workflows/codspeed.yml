@@ -13,9 +13,10 @@ permissions:
 jobs:
   benchmarks:
     name: Run benchmarks
-    # CodSpeed macro runners: dedicated bare-metal machines for walltime measurement,
+    # CodSpeed's bare-metal Graviton macro runner, for walltime measurement. Pinned
+    # rather than `codspeed-macro` so the baseline stays on the same hardware,
     # see https://codspeed.io/docs/features/macro-runners
-    runs-on: codspeed-macro
+    runs-on: codspeed-macro-arm64-graviton-ubuntu-22-04
     permissions:
       contents: read
       id-token: write
