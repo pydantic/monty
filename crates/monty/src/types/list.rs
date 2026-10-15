@@ -782,7 +782,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(ListImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyListImpl::lookup_attr) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
@@ -1018,10 +1018,10 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
     }
 }
 
-pub(crate) struct ListImpl;
+pub(crate) struct PyListImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for ListImpl {
+impl PyAttrs for PyListImpl {
     type Receiver = MutHeap<List>;
 
     #[pymethod]
