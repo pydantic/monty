@@ -471,7 +471,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(TupleImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyTupleImpl::lookup_attr) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)));
         };
@@ -662,10 +662,10 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
     }
 }
 
-pub(crate) struct TupleImpl;
+pub(crate) struct PyTupleImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for TupleImpl {
+impl PyAttrs for PyTupleImpl {
     type Receiver = builtin_attr::Heap<Tuple>;
 
     /// Implements Python's `tuple.index(value[, start[, end]])` method.

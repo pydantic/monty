@@ -350,7 +350,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(ReMatchImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyReMatchImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -466,10 +466,10 @@ struct GroupdictArgs {
     default: Option<Value>,
 }
 
-pub(crate) struct ReMatchImpl;
+pub(crate) struct PyReMatchImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for ReMatchImpl {
+impl PyAttrs for PyReMatchImpl {
     type Receiver = MutHeap<ReMatch>;
 
     /// Handles `m.group(...)` calls, supporting zero, one, or multiple arguments.

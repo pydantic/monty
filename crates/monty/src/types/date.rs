@@ -265,7 +265,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(DateImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyDateImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::Date, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -476,10 +476,10 @@ struct DateReplaceArgs {
     day: Option<i32>,
 }
 
-pub(crate) struct DateImpl;
+pub(crate) struct PyDateImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for DateImpl {
+impl PyAttrs for PyDateImpl {
     type Receiver = MutHeap<Date>;
 
     #[pymethod]

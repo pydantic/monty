@@ -558,7 +558,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(TimeImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyTimeImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::Time, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -658,10 +658,10 @@ struct TimeReplaceArgs {
     fold: Option<i32>,
 }
 
-pub(crate) struct TimeImpl;
+pub(crate) struct PyTimeImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for TimeImpl {
+impl PyAttrs for PyTimeImpl {
     type Receiver = MutHeap<Time>;
 
     #[pymethod]

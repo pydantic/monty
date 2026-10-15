@@ -513,7 +513,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(RePatternImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyRePatternImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -807,10 +807,10 @@ impl<'de> Deserialize<'de> for RePattern {
     }
 }
 
-pub(crate) struct RePatternImpl;
+pub(crate) struct PyRePatternImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for RePatternImpl {
+impl PyAttrs for PyRePatternImpl {
     type Receiver = MutHeap<RePattern>;
 
     #[pymethod]

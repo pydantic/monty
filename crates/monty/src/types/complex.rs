@@ -728,7 +728,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(ComplexImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyComplexImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -754,10 +754,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     }
 }
 
-pub(crate) struct ComplexImpl;
+pub(crate) struct PyComplexImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for ComplexImpl {
+impl PyAttrs for PyComplexImpl {
     type Receiver = MutHeap<Complex>;
 
     #[pymethod]

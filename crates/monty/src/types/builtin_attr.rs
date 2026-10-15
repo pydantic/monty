@@ -51,30 +51,30 @@ pub(crate) enum AttrDef {
 #[cfg_attr(not(test), expect(dead_code, reason = "retained for builtin attribute enumeration"))]
 pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     match owner {
-        Type::List => <list::ListImpl as PyAttrs>::ATTRS,
-        Type::Tuple => <tuple::TupleImpl as PyAttrs>::ATTRS,
-        Type::Complex => <complex::ComplexImpl as PyAttrs>::ATTRS,
-        Type::Date => <date::DateImpl as PyAttrs>::ATTRS,
-        Type::Time => <time::TimeImpl as PyAttrs>::ATTRS,
-        Type::TimeDelta => <timedelta::TimeDeltaImpl as PyAttrs>::ATTRS,
-        Type::TimeZone => <timezone::TimeZoneImpl as PyAttrs>::ATTRS,
-        Type::RePattern => <re_pattern::RePatternImpl as PyAttrs>::ATTRS,
-        Type::ReMatch => <re_match::ReMatchImpl as PyAttrs>::ATTRS,
+        Type::List => <list::PyListImpl as PyAttrs>::ATTRS,
+        Type::Tuple => <tuple::PyTupleImpl as PyAttrs>::ATTRS,
+        Type::Complex => <complex::PyComplexImpl as PyAttrs>::ATTRS,
+        Type::Date => <date::PyDateImpl as PyAttrs>::ATTRS,
+        Type::Time => <time::PyTimeImpl as PyAttrs>::ATTRS,
+        Type::TimeDelta => <timedelta::PyTimeDeltaImpl as PyAttrs>::ATTRS,
+        Type::TimeZone => <timezone::PyTimeZoneImpl as PyAttrs>::ATTRS,
+        Type::RePattern => <re_pattern::PyRePatternImpl as PyAttrs>::ATTRS,
+        Type::ReMatch => <re_match::PyReMatchImpl as PyAttrs>::ATTRS,
         _ => &[],
     }
 }
 
 pub(crate) const fn lookup_attr(owner: Type, name: StaticStrings) -> Option<AttrDef> {
     match owner {
-        Type::List => list::ListImpl::lookup_attr(name),
-        Type::Tuple => tuple::TupleImpl::lookup_attr(name),
-        Type::Complex => complex::ComplexImpl::lookup_attr(name),
-        Type::Date => date::DateImpl::lookup_attr(name),
-        Type::Time => time::TimeImpl::lookup_attr(name),
-        Type::TimeDelta => timedelta::TimeDeltaImpl::lookup_attr(name),
-        Type::TimeZone => timezone::TimeZoneImpl::lookup_attr(name),
-        Type::RePattern => re_pattern::RePatternImpl::lookup_attr(name),
-        Type::ReMatch => re_match::ReMatchImpl::lookup_attr(name),
+        Type::List => list::PyListImpl::lookup_attr(name),
+        Type::Tuple => tuple::PyTupleImpl::lookup_attr(name),
+        Type::Complex => complex::PyComplexImpl::lookup_attr(name),
+        Type::Date => date::PyDateImpl::lookup_attr(name),
+        Type::Time => time::PyTimeImpl::lookup_attr(name),
+        Type::TimeDelta => timedelta::PyTimeDeltaImpl::lookup_attr(name),
+        Type::TimeZone => timezone::PyTimeZoneImpl::lookup_attr(name),
+        Type::RePattern => re_pattern::PyRePatternImpl::lookup_attr(name),
+        Type::ReMatch => re_match::PyReMatchImpl::lookup_attr(name),
         _ => None,
     }
 }
@@ -92,10 +92,10 @@ mod tests {
         types::List,
     };
 
-    struct FloatImpl;
+    struct PyFloatImpl;
 
     #[monty_macros::pyattrs]
-    impl PyAttrs for FloatImpl {
+    impl PyAttrs for PyFloatImpl {
         type Receiver = Immediate<f64>;
 
         #[pymethod]
@@ -107,10 +107,10 @@ mod tests {
 
     #[test]
     fn generated_adapters_use_native_receivers() {
-        const SORT: Option<AttrDef> = list::ListImpl::lookup_attr(StaticStrings::Sort);
+        const SORT: Option<AttrDef> = list::PyListImpl::lookup_attr(StaticStrings::Sort);
         const LIST_TABLE: &[(StaticStrings, AttrDef)] = attrs(Type::List);
         assert!(matches!(SORT, Some(AttrDef::Method(_))));
-        assert_eq!(LIST_TABLE.len(), <list::ListImpl as PyAttrs>::ATTRS.len());
+        assert_eq!(LIST_TABLE.len(), <list::PyListImpl as PyAttrs>::ATTRS.len());
 
         let mut heap = ObjectHeap::new(16, ResourceTracker::default());
         let list_id = heap.allocate(HeapData::List(List::new(vec![Value::Int(2), Value::Int(1)])));
@@ -133,7 +133,7 @@ mod tests {
             };
             assert!(matches!(list.as_slice(), [Value::Int(1), Value::Int(2)]));
 
-            let Some(AttrDef::Method(count)) = tuple::TupleImpl::lookup_attr(StaticStrings::Count) else {
+            let Some(AttrDef::Method(count)) = tuple::PyTupleImpl::lookup_attr(StaticStrings::Count) else {
                 panic!("expected count method")
             };
             assert!(matches!(
@@ -141,7 +141,7 @@ mod tests {
                 Value::Int(2)
             ));
 
-            let Some(AttrDef::Method(conjugate)) = FloatImpl::lookup_attr(StaticStrings::Conjugate) else {
+            let Some(AttrDef::Method(conjugate)) = PyFloatImpl::lookup_attr(StaticStrings::Conjugate) else {
                 panic!("expected immediate method")
             };
             assert!(

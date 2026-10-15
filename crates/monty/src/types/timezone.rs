@@ -341,7 +341,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(TimeZoneImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyTimeZoneImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm));
         };
         super::builtin_attr::call_method(self, call, args, vm)
@@ -362,10 +362,10 @@ fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -
     check_tzinfo_dt_arg(method, dt, vm.heap, vm.interns)
 }
 
-pub(crate) struct TimeZoneImpl;
+pub(crate) struct PyTimeZoneImpl;
 
 #[monty_macros::pyattrs]
-impl PyAttrs for TimeZoneImpl {
+impl PyAttrs for PyTimeZoneImpl {
     type Receiver = MutHeap<TimeZone>;
 
     #[pymethod]
