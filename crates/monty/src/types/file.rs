@@ -341,6 +341,12 @@ struct BufferMeta {
     buffer_total: u64,
 }
 
+/// The owned data of one host write, already checked against the file's mode.
+enum WritePayload {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
 impl OpenFile {
     /// Creates a path-backed file wrapper from a parsed `open()` mode and the
     /// `position` carried across the host boundary by a
@@ -651,13 +657,33 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     }
 
     /// Shared dispatch for any operation that needs the buffer loaded
-    /// (`readline`, `readlines`, `seek`).
-    ///
+    /// (`read`, `readline`, `readlines`, `seek`).
+    fn read_with_spec(&mut self, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
+        self.read_with_effect(vm, spec, |file_id| PostConversionEffect::BufferStore { file_id })
+    }
+
+    /// `json.load`'s `fp.read()`: the rest of the buffer when it is loaded,
+    /// otherwise the host load with `effect` armed to consume the content
+    /// (it must store the buffer via `apply_buffer_store`, which takes the
+    /// `pending_read` recorded here).
+    pub(crate) fn read_all_with(
+        &mut self,
+        vm: &mut VM<'h>,
+        effect: fn(HeapId) -> PostConversionEffect,
+    ) -> RunResult<CallResult> {
+        self.read_with_effect(vm, ReadSpec::All, effect)
+    }
+
     /// If the buffer is already loaded, computes the slice synchronously.
     /// Otherwise records the spec on the file and yields a
     /// [`CallResult::OsCallWithEffect`] so the host loads the full content
-    /// and the resume hook completes the operation.
-    fn read_with_spec(&mut self, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
+    /// and the resume hook built by `effect` completes the operation.
+    fn read_with_effect(
+        &mut self,
+        vm: &mut VM<'h>,
+        spec: ReadSpec,
+        effect: fn(HeapId) -> PostConversionEffect,
+    ) -> RunResult<CallResult> {
         let buffer_loaded = {
             let file = self.get(vm.heap);
             file.ensure_open()?;
@@ -679,8 +705,8 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
 
         // First buffered op: stash spec, yield to host for the full content.
         self.get_mut(vm.heap).pending_read = Some(spec);
-        let file_id = self.id();
-        Ok(self.buffer_load_call(vm, PostConversionEffect::BufferStore { file_id }))
+        let effect = effect(self.id());
+        Ok(self.buffer_load_call(vm, effect))
     }
 
     /// Whether an iteration step must load the buffer from the host first:
@@ -718,45 +744,87 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         defer_drop!(data, vm);
         let binary = self.get(vm.heap).mode.is_binary();
         validate_write_data(data, binary, vm)?;
-        self.get(vm.heap).ensure_open()?;
-        let (path, append, binary, newline) = {
-            let file = self.get(vm.heap);
-            if !file.mode.writable() {
-                let message = if file.mode.is_binary() { "write" } else { "not writable" };
-                return Err(unsupported_operation(message));
-            }
-            // `first_write_done` is flipped in `apply_write_position`, only once
-            // the host confirms the write — a rejected or host-failed write must
-            // not turn the next write into an append.
-            let append = file.mode.is_append() || file.first_write_done;
-            let binary = file.mode.is_binary();
-            let path = file.path().to_owned();
-            (path, append, binary, file.newline)
-        };
-
+        self.check_writable(vm)?;
         // Extract the data payload into an owned `String` / `Vec<u8>` so the
         // OS-call args struct can own it across the snapshot/resume boundary.
         // `validate_write_data` already gated the variant — `binary` selects
         // bytes vs str.
-        let path = MontyPath::new(path);
-        let mut text_length = None;
-        let call = if binary {
+        let payload = if binary {
             let bytes = extract_bytes_payload(data, vm).expect("validate_write_data accepted a bytes-shaped value");
-            let args = PathBytesDataArgs { path, data: bytes };
-            if append {
-                OsFunctionCall::AppendBytes(args)
-            } else {
-                OsFunctionCall::WriteBytes(args)
-            }
+            WritePayload::Bytes(bytes)
         } else {
             let text = extract_str_payload(data, vm).expect("validate_write_data accepted a str-shaped value");
-            let (text, original_length) = newline.translate_write(text);
-            text_length = original_length.map(|length| u64::try_from(length).expect("usize fits in u64"));
-            let args = PathStringDataArgs { path, data: text };
-            if append {
-                OsFunctionCall::AppendText(args)
-            } else {
-                OsFunctionCall::WriteText(args)
+            WritePayload::Text(text)
+        };
+        Ok(self.dispatch_write(vm, payload, false))
+    }
+
+    /// `json.dump`'s `fp.write(text)`: the same host write as [`Self::write`],
+    /// but the call answers `None` rather than the character count.
+    pub(crate) fn write_text_discarding_count(&mut self, vm: &mut VM<'h>, text: String) -> RunResult<CallResult> {
+        self.check_text_write(vm)?;
+        Ok(self.dispatch_write(vm, WritePayload::Text(text), true))
+    }
+
+    /// The checks `write(str)` makes before reaching the host, in the same
+    /// order: text mode, then open and writable.
+    pub(crate) fn check_text_write(&self, vm: &VM<'h>) -> RunResult<()> {
+        if self.get(vm.heap).mode.is_binary() {
+            Err(ExcType::type_error("a bytes-like object is required, not 'str'"))
+        } else {
+            self.check_writable(vm)
+        }
+    }
+
+    /// Raises for a write on a closed or read-only file.
+    fn check_writable(&self, vm: &VM<'h>) -> RunResult<()> {
+        let file = self.get(vm.heap);
+        file.ensure_open()?;
+        if file.mode.writable() {
+            Ok(())
+        } else {
+            let message = if file.mode.is_binary() { "write" } else { "not writable" };
+            Err(unsupported_operation(message))
+        }
+    }
+
+    /// Builds the one-shot write or append for an already validated payload,
+    /// with the position update armed for the host's reply.
+    fn dispatch_write(&mut self, vm: &mut VM<'h>, payload: WritePayload, result_none: bool) -> CallResult {
+        let (path, append, newline, previous_position, previous_length) = {
+            let file = self.get(vm.heap);
+            // `first_write_done` is flipped in `apply_write_position`, only once
+            // the host confirms the write — a rejected or host-failed write must
+            // not turn the next write into an append.
+            let append = file.mode.is_append() || file.first_write_done;
+            (
+                MontyPath::new(file.path().to_owned()),
+                append,
+                file.newline,
+                file.position,
+                file.file_length,
+            )
+        };
+
+        let mut text_length = None;
+        let call = match payload {
+            WritePayload::Bytes(bytes) => {
+                let args = PathBytesDataArgs { path, data: bytes };
+                if append {
+                    OsFunctionCall::AppendBytes(args)
+                } else {
+                    OsFunctionCall::WriteBytes(args)
+                }
+            }
+            WritePayload::Text(text) => {
+                let (text, original_length) = newline.translate_write(text);
+                text_length = original_length.map(|length| u64::try_from(length).expect("usize fits in u64"));
+                let args = PathStringDataArgs { path, data: text };
+                if append {
+                    OsFunctionCall::AppendText(args)
+                } else {
+                    OsFunctionCall::WriteText(args)
+                }
             }
         };
 
@@ -766,13 +834,13 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         // call rejected before dispatch cannot leave stale write state.
         let effect = PostConversionEffect::WritePosition {
             file_id,
-            previous_position: self.get(vm.heap).position,
-            previous_length: self.get(vm.heap).file_length,
+            previous_position,
+            previous_length,
             text_length,
-            result_none: false,
+            result_none,
         }
         .into();
-        Ok(CallResult::OsCallWithEffect { call, effect })
+        CallResult::OsCallWithEffect { call, effect }
     }
 
     /// Marks the file wrapper as closed and releases the cached read buffer.
@@ -1115,8 +1183,8 @@ fn unloaded_iteration_error(file_type: Type) -> RunError {
 ///
 /// `text_length` replaces the host's count as the return value when newline
 /// translation lengthened the payload (see [`Newline::translate_write`]), and
-/// `result_none` replaces it with `None` (`csv.writer.writerows()`); the
-/// logical position still advances by what reached the file.
+/// `result_none` replaces it with `None` (`csv.writer.writerows()`,
+/// `json.dump`); the logical position still advances by what reached the file.
 ///
 /// As with [`apply_buffer_store`], the pending-file-effect pin on `file_id`
 /// is released by `defer_drop!` regardless of which path the function takes.
