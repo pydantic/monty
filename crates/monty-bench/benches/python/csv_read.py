@@ -2,7 +2,6 @@
 # formatted once up front with every string quoted, so all three readers share one input;
 # records with embedded newlines span several source lines. Exercises the per-character
 # parser state machine and per-row dict construction.
-# bench: limits
 
 import csv
 
