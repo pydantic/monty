@@ -2,7 +2,6 @@
 # `writerows` under `QUOTE_ALL`, and `DictWriter`. Fields mix plain values with ones that
 # force quoting (commas, embedded quotes, newlines). The `write()` target is a class, since
 # Monty has no `io.StringIO`; it counts characters written.
-# bench: limits
 
 import csv
 
