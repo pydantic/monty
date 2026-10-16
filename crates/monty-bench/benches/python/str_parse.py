@@ -1,3 +1,6 @@
+# Line-oriented text parsing: split, strip, lower, startswith, `in` and `int()` on real
+# text, rather than the tiny strings `builtin_args` uses.
+
 lines = []
 for i in range(500):
     status = 'ACTIVE' if i % 3 else 'retired'
@@ -16,4 +19,4 @@ for _ in range(10):
         if state == 'active' and name.lower().startswith('widget') and 'north' in zone:
             count += 1
             total += qty
-count + total
+assert count + total == 655_040

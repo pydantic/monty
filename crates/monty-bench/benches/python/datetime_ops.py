@@ -1,3 +1,6 @@
+# Timestamp cohort analysis: `fromisoformat`, `strftime`, `weekday` and timedelta
+# arithmetic.
+
 import datetime
 
 stamps = []
@@ -15,4 +18,4 @@ for _ in range(4):
         cohorts[dt.strftime('%Y-%m')] = cohorts.get(dt.strftime('%Y-%m'), 0) + 1
         total_days += (dt - start).days
 weekend = weekday_counts[5] + weekday_counts[6]
-total_days + weekend + len(cohorts)
+assert total_days + weekend + len(cohorts) == 360_100

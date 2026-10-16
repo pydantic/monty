@@ -1,3 +1,6 @@
+# `finditer` with group capture and `re.split` over a large string, guarding the
+# match-object and group-extraction wrapper around fancy-regex.
+
 import re
 
 parts = []
@@ -12,4 +15,4 @@ for _ in range(5):
         total += int(m.group(1)) + int(m.group(2))
     words = re.split(r'\s+', text)
     total += len(words)
-total
+assert total == 652_500
