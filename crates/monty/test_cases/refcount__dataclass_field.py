@@ -1,9 +1,9 @@
 # The `field(...)` spec is adopted at decoration: the same object goes into
 # `__dataclass_fields__` and keeps owning what it captured, while the class
 # namespace loses its binding to it. `Item` is a heap-allocated class used as
-# the factory, referenced by its module global and by the field that captured
-# it; `shared` by its global, that field's default, and the class attribute
-# that replaced the spec.
+# the factory, referenced by its module global, the field that captured it,
+# and the generated `__init__`; `shared` by its global, that field's default,
+# `__init__`'s copy of it, and the class attribute that replaced the spec.
 from dataclasses import dataclass, field
 
 
@@ -24,4 +24,4 @@ class C:
 assert isinstance(C().it, Item)
 assert C().t == shared
 
-# ref-counts={'Item': 2, 'shared': 3, 'C': 1}
+# ref-counts={'Item': 3, 'shared': 4, 'C': 1}

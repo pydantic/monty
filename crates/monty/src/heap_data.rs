@@ -97,6 +97,9 @@ macro_rules! heap_payloads {
             /// Boxed: a name, an annotation and a default or factory are already
             /// wider than the 32-bit ceiling, and `Field` has attributes left to gain.
             DataclassField(boxed $crate::modules::dataclasses::DataclassField),
+            /// A method `@dataclass` generated into a class namespace.
+            /// Boxed: its `__init__` form carries every field's captured default.
+            DataclassMethod(boxed $crate::modules::dataclasses::DataclassMethod),
             /// A `list_iterator` object.
             ListIterator(inline $crate::types::list::ListIterator),
             /// A `_collections._deque_iterator` object.
@@ -244,6 +247,7 @@ impl HeapData {
             | Self::Instance(_)
             | Self::BoundMethod(_)
             | Self::DataclassField(_)
+            | Self::DataclassMethod(_)
             | Self::ListIterator(_)
             | Self::DequeIterator(_)
             | Self::TupleIterator(_)
@@ -301,6 +305,7 @@ impl HeapData {
             self,
             Self::Class(_)
                 | Self::BoundMethod(_)
+                | Self::DataclassMethod(_)
                 | Self::Closure(_)
                 | Self::FunctionDefaults(_)
                 | Self::ExtFunction(_)
@@ -346,6 +351,7 @@ impl HeapData {
             Self::Instance(instance) => Type::Instance(instance.class()),
             Self::BoundMethod(_) => Type::Function,
             Self::DataclassField(_) => Type::DataclassField,
+            Self::DataclassMethod(_) => Type::Function,
             Self::DataclassParams(_) => Type::DataclassParams,
             Self::LongInt(_) => Type::Int,
             Self::Complex(_) => Type::Complex,
@@ -689,6 +695,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Instance($value) => $body,
             Self::BoundMethod($value) => $body,
             Self::DataclassField($value) => $body,
+            Self::DataclassMethod($value) => $body,
             Self::DataclassParams($value) => $body,
             Self::LongInt($value) => $body,
             Self::Complex($value) => $body,
@@ -1161,6 +1168,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Instance(value) => value.py_iter(vm),
             Self::BoundMethod(value) => value.py_iter(vm),
             Self::DataclassField(value) => value.py_iter(vm),
+            Self::DataclassMethod(value) => value.py_iter(vm),
             Self::DataclassParams(value) => value.py_iter(vm),
             Self::Path(value) => value.py_iter(vm),
             Self::OpenFile(value) => value.py_iter(vm),
@@ -1226,6 +1234,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Instance(value) => value.py_next(vm),
             Self::BoundMethod(value) => value.py_next(vm),
             Self::DataclassField(value) => value.py_next(vm),
+            Self::DataclassMethod(value) => value.py_next(vm),
             Self::DataclassParams(value) => value.py_next(vm),
             Self::Path(value) => value.py_next(vm),
             Self::OpenFile(value) => value.py_next(vm),

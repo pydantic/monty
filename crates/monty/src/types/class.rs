@@ -11,9 +11,10 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReader,
         heap_read_ref_as_field_mut,
     },
+    intern::{Interns, StringId},
     types::{Union, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -93,6 +94,18 @@ impl<'h> HeapRead<'h, Class> {
     /// fall through to this namespace.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.namespace_mut().set(name, value, vm)
+    }
+
+    /// [`set_attr`](Self::set_attr) for a dump upgrade, which has no VM and
+    /// cannot fail: see `HeapRead::<Dict>::set_interned_str`.
+    pub(crate) fn set_interned_attr(
+        &mut self,
+        name: StringId,
+        value: Value,
+        heap: &mut HeapReader<'h>,
+        interns: &Interns,
+    ) -> Option<Value> {
+        self.namespace_mut().set_interned_str(name, value, heap, interns)
     }
 
     /// Removes a class attribute, returning it for the caller to drop.

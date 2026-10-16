@@ -1117,6 +1117,19 @@ impl Heap {
         this
     }
 
+    /// The ids of the live entries `keep` accepts, in index order, for a one-off
+    /// pass over a loaded heap (`dump_upgrade`).
+    pub(crate) fn ids_where(&mut self, keep: impl Fn(&HeapData) -> bool) -> Vec<HeapId> {
+        (0..self.entries.len())
+            .map(HeapId::from_index)
+            .filter(|&id| {
+                self.entries
+                    .entry(id)
+                    .is_some_and(|mut entry| keep(entry.get_mut().data.0.get_mut()))
+            })
+            .collect()
+    }
+
     /// Number of entries in the heap (including freed slots).
     pub fn size(&self) -> usize {
         self.entries.len()
@@ -1993,6 +2006,13 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(value);
             }
         }
+        HeapData::DataclassMethod(method) => {
+            // A generated `__init__` holds the captured defaults and factories,
+            // which can reach back to the class it lives in.
+            for id in method.ref_children() {
+                on_child(id);
+            }
+        }
         HeapData::ListIterator(iter) => on_child(iter.list_id()),
         HeapData::DequeIterator(iter) => on_child(iter.deque_id()),
         HeapData::TupleIterator(iter) => on_child(iter.source_id()),
@@ -2159,6 +2179,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
+        HeapData::DataclassMethod(method) => method.py_dec_ref_ids(stack),
         HeapData::DataclassParams(params) => params.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::DequeIterator(iter) => iter.py_dec_ref_ids(stack),
