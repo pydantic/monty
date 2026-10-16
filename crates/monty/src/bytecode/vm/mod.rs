@@ -12,6 +12,7 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod method_cache;
 mod namespace;
 mod recursion;
 mod scheduler;
@@ -21,6 +22,7 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
+pub(crate) use method_cache::MethodCache;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
@@ -899,6 +901,11 @@ pub struct VM<'h> {
     /// `malloc`/`free` per call. Only held transiently within
     /// `call_sync_function`, so one shared buffer is safe under recursion.
     namespace_scratch: Vec<Value>,
+
+    /// Method lookups on user classes, keyed by class version and name.
+    /// Holds no references, so it needs no cleanup and is never dumped.
+    pub(crate) method_cache: MethodCache,
+
     /// Remaining native Rust call-stack re-entry budget, counted down from
     /// [`recursion::MAX_RUN_REENTRY_DEPTH`] around the two places the
     /// interpreter recurses on its own stack instead of switching
@@ -959,6 +966,7 @@ impl<'h> VM<'h> {
             pending_lookup_effect: None,
             recursion_depth: 0,
             namespace_scratch: Vec::new(),
+            method_cache: MethodCache::default(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
             random: SessionRandom::default(),
@@ -1031,6 +1039,7 @@ impl<'h> VM<'h> {
             pending_lookup_effect: snapshot.pending_lookup_effect,
             recursion_depth: current_frame_depth,
             namespace_scratch: Vec::new(),
+            method_cache: MethodCache::default(),
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),

@@ -1,4 +1,7 @@
-use std::fmt::Write;
+use std::{
+    fmt::Write,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use monty_types::MontyUuid;
 
@@ -42,6 +45,22 @@ pub(crate) struct Class {
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
+    /// Process-unique tag for the current namespace contents, replaced on every
+    /// mutation; keys the VM's `MethodCache`.
+    /// Not dumped: a restored class draws a fresh tag.
+    #[serde(skip, default = "next_class_version")]
+    version: u64,
+}
+
+/// Source of [`Class::version`] tags.
+static NEXT_CLASS_VERSION: AtomicU64 = AtomicU64::new(1);
+
+/// Draws a class version tag no other class, past or present, has held.
+///
+/// Uniqueness is what lets the method cache hold raw ids without refcounts: a
+/// freed class's tag can never match a live one.
+fn next_class_version() -> u64 {
+    NEXT_CLASS_VERSION.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Class {
@@ -52,6 +71,7 @@ impl Class {
             name,
             namespace,
             uuid: None,
+            version: next_class_version(),
         }
     }
 
@@ -79,11 +99,27 @@ impl Class {
     pub fn namespace(&self) -> &Dict {
         &self.namespace
     }
+
+    /// The tag of the namespace's current contents, the method cache key.
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
+    }
 }
 
 impl<'h> HeapRead<'h, Class> {
+    /// Mutable access to the namespace. Every caller must call
+    /// [`bump_version`](Self::bump_version) afterwards, or cached method lookups go stale.
     fn namespace_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
         heap_read_ref_as_field_mut!(self, Class, namespace)
+    }
+
+    /// Retags the namespace after a mutation, invalidating cached lookups.
+    ///
+    /// Runs after the mutation, since storing a key may run user `__eq__` code
+    /// that fills the cache from the old contents.
+    fn bump_version(&mut self, vm: &mut VM<'h>) {
+        self.get_mut(vm.heap).version = next_class_version();
     }
 
     /// Sets a class attribute (`Foo.x = 1`), returning the previous value (if any)
@@ -92,7 +128,9 @@ impl<'h> HeapRead<'h, Class> {
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.namespace_mut().set(name, value, vm)
+        let result = self.namespace_mut().set(name, value, vm);
+        self.bump_version(vm);
+        result
     }
 
     /// Removes a class attribute, returning it for the caller to drop.
@@ -100,7 +138,9 @@ impl<'h> HeapRead<'h, Class> {
     /// Only `@dataclass` needs this, to clear the `field()` object a class body
     /// bound for a factory-only field — CPython's decorator `delattr`s it.
     pub fn pop_attr(&mut self, name: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(self.namespace_mut().pop(name, vm)?.map(|(key, value)| {
+        let popped = self.namespace_mut().pop(name, vm);
+        self.bump_version(vm);
+        Ok(popped?.map(|(key, value)| {
             key.drop_with(vm);
             value
         }))

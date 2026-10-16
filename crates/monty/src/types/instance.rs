@@ -281,7 +281,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 
         // 2. A class member: bind `self` for methods, call data attributes as-is.
         let class_id = self.get(vm.heap).class;
-        if let Some(member) = class_member(class_id, attr_str, vm) {
+        if let Some(member) = cached_class_member(class_id, attr, vm) {
             defer_drop!(member, vm);
             return call_member_bound(member, self.id(), args, vm);
         }
@@ -803,6 +803,23 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
             .get_by_str(name, vm.heap, vm.interns)
             .map(|v| v.clone_with_heap(vm.heap)),
         _ => None,
+    }
+}
+
+/// [`class_member`] through the VM's `MethodCache` (`bytecode/vm/method_cache.rs`).
+///
+/// Only interned names are cached, which covers every `obj.name(...)` call site.
+fn cached_class_member(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    match (attr, vm.heap.get(class_id)) {
+        (EitherStr::Interned(name), HeapData::Class(class)) => {
+            let version = class.version();
+            vm.method_cache.get(version, *name, vm.heap).or_else(|| {
+                let member = class_member(class_id, attr.as_str(vm.interns), vm)?;
+                vm.method_cache.insert(version, *name, &member, vm.heap);
+                Some(member)
+            })
+        }
+        _ => class_member(class_id, attr.as_str(vm.interns), vm),
     }
 }
 

@@ -296,6 +296,27 @@ for _ in range(10_000):
 r
 ";
 
+/// Calls methods on a user class instance, so the class namespace lookup is
+/// on the hot path; the method bodies are kept trivial.
+const USER_METHOD_CALL: &str = "
+class Counter:
+    def __init__(self):
+        self.total = 0
+
+    def add(self, k):
+        self.total += k
+
+    def get(self):
+        return self.total
+
+c = Counter()
+r = 0
+for i in range(10_000):
+    c.add(i)
+    r += c.get()
+r
+";
+
 const LIST_APPEND_STR: &str = "
 a = []
 for i in range(100_000):
@@ -714,6 +735,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     #[cfg(not(feature = "codspeed"))]
     c.bench_function("attr_dispatch_minimal__cpython", |b| {
         run_cpython(b, ATTR_DISPATCH_MINIMAL, 30_000);
+    });
+
+    c.bench_function("user_method_call__monty", |b| {
+        run_monty(b, USER_METHOD_CALL, 166_666_665_000);
+    });
+    #[cfg(not(codspeed))]
+    c.bench_function("user_method_call__cpython", |b| {
+        run_cpython(b, USER_METHOD_CALL, 166_666_665_000);
     });
 
     c.bench_function("list_append_str__monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));
