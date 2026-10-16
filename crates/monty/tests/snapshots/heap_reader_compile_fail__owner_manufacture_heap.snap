@@ -1,0 +1,14 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error[E0624]: associated function `new` is private
+    --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:104:46
+     |
+ 104 |     let _heap: Heap<HeapId<'static>> = Heap::new(0, ResourceTracker::default());
+     |                                              ^^^ private associated function
+     |
+    ::: crates/monty/src/heap/mod.rs:1103:5
+     |
+1103 |     unsafe fn new(capacity: usize, tracker: ResourceTracker) -> Self {
+     |     ---------------------------------------------------------------- private associated function defined here

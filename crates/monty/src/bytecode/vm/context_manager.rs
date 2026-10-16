@@ -11,11 +11,12 @@ use super::{CallResult, VM};
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::RuntimeRef,
     types::PyTrait,
     value::Value,
 };
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// `BeforeWith`: peek the context manager at TOS, call `__enter__`, and push
     /// the result. The context manager stays on the stack across the body so the
     /// matching `WithExit` / `WithExceptStart` can find it.
@@ -24,7 +25,7 @@ impl VM<'_> {
     /// `TypeError` is gated on [`PyTrait::py_is_context_manager`] so we never
     /// have to sniff exception messages — a real context manager whose
     /// `__enter__` itself raises `AttributeError` propagates unchanged.
-    pub(super) fn exec_before_with(&mut self) -> RunResult<CallResult> {
+    pub(super) fn exec_before_with(&mut self) -> RunResult<CallResult<H>> {
         // Pattern-matching `*self.peek()` is a place expression so it doesn't
         // move the whole Value — Rust only copies the HeapId out. Non-Ref
         // values (Int, Bool, None, …) never implement the protocol.
@@ -43,7 +44,7 @@ impl VM<'_> {
     /// and push the result. The compiler emits a trailing `Pop` to discard the
     /// result; splitting "call + discard" lets the call yield to the host while
     /// the discard happens once the host has resumed with the return value.
-    pub(super) fn exec_with_exit(&mut self) -> RunResult<CallResult> {
+    pub(super) fn exec_with_exit(&mut self) -> RunResult<CallResult<H>> {
         let this = self;
         let ctx = this.pop();
         let Value::Ref(ctx_id) = ctx else {
@@ -61,7 +62,7 @@ impl VM<'_> {
     /// compiler-emitted `JumpIfTrue` then branches on its truthiness to either
     /// suppress (Pop ctx, Pop exc, ClearException) or re-raise (Pop ctx, Pop exc,
     /// Reraise).
-    pub(super) fn exec_with_except_start(&mut self) -> RunResult<CallResult> {
+    pub(super) fn exec_with_except_start(&mut self) -> RunResult<CallResult<H>> {
         let len = self.stack.len();
         // Pattern-match via place expressions so neither stack slot is moved.
         let Value::Ref(exc_id) = self.stack[len - 1] else {
@@ -83,7 +84,7 @@ impl VM<'_> {
 /// this gate failure always reports `__exit__`. A user class that defines
 /// `__exit__` but not `__enter__` passes the gate and gets the
 /// "missed __enter__ method" variant from `Instance::py_enter` instead.
-fn not_a_context_manager(vm: &VM<'_>) -> RunError {
+fn not_a_context_manager<H: RuntimeRef>(vm: &VM<'_, H>) -> RunError {
     let ty = vm.peek().py_type_name(vm);
     ExcType::type_error_not_context_manager(ty, "__exit__")
 }

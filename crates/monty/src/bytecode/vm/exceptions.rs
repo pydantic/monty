@@ -8,7 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    heap::{DropGuard, HeapData},
+    heap::{DropGuard, HeapData, RuntimeRef},
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
@@ -24,7 +24,7 @@ enum ExceptionHandlingResult {
     NextTask(RunError),
 }
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// Returns the current function name, or `<module>` outside a function.
     fn current_frame_name(&self) -> StringId {
         match self.current_frame().function_id {
@@ -76,7 +76,7 @@ impl VM<'_> {
     /// Borrows the value so callers that already own one can keep it — the
     /// `raise`/`Reraise` paths reuse it as the raised object itself.
     /// The `is_raise` flag indicates if this is from a `raise` statement (hide caret).
-    pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
+    pub(super) fn make_exception(&mut self, exc_value: &Value<H>, is_raise: bool) -> RunError {
         let simple_exc = match exc_value {
             // Exception instance on heap
             Value::Ref(heap_id) => {
@@ -249,7 +249,7 @@ impl VM<'_> {
     pub(super) fn handle_exception_with_value(
         &mut self,
         mut error: RunError,
-        mut raised: Option<Value>,
+        mut raised: Option<Value<H>>,
     ) -> Option<RunError> {
         loop {
             match self.handle_exception_step(error, raised.take()) {
@@ -261,7 +261,7 @@ impl VM<'_> {
     }
 
     /// Handles one task's exception, returning to the caller's loop if another task must raise.
-    fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
+    fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value<H>>) -> ExceptionHandlingResult {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
@@ -418,7 +418,7 @@ impl VM<'_> {
     /// Creates an exception Value from exception info.
     ///
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
-    fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
+    fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value<H> {
         let exception = exc.exc.clone();
         let heap_id = self.heap.allocate(HeapData::Exception(exception));
         Value::Ref(heap_id)
@@ -446,7 +446,7 @@ impl VM<'_> {
     /// on the first match: an invalid element raises the `TypeError` even when an
     /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
     /// raising `TypeError` still raises the `TypeError` about catching classes).
-    pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
+    pub(super) fn check_exc_match(&self, exception: &Value<H>, exc_type: &Value<H>) -> Result<bool, RunError> {
         let exc_type_enum = exception.py_type(self);
         match exc_type {
             // Single exception class.
@@ -488,14 +488,14 @@ impl VM<'_> {
     /// Helper shared by the single-class and flat-tuple arms of
     /// [`check_exc_match`]; the raised value only matches when its type is an
     /// exception that is a subclass of the handler's class.
-    fn exc_matches_handler(exc_type_enum: Type, handler_type: ExcType) -> bool {
+    fn exc_matches_handler(exc_type_enum: Type<H>, handler_type: ExcType) -> bool {
         matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(handler_type))
     }
 }
 
 /// Streams an assert operand's repr into the configured byte-capped writer.
 /// Reaching the cap stops formatting the remainder and appends `…`.
-fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
+fn assert_operand_repr<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<String> {
     let mut writer = TruncatingWriter::new(vm.env.assert_repr_max_bytes as usize);
     let mut heap_ids = LazyHeapSet::default();
     match value.py_repr_fmt(&mut writer, vm, &mut heap_ids) {
@@ -509,7 +509,7 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
 
 /// `str()` of an explicit assert message, matching how the message renders in
 /// `AssertionError: {msg}` — not truncated, since the user chose it explicitly.
-fn assert_msg_str(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
+fn assert_msg_str<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<String> {
     let str_value = value.py_str(vm)?;
     defer_drop!(str_value, vm);
     Ok(str_value.to_str(vm)?.to_owned())

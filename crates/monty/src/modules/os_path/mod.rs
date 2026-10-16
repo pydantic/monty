@@ -26,7 +26,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, Reference, RuntimeRef},
     intern::{StaticStrings, StringId},
     modules::{
         ModuleFunctions,
@@ -83,9 +83,9 @@ pub(crate) enum OsPathFunctions {
 /// Creates the `os.path` module (named `posixpath`, as CPython's is) and
 /// allocates it on the heap. `os.create_module` hangs one off `os.path`;
 /// `import os.path` / `import posixpath` build their own.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     /// Shorthand for the function-attribute entries in the table below.
-    fn function(f: OsPathFunctions) -> Value {
+    fn function<H: RuntimeRef>(f: OsPathFunctions) -> Value<H> {
         Value::ModuleFunction(ModuleFunctions::OsPath(f))
     }
 
@@ -151,7 +151,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 }
 
 /// Dispatches a call to an `os.path` function.
-pub(super) fn call(vm: &mut VM<'_>, functions: OsPathFunctions, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    functions: OsPathFunctions,
+    args: ArgValues<H>,
+) -> RunResult<CallResult<H>> {
     match functions {
         OsPathFunctions::Abspath => abspath(vm, args).map(CallResult::Value),
         OsPathFunctions::Basename => basename(vm, args).map(CallResult::Value),
@@ -194,17 +198,17 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsPathFunctions, args: ArgValues)
 /// `os.path.join(a, *p)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "join")]
-struct JoinArgs {
-    a: Value,
+struct JoinArgs<H: Reference> {
+    a: Value<H>,
     #[from_args(varargs)]
-    p: Vec<Value>,
+    p: Vec<Value<H>>,
 }
 
 /// Implementation of `os.path.join(a, *p)`: one kind of path throughout.
 /// Any failure re-inspects the arguments like `genericpath._check_arg_types`
 /// (`a` after `os.fspath`, `*p` as passed), so the error names the first
 /// non-path argument before complaining about mixed kinds.
-fn join(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn join<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let JoinArgs { a, p } = JoinArgs::from_args(args, vm)?;
     defer_drop!(a, vm);
     defer_drop!(p, vm);
@@ -227,12 +231,12 @@ fn join(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.split(p)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "split", style = def)]
-struct SplitArgs {
-    p: Value,
+struct SplitArgs<H: Reference> {
+    p: Value<H>,
 }
 
 /// Implementation of `os.path.split(p)`.
-fn split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn split<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let SplitArgs { p } = SplitArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     let text = PathText::fspath(p, vm)?;
@@ -243,12 +247,12 @@ fn split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.splitext(p)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "splitext", style = def)]
-struct SplitextArgs {
-    p: Value,
+struct SplitextArgs<H: Reference> {
+    p: Value<H>,
 }
 
 /// Implementation of `os.path.splitext(p)`.
-fn splitext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn splitext<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let SplitextArgs { p } = SplitextArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     let text = PathText::fspath(p, vm)?;
@@ -259,12 +263,12 @@ fn splitext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.splitdrive(p)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "splitdrive", style = def)]
-struct SplitdriveArgs {
-    p: Value,
+struct SplitdriveArgs<H: Reference> {
+    p: Value<H>,
 }
 
 /// Implementation of `os.path.splitdrive(p)`: POSIX paths have no drive.
-fn splitdrive(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn splitdrive<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let SplitdriveArgs { p } = SplitdriveArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     let text = PathText::fspath(p, vm)?;
@@ -275,13 +279,13 @@ fn splitdrive(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `posix._path_splitroot_ex`, whose clinic wording the errors keep.
 #[derive(FromArgs)]
 #[from_args(name = "_path_splitroot_ex", style = c_named, at_most_total)]
-struct SplitrootArgs {
-    p: Value,
+struct SplitrootArgs<H: Reference> {
+    p: Value<H>,
 }
 
 /// Implementation of `os.path.splitroot(p)`: `(drive, root, tail)` with an
 /// always-empty drive.
-fn splitroot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn splitroot<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let SplitrootArgs { p } = SplitrootArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     let text = PathText::extract(p, vm, |type_name| {
@@ -299,12 +303,12 @@ fn splitroot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.basename(p)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "basename", style = def)]
-struct BasenameArgs {
-    p: Value,
+struct BasenameArgs<H: Reference> {
+    p: Value<H>,
 }
 
 /// Implementation of `os.path.basename(p)`.
-fn basename(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn basename<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let BasenameArgs { p } = BasenameArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     let text = PathText::fspath(p, vm)?;
@@ -314,12 +318,12 @@ fn basename(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.dirname(p)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "dirname", style = def)]
-struct DirnameArgs {
-    p: Value,
+struct DirnameArgs<H: Reference> {
+    p: Value<H>,
 }
 
 /// Implementation of `os.path.dirname(p)`.
-fn dirname(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn dirname<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DirnameArgs { p } = DirnameArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     let text = PathText::fspath(p, vm)?;
@@ -329,12 +333,12 @@ fn dirname(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.isabs(s)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "isabs", style = def)]
-struct IsabsArgs {
-    s: Value,
+struct IsabsArgs<H: Reference> {
+    s: Value<H>,
 }
 
 /// Implementation of `os.path.isabs(s)`.
-fn isabs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn isabs<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let IsabsArgs { s } = IsabsArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let text = PathText::fspath(s, vm)?;
@@ -344,12 +348,12 @@ fn isabs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.normcase(s)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "normcase", style = def)]
-struct NormcaseArgs {
-    s: Value,
+struct NormcaseArgs<H: Reference> {
+    s: Value<H>,
 }
 
 /// Implementation of `os.path.normcase(s)`: the identity on POSIX, after `os.fspath`.
-fn normcase(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn normcase<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let NormcaseArgs { s } = NormcaseArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let text = PathText::fspath(s, vm)?;
@@ -360,12 +364,12 @@ fn normcase(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `posix._path_normpath`, whose clinic wording the errors keep.
 #[derive(FromArgs)]
 #[from_args(name = "_path_normpath", style = c_named, at_most_total)]
-struct NormpathArgs {
-    path: Value,
+struct NormpathArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.normpath(path)`.
-fn normpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn normpath<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let NormpathArgs { path } = NormpathArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let text = PathText::extract(path, vm, |type_name| {
@@ -381,13 +385,13 @@ const C_PATH_ACCEPTS: &str = "string, bytes or os.PathLike";
 /// `os.path.abspath(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "abspath", style = def)]
-struct AbspathArgs {
-    path: Value,
+struct AbspathArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.abspath(path)`: pure, against the sandbox's
 /// virtual working directory.
-fn abspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn abspath<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let AbspathArgs { path } = AbspathArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let text = PathText::fspath(path, vm)?;
@@ -397,15 +401,15 @@ fn abspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.relpath(path, start=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "relpath", style = def)]
-struct RelpathArgs {
-    path: Value,
+struct RelpathArgs<H: Reference> {
+    path: Value<H>,
     #[from_args(default = Value::None)]
-    start: Value,
+    start: Value<H>,
 }
 
 /// Implementation of `os.path.relpath(path, start=None)`: pure, against the
 /// sandbox's virtual working directory. `start=None` means `os.curdir`.
-fn relpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn relpath<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let RelpathArgs { path, start } = RelpathArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     defer_drop!(start, vm);
@@ -432,14 +436,14 @@ fn relpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.commonpath(paths)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "commonpath", style = def)]
-struct CommonpathArgs {
-    paths: Value,
+struct CommonpathArgs<H: Reference> {
+    paths: Value<H>,
 }
 
 /// Implementation of `os.path.commonpath(paths)`: `os.fspath` over the
 /// sequence first, so a non-path element fails before an empty sequence or
 /// mixed kinds do.
-fn commonpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn commonpath<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CommonpathArgs { paths } = CommonpathArgs::from_args(args, vm)?;
     defer_drop!(paths, vm);
     let items = collect_iterable(paths, vm)?;
@@ -462,15 +466,15 @@ fn commonpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.commonprefix(m)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "commonprefix", style = def)]
-struct CommonprefixArgs {
-    m: Value,
+struct CommonprefixArgs<H: Reference> {
+    m: Value<H>,
 }
 
 /// Implementation of `genericpath.commonprefix(m)`: the longest common
 /// leading slice of `min(m)` and `max(m)`. Elements are passed through
 /// `os.fspath` unless `m[0]` is a list or tuple, in which case the elements
 /// are compared as sequences and the prefix is a slice of the smallest one.
-fn commonprefix(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn commonprefix<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CommonprefixArgs { m } = CommonprefixArgs::from_args(args, vm)?;
     defer_drop!(m, vm);
     if !m.py_bool(vm)? {
@@ -499,7 +503,7 @@ fn commonprefix(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `min(items)` / `max(items)` by reference: the first item that no later
 /// item strictly beats, with `min`'s own `<`-unsupported error.
-fn extreme<'a>(items: &'a [Value], is_min: bool, vm: &mut VM<'_>) -> RunResult<&'a Value> {
+fn extreme<'a, H: RuntimeRef>(items: &'a [Value<H>], is_min: bool, vm: &mut VM<'_, H>) -> RunResult<&'a Value<H>> {
     let mut best = &items[0];
     for item in &items[1..] {
         if candidate_wins(best, item, is_min, vm)? {
@@ -514,7 +518,7 @@ fn extreme<'a>(items: &'a [Value], is_min: bool, vm: &mut VM<'_>) -> RunResult<&
 /// list is that list). Strings slice by code point and bytes by byte;
 /// anything else is iterated and indexed like CPython does it (so a dict's
 /// int keys raise `TypeError`), with `==` on the elements.
-fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn common_leading_slice<H: RuntimeRef>(s1: &Value<H>, s2: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     match (s1.py_type_heap(vm.heap), s2.py_type_heap(vm.heap)) {
         (Type::Str, Type::Str) => {
             let a = value_to_owned_string(s1, vm.heap, vm.interns).expect("checked str");
@@ -561,13 +565,13 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
 /// `os.path.isjunction(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "isjunction", style = def)]
-struct IsjunctionArgs {
-    path: Value,
+struct IsjunctionArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.isjunction(path)`: junctions are a Windows
 /// concept, so this is `False` once `os.fspath` accepts the argument.
-fn isjunction(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn isjunction<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let IsjunctionArgs { path } = IsjunctionArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     PathText::fspath(path, vm)?;
@@ -577,13 +581,13 @@ fn isjunction(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.isdevdrive(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "isdevdrive", style = def)]
-struct IsdevdriveArgs {
-    path: Value,
+struct IsdevdriveArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.isdevdrive(path)`: Dev Drives are a Windows
 /// concept, so this is `False` once `os.fspath` accepts the argument.
-fn isdevdrive(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn isdevdrive<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let IsdevdriveArgs { path } = IsdevdriveArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     PathText::fspath(path, vm)?;
@@ -593,15 +597,15 @@ fn isdevdrive(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.samestat(s1, s2)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "samestat", style = def)]
-struct SamestatArgs {
-    s1: Value,
-    s2: Value,
+struct SamestatArgs<H: Reference> {
+    s1: Value<H>,
+    s2: Value<H>,
 }
 
 /// Implementation of `os.path.samestat(s1, s2)`:
 /// `s1.st_ino == s2.st_ino and s1.st_dev == s2.st_dev`, evaluated in that
 /// order so a missing attribute is reported as CPython reports it.
-fn samestat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn samestat<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let SamestatArgs { s1, s2 } = SamestatArgs::from_args(args, vm)?;
     defer_drop!(s1, vm);
     defer_drop!(s2, vm);
@@ -611,7 +615,12 @@ fn samestat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `a.attr == b.attr` for a plain data attribute.
-fn attributes_equal(a: &Value, b: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunResult<bool> {
+fn attributes_equal<H: RuntimeRef>(
+    a: &Value<H>,
+    b: &Value<H>,
+    attr: StaticStrings,
+    vm: &mut VM<'_, H>,
+) -> RunResult<bool> {
     let x = data_attribute(a, attr, vm)?;
     defer_drop!(x, vm);
     let y = data_attribute(b, attr, vm)?;
@@ -621,7 +630,7 @@ fn attributes_equal(a: &Value, b: &Value, attr: StaticStrings, vm: &mut VM<'_>) 
 
 /// `getattr(value, attr)` through the synchronous call path, so any
 /// stat-like object works; a lazy host attribute reads as absent there.
-fn data_attribute(value: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunResult<Value> {
+fn data_attribute<H: RuntimeRef>(value: &Value<H>, attr: StaticStrings, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let name = Value::InternString(vm.interns.intern_static(attr));
     let getattr = Value::Builtin(Builtins::Function(BuiltinsFunctions::Getattr));
     vm.evaluate_function(
@@ -638,12 +647,12 @@ fn data_attribute(value: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunRes
 /// `os.path.exists(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "exists", style = def)]
-struct ExistsArgs {
-    path: Value,
+struct ExistsArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.exists(path)` — the `Path.exists` host call.
-fn exists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn exists<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let ExistsArgs { path } = ExistsArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     predicate(path, "stat", PathAccepts::Fd, OsFunctionCall::Exists, vm)
@@ -652,12 +661,12 @@ fn exists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.path.isfile(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "isfile", style = def)]
-struct IsfileArgs {
-    path: Value,
+struct IsfileArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.isfile(path)` — the `Path.is_file` host call.
-fn isfile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn isfile<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let IsfileArgs { path } = IsfileArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     predicate(path, "stat", PathAccepts::Fd, OsFunctionCall::IsFile, vm)
@@ -666,12 +675,12 @@ fn isfile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.path.isdir(s)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "isdir", style = def)]
-struct IsdirArgs {
-    s: Value,
+struct IsdirArgs<H: Reference> {
+    s: Value<H>,
 }
 
 /// Implementation of `os.path.isdir(s)` — the `Path.is_dir` host call.
-fn isdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn isdir<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let IsdirArgs { s } = IsdirArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     predicate(s, "stat", PathAccepts::Fd, OsFunctionCall::IsDir, vm)
@@ -680,13 +689,13 @@ fn isdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.path.islink(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "islink", style = def)]
-struct IslinkArgs {
-    path: Value,
+struct IslinkArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.islink(path)` — the `Path.is_symlink` host
 /// call. CPython reaches it through `os.lstat`, whose converter takes no fd.
-fn islink(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn islink<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let IslinkArgs { path } = IslinkArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     predicate(path, "lstat", PathAccepts::NoFd, OsFunctionCall::IsSymlink, vm)
@@ -695,15 +704,15 @@ fn islink(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.path.ismount(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "ismount", style = def)]
-struct IsmountArgs {
-    path: Value,
+struct IsmountArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.ismount(path)`: every existing path counts as a
 /// mount point, so this is the `Path.exists` host call. The sandbox cannot
 /// see where the host's mounts begin, and answering `True` is what keeps the
 /// usual "walk up until a mount point" loops terminating.
-fn ismount(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn ismount<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let IsmountArgs { path } = IsmountArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     predicate(path, "lstat", PathAccepts::NoFd, OsFunctionCall::Exists, vm)
@@ -712,14 +721,14 @@ fn ismount(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.path.lexists(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "lexists", style = def)]
-struct LexistsArgs {
-    path: Value,
+struct LexistsArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.lexists(path)`: `Path.exists`, and when that is
 /// `False`, `Path.is_symlink` (a dangling symlink exists without a target);
 /// see [`PreConversionEffect::Lexists`].
-fn lexists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn lexists<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let LexistsArgs { path } = LexistsArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let path = extract_os_path(path, "lstat", "path", PathAccepts::NoFd, vm)?;
@@ -739,7 +748,7 @@ fn lexists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// Completes `os.path.lexists` from the `Path.exists` reply — the resume half
 /// of [`PreConversionEffect::Lexists`]. `False` may still be a dangling
 /// symlink, which `Path.is_symlink` reports.
-pub(crate) fn lexists_reply(value: &MontyObject, path: String) -> Result<Reshaped, RunError> {
+pub(crate) fn lexists_reply<H: RuntimeRef>(value: &MontyObject, path: String) -> Result<Reshaped<H>, RunError> {
     Ok(if bool_reply(value, "os.path.lexists")? {
         Reshaped::Value(MontyObject::bool(true))
     } else {
@@ -753,16 +762,16 @@ pub(crate) fn lexists_reply(value: &MontyObject, path: String) -> Result<Reshape
 /// `os.path.samefile(f1, f2)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "samefile", style = def)]
-struct SamefileArgs {
-    f1: Value,
-    f2: Value,
+struct SamefileArgs<H: Reference> {
+    f1: Value<H>,
+    f2: Value<H>,
 }
 
 /// Implementation of `os.path.samefile(f1, f2)`: `Path.stat` on each in turn,
 /// then `samestat` on the replies (see [`PreConversionEffect::SamefileFirst`]).
 /// `f2` is extracted now but its errors are deferred to after the first
 /// stat, which is when CPython's `os.stat(f2)` would raise them.
-fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn samefile<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let SamefileArgs { f1, f2 } = SamefileArgs::from_args(args, vm)?;
     defer_drop!(f1, vm);
     defer_drop!(f2, vm);
@@ -785,11 +794,11 @@ fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// resume half of [`PreConversionEffect::SamefileFirst`]. The second path's
 /// deferred converter error and `FileNotFoundError` for the empty path raise
 /// here, where CPython's `os.stat(f2)` raises them.
-pub(crate) fn samefile_first_reply(
+pub(crate) fn samefile_first_reply<H: RuntimeRef>(
     value: &MontyObject,
     first: String,
     second: Result<String, PathArgError>,
-) -> Result<Reshaped, RunError> {
+) -> Result<Reshaped<H>, RunError> {
     let first_identity =
         stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
     let second = match second {
@@ -848,13 +857,13 @@ fn stat_identity(value: &MontyObject) -> Option<(String, String)> {
 /// (which CPython's `stat` fails on without the host's help), else the host
 /// call. A NUL byte is answered `False` by the VM before the call leaves the
 /// sandbox.
-fn predicate(
-    path: &Value,
+fn predicate<H: RuntimeRef>(
+    path: &Value<H>,
     func: &'static str,
     accepts: PathAccepts,
     make_call: impl FnOnce(MontyPath) -> OsFunctionCall,
-    vm: &VM<'_>,
-) -> RunResult<CallResult> {
+    vm: &VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     match extract_accepted_path(path, accepts, vm) {
         Err(PathArgError::BadFd { .. }) => Ok(CallResult::Value(Value::Bool(false))),
         Err(err) => Err(err.into_error(func, "path")),
@@ -866,12 +875,12 @@ fn predicate(
 /// `os.path.getsize(filename)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "getsize", style = def)]
-struct GetsizeArgs {
-    filename: Value,
+struct GetsizeArgs<H: Reference> {
+    filename: Value<H>,
 }
 
 /// Implementation of `os.path.getsize(filename)`: `os.stat(filename).st_size`.
-fn getsize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn getsize<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let GetsizeArgs { filename } = GetsizeArgs::from_args(args, vm)?;
     defer_drop!(filename, vm);
     stat_field(filename, StatField::Size, vm)
@@ -880,12 +889,12 @@ fn getsize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.path.getmtime(filename)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "getmtime", style = def)]
-struct GetmtimeArgs {
-    filename: Value,
+struct GetmtimeArgs<H: Reference> {
+    filename: Value<H>,
 }
 
 /// Implementation of `os.path.getmtime(filename)`: `os.stat(filename).st_mtime`.
-fn getmtime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn getmtime<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let GetmtimeArgs { filename } = GetmtimeArgs::from_args(args, vm)?;
     defer_drop!(filename, vm);
     stat_field(filename, StatField::Mtime, vm)
@@ -894,12 +903,12 @@ fn getmtime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.path.getatime(filename)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "getatime", style = def)]
-struct GetatimeArgs {
-    filename: Value,
+struct GetatimeArgs<H: Reference> {
+    filename: Value<H>,
 }
 
 /// Implementation of `os.path.getatime(filename)`: `os.stat(filename).st_atime`.
-fn getatime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn getatime<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let GetatimeArgs { filename } = GetatimeArgs::from_args(args, vm)?;
     defer_drop!(filename, vm);
     stat_field(filename, StatField::Atime, vm)
@@ -908,12 +917,12 @@ fn getatime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.path.getctime(filename)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "getctime", style = def)]
-struct GetctimeArgs {
-    filename: Value,
+struct GetctimeArgs<H: Reference> {
+    filename: Value<H>,
 }
 
 /// Implementation of `os.path.getctime(filename)`: `os.stat(filename).st_ctime`.
-fn getctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn getctime<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let GetctimeArgs { filename } = GetctimeArgs::from_args(args, vm)?;
     defer_drop!(filename, vm);
     stat_field(filename, StatField::Ctime, vm)
@@ -922,7 +931,7 @@ fn getctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// Shared body of the stat getters: the `Path.stat` host call with a
 /// [`PreConversionEffect::StatField`] that keeps one field of the reply. The
 /// empty path fails as CPython's `stat('')` does, without consulting the host.
-fn stat_field(path: &Value, field: StatField, vm: &VM<'_>) -> RunResult<CallResult> {
+fn stat_field<H: RuntimeRef>(path: &Value<H>, field: StatField, vm: &VM<'_, H>) -> RunResult<CallResult<H>> {
     let path = extract_os_path(path, "stat", "path", PathAccepts::Fd, vm)?;
     if path.is_empty() {
         Err(ExcType::file_not_found_error(""))
@@ -986,8 +995,8 @@ pub(crate) fn stat_field_reply(value: &MontyObject, field: StatField) -> Result<
 /// truth-tested like CPython's, hence [`LaxBool`].
 #[derive(FromArgs)]
 #[from_args(name = "realpath", style = def)]
-struct RealpathArgs {
-    filename: Value,
+struct RealpathArgs<H: Reference> {
+    filename: Value<H>,
     #[from_args(kw_only, default = LaxBool::new(false))]
     strict: LaxBool,
 }
@@ -997,7 +1006,7 @@ struct RealpathArgs {
 /// reply into `str` and, under `strict`, chaining the existence check. The
 /// empty path is `os.getcwd()` without a call, as in CPython; the sandbox's
 /// working directory is session state, so there is nothing to check.
-fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn realpath<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let RealpathArgs { filename, strict } = RealpathArgs::from_args(args, vm)?;
     defer_drop!(filename, vm);
     let text = PathText::fspath(filename, vm)?;
@@ -1022,7 +1031,7 @@ fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// host answering the callback itself may already return `str`. Under
 /// `strict`, mounts resolve lexically and never report a missing path, so a
 /// `Path.exists` call on the result follows.
-pub(crate) fn resolved_path_reply(value: &MontyObject, strict: bool) -> Result<Reshaped, RunError> {
+pub(crate) fn resolved_path_reply<H: RuntimeRef>(value: &MontyObject, strict: bool) -> Result<Reshaped<H>, RunError> {
     let resolved = match unstable::root_node(value) {
         MontyNode::Path(path) | MontyNode::String(path) => path.clone(),
         _ => return Err(invalid_reply("os.path.realpath", "a path", value)),
@@ -1056,8 +1065,8 @@ pub(crate) fn realpath_strict_reply(value: &MontyObject, resolved: String) -> Re
 /// `os.path.expanduser(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "expanduser", style = def)]
-struct ExpanduserArgs {
-    path: Value,
+struct ExpanduserArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.expanduser(path)`. Only a leading `~` (bare or
@@ -1065,7 +1074,7 @@ struct ExpanduserArgs {
 /// with a [`PreConversionEffect::ExpandUser`] splicing the answer in. `~user`
 /// needs the password database, which the sandbox has no access to, so it is
 /// returned unchanged as CPython does for an unknown user.
-fn expanduser(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn expanduser<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let ExpanduserArgs { path } = ExpanduserArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let text = PathText::fspath(path, vm)?;
@@ -1101,14 +1110,14 @@ pub(crate) fn expand_user_reply(value: &MontyObject, tail: &[u8], is_bytes: bool
 /// `os.path.expandvars(path)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "expandvars", style = def)]
-struct ExpandvarsArgs {
-    path: Value,
+struct ExpandvarsArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.path.expandvars(path)`. A path without `$` is
 /// returned as is; otherwise the host's `os.environ` is fetched and a
 /// [`PreConversionEffect::ExpandVars`] performs the substitution on resume.
-fn expandvars(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn expandvars<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let ExpandvarsArgs { path } = ExpandvarsArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let text = PathText::fspath(path, vm)?;
@@ -1182,7 +1191,11 @@ struct PathText {
 impl PathText {
     /// `os.fspath(value)`: `str` and `Path` give text, `bytes` gives bytes,
     /// anything else raises the error `type_error` builds from its type name.
-    fn extract(value: &Value, vm: &VM<'_>, type_error: impl FnOnce(&str) -> RunError) -> RunResult<Self> {
+    fn extract<H: RuntimeRef>(
+        value: &Value<H>,
+        vm: &VM<'_, H>,
+        type_error: impl FnOnce(&str) -> RunError,
+    ) -> RunResult<Self> {
         if let Some(text) = value_to_owned_string(value, vm.heap, vm.interns) {
             Ok(Self {
                 bytes: text.into_bytes(),
@@ -1196,27 +1209,27 @@ impl PathText {
     }
 
     /// [`Self::extract`] with `os.fspath`'s own error wording.
-    fn fspath(value: &Value, vm: &VM<'_>) -> RunResult<Self> {
+    fn fspath<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<Self> {
         Self::extract(value, vm, ExcType::type_error_fspath)
     }
 
     /// The type `os.fspath` produced, for `check_arg_types`.
-    fn py_type(&self) -> Type {
+    fn py_type<H: RuntimeRef>(&self) -> Type<H> {
         if self.is_bytes { Type::Bytes } else { Type::Str }
     }
 
     /// Allocates `bytes` as the type this argument arrived with.
-    fn allocate(&self, bytes: Vec<u8>, heap: &Heap) -> Value {
+    fn allocate<H: RuntimeRef>(&self, bytes: Vec<u8>, heap: &Heap<H>) -> Value<H> {
         allocate_text(bytes, self.is_bytes, heap)
     }
 
     /// Allocates the argument itself, unchanged, as the type it arrived with.
-    fn into_value(self, heap: &Heap) -> Value {
+    fn into_value<H: RuntimeRef>(self, heap: &Heap<H>) -> Value<H> {
         allocate_text(self.bytes, self.is_bytes, heap)
     }
 
     /// A two-tuple of [`Self::allocate`]d results, for `split` and friends.
-    fn allocate_pair(&self, first: &[u8], second: &[u8], heap: &Heap) -> Value {
+    fn allocate_pair<H: RuntimeRef>(&self, first: &[u8], second: &[u8], heap: &Heap<H>) -> Value<H> {
         let items = smallvec![
             self.allocate(first.to_vec(), heap),
             self.allocate(second.to_vec(), heap)
@@ -1226,7 +1239,7 @@ impl PathText {
 }
 
 /// `bytes` as a `bytes` value, or as the `str` it was sliced from.
-fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
+fn allocate_text<H: RuntimeRef>(bytes: Vec<u8>, is_bytes: bool, heap: &Heap<H>) -> Value<H> {
     if is_bytes {
         Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(bytes))))
     } else {
@@ -1240,7 +1253,7 @@ fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
 /// `str` nor `bytes` is named, else the arguments mixed `str` and `bytes`.
 /// Callers pass the type `os.fspath` produced for the arguments CPython
 /// rebinds before the check, and the raw type (a `Path` included) otherwise.
-fn check_arg_types(func: &str, kinds: impl IntoIterator<Item = Type>, vm: &VM<'_>) -> RunError {
+fn check_arg_types<H: RuntimeRef>(func: &str, kinds: impl IntoIterator<Item = Type<H>>, vm: &VM<'_, H>) -> RunError {
     for kind in kinds {
         match kind {
             Type::Str | Type::Bytes => {}

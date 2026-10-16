@@ -17,7 +17,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::HeapData,
+    heap::{HeapData, Reference, RuntimeRef},
     os_dispatch::{PostConversionEffect, value_as_path_str},
     types::{
         PyTrait, Type,
@@ -31,7 +31,7 @@ use crate::{
 /// The host performs open-time validation and creation, then returns a file handle.
 /// The resume effect preserves the supplied filename for `.name` and `repr()`;
 /// subsequent I/O uses the handle's path, independent of later directory changes.
-pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub(crate) fn builtin_open<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let OpenArgs {
         file,
         mode,
@@ -107,22 +107,22 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
 /// follow the `_PyArg_BadArgument` shape that `bad_arg_named` emits.
 #[derive(FromArgs)]
 #[from_args(name = "open", bad_arg_named)]
-struct OpenArgs {
-    file: Value,
+struct OpenArgs<H: Reference> {
+    file: Value<H>,
     #[from_args(default)]
-    mode: Option<StrArg>,
+    mode: Option<StrArg<H>>,
     #[from_args(default = Value::Int(-1))]
-    buffering: Value,
+    buffering: Value<H>,
     #[from_args(default = Value::None)]
-    encoding: Value,
+    encoding: Value<H>,
     #[from_args(default = Value::None)]
-    errors: Value,
+    errors: Value<H>,
     #[from_args(default = Value::None)]
-    newline: Value,
+    newline: Value<H>,
     #[from_args(default = Value::Bool(true))]
-    closefd: Value,
+    closefd: Value<H>,
     #[from_args(default = Value::None)]
-    opener: Value,
+    opener: Value<H>,
 }
 
 /// Extracts a path string accepted by `open()`.
@@ -131,7 +131,7 @@ struct OpenArgs {
 /// and `os.DirEntry`. The error message mentions `os.PathLike` to match
 /// CPython, even though full PathLike support is limited to the variants
 /// listed above.
-fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
+fn extract_path_string<'a, H: RuntimeRef>(value: &Value<H>, vm: &'a VM<'_, H>) -> RunResult<&'a str> {
     let opt = match value {
         Value::InternBytes(bytes_id) => decode_utf8_path(vm.interns.get_bytes(*bytes_id))?,
         Value::Ref(id) if let HeapData::Bytes(b) = vm.heap.get(*id) => decode_utf8_path(b.as_slice())?,
@@ -177,7 +177,7 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
 /// Extracts `newline` as the raw string CPython sees: `None` stays `None` and
 /// a non-str raises the clinic `TypeError`. The value itself is validated
 /// after the open, in `apply_open_name`, where CPython validates it.
-fn newline_argument(value: &Value, vm: &VM<'_>) -> RunResult<Option<String>> {
+fn newline_argument<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<Option<String>> {
     if matches!(value, Value::None) {
         Ok(None)
     } else {
@@ -199,7 +199,7 @@ fn newline_argument(value: &Value, vm: &VM<'_>) -> RunResult<Option<String>> {
 /// Non-default values raise `TypeError` ("'<name>' argument is not yet
 /// supported"). A wrong *type* (e.g. `encoding=123`) is reported as a
 /// dedicated type error so it remains diagnosable.
-fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result<(), RunError> {
+fn validate_ignored_open_kwarg<H: RuntimeRef>(name: &str, value: &Value<H>, vm: &VM<'_, H>) -> Result<(), RunError> {
     let is_default = match name {
         // CPython default is -1 (sentinel for "interpreter picks the
         // buffer size"). Monty has no buffering layer to tune.
@@ -250,12 +250,12 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result
 }
 
 /// Creates the path type error used by `open()`.
-fn path_type_error(value: &Value, vm: &VM<'_>) -> RunError {
+fn path_type_error<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunError {
     ExcType::type_error_fspath(&value.py_type_name(vm))
 }
 
 /// The argument-clinic `TypeError` for a str-or-None `open()` kwarg of the wrong type.
-fn kwarg_type_error(name: &str, value: &Value, vm: &VM<'_>) -> RunError {
+fn kwarg_type_error<H: RuntimeRef>(name: &str, value: &Value<H>, vm: &VM<'_, H>) -> RunError {
     ExcType::type_error(format!(
         "open() argument '{name}' must be str or None, not {}",
         value.py_type(vm).cpython_arg_name(vm.heap, vm.interns)

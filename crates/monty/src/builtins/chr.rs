@@ -5,6 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
+    heap::RuntimeRef,
     types::str::allocate_char,
     value::Value,
 };
@@ -13,7 +14,7 @@ use crate::{
 ///
 /// Returns a string representing a character whose Unicode code point is the integer.
 /// The valid range for the argument is from 0 through 1,114,111 (0x10FFFF).
-pub fn builtin_chr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_chr<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let value = args.get_one_arg("chr", vm.heap)?;
     defer_drop!(value, vm);
 

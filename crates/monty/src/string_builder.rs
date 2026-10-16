@@ -38,7 +38,12 @@ use std::{fmt, iter, mem};
 
 use monty_types::{ResourceError, ResourceTracker};
 
-use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_string, value::Value};
+use crate::{
+    exception_private::RunResult,
+    heap::{Heap, RuntimeRef},
+    types::str::allocate_string,
+    value::Value,
+};
 
 /// Resource-tracked builder for a `String`.
 ///
@@ -142,7 +147,7 @@ impl<'t> StringBuilder<'t> {
     ///
     /// If a prior [`fmt::Write`] call captured a tracker error, that error is
     /// returned instead of the partial string.
-    pub fn finish(mut self, heap: &Heap) -> RunResult<Value> {
+    pub fn finish<H: RuntimeRef>(mut self, heap: &Heap<H>) -> RunResult<Value<H>> {
         if let Some(e) = self.pending_error.take() {
             return Err(e.into());
         }

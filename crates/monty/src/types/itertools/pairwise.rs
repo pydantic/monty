@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, DropWithContext, HeapId, HeapRead},
+    heap::{DropGuard, DropWithContext, HeapRead, Reference, RuntimeRef},
     types::{
         itertools::{ItertoolsIter, step::next_source},
         tuple::allocate_tuple,
@@ -14,24 +14,25 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields `(s0, s1), (s1, s2), …` from a source iterator.
 ///
 /// `previous` keeps each item alive for the step that pairs it with its
 /// successor, so it is a second owned ref alongside `source`.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Pairwise {
+pub(crate) struct Pairwise<H: Reference> {
     /// The iterator being paired up; driven twice on the first step. `None`
     /// once exhausted, which both latches the adaptor as spent and releases
     /// the source there and then, as CPython's `pairwise` does.
-    source: Option<Value>,
+    source: Option<Value<H>>,
     /// The left half of the next pair, or `None` before the first step.
-    previous: Option<Value>,
+    previous: Option<Value<H>>,
 }
 
-impl Pairwise {
+impl<H: RuntimeRef> Pairwise<H> {
     /// Takes ownership of `source`, which the caller has already resolved with
     /// `py_iter` — `next` drives it directly and never re-resolves it.
-    pub(crate) fn new(source: Value) -> Self {
+    pub(crate) fn new(source: Value<H>) -> Self {
         Self {
             source: Some(source),
             previous: None,
@@ -39,7 +40,7 @@ impl Pairwise {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Some(Value::Ref(id)) = &self.source {
             on_child(*id);
         }
@@ -49,7 +50,7 @@ impl Pairwise {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if let Some(source) = &mut self.source {
             source.py_dec_ref_ids(stack);
         }
@@ -61,7 +62,10 @@ impl Pairwise {
 
 /// Pulls one item and pairs it with the one before, priming `previous` on the
 /// first step so a source of fewer than two items yields nothing.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &mut HeapRead<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let ItertoolsIter::Pairwise(pairwise) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Pairwise")
     };
@@ -131,7 +135,10 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 }
 
 /// Advances the source, releasing it and `previous` once it stops.
-fn drive_source<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn drive_source<'h, H: RuntimeRef>(
+    iter: &mut HeapRead<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let source = {
         let ItertoolsIter::Pairwise(pairwise) = iter.get(vm.heap) else {
             unreachable!("dispatched on Kind::Pairwise")

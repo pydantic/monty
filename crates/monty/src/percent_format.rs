@@ -20,7 +20,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     fstring::{MAX_FLOAT_PRECISION, ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, Reference, RuntimeRef},
     resource_checks::check_repeat_size,
     str_format::value_error,
     string_builder::{BytesBuilder, StringBuilder},
@@ -31,13 +31,21 @@ use crate::{
 };
 
 /// Renders `template % args` for a `str` template.
-pub(crate) fn percent_format(template: &str, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    format_template::<StrTarget>(template, args, vm)
+pub(crate) fn percent_format<H: RuntimeRef>(
+    template: &str,
+    args: &Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
+    format_template::<_, StrTarget>(template, args, vm)
 }
 
 /// Renders `template % args` for a `bytes` template.
-pub(crate) fn percent_format_bytes(template: &[u8], args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    format_template::<BytesTarget>(template, args, vm)
+pub(crate) fn percent_format_bytes<H: RuntimeRef>(
+    template: &[u8],
+    args: &Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
+    format_template::<_, BytesTarget>(template, args, vm)
 }
 
 /// Copies a `bytes` template through the tracker, so a template near the
@@ -76,7 +84,7 @@ trait Target: Sized {
     /// Appends `template[range]` to the output.
     fn push_literal(builder: &mut Self::Builder<'_>, template: &Self::Template, range: Range<usize>) -> RunResult<()>;
     /// A `%(key)` as a value of the template's type.
-    fn key_value(template: &Self::Template, range: Range<usize>, heap: &Heap) -> Value;
+    fn key_value<H: RuntimeRef>(template: &Self::Template, range: Range<usize>, heap: &Heap<H>) -> Value<H>;
     /// An ASCII fragment (digits, signs, exponents) as an output value.
     fn from_ascii(text: String) -> Self::Output;
     /// The size of an output fragment in bytes.
@@ -84,9 +92,9 @@ trait Target: Sized {
     /// A `str` fragment cut to the directive's precision: `%r`, `%a`, and the `str` `%s` / `%c`.
     fn text_from_string(text: String, spec: &Directive) -> Text<Self>;
     /// The `%s` operand (also `%b` for `bytes`).
-    fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>>;
+    fn text_operand<H: RuntimeRef>(value: &Value<H>, spec: &Directive, vm: &mut VM<'_, H>) -> RunResult<Text<Self>>;
     /// The `%c` operand, always one character or byte; the precision is ignored.
-    fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>>;
+    fn char_operand<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Text<Self>>;
     /// The error for a float directive on a non-numeric operand.
     fn float_type_error(type_name: &str) -> RunError;
     /// The error for an int too large to convert to a float.
@@ -94,7 +102,7 @@ trait Target: Sized {
     /// The error for an unknown conversion at byte `index`.
     fn unsupported(template: &Self::Template, index: usize) -> RunError;
     /// The finished output as a heap value.
-    fn allocate(output: Self::Output, heap: &Heap) -> Value;
+    fn allocate<H: RuntimeRef>(output: Self::Output, heap: &Heap<H>) -> Value<H>;
 }
 
 /// The tracked builder a [`Target`] assembles its output with.
@@ -143,7 +151,7 @@ impl Target for StrTarget {
         builder.push_text(&template[range])
     }
 
-    fn key_value(template: &str, range: Range<usize>, heap: &Heap) -> Value {
+    fn key_value<H: RuntimeRef>(template: &str, range: Range<usize>, heap: &Heap<H>) -> Value<H> {
         allocate_string(&template[range], heap)
     }
 
@@ -174,11 +182,11 @@ impl Target for StrTarget {
     }
 
     /// `str()` of any value.
-    fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+    fn text_operand<H: RuntimeRef>(value: &Value<H>, spec: &Directive, vm: &mut VM<'_, H>) -> RunResult<Text<Self>> {
         Ok(Self::text_from_string(vm.convert_value(value, 1)?, spec))
     }
 
-    fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+    fn char_operand<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Text<Self>> {
         Ok(Text {
             body: char_text(value, vm)?,
             len: 1,
@@ -205,7 +213,7 @@ impl Target for StrTarget {
         unsupported_character(shown, conversion, template[..index].chars().count())
     }
 
-    fn allocate(output: String, heap: &Heap) -> Value {
+    fn allocate<H: RuntimeRef>(output: String, heap: &Heap<H>) -> Value<H> {
         allocate_string(output, heap)
     }
 }
@@ -229,7 +237,7 @@ impl Target for BytesTarget {
         Ok(builder.push_slice(&template[range])?)
     }
 
-    fn key_value(template: &[u8], range: Range<usize>, heap: &Heap) -> Value {
+    fn key_value<H: RuntimeRef>(template: &[u8], range: Range<usize>, heap: &Heap<H>) -> Value<H> {
         allocate_bytes(template[range].to_vec(), heap)
     }
 
@@ -248,7 +256,7 @@ impl Target for BytesTarget {
     }
 
     /// Only `bytes` values; Monty has no `bytearray`, `memoryview` or `__bytes__`.
-    fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+    fn text_operand<H: RuntimeRef>(value: &Value<H>, spec: &Directive, vm: &mut VM<'_, H>) -> RunResult<Text<Self>> {
         match value {
             Value::InternBytes(id) => Ok(Self::from_bytes(vm.interns.get_bytes(*id), spec.precision)),
             Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
@@ -261,7 +269,7 @@ impl Target for BytesTarget {
         }
     }
 
-    fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+    fn char_operand<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Text<Self>> {
         Ok(Self::from_bytes(&[byte_char(value, vm)?], None))
     }
 
@@ -285,7 +293,7 @@ impl Target for BytesTarget {
         }
     }
 
-    fn allocate(output: Vec<u8>, heap: &Heap) -> Value {
+    fn allocate<H: RuntimeRef>(output: Vec<u8>, heap: &Heap<H>) -> Value<H> {
         allocate_bytes(output, heap)
     }
 }
@@ -358,7 +366,11 @@ impl<'t> OutputBuilder<'t> for BytesBuilder<'t> {
 }
 
 /// Walks the template, copying literal runs and rendering each `%` directive.
-fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn format_template<H: RuntimeRef, T: Target>(
+    template: &T::Template,
+    args: &Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     let bytes = T::as_bytes(template);
     let arguments = Arguments::new(args, T::IS_BYTES, vm)?;
     defer_drop!(arguments, vm);
@@ -386,7 +398,7 @@ fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<
             output = extend::<T>(output, &vm.heap.tracker, |builder| builder.push_text("%"))?;
             index += 1;
         } else {
-            let (rendered, next) = render_directive::<T>(template, index, arguments, cursor, vm)?;
+            let (rendered, next) = render_directive::<_, T>(template, index, arguments, cursor, vm)?;
             // A directive that opens the template (the whole of `'%s' % s`) is the output so far.
             output = if T::byte_len(&output) == 0 {
                 rendered
@@ -433,17 +445,17 @@ fn extend<T: Target>(
 }
 
 /// The right-hand operand, split the way CPython's `PyUnicode_Format` sees it.
-struct Arguments {
+struct Arguments<H: Reference> {
     /// The tuple's items, or the lone operand itself; inline for the usual few.
-    positional: SmallVec<[Value; 4]>,
+    positional: SmallVec<[Value<H>; 4]>,
     /// The operand again when `%(key)` may index it: the types CPython's
     /// mapping check accepts (see `limitations/format.md`), minus `bytes`
     /// for a `bytes` template.
-    mapping: Option<Value>,
+    mapping: Option<Value<H>>,
 }
 
-impl Arguments {
-    fn new(args: &Value, bytes_template: bool, vm: &VM<'_>) -> RunResult<Self> {
+impl<H: RuntimeRef> Arguments<H> {
+    fn new(args: &Value<H>, bytes_template: bool, vm: &VM<'_, H>) -> RunResult<Self> {
         let positional = match args {
             Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_slice(), vm)?,
             Value::Ref(id) if let HeapData::NamedTuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_vec(), vm)?,
@@ -459,14 +471,14 @@ impl Arguments {
     }
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Arguments {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Arguments<H> {
     fn drop_with(self, ctx: &mut C) {
         self.positional.drop_with(ctx);
         self.mapping.drop_with(ctx);
     }
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Cursor {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Cursor<H> {
     fn drop_with(self, ctx: &mut C) {
         self.pending.drop_with(ctx);
     }
@@ -474,7 +486,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Cursor {
 
 /// Clones tuple items so the operand can be released before rendering ends,
 /// preflighting the copy like other bulk container clones.
-fn clone_items(items: &[Value], vm: &VM<'_>) -> RunResult<SmallVec<[Value; 4]>> {
+fn clone_items<H: RuntimeRef>(items: &[Value<H>], vm: &VM<'_, H>) -> RunResult<SmallVec<[Value<H>; 4]>> {
     vm.heap
         .tracker
         .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
@@ -483,8 +495,7 @@ fn clone_items(items: &[Value], vm: &VM<'_>) -> RunResult<SmallVec<[Value; 4]>> 
 
 /// Argument consumption state; lives inside a `DropGuard` in the render loop
 /// so a pending keyed value is released on every error path.
-#[derive(Default)]
-struct Cursor {
+struct Cursor<H: Reference> {
     /// Index of the next unconsumed positional argument.
     next: usize,
     /// Set once a `%(key)` directive has run: from then on the only argument
@@ -492,7 +503,17 @@ struct Cursor {
     /// or the conversion takes it.
     keyed: bool,
     /// The value a `%(key)` lookup produced, not yet consumed.
-    pending: Option<Value>,
+    pending: Option<Value<H>>,
+}
+
+impl<H: Reference> Default for Cursor<H> {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            keyed: false,
+            pending: None,
+        }
+    }
 }
 
 /// The flags, width and precision of one `%` directive.
@@ -523,12 +544,12 @@ struct ParsedDirective {
 }
 
 /// Parses and renders the directive starting just after its `%`.
-fn render_directive<T: Target>(
+fn render_directive<H: RuntimeRef, T: Target>(
     template: &T::Template,
     start: usize,
-    arguments: &Arguments,
-    cursor: &mut Cursor,
-    vm: &mut VM<'_>,
+    arguments: &Arguments<H>,
+    cursor: &mut Cursor<H>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<(T::Output, usize)> {
     let bytes = T::as_bytes(template);
     let mut index = start;
@@ -540,7 +561,7 @@ fn render_directive<T: Target>(
         lookup_key(key, arguments, cursor, vm)?;
         index = key_end + 1;
     }
-    let parsed = parse_directive::<T>(bytes, index, arguments, cursor, vm)?;
+    let parsed = parse_directive::<_, T>(bytes, index, arguments, cursor, vm)?;
 
     // The argument is taken before the conversion is checked, so `'%5%' % ()`
     // reports the missing argument rather than the bad conversion.
@@ -550,19 +571,19 @@ fn render_directive<T: Target>(
     let rendered = match parsed.conversion {
         b's' => T::text_operand(value, spec, vm).and_then(|text| pad_text(text, spec, &vm.heap.tracker)),
         b'b' if T::IS_BYTES => T::text_operand(value, spec, vm).and_then(|text| pad_text(text, spec, &vm.heap.tracker)),
-        b'r' | b'a' => repr_operand::<T>(value, parsed.conversion, spec, vm)
+        b'r' | b'a' => repr_operand::<_, T>(value, parsed.conversion, spec, vm)
             .and_then(|text| pad_text(text, spec, &vm.heap.tracker)),
         b'c' => T::char_operand(value, vm).and_then(|text| pad_text(text, spec, &vm.heap.tracker)),
-        b'd' | b'i' | b'u' => format_integer::<T>(value, 10, parsed.conversion, spec, vm),
-        b'o' => format_integer::<T>(value, 8, b'o', spec, vm),
-        b'x' => format_integer::<T>(value, 16, b'x', spec, vm),
-        b'X' => format_integer::<T>(value, 16, b'X', spec, vm),
-        b'e' => format_float::<T>(value, TypeChar::E, spec, vm),
-        b'E' => format_float::<T>(value, TypeChar::EUpper, spec, vm),
-        b'f' => format_float::<T>(value, TypeChar::F, spec, vm),
-        b'F' => format_float::<T>(value, TypeChar::FUpper, spec, vm),
-        b'g' => format_float::<T>(value, TypeChar::G, spec, vm),
-        b'G' => format_float::<T>(value, TypeChar::GUpper, spec, vm),
+        b'd' | b'i' | b'u' => format_integer::<_, T>(value, 10, parsed.conversion, spec, vm),
+        b'o' => format_integer::<_, T>(value, 8, b'o', spec, vm),
+        b'x' => format_integer::<_, T>(value, 16, b'x', spec, vm),
+        b'X' => format_integer::<_, T>(value, 16, b'X', spec, vm),
+        b'e' => format_float::<_, T>(value, TypeChar::E, spec, vm),
+        b'E' => format_float::<_, T>(value, TypeChar::EUpper, spec, vm),
+        b'f' => format_float::<_, T>(value, TypeChar::F, spec, vm),
+        b'F' => format_float::<_, T>(value, TypeChar::FUpper, spec, vm),
+        b'g' => format_float::<_, T>(value, TypeChar::G, spec, vm),
+        b'G' => format_float::<_, T>(value, TypeChar::GUpper, spec, vm),
         _ => Err(T::unsupported(template, parsed.end - 1)),
     }?;
     Ok((rendered, parsed.end))
@@ -570,12 +591,12 @@ fn render_directive<T: Target>(
 
 /// Reads the flags, width, precision, optional C length modifier and
 /// conversion byte, consuming the arguments a `*` width or precision names.
-fn parse_directive<T: Target>(
+fn parse_directive<H: RuntimeRef, T: Target>(
     template: &[u8],
     start: usize,
-    arguments: &Arguments,
-    cursor: &mut Cursor,
-    vm: &mut VM<'_>,
+    arguments: &Arguments<H>,
+    cursor: &mut Cursor<H>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<ParsedDirective> {
     let mut spec = Directive::default();
     let mut index = start;
@@ -663,7 +684,12 @@ fn parse_number(template: &[u8], start: usize, max: isize, message: &str) -> Run
 
 /// Looks `key` up in the mapping operand and makes the result the one
 /// remaining argument, as CPython does. Takes ownership of `key`.
-fn lookup_key(key: Value, arguments: &Arguments, cursor: &mut Cursor, vm: &mut VM<'_>) -> RunResult<()> {
+fn lookup_key<H: RuntimeRef>(
+    key: Value<H>,
+    arguments: &Arguments<H>,
+    cursor: &mut Cursor<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<()> {
     defer_drop!(key, vm);
     let Some(mapping) = &arguments.mapping else {
         return Err(ExcType::type_error("format requires a mapping"));
@@ -676,7 +702,11 @@ fn lookup_key(key: Value, arguments: &Arguments, cursor: &mut Cursor, vm: &mut V
 
 /// Takes the next argument: the pending keyed value if there is one,
 /// otherwise the next positional value.
-fn next_argument(arguments: &Arguments, cursor: &mut Cursor, vm: &VM<'_>) -> RunResult<Value> {
+fn next_argument<H: RuntimeRef>(
+    arguments: &Arguments<H>,
+    cursor: &mut Cursor<H>,
+    vm: &VM<'_, H>,
+) -> RunResult<Value<H>> {
     let positional = if cursor.keyed {
         None
     } else {
@@ -693,10 +723,10 @@ fn next_argument(arguments: &Arguments, cursor: &mut Cursor, vm: &VM<'_>) -> Run
 }
 
 /// Consumes the positional argument a `*` width or precision reads.
-fn star_operand(
-    arguments: &Arguments,
-    cursor: &mut Cursor,
-    vm: &mut VM<'_>,
+fn star_operand<H: RuntimeRef>(
+    arguments: &Arguments<H>,
+    cursor: &mut Cursor<H>,
+    vm: &mut VM<'_, H>,
     on_overflow: fn() -> RunError,
 ) -> RunResult<i64> {
     let value = next_argument(arguments, cursor, vm)?;
@@ -711,7 +741,12 @@ fn star_operand(
 
 /// The `%r` / `%a` operand: `repr()` or `ascii()` for a `str` template, and
 /// always `ascii()` for a `bytes` template.
-fn repr_operand<T: Target>(value: &Value, conversion: u8, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<T>> {
+fn repr_operand<H: RuntimeRef, T: Target>(
+    value: &Value<H>,
+    conversion: u8,
+    spec: &Directive,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Text<T>> {
     let ascii = T::IS_BYTES || conversion == b'a';
     let text = vm.convert_value(value, if ascii { 3 } else { 2 })?;
     Ok(T::text_from_string(text, spec))
@@ -725,12 +760,12 @@ fn pad_text<T: Target>(text: Text<T>, spec: &Directive, tracker: &ResourceTracke
 
 /// Renders `%d`/`%i`/`%u` (base 10), `%o`, `%x` and `%X`: the magnitude in
 /// `base`, zero-extended to the precision, then signed, prefixed and padded.
-fn format_integer<T: Target>(
-    value: &Value,
+fn format_integer<H: RuntimeRef, T: Target>(
+    value: &Value<H>,
     base: u32,
     conversion: u8,
     spec: &Directive,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<T::Output> {
     let operand = integer_operand(value, conversion, vm)?;
     defer_drop!(operand, vm);
@@ -764,7 +799,7 @@ fn format_integer<T: Target>(
 
 /// Coerces an integer directive's operand: ints and bools as they are, floats
 /// truncated for the decimal directives only, anything else through `__index__`.
-fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<Value> {
+fn integer_operand<H: RuntimeRef>(value: &Value<H>, conversion: u8, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let decimal = matches!(conversion, b'd' | b'i' | b'u');
     match value {
         Value::Int(_) | Value::Bool(_) => Ok(value.clone_with_heap(vm.heap)),
@@ -784,7 +819,12 @@ fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<
 }
 
 /// Renders an integer operand's magnitude in `base`, reporting whether it was negative.
-fn magnitude_digits(operand: &Value, base: u32, uppercase: bool, vm: &VM<'_>) -> RunResult<(bool, String)> {
+fn magnitude_digits<H: RuntimeRef>(
+    operand: &Value<H>,
+    base: u32,
+    uppercase: bool,
+    vm: &VM<'_, H>,
+) -> RunResult<(bool, String)> {
     match operand {
         Value::Int(n) => Ok((*n < 0, small_digits(n.unsigned_abs(), base, uppercase))),
         Value::Bool(b) => Ok((false, u64::from(*b).to_string())),
@@ -842,13 +882,13 @@ fn zero_extend(digits: String, precision: Option<usize>, tracker: &ResourceTrack
 
 /// Renders the `%e`/`%f`/`%g` family through the shared f-string formatters,
 /// then re-signs and pads the digit text the printf way.
-fn format_float<T: Target>(
-    value: &Value,
+fn format_float<H: RuntimeRef, T: Target>(
+    value: &Value<H>,
     type_char: TypeChar,
     spec: &Directive,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<T::Output> {
-    let number = float_operand::<T>(value, vm)?;
+    let number = float_operand::<_, T>(value, vm)?;
     let precision = spec.precision.unwrap_or(6);
     // CPython bounds the precision by `INT_MAX - 1024` before looking at the
     // value, so `inf`/`nan` are rejected too.
@@ -892,7 +932,7 @@ fn format_float<T: Target>(
 
 /// Coerces a float directive's operand: floats and ints directly, big ints
 /// when they fit a float, anything else through `__index__`.
-fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
+fn float_operand<H: RuntimeRef, T: Target>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<f64> {
     match value {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
@@ -904,7 +944,7 @@ fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
         _ => {
             if let Some(index) = value.py_index_impl(vm)? {
                 defer_drop!(index, vm);
-                float_operand::<T>(index, vm)
+                float_operand::<_, T>(index, vm)
             } else {
                 Err(T::float_type_error(&value.py_type_name(vm)))
             }
@@ -914,7 +954,7 @@ fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 
 /// Renders a `str` `%c`: a one-character string as itself, otherwise an
 /// integer code point.
-fn char_text(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
+fn char_text<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<String> {
     match value {
         Value::Int(n) => char_from_code(*n),
         Value::Bool(b) => char_from_code(i64::from(*b)),
@@ -961,7 +1001,7 @@ fn char_range_error() -> RunError {
 
 /// Renders a `bytes` `%c`: a one-byte `bytes` as itself, otherwise an
 /// integer in `range(256)`.
-fn byte_char(value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
+fn byte_char<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<u8> {
     match value {
         Value::Int(n) => u8::try_from(*n).map_err(|_| byte_range_error()),
         Value::Bool(b) => Ok(u8::from(*b)),

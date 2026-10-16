@@ -22,7 +22,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
+        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
+        Reference, RuntimeRef,
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
@@ -30,6 +31,7 @@ use crate::{
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// A callable that prepends bound arguments to `func` on every call.
 ///
 /// `func`, every value in `args`, and both halves of every `keywords` pair are
@@ -37,31 +39,31 @@ use crate::{
 /// `py_dec_ref_ids` and `for_each_child_id` must enumerate all of them or the
 /// GC will under-trace and free a live object.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Partial {
+pub(crate) struct Partial<H: Reference> {
     /// The wrapped callable. Never itself a `partial`: [`Partial::init`]
     /// flattens those at construction, as CPython does.
-    func: Value,
+    func: Value<H>,
     /// Positional arguments passed before the call's own.
-    args: Vec<Value>,
+    args: Vec<Value<H>>,
     /// Bound keywords as `(name, value)` pairs, names being `str` values.
     ///
     /// A `Vec` rather than a `Dict` because merging has to preserve the bound
     /// order while letting call-time keywords replace values in place, and
     /// there are rarely more than a couple of names to scan.
-    keywords: Vec<(Value, Value)>,
+    keywords: Vec<(Value<H>, Value<H>)>,
 }
 
 /// The callable, bound positionals and bound keywords lifted out of a partial,
 /// as owned clones (see [`Partial::clone_parts`]).
-type PartialParts = (Value, Vec<Value>, Vec<(Value, Value)>);
+type PartialParts<H> = (Value<H>, Vec<Value<H>>, Vec<(Value<H>, Value<H>)>);
 
-impl Partial {
+impl<H: RuntimeRef> Partial<H> {
     /// `functools.partial(func, /, *args, **keywords)`.
     ///
     /// A `func` that is itself a `partial` is flattened: its callable, bound
     /// arguments and keywords are merged into the new one, so
     /// `partial(partial(f, 1), 2)` is `partial(f, 1, 2)` and reprs as such.
-    pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    pub(crate) fn init(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         // CPython's `partial_new` checks the positional count before anything
         // else, so `partial(func=f)` reports a missing argument rather than an
         // unexpected keyword.
@@ -103,7 +105,7 @@ impl Partial {
     }
 
     /// Invokes `on_child` for each heap id this partial owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for value in self.owned_values() {
             if let Value::Ref(id) = value {
                 on_child(*id);
@@ -112,7 +114,7 @@ impl Partial {
     }
 
     /// Every owned `Value`, in no particular order.
-    fn owned_values(&self) -> impl Iterator<Item = &Value> {
+    fn owned_values(&self) -> impl Iterator<Item = &Value<H>> {
         once(&self.func)
             .chain(self.args.iter())
             .chain(self.keywords.iter().flat_map(|(name, value)| [name, value]))
@@ -125,7 +127,7 @@ impl Partial {
     /// replace `self.keywords` wholesale, so anything already there would leak.
     /// CPython only unwraps an exact `partial`, so a subclass instance (which
     /// Monty cannot create anyway) would stay nested.
-    fn flatten(&mut self, vm: &mut VM<'_>) -> RunResult<()> {
+    fn flatten(&mut self, vm: &mut VM<'_, H>) -> RunResult<()> {
         debug_assert!(
             self.keywords.is_empty(),
             "flatten() overwrites keywords rather than merging"
@@ -151,7 +153,7 @@ impl Partial {
     /// lift its contents out and then release the borrow.
     ///
     /// Preflights both vectors through [`check_clone_slots`].
-    pub(crate) fn clone_parts(&self, heap: &impl ContainsHeap) -> RunResult<PartialParts> {
+    pub(crate) fn clone_parts(&self, heap: &impl ContainsHeap<Ref = H>) -> RunResult<PartialParts<H>> {
         check_clone_slots(
             self.args.len().saturating_add(self.keywords.len().saturating_mul(2)),
             heap,
@@ -185,12 +187,12 @@ fn check_clone_slots(slots: usize, heap: &impl ContainsHeap) -> RunResult<()> {
 /// re-enter that same partial. The `HeapRead` reader count does outlive it, but
 /// that bars only freeing the entry, which the caller's own reference prevents
 /// anyway.
-pub(crate) fn partial_call_args(
-    bound_args: Vec<Value>,
-    bound_keywords: Vec<(Value, Value)>,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> ArgValues {
+pub(crate) fn partial_call_args<H: RuntimeRef>(
+    bound_args: Vec<Value<H>>,
+    bound_keywords: Vec<(Value<H>, Value<H>)>,
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
+) -> ArgValues<H> {
     let (positional, keywords) = args.into_parts();
     let mut args = bound_args;
     args.extend(positional);
@@ -220,7 +222,11 @@ const KEYWORD_INDEX_THRESHOLD: usize = 8;
 /// controlled (`partial(f, **thousands)`) and nothing here reaches an execution
 /// checkpoint. Past [`KEYWORD_INDEX_THRESHOLD`] it therefore builds a name
 /// index and keeps it current, which the pushes below rely on.
-fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item = (Value, Value)>, vm: &mut VM<'_>) {
+fn merge_keywords<H: RuntimeRef>(
+    bound: &mut Vec<(Value<H>, Value<H>)>,
+    keywords: impl Iterator<Item = (Value<H>, Value<H>)>,
+    vm: &mut VM<'_, H>,
+) {
     // Built lazily rather than up front because `bound` usually starts empty
     // and grows past the threshold during this very loop.
     let mut index: Option<AHashMap<String, usize>> = None;
@@ -254,7 +260,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
 ///
 /// A non-`str` name never matches; the binder rejects it when the merged
 /// arguments reach the wrapped callable.
-fn keyword_index(bound: &[(Value, Value)], name: &Value, vm: &VM<'_>) -> Option<usize> {
+fn keyword_index<H: RuntimeRef>(bound: &[(Value<H>, Value<H>)], name: &Value<H>, vm: &VM<'_, H>) -> Option<usize> {
     let name = name.to_str_heap(vm.heap, vm.interns).ok()?;
     bound
         .iter()
@@ -266,7 +272,7 @@ fn keyword_index(bound: &[(Value, Value)], name: &Value, vm: &VM<'_>) -> Option<
 /// Skips non-`str` names for the same reason [`keyword_index`] never matches
 /// them. Names are owned copies so the map outlives the heap borrow that read
 /// them, leaving the merge loop free to drop displaced values.
-fn keyword_index_map(bound: &[(Value, Value)], vm: &VM<'_>) -> AHashMap<String, usize> {
+fn keyword_index_map<H: RuntimeRef>(bound: &[(Value<H>, Value<H>)], vm: &VM<'_, H>) -> AHashMap<String, usize> {
     bound
         .iter()
         .enumerate()
@@ -276,7 +282,7 @@ fn keyword_index_map(bound: &[(Value, Value)], vm: &VM<'_>) -> AHashMap<String, 
 
 /// Releases the refs a partial owns, for one abandoned before it reaches the
 /// heap; a heap-stored partial is freed through [`HeapItem::py_dec_ref_ids`].
-impl<C: ContainsHeap> DropWithContext<C> for Partial {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Partial<H> {
     fn drop_with(self, ctx: &mut C) {
         self.func.drop_with(ctx);
         self.args.drop_with(ctx);
@@ -284,8 +290,8 @@ impl<C: ContainsHeap> DropWithContext<C> for Partial {
     }
 }
 
-impl HeapItem for Partial {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for Partial<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.func.py_dec_ref_ids(stack);
         for arg in &mut self.args {
             arg.py_dec_ref_ids(stack);
@@ -297,7 +303,7 @@ impl HeapItem for Partial {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Partial<H>> {
     /// Calls the wrapped callable with the bound arguments merged beneath the
     /// call's own.
     ///
@@ -306,7 +312,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
     /// stack without ever pushing a VM frame. Charging the native re-entry
     /// budget is what bounds such a chain by `RecursionError` rather than a
     /// stack overflow.
-    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_call(&mut self, args: ArgValues<H>, vm: &mut VM<'h, H>) -> RunResult<CallResult<H>> {
         let parts = self.get(vm.heap).clone_parts(vm);
         let (func, bound_args, bound_keywords) = match parts {
             Ok(parts) => parts,
@@ -332,21 +338,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
         vm.call_function(func, args)
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
+    fn py_type(&self, _: &VM<'h, H>) -> Type<H> {
         Type::Partial
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value<H>, _: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
     /// Partials hash by identity, as CPython's do — it defines neither
     /// `__eq__` nor `__hash__`, so two equivalent partials stay distinct keys.
-    fn py_hash(&self, _: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
 
@@ -354,7 +360,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
     ///
     /// Takes a recursion level like the container reprs: a bound argument can
     /// hold a list that holds this partial, and that cycle prints as `...`.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
         };
@@ -413,7 +419,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
     ///
     /// `args` and `keywords` are rebuilt on each access, so mutating the
     /// returned dict does not change what the partial passes on.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let attr = match attr.static_string(vm.interns) {
             Some(StaticStrings::Func) => "func",
             Some(StaticStrings::Args) => "args",
@@ -435,7 +441,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
             }
             "keywords" => {
                 check_clone_slots(self.get(vm.heap).keywords.len().saturating_mul(2), vm.heap)?;
-                let pairs: Vec<(Value, Value)> = (0..self.get(vm.heap).keywords.len())
+                let pairs: Vec<(Value<H>, Value<H>)> = (0..self.get(vm.heap).keywords.len())
                     .map(|index| {
                         let (name, value) = &self.get(vm.heap).keywords[index];
                         (name.clone_with_heap(vm), value.clone_with_heap(vm))
@@ -451,13 +457,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
     }
 }
 
-impl<'h> HeapRead<'h, Partial> {
+impl<'h, H: RuntimeRef> HeapRead<'h, Partial<H>> {
     /// Allocates a partial over the very same callable and bound arguments.
     ///
     /// How `copy.copy` rebuilds a partial: CPython's reducer hands the same
     /// `func`, argument values and keyword values to a new object, so the two
     /// partials share everything they hold.
-    pub(crate) fn allocate_like(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    pub(crate) fn allocate_like(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let (func, args, keywords) = self.get(vm.heap).clone_parts(vm.heap)?;
         Ok(Value::Ref(vm.heap.allocate(HeapData::Partial(Box::new(Partial {
             func,
@@ -467,7 +473,7 @@ impl<'h> HeapRead<'h, Partial> {
     }
 }
 
-impl<'h> PyDeepCopy<'h> for HeapRead<'h, Partial> {
+impl<'h, H: RuntimeRef> PyDeepCopy<'h, H> for HeapRead<'h, Partial<H>> {
     /// Copies a partial by rebuilding it over deep copies of its callable and
     /// of everything it has bound.
     ///
@@ -477,7 +483,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Partial> {
     /// recurses to the limit in both. The bound arguments go in afterwards, so
     /// a container that holds this partial resolves to the copy instead.
     #[inline(never)]
-    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_deep_copy(&self, source: &Value<H>, memo: &mut Memo<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let func = self.get(vm.heap).func.clone_with_heap(vm.heap);
         let copied = deep_copy(&func, memo, vm);
         func.drop_with(vm);
@@ -515,11 +521,11 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Partial> {
 /// Copies land in the destination one at a time rather than being collected
 /// first, so a failure part-way leaves the caller's guard holding everything
 /// copied so far — there is never a second owner to release.
-fn deep_copy_args<'h>(
-    source: &HeapRead<'h, Partial>,
-    copy_id: HeapId,
-    memo: &mut Memo,
-    vm: &mut VM<'h>,
+fn deep_copy_args<'h, H: RuntimeRef>(
+    source: &HeapRead<'h, Partial<H>>,
+    copy_id: H,
+    memo: &mut Memo<H>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     let count = source.get(vm.heap).args.len();
     check_clone_slots(count, vm.heap)?;
@@ -543,11 +549,11 @@ fn deep_copy_args<'h>(
 /// Names go through the memo alongside their values, as copying CPython's
 /// keywords dict does; a `str` name comes back shared, so the order the
 /// merge relies on is preserved without rehashing anything.
-fn deep_copy_keywords<'h>(
-    source: &HeapRead<'h, Partial>,
-    copy_id: HeapId,
-    memo: &mut Memo,
-    vm: &mut VM<'h>,
+fn deep_copy_keywords<'h, H: RuntimeRef>(
+    source: &HeapRead<'h, Partial<H>>,
+    copy_id: H,
+    memo: &mut Memo<H>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     let count = source.get(vm.heap).keywords.len();
     check_clone_slots(count.saturating_mul(2), vm.heap)?;

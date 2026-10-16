@@ -3,14 +3,16 @@
 //! - `#[derive(FromArgs)]` — `ArgValues` → typed struct (positional/kwarg
 //!   dispatch, defaults, type coercion via `FromValue`, refcount cleanup).
 //! - `#[derive(ToArgs)]` — typed struct → host call arguments.
+//! - `#[derive(Relocate)]` — converts numeric wire references into owner-branded pointers.
 //!
-//! Generated code is internal to `monty` (`FromArgs`) and `monty-types` (`ToArgs`).
+//! Generated code is internal to `monty` (`FromArgs`, `Relocate`) and `monty-types` (`ToArgs`).
 //! See the crate `README.md` for usage and the docstrings on `StructAttrs` /
 //! `FieldKind` in `from_args.rs` for the full attribute surface.
 
 use proc_macro::TokenStream;
 
 mod from_args;
+mod relocate;
 mod to_args;
 
 /// Derive `FromArgs::from_args`. Each struct field becomes a Python
@@ -29,6 +31,15 @@ mod to_args;
 pub fn derive_from_args(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     from_args::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Rebuilds an integer-reference graph through a sealed owner's destination-reference callback.
+#[proc_macro_derive(Relocate)]
+pub fn derive_relocate(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    relocate::expand(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

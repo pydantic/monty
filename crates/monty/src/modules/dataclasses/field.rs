@@ -11,12 +11,13 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapItem, HeapObjectRead, Reference, RuntimeRef},
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Marker, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// One entry of a class's `__dataclass_fields__`: CPython's `dataclasses.Field`.
 ///
 /// Also what `dataclasses.field(...)` returns, as in CPython — the decorator
@@ -30,27 +31,27 @@ use crate::{
 /// attributes Monty can model are stored; the rest are constants or refused
 /// (see `py_getattr` below).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DataclassField {
+pub(crate) struct DataclassField<H: Reference> {
     /// The interned field name (from an `__annotations__` key, always interned),
     /// or `None` before a decorator adopts the field.
     name: Option<StringId>,
     /// `Field.type`: the annotation as source text, never evaluated. `None`
     /// until adopted, alongside `name`.
-    annotation: Option<Value>,
+    annotation: Option<Value<H>>,
     /// The default **captured when `@dataclass` ran**, or `None` for a required
     /// field — rebinding the class attribute afterwards must not change it.
-    default: Option<Value>,
+    default: Option<Value<H>>,
     /// `field(default_factory=...)`: a callable invoked once per construction to
     /// build this field's default. Mutually exclusive with `default`.
-    default_factory: Option<Value>,
+    default_factory: Option<Value<H>>,
 }
 
-impl DataclassField {
+impl<H: RuntimeRef> DataclassField<H> {
     /// Builds an adopted field, taking ownership of `annotation` and `default`.
     ///
     /// For a plain `x: int = 5`, where no `field()` object exists at all.
     #[must_use]
-    pub fn new(name: StringId, annotation: Value, default: Option<Value>) -> Self {
+    pub fn new(name: StringId, annotation: Value<H>, default: Option<Value<H>>) -> Self {
         Self {
             name: Some(name),
             annotation: Some(annotation),
@@ -62,7 +63,7 @@ impl DataclassField {
     /// Builds the un-adopted field `field(...)` returns, owning `default` and
     /// `default_factory`. The decorator supplies the name and annotation later.
     #[must_use]
-    pub fn new_spec(default: Option<Value>, default_factory: Option<Value>) -> Self {
+    pub fn new_spec(default: Option<Value<H>>, default_factory: Option<Value<H>>) -> Self {
         Self {
             name: None,
             annotation: None,
@@ -81,19 +82,19 @@ impl DataclassField {
     /// `Field.type`, borrowed — the annotation the class was defined with, or
     /// `None` for a `field()` result no decorator has adopted.
     #[must_use]
-    pub fn annotation(&self) -> Option<&Value> {
+    pub fn annotation(&self) -> Option<&Value<H>> {
         self.annotation.as_ref()
     }
 
     /// The captured default, or `None` for a required field.
     #[must_use]
-    pub fn default(&self) -> Option<&Value> {
+    pub fn default(&self) -> Option<&Value<H>> {
         self.default.as_ref()
     }
 
     /// The captured `default_factory`, or `None` when the field has none.
     #[must_use]
-    pub fn default_factory(&self) -> Option<&Value> {
+    pub fn default_factory(&self) -> Option<&Value<H>> {
         self.default_factory.as_ref()
     }
 
@@ -111,14 +112,14 @@ impl DataclassField {
     /// adopted more than once — bound under two names, or by two classes — so
     /// the annotation it already held is returned for the caller to release.
     #[must_use]
-    pub fn adopt(&mut self, name: StringId, annotation: Value) -> Option<Value> {
+    pub fn adopt(&mut self, name: StringId, annotation: Value<H>) -> Option<Value<H>> {
         self.name = Some(name);
         self.annotation.replace(annotation)
     }
 
     /// Every stored value that is a heap reference: the field's children, for
     /// the cycle collector's walk.
-    pub fn ref_children(&self) -> impl Iterator<Item = HeapId> + '_ {
+    pub fn ref_children(&self) -> impl Iterator<Item = H> + '_ {
         [&self.annotation, &self.default, &self.default_factory]
             .into_iter()
             .flatten()
@@ -131,7 +132,7 @@ impl DataclassField {
 
 /// Releases a field that never reached the heap — one the decorator collected
 /// before rejecting the class.
-impl<C: ContainsHeap> DropWithContext<C> for DataclassField {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for DataclassField<H> {
     fn drop_with(self, ctx: &mut C) {
         self.annotation.drop_with(ctx);
         self.default.drop_with(ctx);
@@ -144,7 +145,7 @@ impl<C: ContainsHeap> DropWithContext<C> for DataclassField {
 ///
 /// Legal outside a class body too (`f = field(default=1)`), which is why it is
 /// a value rather than a decoration-time form.
-pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn field<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let FieldArgs {
         default,
         default_factory,
@@ -199,7 +200,7 @@ pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Whether an argument was left at the `MISSING` sentinel `field()` defaults to.
-fn is_missing(value: &Value) -> bool {
+fn is_missing<H: RuntimeRef>(value: &Value<H>) -> bool {
     matches!(value, Value::Marker(Marker(StaticStrings::Missing)))
 }
 
@@ -207,31 +208,31 @@ fn is_missing(value: &Value) -> bool {
 /// `MISSING` is the "not given" sentinel, since `None` is a legitimate default.
 #[derive(FromArgs)]
 #[from_args(name = "field", style = def)]
-struct FieldArgs {
+struct FieldArgs<H: Reference> {
     #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
-    default: Value,
+    default: Value<H>,
     #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
-    default_factory: Value,
+    default_factory: Value<H>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    init: Value,
+    init: Value<H>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    repr: Value,
+    repr: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    hash: Value,
+    hash: Value<H>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    compare: Value,
+    compare: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    metadata: Value,
+    metadata: Value<H>,
     #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
-    kw_only: Value,
+    kw_only: Value<H>,
     /// CPython's optional per-field docstring. Monty stores none, so anything
     /// but the `None` default is refused rather than silently dropped.
     #[from_args(kw_only, default = Value::None)]
-    doc: Value,
+    doc: Value<H>,
 }
 
 /// The `Field` a heap id points at, if it is one.
-pub(super) fn field_at_id<'a>(vm: &'a VM<'_>, field_id: HeapId) -> Option<&'a DataclassField> {
+pub(super) fn field_at_id<'a, H: RuntimeRef>(vm: &'a VM<'_, H>, field_id: H) -> Option<&'a DataclassField<H>> {
     match vm.heap.get(field_id) {
         HeapData::DataclassField(field) => Some(field),
         _ => None,
@@ -240,7 +241,7 @@ pub(super) fn field_at_id<'a>(vm: &'a VM<'_>, field_id: HeapId) -> Option<&'a Da
 
 /// The heap `Field` a class-body value is, when the body bound a `field()`
 /// result the decorator should adopt rather than treat as a plain default.
-pub(super) fn adoptable_field(bound: Option<&Value>, vm: &VM<'_>) -> Option<HeapId> {
+pub(super) fn adoptable_field<H: RuntimeRef>(bound: Option<&Value<H>>, vm: &VM<'_, H>) -> Option<H> {
     match bound {
         Some(Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::DataclassField(_)) => Some(*id),
         _ => None,
@@ -248,7 +249,11 @@ pub(super) fn adoptable_field(bound: Option<&Value>, vm: &VM<'_>) -> Option<Heap
 }
 
 /// The `Field` at `idx` in a `__dataclass_fields__` dict, in definition order.
-pub(super) fn field_at<'a>(vm: &'a VM<'_>, fields_id: HeapId, idx: usize) -> Option<&'a DataclassField> {
+pub(super) fn field_at<'a, H: RuntimeRef>(
+    vm: &'a VM<'_, H>,
+    fields_id: H,
+    idx: usize,
+) -> Option<&'a DataclassField<H>> {
     let HeapData::Dict(fields) = vm.heap.get(fields_id) else {
         return None;
     };
@@ -267,32 +272,32 @@ const UNMODELLED_ATTRS: [(&str, &str); 2] = [
 
 /// `dataclasses.MISSING`, the sentinel CPython reports for an unset `default` or
 /// `default_factory`.
-fn missing() -> Value {
+fn missing<H: RuntimeRef>() -> Value<H> {
     Value::Marker(Marker(StaticStrings::Missing))
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, DataclassField<H>> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::DataclassField
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         // `Field` defines no `__eq__`, so it compares by identity, which
         // `Value::py_eq_impl` resolves before ever reaching here.
         Ok(None)
     }
 
-    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
 
     /// CPython's `Field.__repr__`, attribute for attribute. `type` is annotation
     /// text, the one spelling Monty cannot reproduce (a documented divergence).
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
         };
@@ -339,7 +344,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
     /// Everything but `name`/`type`/`default`/`default_factory` is a constant,
     /// because the arguments that would vary them are refused by `field()`, so
     /// every field Monty builds carries CPython's defaults.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let attr_str = attr.as_str(vm.interns);
         let value = match attr_str {
             // `None` until a decorator adopts the field, as in CPython.
@@ -379,12 +384,12 @@ fn unmodelled_attr_error(attr: &str, missing: &str) -> RunError {
 }
 
 /// Clones a stored slot for `py_getattr`, reporting `MISSING` when it is unset.
-fn clone_or_missing(value: Option<&Value>, vm: &VM<'_>) -> Value {
+fn clone_or_missing<H: RuntimeRef>(value: Option<&Value<H>>, vm: &VM<'_, H>) -> Value<H> {
     value.map_or_else(missing, |value| value.clone_with_heap(vm.heap))
 }
 
-impl HeapItem for DataclassField {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for DataclassField<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         for value in [&mut self.annotation, &mut self.default, &mut self.default_factory]
             .into_iter()
             .flatten()

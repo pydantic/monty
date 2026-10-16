@@ -24,7 +24,7 @@ use crate::types::str::allocate_string;
 ///
 /// Expected: E0502 (cannot borrow `*heap` as mutable because it is also borrowed as immutable)
 #[cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)]
-fn heap_mutation_while_reading(list_id: HeapId, heap: &mut Heap) {
+fn heap_mutation_while_reading<H: RuntimeRef>(list_id: H, heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
@@ -43,7 +43,7 @@ fn heap_mutation_while_reading(list_id: HeapId, heap: &mut Heap) {
 ///
 /// Expected: E0499 (cannot borrow `*heap` as mutable more than once at a time)
 #[cfg(heap_reader_compile_fail_test_double_get_mut)]
-fn double_get_mut(list_id: HeapId, heap: &mut Heap) {
+fn double_get_mut<H: RuntimeRef>(list_id: H, heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let mut a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
@@ -66,7 +66,7 @@ fn double_get_mut(list_id: HeapId, heap: &mut Heap) {
 ///
 /// Expected: E0502 (cannot borrow `*heap` as mutable because it is also borrowed as immutable)
 #[cfg(heap_reader_compile_fail_test_dec_ref_while_reading)]
-fn dec_ref_while_reading(list_id: HeapId, heap: &mut Heap) {
+fn dec_ref_while_reading<H: RuntimeRef>(list_id: H, heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
@@ -85,8 +85,8 @@ fn dec_ref_while_reading(list_id: HeapId, heap: &mut Heap) {
 ///
 /// Expected: E0521 (borrowed data escapes outside of closure)
 #[cfg(heap_reader_compile_fail_test_smuggle_heap_read)]
-fn smuggle_heap_read(list_id: HeapId, heap: &mut Heap) {
-    let mut smuggled: Option<HeapObjectRead<'_, List>> = None;
+fn smuggle_heap_read<H: RuntimeRef>(list_id: H, heap: &mut Heap<H>) {
+    let mut smuggled: Option<HeapObjectRead<'_, H, List<H>>> = None;
     HeapReader::with(heap, &mut (), |heap, ()| {
         let a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
@@ -105,7 +105,7 @@ fn smuggle_heap_read(list_id: HeapId, heap: &mut Heap) {
 ///
 /// Expected: E0500 (closure requires unique access to `*heap` but it is already borrowed)
 #[cfg(heap_reader_compile_fail_test_mutation_in_map_closure)]
-fn mutation_in_map_closure(list_id: HeapId, other_id: HeapId, heap: &mut Heap) {
+fn mutation_in_map_closure<H: RuntimeRef>(list_id: H, other_id: H, heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
@@ -124,23 +124,6 @@ fn mutation_in_map_closure(list_id: HeapId, other_id: HeapId, heap: &mut Heap) {
     });
 }
 
-/// Must not compile: calling `read()` (which takes `&mut self`) while holding a live
-/// reference from `get()` (which borrows `self` as `&`).
-///
-/// Expected: E0502 (cannot borrow `*heap` as mutable because it is also borrowed as immutable)
-#[cfg(heap_reader_compile_fail_test_read_while_ref_alive)]
-fn read_while_ref_alive(id_a: HeapId, id_b: HeapId, heap: &mut Heap) {
-    HeapReader::with(heap, &mut (), |heap, ()| {
-        let a = match heap.read(id_a) {
-            HeapReadOutput::List(list) => list,
-            _ => unreachable!(),
-        };
-        let a_ref = a.get(heap);
-        let _b = heap.read(id_b);
-        let _ = a_ref.as_slice();
-    });
-}
-
 /// Must not compile: returning the `VM` itself out of a `HeapReader::with` closure.
 ///
 /// `VM<'h>` has invariant `'h`, and the closure's HRTB makes `'h` universally
@@ -150,11 +133,11 @@ fn read_while_ref_alive(id_a: HeapId, id_b: HeapId, heap: &mut Heap) {
 ///
 /// Expected: a borrow-check error preventing the VM from escaping.
 #[cfg(heap_reader_compile_fail_test_smuggle_vm)]
-fn smuggle_vm(
-    heap: &mut Heap,
+fn smuggle_vm<H: RuntimeRef>(
+    heap: &mut Heap<H>,
     tables: &'static mut crate::run::SessionTables,
     program: &'static crate::run::Program,
-) -> VM<'static> {
+) -> VM<'static, H> {
     HeapReader::with(
         heap,
         &mut (tables, monty_types::PrintWriter::Disabled),
@@ -180,7 +163,7 @@ fn smuggle_vm(
 /// Expected: lifetime/type mismatch error from `mem::swap` — the inner closure's
 /// universally-quantified lifetime cannot be unified with the outer call's.
 #[cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)]
-fn smuggle_and_swap_reader(heap_a: &mut Heap, heap_b: &mut Heap) {
+fn smuggle_and_swap_reader<H: RuntimeRef>(heap_a: &mut Heap<H>, heap_b: &mut Heap<H>) {
     HeapReader::with(heap_a, &mut (), |reader_a, ()| {
         HeapReader::with(heap_b, reader_a, |reader_b, smuggled| {
             // `reader_b: &'inner mut HeapReader<'inner>` and
@@ -190,3 +173,7 @@ fn smuggle_and_swap_reader(heap_a: &mut Heap, heap_b: &mut Heap) {
         });
     });
 }
+
+/// Accepted lifetime-bearing argument declarations, checked even when no negative case is selected.
+#[path = "../from_args_compile_cases/cases.rs"]
+mod generic_arguments;

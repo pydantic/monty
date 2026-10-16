@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bytecode::VM,
     exception_private::RunResult,
-    heap::{HeapId, HeapRead},
+    heap::{HeapRead, Reference, RuntimeRef},
     predicate::call_predicate,
     types::{
         PyTrait,
@@ -14,25 +14,26 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields the items of `source` for which `predicate` is false.
 ///
 /// No spent flag: unlike the `while` adaptors this never stops early, so the
 /// source's own exhaustion is the only end condition.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct FilterFalse {
+pub(crate) struct FilterFalse<H: Reference> {
     /// `Value::None` selects the truth test, as `filter(None, ...)` does.
-    predicate: Value,
-    source: Value,
+    predicate: Value<H>,
+    source: Value<H>,
 }
 
-impl FilterFalse {
+impl<H: RuntimeRef> FilterFalse<H> {
     /// Takes ownership of both, with `source` already resolved by `py_iter`.
-    pub(crate) fn new(predicate: Value, source: Value) -> Self {
+    pub(crate) fn new(predicate: Value<H>, source: Value<H>) -> Self {
         Self { predicate, source }
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = &self.predicate {
             on_child(*id);
         }
@@ -42,14 +43,17 @@ impl FilterFalse {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.predicate.py_dec_ref_ids(stack);
         self.source.py_dec_ref_ids(stack);
     }
 }
 
 /// Pulls items until one the predicate rejects, which is the one yielded.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &mut HeapRead<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let mut steps = 0usize;
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a

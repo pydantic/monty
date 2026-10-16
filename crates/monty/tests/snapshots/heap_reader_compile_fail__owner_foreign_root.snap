@@ -1,0 +1,32 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error[E0521]: borrowed data escapes outside of closure
+  --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:85:32
+   |
+83 |     left.activate(|left| {
+   |                    ----
+   |                    |
+   |                    `left` is a reference that is only valid in the closure body
+   |                    has type `&mut OwnedState<HeapObjectPtr<'1>>`
+84 |         let id = left.heap.allocate(HeapData::List(List::new(Vec::new())));
+85 |         right.activate(|right| right.globals.push(Value::Ref(id)));
+   |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                                |
+   |                                `left` escapes the closure body here
+   |                                argument requires that `'1` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:85:62
+   |
+84 |         let id = left.heap.allocate(HeapData::List(List::new(Vec::new())));
+   |             -- lifetime `'2` appears in the type of `id`
+85 |         right.activate(|right| right.globals.push(Value::Ref(id)));
+   |                         -----                                ^^ this usage requires that `'1` must outlive `'2`
+   |                         |
+   |                         has type `&mut OwnedState<HeapObjectPtr<'1>>`
+   |
+   = note: requirement occurs because of the type `HeapObjectPtr<'_>`, which makes the generic argument `'_` invariant
+   = note: the struct `HeapObjectPtr<'heap>` is invariant over the parameter `'heap`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

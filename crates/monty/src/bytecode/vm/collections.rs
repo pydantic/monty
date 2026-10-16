@@ -4,7 +4,7 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput, RuntimeRef},
     intern::StringId,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
@@ -13,7 +13,7 @@ use crate::{
     value::{VALUE_SIZE, Value},
 };
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// Builds a list from the top n stack values.
     pub(super) fn build_list(&mut self, count: usize) {
         let items = self.pop_n(count);
@@ -135,7 +135,7 @@ impl VM<'_> {
         }
 
         {
-            let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
+            let copied_items: Vec<Value<H>> = collect_iterable(iterable, this)?;
             defer_drop_mut!(copied_items, this);
 
             // Check if any copied items are refs (for updating contains_refs)
@@ -223,7 +223,7 @@ impl VM<'_> {
         let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+        let copied_items: Vec<(Value<H>, Value<H>)> = if let Value::Ref(id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
                     .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
@@ -312,7 +312,7 @@ impl VM<'_> {
         defer_drop!(mapping, this);
 
         // Clone all key/value pairs out of the mapping before mutating the target dict
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+        let copied_items: Vec<(Value<H>, Value<H>)> = if let Value::Ref(id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
                 dict.iter()
                     .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
@@ -373,7 +373,7 @@ impl VM<'_> {
             let type_ = iterable.py_type_name(this);
             return Err(ExcType::type_error_not_iterable(&type_));
         }
-        let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
+        let copied_items: Vec<Value<H>> = collect_iterable(iterable, this)?;
 
         // The target set sits at `depth` positions below TOS (which is now gone after pop)
         let stack_len = this.stack.len();
@@ -555,7 +555,7 @@ impl VM<'_> {
     /// Helper to push unpacked items with starred target onto the stack.
     ///
     /// Takes a slice of items and creates the middle list.
-    fn push_unpack_ex_results(&mut self, items: Vec<Value>, before: usize, after: usize) {
+    fn push_unpack_ex_results(&mut self, items: Vec<Value<H>>, before: usize, after: usize) {
         let this = self;
 
         defer_drop_mut!(items, this);
@@ -567,7 +567,7 @@ impl VM<'_> {
         }
 
         // Middle items as a list (starred target)
-        let middle_list: Vec<Value> = items.drain(before..).collect();
+        let middle_list: Vec<Value<H>> = items.drain(before..).collect();
         let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)));
         this.push(Value::Ref(list_id));
 
@@ -580,7 +580,7 @@ impl VM<'_> {
 
 /// Resolves the function-name string used by `DictMerge` error wording.
 /// `0xFFFF` is the compiler sentinel for "unknown caller".
-fn func_name_for_dict_merge(func_name_id: u16, vm: &VM<'_>) -> String {
+fn func_name_for_dict_merge<H: RuntimeRef>(func_name_id: u16, vm: &VM<'_, H>) -> String {
     if func_name_id == 0xFFFF {
         "<unknown>".to_string()
     } else {
@@ -598,7 +598,11 @@ fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
 /// unpack errors. Shared by `UNPACK_SEQUENCE` and native code that mirrors a
 /// Python unpack (`random.setstate`). Consumes at most `count + 1` items, so an
 /// endless iterable still fails.
-pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+pub(crate) fn unpack_exact<H: RuntimeRef>(
+    value: &Value<H>,
+    count: usize,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Vec<Value<H>>> {
     // Fast path: tuple, list; unpack without iterator.
     if let Some(items) = exact_sequence_items(value, vm.heap) {
         if items.len() != count {
@@ -642,7 +646,7 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
 }
 
 /// Returns borrowed items for built-in tuples and lists so unpacking can bypass the iterator protocol.
-fn exact_sequence_items<'a>(value: &Value, heap: &'a Heap) -> Option<&'a [Value]> {
+fn exact_sequence_items<'a, H: RuntimeRef>(value: &Value<H>, heap: &'a Heap<H>) -> Option<&'a [Value<H>]> {
     let Value::Ref(id) = value else {
         return None;
     };
@@ -683,7 +687,7 @@ fn unpack_too_many_unknown_error(expected: usize) -> RunError {
 ///
 /// Takes the value rather than its name because the wording depends on *why* it
 /// is not iterable — see [`opts_out_of_iter`].
-fn unpack_type_error(value: &Value, vm: &VM<'_>) -> RunError {
+fn unpack_type_error<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunError {
     let type_name = value.py_type_name(vm);
     if opts_out_of_iter(value, vm) {
         ExcType::type_error_not_iterable(&type_name)
@@ -703,6 +707,6 @@ fn unpack_type_error(value: &Value, vm: &VM<'_>) -> RunError {
 /// "Value after * must be an iterable ...") only when the type has no `tp_iter`
 /// slot at all; a class opting out with `__iter__ = None` still fills the slot,
 /// so `slot_tp_iter`'s own error survives.
-fn opts_out_of_iter(value: &Value, vm: &VM<'_>) -> bool {
+fn opts_out_of_iter<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     matches!(value, Value::Ref(id) if instance_defines_iter(*id, vm))
 }

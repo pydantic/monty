@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::DropGuard,
+    heap::{DropGuard, Reference, RuntimeRef},
     types::{PyTrait, Type},
     value::Value,
 };
@@ -18,11 +18,11 @@ use crate::{
 /// (`sum() takes at most 2 arguments (3 given)`).
 #[derive(FromArgs)]
 #[from_args(name = "sum", at_most_total)]
-struct SumArgs {
+struct SumArgs<H: Reference> {
     #[from_args(pos_only)]
-    iterable: Value,
+    iterable: Value<H>,
     #[from_args(default = Value::Int(0))]
-    start: Value,
+    start: Value<H>,
 }
 
 /// Implementation of the sum() builtin function.
@@ -30,7 +30,7 @@ struct SumArgs {
 /// Sums the items of an iterable from left to right with an optional start value.
 /// The default start value is 0. Str and bytes start values are explicitly
 /// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
-pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_sum<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
 

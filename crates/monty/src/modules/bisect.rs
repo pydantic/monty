@@ -6,7 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::{HeapData, HeapReadOutput, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{Module, PyTrait, Type},
@@ -24,7 +24,7 @@ pub(crate) enum BisectFunctions {
 }
 
 /// Creates the module and its two aliases.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Bisect, vm.interns);
     for (name, function) in [
         (StaticStrings::BisectLeft, BisectFunctions::BisectLeft),
@@ -41,7 +41,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 
 /// Clinic's nullable slice-index conversion for `hi`; -1 means the length,
 /// even when explicitly supplied. Other negative values are not normalized.
-fn convert_hi(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
+fn convert_hi<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<i64> {
     if matches!(value, Value::None) {
         return Ok(-1);
     }
@@ -68,15 +68,15 @@ macro_rules! arguments {
     ($ty:ident, $name:literal) => {
         #[derive(FromArgs)]
         #[from_args(name = $name, style = c_named)]
-        struct $ty {
-            a: Value,
-            x: Value,
+        struct $ty<H: Reference> {
+            a: Value<H>,
+            x: Value<H>,
             #[from_args(default = Value::Int(0))]
-            lo: Value,
+            lo: Value<H>,
             #[from_args(default = Value::None)]
-            hi: Value,
+            hi: Value<H>,
             #[from_args(kw_only, default = Value::None)]
-            key: Value,
+            key: Value<H>,
         }
     };
 }
@@ -86,7 +86,11 @@ arguments!(InsortLeftArgs, "insort_left");
 arguments!(InsortRightArgs, "insort_right");
 
 /// Dispatch with shared search logic and CPython's key evaluation order.
-pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: BisectFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     let (a, x, lo, hi, key) = match function {
         BisectFunctions::BisectLeft => {
             let BisectLeftArgs { a, x, lo, hi, key } = BisectLeftArgs::from_args(args, vm)?;
@@ -152,12 +156,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) 
 }
 
 /// Search without retaining a borrowed container across Python callbacks.
-fn search(
-    vm: &mut VM<'_>,
-    a: &Value,
-    x: &Value,
+fn search<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    a: &Value<H>,
+    x: &Value<H>,
     bounds: (i64, i64),
-    key: &Value,
+    key: &Value<H>,
     left: bool,
     context: &'static str,
 ) -> RunResult<i64> {
@@ -226,7 +230,7 @@ fn search(
 /// Lists and tuples compare the first unequal pair with `<`, rather than
 /// deriving `<` from a three-way ordering. This preserves identity/equality
 /// shortcuts (including NaNs) and reports errors on the offending elements.
-fn less_than(vm: &mut VM<'_>, a: &Value, b: &Value) -> RunResult<bool> {
+fn less_than<H: RuntimeRef>(vm: &mut VM<'_, H>, a: &Value<H>, b: &Value<H>) -> RunResult<bool> {
     if !matches!(
         (a.py_type(vm), b.py_type(vm)),
         (Type::List, Type::List) | (Type::Tuple | Type::NamedTuple, Type::Tuple | Type::NamedTuple)

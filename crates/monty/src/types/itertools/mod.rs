@@ -10,6 +10,7 @@
 //! - `py_next` cannot hold the state borrow: adaptors re-enter the VM, so each
 //!   per-type function takes the `HeapRead` and re-projects under short borrows.
 
+use crate::heap::{Reference, RuntimeRef};
 pub mod accumulate;
 pub mod batched;
 pub mod chain;
@@ -66,42 +67,43 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// The state of one `itertools` iterator, whichever adaptor produced it.
 ///
 /// Held inline, so this width is memcpy'd on every heap allocate and free
-/// along with the rest of `HeapData`, which `heap_data.rs` caps at 80 bytes.
+/// along with the rest of `HeapData`, which `heap_data.rs` caps at 72 bytes on 64-bit hosts.
 /// The budget below keeps the family from becoming what sets that size.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum ItertoolsIter {
-    Count(Count),
-    Repeat(Repeat),
-    Pairwise(Pairwise),
-    Compress(Compress),
-    Islice(Islice),
-    Chain(Chain),
-    Cycle(Cycle),
-    TakeWhile(TakeWhile),
-    DropWhile(DropWhile),
-    FilterFalse(FilterFalse),
-    StarMap(StarMap),
+pub(crate) enum ItertoolsIter<H: Reference> {
+    Count(Count<H>),
+    Repeat(Repeat<H>),
+    Pairwise(Pairwise<H>),
+    Compress(Compress<H>),
+    Islice(Islice<H>),
+    Chain(Chain<H>),
+    Cycle(Cycle<H>),
+    TakeWhile(TakeWhile<H>),
+    DropWhile(DropWhile<H>),
+    FilterFalse(FilterFalse<H>),
+    StarMap(StarMap<H>),
     /// Boxed: three `Value`s make it 56 bytes, wide enough to set `HeapData`'s
     /// size on 32-bit. See the budget below.
-    Accumulate(Box<Accumulate>),
-    Batched(Batched),
-    ZipLongest(ZipLongest),
+    Accumulate(Box<Accumulate<H>>),
+    Batched(Batched<H>),
+    ZipLongest(ZipLongest<H>),
     /// Boxed with the rest of the combinatoric family for consistency: only
     /// `Permutations` and `GroupBy` are actually past the budget below, but a
     /// pool plus index vectors is the kind of payload that grows.
-    Combinations(Box<Combinations>),
-    Permutations(Box<Permutations>),
-    Product(Box<Product>),
-    GroupBy(Box<GroupBy>),
+    Combinations(Box<Combinations<H>>),
+    Permutations(Box<Permutations<H>>),
+    Product(Box<Product<H>>),
+    GroupBy(Box<GroupBy<H>>),
     /// Inline: two `Value`s, the same width as `pairwise`.
-    Grouper(Grouper),
+    Grouper(Grouper<H>),
     /// Inline: a `Value` and a slot index.
-    Tee(Tee),
+    Tee(Tee<H>),
     /// Boxed: a source, the items read into this link and the link after it.
-    TeeBlock(Box<TeeBlock>),
+    TeeBlock(Box<TeeBlock<H>>),
 }
 
 // `Dict` is the widest `HeapData` payload on 64-bit hosts, so it — not a
@@ -111,14 +113,14 @@ pub(crate) enum ItertoolsIter {
 // TODO: when this fails, box the offending variant (as `Accumulate` and the
 // combinatoric family are), not the enum and not at the `HeapData` boundary.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<ItertoolsIter>() <= size_of::<Dict>());
+const _: () = assert!(size_of::<ItertoolsIter<HeapId<'static>>>() <= size_of::<Dict<HeapId<'static>>>());
 
 // On 32-bit `Dict` is 36 bytes while these adaptors, built from `Value`s that
 // stay 16 bytes either way, do not shrink — so this family *is* what sets
 // `HeapData`'s size and no other variant can serve as the budget. 48 is the
 // width already paid; every byte past it costs `PAGE_SIZE` more per heap page.
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(size_of::<ItertoolsIter>() <= 48);
+const _: () = assert!(size_of::<ItertoolsIter<HeapId<'static>>>() <= 48);
 
 /// Which adaptor an [`ItertoolsIter`] is, without borrowing it.
 ///
@@ -150,7 +152,7 @@ pub(crate) enum Kind {
     TeeBlock,
 }
 
-impl ItertoolsIter {
+impl<H: RuntimeRef> ItertoolsIter<H> {
     /// The adaptor tag, for dispatch without holding a borrow.
     pub(crate) fn kind(&self) -> Kind {
         match self {
@@ -179,7 +181,7 @@ impl ItertoolsIter {
     }
 
     /// The Python type this adaptor reports — the dotted CPython `tp_name`.
-    pub(crate) fn py_type(&self) -> Type {
+    pub(crate) fn py_type(&self) -> Type<H> {
         match self {
             Self::Count(_) => Type::ItertoolsCount,
             Self::Repeat(_) => Type::ItertoolsRepeat,
@@ -266,7 +268,7 @@ impl ItertoolsIter {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, on_child: impl FnMut(H)) {
         match self {
             Self::Count(count) => count.for_each_child_id(on_child),
             Self::Repeat(repeat) => repeat.for_each_child_id(on_child),
@@ -293,9 +295,9 @@ impl ItertoolsIter {
     }
 }
 
-impl HeapItem for ItertoolsIter {
+impl<H: RuntimeRef> HeapItem<H> for ItertoolsIter<H> {
     /// Mirrors [`ItertoolsIter::for_each_child_id`] — the two must stay in sync.
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         match self {
             Self::Count(count) => count.py_dec_ref_ids(stack),
             Self::Repeat(repeat) => repeat.py_dec_ref_ids(stack),
@@ -322,30 +324,30 @@ impl HeapItem for ItertoolsIter {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
-    fn py_is_iterator(&self, _: &VM<'h>) -> bool {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, ItertoolsIter<H>> {
+    fn py_is_iterator(&self, _: &VM<'h, H>) -> bool {
         true
     }
 
-    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+    fn py_is_iterable(&self, _: &VM<'h, H>) -> bool {
         true
     }
 
-    fn py_type(&self, vm: &VM<'h>) -> Type {
+    fn py_type(&self, vm: &VM<'h, H>) -> Type<H> {
         self.get(vm.heap).py_type()
     }
 
     /// `None` for every adaptor: CPython exposes remaining counts through
     /// `__length_hint__`, never `__len__`.
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value<H>, _: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         Ok(self.clone_value(vm.heap))
     }
 
@@ -354,7 +356,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
     /// adaptor that answers from its own state never does. Charging it up front
     /// made a spent `batched`, a latched `takewhile` or an `accumulate` yielding
     /// its `initial` cost a level it never spent.
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         match self.get(vm.heap).kind() {
             Kind::Count => count::next(self, vm),
             Kind::Repeat => repeat::next(self, vm),
@@ -384,7 +386,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
 
     /// Only `count` and `repeat` carry a custom `repr`; every other adaptor
     /// uses Python's identity-bearing default object representation.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         match self.get(vm.heap).kind() {
             Kind::Count => count::repr_fmt(self, f, vm, heap_ids),
             Kind::Repeat => repeat::repr_fmt(self, f, vm, heap_ids),

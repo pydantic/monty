@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::DropGuard,
+    heap::{DropGuard, Reference, RuntimeRef},
     types::{CmpOrder, PyTrait},
     value::Value,
 };
@@ -18,7 +18,7 @@ use crate::{
 /// Supports two forms:
 /// - `min(iterable)` - returns smallest item from iterable
 /// - `min(arg1, arg2, ...)` - returns smallest of the arguments
-pub fn builtin_min(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_min<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let MinArgs { args, key, default } = MinArgs::from_args(args, vm)?;
     run_min_max(vm, args, key, default, true)
 }
@@ -29,7 +29,7 @@ pub fn builtin_min(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Supports two forms:
 /// - `max(iterable)` - returns largest item from iterable
 /// - `max(arg1, arg2, ...)` - returns largest of the arguments
-pub fn builtin_max(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_max<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let MaxArgs { args, key, default } = MaxArgs::from_args(args, vm)?;
     run_min_max(vm, args, key, default, false)
 }
@@ -37,13 +37,13 @@ pub fn builtin_max(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Shared implementation for min() and max() after argument extraction.
 ///
 /// When `is_min` is true, returns the minimum; otherwise returns the maximum.
-fn run_min_max(
-    vm: &mut VM<'_>,
-    args: Vec<Value>,
-    key: Value,
-    default: Option<Value>,
+fn run_min_max<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    args: Vec<Value<H>>,
+    key: Value<H>,
+    default: Option<Value<H>>,
     is_min: bool,
-) -> RunResult<Value> {
+) -> RunResult<Value<H>> {
     let func_name = if is_min { "min" } else { "max" };
     let key_context = if is_min {
         "min() key argument"
@@ -178,13 +178,13 @@ fn run_min_max(
 /// single iterable argument.
 #[derive(FromArgs)]
 #[from_args(name = "min")]
-struct MinArgs {
+struct MinArgs<H: Reference> {
     #[from_args(varargs)]
-    args: Vec<Value>,
+    args: Vec<Value<H>>,
     #[from_args(default = Value::None)]
-    key: Value,
+    key: Value<H>,
     #[from_args(default)]
-    default: Option<Value>,
+    default: Option<Value<H>>,
 }
 
 /// Argument shape for `max(*args, key=None, default=...)`.
@@ -193,13 +193,13 @@ struct MinArgs {
 /// name used in error messages.
 #[derive(FromArgs)]
 #[from_args(name = "max")]
-struct MaxArgs {
+struct MaxArgs<H: Reference> {
     #[from_args(varargs)]
-    args: Vec<Value>,
+    args: Vec<Value<H>>,
     #[from_args(default = Value::None)]
-    key: Value,
+    key: Value<H>,
     #[from_args(default)]
-    default: Option<Value>,
+    default: Option<Value<H>>,
 }
 
 /// Calls the user-provided key function for a single candidate value.
@@ -207,7 +207,12 @@ struct MaxArgs {
 /// The caller passes an owned clone of the candidate so this helper can forward it
 /// into the function call without changing ownership of the original item being
 /// tracked as the eventual min/max result.
-fn evaluate_key(item: Value, key_fn: &Value, key_context: &'static str, vm: &mut VM<'_>) -> RunResult<Value> {
+fn evaluate_key<H: RuntimeRef>(
+    item: Value<H>,
+    key_fn: &Value<H>,
+    key_context: &'static str,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     vm.evaluate_function(key_context, key_fn, ArgValues::One(item))
 }
 
@@ -216,7 +221,12 @@ fn evaluate_key(item: Value, key_fn: &Value, key_context: &'static str, vm: &mut
 /// `min()` replaces the current winner when the new candidate compares smaller,
 /// while `max()` replaces it when the new candidate compares larger. Equal values
 /// keep the existing winner so ties preserve the first-seen item, matching CPython.
-pub(crate) fn candidate_wins(current: &Value, candidate: &Value, is_min: bool, vm: &mut VM<'_>) -> RunResult<bool> {
+pub(crate) fn candidate_wins<H: RuntimeRef>(
+    current: &Value<H>,
+    candidate: &Value<H>,
+    is_min: bool,
+    vm: &mut VM<'_, H>,
+) -> RunResult<bool> {
     let ordering = match candidate.py_cmp(current, vm)? {
         CmpOrder::Ordered(ordering) => ordering,
         // A `NaN` candidate (or `NaN`-carrying container) is neither smaller nor
@@ -240,7 +250,7 @@ fn default_with_multiple_args(func_name: &str) -> RunError {
 }
 
 #[cold]
-fn ord_not_supported(left: &Value, right: &Value, is_min: bool, vm: &VM<'_>) -> RunError {
+fn ord_not_supported<H: RuntimeRef>(left: &Value<H>, right: &Value<H>, is_min: bool, vm: &VM<'_, H>) -> RunError {
     let left_type = left.py_type_name(vm);
     let right_type = right.py_type_name(vm);
     let operator = if is_min { "<" } else { ">" };

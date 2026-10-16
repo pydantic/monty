@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapRead},
+    heap::{DropGuard, Heap, HeapData, HeapRead, Reference, RuntimeRef},
     types::{
         CsvObject, List,
         csv::dialect::{Dialect, Quoting},
@@ -27,10 +27,10 @@ use crate::{
 pub(crate) const FIELD_SIZE_LIMIT: usize = 131_072;
 
 /// A `_csv.reader`: the source iterator, the dialect, and the lines consumed so far.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Reader {
+#[derive(Debug, Serialize, Deserialize, monty_macros::Relocate)]
+pub(crate) struct Reader<H: Reference> {
     /// The iterator lines come from (`iter(csvfile)` at construction). Owned.
-    source: Value,
+    source: Value<H>,
     /// Shared with each record read, so a row costs no copy of the dialect's strings.
     pub(crate) dialect: Arc<Dialect>,
     /// Source lines consumed, including those a multi-line record spans.
@@ -41,8 +41,8 @@ pub(crate) struct Reader {
     field_hint: usize,
 }
 
-impl Reader {
-    pub(crate) fn new(source: Value, dialect: Dialect) -> Self {
+impl<H: RuntimeRef> Reader<H> {
+    pub(crate) fn new(source: Value<H>, dialect: Dialect) -> Self {
         Self {
             source,
             dialect: Arc::new(dialect),
@@ -52,27 +52,33 @@ impl Reader {
     }
 
     /// Invokes `on_child` for each heap id this reader owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = &self.source {
             on_child(*id);
         }
     }
 
     /// Releases the source reference (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.source.py_dec_ref_ids(stack);
     }
 }
 
 /// One record as a `list` of fields, or `None` once the source is exhausted.
-pub(super) fn next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    obj: &mut HeapRead<'h, CsvObject<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let fields = next_fields(obj, vm)?;
     Ok(fields.map(|fields| Value::Ref(vm.heap.allocate(HeapData::List(List::new(fields))))))
 }
 
 /// The fields of the next record, or `None` once the source is exhausted. `DictReader`
 /// takes the fields this way, so its rows never pass through a list.
-pub(super) fn next_fields<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Vec<Value>>> {
+pub(super) fn next_fields<'h, H: RuntimeRef>(
+    obj: &mut HeapRead<'h, CsvObject<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Vec<Value<H>>>> {
     let (source, dialect, field_hint) = {
         let CsvObject::Reader(reader) = obj.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::Reader")
@@ -122,7 +128,7 @@ pub(super) fn next_fields<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
             reader.line_num += 1;
         }
         // The parser only allocates, so the line is read in place rather than copied.
-        let heap: &Heap = vm.heap;
+        let heap: &Heap<H> = vm.heap;
         let mut rest = line.to_str_heap(heap, vm.interns)?;
         while !rest.is_empty() {
             heap.tracker.check_time_every(polls)?;
@@ -191,7 +197,12 @@ impl<'d> Parser<'d> {
     }
 
     /// Feeds one character, or `None` for the end of a source line.
-    fn process_char(&mut self, c: Option<char>, fields: &mut Vec<Value>, heap: &Heap) -> RunResult<()> {
+    fn process_char<H: RuntimeRef>(
+        &mut self,
+        c: Option<char>,
+        fields: &mut Vec<Value<H>>,
+        heap: &Heap<H>,
+    ) -> RunResult<()> {
         let d = self.dialect;
         // The state a line break leads to: the record is complete at end of line,
         // otherwise the rest of the terminator is swallowed.
@@ -362,7 +373,7 @@ impl<'d> Parser<'d> {
 
     /// Closes the current field: an unquoted empty field is `None` under `QUOTE_NOTNULL` /
     /// `QUOTE_STRINGS`, an unquoted non-empty one a `float` under `QUOTE_NONNUMERIC` / `QUOTE_STRINGS`.
-    fn save_field(&mut self, fields: &mut Vec<Value>, heap: &Heap) -> RunResult<()> {
+    fn save_field<H: RuntimeRef>(&mut self, fields: &mut Vec<Value<H>>, heap: &Heap<H>) -> RunResult<()> {
         let quoting = self.dialect.quoting;
         let unquoted = self.unquoted_field;
         let value = if unquoted && self.field_len == 0 && matches!(quoting, Quoting::Notnull | Quoting::Strings) {

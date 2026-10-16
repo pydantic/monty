@@ -23,19 +23,19 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapItem, HeapObjectRead, HeapReadOutput, Reference, RuntimeRef},
     intern::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
 /// One `csv` object, whichever constructor produced it.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum CsvObject {
-    Reader(Reader),
-    Writer(Writer),
-    DictReader(DictReader),
-    DictWriter(DictWriter),
+#[derive(Debug, Serialize, Deserialize, monty_macros::Relocate)]
+pub(crate) enum CsvObject<H: Reference> {
+    Reader(Reader<H>),
+    Writer(Writer<H>),
+    DictReader(DictReader<H>),
+    DictWriter(DictWriter<H>),
     Dialect(Dialect),
 }
 
@@ -50,7 +50,7 @@ enum Kind {
     Dialect,
 }
 
-impl CsvObject {
+impl<H: RuntimeRef> CsvObject<H> {
     fn kind(&self) -> Kind {
         match self {
             Self::Reader(_) => Kind::Reader,
@@ -62,7 +62,7 @@ impl CsvObject {
     }
 
     /// The Python type this object reports.
-    pub(crate) fn py_type(&self) -> Type {
+    pub(crate) fn py_type(&self) -> Type<H> {
         match self {
             Self::Reader(_) => Type::CsvReader,
             Self::Writer(_) => Type::CsvWriter,
@@ -73,7 +73,7 @@ impl CsvObject {
     }
 
     /// Invokes `on_child` for each heap id this object owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, on_child: impl FnMut(H)) {
         match self {
             Self::Reader(reader) => reader.for_each_child_id(on_child),
             Self::Writer(writer) => writer.for_each_child_id(on_child),
@@ -84,14 +84,14 @@ impl CsvObject {
     }
 
     /// Allocates this object on the heap.
-    pub(crate) fn allocate(self, vm: &VM<'_>) -> Value {
+    pub(crate) fn allocate(self, vm: &VM<'_, H>) -> Value<H> {
         Value::Ref(vm.heap.allocate(HeapData::Csv(Box::new(self))))
     }
 }
 
-impl HeapItem for CsvObject {
+impl<H: RuntimeRef> HeapItem<H> for CsvObject<H> {
     /// Mirrors [`CsvObject::for_each_child_id`] — the two must stay in sync.
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         match self {
             Self::Reader(reader) => reader.py_dec_ref_ids(stack),
             Self::Writer(writer) => writer.py_dec_ref_ids(stack),
@@ -102,38 +102,38 @@ impl HeapItem for CsvObject {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, CsvObject<H>> {
+    fn py_type(&self, vm: &VM<'h, H>) -> Type<H> {
         self.get(vm.heap).py_type()
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value<H>, _: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
     /// Identity hashing, as for any class without `__eq__`.
-    fn py_hash(&self, _: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _: &mut LazyHeapSet<H>) -> RunResult<()> {
         self.py_default_repr_fmt(f, vm)
     }
 
-    fn py_is_iterator(&self, vm: &VM<'h>) -> bool {
+    fn py_is_iterator(&self, vm: &VM<'h, H>) -> bool {
         matches!(self.get(vm.heap).kind(), Kind::Reader | Kind::DictReader)
     }
 
-    fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
+    fn py_is_iterable(&self, vm: &VM<'h, H>) -> bool {
         self.py_is_iterator(vm)
     }
 
     /// `iter(reader) is reader`; the other objects are not iterable.
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         if self.py_is_iterator(vm) {
             Ok(self.clone_value(vm.heap))
         } else {
@@ -141,7 +141,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         match self.get(vm.heap).kind() {
             Kind::Reader => reader::next(self, vm),
             Kind::DictReader => dict::reader_next(self, vm),
@@ -151,7 +151,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let Some(name) = attr.static_string(vm.interns) else {
             return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)));
         };
@@ -183,7 +183,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
             (CsvObject::DictWriter(writer), StaticStrings::Writer) => writer.writer.clone_with_heap(vm.heap),
             (CsvObject::Dialect(dialect), name) => match dialect.attr(name, vm) {
                 Some(value) => value,
-                None => return Err(ExcType::attribute_error(Type::CsvDialect, attr.as_str(vm.interns))),
+                None => return Err(ExcType::attribute_error(Type::<H>::CsvDialect, attr.as_str(vm.interns))),
             },
             _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
         };
@@ -194,7 +194,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
     /// CPython are assignable, except the wrapped `reader` / `writer` and `line_num`;
     /// everything on the `_csv` objects is read-only, with CPython's two wordings for a
     /// member and a getset descriptor.
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         let slot = match (self.get_mut(vm.heap), name.static_string(vm.interns)) {
             (CsvObject::Reader(_), Some(StaticStrings::Dialect | StaticStrings::LineNum))
             | (CsvObject::Writer(_), Some(StaticStrings::Dialect)) => {
@@ -220,7 +220,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
                 value.drop_with(vm);
                 return Err(ExcType::attribute_error_not_writable(
                     name.as_str(vm.interns),
-                    &Type::CsvDialect.to_string(),
+                    &Type::<H>::CsvDialect.to_string(),
                 ));
             }
             _ => {
@@ -233,7 +233,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         Ok(())
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         match (self.get(vm.heap).kind(), attr.static_string(vm.interns)) {
             (Kind::Writer, Some(StaticStrings::Writerow)) => writer::writerow(self, args, vm),
             (Kind::Writer, Some(StaticStrings::Writerows)) => writer::writerows(self, args, vm),
@@ -249,7 +249,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
 }
 
 /// `line_num` as a Python `int`.
-fn line_num_value(line_num: u64) -> RunResult<Value> {
+fn line_num_value<H: RuntimeRef>(line_num: u64) -> RunResult<Value<H>> {
     i64::try_from(line_num)
         .map(Value::Int)
         .map_err(|_| ExcType::overflow_c_ssize_t())

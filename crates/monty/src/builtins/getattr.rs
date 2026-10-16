@@ -7,7 +7,7 @@ use crate::{
     bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::DropWithContext,
+    heap::{DropWithContext, RuntimeRef},
 };
 
 /// Implementation of the getattr() builtin function.
@@ -30,7 +30,7 @@ use crate::{
 /// getattr(obj, 'y', None)       # Get obj.y or None if not found
 /// getattr(module, 'function')   # Get module.function
 /// ```
-pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub fn builtin_getattr<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let positional = args.into_pos_only("getattr", vm.heap)?;
     defer_drop!(positional, vm);
 

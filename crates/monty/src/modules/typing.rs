@@ -12,7 +12,7 @@
 use crate::{
     builtins::Builtins,
     bytecode::VM,
-    heap::{HeapData, HeapId},
+    heap::{HeapData, RuntimeRef},
     intern::StaticStrings,
     types::{Module, Type},
     value::{Marker, Value},
@@ -20,7 +20,7 @@ use crate::{
 
 /// Creates the `typing` module and allocates it on the heap.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Typing, vm.interns);
 
     // typing.TYPE_CHECKING - always False

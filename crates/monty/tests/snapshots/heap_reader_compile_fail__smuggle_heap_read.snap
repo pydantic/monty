@@ -1,0 +1,66 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error[E0310]: the parameter type `H` may not live long enough
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:89:23
+   |
+89 |     let mut smuggled: Option<HeapObjectRead<'_, H, List<H>>> = None;
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                       |
+   |                       the parameter type `H` must be valid for the static lifetime...
+   |                       ...so that the type `H` will meet its required lifetime bounds
+   |
+help: consider adding an explicit lifetime bound
+   |
+88 | fn smuggle_heap_read<H: RuntimeRef + 'static>(list_id: H, heap: &mut Heap<H>) {
+   |                                    +++++++++
+
+error[E0310]: the parameter type `H` may not live long enough
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:90:5
+   |
+90 |     HeapReader::with(heap, &mut (), |heap, ()| {
+   |     ^^^^^^^^^^^^^^^^
+   |     |
+   |     the parameter type `H` must be valid for the static lifetime...
+   |     ...so that the type `H` will meet its required lifetime bounds
+   |
+help: consider adding an explicit lifetime bound
+   |
+88 | fn smuggle_heap_read<H: RuntimeRef + 'static>(list_id: H, heap: &mut Heap<H>) {
+   |                                    +++++++++
+
+error[E0310]: the parameter type `H` may not live long enough
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:90:5
+   |
+90 | /     HeapReader::with(heap, &mut (), |heap, ()| {
+91 | |         let a = match heap.read(list_id) {
+92 | |             HeapReadOutput::List(list) => list,
+93 | |             _ => unreachable!(),
+94 | |         };
+95 | |         smuggled = Some(a);
+96 | |     });
+   | |      ^
+   | |      |
+   | |______the parameter type `H` must be valid for the static lifetime...
+   |        ...so that the type `H` will meet its required lifetime bounds
+   |
+help: consider adding an explicit lifetime bound
+   |
+88 | fn smuggle_heap_read<H: RuntimeRef + 'static>(list_id: H, heap: &mut Heap<H>) {
+   |                                    +++++++++
+
+error[E0521]: borrowed data escapes outside of closure
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:95:9
+   |
+89 |     let mut smuggled: Option<HeapObjectRead<'_, H, List<H>>> = None;
+   |         ------------ `smuggled` declared here, outside of the closure body
+90 |     HeapReader::with(heap, &mut (), |heap, ()| {
+   |                                      ---- `heap` is a reference that is only valid in the closure body
+...
+95 |         smuggled = Some(a);
+   |         ^^^^^^^^ `heap` escapes the closure body here
+   |
+   = note: requirement occurs because of the type `heap::HeapObjectRead<'_, H, list::List<H>>`, which makes the generic argument `'_` invariant
+   = note: the struct `heap::HeapObjectRead<'a, H, T>` is invariant over the parameter `'a`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

@@ -19,7 +19,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapItem, HeapObjectRead, HeapReadOutput, Reference, RuntimeRef},
     intern::{Interns, StaticStrings},
     string_builder::StringBuilder,
     types::{
@@ -28,7 +28,7 @@ use crate::{
         timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, NoHeapRef, Value},
 };
 
 const MICROSECONDS_PER_DAY: i128 = 86_400_000_000;
@@ -120,7 +120,7 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 }
 
 /// Constructor for `date(year, month, day)`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DateInitArgs { year, month, day } = DateInitArgs::from_args(args, vm)?;
     let date = from_ymd(year, month, day)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
@@ -143,7 +143,7 @@ struct DateInitArgs {
 
 /// Reads `date.today()` from the session's clock in the session zone. A `CallHost`
 /// clock requests a `DateToday` answer constructed with `MontyObject::date`.
-pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub(crate) fn class_today<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     args.check_zero_args("date.today", vm.heap)?;
     Ok(match datetime::sandbox_instant(vm)? {
         None => CallResult::OsCall(OsFunctionCall::DateToday),
@@ -158,7 +158,11 @@ pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRes
 ///
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
 /// matching CPython 3.11+ behavior.
-pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub(crate) fn class_fromisoformat<H: RuntimeRef>(
+    heap: &mut Heap<H>,
+    args: ArgValues<H>,
+    interns: &Interns,
+) -> RunResult<Value<H>> {
     let value = args.get_one_arg("date.fromisoformat", heap)?;
     let s = extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
@@ -182,13 +186,18 @@ fn parse_iso_date(s: &str) -> Option<Date> {
 /// For Rust-side construction where the values are known good (the `date.min` /
 /// `date.max` class constants); anything derived from user input must go
 /// through [`from_ymd`] so the components are validated.
-pub(crate) fn allocate_ymd(year: i32, month: i32, day: i32, heap: &Heap) -> Value {
+pub(crate) fn allocate_ymd<H: RuntimeRef>(year: i32, month: i32, day: i32, heap: &Heap<H>) -> Value<H> {
     let date = from_ymd(year, month, day).expect("caller guarantees in-range date components");
     Value::Ref(heap.allocate(HeapData::Date(date)))
 }
 
 /// Extracts a string from a `Value` for use by classmethods.
-pub(crate) fn extract_str_arg(value: &Value, method_name: &str, heap: &Heap, interns: &Interns) -> RunResult<String> {
+pub(crate) fn extract_str_arg<H: RuntimeRef>(
+    value: &Value<H>,
+    method_name: &str,
+    heap: &Heap<H>,
+    interns: &Interns,
+) -> RunResult<String> {
     match value {
         Value::InternString(string_id) => Ok(interns.get_str(*string_id).to_owned()),
         Value::Ref(heap_id) => match heap.get(*heap_id) {
@@ -199,61 +208,61 @@ pub(crate) fn extract_str_arg(value: &Value, method_name: &str, heap: &Heap, int
     }
 }
 
-impl HeapItem for Date {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
+impl<H: RuntimeRef> HeapItem<H> for Date {
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<H>) {}
 }
 
 /// `HeapRead`-based dispatch for `Date`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident dates.
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Date> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::Date
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Date(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
         Ok(Some(*self.get(vm.heap) == *other.get(vm.heap)))
     }
 
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, H>) -> RunResult<CmpOrder> {
         Ok(CmpOrder::from_total(self.get(vm.heap).partial_cmp(other.get(vm.heap))))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(true)
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
         write!(f, "datetime.date({year}, {month}, {day})")?;
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
         Ok(allocate_string(format!("{year:04}-{month:02}-{day:02}"), vm.heap))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
         Ok(py_add(*self.get(vm.heap), *other.get(vm.heap), vm.heap))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::Date(other)) => Ok(py_sub_date(*self.get(vm.heap), *other.get(vm.heap), vm.heap)),
             Some(HeapReadOutput::TimeDelta(other)) => {
@@ -263,7 +272,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let date = *self.get(vm.heap);
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Isoformat) => {
@@ -308,11 +317,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     date.0.weekday().number_from_monday(),
                 ))))
             }
-            _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
+            _ => Err(ExcType::attribute_error_method(Type::<NoHeapRef>::Date, attr, args, vm)),
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
@@ -324,14 +333,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
 }
 
 /// `date - date` returns a timedelta with the difference in days.
-pub(crate) fn py_sub_date(a: Date, b: Date, heap: &mut Heap) -> Option<Value> {
+pub(crate) fn py_sub_date<H: RuntimeRef>(a: Date, b: Date, heap: &mut Heap<H>) -> Option<Value<H>> {
     let diff_days = i64::from(to_ordinal(a)) - i64::from(to_ordinal(b));
     let delta = timedelta::from_total_microseconds(i128::from(diff_days) * MICROSECONDS_PER_DAY).ok()?;
     Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))))
 }
 
 /// `date + timedelta` helper.
-pub(crate) fn py_add(date: Date, delta: TimeDelta, heap: &mut Heap) -> Option<Value> {
+pub(crate) fn py_add<H: RuntimeRef>(date: Date, delta: TimeDelta, heap: &mut Heap<H>) -> Option<Value<H>> {
     let (days, _, _) = timedelta::components(&delta);
     let new_ordinal = i64::from(to_ordinal(date)).checked_add(i64::from(days))?;
     let new_ordinal = i32::try_from(new_ordinal).ok()?;
@@ -340,7 +349,7 @@ pub(crate) fn py_add(date: Date, delta: TimeDelta, heap: &mut Heap) -> Option<Va
 }
 
 /// `date - timedelta` helper.
-pub(crate) fn py_sub_timedelta(date: Date, delta: TimeDelta, heap: &mut Heap) -> Option<Value> {
+pub(crate) fn py_sub_timedelta<H: RuntimeRef>(date: Date, delta: TimeDelta, heap: &mut Heap<H>) -> Option<Value<H>> {
     let (days, _, _) = timedelta::components(&delta);
     let new_ordinal = i64::from(to_ordinal(date)).checked_sub(i64::from(days))?;
     let new_ordinal = i32::try_from(new_ordinal).ok()?;
@@ -500,8 +509,8 @@ pub(crate) fn invalid_strftime_error() -> RunError {
 /// the derive rather than a hand-written extract helper.
 #[derive(FromArgs)]
 #[from_args(name = "strftime", style = c_named, at_most_total, bad_arg)]
-pub(crate) struct StrftimeArgs {
-    pub(crate) format: StrArg,
+pub(crate) struct StrftimeArgs<H: Reference> {
+    pub(crate) format: StrArg<H>,
 }
 
 /// Keyword arguments for `date.replace()`. All keyword-only; absent fields

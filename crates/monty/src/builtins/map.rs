@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData},
+    heap::{DropGuard, DropWithContext, HeapData, Reference, RuntimeRef},
     types::{List, iter::checked_preallocation_hint},
     value::Value,
 };
@@ -26,7 +26,7 @@ use crate::{
 /// map(pow, [2, 3], [3, 2])          # [8, 9]
 /// map(str, [1, 2, 3])               # ['1', '2', '3']
 /// ```
-pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_map<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     // CPython's map() uses a bespoke arity message
     // (`map() must have at least two arguments.`) rather than the generic
     // "missing N required positional arguments" wording the macro would
@@ -58,7 +58,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(first_iter, vm);
     let mut first_iter = first_iter.read(vm);
 
-    let extra_iterators: Vec<Value> = Vec::with_capacity(extra_iterables.len());
+    let extra_iterators: Vec<Value<H>> = Vec::with_capacity(extra_iterables.len());
     defer_drop_mut!(extra_iterators, vm);
 
     for iterable in extra_iterables.drain(..) {
@@ -67,7 +67,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // Validate and clamp the iterator's hint before reserving native memory.
     let hint = first_iter.iter_size_hint(vm);
-    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value>(), &vm.heap.tracker)?;
+    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value<H>>(), &vm.heap.tracker)?;
     let out = Vec::with_capacity(capacity);
     defer_drop_mut!(out, vm);
 
@@ -125,11 +125,11 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// macro's default unknown-kwarg error path is exactly what we want.
 #[derive(FromArgs)]
 #[from_args(name = "map")]
-struct MapArgs {
+struct MapArgs<H: Reference> {
     #[from_args(pos_only)]
-    function: Value,
+    function: Value<H>,
     #[from_args(pos_only)]
-    first_iterable: Value,
+    first_iterable: Value<H>,
     #[from_args(varargs)]
-    extra_iterables: Vec<Value>,
+    extra_iterables: Vec<Value<H>>,
 }

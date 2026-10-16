@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData},
+    heap::{DropWithContext, HeapData, RuntimeRef},
     intern::StaticStrings,
     types::{Class, Dict, PyTrait},
     value::Value,
@@ -23,7 +23,7 @@ use crate::{
 /// because the "exactly 1 *or* 3 positionals, same name" overload isn't
 /// expressible by any of the binder families — CPython special-cases `type`'s
 /// argument parsing in `type_new`/`type_init` for the same reason.
-pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_type<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let (mut pos, kwargs) = args.into_parts();
     match pos.len() {
         1 => {
@@ -57,7 +57,7 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// instance returns the `HostClassType` entry it owns (one per host class, so
 /// identity holds there too); everything else returns the builtin `Type`
 /// marker.
-fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
+fn type_of<H: RuntimeRef>(vm: &mut VM<'_, H>, value: Value<H>) -> Value<H> {
     defer_drop!(value, vm);
     if let Value::Ref(id) = &value
         && let HeapData::Instance(inst) = vm.heap.get(*id)
@@ -95,13 +95,13 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
 /// and a `__doc__ = None` entry is synthesized when the dict omits it,
 /// matching CPython's `type` descriptor default (compiled `class` bodies
 /// get their `__doc__` from the parser instead).
-fn create_class(
-    vm: &mut VM<'_>,
-    name: Value,
-    bases: Value,
-    namespace: Value,
-    kwargs: KwargsValues,
-) -> RunResult<Value> {
+fn create_class<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    name: Value<H>,
+    bases: Value<H>,
+    namespace: Value<H>,
+    kwargs: KwargsValues<H>,
+) -> RunResult<Value<H>> {
     defer_drop!(name, vm);
     defer_drop!(bases, vm);
     defer_drop!(namespace, vm);
@@ -158,7 +158,7 @@ fn create_class(
     // Copy the namespace (CPython semantics: the class owns an independent
     // dict). `clone_with_heap` takes `&Heap`, so the pairs can be cloned
     // while `source` still borrows the heap immutably.
-    let mut pairs: Vec<(Value, Value)> = source
+    let mut pairs: Vec<(Value<H>, Value<H>)> = source
         .iter()
         .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
         .collect();

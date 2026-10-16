@@ -14,21 +14,22 @@ use super::FrameNamespace;
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
-    heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapReadOutput, HeapReader, Reference, RuntimeRef},
     intern::{FunctionId, StringId},
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Live tasks are runnable or blocked; completion removes the task from the scheduler.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-enum TaskState {
+enum TaskState<H: Reference> {
     /// Queued or currently executing. `Err` must be raised before executing more bytecode.
     Ready(RunResult<()>),
     /// Owns an inc_ref on the awaitable; its awaiter identifies the task to wake.
-    Blocked(HeapId),
+    Blocked(H),
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for TaskState {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for TaskState<H> {
     fn drop_with(self, heap: &mut C) {
         match self {
             Self::Ready(_) => {}
@@ -37,30 +38,31 @@ impl<C: ContainsHeap> DropWithContext<C> for TaskState {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// A live async task. Its execution context is saved here while another task runs.
 /// The current task's frames and stacks live in the VM, including for the main task.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Task {
+pub(crate) struct Task<H: Reference> {
     /// Unique identifier for this task.
     pub id: TaskId,
     /// Saved frames; empty while this task is current or has not started.
-    pub frames: Vec<SerializedTaskFrame>,
+    pub frames: Vec<SerializedTaskFrame<H>>,
     /// Saved operand stack; the current task uses the VM's stack.
-    pub stack: Vec<Value>,
+    pub stack: Vec<Value<H>>,
     /// Exception stack for nested except blocks.
-    pub exception_stack: Vec<Value>,
+    pub exception_stack: Vec<Value<H>>,
     /// VM-level instruction_ip (for exception table lookup).
     pub instruction_ip: usize,
     /// Owned coroutine reference for a spawned task; the main task has none.
-    pub coroutine_id: Option<HeapId>,
+    pub coroutine_id: Option<H>,
     /// Result recipient, owning an inc_ref for a gather. An already-settled gather
     /// discards the result. The main task has no awaiter.
-    pub awaiter: Option<Awaiter>,
+    pub awaiter: Option<Awaiter<H>>,
     /// Current execution state.
-    state: TaskState,
+    state: TaskState<H>,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Task {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Task<H> {
     fn drop_with(mut self, heap: &mut C) {
         self.stack.drain(..).drop_with(heap);
         self.exception_stack.drain(..).drop_with(heap);
@@ -77,12 +79,13 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// Serialized call frame for task storage.
 ///
 /// Similar to `SerializedFrame` but used within the scheduler for task context.
 /// Cannot store `&Code` references - uses `FunctionId` to look up code on resume.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SerializedTaskFrame {
+pub(crate) struct SerializedTaskFrame<H: Reference> {
     /// Which function's code this frame executes (None = module-level).
     pub function_id: Option<FunctionId>,
     /// Instruction pointer within this frame's bytecode.
@@ -100,15 +103,15 @@ pub(crate) struct SerializedTaskFrame {
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
     pub is_initializer: bool,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
-    pub namespace: Option<Box<FrameNamespace>>,
+    pub namespace: Option<Box<FrameNamespace<H>>>,
     /// The `from ... import` in progress, if the frame parked inside one.
     #[serde(default)]
     pub import_from_module: Option<StringId>,
 }
 
-impl Task {
+impl<H: RuntimeRef> Task<H> {
     /// Creates a runnable task, taking ownership of its coroutine and awaiter references.
-    pub fn new(id: TaskId, coroutine_id: Option<HeapId>, awaiter: Option<Awaiter>) -> Self {
+    pub fn new(id: TaskId, coroutine_id: Option<H>, awaiter: Option<Awaiter<H>>) -> Self {
         Self {
             id,
             frames: Vec::new(),
@@ -122,13 +125,14 @@ impl Task {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// Owns live tasks, pending external futures, and call IDs for both sync and async execution.
 /// A blocked task is queued once when its awaitable settles, for either a value or an error.
 /// Selecting that task consumes its queue entry and resume result before bytecode can run.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Scheduler {
+pub(crate) struct Scheduler<H: Reference> {
     /// All tasks keyed by their `TaskId`.
-    tasks: AHashMap<TaskId, Task>,
+    tasks: AHashMap<TaskId, Task<H>>,
     /// Tasks ready to execute or raise a pending exception.
     ready_queue: VecDeque<TaskId>,
     /// Task whose context is in the VM, or `None` when that context has been discarded.
@@ -142,16 +146,16 @@ pub(crate) struct Scheduler {
     /// each value until the host resolves or fails the call — that ref keeps
     /// the future entry alive between yield and resume even if no awaiter is
     /// holding a `Value::Ref` to it.
-    pending_externals: AHashMap<CallId, HeapId>,
+    pending_externals: AHashMap<CallId, H>,
     /// Index mapping a spawned coroutine's `HeapId` to the `TaskId` driving
     /// it. Populated in [`Scheduler::spawn`] and removed in
     /// [`Scheduler::cancel_task`]. Lets `GatherFuture` and other call sites
     /// dispatch from coroutine heap id back to the driving task without
     /// scanning all tasks.
-    coroutine_to_task: AHashMap<HeapId, TaskId>,
+    coroutine_to_task: AHashMap<H, TaskId>,
 }
 
-impl Scheduler {
+impl<H: RuntimeRef> Scheduler<H> {
     /// Creates the main task as current; it needs no queue entry to start executing.
     pub fn new() -> Self {
         let main_task_id = TaskId::default();
@@ -182,7 +186,7 @@ impl Scheduler {
 
     /// Returns the main task, whose context is saved here whenever another
     /// task is loaded; `None` once it has been cancelled.
-    pub fn main_task(&self) -> Option<&Task> {
+    pub fn main_task(&self) -> Option<&Task<H>> {
         self.tasks.get(&TaskId::default())
     }
 
@@ -191,7 +195,7 @@ impl Scheduler {
     /// # Panics
     /// Panics if the task ID doesn't exist.
     #[inline]
-    pub fn get_task_mut(&mut self, task_id: TaskId) -> &mut Task {
+    pub fn get_task_mut(&mut self, task_id: TaskId) -> &mut Task<H> {
         self.tasks
             .get_mut(&task_id)
             .expect("Scheduler::get_task_mut: task not found")
@@ -211,7 +215,7 @@ impl Scheduler {
     /// The scheduler inc_refs `future_id` so the entry stays alive between
     /// the yield to the host and the matching `resolve_future` / `fail_future`
     /// call, even if no awaiter holds a `Value::Ref` to it.
-    pub fn add_pending_external(&mut self, call_id: CallId, future_id: HeapId, heap: &Heap) {
+    pub fn add_pending_external(&mut self, call_id: CallId, future_id: H, heap: &Heap<H>) {
         heap.inc_ref(future_id);
         let prev = self.pending_externals.insert(call_id, future_id);
         debug_assert!(prev.is_none(), "add_pending_external: CallId already registered");
@@ -221,7 +225,7 @@ impl Scheduler {
     ///
     /// The caller becomes responsible for the inc_ref previously held by the
     /// scheduler (typically dec_ref'd once the state transition is committed).
-    pub fn take_pending_external(&mut self, call_id: CallId) -> Option<HeapId> {
+    pub fn take_pending_external(&mut self, call_id: CallId) -> Option<H> {
         self.pending_externals.remove(&call_id)
     }
 
@@ -230,7 +234,7 @@ impl Scheduler {
     /// The task will be unblocked when the awaitable settles and its awaiter
     /// slot routes back here (`Awaiter::Task(task_id)` on either
     /// `ExternalFuture::Pending` or `AwaitedGather`).
-    pub fn block_current_on(&mut self, awaitable_id: HeapId, heap: &Heap) {
+    pub fn block_current_on(&mut self, awaitable_id: H, heap: &Heap<H>) {
         if let Some(task_id) = self.current_task {
             let task = self.get_task_mut(task_id);
             debug_assert!(matches!(task.state, TaskState::Ready(Ok(()))));
@@ -260,7 +264,7 @@ impl Scheduler {
     /// **owning** references held by the new task; the matching `dec_ref`
     /// happens in [`Scheduler::cancel_task`]. It takes `gather_id` rather than
     /// a ready-made `Awaiter` so the `None` return above has nothing to unwind.
-    pub fn spawn(&mut self, heap: &Heap, coroutine_id: HeapId, gather_id: Option<HeapId>) -> Option<TaskId> {
+    pub fn spawn(&mut self, heap: &Heap<H>, coroutine_id: H, gather_id: Option<H>) -> Option<TaskId> {
         if self.coroutine_to_task.contains_key(&coroutine_id) {
             return None;
         }
@@ -297,7 +301,7 @@ impl Scheduler {
     }
 
     /// Wakes a blocked task with a value already on its stack, or an exception to raise.
-    pub fn make_ready(&mut self, task_id: TaskId, result: RunResult<()>, heap: &mut Heap) {
+    pub fn make_ready(&mut self, task_id: TaskId, result: RunResult<()>, heap: &mut Heap<H>) {
         let task = self.get_task_mut(task_id);
         debug_assert!(matches!(task.state, TaskState::Blocked(_)));
         let old_state = mem::replace(&mut task.state, TaskState::Ready(result));
@@ -321,7 +325,7 @@ impl Scheduler {
     /// Removes a task and releases its saved context and heap references.
     /// Cancels tasks under any gather it is still blocked on, using an iterative walk
     /// so deeply nested gathers cannot overflow the native stack during teardown.
-    pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>) {
+    pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, H>) {
         let mut pending: SmallVec<[TaskId; 4]> = smallvec![task_id];
         while let Some(task_id) = pending.pop() {
             self.cancel_one(task_id, heap, &mut pending);
@@ -333,7 +337,7 @@ impl Scheduler {
     ///
     /// Dropping this task ahead of the children it queued is sound: each owns
     /// an inc_ref on that same gather (see [`Scheduler::spawn`]).
-    fn cancel_one(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
+    fn cancel_one(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, H>, pending: &mut SmallVec<[TaskId; 4]>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
         let Some(task) = self.tasks.remove(&task_id) else {
@@ -373,10 +377,10 @@ impl Scheduler {
     /// `root`, since the walk takes no references of its own: each nested
     /// gather is kept alive by its parent's `items`, and the parent in turn by
     /// the `Awaiter::GatherSlot` inc_ref that nested child holds.
-    fn queue_gather_tasks(&self, root: HeapId, heap: &HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
+    fn queue_gather_tasks(&self, root: H, heap: &HeapReader<'_, H>, pending: &mut SmallVec<[TaskId; 4]>) {
         // Gathers nest as a tree — a gather may only be awaited once, so the
         // walk cannot revisit a node and terminates.
-        let mut gathers: SmallVec<[HeapId; 4]> = smallvec![root];
+        let mut gathers: SmallVec<[H; 4]> = smallvec![root];
         while let Some(gather_id) = gathers.pop() {
             // Coroutine and external children land here too; only gathers have
             // children of their own to walk.
@@ -415,7 +419,7 @@ impl Scheduler {
 
     /// Cleans up all scheduler resources: the pending-future inc_refs and
     /// every remaining task (via [`Scheduler::cancel_task`]).
-    pub fn cleanup(&mut self, heap: &mut HeapReader<'_>) {
+    pub fn cleanup(&mut self, heap: &mut HeapReader<'_, H>) {
         // Release the inc_refs the scheduler holds on each pending future.
         for (_, future_id) in mem::take(&mut self.pending_externals) {
             heap.dec_ref(future_id);
@@ -427,7 +431,7 @@ impl Scheduler {
     }
 }
 
-impl Default for Scheduler {
+impl<H: RuntimeRef> Default for Scheduler<H> {
     fn default() -> Self {
         Self::new()
     }

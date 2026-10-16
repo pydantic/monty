@@ -17,7 +17,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput, RuntimeRef},
     resource_checks::check_repeat_size,
     types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
     value::{VALUE_SIZE, Value},
@@ -29,7 +29,12 @@ use crate::{
 /// A Counter is a plain dict, so its values are ordinary Python objects and
 /// CPython never coerces them — floats and big ints must survive arithmetic
 /// intact. Both operands are borrowed; the result is a fresh owned `Value`.
-fn count_arith(lhs: &Value, rhs: &Value, subtract: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+fn count_arith<H: RuntimeRef>(
+    lhs: &Value<H>,
+    rhs: &Value<H>,
+    subtract: bool,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     // `py_add`/`py_sub` already raise the exact `binary_type_error(op, ...)` this
     // needs when the counts aren't addable, so delegate rather than re-derive it.
     if subtract {
@@ -82,7 +87,7 @@ impl CountCmp {
 /// `NaN` makes a pair *unordered* rather than incomparable, and every IEEE
 /// ordering comparison against `NaN` is false — so `nan <= nan` is `false`, which
 /// is exactly what CPython's element-wise `Counter` comparisons observe.
-fn count_holds(lhs: &Value, rhs: &Value, op: CountCmp, vm: &mut VM<'_>) -> RunResult<bool> {
+fn count_holds<H: RuntimeRef>(lhs: &Value<H>, rhs: &Value<H>, op: CountCmp, vm: &mut VM<'_, H>) -> RunResult<bool> {
     match lhs.py_cmp(rhs, vm)? {
         CmpOrder::Ordered(ordering) => Ok(op.holds(ordering)),
         CmpOrder::Unordered => Ok(false),
@@ -100,7 +105,7 @@ fn count_holds(lhs: &Value, rhs: &Value, op: CountCmp, vm: &mut VM<'_>) -> RunRe
 /// Unlike the algebra's [`count_holds`], a `NaN` pair is treated as **equal**
 /// here: Python's `sorted`/`heapq` never raise on `NaN`, they just leave it
 /// wherever the (ill-defined for `NaN`) ordering happens to place it.
-fn count_sort_cmp(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<Ordering> {
+fn count_sort_cmp<H: RuntimeRef>(lhs: &Value<H>, rhs: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Ordering> {
     match lhs.py_cmp(rhs, vm)? {
         CmpOrder::Ordered(ordering) => Ok(ordering),
         CmpOrder::Unordered => Ok(Ordering::Equal),
@@ -115,7 +120,7 @@ fn count_sort_cmp(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<Orderi
 /// Whether a count is strictly greater than zero (the `Counter` algebra keeps
 /// only positive results). CPython's `_keep_positive` filters with `count > 0`,
 /// so an unorderable count reports `>` and a `NaN` count is not positive.
-fn count_is_positive(value: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
+fn count_is_positive<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<bool> {
     count_holds(value, &Value::Int(0), CountCmp::Gt, vm)
 }
 
@@ -129,7 +134,7 @@ fn count_is_positive(value: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
 /// CPython converts before it inspects the sign, so a huge negative count is
 /// rejected rather than skipped. That boundary is exactly Monty's `Int`
 /// (`i64`) / `LongInt` split, so the type of the count decides it.
-fn count_repeat_len(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
+fn count_repeat_len<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<usize> {
     match value {
         Value::Int(i) => Ok(usize::try_from(*i).unwrap_or(0)),
         Value::Bool(b) => Ok(usize::from(*b)),
@@ -148,13 +153,13 @@ fn count_repeat_len(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
 /// `self.get(elem, 0) + 1`. The two agree numerically, but the left operand is
 /// the one named in a `TypeError`. Ignored when `subtract` is set, which is
 /// always `self.get(elem, 0) - count`.
-fn counter_bump<'h>(
-    counter: &mut HeapObjectRead<'h, Dict>,
-    key: Value,
-    delta: &Value,
+fn counter_bump<'h, H: RuntimeRef>(
+    counter: &mut HeapObjectRead<'h, H, Dict<H>>,
+    key: Value<H>,
+    delta: &Value<H>,
     subtract: bool,
     delta_first: bool,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     // Either failure below — `dict_get` hashing an unhashable key (e.g.
     // `Counter([[1]])`), or the arithmetic on a non-numeric count — releases the
@@ -181,12 +186,12 @@ fn counter_bump<'h>(
 /// and from `kwargs` into `counter`. `subtract` negates the deltas.
 ///
 /// Consumes `source` and `kwargs`.
-pub(crate) fn counter_update<'h>(
-    counter: &mut HeapObjectRead<'h, Dict>,
-    source: Option<Value>,
-    kwargs: KwargsValues,
+pub(crate) fn counter_update<'h, H: RuntimeRef>(
+    counter: &mut HeapObjectRead<'h, H, Dict<H>>,
+    source: Option<Value<H>>,
+    kwargs: KwargsValues<H>,
     subtract: bool,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     // An explicit `None` source is a no-op (CPython skips it before dispatch), so
     // `Counter(None)` and `c.update(None)` only apply the keyword counts below.
@@ -199,8 +204,8 @@ pub(crate) fn counter_update<'h>(
                 unreachable!("mapping is a ref");
             };
             // Snapshot (key, delta) pairs first so `c.update(c)` is well-defined.
-            let pairs: Vec<(Value, Value)> = {
-                let Some(src) = vm.heap.read_as::<Dict>(src_id) else {
+            let pairs: Vec<(Value<H>, Value<H>)> = {
+                let Some(src) = vm.heap.read_as::<Dict<H>>(src_id) else {
                     unreachable!("mapping is a dict");
                 };
                 let src = src.get(vm.heap);
@@ -213,7 +218,7 @@ pub(crate) fn counter_update<'h>(
         } else {
             // `_count_elements`: `self[elem] = self_get(elem, 0) + 1`, so the
             // existing count is the left operand here.
-            let items = collect_owned_iterable::<Vec<Value>>(source, vm)?.into_iter();
+            let items = collect_owned_iterable::<_, Vec<Value<H>>>(source, vm)?.into_iter();
             // A bump can fail on an unhashable item; the guard releases the
             // items it never reached.
             defer_drop_mut!(items, vm);
@@ -239,11 +244,11 @@ pub(crate) fn counter_update<'h>(
 /// one CPython takes a `super().update()` fast path that stores values verbatim
 /// — which is why `Counter({'a': True})` keeps `True` rather than `1`.
 /// `subtract` has no fast path and always computes `self.get(elem, 0) - count`.
-fn counter_merge_mapping<'h>(
-    counter: &mut HeapObjectRead<'h, Dict>,
-    pairs: Vec<(Value, Value)>,
+fn counter_merge_mapping<'h, H: RuntimeRef>(
+    counter: &mut HeapObjectRead<'h, H, Dict<H>>,
+    pairs: Vec<(Value<H>, Value<H>)>,
     subtract: bool,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     let is_empty = counter.get(vm.heap).is_empty();
     // A merge can fail on an unhashable key or a non-numeric count; the guard
@@ -267,7 +272,7 @@ fn counter_merge_mapping<'h>(
 }
 
 /// Converts kwargs into owned `(key_value, count_value)` delta pairs.
-fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
+fn counter_kwarg_deltas<H: RuntimeRef>(kwargs: KwargsValues<H>) -> Vec<(Value<H>, Value<H>)> {
     match kwargs {
         KwargsValues::Empty => Vec::new(),
         KwargsValues::Inline(kvs) => kvs.into_iter().map(|(id, v)| (Value::InternString(id), v)).collect(),
@@ -284,12 +289,12 @@ fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
 /// `self` (`Counter.update() takes from 1 to 2 positional arguments but 3 were
 /// given`), which the derive's `def` family — positional-only, no receiver —
 /// cannot express. The `+ 1`s below re-introduce that `self`.
-pub(crate) fn counter_update_method<'h>(
-    counter: &mut HeapObjectRead<'h, Dict>,
-    args: ArgValues,
+pub(crate) fn counter_update_method<'h, H: RuntimeRef>(
+    counter: &mut HeapObjectRead<'h, H, Dict<H>>,
+    args: ArgValues<H>,
     subtract: bool,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let (mut pos, kwargs) = args.into_parts();
     let total = pos.len();
     let source = (total > 0).then(|| pos.next().expect("len checked"));
@@ -309,7 +314,10 @@ pub(crate) fn counter_update_method<'h>(
 ///
 /// Sums with real numeric addition (CPython's `sum(self.values())`), so a
 /// float or big-int count is preserved in the total rather than truncated.
-pub(crate) fn counter_total<'h>(counter: &HeapObjectRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
+pub(crate) fn counter_total<'h, H: RuntimeRef>(
+    counter: &HeapObjectRead<'h, H, Dict<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let counts = counter
         .get(vm.heap)
         .iter()
@@ -337,7 +345,7 @@ pub(crate) fn counter_total<'h>(counter: &HeapObjectRead<'h, Dict>, vm: &mut VM<
 /// Takes the counts by value because the comparison needs `&mut VM` (big ints
 /// live on the heap), which callers cannot hold alongside a `Dict` borrow.
 /// Consumes `counts`.
-pub(crate) fn counter_order(counts: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
+pub(crate) fn counter_order<H: RuntimeRef>(counts: Vec<Value<H>>, vm: &mut VM<'_, H>) -> RunResult<Vec<usize>> {
     let mut order: Vec<usize> = (0..counts.len()).collect();
     // `sort_by` needs an infallible comparator, so a comparison error is stashed
     // and reported once the sort finishes; the ordering it produces in that case
@@ -365,11 +373,11 @@ pub(crate) fn counter_order(counts: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Ve
 /// `Counter.most_common([n])` — a list of `(element, count)` tuples ordered by
 /// count descending (ties in insertion order). `n` omitted/`None` returns all;
 /// a non-positive `n` returns an empty list.
-pub(crate) fn counter_most_common<'h>(
-    counter: &HeapObjectRead<'h, Dict>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+pub(crate) fn counter_most_common<'h, H: RuntimeRef>(
+    counter: &HeapObjectRead<'h, H, Dict<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let n_arg = args.get_zero_one_arg("most_common", vm.heap)?;
     // `n` goes through `__index__`, so a bool counts as `0`/`1` and a big int is
     // accepted (clamped): a huge positive returns every item, a negative none.
@@ -431,11 +439,11 @@ pub(crate) fn counter_most_common<'h>(
 /// `Counter.elements()` — a list repeating each element by its count, skipping
 /// zero and negative counts (Monty's eager iterator convention returns a list
 /// rather than CPython's lazy iterator).
-pub(crate) fn counter_elements<'h>(
-    counter: &HeapObjectRead<'h, Dict>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+pub(crate) fn counter_elements<'h, H: RuntimeRef>(
+    counter: &HeapObjectRead<'h, H, Dict<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     args.check_zero_args("elements", vm.heap)?;
 
     // Resolve every repetition length up front: a count that `itertools.repeat`
@@ -443,7 +451,7 @@ pub(crate) fn counter_elements<'h>(
     // must raise before anything is built. No user code runs here or below, so
     // each pass reads the entries under one borrow.
     let lengths = {
-        let vm: &VM<'h> = vm;
+        let vm: &VM<'h, H> = vm;
         counter
             .get(vm.heap)
             .iter()
@@ -460,7 +468,7 @@ pub(crate) fn counter_elements<'h>(
     // `Vec::new()` (not `with_capacity(total)`): `total` is attacker-controlled,
     // and `check_repeat_size` above is the real guard (it fires before this loop
     // whenever a memory limit is set). Pre-reserving would itself panic.
-    let mut items: Vec<Value> = Vec::new();
+    let mut items: Vec<Value<H>> = Vec::new();
     for ((key, _), &count) in counter.get(vm.heap).iter().zip(&lengths) {
         for _ in 0..count {
             items.push(key.clone_with_heap(vm.heap));
@@ -484,12 +492,12 @@ pub(crate) enum CounterOp {
 
 /// Computes a binary `Counter` operation, returning a new Counter that keeps
 /// only positive counts (CPython's `Counter.__add__` etc.).
-pub(crate) fn counter_binary_op<'h>(
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
+pub(crate) fn counter_binary_op<'h, H: RuntimeRef>(
+    lhs: &HeapObjectRead<'h, H, Dict<H>>,
+    rhs: &HeapObjectRead<'h, H, Dict<H>>,
     op: CounterOp,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let mut result = Dict::new();
     result.make_counter();
     let result = vm.heap.allocate_as(result);
@@ -542,12 +550,12 @@ enum ExtremeOp {
 /// right-only keys across. The caller's final `retain_positive` performs the
 /// `> 0` strip (and raises the `> 0` `TypeError` for an unorderable right-only
 /// key, matching CPython's second-loop wording).
-fn counter_binary_extreme<'h>(
-    result: &mut HeapObjectRead<'h, Dict>,
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
+fn counter_binary_extreme<'h, H: RuntimeRef>(
+    result: &mut HeapObjectRead<'h, H, Dict<H>>,
+    lhs: &HeapObjectRead<'h, H, Dict<H>>,
+    rhs: &HeapObjectRead<'h, H, Dict<H>>,
     op: ExtremeOp,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     // Two guards cover every failure below, so each one is a plain `?`: the outer
     // releases the entries the loop never reached, the inner the one in flight.
@@ -621,11 +629,11 @@ pub(crate) enum CounterCmp {
 /// present in only one operand still constrains the result. The strict forms
 /// are defined in terms of the loose ones: `<` is `<= and !=`, `>` is
 /// `>= and !=`.
-pub(crate) fn counter_compare<'h>(
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
+pub(crate) fn counter_compare<'h, H: RuntimeRef>(
+    lhs: &HeapObjectRead<'h, H, Dict<H>>,
+    rhs: &HeapObjectRead<'h, H, Dict<H>>,
     cmp: CounterCmp,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<bool> {
     // `<` is `<= and !=` and `>` is `>= and !=`, so both strict forms run the
     // loose comparison — whose operator is what an unorderable pair reports — and
@@ -681,11 +689,11 @@ pub(crate) fn counter_compare<'h>(
 ///
 /// Returns owned clones so the caller can run comparisons that need `&mut VM`.
 /// Every returned pair must be dropped by the caller.
-fn counter_union_counts<'h>(
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
-    vm: &mut VM<'h>,
-) -> RunResult<Vec<(Value, Value)>> {
+fn counter_union_counts<'h, H: RuntimeRef>(
+    lhs: &HeapObjectRead<'h, H, Dict<H>>,
+    rhs: &HeapObjectRead<'h, H, Dict<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Vec<(Value<H>, Value<H>)>> {
     // Three guards, so a failing lookup is a plain `?`: the pairs accumulated so
     // far, the entries not yet visited, and the entry in flight all get released.
     let mut pairs = DropGuard::new(Vec::new(), vm);
@@ -734,11 +742,11 @@ fn counter_union_counts<'h>(
 /// Note the asymmetry CPython has between the directions: `+=` / `-=` walk
 /// *other*'s keys (so new keys can appear), whereas `&=` walks *self*'s keys
 /// (so no key is ever added), and `|=` walks *other*'s keys keeping the larger.
-pub(crate) fn counter_inplace_op<'h>(
-    counter: &mut HeapObjectRead<'h, Dict>,
-    rhs: &Value,
+pub(crate) fn counter_inplace_op<'h, H: RuntimeRef>(
+    counter: &mut HeapObjectRead<'h, H, Dict<H>>,
+    rhs: &Value<H>,
     op: CounterOp,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     match op {
         // `for elem, count in other.items(): self[elem] += count`
@@ -812,11 +820,11 @@ pub(crate) fn counter_inplace_op<'h>(
 /// `-c` keeps the *strictly negative* counts, storing their negation (CPython's
 /// `{elem: -count for elem, count in self.items() if count < 0}`). Both leave
 /// only positive counts, so the result is a valid Counter.
-pub(crate) fn counter_unary_op<'h>(
-    counter: &HeapObjectRead<'h, Dict>,
+pub(crate) fn counter_unary_op<'h, H: RuntimeRef>(
+    counter: &HeapObjectRead<'h, H, Dict<H>>,
     negate: bool,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let mut result = Dict::new();
     result.make_counter();
     let result = vm.heap.allocate_as(result);
@@ -865,11 +873,11 @@ pub(crate) fn counter_unary_op<'h>(
 
 /// Folds a batch of `(key, delta)` pairs into `counter`, releasing any pairs
 /// left unconsumed when a bump fails.
-fn counter_bump_all<'h>(
-    counter: &mut HeapObjectRead<'h, Dict>,
-    pairs: Vec<(Value, Value)>,
+fn counter_bump_all<'h, H: RuntimeRef>(
+    counter: &mut HeapObjectRead<'h, H, Dict<H>>,
+    pairs: Vec<(Value<H>, Value<H>)>,
     subtract: bool,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     let pairs = pairs.into_iter();
     defer_drop_mut!(pairs, vm);
@@ -885,7 +893,10 @@ fn counter_bump_all<'h>(
 /// Returns the dictionary handle for an in-place right-hand operand, or raises
 /// CPython's `AttributeError: 'X' object has no attribute 'items'` — the failure
 /// `c += other` / `-=` / `|=` hit when `other.items()` has no `.items()`.
-fn counter_require_mapping<'h>(rhs: &Value, vm: &VM<'h>) -> RunResult<HeapObjectRead<'h, Dict>> {
+fn counter_require_mapping<'h, H: RuntimeRef>(
+    rhs: &Value<H>,
+    vm: &VM<'h, H>,
+) -> RunResult<HeapObjectRead<'h, H, Dict<H>>> {
     match rhs.read_heap(vm) {
         Some(HeapReadOutput::Dict(dict)) => Ok(dict),
         _ => Err(ExcType::attribute_error(rhs.py_type_name(vm), "items")),
@@ -893,7 +904,10 @@ fn counter_require_mapping<'h>(rhs: &Value, vm: &VM<'h>) -> RunResult<HeapObject
 }
 
 /// Removes every entry whose count is not strictly positive from `counter`.
-fn counter_retain_positive<'h>(counter: &mut HeapObjectRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<()> {
+fn counter_retain_positive<'h, H: RuntimeRef>(
+    counter: &mut HeapObjectRead<'h, H, Dict<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<()> {
     // The keys to remove are collected first: the scan clones them out of the
     // dict, so popping while iterating is not possible. Both guards release what
     // they still hold if a count comparison — or a `pop` hashing a key — raises.

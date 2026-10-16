@@ -21,7 +21,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapItem, HeapObjectRead, HeapReadOutput, Reference, RuntimeRef},
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, is_path_os_method, value_as_path_str},
     types::{
@@ -29,7 +29,7 @@ use crate::{
         dir_scan::{glob_call, walk_call},
         str::allocate_string,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, NoHeapRef, Value},
 };
 
 /// Python `pathlib.Path` object representing a filesystem path.
@@ -284,7 +284,7 @@ impl Path {
     /// - `Path('a')` returns `Path('a')`
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    pub fn init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         let pos_args = args.into_pos_only("Path", vm.heap)?;
         defer_drop!(pos_args, vm);
 
@@ -311,7 +311,7 @@ impl Path {
 ///
 /// A pure-Python classmethod in CPython, so its arity errors count `cls`:
 /// one stray positional is `takes 1 positional argument but 2 were given`.
-pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn class_cwd<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     if !matches!(args, ArgValues::Empty) {
         let (pos, kwargs) = args.into_parts();
         let given = pos.len();
@@ -334,11 +334,11 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `Path.glob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "Path.glob", style = def)]
-struct PathGlobArgs {
+struct PathGlobArgs<H: Reference> {
     #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
+    pattern: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    case_sensitive: Value,
+    case_sensitive: Value<H>,
     #[from_args(kw_only, default = LaxBool::new(false))]
     recurse_symlinks: LaxBool,
 }
@@ -346,11 +346,11 @@ struct PathGlobArgs {
 /// `Path.rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "Path.rglob", style = def)]
-struct PathRglobArgs {
+struct PathRglobArgs<H: Reference> {
     #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
+    pattern: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    case_sensitive: Value,
+    case_sensitive: Value<H>,
     #[from_args(kw_only, default = LaxBool::new(false))]
     recurse_symlinks: LaxBool,
 }
@@ -358,11 +358,11 @@ struct PathRglobArgs {
 /// `Path.walk(top_down=True, on_error=None, follow_symlinks=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "Path.walk", style = def)]
-struct PathWalkArgs {
+struct PathWalkArgs<H: Reference> {
     #[from_args(default = LaxBool::new(true))]
     top_down: LaxBool,
     #[from_args(default = Value::None)]
-    on_error: Value,
+    on_error: Value<H>,
     #[from_args(default = LaxBool::new(false))]
     follow_symlinks: LaxBool,
 }
@@ -372,14 +372,14 @@ struct PathWalkArgs {
 ///
 /// `rglob` is `glob` of `'**/' + pattern`. Any non-`None` `case_sensitive` is
 /// truth-tested, and makes CPython list even literal pattern parts.
-fn path_glob(
+fn path_glob<H: RuntimeRef>(
     base: &str,
-    pattern: Value,
+    pattern: Value<H>,
     recursive: bool,
-    case_sensitive: Value,
+    case_sensitive: Value<H>,
     recurse_symlinks: LaxBool,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     defer_drop!(pattern, vm);
     defer_drop!(case_sensitive, vm);
     let pattern_text = match value_as_path_str(pattern, vm.heap, vm.interns) {
@@ -408,12 +408,12 @@ fn path_glob(
 }
 
 /// Extracts a string from a Value for use as a path.
-fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
+fn extract_path_string<'a, H: RuntimeRef>(val: &Value<H>, vm: &'a VM<'_, H>) -> RunResult<&'a str> {
     value_as_path_str(val, vm.heap, vm.interns)
         .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
 }
 
-fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path> {
+fn fold_joinpath<H: RuntimeRef>(mut path: Path, parts: &[Value<H>], vm: &VM<'_, H>) -> RunResult<Path> {
     for part in parts {
         path = Path::new(path.joinpath(extract_path_string(part, vm)?));
     }
@@ -421,14 +421,14 @@ fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path
 }
 
 /// Joins a `Path` with a path-like right operand for `Path.__truediv__`.
-fn path_div(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
+fn path_div<H: RuntimeRef>(path: &Path, other: &Value<H>, heap: &Heap<H>, interns: &Interns) -> Option<Value<H>> {
     let other = value_as_path_str(other, heap, interns)?;
     let result = path.joinpath(other);
     Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))))
 }
 
 /// Prepends a path-like left operand for `Path.__rtruediv__`.
-fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
+fn path_rdiv<H: RuntimeRef>(path: &Path, other: &Value<H>, heap: &Heap<H>, interns: &Interns) -> Option<Value<H>> {
     let base = value_as_path_str(other, heap, interns)?;
     let result = Path::new(base.to_owned()).joinpath(path.as_str());
     Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))))
@@ -490,7 +490,7 @@ impl Path {
     /// `stem`, `suffix`, `suffixes`, `parts`), or `None` if the variant doesn't
     /// correspond to a Path attribute. Used by `py_getattr` to share logic between
     /// the interned fast path and the heap string slow path.
-    pub(crate) fn getattr_by_static(&self, ss: StaticStrings, heap: &Heap) -> Option<Value> {
+    pub(crate) fn getattr_by_static<H: RuntimeRef>(&self, ss: StaticStrings, heap: &Heap<H>) -> Option<Value<H>> {
         let v = match ss {
             StaticStrings::Name => allocate_string(self.name(), heap),
             StaticStrings::Parent => {
@@ -527,24 +527,24 @@ impl Path {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Path> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::Path
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         // Paths don't have a length in Python
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Path(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
         Ok(Some(self.get(vm.heap).path == other.get(vm.heap).path))
     }
 
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         let p = self.get(vm.heap);
         if let Some(cached) = p.cached_hash.get() {
             return Ok(Some(cached));
@@ -556,24 +556,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
         Ok(Some(hash))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         // Paths are always truthy (even empty paths)
         Ok(true)
     }
 
-    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_truediv_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(path_div(self.get(vm.heap), other, vm.heap, vm.interns))
     }
 
-    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rtruediv_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(path_rdiv(self.get(vm.heap), other, vm.heap, vm.interns))
     }
 
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap))
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         // Format like: PosixPath('/usr/bin')
         Ok(write!(f, "PosixPath('{}')", self.get(vm.heap).path)?)
     }
@@ -584,10 +584,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     /// OS methods yield calls to the host; `iterdir` retains the receiver's spelling
     /// so the resume path can restore it on each returned entry.
     /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                Type::<NoHeapRef>::Path,
+                attr.as_str(vm.interns),
+            ));
         };
 
         if is_path_os_method(method) {
@@ -684,19 +687,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
             }
             _ => {
                 args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(
+                    Type::<NoHeapRef>::Path,
+                    attr.as_str(vm.interns),
+                ));
             }
         };
         value.map(CallResult::Value)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string(vm.interns) {
             if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap) {
                 return Ok(Some(CallResult::Value(v)));
             }
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                Type::<NoHeapRef>::Path,
+                attr.as_str(vm.interns),
+            ));
         }
         // Slow path: heap-allocated strings need string comparison
         let attr_str = attr.as_str(vm.interns);
@@ -707,7 +716,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
             "suffix" => StaticStrings::Suffix,
             "suffixes" => StaticStrings::Suffixes,
             "parts" => StaticStrings::Parts,
-            _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
+            _ => return Err(ExcType::attribute_error(Type::<NoHeapRef>::Path, attr_str)),
         };
         let v = self
             .get(vm.heap)
@@ -717,8 +726,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     }
 }
 
-impl HeapItem for Path {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for Path {
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<H>) {
         // Path doesn't contain heap references, nothing to do
     }
 }

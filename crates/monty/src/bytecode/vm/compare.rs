@@ -5,17 +5,18 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
+    heap::RuntimeRef,
     types::{CmpOrder, PyTrait},
     value::Value,
 };
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// Evaluates a comparison as a boolean without consuming its operands.
     ///
     /// Shared by fused asserts and comparison helpers that need truth rather
     /// than the arbitrary value a direct `==` expression may produce.
     #[inline]
-    pub(crate) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+    pub(crate) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value<H>, rhs: &Value<H>) -> RunResult<bool> {
         match op {
             CmpOperator::Eq | CmpOperator::NotEq => {
                 let result = lhs.py_rich_eq(rhs, self)?;
@@ -64,7 +65,7 @@ impl VM<'_> {
     /// Evaluates an ordering comparison, preserving CPython's behavior for
     /// unordered values such as `NaN` and incomparable operand types.
     #[inline]
-    fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+    fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value<H>, rhs: &Value<H>) -> RunResult<bool> {
         // A type whose ordering no `CmpOrder` describes (a `Counter` compares as
         // a multiset) answers the operator itself. Hooked in here rather than at
         // the opcode so the fused-assert path, which calls `cmp_values` directly,
@@ -126,7 +127,7 @@ impl VM<'_> {
 /// Defines a specialized entry point for each boolean comparison opcode.
 macro_rules! compare_opcodes {
     ($($name:ident => $op:ident,)*) => {
-        impl VM<'_> {
+        impl<H: RuntimeRef> VM<'_, H> {
             $(
                 pub(super) fn $name(&mut self) -> Result<(), RunError> {
                     self.compare_op::<{ CmpOperator::$op.as_operand() }>()

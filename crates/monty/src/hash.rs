@@ -32,7 +32,7 @@ use std::{
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::heap::HeapId;
+use crate::heap::RuntimeRef;
 
 /// A verified Python hash value.
 ///
@@ -155,7 +155,7 @@ pub(crate) fn hash_one(value: impl Hash) -> HashValue {
 /// instances, bound methods, and cells (CPython's default for objects without
 /// a user `__hash__`). Keeps the `DefaultHasher` boilerplate in one place.
 #[inline]
-pub(crate) fn identity_hash(id: HeapId) -> HashValue {
+pub(crate) fn identity_hash<H: RuntimeRef>(id: H) -> HashValue {
     hash_one(id)
 }
 

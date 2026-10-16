@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, HeapId, HeapRead},
+    heap::{DropGuard, HeapRead, Reference, RuntimeRef},
     types::{
         PyTrait,
         itertools::{ItertoolsIter, step::next_source},
@@ -14,20 +14,21 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields each `data` item whose parallel `selectors` item is truthy.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Compress {
-    data: Value,
+pub(crate) struct Compress<H: Reference> {
+    data: Value<H>,
     /// Pulled in lockstep with `data`; its truthiness gates each item.
-    selectors: Value,
+    selectors: Value<H>,
     /// Latches once either side runs out, so neither is driven again.
     done: bool,
 }
 
-impl Compress {
+impl<H: RuntimeRef> Compress<H> {
     /// Takes ownership of both iterators, which the caller has already resolved
     /// with `py_iter`.
-    pub(crate) fn new(data: Value, selectors: Value) -> Self {
+    pub(crate) fn new(data: Value<H>, selectors: Value<H>) -> Self {
         Self {
             data,
             selectors,
@@ -36,7 +37,7 @@ impl Compress {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = &self.data {
             on_child(*id);
         }
@@ -46,7 +47,7 @@ impl Compress {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.data.py_dec_ref_ids(stack);
         self.selectors.py_dec_ref_ids(stack);
     }
@@ -54,7 +55,10 @@ impl Compress {
 
 /// Pulls one item from each side per step, yielding the datum when its selector
 /// is truthy and stopping as soon as *either* side runs out.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &mut HeapRead<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let mut steps = 0usize;
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a
@@ -98,7 +102,11 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 
 /// Advances one side, latching `done` when it runs out so a `None` outcome
 /// means the whole adaptor is spent rather than just this step.
-fn step<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, source: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn step<'h, H: RuntimeRef>(
+    iter: &mut HeapRead<'h, ItertoolsIter<H>>,
+    source: &Value<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     if let Some(item) = next_source(source, vm)? {
         Ok(Some(item))
     } else {

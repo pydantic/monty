@@ -9,7 +9,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
-    heap::HeapId,
+    heap::RuntimeRef,
     intern::StaticStrings,
 };
 
@@ -143,7 +143,7 @@ impl StandardLib {
     }
 
     /// Creates a new instance of this module on the heap.
-    pub fn create(self, vm: &mut VM<'_>) -> HeapId {
+    pub fn create<H: RuntimeRef>(self, vm: &mut VM<'_, H>) -> H {
         match self {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
@@ -247,7 +247,7 @@ impl ModuleFunctions {
     ///
     /// Returns `CallResult` to support both immediate values and OS calls that
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
-    pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    pub fn call<H: RuntimeRef>(self, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         match self {
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
             Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),

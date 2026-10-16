@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, DropWithContext, HeapId, HeapRead},
+    heap::{DropGuard, DropWithContext, HeapRead, Reference, RuntimeRef},
     types::{
         TupleVec, allocate_tuple,
         itertools::{ItertoolsIter, step::next_source},
@@ -14,6 +14,7 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields one tuple per round, padding sources that have run out.
 ///
 /// A spent source is released and its slot goes `None`, so it is never driven
@@ -21,18 +22,18 @@ use crate::{
 /// counts the live slots, so exhaustion is O(1) to detect and `zip_longest()`
 /// with no arguments at all stops immediately.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ZipLongest {
+pub(crate) struct ZipLongest<H: Reference> {
     /// One slot per argument; `None` once that source is spent.
-    sources: Vec<Option<Value>>,
-    fillvalue: Value,
+    sources: Vec<Option<Value<H>>>,
+    fillvalue: Value<H>,
     /// How many slots are still live.
     active: usize,
 }
 
-impl ZipLongest {
+impl<H: RuntimeRef> ZipLongest<H> {
     /// Takes the sources already resolved by `py_iter`, unlike `chain`'s lazy
     /// arguments: CPython resolves every `zip_longest` argument up front.
-    pub(crate) fn new(sources: Vec<Value>, fillvalue: Value) -> Self {
+    pub(crate) fn new(sources: Vec<Value<H>>, fillvalue: Value<H>) -> Self {
         Self {
             active: sources.len(),
             sources: sources.into_iter().map(Some).collect(),
@@ -41,7 +42,7 @@ impl ZipLongest {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for source in self.sources.iter().flatten() {
             if let Value::Ref(id) = source {
                 on_child(*id);
@@ -53,7 +54,7 @@ impl ZipLongest {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         for source in self.sources.iter_mut().flatten() {
             source.py_dec_ref_ids(stack);
         }
@@ -62,7 +63,10 @@ impl ZipLongest {
 }
 
 /// Draws one item per slot, padding the spent ones, and stops once none are live.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &mut HeapRead<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let ItertoolsIter::ZipLongest(zip) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::ZipLongest")
     };

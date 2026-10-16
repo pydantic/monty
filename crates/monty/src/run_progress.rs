@@ -6,6 +6,8 @@
 //! The internal [`Snapshot`] type is `pub(crate)` — callers interact exclusively with
 //! the per-variant structs.
 
+mod persist;
+
 use std::mem;
 
 use monty_types::{
@@ -17,11 +19,12 @@ use crate::{
     asyncio::CallId,
     bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap, HeapReader},
+    heap::{DropWithContext, HeapId, HeapOwner, HeapReader, Reference, RuntimeRef},
     intern::StringId,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
+    types::SessionRandom,
     value::Value,
 };
 
@@ -159,13 +162,13 @@ impl FunctionCall {
     /// This allows modifying resource limits between execution phases,
     /// e.g. setting a time limit before resuming after an external function call.
     pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
-        &mut self.snapshot.heap.tracker
+        self.snapshot.owner.tracker_mut()
     }
 
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        &self.snapshot.heap.tracker
+        self.snapshot.owner.tracker()
     }
 
     /// Resumes execution with the return value or exception from the external function.
@@ -321,7 +324,7 @@ impl OsCall {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        &self.snapshot.heap.tracker
+        self.snapshot.owner.tracker()
     }
 }
 
@@ -413,7 +416,7 @@ impl NameLookup {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        &self.snapshot.heap.tracker
+        self.snapshot.owner.tracker()
     }
 
     /// Aborts the feed with an uncatchable exception; see [`OsCall::abort`].
@@ -441,44 +444,23 @@ impl NameLookup {
         let result = result.into();
 
         let Snapshot {
-            mut heap,
+            mut owner,
             mut executor,
-            vm_state: snapshot_vm_state,
         } = self.snapshot;
-        let scope = self.scope;
-        let name = self.name;
-
-        heap.tracker.on_turn_start();
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-                // Restore the VM first, then convert inside its lifetime
-                let mut vm = VM::restore(
-                    snapshot_vm_state,
-                    &mut executor.tables,
-                    &executor.program,
-                    reader,
-                    print.reborrow(),
-                );
-
-                // Resolve the name lookup result with the VM alive
-                let answer = LookupAnswer::new(result, &mut vm);
-                let effect = vm.pending_lookup_effect.take();
-                let vm_result = resume_lookup(&mut vm, answer, effect, &scope, &name);
-
-                // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
-                let vm_state = check_snapshot_from_converted(&converted, vm);
-                (converted, vm_state)
-            });
-        build_run_progress(converted, vm_state, executor, heap)
+        let (converted, _) = resume_owned(&mut owner, &mut executor, print, |vm| {
+            let answer = LookupAnswer::new(result, vm);
+            let effect = vm.pending_lookup_effect.take();
+            resume_lookup(vm, answer, effect, &self.scope, &self.name)
+        });
+        build_run_progress(converted, executor, owner)
     }
 }
 
 /// A host's [`NameLookupResult`] in interpreter terms, ready for
 /// [`resume_lookup`].
-pub(crate) enum LookupAnswer {
+pub(crate) enum LookupAnswer<H: Reference> {
     /// The host served this value.
-    Value(Value),
+    Value(Value<H>),
     /// The name / attribute does not exist.
     Undefined,
     /// Resolving it failed — a host exception, or a value the heap could not
@@ -486,13 +468,13 @@ pub(crate) enum LookupAnswer {
     Error(RunError),
 }
 
-impl LookupAnswer {
+impl<H: RuntimeRef> LookupAnswer<H> {
     /// Converts the host's answer while the VM is alive.
     ///
     /// A value the heap cannot take becomes an in-sandbox error with the
     /// mapping [`VM::resume`] applies to external call results: a resource
     /// limit raises `MemoryError`, an unconvertible object `RuntimeError`.
-    pub(crate) fn new(result: NameLookupResult, vm: &mut VM<'_>) -> Self {
+    pub(crate) fn new(result: NameLookupResult, vm: &mut VM<'_, H>) -> Self {
         match result {
             NameLookupResult::Value(obj) => match obj.to_value(vm) {
                 Ok(value) => Self::Value(value),
@@ -520,13 +502,13 @@ impl LookupAnswer {
 /// the value is pushed (a namespace lookup also caches it in its slot), or
 /// `Undefined` raises the `NameError` / `AttributeError` an unanswered
 /// lookup gets.
-pub(crate) fn resume_lookup(
-    vm: &mut VM<'_>,
-    answer: LookupAnswer,
-    effect: Option<PendingLookupEffect>,
+pub(crate) fn resume_lookup<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    answer: LookupAnswer<H>,
+    effect: Option<PendingLookupEffect<H>>,
     scope: &LookupScope,
     name: &str,
-) -> RunResult<FrameExit> {
+) -> RunResult<FrameExit<H>> {
     let value = match (answer, effect) {
         (LookupAnswer::Error(err), effect) => {
             effect.drop_with(vm);
@@ -565,7 +547,7 @@ pub(crate) fn resume_lookup(
 /// Converts missing import attributes to `ImportError` for `from` imports or
 /// `ModuleNotFoundError` for dotted modules, matching synchronous loads.
 /// Other errors and non-import lookups pass through unchanged.
-fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
+fn import_from_error<H: RuntimeRef>(err: RunError, name: &str, vm: &VM<'_, H>) -> RunError {
     let RunError::Exc(exc) = &err else {
         return err;
     };
@@ -587,7 +569,10 @@ fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
 /// An armed `hasattr()` / `getattr()` effect yields `False` / its default; a
 /// bare name or attribute read raises `NameError` / `AttributeError` through
 /// the VM so the traceback is captured. Any other exit passes through.
-pub(crate) fn answer_unserved_lookups(mut result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<FrameExit> {
+pub(crate) fn answer_unserved_lookups<H: RuntimeRef>(
+    mut result: RunResult<FrameExit<H>>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<FrameExit<H>> {
     loop {
         let (scope, name, effect) = match result? {
             FrameExit::NameLookup {
@@ -650,14 +635,12 @@ fn undefined_lookup_error(scope: &LookupScope, name: &str) -> RunError {
 ///
 /// Use [`pending_call_ids`](Self::pending_call_ids) to see which calls are pending, then call
 /// [`resume`](Self::resume) with some or all of the results.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 pub struct ResolveFutures {
     /// The executor containing compiled code and interns.
     executor: Executor,
-    /// The VM state containing stack, frames, globals, and exception state.
-    vm_state: VMSnapshot,
-    /// The heap containing all allocated objects.
-    heap: Heap,
+    /// The arena and all parked VM roots, transferred as one sealed owner.
+    owner: HeapOwner,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
     /// Where the main task's blocked `await` is in the source.
@@ -666,17 +649,10 @@ pub struct ResolveFutures {
 
 impl ResolveFutures {
     /// Creates a new `ResolveFutures` from its parts.
-    fn new(
-        executor: Executor,
-        vm_state: VMSnapshot,
-        heap: Heap,
-        pending_call_ids: Vec<u32>,
-        position: SourceRange,
-    ) -> Self {
+    fn new(executor: Executor, owner: HeapOwner, pending_call_ids: Vec<u32>, position: SourceRange) -> Self {
         Self {
             executor,
-            vm_state,
-            heap,
+            owner,
             pending_call_ids,
             position,
         }
@@ -697,18 +673,13 @@ impl ResolveFutures {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        &self.heap.tracker
+        self.owner.tracker()
     }
 
     /// Aborts with an uncatchable exception and abandons pending futures.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
-        let Self {
-            executor,
-            vm_state,
-            heap,
-            ..
-        } = self;
-        abort_restored(executor, vm_state, heap, exc, print)
+        let Self { executor, owner, .. } = self;
+        abort_restored(executor, owner, exc, print)
     }
 
     /// Forces a GC cycle against the exact root walk used by the live VM.
@@ -723,25 +694,29 @@ impl ResolveFutures {
     pub fn __force_gc_for_tests(self) -> Self {
         let Self {
             mut executor,
-            vm_state,
-            mut heap,
+            mut owner,
             pending_call_ids,
             position,
         } = self;
-
-        let vm_state = HeapReader::with(&mut heap, &mut executor, |reader, executor| {
-            let mut vm = VM::restore(
-                vm_state,
-                &mut executor.tables,
-                &executor.program,
-                reader,
-                PrintWriter::Stdout,
-            );
-            vm.__force_gc_for_tests();
-            vm.snapshot()
+        owner.activate(|state| {
+            let snapshot = state.vm_state.take().expect("suspended VM");
+            state.vm_state = Some(Box::new(HeapReader::with(
+                &mut state.heap,
+                &mut executor,
+                |reader, executor| {
+                    let mut vm = VM::restore(
+                        *snapshot,
+                        &mut executor.tables,
+                        &executor.program,
+                        reader,
+                        PrintWriter::Stdout,
+                    );
+                    vm.__force_gc_for_tests();
+                    vm.snapshot()
+                },
+            )));
         });
-
-        Self::new(executor, vm_state, heap, pending_call_ids, position)
+        Self::new(executor, owner, pending_call_ids, position)
     }
 
     /// Number of tasks still live while this snapshot is suspended.
@@ -753,7 +728,8 @@ impl ResolveFutures {
     #[doc(hidden)]
     #[must_use]
     pub fn __live_task_count_for_tests(&self) -> usize {
-        self.vm_state.live_task_count()
+        self.owner
+            .inspect(|state| state.vm_state.as_ref().expect("suspended VM").live_task_count())
     }
 
     /// Resumes execution with results for some or all pending futures.
@@ -778,8 +754,7 @@ impl ResolveFutures {
     ) -> Result<RunProgress, MontyException> {
         let Self {
             mut executor,
-            vm_state,
-            mut heap,
+            mut owner,
             pending_call_ids,
             ..
         } = self;
@@ -790,33 +765,16 @@ impl ResolveFutures {
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
             .map(|(call_id, _)| *call_id);
 
-        heap.tracker.on_turn_start();
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-                // Restore the VM from the snapshot (must happen before any error return to clean up properly).
-                let mut vm = VM::restore(
-                    vm_state,
-                    &mut executor.tables,
-                    &executor.program,
-                    reader,
-                    print.reborrow(),
-                );
-
-                // Now check for invalid call_ids after VM is restored.
-                if let Some(call_id) = invalid_call_id {
-                    return Err(MontyException::runtime_error(format!(
-                        "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
-                    )));
-                }
-
-                let result = vm.resume_with_resolved_futures(results);
-
-                // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(result, &mut vm);
-                let vm_state = check_snapshot_from_converted(&converted, vm);
-                Ok((converted, vm_state))
-            })?;
-        build_run_progress(converted, vm_state, executor, heap)
+        if let Some(call_id) = invalid_call_id {
+            owner.tracker_mut().on_turn_start();
+            return Err(MontyException::runtime_error(format!(
+                "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
+            )));
+        }
+        let (converted, _) = resume_owned(&mut owner, &mut executor, print, |vm| {
+            vm.resume_with_resolved_futures(results)
+        });
+        build_run_progress(converted, executor, owner)
     }
 }
 
@@ -829,14 +787,12 @@ impl ResolveFutures {
 /// This is a `pub(crate)` implementation detail wrapped by the per-variant
 /// structs (`FunctionCall`, `OsCall`, `NameLookup`). It is not exposed in the
 /// public API.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 pub(crate) struct Snapshot {
     /// The executor containing compiled code and interns.
     pub(crate) executor: Executor,
-    /// The VM state containing stack, frames, globals, and exception state.
-    pub(crate) vm_state: VMSnapshot,
-    /// The heap containing all allocated objects.
-    pub(crate) heap: Heap,
+    /// The arena and all parked VM roots, transferred as one sealed owner.
+    pub(crate) owner: HeapOwner,
 }
 
 impl Snapshot {
@@ -859,39 +815,18 @@ impl Snapshot {
     ) -> Result<RunProgress, MontyException> {
         let Self {
             mut executor,
-            vm_state,
-            mut heap,
+            mut owner,
         } = self;
-
-        heap.tracker.on_turn_start();
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-                let mut vm = VM::restore(
-                    vm_state,
-                    &mut executor.tables,
-                    &executor.program,
-                    reader,
-                    print.reborrow(),
-                );
-
-                let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
-
-                // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
-                let vm_state = check_snapshot_from_converted(&converted, vm);
-                (converted, vm_state)
-            });
-        build_run_progress(converted, vm_state, executor, heap)
+        let (converted, _) = resume_owned(&mut owner, &mut executor, print, |vm| {
+            resume_with_result(vm, ext_result, eager_call_id)
+        });
+        build_run_progress(converted, executor, owner)
     }
 
     /// Raises `exc` uncatchably at the suspension point.
     pub(crate) fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
-        let Self {
-            executor,
-            vm_state,
-            heap,
-        } = self;
-        abort_restored(executor, vm_state, heap, exc, print)
+        let Self { executor, owner } = self;
+        abort_restored(executor, owner, exc, print)
     }
 }
 
@@ -908,11 +843,11 @@ impl Snapshot {
 /// (`os.chdir`, `Path.iterdir`, `open`) refuse a future: the effect runs in
 /// `VM::resume`, which a future bypasses. The future is not registered, so
 /// nothing waits on a call id no task will ever await.
-pub(crate) fn resume_with_result(
-    vm: &mut VM<'_>,
+pub(crate) fn resume_with_result<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
     result: ExtFunctionResult,
     eager_call_id: Option<u32>,
-) -> Result<FrameExit, RunError> {
+) -> Result<FrameExit<H>, RunError> {
     if let Some(module_id) = vm.suspended_import() {
         return resume_import(vm, module_id, result, eager_call_id);
     }
@@ -965,12 +900,12 @@ pub(crate) fn resume_with_result(
 
 /// Resumes an import with the host's module value or raises its exception without carets.
 /// `NotFound` raises `ModuleNotFoundError`; futures are rejected because imports cannot await.
-fn resume_import(
-    vm: &mut VM<'_>,
+fn resume_import<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
     module_id: StringId,
     result: ExtFunctionResult,
     eager_call_id: Option<u32>,
-) -> Result<FrameExit, RunError> {
+) -> Result<FrameExit<H>, RunError> {
     match (result, eager_call_id) {
         (ExtFunctionResult::Return(obj), None) => vm.resume(obj),
         (ExtFunctionResult::Error(exc), None) => {
@@ -994,27 +929,12 @@ fn resume_import(
 /// Restores the VM and aborts uncatchably, rolling back any armed OS effect.
 fn abort_restored(
     mut executor: Executor,
-    vm_state: VMSnapshot,
-    mut heap: Heap,
+    mut owner: HeapOwner,
     exc: MontyException,
     print: PrintWriter<'_>,
 ) -> Result<RunProgress, MontyException> {
-    heap.tracker.on_turn_start();
-    let (converted, vm_state) =
-        HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-            let mut vm = VM::restore(
-                vm_state,
-                &mut executor.tables,
-                &executor.program,
-                reader,
-                print.reborrow(),
-            );
-            let vm_result = vm.abort(exc);
-            let converted = convert_frame_exit(vm_result, &mut vm);
-            let vm_state = check_snapshot_from_converted(&converted, vm);
-            (converted, vm_state)
-        });
-    build_run_progress(converted, vm_state, executor, heap)
+    let (converted, _) = resume_owned(&mut owner, &mut executor, print, |vm| vm.abort(exc));
+    build_run_progress(converted, executor, owner)
 }
 
 pub use monty_types::{ExtFunctionResult, NameLookupResult};
@@ -1090,7 +1010,7 @@ impl ConvertedExit {
 ///
 /// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
-pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
+pub(crate) fn convert_frame_exit<H: RuntimeRef>(result: RunResult<FrameExit<H>>, vm: &mut VM<'_, H>) -> ConvertedExit {
     // An effect still armed on arrival belongs to an OS call that was answered
     // without consuming it — an eager `resume_with_resolved_futures` never
     // takes it. It can never apply to whatever suspends next, so release it
@@ -1206,7 +1126,10 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
 ///
 /// Consumes the VM. Returns `Some(VMSnapshot)` for suspendable exits, `None` for
 /// completion/error (in which case the VM's `Drop` impl handles cleanup).
-pub(crate) fn check_snapshot_from_converted(converted: &ConvertedExit, vm: VM<'_>) -> Option<VMSnapshot> {
+pub(crate) fn check_snapshot_from_converted<H: RuntimeRef>(
+    converted: &ConvertedExit,
+    vm: VM<'_, H>,
+) -> Option<VMSnapshot<H>> {
     if converted.needs_snapshot() {
         Some(vm.snapshot())
     } else {
@@ -1214,23 +1137,59 @@ pub(crate) fn check_snapshot_from_converted(converted: &ConvertedExit, vm: VM<'_
     }
 }
 
-/// Assembles a `RunProgress` from already-converted data and owned heap.
+/// Heap-independent session changes returned when a suspended execution finishes.
+pub(crate) struct SessionUpdate {
+    pub(crate) cwd: Option<String>,
+    pub(crate) random: SessionRandom,
+}
+
+/// Restores and parks a VM inside its owner, exporting only host values and session metadata.
+pub(crate) fn resume_owned(
+    owner: &mut HeapOwner,
+    executor: &mut Executor,
+    print: PrintWriter<'_>,
+    run: impl for<'reader, 'arena> FnOnce(&mut VM<'reader, HeapId<'arena>>) -> RunResult<FrameExit<HeapId<'arena>>>,
+) -> (ConvertedExit, Option<SessionUpdate>) {
+    owner.tracker_mut().on_turn_start();
+    owner.activate(|state| {
+        let snapshot = state.vm_state.take().expect("suspended VM");
+        HeapReader::with(&mut state.heap, &mut (executor, print), |reader, (executor, print)| {
+            let mut vm = VM::restore(
+                *snapshot,
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                print.reborrow(),
+            );
+            let result = run(&mut vm);
+            let converted = convert_frame_exit(result, &mut vm);
+            let update = if converted.needs_snapshot() {
+                state.vm_state = Some(Box::new(vm.snapshot()));
+                None
+            } else {
+                state.globals = vm.take_globals();
+                Some(SessionUpdate {
+                    cwd: vm.take_changed_cwd(),
+                    random: mem::take(&mut vm.random),
+                })
+            };
+            (converted, update)
+        })
+    })
+}
+
+/// Assembles a `RunProgress` from already-converted data and its sealed owner.
 ///
 /// This runs after the VM has been dropped (releasing the heap borrow),
 /// so the heap can be moved into `Snapshot` structs.
 pub(crate) fn build_run_progress(
     converted: ConvertedExit,
-    vm_state: Option<VMSnapshot>,
     executor: Executor,
-    heap: Heap,
+    owner: HeapOwner,
 ) -> Result<RunProgress, MontyException> {
     macro_rules! new_snapshot {
         () => {
-            Snapshot {
-                executor,
-                vm_state: vm_state.expect("snapshot should exist"),
-                heap,
-            }
+            Snapshot { executor, owner }
         };
     }
 
@@ -1269,8 +1228,7 @@ pub(crate) fn build_run_progress(
             position,
         } => Ok(RunProgress::ResolveFutures(ResolveFutures::new(
             executor,
-            vm_state.expect("snapshot should exist for ResolveFutures"),
-            heap,
+            owner,
             pending_call_ids,
             position,
         ))),

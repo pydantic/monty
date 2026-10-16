@@ -5,7 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropGuard, HeapData},
+    heap::{DropGuard, HeapData, Reference, RuntimeRef},
     types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
@@ -16,7 +16,7 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_zip<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
     defer_drop_mut!(iterables, vm);
     // CPython's `strict` is truthy-checked (not strict typed), so test the raw
@@ -31,7 +31,7 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 
     // Create iterators for each iterable
-    let iterators: Vec<Value> = Vec::with_capacity(iterables.len());
+    let iterators: Vec<Value<H>> = Vec::with_capacity(iterables.len());
     defer_drop_mut!(iterators, vm);
     for iterable in iterables.drain(..) {
         iterators.push(iterable.into_py_iter(vm)?);
@@ -92,11 +92,11 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// (`py_bool`), not strict-type equality, so accepting any value is correct.
 #[derive(FromArgs)]
 #[from_args(name = "zip")]
-struct ZipArgs {
+struct ZipArgs<H: Reference> {
     #[from_args(varargs)]
-    iterables: Vec<Value>,
+    iterables: Vec<Value<H>>,
     #[from_args(default = Value::Bool(false))]
-    strict: Value,
+    strict: Value<H>,
 }
 
 /// Builds the `ValueError` for `zip(strict=True)` when iterables have different lengths.

@@ -23,33 +23,34 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapItem, HeapObjectRead, HeapReadOutput, Reference, RuntimeRef},
     intern::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// A parameterized builtin type such as `list[int]`.
 ///
 /// `args` is an OWNED ref to the `__args__` tuple — the subscript itself when
 /// it was a tuple (`dict[str, int]`), otherwise a one-item tuple wrapping it —
 /// so `py_dec_ref_ids` and `for_each_child_id` must both release it.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct GenericAlias {
+pub(crate) struct GenericAlias<H: Reference> {
     /// The subscripted type, `list` in `list[int]`. Never a class object:
     /// only the builtin types in [`Type::has_class_getitem`] are subscriptable.
-    origin: Type,
+    origin: Type<H>,
     /// The `__args__` tuple, always a `Value::Ref` to a `HeapData::Tuple`,
     /// shared with every read of that attribute.
-    args: Value,
+    args: Value<H>,
 }
 
-impl GenericAlias {
+impl<H: RuntimeRef> GenericAlias<H> {
     /// Builds `origin[key]`, taking ownership of `key`.
     ///
     /// `origin` must satisfy [`Type::has_class_getitem`]; callers raise the
     /// `type 'int' is not subscriptable` error for the rest.
-    pub(crate) fn subscript(origin: Type, key: Value, vm: &mut VM<'_>) -> Value {
+    pub(crate) fn subscript(origin: Type<H>, key: Value<H>, vm: &mut VM<'_, H>) -> Value<H> {
         debug_assert!(origin.has_class_getitem(), "{origin} is not a generic type");
         // A tuple key is `__args__` itself, as in CPython, so `tuple[()]`
         // has empty args and `list[int, str]` two.
@@ -67,7 +68,7 @@ impl GenericAlias {
     /// `type` is a builtin function rather than a `Type` value in Monty, so
     /// `type[int]` hands back that function: `type[int].__origin__ is type`
     /// holds and `type[int](x)` reaches `type()`.
-    pub(crate) fn origin_value(&self) -> Value {
+    pub(crate) fn origin_value(&self) -> Value<H> {
         match self.origin {
             Type::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
             origin => Value::Builtin(Builtins::Type(origin)),
@@ -75,7 +76,7 @@ impl GenericAlias {
     }
 
     /// Invokes `on_child` for the heap id this alias owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = self.args {
             on_child(id);
         }
@@ -84,46 +85,46 @@ impl GenericAlias {
 
 /// Releases the args tuple of an alias abandoned before it reaches the heap;
 /// a heap-stored alias is freed through [`HeapItem::py_dec_ref_ids`].
-impl<C: ContainsHeap> DropWithContext<C> for GenericAlias {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for GenericAlias<H> {
     fn drop_with(self, ctx: &mut C) {
         self.args.drop_with(ctx);
     }
 }
 
-impl HeapItem for GenericAlias {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for GenericAlias<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.args.py_dec_ref_ids(stack);
     }
 }
 
-impl<'h> HeapObjectRead<'h, GenericAlias> {
+impl<'h, H: RuntimeRef> HeapObjectRead<'h, H, GenericAlias<H>> {
     /// The origin type and an owned ref to the `__args__` tuple.
-    fn parts(&self, vm: &mut VM<'h>) -> (Type, Value) {
+    fn parts(&self, vm: &mut VM<'h, H>) -> (Type<H>, Value<H>) {
         let this = self.get(vm.heap);
         (this.origin, this.args.clone_with_heap(vm))
     }
 
     /// The alias's repr as a plain string, for error messages that name it.
-    fn repr_string(&self, vm: &mut VM<'h>) -> RunResult<String> {
+    fn repr_string(&self, vm: &mut VM<'h, H>) -> RunResult<String> {
         let mut repr = String::new();
         self.py_repr_fmt(&mut repr, vm, &mut LazyHeapSet::default())?;
         Ok(repr)
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, GenericAlias<H>> {
     /// `list[int](x)` is `list(x)`: the subscript is erased at runtime, so the
     /// arguments go straight to the origin type.
-    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_call(&mut self, args: ArgValues<H>, vm: &mut VM<'h, H>) -> RunResult<CallResult<H>> {
         let origin = self.get(vm.heap).origin_value();
         vm.call_function(&origin, args)
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
+    fn py_type(&self, _: &VM<'h, H>) -> Type<H> {
         Type::GenericAlias
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
@@ -132,7 +133,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// Takes a recursion level like the repr: an argument can be a list that
     /// holds this alias, and comparing two such cycles raises `RecursionError`
     /// rather than overflowing the native stack.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::GenericAlias(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -148,7 +149,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// Combines the origin with the `__args__` tuple's hash, so `list[int]`
     /// is one dict key however many times it is written; an unhashable
     /// argument (`list[[1]]`) makes the alias unhashable, as in CPython.
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         let (origin, args) = self.parts(vm);
         defer_drop!(args, vm);
         let Some(args_hash) = args.py_hash(vm)? else {
@@ -164,7 +165,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     ///
     /// Takes a recursion level like the container reprs: an argument can be
     /// a list that holds this alias, and that cycle prints as `...`.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
         };
@@ -198,7 +199,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// `__origin__`, `__args__` and `__parameters__` (always `()`, Monty
     /// having no `TypeVar`s); everything else resolves on the origin type, so
     /// `list[int].__name__` is `'list'` and unknown names report `list`.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let (origin, args) = self.parts(vm);
         defer_drop!(args, vm);
         match attr.static_string(vm.interns) {
@@ -213,7 +214,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// `dict[str, int].fromkeys(...)` and `list[int].__class_getitem__(str)`
     /// dispatch to the origin's classmethods, and `list[int].__name__()` to
     /// the origin's own attributes.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         if matches!(
             attr.static_string(vm.interns),
             Some(StaticStrings::DunderOrigin | StaticStrings::DunderArgs | StaticStrings::DunderParameters)
@@ -235,17 +236,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         }
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Union::heap_or(self, other, vm)
     }
 
-    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Union::heap_ror(self, other, vm)
     }
 
     /// An alias has no type variables to fill, so `list[int][str]` fails as
     /// CPython's `__parameters__ == ()` case does.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&self, _key: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let repr = self.repr_string(vm)?;
         Err(ExcType::type_error_not_generic_class(&repr))
     }
@@ -254,11 +255,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
 /// Writes one `__args__` item the way CPython's `ga_repr_item` does: a type
 /// by its qualified name (`int`, `collections.deque`, a class's bare name),
 /// `...` for `Ellipsis`, and the ordinary repr for anything else.
-pub(crate) fn repr_type_arg(
-    item: &Value,
+pub(crate) fn repr_type_arg<H: RuntimeRef>(
+    item: &Value<H>,
     f: &mut impl Write,
-    vm: &mut VM<'_>,
-    heap_ids: &mut LazyHeapSet,
+    vm: &mut VM<'_, H>,
+    heap_ids: &mut LazyHeapSet<H>,
 ) -> RunResult<()> {
     match item {
         Value::Ellipsis => Ok(f.write_str("...")?),

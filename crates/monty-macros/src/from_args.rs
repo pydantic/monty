@@ -22,8 +22,11 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::{Data, DataStruct, DeriveInput, Expr, Fields, Ident, LitStr, Token, Type, spanned::Spanned};
+use syn::{
+    Data, DataStruct, DeriveInput, Expr, Fields, Generics, Ident, LitStr, Token, Type, parse_quote, spanned::Spanned,
+};
 
+/// Generates argument extraction and error-path cleanup from a validated signature.
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let signature = Signature::parse(input)?;
     Ok(signature.render())
@@ -32,6 +35,8 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
 struct Signature {
     struct_ident: Ident,
+    /// Preserved on the target and cleanup slots, including arena lifetimes.
+    generics: Generics,
     /// Function name embedded in error messages (the `{name}()` prefix).
     func_name: String,
     /// CPython parser family from `style = ...` (default [`Style::Clinic`]).
@@ -145,6 +150,7 @@ pub(crate) enum DefaultExpr {
 }
 
 impl Signature {
+    /// Validates the declaration before generating any binding or cleanup code.
     fn parse(input: &DeriveInput) -> syn::Result<Self> {
         let DeriveInput {
             ident: struct_ident,
@@ -195,6 +201,7 @@ impl Signature {
 
         let signature = Self {
             struct_ident: struct_ident.clone(),
+            generics: input.generics.clone(),
             func_name,
             style,
             fields,
@@ -362,8 +369,46 @@ impl Signature {
         Ok(())
     }
 
+    /// Keeps the extraction implementation and its owning slots under the same bounds.
     fn render(&self) -> TokenStream {
         let struct_ident = &self.struct_ident;
+        let generics = &self.generics;
+        let (_, ty_generics, _) = generics.split_for_impl();
+        let existing_heap = generics.type_params().find(|param| {
+            param.bounds.iter().any(|bound| {
+                matches!(bound,
+                    syn::TypeParamBound::Trait(bound) if bound.path.segments.last().is_some_and(|segment|
+                        segment.ident == "Reference" || segment.ident == "RuntimeRef")
+                )
+            })
+        });
+        let heap_ident = if let Some(param) = existing_heap {
+            param.ident.clone()
+        } else {
+            let mut name = "__HeapRef".to_owned();
+            while generics.type_params().any(|param| param.ident == name)
+                || generics.const_params().any(|param| param.ident == name)
+            {
+                name.push('_');
+            }
+            format_ident!("{name}")
+        };
+        let mut slots_generics = generics.clone();
+        let method_generics = if existing_heap.is_some() {
+            slots_generics
+                .make_where_clause()
+                .predicates
+                .push(parse_quote!(#heap_ident: crate::heap::RuntimeRef));
+            quote!()
+        } else {
+            slots_generics.params.insert(
+                generics.lifetimes().count(),
+                parse_quote!(#heap_ident: crate::heap::RuntimeRef),
+            );
+            quote!(<#heap_ident: crate::heap::RuntimeRef>)
+        };
+        let (_, slots_ty, slots_where) = slots_generics.split_for_impl();
+        let slots_turbofish = slots_ty.as_turbofish();
         // Dedicated owning-slots struct: holds the raw `Bound` returned by the
         // runtime binder plus one typed `Option` per named field. A `DropGuard`
         // around it centralises error-path cleanup in one `DropWithContext` impl,
@@ -374,9 +419,53 @@ impl Signature {
         let n_slots = named.len();
         let slot_idents: Vec<&Ident> = named.iter().map(|f| &f.ident).collect();
         let slot_tys: Vec<&Type> = named.iter().map(|f| &f.ty).collect();
+        let mut extraction_generics = generics.clone();
+        if existing_heap.is_some() {
+            extraction_generics
+                .make_where_clause()
+                .predicates
+                .push(parse_quote!(#heap_ident: crate::heap::RuntimeRef));
+        }
+        let (impl_generics, _, impl_where) = extraction_generics.split_for_impl();
+        let method_where = if slot_tys.is_empty() {
+            quote!()
+        } else {
+            quote!(where #(#slot_tys: crate::args::FromValue<#heap_ident>,)*)
+        };
+        let mut context_name = "__C".to_owned();
+        while generics.type_params().any(|param| param.ident == context_name)
+            || generics.const_params().any(|param| param.ident == context_name)
+        {
+            context_name.push('_');
+        }
+        let context_ident = format_ident!("{context_name}");
+        let mut cleanup_generics = slots_generics.clone();
+        cleanup_generics
+            .params
+            .push(parse_quote!(#context_ident: crate::heap::ContainsHeap<Ref = #heap_ident>));
+        for ty in &slot_tys {
+            cleanup_generics
+                .make_where_clause()
+                .predicates
+                .push(parse_quote!(#ty: crate::args::FromValue<#heap_ident>));
+        }
+        let (cleanup_impl, _, cleanup_where) = cleanup_generics.split_for_impl();
+        let mut marker_name = "__from_args_marker".to_owned();
+        while self.fields.iter().any(|field| field.ident == marker_name) {
+            marker_name.push('_');
+        }
+        let marker_ident = format_ident!("{marker_name}");
+        let (marker_field, marker_value) = if generics.params.is_empty() {
+            (quote!(), quote!())
+        } else {
+            (
+                quote!(#marker_ident: ::std::marker::PhantomData<fn() -> #struct_ident #ty_generics>,),
+                quote!(#marker_ident: ::std::marker::PhantomData,),
+            )
+        };
 
         let spec = self.render_spec(&named);
-        let conversions = named.iter().map(|f| self.render_conversion(f));
+        let conversions = named.iter().map(|f| self.render_conversion(f, &heap_ident));
         let build_fields = self.fields.iter().map(render_build_field);
 
         quote! {
@@ -384,34 +473,35 @@ impl Signature {
             /// arguments plus each converted field. Its `DropWithContext` impl
             /// releases both, so a `DropGuard` around it keeps refcounts
             /// balanced on every conversion error path.
-            struct #slots_struct_ident {
-                raw: crate::args::Bound<#n_slots>,
+            struct #slots_struct_ident #slots_generics #slots_where {
+                raw: crate::args::Bound<#heap_ident, #n_slots>,
                 #(#slot_idents: ::std::option::Option<#slot_tys>,)*
+                #marker_field
             }
 
             #[automatically_derived]
-            impl<__C: crate::heap::ContainsHeap> crate::heap::DropWithContext<__C> for #slots_struct_ident {
-                fn drop_with(self, heap: &mut __C) {
+            impl #cleanup_impl crate::heap::DropWithContext<#context_ident> for #slots_struct_ident #slots_ty #cleanup_where {
+                fn drop_with(self, heap: &mut #context_ident) {
                     crate::heap::DropWithContext::drop_with(self.raw, heap);
                     #(
                         if let ::std::option::Option::Some(__v) = self.#slot_idents {
-                            <#slot_tys as crate::args::FromValue>::drop_extracted(__v, heap);
+                            <#slot_tys as crate::args::FromValue<#heap_ident>>::drop_extracted(__v, heap);
                         }
                     )*
                 }
             }
 
             #[automatically_derived]
-            impl #struct_ident {
+            impl #impl_generics #struct_ident #ty_generics #impl_where {
                 /// Extract arguments into `Self`. Binding (dispatch, arity,
                 /// kwargs, cleanup) happens in `crate::args::bind`; this body
                 /// only converts each raw slot in declaration order. On any
                 /// error path every remaining value is dropped via the slots
                 /// struct's `DropWithContext` impl (driven by a `DropGuard`).
-                pub(crate) fn from_args(
-                    args: crate::args::ArgValues,
-                    vm: &mut crate::bytecode::VM<'_>,
-                ) -> crate::exception_private::RunResult<Self> {
+                pub(crate) fn from_args #method_generics (
+                    args: crate::args::ArgValues<#heap_ident>,
+                    vm: &mut crate::bytecode::VM<'_, #heap_ident>,
+                ) -> crate::exception_private::RunResult<Self> #method_where {
                     #spec
 
                     // The guard owns cleanup on every error path — including
@@ -419,14 +509,15 @@ impl Signature {
                     // success path every slot is drained by the build below,
                     // so the guard's drop at scope exit is a cheap no-op.
                     let mut __guard = crate::heap::DropGuard::new(
-                        #slots_struct_ident {
+                        #slots_struct_ident #slots_turbofish {
                             raw: crate::args::Bound::new(&__SPEC),
                             #(#slot_idents: ::std::option::Option::None,)*
+                            #marker_value
                         },
                         vm,
                     );
                     let (__slots, vm) = __guard.as_parts_mut();
-                    crate::args::bind::<#n_slots>(&__SPEC, &mut __slots.raw, args, vm)?;
+                    crate::args::bind::<#heap_ident, #n_slots>(&__SPEC, &mut __slots.raw, args, vm)?;
 
                     #(#conversions)*
                     __slots.raw.finish()?;
@@ -508,7 +599,7 @@ impl Signature {
     /// raw slot, then `FromValue::extract_into` it into the typed slot. The
     /// per-param call order is what lets the C families interleave
     /// missing/conflict errors with conversion, exactly like CPython.
-    fn render_conversion(&self, field: &Field) -> TokenStream {
+    fn render_conversion(&self, field: &Field, heap_ident: &Ident) -> TokenStream {
         let ident = &field.ident;
         let ty = &field.ty;
         let slot_index = field.slot_index.expect("named field has a slot");
@@ -516,12 +607,12 @@ impl Signature {
         if field.default.is_none() {
             quote! {
                 let __v = __slots.raw.require(#slot_index)?;
-                <#ty as crate::args::FromValue>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?;
+                <#ty as crate::args::FromValue<#heap_ident>>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?;
             }
         } else {
             quote! {
                 if let ::std::option::Option::Some(__v) = __slots.raw.take(#slot_index) {
-                    <#ty as crate::args::FromValue>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?;
+                    <#ty as crate::args::FromValue<#heap_ident>>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?;
                 }
             }
         }

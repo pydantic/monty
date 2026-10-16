@@ -8,7 +8,7 @@ use crate::{
     intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
-    value::{EitherStr, Marker},
+    value::{EitherStr, Marker, NoHeapRef},
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -144,7 +144,7 @@ pub struct ImportName {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Callable {
     /// A builtin function like `print`, `len`, `str`, etc.
-    Builtin(Builtins),
+    Builtin(Builtins<NoHeapRef>),
     /// A name to be looked up in the namespace at runtime (e.g., `x` in `x = len; x('abc')`).
     Name(Identifier),
 }
@@ -191,7 +191,7 @@ pub(crate) enum DictItem {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Expr {
     Literal(Literal),
-    Builtin(Builtins),
+    Builtin(Builtins<NoHeapRef>),
     Name(Identifier),
     /// Function call expression.
     ///

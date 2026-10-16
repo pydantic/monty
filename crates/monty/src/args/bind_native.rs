@@ -38,7 +38,7 @@ use crate::{
     bytecode::VM,
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropWithContext},
+    heap::{ContainsHeap, DropWithContext, Reference, RuntimeRef},
     intern::{Interns, StaticStrings},
     value::{EitherStr, Value},
 };
@@ -65,11 +65,11 @@ use crate::{
 /// `#[inline]` lets the shape dispatch fold into each derive's call site
 /// while `bind_slow` stays outlined.
 #[inline]
-pub(crate) fn bind<const N: usize>(
+pub(crate) fn bind<H: RuntimeRef, const N: usize>(
     spec: &'static ParamSpec,
-    bound: &mut Bound<N>,
-    args: ArgValues,
-    vm: &mut VM<'_>,
+    bound: &mut Bound<H, N>,
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<()> {
     // `spec` is passed explicitly (despite living in `bound` too) so the
     // inlined fast-path conditions constant-fold against the caller's
@@ -95,11 +95,11 @@ pub(crate) fn bind<const N: usize>(
 
 /// The general binding path: iterators, a cleanup guard, kwarg dispatch, and
 /// every family pre-check. See [`bind`] for the contract.
-fn bind_slow<const N: usize>(
+fn bind_slow<H: RuntimeRef, const N: usize>(
     spec: &'static ParamSpec,
-    bound: &mut Bound<N>,
-    args: ArgValues,
-    vm: &mut VM<'_>,
+    bound: &mut Bound<H, N>,
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<()> {
     let (pos, kwargs) = args.into_parts();
     let state = IterState {
@@ -423,11 +423,11 @@ impl ErrorFamily {
 /// [`take_varargs`](Self::take_varargs) / [`take_varkwargs`](Self::take_varkwargs))
 /// or the whole value dropped with the heap. Generated code embeds it in the
 /// guarded slots struct so both happen automatically.
-pub(crate) struct Bound<const N: usize> {
+pub(crate) struct Bound<H: Reference, const N: usize> {
     spec: &'static ParamSpec,
-    slots: [Option<Value>; N],
-    varargs: Vec<Value>,
-    varkwargs: Vec<(Value, Value)>,
+    slots: [Option<Value<H>>; N],
+    varargs: Vec<Value<H>>,
+    varkwargs: Vec<(Value<H>, Value<H>)>,
     /// C families only: leftover-kwarg errors raised by [`finish`](Self::finish).
     /// Boxed because `RunError` is large and `Bound` is moved by value through
     /// the generated code — the common no-leftover call pays one niche'd word.
@@ -446,7 +446,7 @@ struct DeferredLeftovers {
     unknown: Option<RunError>,
 }
 
-impl<const N: usize> Bound<N> {
+impl<H: RuntimeRef, const N: usize> Bound<H, N> {
     /// Empty slots for `spec`, ready for [`bind`]. Called by generated code
     /// when building its guarded slots struct; `N` must equal
     /// `spec.params.len()` (the derive guarantees this).
@@ -469,7 +469,7 @@ impl<const N: usize> Bound<N> {
     /// Take required param `i`, raising the family's missing-required error if
     /// absent. For the aggregating families the missing case is unreachable —
     /// [`bind`] already checked — so this only genuinely errors for `C`/`CNamed`.
-    pub(crate) fn require(&mut self, i: usize) -> RunResult<Value> {
+    pub(crate) fn require(&mut self, i: usize) -> RunResult<Value<H>> {
         match self.slots[i].take() {
             Some(v) => Ok(v),
             None => Err(self.missing_error(i)),
@@ -477,18 +477,18 @@ impl<const N: usize> Bound<N> {
     }
 
     /// Take optional param `i` (`None` = absent, caller applies the default).
-    pub(crate) fn take(&mut self, i: usize) -> Option<Value> {
+    pub(crate) fn take(&mut self, i: usize) -> Option<Value<H>> {
         self.slots[i].take()
     }
 
     /// Take the collected `*args` values.
-    pub(crate) fn take_varargs(&mut self) -> Vec<Value> {
+    pub(crate) fn take_varargs(&mut self) -> Vec<Value<H>> {
         mem::take(&mut self.varargs)
     }
 
     /// Take the collected `**kwargs`, collapsing empty to `KwargsValues::Empty`
     /// so callers get cheap emptiness checks.
-    pub(crate) fn take_varkwargs(&mut self) -> KwargsValues {
+    pub(crate) fn take_varkwargs(&mut self) -> KwargsValues<H> {
         if self.varkwargs.is_empty() {
             KwargsValues::Empty
         } else {
@@ -541,7 +541,7 @@ impl<const N: usize> Bound<N> {
     }
 }
 
-impl<C: ContainsHeap, const N: usize> DropWithContext<C> for Bound<N> {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>, const N: usize> DropWithContext<C> for Bound<H, N> {
     fn drop_with(self, heap: &mut C) {
         for slot in self.slots {
             slot.drop_with(heap);
@@ -557,12 +557,12 @@ impl<C: ContainsHeap, const N: usize> DropWithContext<C> for Bound<N> {
 /// The partially-consumed argument iterators [`bind_slow`] owns mid-flight,
 /// guarded so both are drained on every error path (already-bound values are
 /// covered by the caller's guard around the slots struct).
-struct IterState {
-    pos: ArgPosIter,
-    kwargs: KwargsValuesIter,
+struct IterState<H: Reference> {
+    pos: ArgPosIter<H>,
+    kwargs: KwargsValuesIter<H>,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for IterState {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for IterState<H> {
     fn drop_with(self, heap: &mut C) {
         self.pos.drop_with(heap);
         self.kwargs.drop_with(heap);
@@ -712,7 +712,12 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
 
 /// Collect the names of required-but-unfilled params in `start..end` (the
 /// positional prefix or the keyword-only tail) for the aggregated missing errors.
-fn missing_names(spec: &ParamSpec, slots: &[Option<Value>], start: usize, end: usize) -> Vec<&'static str> {
+fn missing_names<H: RuntimeRef>(
+    spec: &ParamSpec,
+    slots: &[Option<Value<H>>],
+    start: usize,
+    end: usize,
+) -> Vec<&'static str> {
     spec.params[start..end]
         .iter()
         .zip(&slots[start..end])

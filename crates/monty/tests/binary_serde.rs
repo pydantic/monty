@@ -6,15 +6,15 @@
 //! it is `Serialize`/`Deserialize`, so it is round-tripped through the dump
 //! codec directly to cover the serde impls a dump ultimately rests on.
 
-use std::fmt::Write;
+use std::{fmt::Write, thread};
 
 use insta::assert_snapshot;
-use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, MontyException, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
 };
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json::to_value;
+use serde_json::{json, to_value};
 
 /// Round-trips compiled code through the dump codec, without the dump header.
 fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
@@ -41,6 +41,112 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
         )?;
     }
     Ok(progress)
+}
+
+/// Relocation preserves cycles, shared children and cached identity-based hashes.
+/// Positional serde formats retain struct boundaries and field order across owner reconstruction.
+#[test]
+fn sequence_codecs_restore_complete_owners() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    assert_snapshot!(
+        "idle_postcard",
+        format!("{:02x?}", postcard::to_allocvec(&repl).unwrap())
+    );
+    repl.feed_run("x = [1]\ny = x\nx.append(x)", vec![], PrintWriter::Disabled)
+        .unwrap();
+    let bytes = postcard::to_allocvec(&repl).unwrap();
+    let mut restored: MontyRepl = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(
+        restored
+            .feed_run("x is y and x[1] is x", vec![], PrintWriter::Disabled)
+            .unwrap(),
+        MontyObject::bool(true)
+    );
+
+    let run = MontyRun::new("ext_fn() + 1".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = resolve_name_lookups(
+        run.start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+            .unwrap(),
+    )
+    .unwrap();
+    let bytes = postcard::to_allocvec(&progress).unwrap();
+    let restored: RunProgress = postcard::from_bytes(&bytes).unwrap();
+    let result = restored
+        .into_function_call()
+        .unwrap()
+        .resume(MontyObject::int(41), PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(result.into_complete().unwrap(), MontyObject::int(42));
+}
+
+/// Both serde field orders work, and independently restored arenas can move threads.
+#[test]
+fn relocated_heaps_preserve_identity_and_sharing() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "class Key: pass\n\
+         key = Key()\n\
+         items = [[i] for i in range(600)]\n\
+         shared = [items, items]\n\
+         items.append(shared)\n\
+         pair = (Key, key)\n\
+         frozen = frozenset(pair)\n\
+         mapping = {Key: 1, key: 2, pair: 3, frozen: 4}\n\
+         identities = [id(Key), id(key), id(items)]\n\
+         hashes = [hash(Key), hash(key), hash(pair), hash(frozen)]",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let bytes = minicbor_serde::to_vec(&repl).unwrap();
+    let json = serde_json::to_vec(&repl).unwrap();
+    // JSON's map representation puts globals before heap; the CBOR derive puts heap first.
+    let json_value = to_value(&repl).unwrap();
+    let reordered: MontyRepl = serde_json::from_value(json_value).unwrap();
+    let binary: MontyRepl = minicbor_serde::from_slice(&bytes).unwrap();
+    let textual: MontyRepl = serde_json::from_slice(&json).unwrap();
+    for restored in [&reordered, &binary, &textual] {
+        assert_eq!(minicbor_serde::to_vec(restored).unwrap(), bytes);
+    }
+    drop(repl);
+    for mut restored in [reordered, binary, textual] {
+        thread::spawn(move || {
+            restored
+                .feed_run(
+                    "assert shared[0] is shared[1]\n\
+                     assert items[-1] is shared\n\
+                     assert identities == [id(Key), id(key), id(items)]\n\
+                     assert hashes == [hash(Key), hash(key), hash(pair), hash(frozen)]\n\
+                     assert [mapping[Key], mapping[key], mapping[pair], mapping[frozen]] == [1, 2, 3, 4]\n\
+                     shared[0][0].append(7)\n\
+                     assert shared[1][0] == [0, 7]\n\
+                     items = shared = None\n\
+                     for _ in range(600):\n    temporary = [1, 2, 3]",
+                    vec![],
+                    PrintWriter::Disabled,
+                )
+                .unwrap();
+        })
+        .join()
+        .unwrap();
+    }
+}
+
+/// Compiled code can outlive its session, so decoding must reject every heap-reference shape.
+#[test]
+fn compiled_constants_cannot_retain_heap_references() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("def f(): return 1000", vec![], PrintWriter::Disabled)
+        .unwrap();
+    let original = to_value(&repl).unwrap();
+    assert_eq!(original["interns"]["functions"][0]["B"]["C"], json!([{"I": 1000}]));
+    let mut errors = Vec::new();
+    for constant in [json!({"C": 0}), json!({"A": {"Type": {"Instance": 0}}})] {
+        let mut state = original.clone();
+        state["interns"]["functions"][0]["B"]["C"] = json!([constant]);
+        errors.push(serde_json::from_value::<MontyRepl>(state).unwrap_err().to_string());
+    }
+    assert_snapshot!("heap_constants_rejected", errors.join("\n"));
 }
 
 // === MontyRun round-trip tests ===
@@ -365,8 +471,7 @@ str((list(di), list(si)))
     let progress = resolve_name_lookups(progress).unwrap();
     let loaded = round_trip_progress(&progress);
 
-    // Both are resumed, as in the itertools test below: an unresumed
-    // `RunProgress` leaves its globals' refs unreleased.
+    // Resume both independent owners after reconstruction.
     let expected = MontyObject::string("([2, 3], [2, 3])");
     for progress in [progress, loaded] {
         let call = progress.into_function_call().expect("should be at function call");
@@ -446,9 +551,7 @@ ext_fn(0)
         MontyObject::string("repeat('x', 1)".to_owned()),
     ]);
 
-    // Both are resumed: an unresumed `RunProgress` leaves its globals' refs
-    // unreleased, aborting under `memory-model-checks`. Pre-existing and not
-    // itertools-specific (a plain `x = [1, 2]` global does it too).
+    // Resume both copies to check iterator state before and after relocation.
     let original = progress.into_function_call().expect("should be at function call");
     assert_eq!(original.function_name, "ext_fn");
     let from_original = original.resume(MontyObject::int(0), PrintWriter::Stdout).unwrap();
@@ -457,6 +560,55 @@ ext_fn(0)
     let call = loaded.into_function_call().expect("should be at function call");
     let from_loaded = call.resume(MontyObject::int(0), PrintWriter::Stdout).unwrap();
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
+/// CSV payloads retain iterator positions, dialects and shared bound-method targets after relocation.
+#[test]
+fn run_progress_round_trip_preserves_csv_objects() {
+    let code = r"
+import csv
+
+class Sink:
+    def __init__(self):
+        self.lines = []
+
+    def write(self, text):
+        self.lines.append(text)
+        return len(text)
+
+dialect = csv.get_dialect('excel')
+reader = csv.reader(['a,b\n', 'c,d\n'], dialect)
+dict_reader = csv.DictReader(['a,b\n', 'x,y\n'])
+next(reader)
+assert dict_reader.fieldnames == ['a', 'b']
+sink = Sink()
+writer = csv.writer(sink, dialect)
+dict_writer = csv.DictWriter(sink, ['a', 'b'], dialect=dialect)
+ext_fn()
+writer.writerow(next(reader))
+dict_writer.writerow(next(dict_reader))
+assert sink.lines == ['c,d\r\n', 'x,y\r\n']
+assert reader.line_num == 2
+assert dict_reader.line_num == 2
+assert writer.dialect.delimiter == dialect.delimiter
+None
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = resolve_name_lookups(
+        runner
+            .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+            .unwrap(),
+    )
+    .unwrap();
+    let restored = round_trip_progress(&progress);
+    for progress in [progress, restored] {
+        let result = progress
+            .into_function_call()
+            .unwrap()
+            .resume(MontyObject::none(), PrintWriter::Disabled)
+            .unwrap();
+        assert_eq!(result.into_complete().unwrap(), MontyObject::none());
+    }
 }
 
 /// A live `functools.partial` on the heap survives a round-trip with its bound

@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapReadOutput},
+    heap::{DropWithContext, HeapReadOutput, RuntimeRef},
     types::py_trait::attribute_name_value,
     value::{EitherStr, Value},
 };
@@ -23,7 +23,7 @@ use crate::{
 /// ```python
 /// object.__setattr__(point, 'x', 1)
 /// ```
-pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_object_setattr<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     // CPython reaches this as a slot wrapper bound to `obj`, so its messages
     // name the wrapper and count `obj` as the receiver rather than an argument.
     let positional = args.into_pos_only("wrapper __setattr__", vm.heap)?;
@@ -67,7 +67,7 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
 }
 
 /// `object.__setattr__` applied to a value with no instance `__dict__`.
-fn no_dict_error(object: &Value, name: &EitherStr, vm: &VM<'_>) -> RunError {
+fn no_dict_error<H: RuntimeRef>(object: &Value<H>, name: &EitherStr, vm: &VM<'_, H>) -> RunError {
     let type_name = object.py_type_name(vm);
     ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns))
 }

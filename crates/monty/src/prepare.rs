@@ -15,6 +15,7 @@ use crate::{
     name_map::{NameMap, namespace_overflow},
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParsedSignature, RawFunctionDef, Try},
+    value::NoHeapRef,
 };
 
 /// Mutable handle to the module's global [`NameMap`], threaded through
@@ -1267,7 +1268,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             let name_str = self.interner.get_str(name.name_id);
             let already_bound =
                 self.names_assigned_in_order.contains(&name.name_id) || self.globals.globals.contains(name.name_id);
-            if !already_bound && let Ok(builtin) = name_str.parse::<Builtins>() {
+            if !already_bound && let Ok(builtin) = name_str.parse::<Builtins<NoHeapRef>>() {
                 return Ok(Expr::Builtin(builtin));
             }
         }

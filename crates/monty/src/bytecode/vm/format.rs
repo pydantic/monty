@@ -11,7 +11,7 @@ use crate::{
         ParseFormatSpecReason, ParsedFormatSpec, decode_format_spec, format_string, format_with_spec,
         validate_string_spec,
     },
-    heap::HeapReadOutput,
+    heap::{HeapReadOutput, RuntimeRef},
     intern::StringId,
     string_builder::StringBuilder,
     types::{
@@ -24,7 +24,7 @@ use crate::{
     value::Value,
 };
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// Builds an f-string by concatenating n string parts from the stack.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
         if count == 1 {
@@ -99,7 +99,7 @@ impl VM<'_> {
     /// Formats a value from a runtime format spec.
     pub(crate) fn format_runtime_value(
         &mut self,
-        value: &Value,
+        value: &Value<H>,
         conversion: u8,
         format_spec: Option<&str>,
     ) -> Result<String, RunError> {
@@ -132,7 +132,7 @@ impl VM<'_> {
     /// Formats a value from a parsed format spec.
     fn format_parsed_value(
         &mut self,
-        value: &Value,
+        value: &Value<H>,
         conversion: u8,
         spec: &ParsedFormatSpec,
     ) -> Result<String, RunError> {
@@ -151,7 +151,7 @@ impl VM<'_> {
     }
 
     /// Applies the f-string and `str.format()` conversion flags to a value.
-    pub(crate) fn convert_value(&mut self, value: &Value, conversion: u8) -> Result<String, RunError> {
+    pub(crate) fn convert_value(&mut self, value: &Value<H>, conversion: u8) -> Result<String, RunError> {
         match conversion {
             0 | 1 if value.py_type(self) == Type::Str => Ok(value.to_str(self)?.to_owned()),
             2 => str_value_into_string(value.py_repr(self)?, self),
@@ -184,7 +184,7 @@ impl VM<'_> {
     }
 
     /// Keeps temporal strftime specs out of generic mini-language parsing.
-    fn try_format_temporal(&mut self, value: &Value, spec_str: &str) -> Result<Option<String>, RunError> {
+    fn try_format_temporal(&mut self, value: &Value<H>, spec_str: &str) -> Result<Option<String>, RunError> {
         let Value::Ref(id) = value else {
             return Ok(None);
         };
@@ -256,7 +256,7 @@ impl VM<'_> {
 /// `String`, dropping the value's heap reference on every path. Used by the
 /// f-string conversion arms, which need the text in an owned buffer to feed
 /// the mini-language formatter.
-fn str_value_into_string(value: Value, vm: &mut VM<'_>) -> Result<String, RunError> {
+fn str_value_into_string<H: RuntimeRef>(value: Value<H>, vm: &mut VM<'_, H>) -> Result<String, RunError> {
     defer_drop!(value, vm);
     Ok(value.to_str(vm)?.to_owned())
 }

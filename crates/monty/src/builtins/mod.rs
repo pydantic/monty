@@ -3,6 +3,7 @@
 //! This module provides the interpreter-native implementation of Python builtins.
 //! Each builtin function has its own submodule for organization.
 
+use crate::heap::{Reference, RuntimeRef};
 mod abs;
 mod all;
 mod any;
@@ -51,24 +52,36 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Enumerates every interpreter-native Python builtins
 ///
 /// Uses strum derives for automatic `Display`, `FromStr`, and `AsRef<str>` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Builtins {
+pub(crate) enum Builtins<R> {
     /// A builtin function like `print`, `len`, `type`, etc.
     Function(BuiltinsFunctions),
     /// An exception type constructor like `ValueError`, `TypeError`, etc.
     ExcType(ExcType),
     /// A type constructor like `list`, `dict`, `int`, etc.
-    Type(Type),
+    Type(Type<R>),
 }
 
-impl Builtins {
+impl<R> Builtins<R> {
+    /// Keeps compiled builtin constants independent of the execution heap.
+    pub(crate) fn copy_without_refs<Other>(&self) -> Option<Builtins<Other>> {
+        match self {
+            Self::Function(value) => Some(Builtins::Function(*value)),
+            Self::ExcType(value) => Some(Builtins::ExcType(*value)),
+            Self::Type(value) => value.copy_without_refs().map(Builtins::Type),
+        }
+    }
+}
+
+impl<H: RuntimeRef> Builtins<H> {
     /// Resolves builtin names that evaluate directly to singleton values.
     #[must_use]
-    pub fn value_from_name(name: &str) -> Option<Value> {
+    pub fn value_from_name(name: &str) -> Option<Value<H>> {
         match name {
             "Ellipsis" => Some(Value::Ellipsis),
             "NotImplemented" => Some(Value::NotImplemented),
@@ -84,7 +97,7 @@ impl Builtins {
     /// [`CallResult::OsCall`] for [`OsFunctionCall::Open`](monty_types::OsFunctionCall) (see
     /// [`crate::builtins::open`]). `next()` on a file nobody has read yet
     /// likewise yields the read that loads it.
-    pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    pub fn call(self, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         match self {
             Self::Function(b) => b.call(vm, args),
             Self::ExcType(exc) => exc.call(vm, args).map(CallResult::Value),
@@ -104,7 +117,7 @@ impl Builtins {
     }
 
     /// Returns the type of this builtin.
-    pub fn py_type(self) -> Type {
+    pub fn py_type(self) -> Type<H> {
         match self {
             Self::Function(_) => Type::BuiltinFunction,
             Self::ExcType(_) => Type::Type,
@@ -113,7 +126,7 @@ impl Builtins {
     }
 }
 
-impl FromStr for Builtins {
+impl<H: Reference> FromStr for Builtins<H> {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -134,11 +147,11 @@ impl FromStr for Builtins {
 pub use monty_types::BuiltinsFunctions;
 
 pub(crate) trait BuiltinsFunctionsExt: Sized {
-    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult>;
+    fn call<H: RuntimeRef>(self, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>>;
 }
 
 impl BuiltinsFunctionsExt for BuiltinsFunctions {
-    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    fn call<H: RuntimeRef>(self, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let r = match self {
             Self::Abs => abs::builtin_abs(vm, args),
             Self::All => all::builtin_all(vm, args),

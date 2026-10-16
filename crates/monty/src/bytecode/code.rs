@@ -4,7 +4,13 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
-use crate::{intern::StringId, parse::CodeRange, value::Value};
+use super::constant::Constant;
+use crate::{
+    heap::Reference,
+    intern::StringId,
+    parse::CodeRange,
+    value::{NoHeapRef, Value},
+};
 
 /// Compiled bytecode for a function or module.
 ///
@@ -19,7 +25,7 @@ pub struct Code {
 
     /// Immediate constants indexed by `LoadConst`; heap literals live in `Interns`.
     #[serde(rename = "C")]
-    constants: Vec<Value>,
+    constants: Vec<Constant>,
 
     /// Source location table for tracebacks.
     ///
@@ -57,14 +63,14 @@ impl Code {
     #[must_use]
     pub fn new(
         bytecode: Vec<u8>,
-        constants: Vec<Value>,
+        constants: Vec<Value<NoHeapRef>>,
         location_table: Vec<LocationEntry>,
         exception_table: Vec<ExceptionEntry>,
         local_names: Vec<StringId>,
     ) -> Self {
         Self {
             bytecode,
-            constants,
+            constants: constants.into_iter().map(|value| Constant::new(&value)).collect(),
             location_table,
             exception_table,
             local_names,
@@ -80,8 +86,8 @@ impl Code {
     /// Returns the constant referenced by a `LoadConst` operand.
     /// Panics for an index not produced by this code's compiler.
     #[must_use]
-    pub fn constant(&self, index: u16) -> &Value {
-        &self.constants[usize::from(index)]
+    pub fn constant<H: Reference>(&self, index: u16) -> Value<H> {
+        self.constants[usize::from(index)].value()
     }
 
     /// Returns the local variable name for a given slot index.
@@ -129,7 +135,7 @@ impl Clone for Code {
     fn clone(&self) -> Self {
         Self {
             bytecode: self.bytecode.clone(),
-            constants: self.constants.iter().map(Value::copy_immediate).collect(),
+            constants: self.constants.clone(),
             location_table: self.location_table.clone(),
             exception_table: self.exception_table.clone(),
             local_names: self.local_names.clone(),

@@ -23,7 +23,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{DropGuard, DropWithContext, HeapData},
+    heap::{DropGuard, DropWithContext, HeapData, RuntimeRef},
     intern::{Interns, StringId},
     resource_checks::check_estimated_size,
     types::{Dict, allocate_tuple},
@@ -248,13 +248,13 @@ impl Signature {
     /// - Unexpected keyword argument
     /// - Positional-only parameter passed as keyword
     /// - Same argument passed both positionally and by keyword
-    pub fn bind(
+    pub fn bind<H: RuntimeRef>(
         &self,
-        args: ArgValues,
-        defaults: &[Value],
-        vm: &mut VM<'_>,
+        args: ArgValues<H>,
+        defaults: &[Value<H>],
+        vm: &mut VM<'_, H>,
         func_name: Identifier,
-        namespace: &mut Vec<Value>,
+        namespace: &mut Vec<Value<H>>,
     ) -> RunResult<()> {
         let (pos_iter, keyword_args) = args.into_parts();
         let n_kwargs = keyword_args.len();

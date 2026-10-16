@@ -5,6 +5,14 @@ Not a public crate — consumers get the macros re-exported
 (`monty::args::FromArgs` / `monty::args::ToArgs`) and should not depend on
 `monty-macros` directly.
 
+## `#[derive(Relocate)]`
+
+Internal to the interpreter: generates conversion from a stored type's `HeapIndex` specialization to runtime references.
+A complete snapshot owner reserves destination slots before supplying the reference-conversion callback.
+Reference-free fields move unchanged; reference-bearing containers and nested payloads are converted recursively.
+The derive accepts one reference type parameter and does not implement pointer deserialization.
+New storage wrappers or reference-bearing aliases need support in `relocate.rs`.
+
 ## `#[derive(FromArgs)]`
 
 Generates the `from_args` body for a Rust-implemented Python function. The
@@ -14,6 +22,8 @@ signature and one call to the runtime binder
 dispatch, arity checks, duplicate detection, and reference-count cleanup.
 The generated code then converts each raw slot via `FromValue` in
 declaration order and applies defaults.
+Lifetime, type and const parameters, their defaults, and where clauses are preserved on the generated implementation and cleanup slots.
+Generic field types acquire `FromValue` bounds on argument extraction; the parameter specification remains shared, static data.
 
 ```rust
 use monty::args::FromArgs;

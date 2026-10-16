@@ -8,7 +8,11 @@ use super::{
     compiler::CompileError,
     op::{Opcode, Operand},
 };
-use crate::{intern::StringId, parse::CodeRange, value::Value};
+use crate::{
+    intern::StringId,
+    parse::CodeRange,
+    value::{NoHeapRef, Value},
+};
 
 /// Builder for emitting bytecode during compilation.
 ///
@@ -23,7 +27,7 @@ pub struct CodeBuilder {
     bytecode: Vec<u8>,
 
     /// Constants collected during compilation.
-    constants: Vec<Value>,
+    constants: Vec<Value<NoHeapRef>>,
 
     /// Source location entries for traceback generation.
     location_table: Vec<LocationEntry>,
@@ -397,7 +401,7 @@ impl CodeBuilder {
     /// entries — `LoadConst` and related opcodes encode the index in `u16`,
     /// so any function with more than `65 536` distinct constants exceeds the
     /// bytecode format.
-    pub fn add_const(&mut self, value: Value) -> Result<u16, CompileError> {
+    pub fn add_const(&mut self, value: Value<NoHeapRef>) -> Result<u16, CompileError> {
         let idx_u16 = u16::try_from(self.constants.len()).map_err(|_| self.constant_pool_full())?;
         self.constants.push(value);
         Ok(idx_u16)

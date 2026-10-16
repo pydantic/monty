@@ -27,7 +27,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{ContainsHeap, HeapData, HeapItem, HeapObjectRead, Reference, RuntimeRef},
     identity::Identity,
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
@@ -39,18 +39,19 @@ use crate::{
     value::{EitherStr, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// The heap payload for every object a directory scan produces.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum DirScan {
+pub(crate) enum DirScan<H: Reference> {
     /// An `os.DirEntry`.
     Entry(DirEntry),
     /// The `ScandirIterator` that `os.scandir()` returns.
     Scandir(ScandirIterator),
     /// The iterator `os.walk()` and `Path.walk()` return.
-    Walk(WalkIterator),
+    Walk(WalkIterator<H>),
 }
 
-impl DirScan {
+impl<H: RuntimeRef> DirScan<H> {
     /// Whether this object can be part of a reference cycle: only a walk holds
     /// container references (its `onerror` callable and the yielded `dirnames`).
     pub(crate) fn is_gc_tracked(&self) -> bool {
@@ -58,7 +59,7 @@ impl DirScan {
     }
 
     /// The Python type of this object.
-    pub(crate) fn py_type(&self) -> Type {
+    pub(crate) fn py_type(&self) -> Type<H> {
         match self {
             Self::Entry(_) => Type::DirEntry,
             Self::Scandir(_) => Type::ScandirIterator,
@@ -75,7 +76,7 @@ impl DirScan {
     }
 
     /// Invokes `on_child` for each heap id this object owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Self::Walk(walk) = self {
             if let Value::Ref(id) = &walk.onerror {
                 on_child(*id);
@@ -87,8 +88,8 @@ impl DirScan {
     }
 }
 
-impl HeapItem for DirScan {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for DirScan<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if let Self::Walk(walk) = self {
             walk.onerror.py_dec_ref_ids(stack);
             if let Some(pending) = walk.pending.take() {
@@ -121,6 +122,7 @@ pub(crate) struct ScandirIterator {
     position: usize,
 }
 
+#[derive(monty_macros::Relocate)]
 /// `os.walk()` / `Path.walk()`: CPython's walk loop run over a prefetched tree.
 ///
 /// A top-down walk keeps the `dirnames` list it last yielded and reads it back
@@ -131,7 +133,7 @@ pub(crate) struct ScandirIterator {
     clippy::struct_excessive_bools,
     reason = "independent walk options plus the running flag"
 )]
-pub(crate) struct WalkIterator {
+pub(crate) struct WalkIterator<H: Reference> {
     /// The scanned subtree.
     tree: ScanTree,
     /// Whether this is `Path.walk()`, which yields `Path`s and lists symlinks
@@ -142,11 +144,11 @@ pub(crate) struct WalkIterator {
     /// Descend into symlinked directories.
     followlinks: bool,
     /// Called with each `OSError`; `None` ignores them. Owned.
-    onerror: Value,
+    onerror: Value<H>,
     /// Steps still to take; the last is next.
     stack: Vec<WalkStep>,
     /// The directory last yielded top-down and its `dirnames` list (owned).
-    pending: Option<PendingDirnames>,
+    pending: Option<PendingDirnames<H>>,
     /// The host's error for the root, reported on the first step.
     root_error: Option<SimpleException>,
     /// A step is in progress; `onerror` advancing the walk again is refused.
@@ -168,43 +170,44 @@ enum WalkStep {
     },
 }
 
+#[derive(monty_macros::Relocate)]
 /// The `dirnames` list a top-down walk yielded, read back to decide where to descend.
 #[derive(Debug, Serialize, Deserialize)]
-struct PendingDirnames {
+struct PendingDirnames<H: Reference> {
     /// The yielded directory relative to the scan root.
     relative: String,
     /// The yielded directory as spelled.
     spelled: String,
     /// The yielded `dirnames` list. Owned.
-    dirnames: HeapId,
+    dirnames: H,
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, DirScan<H>> {
+    fn py_type(&self, vm: &VM<'h, H>) -> Type<H> {
         self.get(vm.heap).py_type()
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
-    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
 
-    fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
+    fn py_is_iterable(&self, vm: &VM<'h, H>) -> bool {
         !matches!(self.get(vm.heap), DirScan::Entry(_))
     }
 
-    fn py_is_iterator(&self, vm: &VM<'h>) -> bool {
+    fn py_is_iterator(&self, vm: &VM<'h, H>) -> bool {
         self.py_is_iterable(vm)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         if self.py_is_iterable(vm) {
             Ok(self.clone_value(vm.heap))
         } else {
@@ -212,7 +215,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         match self.get_mut(vm.heap) {
             DirScan::Entry(_) => Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))),
             DirScan::Scandir(iter) => {
@@ -228,7 +231,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         match self.get(vm.heap) {
             DirScan::Entry(entry) => {
                 f.write_str("<DirEntry ")?;
@@ -245,11 +248,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_is_context_manager(&self, vm: &VM<'h>) -> bool {
+    fn py_is_context_manager(&self, vm: &VM<'h, H>) -> bool {
         matches!(self.get(vm.heap), DirScan::Scandir(_))
     }
 
-    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, vm: &mut VM<'h, H>) -> RunResult<CallResult<H>> {
         if self.py_is_context_manager(vm) {
             Ok(CallResult::Value(self.clone_value(vm.heap)))
         } else {
@@ -257,7 +260,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_exit(&mut self, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
+    fn py_exit(&mut self, vm: &mut VM<'h, H>, _exc: Option<H>) -> RunResult<CallResult<H>> {
         match self.get_mut(vm.heap) {
             DirScan::Scandir(iter) => {
                 iter.position = iter.entries.len();
@@ -267,7 +270,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let value = match (self.get(vm.heap), attr.static_string(vm.interns)) {
             (DirScan::Entry(entry), Some(StaticStrings::Name)) => allocate_string(entry.name.as_str(), vm.heap),
             (DirScan::Entry(entry), Some(StaticStrings::Path)) => allocate_string(entry.path.as_str(), vm.heap),
@@ -276,7 +279,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         value.drop_with(vm);
         let readonly = matches!(self.get(vm.heap), DirScan::Entry(_))
             && matches!(
@@ -293,7 +296,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let method = attr.static_string(vm.interns);
         match (self.get(vm.heap), method) {
             (DirScan::Entry(entry), Some(method)) if ENTRY_METHODS.contains(&method) => {
@@ -312,7 +315,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
     }
 }
 
-impl DirScan {
+impl<H: RuntimeRef> DirScan<H> {
     /// What the host sees when one crosses the boundary: its sandbox `repr`
     /// for an entry, a placeholder for the iterators.
     pub(crate) fn boundary_repr(&self) -> String {
@@ -335,13 +338,13 @@ const ENTRY_METHODS: [StaticStrings; 6] = [
 ];
 
 /// Runs a `DirEntry` method from what the scan saw; only `stat()` asks the host.
-fn entry_method(
+fn entry_method<H: RuntimeRef>(
     method: StaticStrings,
     info: EntryInfo,
     path: String,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     let value = match method {
         StaticStrings::IsDir => {
             let IsDirArgs { follow_symlinks } = IsDirArgs::from_args(args, vm)?;
@@ -405,7 +408,10 @@ struct StatArgs {
 ///
 /// No heap borrow is held across the `onerror` call, which re-enters Python;
 /// a `next()` on this walk from there raises, as on a running generator.
-fn walk_next<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn walk_next<'h, H: RuntimeRef>(
+    this: &mut HeapObjectRead<'h, H, DirScan<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let walk = walk_mut(this, vm);
     if walk.running {
         return Err(ExcType::generator_already_executing());
@@ -427,7 +433,10 @@ fn walk_next<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
 }
 
 /// The body of [`walk_next`], which ends the walk if this raises.
-fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn walk_step<'h, H: RuntimeRef>(
+    this: &mut HeapObjectRead<'h, H, DirScan<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     loop {
         if let Some(pending) = walk_mut(this, vm).pending.take() {
             descend_into_dirnames(this, pending, vm)?;
@@ -485,10 +494,10 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
 /// a symlink is skipped unless the walk follows links. A name is looked up in
 /// the tree normalized, as it is stored; one leaving the tree (absolute, or
 /// `..` above the top) is visited as missing, where CPython would list it.
-fn descend_into_dirnames<'h>(
-    this: &mut HeapObjectRead<'h, DirScan>,
-    pending: PendingDirnames,
-    vm: &mut VM<'h>,
+fn descend_into_dirnames<'h, H: RuntimeRef>(
+    this: &mut HeapObjectRead<'h, H, DirScan<H>>,
+    pending: PendingDirnames<H>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     let PendingDirnames {
         relative,
@@ -556,7 +565,10 @@ fn normalized_child(relative: &str, name: &str) -> Option<String> {
 }
 
 /// The walk inside a `DirScan` known to be one.
-fn walk_mut<'a, 'h>(this: &'a mut HeapObjectRead<'h, DirScan>, vm: &'a mut VM<'h>) -> &'a mut WalkIterator {
+fn walk_mut<'a, 'h, H: RuntimeRef>(
+    this: &'a mut HeapObjectRead<'h, H, DirScan<H>>,
+    vm: &'a mut VM<'h, H>,
+) -> &'a mut WalkIterator<H> {
     match this.get_mut(vm.heap) {
         DirScan::Walk(walk) => walk,
         DirScan::Entry(_) | DirScan::Scandir(_) => unreachable!("walk_next is only called on a walk"),
@@ -564,7 +576,7 @@ fn walk_mut<'a, 'h>(this: &'a mut HeapObjectRead<'h, DirScan>, vm: &'a mut VM<'h
 }
 
 /// Allocates a list of `str`.
-fn string_list(items: Vec<String>, vm: &VM<'_>) -> Value {
+fn string_list<H: RuntimeRef>(items: Vec<String>, vm: &VM<'_, H>) -> Value<H> {
     let items = items.into_iter().map(|item| allocate_string(item, vm.heap)).collect();
     Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))
 }
@@ -585,7 +597,7 @@ enum WalkAction {
     },
 }
 
-impl WalkIterator {
+impl<H: RuntimeRef> WalkIterator<H> {
     /// The generator's `__qualname__`, as its `repr` shows it.
     fn qualname(&self) -> &'static str {
         if self.path_flavor { "Path.walk" } else { "walk" }
@@ -701,20 +713,22 @@ fn scan_join(dir: &str, name: &str) -> String {
 // Building the calls and applying the replies.
 // =============================================================================
 
+#[derive(monty_macros::Relocate)]
 /// What to build from a [`OsFunctionCall::Scan`] reply on resume.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum ScanEffect {
+pub(crate) enum ScanEffect<H: Reference> {
     /// `os.scandir(path)`; `spelled` is the path as given, joined onto each entry.
     Scandir { spelled: String },
     /// `os.walk()` / `Path.walk()`.
-    Walk(WalkSetup),
+    Walk(WalkSetup<H>),
     /// `Path.glob()` / `Path.rglob()`.
     Glob(GlobSetup),
 }
 
+#[derive(monty_macros::Relocate)]
 /// The arguments of a walk, carried across the host call.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct WalkSetup {
+pub(crate) struct WalkSetup<H: Reference> {
     /// The top directory as spelled (`str(self)` for `Path.walk`).
     top: String,
     /// See [`WalkIterator::path_flavor`].
@@ -724,7 +738,7 @@ pub(crate) struct WalkSetup {
     /// See [`WalkIterator::followlinks`].
     followlinks: bool,
     /// Owned until it moves into the iterator, or released with the effect.
-    onerror: Value,
+    onerror: Value<H>,
 }
 
 /// The parsed pattern of a glob, carried across the host call.
@@ -744,7 +758,7 @@ pub(crate) struct GlobSetup {
     recurse_symlinks: bool,
 }
 
-impl ScanEffect {
+impl<H: RuntimeRef> ScanEffect<H> {
     /// The Python operation, for error messages.
     pub(crate) fn operation_name(&self) -> &'static str {
         match self {
@@ -764,7 +778,7 @@ impl ScanEffect {
     }
 
     /// Builds the result from the host's reply, or from an error [`Self::absorbs`] accepted.
-    pub(crate) fn apply(self, reply: Result<MontyObject, RunError>, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn apply(self, reply: Result<MontyObject, RunError>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
         // The reply bypasses `to_value`, so charge the indexed copy here. A host's
         // reply is bounded by its own budget; this keeps a large one from
         // overrunning the sandbox's limits before the next instruction checkpoint.
@@ -853,7 +867,7 @@ impl ScanEffect {
                     Err(_) => Vec::new(),
                 };
                 vm.heap.tracker.check_time()?;
-                let total: usize = matches.iter().map(|path| path.len() + size_of::<Value>()).sum();
+                let total: usize = matches.iter().map(|path| path.len() + size_of::<Value<H>>()).sum();
                 vm.heap.tracker.check_allocation(total)?;
                 let paths = matches
                     .into_iter()
@@ -868,7 +882,7 @@ impl ScanEffect {
     }
 
     /// Drops what the effect owns when it will never be applied.
-    pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
+    pub(crate) fn release(self, heap: &mut impl ContainsHeap<Ref = H>) {
         if let Self::Walk(setup) = self {
             setup.onerror.drop_with(heap);
         }
@@ -956,7 +970,7 @@ impl ScanSource for TrackedTree<'_> {
 }
 
 /// Starts `os.scandir(path)`: a depth-one scan, answered with a `ScandirIterator`.
-pub(crate) fn scandir_call(path: MontyPath) -> CallResult {
+pub(crate) fn scandir_call<H: RuntimeRef>(path: MontyPath) -> CallResult<H> {
     let spelled = path.as_str().to_owned();
     CallResult::OsCallWithEffect {
         call: OsFunctionCall::Scan(ScanArgs::listing(path, Some(1), false)),
@@ -967,14 +981,14 @@ pub(crate) fn scandir_call(path: MontyPath) -> CallResult {
 /// Starts `os.walk()` / `Path.walk()`: a full scan, answered with a walk iterator.
 ///
 /// Takes ownership of `onerror`.
-pub(crate) fn walk_call(
+pub(crate) fn walk_call<H: RuntimeRef>(
     top: String,
     path_flavor: bool,
     topdown: bool,
-    onerror: Value,
+    onerror: Value<H>,
     followlinks: bool,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     let empty = top.is_empty();
     let effect = ScanEffect::Walk(WalkSetup {
         top: top.clone(),
@@ -1001,12 +1015,12 @@ pub(crate) fn walk_call(
 ///
 /// Parses the pattern as `pathlib` does, hoists its literal prefix into the
 /// scan root, and scans what is left.
-pub(crate) fn glob_call(
+pub(crate) fn glob_call<H: RuntimeRef>(
     base: &str,
     pattern: &str,
     case_sensitive: Option<bool>,
     recurse_symlinks: bool,
-) -> RunResult<CallResult> {
+) -> RunResult<CallResult<H>> {
     if pattern.starts_with('/') {
         return Err(
             SimpleException::new_msg(ExcType::NotImplementedError, "Non-relative patterns are unsupported").into(),

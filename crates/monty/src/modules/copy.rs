@@ -11,7 +11,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
@@ -34,7 +34,7 @@ const COPY_FUNCTIONS: &[(StaticStrings, CopyFunctions)] = &[
 ];
 
 /// Creates the `copy` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Copy, vm.interns);
 
     for (name, func) in COPY_FUNCTIONS {
@@ -45,7 +45,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 }
 
 /// Dispatches a call to a `copy` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: CopyFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: CopyFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         CopyFunctions::Copy => call_copy(vm, args),
         CopyFunctions::Deepcopy => call_deepcopy(vm, args),
@@ -55,12 +59,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: CopyFunctions, args: ArgValues) ->
 /// A pure-Python `def` in CPython, so the parameter binds without a type check.
 #[derive(FromArgs)]
 #[from_args(name = "copy", style = def)]
-struct CopyArgs {
-    x: Value,
+struct CopyArgs<H: Reference> {
+    x: Value<H>,
 }
 
 /// `copy.copy(x)`: a new object holding the *same* items as `x`.
-fn call_copy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_copy<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CopyArgs { x } = CopyArgs::from_args(args, vm)?;
     defer_drop!(x, vm);
     shallow_copy(x, vm)
@@ -70,16 +74,16 @@ fn call_copy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// accepted for arity parity and never read.
 #[derive(FromArgs)]
 #[from_args(name = "deepcopy", style = def)]
-struct DeepcopyArgs {
-    x: Value,
+struct DeepcopyArgs<H: Reference> {
+    x: Value<H>,
     #[from_args(default = Value::None, static_string = "Memo")]
-    memo: Value,
+    memo: Value<H>,
     #[from_args(default = Value::None, static_string = "NilSentinel")]
-    _nil: Value,
+    _nil: Value<H>,
 }
 
 /// `copy.deepcopy(x, memo=None)`: rebuilds `x` and everything it holds.
-fn call_deepcopy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_deepcopy<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DeepcopyArgs { x, memo, _nil: nil } = DeepcopyArgs::from_args(args, vm)?;
     defer_drop!(x, vm);
     defer_drop!(nil, vm);
@@ -97,7 +101,7 @@ fn call_deepcopy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// [`classify`] settles what happens to each heap type; this only spells out
 /// the rebuilds, which need the typed handle its arm binds.
-fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn shallow_copy<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let Value::Ref(id) = value else {
         return Ok(value.clone_with_heap(vm.heap));
     };
@@ -181,12 +185,12 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// Implementations memoize an empty shell before filling it, so a container
 /// holding itself resolves to the shell instead of recursing forever, and hold
 /// that shell in a `DropGuard` so a failure partway releases it.
-pub(crate) trait PyDeepCopy<'h> {
+pub(crate) trait PyDeepCopy<'h, H: RuntimeRef> {
     /// Returns a new object holding deep copies of everything this one holds.
     ///
     /// `source` is the `Value` being copied — the memo key, and what a type
     /// that turns out not to need rebuilding hands back unchanged.
-    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value>;
+    fn py_deep_copy(&self, source: &Value<H>, memo: &mut Memo<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>>;
 }
 
 /// Returns a deep copy of `value`, reusing anything this pass already copied.
@@ -196,7 +200,11 @@ pub(crate) trait PyDeepCopy<'h> {
 ///
 /// The whole walk runs inside one call, past no instruction checkpoint, so
 /// every fill loop polls the duration limit as the container iterators do.
-pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn deep_copy<H: RuntimeRef>(
+    source: &Value<H>,
+    memo: &mut Memo<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     let Value::Ref(id) = source else {
         return Ok(source.clone_with_heap(vm.heap));
     };
@@ -272,7 +280,7 @@ enum Copyability {
 }
 
 /// Decides what the two passes do with a heap value.
-fn classify(output: &HeapReadOutput<'_>) -> Copyability {
+fn classify<H: RuntimeRef>(output: &HeapReadOutput<'_, H>) -> Copyability {
     match output {
         HeapReadOutput::List(_)
         | HeapReadOutput::Dict(_)
@@ -360,13 +368,13 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
 /// Fills an instance copy's `__dict__` from the original's, going
 /// through the attribute dict rather than `setattr` so frozen ones can be
 /// rebuilt — the bypass CPython's `__dict__.update` is.
-pub(crate) fn deep_copy_attrs(
-    source_id: HeapId,
-    copy_id: HeapId,
-    source: &Value,
-    memo: &mut Memo,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+pub(crate) fn deep_copy_attrs<H: RuntimeRef>(
+    source_id: H,
+    copy_id: H,
+    source: &Value<H>,
+    memo: &mut Memo<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
     let (copy, vm) = guard.as_parts_mut();
     memo.insert(source, copy, vm)?;
@@ -399,12 +407,12 @@ pub(crate) fn deep_copy_attrs(
 
 /// Deep-copies `len` items into a vector, for the immutable containers that
 /// cannot be built until they have all of them.
-pub(crate) fn deep_copy_slots<'h>(
+pub(crate) fn deep_copy_slots<'h, H: RuntimeRef>(
     len: usize,
-    memo: &mut Memo,
-    vm: &mut VM<'h>,
-    mut clone_item: impl FnMut(usize, &mut VM<'h>) -> Value,
-) -> RunResult<Vec<Value>> {
+    memo: &mut Memo<H>,
+    vm: &mut VM<'h, H>,
+    mut clone_item: impl FnMut(usize, &mut VM<'h, H>) -> Value<H>,
+) -> RunResult<Vec<Value<H>>> {
     vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
     let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
     for index in 0..len {
@@ -420,7 +428,12 @@ pub(crate) fn deep_copy_slots<'h>(
 }
 
 /// Deep-copies an owned key and value, releasing both either way.
-pub(crate) fn deep_copy_pair(key: Value, value: Value, memo: &mut Memo, vm: &mut VM<'_>) -> RunResult<(Value, Value)> {
+pub(crate) fn deep_copy_pair<H: RuntimeRef>(
+    key: Value<H>,
+    value: Value<H>,
+    memo: &mut Memo<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<(Value<H>, Value<H>)> {
     let key_copy = deep_copy(&key, memo, vm);
     key.drop_with(vm);
     let key_copy = match key_copy {
@@ -450,17 +463,17 @@ pub(crate) fn deep_copy_pair(key: Value, value: Value, memo: &mut Memo, vm: &mut
 ///
 /// Sources are pinned for the whole pass because heap ids are recycled: one
 /// dying mid-pass would let a later object inherit its id, and its entry.
-pub(crate) struct Memo {
+pub(crate) struct Memo<H: Reference> {
     /// The memo dict — the caller's when they passed one, else freshly made.
-    dict: Value,
+    dict: Value<H>,
     /// Every source visited this pass, keeping their ids unique.
-    keep_alive: Vec<Value>,
+    keep_alive: Vec<Value<H>>,
 }
 
-impl Memo {
+impl<H: RuntimeRef> Memo<H> {
     /// `None` allocates a fresh dict; a caller's dict is adopted, so they see
     /// what the pass recorded.
-    fn new(memo: Value, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn new(memo: Value<H>, vm: &mut VM<'_, H>) -> RunResult<Self> {
         let dict = match memo {
             Value::None => Value::Ref(vm.heap.allocate(HeapData::Dict(Dict::new()))),
             Value::Ref(id) if matches!(vm.heap.read(id), HeapReadOutput::Dict(_)) => memo,
@@ -479,7 +492,7 @@ impl Memo {
     }
 
     /// Returns the copy this pass already made for `source`, if any.
-    pub(crate) fn get(&self, source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    pub(crate) fn get(&self, source: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<Value<H>>> {
         let key = source.id().into_value(vm.heap);
         defer_drop!(key, vm);
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id()) else {
@@ -498,7 +511,7 @@ impl Memo {
     /// hook's result still has to be recorded. Asking the memo covers both,
     /// where re-inserting would re-hash the key, drop the copy it displaced and
     /// pin the source a second time.
-    fn insert_if_absent(&mut self, source: &Value, copy: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+    fn insert_if_absent(&mut self, source: &Value<H>, copy: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<()> {
         match self.get(source, vm)? {
             Some(existing) => {
                 existing.drop_with(vm);
@@ -509,7 +522,7 @@ impl Memo {
     }
 
     /// Records `copy` as the copy of `source`, and pins `source` for the pass.
-    pub(crate) fn insert(&mut self, source: &Value, copy: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+    pub(crate) fn insert(&mut self, source: &Value<H>, copy: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<()> {
         let key = source.id().into_value(vm.heap);
         let value = copy.clone_with_heap(vm.heap);
         let HeapReadOutput::Dict(mut dict) = vm.heap.read(self.dict_id()) else {
@@ -524,16 +537,16 @@ impl Memo {
     }
 
     /// The memo dict as an owned value, for handing to `__deepcopy__`.
-    pub(crate) fn dict_value(&self, vm: &VM<'_>) -> Value {
+    pub(crate) fn dict_value(&self, vm: &VM<'_, H>) -> Value<H> {
         self.dict.clone_with_heap(vm.heap)
     }
 
-    fn dict_id(&self) -> HeapId {
+    fn dict_id(&self) -> H {
         self.dict.ref_id().expect("memo dict is heap allocated")
     }
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Memo {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Memo<H> {
     fn drop_with(self, context: &mut C) {
         self.dict.drop_with(context);
         self.keep_alive.drop_with(context);
@@ -551,11 +564,11 @@ impl<C: ContainsHeap> DropWithContext<C> for Memo {
 /// and returning, so without this the whole walk is invisible to the time
 /// limits. The clones are guarded because that poll can now cut the
 /// loop short with items already taken.
-pub(crate) fn clone_items<'h>(
+pub(crate) fn clone_items<'h, H: RuntimeRef>(
     len: usize,
-    vm: &mut VM<'h>,
-    mut clone_item: impl FnMut(usize, &mut VM<'h>) -> Value,
-) -> RunResult<Vec<Value>> {
+    vm: &mut VM<'h, H>,
+    mut clone_item: impl FnMut(usize, &mut VM<'h, H>) -> Value<H>,
+) -> RunResult<Vec<Value<H>>> {
     vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
     let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
     for index in 0..len {
@@ -568,7 +581,7 @@ pub(crate) fn clone_items<'h>(
 
 /// Clones an instance's `__dict__` entries, polling and guarded for the reason
 /// [`clone_items`] is.
-fn clone_attrs(id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
+fn clone_attrs<H: RuntimeRef>(id: H, vm: &mut VM<'_, H>) -> RunResult<Vec<(Value<H>, Value<H>)>> {
     let len = attrs(id, vm).len();
     vm.heap
         .tracker
@@ -584,7 +597,7 @@ fn clone_attrs(id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
 }
 
 /// Borrows an instance's attribute dict.
-fn attrs<'a>(id: HeapId, vm: &'a VM<'_>) -> &'a Dict {
+fn attrs<'a, H: RuntimeRef>(id: H, vm: &'a VM<'_, H>) -> &'a Dict<H> {
     match vm.heap.get(id) {
         HeapData::Instance(instance) => instance.attrs(),
         _ => unreachable!("caller checked the type"),
@@ -602,7 +615,7 @@ fn attrs<'a>(id: HeapId, vm: &'a VM<'_>) -> &'a Dict {
 /// clock as well; see `timeout_in_shallow_copy_fill_loop`. The poll runs
 /// *before* each pair is taken from the iterator, so a timeout leaves every
 /// remaining pair inside the guard; pulling first would strand the one in hand.
-fn insert_pairs(dict_id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunResult<()> {
+fn insert_pairs<H: RuntimeRef>(dict_id: H, pairs: Vec<(Value<H>, Value<H>)>, vm: &mut VM<'_, H>) -> RunResult<()> {
     let pairs = pairs.into_iter();
     defer_drop_mut!(pairs, vm);
     for index in 0.. {
@@ -624,7 +637,7 @@ fn insert_pairs(dict_id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) ->
 /// Moves owned `pairs` into the `__dict__` of an instance copy, bypassing
 /// `setattr` as [`deep_copy_attrs`] does. Guarded, and polled before the pull,
 /// for the reasons [`insert_pairs`] is.
-fn insert_attrs(id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunResult<()> {
+fn insert_attrs<H: RuntimeRef>(id: H, pairs: Vec<(Value<H>, Value<H>)>, vm: &mut VM<'_, H>) -> RunResult<()> {
     let pairs = pairs.into_iter();
     defer_drop_mut!(pairs, vm);
     for index in 0.. {
@@ -648,7 +661,7 @@ fn insert_attrs(id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunR
 // ===========================================================================
 
 /// Releases a half-built copy when filling it failed.
-fn release_on_error(copy: Value, filled: RunResult<()>, vm: &mut VM<'_>) -> RunResult<Value> {
+fn release_on_error<H: RuntimeRef>(copy: Value<H>, filled: RunResult<()>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     match filled {
         Ok(()) => Ok(copy),
         Err(e) => {
@@ -659,11 +672,11 @@ fn release_on_error(copy: Value, filled: RunResult<()>, vm: &mut VM<'_>) -> RunR
 }
 
 /// Whether the two values are the same object (Python's `is`).
-fn same_object(a: &Value, b: &Value) -> bool {
+fn same_object<H: RuntimeRef>(a: &Value<H>, b: &Value<H>) -> bool {
     a.id() == b.id()
 }
 
 /// The `TypeError` CPython's pickler raises for a type it cannot rebuild.
-fn cannot_copy(value: &Value, vm: &VM<'_>) -> RunError {
+fn cannot_copy<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunError {
     ExcType::type_error(format!("cannot pickle '{}' object", value.py_type_name(vm)))
 }

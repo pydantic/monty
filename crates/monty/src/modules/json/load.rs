@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, HeapData, HeapReader},
+    heap::{ContainsHeap, DropGuard, HeapData, HeapReader, Reference, RuntimeRef},
     types::{
         Dict, List, LongInt,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
@@ -63,7 +63,7 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// CPython kwargs `cls`, `object_hook`, `parse_float`, `parse_int`,
 /// `parse_constant`, and `object_pairs_hook` are intentionally unsupported
 /// and will raise `TypeError` if passed.
-pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call_loads<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm)?;
     defer_drop_mut!(s, vm);
     parse_json_input(s, vm)
@@ -78,8 +78,8 @@ pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// the macro emits the standard "unexpected keyword" error for them.
 #[derive(FromArgs)]
 #[from_args(name = "loads", style = def)]
-struct JsonLoadsArgs {
-    s: Value,
+struct JsonLoadsArgs<H: Reference> {
+    s: Value<H>,
 }
 
 /// Parses a `json.loads()` input value and converts it into a Monty value.
@@ -87,7 +87,7 @@ struct JsonLoadsArgs {
 /// The parser works directly on the underlying byte slice. Decoded strings from
 /// `jiter` are copied into Monty's heap immediately before any further parser
 /// movement so borrowed tape-backed data never escapes.
-fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn parse_json_input<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let bytes: Cow<'_, [u8]> = match value {
         Value::InternString(string_id) => Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()),
         Value::InternBytes(bytes_id) => Cow::Borrowed(vm.interns.get_bytes(*bytes_id)),
@@ -109,7 +109,7 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 ///
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
-fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_>) -> RunResult<Value> {
+fn parse_json_bytes<H: RuntimeRef>(bytes: &[u8], vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
     // Take the cache out of the VM so we can pass it alongside &mut VM
     // without conflicting borrows. `mem::take` leaves `Default` in its place.
@@ -135,12 +135,12 @@ fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_>) -> RunResult<Value> {
 ///
 /// Strings are allocated immediately because `jiter` may reuse its internal
 /// tape buffer on the next parser step.
-fn parse_json_value(
+fn parse_json_value<H: RuntimeRef>(
     jiter: &mut Jiter<'_>,
     depth: usize,
-    cache: &mut JsonStringCache,
-    vm: &mut VM<'_>,
-) -> ParseResult<Value> {
+    cache: &mut JsonStringCache<H>,
+    vm: &mut VM<'_, H>,
+) -> ParseResult<Value<H>> {
     let peek = jiter.peek()?;
     parse_json_value_from_peek(peek, jiter, depth, cache, vm)
 }
@@ -149,13 +149,13 @@ fn parse_json_value(
 ///
 /// The caller provides the `Peek` so container iteration can avoid reparsing
 /// the next token after `array_step()`.
-fn parse_json_value_from_peek(
+fn parse_json_value_from_peek<H: RuntimeRef>(
     peek: Peek,
     jiter: &mut Jiter<'_>,
     depth: usize,
-    cache: &mut JsonStringCache,
-    vm: &mut VM<'_>,
-) -> ParseResult<Value> {
+    cache: &mut JsonStringCache<H>,
+    vm: &mut VM<'_, H>,
+) -> ParseResult<Value<H>> {
     match peek {
         Peek::Null => {
             jiter.known_null()?;
@@ -176,7 +176,11 @@ fn parse_json_value_from_peek(
 /// Allocates a string using the cache when eligible, falling back to direct
 /// allocation for empty/single-char strings (already interned by
 /// `allocate_string`).
-fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> Value {
+fn allocate_cached_string<H: RuntimeRef>(
+    s: String,
+    cache: &mut JsonStringCache<H>,
+    heap: &HeapReader<'_, H>,
+) -> Value<H> {
     if s.len() < 2 {
         // Empty and single-char strings are interned by allocate_string.
         allocate_string(s, heap.heap())
@@ -188,7 +192,7 @@ fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapRea
 /// Parses a JSON number into the corresponding Monty numeric value.
 ///
 /// Oversized integers that exceed Monty's digit limit are rejected with a `ValueError`
-fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_>) -> ParseResult<Value> {
+fn parse_json_number<H: RuntimeRef>(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_, H>) -> ParseResult<Value<H>> {
     let start = jiter.current_index();
     // Parse to bytes so that we can check the digit count before any BigInt allocation occurs.
     let token = jiter.known_number_bytes(peek)?;
@@ -217,12 +221,12 @@ fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_>) -> Pars
 ///
 /// Elements are converted one by one as the iterator advances, avoiding any
 /// intermediate `JsonValue` tree.
-fn parse_json_array(
+fn parse_json_array<H: RuntimeRef>(
     jiter: &mut Jiter<'_>,
     depth: usize,
-    cache: &mut JsonStringCache,
-    vm: &mut VM<'_>,
-) -> ParseResult<Value> {
+    cache: &mut JsonStringCache<H>,
+    vm: &mut VM<'_, H>,
+) -> ParseResult<Value<H>> {
     check_json_recursion_limit(jiter, depth)?;
 
     let Some(mut next) = jiter.known_array()? else {
@@ -276,12 +280,12 @@ fn parse_json_string(jiter: &mut Jiter<'_>) -> ParseResult<String> {
 ///
 /// Keys are allocated before parsing their values because `jiter` may reuse its
 /// temporary string storage on the next parser step.
-fn parse_json_object(
+fn parse_json_object<H: RuntimeRef>(
     jiter: &mut Jiter<'_>,
     depth: usize,
-    cache: &mut JsonStringCache,
-    vm: &mut VM<'_>,
-) -> ParseResult<Value> {
+    cache: &mut JsonStringCache<H>,
+    vm: &mut VM<'_, H>,
+) -> ParseResult<Value<H>> {
     check_json_recursion_limit(jiter, depth)?;
 
     let Some(mut key) = parse_first_object_key(jiter)? else {

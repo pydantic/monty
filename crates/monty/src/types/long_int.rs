@@ -26,7 +26,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
-    heap::{Heap, HeapData, HeapObjectRead, HeapRead},
+    heap::{Heap, HeapData, HeapObjectRead, HeapRead, RuntimeRef},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
     types::{LazyHeapSet, PyTrait, Type, str::allocate_string, tuple::allocate_tuple},
     value::{Value, eq_bigint, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
@@ -61,7 +61,7 @@ static INT_MAX_STR_DIGITS_THRESHOLD: OnceLock<BigInt> = OnceLock::new();
 pub struct LongInt(pub BigInt);
 
 /// Allocates an `i128` already known not to fit the immediate integer representation.
-pub(crate) fn wide_i128_into_value(value: i128, heap: &Heap) -> Value {
+pub(crate) fn wide_i128_into_value<H: RuntimeRef>(value: i128, heap: &Heap<H>) -> Value<H> {
     debug_assert!(i64::try_from(value).is_err());
     let id = heap.allocate(HeapData::LongInt(LongInt::new(BigInt::from(value))));
     Value::Ref(id)
@@ -76,7 +76,7 @@ impl LongInt {
     /// Converts a nonnegative `u128` to its most compact Python integer representation.
     ///
     /// The common immediate path avoids constructing a temporary `BigInt`.
-    pub(crate) fn value_from_u128(value: u128, heap: &Heap) -> Value {
+    pub(crate) fn value_from_u128<H: RuntimeRef>(value: u128, heap: &Heap<H>) -> Value<H> {
         if let Ok(value) = i64::try_from(value) {
             Value::Int(value)
         } else {
@@ -90,7 +90,7 @@ impl LongInt {
     ///
     /// Finite values outside the immediate range become arbitrary-precision integers;
     /// infinity and NaN raise the exceptions required by Python.
-    pub(crate) fn value_from_f64(value: f64, heap: &Heap) -> RunResult<Value> {
+    pub(crate) fn value_from_f64<H: RuntimeRef>(value: f64, heap: &Heap<H>) -> RunResult<Value<H>> {
         if value.is_infinite() {
             Err(ExcType::overflow_float_infinity_to_integer())
         } else if value.is_nan() {
@@ -110,7 +110,7 @@ impl LongInt {
     /// For performance, we want to keep values as `Value::Int(i64)` whenever possible.
     /// This method checks if the value fits in an i64 and returns `Value::Int` if so,
     /// otherwise allocates a `HeapData::LongInt` on the heap.
-    pub fn into_value(self, heap: &Heap) -> Value {
+    pub fn into_value<H: RuntimeRef>(self, heap: &Heap<H>) -> Value<H> {
         // Try to demote back to i64 for performance
         if let Some(i) = self.0.to_i64() {
             Value::Int(i)
@@ -220,7 +220,7 @@ impl LongInt {
     }
 
     /// Left-shifts an immediate integer, promoting only when the result requires it.
-    pub(crate) fn left_shift_i64(value: i64, shift: u64, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn left_shift_i64<H: RuntimeRef>(value: i64, shift: u64, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
         let bits = u64::from(i64::BITS - value.unsigned_abs().leading_zeros());
         check_lshift_size(bits, shift, &vm.heap.tracker)?;
         if value == 0 {
@@ -247,7 +247,7 @@ impl LongInt {
 }
 
 /// Extracts a Python integer as a sequence repetition count.
-pub(crate) fn repeat_count(value: &Value, vm: &VM<'_>) -> RunResult<Option<usize>> {
+pub(crate) fn repeat_count<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<Option<usize>> {
     match value {
         Value::Int(value) => Ok(Some(if *value <= 0 {
             0
@@ -404,46 +404,46 @@ fn int_max_str_digits_threshold() -> &'static BigInt {
 
 // === Trait Implementations ===
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, LongInt> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::Int
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(!self.get(vm.heap).is_zero())
     }
 
     /// A `LongInt` *is* an int, so it indexes as itself — the caller narrows it
     /// (or reports the overflow its own way).
-    fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_index_impl(&self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(eq_bigint(self.get(vm.heap).inner(), other, vm))
     }
 
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(self.get(vm.heap).hash()))
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let value = self.get(vm.heap);
         value.check_str_digits_limit()?;
         Ok(write!(f, "{value}")?)
     }
 
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let value = self.get(vm.heap);
         value.check_str_digits_limit()?;
         Ok(allocate_string(value.to_string(), vm.heap))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => lhs.inner() + rhs,
@@ -455,25 +455,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
-    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_radd_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         // `+` is commutative here, and the id is unused by the direct form.
         self.py_add_impl(other, vm)
     }
 
-    fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_neg_impl(&self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let negated = -LongInt::new(self.get(vm.heap).inner().clone());
         // A negated LongInt may fit back in an `i64`, which `into_value` demotes.
         Ok(Some(negated.into_value(vm.heap)))
     }
 
-    fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_pos_impl(&self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         // `+x` on an int is the identity, so hand back this same LongInt rather
         // than allocating a copy of its digits. The caller owns the returned
         // value, hence the extra reference.
         Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => lhs.inner() - rhs,
@@ -485,7 +485,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
-    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rsub_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let rhs = self.get(vm.heap);
         let result = match other {
             Value::Int(lhs) => BigInt::from(*lhs) - rhs.inner(),
@@ -497,7 +497,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
-    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_mod_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = self.get(vm.heap).inner();
         let result = match other {
             Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
@@ -516,7 +516,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
-    fn py_rmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rmod_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let rhs = self.get(vm.heap);
         if rhs.is_zero() {
             return Err(ExcType::zero_division().into());
@@ -531,7 +531,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
-    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_mul_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => {
@@ -553,11 +553,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(result)
     }
 
-    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rmul_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_truediv_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => bigint_true_divide(lhs.inner(), &BigInt::from(*rhs), &vm.heap.tracker)?,
@@ -572,7 +572,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(Value::Float(result)))
     }
 
-    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rtruediv_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         // A long divisor is never zero: zero always fits in `i64`.
         let rhs = self.get(vm.heap);
         let result = match other {
@@ -584,7 +584,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(Value::Float(result)))
     }
 
-    fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_floordiv_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
@@ -607,7 +607,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
-    fn py_rfloordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rfloordiv_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let rhs = self.get(vm.heap);
         if rhs.is_zero() {
             return Err(ExcType::zero_division().into());
@@ -623,7 +623,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(result).into_value(vm.heap)))
     }
 
-    fn py_divmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_divmod_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = self.get(vm.heap);
         if let Value::Float(rhs) = other {
             return if *rhs == 0.0 {
@@ -644,7 +644,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(bigint_divmod_tuple(lhs.inner(), &rhs, vm.heap)))
     }
 
-    fn py_rdivmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rdivmod_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         // A long divisor is never zero: zero always fits in `i64`.
         let rhs = self.get(vm.heap);
         let lhs = match other {
@@ -657,7 +657,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(bigint_divmod_tuple(&BigInt::from(lhs), rhs.inner(), vm.heap)))
     }
 
-    fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_pow_impl(
+        &self,
+        other: &Value<H>,
+        modulus: Option<&Value<H>>,
+        vm: &mut VM<'h, H>,
+    ) -> RunResult<Option<Value<H>>> {
         let base = self.get(vm.heap);
         if let Some(modulus) = modulus {
             modular_pow(base.inner(), other, modulus, vm.heap)
@@ -666,7 +671,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         }
     }
 
-    fn py_rpow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rpow_impl(
+        &self,
+        other: &Value<H>,
+        modulus: Option<&Value<H>>,
+        vm: &mut VM<'h, H>,
+    ) -> RunResult<Option<Value<H>>> {
         let exponent = self.get(vm.heap);
         if modulus.is_some() {
             Ok(None)
@@ -680,31 +690,31 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         }
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs & rhs))
     }
 
-    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rand_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs & lhs))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs | rhs))
     }
 
-    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs | lhs))
     }
 
-    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| lhs ^ rhs))
     }
 
-    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rxor_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(self.bitwise_value(other, vm, |lhs, rhs| rhs ^ lhs))
     }
 
-    fn py_lshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_lshift_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let Some(shift) = shift_amount(other, vm)? else {
             return Ok(None);
         };
@@ -713,7 +723,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(LongInt::new(value.inner() << shift).into_value(vm.heap)))
     }
 
-    fn py_rlshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rlshift_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = match other {
             Value::Int(lhs) => *lhs,
             Value::Bool(lhs) => i64::from(*lhs),
@@ -729,7 +739,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         }
     }
 
-    fn py_rshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rshift_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let Some(shift) = shift_amount(other, vm)? else {
             return Ok(None);
         };
@@ -738,7 +748,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         ))
     }
 
-    fn py_rrshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rrshift_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let lhs = match other {
             Value::Int(lhs) => *lhs,
             Value::Bool(lhs) => i64::from(*lhs),
@@ -760,12 +770,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
 
 impl<'h> HeapRead<'h, LongInt> {
     /// Applies a two-operand bitwise operation using this long integer as the left operand.
-    fn bitwise_value(
+    fn bitwise_value<H: RuntimeRef>(
         &self,
-        other: &Value,
-        vm: &mut VM<'h>,
+        other: &Value<H>,
+        vm: &mut VM<'h, H>,
         operation: impl FnOnce(BigInt, BigInt) -> BigInt,
-    ) -> Option<Value> {
+    ) -> Option<Value<H>> {
         let rhs = match other {
             Value::Int(value) => BigInt::from(*value),
             Value::Bool(value) => BigInt::from(*value),
@@ -789,7 +799,12 @@ const MODPOW_UNPOLLED_WORK: u64 = 1 << 27;
 /// Small inputs take `num-bigint`'s Montgomery `modpow`; anything past
 /// `MODPOW_UNPOLLED_WORK` takes the slower [`polled_modpow`] so a time limit can
 /// interrupt it, as CPython computes these rather than rejecting them.
-pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap: &Heap) -> RunResult<Option<Value>> {
+pub(crate) fn modular_pow<H: RuntimeRef>(
+    base: &BigInt,
+    exponent: &Value<H>,
+    modulus: &Value<H>,
+    heap: &Heap<H>,
+) -> RunResult<Option<Value<H>>> {
     let Some(exponent) = integer_value(exponent, heap) else {
         return Ok(None);
     };
@@ -847,7 +862,7 @@ fn polled_modpow(
 }
 
 /// Raises a long integer to another integer value.
-fn long_int_pow(base: &LongInt, exponent: &Value, heap: &Heap) -> RunResult<Option<Value>> {
+fn long_int_pow<H: RuntimeRef>(base: &LongInt, exponent: &Value<H>, heap: &Heap<H>) -> RunResult<Option<Value<H>>> {
     if let Value::Float(exponent) = exponent {
         return Ok(Some(float_pow_value(base.to_f64_checked()?, *exponent, heap)?));
     }
@@ -858,7 +873,7 @@ fn long_int_pow(base: &LongInt, exponent: &Value, heap: &Heap) -> RunResult<Opti
 }
 
 /// Raises one arbitrary-precision integer to another.
-fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResult<Option<Value>> {
+fn long_int_pow_value<H: RuntimeRef>(base: &BigInt, exponent: &BigInt, heap: &Heap<H>) -> RunResult<Option<Value<H>>> {
     if exponent.is_negative() {
         // CPython hands off to `float_pow`, converting both operands before its zero-base check.
         Ok(Some(float_pow_value(
@@ -881,7 +896,7 @@ fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResul
 }
 
 /// Borrows or promotes an integer value into its arbitrary-precision representation.
-fn integer_value<'a>(value: &'a Value, heap: &'a Heap) -> Option<Cow<'a, BigInt>> {
+fn integer_value<'a, H: RuntimeRef>(value: &'a Value<H>, heap: &'a Heap<H>) -> Option<Cow<'a, BigInt>> {
     match value {
         Value::Int(value) => Some(Cow::Owned(BigInt::from(*value))),
         Value::Bool(value) => Some(Cow::Owned(BigInt::from(*value))),
@@ -992,7 +1007,7 @@ fn i64_bits(value: i64) -> u64 {
 ///
 /// `div_mod_floor` gives Python's floor semantics directly, so the remainder takes the
 /// divisor's sign. Callers must reject a zero divisor and preflight the quotient's size.
-pub(crate) fn bigint_divmod_tuple(lhs: &BigInt, rhs: &BigInt, heap: &Heap) -> Value {
+pub(crate) fn bigint_divmod_tuple<H: RuntimeRef>(lhs: &BigInt, rhs: &BigInt, heap: &Heap<H>) -> Value<H> {
     let (quotient, remainder) = lhs.div_mod_floor(rhs);
     let quotient = LongInt::new(quotient).into_value(heap);
     let remainder = LongInt::new(remainder).into_value(heap);
@@ -1000,7 +1015,7 @@ pub(crate) fn bigint_divmod_tuple(lhs: &BigInt, rhs: &BigInt, heap: &Heap) -> Va
 }
 
 /// Extracts a validated non-negative shift amount from an integer value.
-fn shift_amount(value: &Value, vm: &VM<'_>) -> RunResult<Option<u64>> {
+fn shift_amount<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<Option<u64>> {
     let value = match value {
         Value::Int(value) => return shift_i64(*value).map(Some),
         Value::Bool(value) => return Ok(Some(u64::from(*value))),

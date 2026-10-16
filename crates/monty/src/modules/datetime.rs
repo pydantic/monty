@@ -13,7 +13,7 @@
 use crate::{
     builtins::Builtins,
     bytecode::VM,
-    heap::{HeapData, HeapId},
+    heap::{HeapData, RuntimeRef},
     intern::StaticStrings,
     types::{Module, Type},
     value::Value,
@@ -21,7 +21,7 @@ use crate::{
 
 /// Creates the `datetime` module and allocates it on the heap.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Datetime, vm.interns);
 
     module.set_attr(StaticStrings::Date, Value::Builtin(Builtins::Type(Type::Date)), vm);

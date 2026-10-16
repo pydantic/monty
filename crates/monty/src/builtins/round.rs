@@ -9,12 +9,12 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::Heap,
+    heap::{Heap, Reference, RuntimeRef},
     types::LongInt,
     value::Value,
 };
 
-pub fn normalize_bool_to_int(value: Value) -> Value {
+pub fn normalize_bool_to_int<H: RuntimeRef>(value: Value<H>) -> Value<H> {
     match value {
         Value::Bool(b) => Value::Int(i64::from(b)),
         other => other,
@@ -27,10 +27,10 @@ pub fn normalize_bool_to_int(value: Value) -> Value {
 /// the total pre-count reports `round() takes at most 2 arguments (3 given)`.
 #[derive(FromArgs)]
 #[from_args(name = "round", style = c_named, at_most_total)]
-struct RoundArgs {
-    number: Value,
+struct RoundArgs<H: Reference> {
+    number: Value<H>,
     #[from_args(default = Value::None)]
-    ndigits: Value,
+    ndigits: Value<H>,
 }
 
 /// Implementation of the round() builtin function.
@@ -38,7 +38,7 @@ struct RoundArgs {
 /// Rounds a number to a given precision in decimal digits.
 /// If ndigits is omitted or None, returns the nearest integer.
 /// Uses banker's rounding (round half to even).
-pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_round<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let RoundArgs { number, ndigits } = RoundArgs::from_args(args, vm)?;
     let number = normalize_bool_to_int(number);
     defer_drop!(number, vm);
@@ -125,7 +125,7 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Rounds an integer to the nearest multiple of `10**k`, half to even, exactly in integers
 /// like CPython's `int.__round__`.
-fn round_to_tens(n: &BigInt, k: u64, heap: &Heap) -> Value {
+fn round_to_tens<H: RuntimeRef>(n: &BigInt, k: u64, heap: &Heap<H>) -> Value<H> {
     // `10**k` exceeds `|n|` once `k` passes its decimal digit count, so the result is 0.
     let digit_bound = n.bits().saturating_mul(30_103) / 100_000 + 1;
     if k > digit_bound {

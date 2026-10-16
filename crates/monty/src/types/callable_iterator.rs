@@ -14,29 +14,30 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, HeapId, HeapItem, HeapObjectRead},
+    heap::{DropGuard, HeapItem, HeapObjectRead, Reference, RuntimeRef},
     types::{PyTrait, Type},
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Calls `callable()` for each item until a result compares `==` to `sentinel`.
 ///
 /// `callable` and `sentinel` are OWNED refs held directly here — not in a
 /// referenced container — so `py_dec_ref_ids` and `for_each_child_id` must both
 /// enumerate them or the GC will under-trace and free a live object.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct CallableIterator {
+pub(crate) struct CallableIterator<H: Reference> {
     /// Invoked with no arguments to produce each item.
-    callable: Value,
+    callable: Value<H>,
     /// Iteration stops once a result compares `==` to this.
-    sentinel: Value,
+    sentinel: Value<H>,
     /// Latches on exhaustion so a spent iterator never calls `callable` again.
     done: bool,
 }
 
-impl CallableIterator {
+impl<H: RuntimeRef> CallableIterator<H> {
     /// Takes ownership of `callable` and `sentinel` from the caller.
-    pub(crate) fn new(callable: Value, sentinel: Value) -> Self {
+    pub(crate) fn new(callable: Value<H>, sentinel: Value<H>) -> Self {
         Self {
             callable,
             sentinel,
@@ -45,7 +46,7 @@ impl CallableIterator {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = &self.callable {
             on_child(*id);
         }
@@ -55,35 +56,35 @@ impl CallableIterator {
     }
 }
 
-impl HeapItem for CallableIterator {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for CallableIterator<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.callable.py_dec_ref_ids(stack);
         self.sentinel.py_dec_ref_ids(stack);
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
-    fn py_is_iterator(&self, _: &VM<'h>) -> bool {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, CallableIterator<H>> {
+    fn py_is_iterator(&self, _: &VM<'h, H>) -> bool {
         true
     }
 
-    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+    fn py_is_iterable(&self, _: &VM<'h, H>) -> bool {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
+    fn py_type(&self, _: &VM<'h, H>) -> Type<H> {
         Type::CallableIterator
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value<H>, _: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         Ok(self.clone_value(vm.heap))
     }
 
@@ -93,7 +94,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
     /// `callable` re-enters Python and may reach this same iterator through a
     /// nested `next()`, which would alias the `UnsafeCell` if a borrow were held
     /// across it (`iter__reentrant.py` covers exactly that).
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let resolved = {
             let this = self.get(vm.heap);
             if this.done {
@@ -135,7 +136,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
 ///
 /// Takes both values by ownership: the caller has already cloned them out of the
 /// iterator so that no heap borrow is live across the re-entrant call.
-fn callable_next(callable: Value, sentinel: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+fn callable_next<H: RuntimeRef>(
+    callable: Value<H>,
+    sentinel: Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Option<Value<H>>> {
     defer_drop!(callable, vm);
     defer_drop!(sentinel, vm);
     let result = match vm.evaluate_function("iter(callable, sentinel)", callable, ArgValues::Empty) {

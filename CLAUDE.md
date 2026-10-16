@@ -274,15 +274,27 @@ Resolve filenames with `Interns::get_filename`; ordinary `get_str` only accepts 
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
 
-**The `crates/monty/src/heap/` module is a critical safety boundary.** Its `mod.rs`, `stable_heap.rs` and `free_list.rs` contain `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants).
+**The `crates/monty/src/heap/` module is a critical safety boundary.** Its `mod.rs`, `object_ptr.rs`, `owner.rs`, `stable_heap.rs` and `free_list.rs` contain `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants).
 Do NOT modify files under `crates/monty/src/heap/` without explicit user approval.
 Changes to this module require careful review of the safety invariants documented in the code comments.
 
+Runtime `HeapId<'arena>` is one pointer with an invariant arena lifetime; `Value` remains 16 bytes and native slots 104 bytes.
+`HeapOwner` seals the heap, idle globals and suspended VM roots together.
+Its higher-ranked activation callbacks prevent pointers or independently replaceable arenas from escaping.
+Only complete owners implement `Send`; active pointers and views are neither `Send` nor `Sync`.
+The arena brand is separate from the shorter `HeapReader` brand.
+Branding proves arena membership, not liveness: permanent slots retain live-state checks and reader counts across reuse.
+Pages contain `UnsafeCell<MaybeUninit<HeapEntry>>` slots; initialization must not mutably reborrow an existing page.
+Dumps and Python identity hashes use numeric slot indexes, never addresses.
+Deserialization first builds a pointer-free graph, then reserves destination slots and relocates every payload and root inside its owner.
+There is no pointer or standalone heap `Deserialize` implementation and no thread-local relocation context.
+Compiler constants use `Value<NoHeapRef>`, excluding direct references and instance-type references structurally.
+
 #### Core concepts
 
-- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with`, which takes a `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
-- **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
-- **`HeapReadOutput<'a>`** — Enum over all `HeapRead<'a, T>` variants (one per `HeapData` variant). Pattern match to get the typed handle.
+- **`HeapReader<'a, H>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with`, which takes a `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
+- **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a, H>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
+- **`HeapReadOutput<'a, H>`** — Enum over typed `HeapObjectRead<'a, H, T>` handles, which retain object identity and dereference to `HeapRead<'a, T>`.
 
 #### Reading and mutating heap data
 
@@ -294,7 +306,7 @@ Changes to this module require careful review of the safety invariants documente
 // `HeapRead` handle, so the closure can have additional
 // context while still having the `for <'a>` safety guarantee.
 HeapReader::with(heap, &mut (), |heap, ()| {
-    let output = heap.read(some_id);  // returns HeapReadOutput<'a>
+    let output = heap.read(some_id);  // returns HeapReadOutput<'a, H>
     match output {
         HeapReadOutput::List(list) => {
             let items = list.get(heap);           // &List, borrows heap immutably
@@ -314,21 +326,21 @@ Key borrowing rules:
 
 #### Implementing type methods with HeapRead
 
-Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<'h>` trait provides the common interface:
+Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<'h, H>` trait provides the common interface:
 
 ```rust
 // Methods on a heap type
-impl<'h> HeapRead<'h, List> {
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+impl<'h, H: RuntimeRef> HeapRead<'h, List<H>> {
+    pub fn append(&mut self, vm: &mut VM<'h, H>, item: Value<H>) -> RunResult<()> {
         self.get_mut(vm.heap).items.push(item);
         Ok(())
     }
 }
 
 // PyTrait implementation
-impl<'h> PyTrait<'h> for HeapRead<'h, List> {
-    fn py_type(&self, vm: &VM<'h>) -> Type { Type::List }
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapRead<'h, List<H>> {
+    fn py_type(&self, vm: &VM<'h, H>) -> Type<H> { Type::List }
+    fn py_len(&self, vm: &VM<'h, H>) -> Option<usize> {
         Some(self.get(vm.heap).items.len())
     }
     // ...

@@ -1,0 +1,16 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error: lifetime may not live long enough
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:144:35
+    |
+144 |         |reader, (tables, print)| VM::new(Vec::new(), tables, program, reader, print.reborrow()),
+    |          ------                 - ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+    |          |                      |
+    |          |                      return type of closure is VM<'2, H>
+    |          has type `&'1 mut heap::HeapReader<'1, H>`
+    |
+    = note: requirement occurs because of the type `VM<'_, H>`, which makes the generic argument `'_` invariant
+    = note: the struct `VM<'h, H>` is invariant over the parameter `'h`
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

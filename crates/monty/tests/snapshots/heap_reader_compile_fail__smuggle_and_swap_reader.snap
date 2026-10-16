@@ -1,15 +1,18 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
 error[E0521]: borrowed data escapes outside of closure
-   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:189:13
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:172:13
     |
-185 |         HeapReader::with(heap_b, reader_a, |reader_b, smuggled| {
+168 |         HeapReader::with(heap_b, reader_a, |reader_b, smuggled| {
     |                                             --------  -------- `smuggled` declared here, outside of the closure body
     |                                             |
     |                                             `reader_b` is a reference that is only valid in the closure body
 ...
-189 |             std::mem::swap(reader_b, smuggled);
+172 |             std::mem::swap(reader_b, smuggled);
     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `reader_b` escapes the closure body here
     |
-    = note: requirement occurs because of a mutable reference to `heap::HeapReader<'_>`
+    = note: requirement occurs because of a mutable reference to `heap::HeapReader<'_, H>`
     = note: mutable references are invariant over their type parameter
     = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
-For more information about this error, try `rustc --explain E0521`.

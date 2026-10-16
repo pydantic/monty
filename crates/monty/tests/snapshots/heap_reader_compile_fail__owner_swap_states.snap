@@ -1,0 +1,27 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error[E0521]: borrowed data escapes outside of closure
+  --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:98:49
+   |
+98 |     left.activate(|left| right.activate(|right| mem::swap(left, right)));
+   |                    ----                  -----  ^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
+   |                    |                     |
+   |                    |                     `right` is a reference that is only valid in the closure body
+   |                    `left` declared here, outside of the closure body
+   |
+   = note: requirement occurs because of a mutable reference to `OwnedState<HeapObjectPtr<'_>>`
+   = note: mutable references are invariant over their type parameter
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error[E0521]: borrowed data escapes outside of closure
+  --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:98:49
+   |
+98 |     left.activate(|left| right.activate(|right| mem::swap(left, right)));
+   |                    ----                         ^^^^^^^^^^^^^^^^^^^^^^
+   |                    |                            |
+   |                    |                            `left` escapes the closure body here
+   |                    |                            argument requires that `'1` must outlive `'static`
+   |                    `left` is a reference that is only valid in the closure body
+   |                    has type `&mut OwnedState<HeapObjectPtr<'1>>`

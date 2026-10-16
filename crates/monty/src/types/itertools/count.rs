@@ -8,33 +8,34 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, HeapId, HeapRead},
+    heap::{DropGuard, HeapRead, Reference, RuntimeRef},
     types::{LazyHeapSet, PyTrait, itertools::ItertoolsIter},
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields `start`, `start + step`, `start + 2 * step`, … without ever stopping.
 ///
 /// Both fields are OWNED refs held directly rather than inside a container (a
 /// count over big integers stores `LongInt` refs), so `py_dec_ref_ids` and
 /// `for_each_child_id` must enumerate them or the GC under-traces.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Count {
+pub(crate) struct Count<H: Reference> {
     /// The value the next `__next__` hands out; advanced by `step` afterwards.
-    current: Value,
+    current: Value<H>,
     /// Added to `current` after each yield, and reported by `repr`.
-    step: Value,
+    step: Value<H>,
 }
 
-impl Count {
+impl<H: RuntimeRef> Count<H> {
     /// Takes ownership of `start` and `step`, which the caller has already
     /// checked are numbers — [`next`] relies on `current + step` being defined.
-    pub(crate) fn new(start: Value, step: Value) -> Self {
+    pub(crate) fn new(start: Value<H>, step: Value<H>) -> Self {
         Self { current: start, step }
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = &self.current {
             on_child(*id);
         }
@@ -44,7 +45,7 @@ impl Count {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.current.py_dec_ref_ids(stack);
         self.step.py_dec_ref_ids(stack);
     }
@@ -55,7 +56,10 @@ impl Count {
 /// Never returns `Ok(None)` — `count` is infinite, so consumption stops only on
 /// a host-configured limit. The addition promotes to `LongInt` on overflow, as
 /// CPython switches off its `ssize_t` fast path.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &mut HeapRead<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     // Resolve to owned clones and release the borrow before `py_add`, which
     // allocates on int -> LongInt promotion and so mutates the heap.
     let (item, step) = {
@@ -84,11 +88,11 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 
 /// Matches CPython's `count_repr`: the step is shown unless it is an *integer*
 /// equal to 1, so `count(0, 1.0)` still prints its step.
-pub(super) fn repr_fmt<'h>(
-    iter: &HeapRead<'h, ItertoolsIter>,
+pub(super) fn repr_fmt<'h, H: RuntimeRef>(
+    iter: &HeapRead<'h, ItertoolsIter<H>>,
     f: &mut impl Write,
-    vm: &mut VM<'h>,
-    heap_ids: &mut LazyHeapSet,
+    vm: &mut VM<'h, H>,
+    heap_ids: &mut LazyHeapSet<H>,
 ) -> RunResult<()> {
     let (current, step) = {
         let ItertoolsIter::Count(count) = iter.get(vm.heap) else {

@@ -32,7 +32,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{DropGuard, Heap, HeapData, HeapId},
+    heap::{DropGuard, Heap, HeapData, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     string_builder::StringBuilder,
@@ -71,7 +71,7 @@ const UNICODEDATA_FUNCTIONS: &[(StaticStrings, UnicodedataFunctions)] = &[
 ];
 
 /// Creates the `unicodedata` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Unicodedata, vm.interns);
 
     for (name, func) in UNICODEDATA_FUNCTIONS {
@@ -87,7 +87,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 /// Dispatches a call to a `unicodedata` module function.
 ///
 /// All functions are pure computations and return `Value` directly.
-pub(super) fn call(vm: &mut VM<'_>, function: UnicodedataFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: UnicodedataFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         UnicodedataFunctions::Category => uni_category(vm, args),
         UnicodedataFunctions::Name => uni_name(vm, args),
@@ -102,7 +106,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: UnicodedataFunctions, args: ArgVal
 ///
 /// Returns e.g. `"Lu"` (uppercase letter), `"Nd"` (decimal digit), or `"Cn"`
 /// for unassigned code points.
-fn uni_category(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn uni_category<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let value = args.get_one_arg("category", vm.heap)?;
     defer_drop!(value, vm);
     let c = single_char(value, "category", None, vm)?;
@@ -113,7 +117,7 @@ fn uni_category(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Raises `ValueError("no such name")` when the character has no name and no
 /// `default` is supplied; otherwise returns `default`.
-fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn uni_name<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let NameArgs {
         chr: chr_val,
         default: default_val,
@@ -136,7 +140,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Raises `KeyError("undefined character name '<name>'")` when no character has
 /// that name. Unlike CPython, named sequences are not resolved.
-fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn uni_lookup<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let value = args.get_one_arg("lookup", vm.heap)?;
     defer_drop!(value, vm);
     let name = value.to_str(vm)?;
@@ -149,7 +153,7 @@ fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `unicodedata.combining(chr)` — the canonical combining class as an int.
 ///
 /// Returns `0` for characters with no combining class (the common case).
-fn uni_combining(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn uni_combining<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let value = args.get_one_arg("combining", vm.heap)?;
     defer_drop!(value, vm);
     let c = single_char(value, "combining", None, vm)?;
@@ -157,7 +161,7 @@ fn uni_combining(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `unicodedata.normalize(form, unistr)` — normalize a string to NFC/NFD/NFKC/NFKD.
-fn uni_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn uni_normalize<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let NormalizeArgs { form, unistr } = NormalizeArgs::from_args(args, vm)?;
     defer_drop!(form, vm);
     defer_drop!(unistr, vm);
@@ -166,7 +170,7 @@ fn uni_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
-fn uni_is_normalized(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn uni_is_normalized<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let IsNormalizedArgs { form, unistr } = IsNormalizedArgs::from_args(args, vm)?;
     defer_drop!(form, vm);
     defer_drop!(unistr, vm);
@@ -189,11 +193,11 @@ fn uni_is_normalized(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// wording CPython uses here (`name expected at most 2 arguments, got 3`).
 #[derive(FromArgs)]
 #[from_args(name = "name", style = unpack, kwarg_error_name = "unicodedata.name")]
-struct NameArgs {
+struct NameArgs<H: Reference> {
     #[from_args(pos_only)]
-    chr: Value,
+    chr: Value<H>,
     #[from_args(pos_only, default)]
-    default: Option<Value>,
+    default: Option<Value<H>>,
 }
 
 /// Argument shape for `normalize(form, unistr, /)`.
@@ -207,21 +211,21 @@ struct NameArgs {
 /// `normalize expected 2 arguments, got N` arity error.
 #[derive(FromArgs)]
 #[from_args(name = "normalize", style = unpack, bad_arg, kwarg_error_name = "unicodedata.normalize")]
-struct NormalizeArgs {
+struct NormalizeArgs<H: Reference> {
     #[from_args(pos_only)]
-    form: StrArg,
+    form: StrArg<H>,
     #[from_args(pos_only)]
-    unistr: StrArg,
+    unistr: StrArg<H>,
 }
 
 /// Argument shape for `is_normalized(form, unistr, /)` — see [`NormalizeArgs`].
 #[derive(FromArgs)]
 #[from_args(name = "is_normalized", style = unpack, bad_arg, kwarg_error_name = "unicodedata.is_normalized")]
-struct IsNormalizedArgs {
+struct IsNormalizedArgs<H: Reference> {
     #[from_args(pos_only)]
-    form: StrArg,
+    form: StrArg<H>,
     #[from_args(pos_only)]
-    unistr: StrArg,
+    unistr: StrArg<H>,
 }
 
 /// The four Unicode normalization forms accepted by `normalize`/`is_normalized`.
@@ -254,7 +258,7 @@ impl NormForm {
 /// The output length is not bounded by the input (decomposition can expand a
 /// single code point into several), so the result is built through
 /// [`StringBuilder`] which preflights allocator-backed usage as it grows.
-fn normalize_with(form: NormForm, text: &str, heap: &Heap) -> RunResult<Value> {
+fn normalize_with<H: RuntimeRef>(form: NormForm, text: &str, heap: &Heap<H>) -> RunResult<Value<H>> {
     let mut builder = StringBuilder::new(&heap.tracker);
     match form {
         NormForm::Nfc => {
@@ -288,7 +292,12 @@ fn normalize_with(form: NormForm, text: &str, heap: &Heap) -> RunResult<Value> {
 /// string of the wrong length yields `"<fn>(): argument[ N] must be a unicode
 /// character, not a string of length <n>"`. `arg_num` supplies the ` N` suffix
 /// (only `name()` numbers its argument).
-fn single_char(value: &Value, fn_name: &str, arg_num: Option<u32>, vm: &VM<'_>) -> RunResult<char> {
+fn single_char<H: RuntimeRef>(
+    value: &Value<H>,
+    fn_name: &str,
+    arg_num: Option<u32>,
+    vm: &VM<'_, H>,
+) -> RunResult<char> {
     let arg_word = match arg_num {
         Some(n) => format!("argument {n}"),
         None => "argument".to_string(),

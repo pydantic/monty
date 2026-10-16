@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData, HeapId},
+    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -25,7 +25,7 @@ use crate::{
             Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
         },
     },
-    value::{VALUE_SIZE, Value},
+    value::{NoHeapRef, VALUE_SIZE, Value},
 };
 
 /// The `itertools` callables that are not type objects.
@@ -45,7 +45,7 @@ pub(crate) enum ItertoolsFunctions {
 }
 
 /// The module's type objects, by the name each is bound to.
-const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
+const ITERTOOLS_TYPES: &[(StaticStrings, Type<NoHeapRef>)] = &[
     (StaticStrings::Count, Type::ItertoolsCount),
     (StaticStrings::Repeat, Type::ItertoolsRepeat),
     (StaticStrings::Pairwise, Type::ItertoolsPairwise),
@@ -74,11 +74,12 @@ const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
 ];
 
 /// Creates the `itertools` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Itertools, vm.interns);
 
     for (name, type_) in ITERTOOLS_TYPES {
-        module.set_attr(*name, Value::Builtin(Builtins::Type(*type_)), vm);
+        let type_ = type_.copy_without_refs().expect("static itertools type");
+        module.set_attr(*name, Value::Builtin(Builtins::Type(type_)), vm);
     }
     module.set_attr(
         StaticStrings::Tee,
@@ -90,7 +91,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 }
 
 /// Dispatches a call to one of the module's two plain functions.
-pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: ItertoolsFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         ItertoolsFunctions::Tee => call_tee(vm, args),
         ItertoolsFunctions::ChainFromIterable => call_chain_from_iterable(vm, args),
@@ -101,7 +106,7 @@ pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValue
 ///
 /// # Panics
 /// Panics on a type this module does not own, which `Type::call` never passes.
-pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn construct<H: RuntimeRef>(type_: Type<H>, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     match type_ {
         Type::ItertoolsCount => call_count(vm, args),
         Type::ItertoolsRepeat => call_repeat(vm, args),
@@ -140,15 +145,15 @@ pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunRes
 /// (`at_most_total`): `count(1, 2, step=3)` reports three arguments.
 #[derive(FromArgs)]
 #[from_args(name = "count", style = c_named, at_most_total)]
-struct CountArgs {
+struct CountArgs<H: Reference> {
     #[from_args(default = Value::Int(0))]
-    start: Value,
+    start: Value<H>,
     #[from_args(default = Value::Int(1))]
-    step: Value,
+    step: Value<H>,
 }
 
 /// `itertools.count(start=0, step=1)` — an infinite arithmetic progression.
-fn call_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_count<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CountArgs { start, step } = CountArgs::from_args(args, vm)?;
     // CPython's `count_new` runs one `PyNumber_Check` over both arguments after
     // parsing, so a bad `start` and a bad `step` give the same single message.
@@ -170,14 +175,14 @@ fn call_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `__index__` coercion (and its `OverflowError`) happens in the body.
 #[derive(FromArgs)]
 #[from_args(name = "repeat", style = c_named, at_most_total)]
-struct RepeatArgs {
-    object: Value,
+struct RepeatArgs<H: Reference> {
+    object: Value<H>,
     #[from_args(default)]
-    times: Option<Value>,
+    times: Option<Value<H>>,
 }
 
 /// `itertools.repeat(object, times=?)` — `object` forever, or `times` times.
-fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_repeat<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let RepeatArgs { object, times } = RepeatArgs::from_args(args, vm)?;
     let remaining = match times {
         None => None,
@@ -201,7 +206,7 @@ fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Monty's numeric types are exactly `int` (immediate, interned big, or heap
 /// `LongInt` — all reported as [`Type::Int`]), `float`, `complex` and `bool`.
-fn is_number(value: &Value, vm: &VM<'_>) -> bool {
+fn is_number<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     matches!(
         value.py_type_heap(vm.heap),
         Type::Int | Type::Float | Type::Complex | Type::Bool
@@ -213,7 +218,7 @@ fn is_number(value: &Value, vm: &VM<'_>) -> bool {
 /// CPython's `count_new` does the same — `repr(count(True))` is `count(1)`, not
 /// `count(True)` — so this is parity rather than a shortcut. It also keeps
 /// `py_next` off Monty's unsupported `bool + int` path.
-fn normalize_bool(value: Value) -> Value {
+fn normalize_bool<H: RuntimeRef>(value: Value<H>) -> Value<H> {
     match value {
         Value::Bool(b) => Value::Int(i64::from(b)),
         other => other,
@@ -225,7 +230,7 @@ fn normalize_bool(value: Value) -> Value {
 /// Negative counts clamp to zero (`repeat(x, -1)` is empty) and a `times` too
 /// large for a machine integer raises `OverflowError`, matching the conversion
 /// to `Py_ssize_t`. `bool` is accepted because it is an `int` subclass.
-fn repeat_times(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+fn repeat_times<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<usize> {
     let count = match value {
         Value::Bool(b) => i64::from(*b),
         other => other.as_int(vm)?,
@@ -242,13 +247,13 @@ fn repeat_times(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 /// with `pairwise() takes no keyword arguments`.
 #[derive(FromArgs)]
 #[from_args(name = "pairwise", style = unpack)]
-struct PairwiseArgs {
+struct PairwiseArgs<H: Reference> {
     #[from_args(pos_only)]
-    iterable: Value,
+    iterable: Value<H>,
 }
 
 /// `itertools.pairwise(iterable)` — successive overlapping pairs.
-fn call_pairwise(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_pairwise<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let PairwiseArgs { iterable } = PairwiseArgs::from_args(args, vm)?;
     // Resolve to an iterator up front, as CPython does: a non-iterable raises
     // here rather than on the first `next()`.
@@ -264,13 +269,13 @@ fn call_pairwise(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// together: `compress([1], [1], data=[1])` reports three arguments.
 #[derive(FromArgs)]
 #[from_args(name = "compress", style = c_named, at_most_total)]
-struct CompressArgs {
-    data: Value,
-    selectors: Value,
+struct CompressArgs<H: Reference> {
+    data: Value<H>,
+    selectors: Value<H>,
 }
 
 /// `itertools.compress(data, selectors)` — data items with a truthy selector.
-fn call_compress(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_compress<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CompressArgs { data, selectors } = CompressArgs::from_args(args, vm)?;
     // `into_py_iter` consumes its receiver, so each conversion guards the other
     // argument: whichever is not being converted is released if this one raises.
@@ -291,19 +296,19 @@ fn call_compress(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// given — resolved in the body by [`islice_bounds`], not by the binder.
 #[derive(FromArgs)]
 #[from_args(name = "islice", style = unpack)]
-struct IsliceArgs {
+struct IsliceArgs<H: Reference> {
     #[from_args(pos_only)]
-    iterable: Value,
+    iterable: Value<H>,
     #[from_args(pos_only)]
-    first: Value,
+    first: Value<H>,
     #[from_args(pos_only, default)]
-    second: Option<Value>,
+    second: Option<Value<H>>,
     #[from_args(pos_only, default)]
-    third: Option<Value>,
+    third: Option<Value<H>>,
 }
 
 /// `itertools.islice(iterable, [start,] stop[, step])` — a slice of an iterator.
-fn call_islice(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_islice<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let IsliceArgs {
         iterable,
         first,
@@ -331,11 +336,11 @@ fn call_islice(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// With two arguments the second is `stop`; with three or more it is `start`.
 /// CPython words the two failures differently, so they are not interchangeable.
-fn islice_bounds(
-    first: &Value,
-    second: Option<&Value>,
-    third: Option<&Value>,
-    vm: &mut VM<'_>,
+fn islice_bounds<H: RuntimeRef>(
+    first: &Value<H>,
+    second: Option<&Value<H>>,
+    third: Option<&Value<H>>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<(usize, Option<usize>, usize)> {
     match second {
         None => match islice_index(first, vm)? {
@@ -381,7 +386,7 @@ enum IsliceBound {
 
 /// Reads one `islice` bound; whether `Unbounded` is allowed is the caller's
 /// business, and differs per parameter.
-fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
+fn islice_index<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<IsliceBound> {
     let index = match value {
         Value::None => return Ok(IsliceBound::Unbounded),
         Value::Bool(b) => i64::from(*b),
@@ -401,8 +406,8 @@ fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
 /// Uses `into_pos_only` because the derive cannot express unbounded `*args`
 /// with no keywords: `style = unpack` models a fixed `min..max` and rejects
 /// `varargs`.
-fn call_chain(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let iterables: Vec<Value> = args.into_pos_only("chain", vm.heap)?.collect();
+fn call_chain<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
+    let iterables: Vec<Value<H>> = args.into_pos_only("chain", vm.heap)?.collect();
     // Arguments are NOT resolved here: CPython calls `iter()` on each only as it
     // reaches it, so `chain([1], 5)` constructs and raises mid-consumption.
     let iter = ItertoolsIter::Chain(Chain::new(iterables));
@@ -415,13 +420,13 @@ fn call_chain(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// argument, got 2` and keywords are rejected wholesale.
 #[derive(FromArgs)]
 #[from_args(name = "cycle", style = unpack)]
-struct CycleArgs {
+struct CycleArgs<H: Reference> {
     #[from_args(pos_only)]
-    iterable: Value,
+    iterable: Value<H>,
 }
 
 /// `itertools.cycle(iterable)` — the source's items, repeating forever.
-fn call_cycle(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_cycle<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CycleArgs { iterable } = CycleArgs::from_args(args, vm)?;
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
     let source = iterable.into_py_iter(vm)?;
@@ -440,11 +445,11 @@ macro_rules! callable_and_iterable_args {
     ($struct_name:ident, $py_name:literal) => {
         #[derive(FromArgs)]
         #[from_args(name = $py_name, style = unpack)]
-        struct $struct_name {
+        struct $struct_name<H: Reference> {
             #[from_args(pos_only)]
-            callable: Value,
+            callable: Value<H>,
             #[from_args(pos_only)]
-            iterable: Value,
+            iterable: Value<H>,
         }
     };
 }
@@ -455,7 +460,7 @@ callable_and_iterable_args!(FilterFalseArgs, "filterfalse");
 callable_and_iterable_args!(StarMapArgs, "starmap");
 
 /// `itertools.takewhile(predicate, iterable)` — the leading passing run.
-fn call_takewhile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_takewhile<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let TakeWhileArgs { callable, iterable } = TakeWhileArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::TakeWhile(TakeWhile::new(predicate, source));
@@ -463,7 +468,7 @@ fn call_takewhile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `itertools.dropwhile(predicate, iterable)` — everything past that run.
-fn call_dropwhile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_dropwhile<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DropWhileArgs { callable, iterable } = DropWhileArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::DropWhile(DropWhile::new(predicate, source));
@@ -471,7 +476,7 @@ fn call_dropwhile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `itertools.filterfalse(predicate, iterable)` — the items it rejects.
-fn call_filterfalse(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_filterfalse<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let FilterFalseArgs { callable, iterable } = FilterFalseArgs::from_args(args, vm)?;
     let (predicate, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::FilterFalse(FilterFalse::new(predicate, source));
@@ -479,7 +484,7 @@ fn call_filterfalse(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `itertools.starmap(function, iterable)` — each item spread as arguments.
-fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_starmap<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let StarMapArgs { callable, iterable } = StarMapArgs::from_args(args, vm)?;
     let (function, source) = resolve_source(callable, iterable, vm)?;
     let iter = ItertoolsIter::StarMap(StarMap::new(function, source));
@@ -497,17 +502,17 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// discovers a non-callable when the second item arrives.
 #[derive(FromArgs)]
 #[from_args(name = "accumulate", style = c_named)]
-struct AccumulateArgs {
+struct AccumulateArgs<H: Reference> {
     #[from_args(static_string = "IterableArg")]
-    iterable: Value,
+    iterable: Value<H>,
     #[from_args(default = Value::None)]
-    func: Value,
+    func: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    initial: Value,
+    initial: Value<H>,
 }
 
 /// `itertools.accumulate(iterable, func=None, *, initial=None)` — running totals.
-fn call_accumulate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_accumulate<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let AccumulateArgs {
         iterable,
         func,
@@ -542,16 +547,16 @@ fn call_accumulate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// happens in the binder, which releases the value on both paths.
 #[derive(FromArgs)]
 #[from_args(name = "batched", style = c_named)]
-struct BatchedArgs {
+struct BatchedArgs<H: Reference> {
     #[from_args(static_string = "IterableArg")]
-    iterable: Value,
-    n: Value,
+    iterable: Value<H>,
+    n: Value<H>,
     #[from_args(kw_only, default = LaxBool::new(false))]
     strict: LaxBool,
 }
 
 /// `itertools.batched(iterable, n, *, strict=False)` — consecutive n-tuples.
-fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_batched<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let BatchedArgs { iterable, n, strict } = BatchedArgs::from_args(args, vm)?;
     let strict = strict.bool();
     // `n` is validated before the iterable is resolved, matching CPython's
@@ -572,7 +577,7 @@ fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Coerces `batched`'s `n` and enforces CPython's "at least one" floor.
-fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+fn batched_n<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<usize> {
     let n = ssize_arg(value, vm)?;
     if n < 1 {
         Err(ExcType::batched_bad_n())
@@ -589,7 +594,7 @@ fn batched_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 /// conversion does, and the bound below reports the same for the range between
 /// `isize` and `i64` that only a 32-bit host (`wasm32-wasip1`) has —
 /// `batched('AB', 2**40)` there.
-fn ssize_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<isize> {
+fn ssize_arg<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<isize> {
     let n = match value {
         Value::Bool(b) => i64::from(*b),
         other => other.as_int(vm)?,
@@ -605,15 +610,15 @@ fn ssize_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<isize> {
 /// appends the offending name, which `limitations/itertools.md` records.
 #[derive(FromArgs)]
 #[from_args(name = "zip_longest")]
-struct ZipLongestArgs {
+struct ZipLongestArgs<H: Reference> {
     #[from_args(varargs)]
-    iterables: Vec<Value>,
+    iterables: Vec<Value<H>>,
     #[from_args(kw_only, default = Value::None)]
-    fillvalue: Value,
+    fillvalue: Value<H>,
 }
 
 /// `itertools.zip_longest(*iterables, fillvalue=None)` — zip to the longest.
-fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_zip_longest<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let ZipLongestArgs { iterables, fillvalue } = ZipLongestArgs::from_args(args, vm)?;
     // Every argument is resolved up front, unlike `chain`'s lazy ones, so a
     // later non-iterable must release the arguments never reached as well. The
@@ -649,10 +654,10 @@ macro_rules! iterable_and_r_args {
     ($struct_name:ident, $py_name:literal) => {
         #[derive(FromArgs)]
         #[from_args(name = $py_name, style = c_named, at_most_total)]
-        struct $struct_name {
+        struct $struct_name<H: Reference> {
             #[from_args(static_string = "IterableArg")]
-            iterable: Value,
-            r: Value,
+            iterable: Value<H>,
+            r: Value<H>,
         }
     };
 }
@@ -661,14 +666,14 @@ iterable_and_r_args!(CombinationsArgs, "combinations");
 iterable_and_r_args!(CombinationsWithReplacementArgs, "combinations_with_replacement");
 
 /// `itertools.combinations(iterable, r)` — `r`-length subsequences.
-fn call_combinations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_combinations<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CombinationsArgs { iterable, r } = CombinationsArgs::from_args(args, vm)?;
     build_combinations(iterable, r, false, vm)
 }
 
 /// `itertools.combinations_with_replacement(iterable, r)` — the same, with
 /// each item allowed to repeat.
-fn call_combinations_with_replacement(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_combinations_with_replacement<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CombinationsWithReplacementArgs { iterable, r } = CombinationsWithReplacementArgs::from_args(args, vm)?;
     build_combinations(iterable, r, true, vm)
 }
@@ -678,7 +683,12 @@ fn call_combinations_with_replacement(vm: &mut VM<'_>, args: ArgValues) -> RunRe
 /// `r` is converted before the pool is collected, but its sign is checked
 /// after: `combinations(5, -1)` reports the non-iterable, `combinations(5, 'x')`
 /// the bad `r`.
-fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+fn build_combinations<H: RuntimeRef>(
+    iterable: Value<H>,
+    r: Value<H>,
+    replacement: bool,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     let converted = ssize_arg(&r, vm);
     r.drop_with(vm);
     let r = match converted {
@@ -688,7 +698,7 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
             return Err(error);
         }
     };
-    let pool: Vec<Value> = collect_owned_iterable(iterable, vm)?;
+    let pool: Vec<Value<H>> = collect_owned_iterable(iterable, vm)?;
     let mut pool_guard = DropGuard::new(pool, vm);
     let (pool, vm) = pool_guard.as_parts_mut();
     let r = usize::try_from(r).map_err(|_| ExcType::combinatoric_negative_r())?;
@@ -713,18 +723,18 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
 /// to clinic, so the body inspects it — and only once the pool exists.
 #[derive(FromArgs)]
 #[from_args(name = "permutations", style = c_named, at_most_total)]
-struct PermutationsArgs {
+struct PermutationsArgs<H: Reference> {
     #[from_args(static_string = "IterableArg")]
-    iterable: Value,
+    iterable: Value<H>,
     #[from_args(default = Value::None)]
-    r: Value,
+    r: Value<H>,
 }
 
 /// `itertools.permutations(iterable, r=None)` — `r`-length orderings.
-fn call_permutations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_permutations<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let PermutationsArgs { iterable, r } = PermutationsArgs::from_args(args, vm)?;
     let mut r_guard = DropGuard::new(r, vm);
-    let pool: Vec<Value> = collect_owned_iterable(iterable, r_guard.ctx())?;
+    let pool: Vec<Value<H>> = collect_owned_iterable(iterable, r_guard.ctx())?;
     let (r, vm) = r_guard.into_parts();
     let mut pool_guard = DropGuard::new(pool, vm);
     let (pool, vm) = pool_guard.as_parts_mut();
@@ -740,7 +750,7 @@ fn call_permutations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// CPython checks the type rather than calling `__index__`, so `1.0` and an
 /// `__index__` object are both `Expected int as r`; a `bool` passes as an
 /// `int` subclass.
-fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
+fn permutations_r<H: RuntimeRef>(r: Value<H>, n: usize, vm: &mut VM<'_, H>) -> RunResult<usize> {
     defer_drop!(r, vm);
     if matches!(r, Value::None) {
         Ok(n)
@@ -760,15 +770,15 @@ fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
 /// conversion in the body.
 #[derive(FromArgs)]
 #[from_args(name = "product")]
-struct ProductArgs {
+struct ProductArgs<H: Reference> {
     #[from_args(varargs)]
-    iterables: Vec<Value>,
+    iterables: Vec<Value<H>>,
     #[from_args(kw_only, default = Value::Int(1))]
-    repeat: Value,
+    repeat: Value<H>,
 }
 
 /// `itertools.product(*iterables, repeat=1)` — the cartesian product.
-fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_product<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let ProductArgs { iterables, repeat } = ProductArgs::from_args(args, vm)?;
     // Each argument is moved out of the vec as it is collected; the ones a
     // `repeat` of zero never reaches stay in it and are released by the guard,
@@ -787,7 +797,7 @@ fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     for slot in iterables.iter_mut().take(width) {
         let iterable = mem::replace(slot, Value::None);
         let (pools, vm) = pools_guard.as_parts_mut();
-        let pool: Vec<Value> = collect_owned_iterable(iterable, vm)?;
+        let pool: Vec<Value<H>> = collect_owned_iterable(iterable, vm)?;
         pools.push(pool);
     }
     // The index vector and every result tuple scale with `repeat` alone, so
@@ -833,15 +843,15 @@ fn index_bytes(slots: usize) -> Option<usize> {
 /// item is keyed.
 #[derive(FromArgs)]
 #[from_args(name = "groupby", style = c_named, at_most_total)]
-struct GroupbyArgs {
+struct GroupbyArgs<H: Reference> {
     #[from_args(static_string = "IterableArg")]
-    iterable: Value,
+    iterable: Value<H>,
     #[from_args(default = Value::None)]
-    key: Value,
+    key: Value<H>,
 }
 
 /// `itertools.groupby(iterable, key=None)` — `(key, group)` per run of equal keys.
-fn call_groupby(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_groupby<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let GroupbyArgs { iterable, key } = GroupbyArgs::from_args(args, vm)?;
     let (key, source) = resolve_source(key, iterable, vm)?;
     let iter = ItertoolsIter::GroupBy(Box::new(GroupBy::new(source, key)));
@@ -853,7 +863,7 @@ fn call_groupby(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// `METH_O` in CPython, so keywords are rejected wholesale and the arity
 /// wording is `takes exactly one argument (N given)`.
-fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_chain_from_iterable<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let mut positional = args.into_pos_only("chain.from_iterable", vm.heap)?;
     let count = positional.len();
     if count != 1 {
@@ -878,15 +888,15 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
 /// conversion in the body, as `batched`'s does.
 #[derive(FromArgs)]
 #[from_args(name = "tee", style = unpack, kwarg_error_name = "itertools.tee")]
-struct TeeArgs {
+struct TeeArgs<H: Reference> {
     #[from_args(pos_only)]
-    iterable: Value,
+    iterable: Value<H>,
     #[from_args(pos_only, default)]
-    n: Option<Value>,
+    n: Option<Value<H>>,
 }
 
 /// `itertools.tee(iterable, n=2)` — `n` iterators over one source.
-fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_tee<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let TeeArgs { iterable, n } = TeeArgs::from_args(args, vm)?;
     let consumers = match n {
         None => Ok(2),
@@ -933,7 +943,7 @@ fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// the tuple slot each is returned in — all of it inside one builtin call, so
 /// the whole group is charged before any of it is built. CPython reports an
 /// `n` too large as a bare `MemoryError` when its own allocation fails.
-fn tee_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+fn tee_n<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<usize> {
     let n = ssize_arg(value, vm)?;
     let n = usize::try_from(n).map_err(|_| ExcType::tee_negative_n())?;
     let per_consumer = HEAP_ENTRY_SIZE + size_of::<usize>() + VALUE_SIZE;
@@ -950,7 +960,11 @@ fn tee_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 /// CPython resolves eagerly for all four, so a non-iterable raises here rather
 /// than on the first `next()`. The callable itself is never type-checked: a
 /// non-callable is only discovered when the adaptor first applies it.
-fn resolve_source(callable: Value, iterable: Value, vm: &mut VM<'_>) -> RunResult<(Value, Value)> {
+fn resolve_source<H: RuntimeRef>(
+    callable: Value<H>,
+    iterable: Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<(Value<H>, Value<H>)> {
     let mut guard = DropGuard::new(callable, vm);
     let source = iterable.into_py_iter(guard.ctx())?;
     let (callable, _) = guard.into_parts();

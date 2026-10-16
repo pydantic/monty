@@ -15,7 +15,7 @@ use ruff_python_stdlib::identifiers::is_identifier;
 use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
-    heap::{DropWithContext, Heap, HeapReader},
+    heap::{DropWithContext, HeapOwner, HeapReader, RuntimeRef},
     intern::{CompileInterns, Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
@@ -201,28 +201,33 @@ impl MontyRun {
         let mut executor = self.executor;
 
         // Create heap and VM with empty globals, then populate inputs with VM alive
-        let mut heap = Heap::new(executor.namespace_size(), resource_tracker);
-        let globals = executor.empty_globals();
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-                let mut vm = VM::new(
-                    globals,
-                    &mut executor.tables,
-                    &executor.program,
-                    reader,
-                    print.reborrow(),
-                );
-                populate_inputs(inputs, &mut vm)?;
+        let mut owner = HeapOwner::new(executor.namespace_size(), resource_tracker);
+        let converted = owner.activate(|state| {
+            let globals = executor.empty_globals();
+            HeapReader::with(
+                &mut state.heap,
+                &mut (&mut executor, print),
+                |reader, (executor, print)| {
+                    let mut vm = VM::new(
+                        globals,
+                        &mut executor.tables,
+                        &executor.program,
+                        reader,
+                        print.reborrow(),
+                    );
+                    populate_inputs(inputs, &mut vm)?;
 
-                // Start execution
-                let vm_result = vm.run_external();
+                    // Start execution
+                    let vm_result = vm.run_external();
 
-                // Three-phase conversion: convert while VM alive, then snapshot, then build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
-                let vm_state = check_snapshot_from_converted(&converted, vm);
-                Ok((converted, vm_state))
-            })?;
-        build_run_progress(converted, vm_state, executor, heap)
+                    // Three-phase conversion: convert while VM alive, then snapshot, then build progress
+                    let converted = convert_frame_exit(vm_result, &mut vm);
+                    state.vm_state = check_snapshot_from_converted(&converted, vm).map(Box::new);
+                    Ok(converted)
+                },
+            )
+        })?;
+        build_run_progress(converted, executor, owner)
     }
 }
 
@@ -549,25 +554,26 @@ impl Executor {
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity;
-        let mut heap = Heap::new(heap_capacity, resource_tracker);
-        let globals = self.empty_globals();
-
-        // Create VM first, then populate inputs with VM alive
-        let result = HeapReader::with(&mut heap, &mut (&mut *self, print), |reader, (executor, print)| {
-            let mut vm = VM::new(
-                globals,
-                &mut executor.tables,
-                &executor.program,
-                reader,
-                print.reborrow(),
-            );
-            populate_inputs(inputs, &mut vm)?;
-            Program::run_to_completion(&mut vm)
+        let mut owner = HeapOwner::new(heap_capacity, resource_tracker);
+        let result = owner.activate(|state| {
+            let globals = self.empty_globals();
+            HeapReader::with(
+                &mut state.heap,
+                &mut (&mut *self, print),
+                |reader, (executor, print)| {
+                    let mut vm = VM::new(
+                        globals,
+                        &mut executor.tables,
+                        &executor.program,
+                        reader,
+                        print.reborrow(),
+                    );
+                    populate_inputs(inputs, &mut vm)?;
+                    Program::run_to_completion(&mut vm)
+                },
+            )
         });
-
-        if heap.size() > heap_capacity {
-            self.heap_capacity = heap.size();
-        }
+        self.heap_capacity = self.heap_capacity.max(owner.inspect(|state| state.heap.size()));
 
         // Non-REPL execution has exactly one source, so every frame's filename
         // resolves to the same `self.code`.
@@ -598,79 +604,80 @@ impl Executor {
         inputs: Vec<MontyObject>,
         resource_tracker: ResourceTracker,
     ) -> Result<RefCountOutput, MontyException> {
-        let mut heap = Heap::new(self.namespace_size(), resource_tracker);
-        let globals = self.empty_globals();
+        let mut owner = HeapOwner::new(self.namespace_size(), resource_tracker);
+        owner.activate(|state| {
+            let globals = self.empty_globals();
+            HeapReader::with(&mut state.heap, self, |reader, executor| {
+                // Create VM, populate inputs, and run
+                let mut vm = VM::new(
+                    globals,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Stdout,
+                );
+                populate_inputs(inputs, &mut vm)?;
+                // Lookups are answered before the globals are taken below: an
+                // armed `hasattr()` / `getattr()` effect runs the module on.
+                let frame_exit_result = answer_unserved_lookups(vm.run_external(), &mut vm);
 
-        HeapReader::with(&mut heap, self, |reader, executor| {
-            // Create VM, populate inputs, and run
-            let mut vm = VM::new(
-                globals,
-                &mut executor.tables,
-                &executor.program,
-                reader,
-                PrintWriter::Stdout,
-            );
-            populate_inputs(inputs, &mut vm)?;
-            // Lookups are answered before the globals are taken below: an
-            // armed `hasattr()` / `getattr()` effect runs the module on.
-            let frame_exit_result = answer_unserved_lookups(vm.run_external(), &mut vm);
+                // Tasks the module left running (a sibling detached from a failed
+                // gather, say) hold real references, and are not reachable from
+                // any name — so tear the scheduler down first and hold the
+                // leak check to what survives that.
+                vm.__finalize_tasks_for_tests();
+                vm.__force_gc_for_tests();
 
-            // Tasks the module left running (a sibling detached from a failed
-            // gather, say) hold real references, and are not reachable from
-            // any name — so tear the scheduler down first and hold the
-            // leak check to what survives that.
-            vm.__finalize_tasks_for_tests();
-            vm.__force_gc_for_tests();
+                // Take globals out of the VM so we can inspect them, but keep VM alive
+                // for heap access and later conversion.
+                let globals = vm.take_globals();
 
-            // Take globals out of the VM so we can inspect them, but keep VM alive
-            // for heap access and later conversion.
-            let globals = vm.take_globals();
+                // Read refcounts BEFORE converting the return value, because
+                // `frame_exit_to_object` drops the return value (decrementing its refcount).
+                let mut counts = ahash::AHashMap::new();
+                let mut roots = Vec::new();
 
-            // Read refcounts BEFORE converting the return value, because
-            // `frame_exit_to_object` drops the return value (decrementing its refcount).
-            let mut counts = ahash::AHashMap::new();
-            let mut roots = Vec::new();
-
-            for (namespace_id, name_id) in vm.global_names.iter() {
-                let idx = namespace_id.index();
-                if idx < globals.len()
-                    && let Value::Ref(id) = &globals[idx]
-                {
-                    counts.insert(vm.interns.get_str(name_id).to_owned(), vm.heap.get_refcount(*id));
+                for (namespace_id, name_id) in vm.global_names.iter() {
+                    let idx = namespace_id.index();
+                    if idx < globals.len()
+                        && let Value::Ref(id) = &globals[idx]
+                    {
+                        counts.insert(vm.interns.get_str(name_id).to_owned(), vm.heap.get_refcount(*id));
+                        roots.push(*id);
+                    }
+                }
+                // The module's result is a root too: it is still owned by the pending
+                // `FrameExit::Return` here, since `frame_exit_to_object` below is what drops it.
+                if let Ok(FrameExit::Return(Value::Ref(id))) = &frame_exit_result {
                     roots.push(*id);
                 }
-            }
-            // The module's result is a root too: it is still owned by the pending
-            // `FrameExit::Return` here, since `frame_exit_to_object` below is what drops it.
-            if let Ok(FrameExit::Return(Value::Ref(id))) = &frame_exit_result {
-                roots.push(*id);
-            }
-            // Those are the only roots: locals are gone once the module frame exits, so
-            // anything still live must hang off a name or the result to not be a leak.
-            let unreachable: Vec<String> = vm
-                .heap
-                .unreachable_entries(roots)
-                .into_iter()
-                .map(|(id, ty)| format!("{} (id {})", ty.name(vm.heap, vm.interns), id.index()))
-                .collect();
-            let heap_count = vm.heap.entry_count();
+                // Those are the only roots: locals are gone once the module frame exits, so
+                // anything still live must hang off a name or the result to not be a leak.
+                let unreachable: Vec<String> = vm
+                    .heap
+                    .unreachable_entries(roots)
+                    .into_iter()
+                    .map(|(id, ty)| format!("{} (id {})", ty.name(vm.heap, vm.interns), id.index()))
+                    .collect();
+                let heap_count = vm.heap.entry_count();
 
-            // Convert return value while VM is still alive (needs access to interns).
-            // Non-REPL: single source, so every frame resolves to `executor.code`.
-            let value = frame_exit_to_object(frame_exit_result, &mut vm)
-                .map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code)))?;
+                // Convert return value while VM is still alive (needs access to interns).
+                // Non-REPL: single source, so every frame resolves to `executor.code`.
+                let value = frame_exit_to_object(frame_exit_result, &mut vm)
+                    .map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code)))?;
 
-            // Drop globals with proper ref counting
-            globals.drop_with(vm.heap);
+                // Drop globals with proper ref counting
+                globals.drop_with(vm.heap);
 
-            let allocations_since_gc = vm.heap.get_allocations_since_gc();
+                let allocations_since_gc = vm.heap.get_allocations_since_gc();
 
-            Ok(RefCountOutput {
-                value,
-                counts,
-                unreachable,
-                heap_count,
-                allocations_since_gc,
+                Ok(RefCountOutput {
+                    value,
+                    counts,
+                    unreachable,
+                    heap_count,
+                    allocations_since_gc,
+                })
             })
         })
     }
@@ -680,7 +687,7 @@ impl Executor {
     /// Used to initialize global storage before input population. The VM is created
     /// with these empty globals, then [`populate_inputs`] fills
     /// the input slots while the VM is alive.
-    pub(crate) fn empty_globals(&self) -> Vec<Value> {
+    pub(crate) fn empty_globals<H: RuntimeRef>(&self) -> Vec<Value<H>> {
         (0..self.namespace_size()).map(|_| Value::Undefined).collect()
     }
 }
@@ -722,7 +729,7 @@ impl Program {
     ///
     /// This is the shared non-iterative execution core used by both the standard
     /// `run` path and the REPL's `feed_run` path.
-    pub(crate) fn run_to_completion(vm: &mut VM<'_>) -> RunResult<MontyObject> {
+    pub(crate) fn run_to_completion<H: RuntimeRef>(vm: &mut VM<'_, H>) -> RunResult<MontyObject> {
         let mut frame_exit_result = vm.run_external();
 
         // In the non-iterative path there's no host to resolve names, lazy
@@ -774,7 +781,7 @@ impl Program {
 /// This runs with the VM alive so that `to_value` has access to the full VM context.
 /// On error partway through, the VM's `Drop` impl will drain globals and
 /// properly decrement refcounts for any already-converted values.
-fn populate_inputs(inputs: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<(), MontyException> {
+fn populate_inputs<H: RuntimeRef>(inputs: Vec<MontyObject>, vm: &mut VM<'_, H>) -> Result<(), MontyException> {
     if inputs.len() > vm.globals.len() {
         return Err(MontyException::runtime_error("too many inputs for namespace"));
     }
@@ -792,7 +799,10 @@ fn populate_inputs(inputs: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<(), Mont
 /// Used by non-iterative execution paths: lookups are answered as no host
 /// would (see [`answer_unserved_lookups`]) and the remaining suspendable
 /// outcomes (external calls, futures) produce errors.
-pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: &mut VM<'_>) -> RunResult<MontyObject> {
+pub(crate) fn frame_exit_to_object<H: RuntimeRef>(
+    frame_exit_result: RunResult<FrameExit<H>>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<MontyObject> {
     // Suspensions this path cannot service. The error is built from a borrow
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.

@@ -7,7 +7,7 @@ use std::{
 use smallvec::SmallVec;
 
 use crate::{
-    heap::{Heap, HeapId},
+    heap::{Heap, RuntimeRef},
     value::Value,
 };
 
@@ -17,22 +17,26 @@ use crate::{
 /// handled inline in `py_dec_ref_ids_for_data`) so reference-count cleanup can
 /// walk children iteratively without requiring the Python-level `PyTrait` API;
 /// leaf variants with no children fall through the dispatch's `_ => {}` arm.
-pub(crate) trait HeapItem {
+pub(crate) trait HeapItem<H: RuntimeRef> {
     /// Pushes every owned heap reference onto the iterative cleanup stack.
     ///
     /// Owned `HeapId` fields must be documented as owned and pushed exactly
     /// once. With `memory-model-checks`, delegation also marks contained
     /// `Value`s as `Dereferenced`.
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>);
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>);
 }
 
 /// Gives cleanup machinery access to an owned heap.
 pub(crate) trait ContainsHeap {
-    fn heap(&self) -> &Heap;
-    fn heap_mut(&mut self) -> &mut Heap;
+    type Ref: RuntimeRef;
+
+    fn heap(&self) -> &Heap<Self::Ref>;
+    fn heap_mut(&mut self) -> &mut Heap<Self::Ref>;
 }
 
-impl ContainsHeap for Heap {
+impl<H: RuntimeRef> ContainsHeap for Heap<H> {
+    type Ref = H;
+
     fn heap(&self) -> &Self {
         self
     }
@@ -109,9 +113,9 @@ impl<C, U: DropWithContext<C>> DropWithContext<C> for Drain<'_, U> {
     }
 }
 
-impl<C, const N: usize> DropWithContext<C> for [Value; N]
+impl<H: RuntimeRef, C, const N: usize> DropWithContext<C> for [Value<H>; N]
 where
-    Value: DropWithContext<C>,
+    Value<H>: DropWithContext<C>,
 {
     fn drop_with(self, ctx: &mut C) {
         for value in self {

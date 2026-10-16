@@ -6,7 +6,7 @@
 
 use monty_types::OsFunctionCall;
 
-use crate::bytecode::CallResult;
+use crate::{bytecode::CallResult, heap::RuntimeRef};
 
 /// Property descriptor for computed attributes (mirrors Python's descriptor
 /// protocol — accessing the property invokes its getter).
@@ -37,7 +37,7 @@ impl Property {
     }
 
     /// Invokes the getter, returning the `CallResult` the VM should act on.
-    pub fn get(self) -> CallResult {
+    pub fn get<H: RuntimeRef>(self) -> CallResult<H> {
         match self {
             Self::Os(ZeroArgOsProperty::GetEnviron) => CallResult::OsCall(OsFunctionCall::GetEnviron),
         }

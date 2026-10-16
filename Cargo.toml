@@ -166,7 +166,7 @@ opentelemetry-proto = { version = "0.32", default-features = false, features = [
 [workspace.lints.rust]
 unsafe_code = "deny"
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)', 'cfg(heap_reader_compile_fail_tests)', 'cfg(heap_reader_compile_fail_test_read_while_ref_alive)', 'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)', 'cfg(heap_reader_compile_fail_test_smuggle_heap_read)', 'cfg(heap_reader_compile_fail_test_double_get_mut)', 'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)', 'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)', 'cfg(heap_reader_compile_fail_test_smuggle_vm)', 'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(heap_owner_compile_fail, values("escape_pointer", "retain_root", "foreign_read", "foreign_root", "swap_heaps", "swap_states", "manufacture_heap", "deserialize_pointer", "deserialize_heap", "indirect_constant", "send_pointer", "send_view", "sync_owner"))', 'cfg(codspeed)', 'cfg(heap_reader_compile_fail_tests)', 'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)', 'cfg(heap_reader_compile_fail_test_smuggle_heap_read)', 'cfg(heap_reader_compile_fail_test_double_get_mut)', 'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)', 'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)', 'cfg(heap_reader_compile_fail_test_smuggle_vm)', 'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)'] }
 
 [workspace.lints.rustdoc]
 invalid_codeblock_attributes = "allow"

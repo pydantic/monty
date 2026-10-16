@@ -41,6 +41,14 @@ mod types;
 mod value;
 mod virtual_path;
 
+#[cfg(test)]
+#[path = "../tests/heap_owner_cases/cases.rs"]
+mod heap_owner_tests;
+
+#[cfg(heap_reader_compile_fail_tests)]
+#[path = "../tests/heap_owner_compile_fail_cases/cases.rs"]
+mod heap_owner_compile_fail_cases;
+
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 /// The import names of every module the sandbox provides itself; see `SANDBOX_MODULE_NAMES` in `monty_types`.

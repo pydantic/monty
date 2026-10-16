@@ -14,7 +14,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapRead, HeapReadOutput, Reference, RuntimeRef},
     types::{
         allocate_tuple,
         itertools::{ItertoolsIter, step::next_item},
@@ -22,33 +22,34 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// The outer iterator: yields `(key, grouper)` once per run of equal keys.
 ///
 /// Boxed inside [`ItertoolsIter`]: six fields put it well past the family's
 /// size budget.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct GroupBy {
-    source: Value,
+pub(crate) struct GroupBy<H: Reference> {
+    source: Value<H>,
     /// `Value::None` groups by the items themselves, as CPython's absent
     /// `keyfunc` does.
-    keyfunc: Value,
+    keyfunc: Value<H>,
     /// The key of the group most recently yielded — CPython's `tgtkey`.
-    target_key: Option<Value>,
+    target_key: Option<Value<H>>,
     /// The key and item read ahead from the source and not yet handed to a
     /// group. Always set and cleared together — [`step`] reads a pair in, and
     /// a grouper takes both as it hands the item out.
-    current_key: Option<Value>,
-    current_value: Option<Value>,
+    current_key: Option<Value<H>>,
+    current_value: Option<Value<H>>,
     /// The grouper most recently yielded, the only one allowed to draw from
     /// the source. Identity only — a borrowed id, never released here. It can
     /// only ever match a live grouper of this `groupby`: a later one replaces
     /// it, so a stale id names no live grouper that would check it.
-    current_grouper: Option<HeapId>,
+    current_grouper: Option<H>,
 }
 
-impl GroupBy {
+impl<H: RuntimeRef> GroupBy<H> {
     /// Takes ownership of both, with `source` already resolved by `py_iter`.
-    pub(crate) fn new(source: Value, keyfunc: Value) -> Self {
+    pub(crate) fn new(source: Value<H>, keyfunc: Value<H>) -> Self {
         Self {
             source,
             keyfunc,
@@ -60,7 +61,7 @@ impl GroupBy {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for value in [&self.source, &self.keyfunc] {
             if let Value::Ref(id) = value {
                 on_child(*id);
@@ -74,7 +75,7 @@ impl GroupBy {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.source.py_dec_ref_ids(stack);
         self.keyfunc.py_dec_ref_ids(stack);
         for value in [&mut self.target_key, &mut self.current_key, &mut self.current_value]
@@ -86,19 +87,20 @@ impl GroupBy {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// The inner iterator: the items of one group, drawn through the parent.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Grouper {
+pub(crate) struct Grouper<H: Reference> {
     /// The `groupby` this group belongs to — owned, as CPython's `parent` is,
     /// so the group outlives a caller that drops the outer iterator.
-    parent: Value,
+    parent: Value<H>,
     /// The key every item of this group must equal.
-    target_key: Value,
+    target_key: Value<H>,
 }
 
-impl Grouper {
+impl<H: RuntimeRef> Grouper<H> {
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for value in [&self.parent, &self.target_key] {
             if let Value::Ref(id) = value {
                 on_child(*id);
@@ -107,7 +109,7 @@ impl Grouper {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.parent.py_dec_ref_ids(stack);
         self.target_key.py_dec_ref_ids(stack);
     }
@@ -117,7 +119,10 @@ impl Grouper {
 ///
 /// Takes the object read rather than the bare handle because the new grouper
 /// needs an owned reference to this `groupby`.
-pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &mut HeapObjectRead<'h, H, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     // Spent from here on, whether or not a new group opens: CPython clears
     // `currgrouper` before the skip.
     groupby_mut(iter, vm).current_grouper = None;
@@ -183,10 +188,10 @@ pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM
 
 /// Hands out the read-ahead item if it belongs to this group, reading one in
 /// first when the parent holds none.
-pub(super) fn grouper_next<'h>(
-    iter: &mut HeapObjectRead<'h, ItertoolsIter>,
-    vm: &mut VM<'h>,
-) -> RunResult<Option<Value>> {
+pub(super) fn grouper_next<'h, H: RuntimeRef>(
+    iter: &mut HeapObjectRead<'h, H, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let ItertoolsIter::Grouper(grouper) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Grouper")
     };
@@ -235,7 +240,7 @@ pub(super) fn grouper_next<'h>(
 ///
 /// `false` means the source is spent; the pair already held is left as it was,
 /// as CPython's `groupby_step` leaves `currkey` and `currvalue`.
-fn step<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<bool> {
+fn step<'h, H: RuntimeRef>(iter: &mut HeapRead<'h, ItertoolsIter<H>>, vm: &mut VM<'h, H>) -> RunResult<bool> {
     let groupby = groupby_ref(iter, vm);
     let source = groupby.source.clone_with_heap(vm.heap);
     let keyfunc = groupby.keyfunc.clone_with_heap(vm.heap);
@@ -262,7 +267,7 @@ fn step<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResul
 }
 
 /// The `GroupBy` behind an iterator already dispatched as one.
-fn groupby_ref<'r, 'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &'r VM<'h>) -> &'r GroupBy {
+fn groupby_ref<'r, 'h, H: RuntimeRef>(iter: &HeapRead<'h, ItertoolsIter<H>>, vm: &'r VM<'h, H>) -> &'r GroupBy<H> {
     let ItertoolsIter::GroupBy(groupby) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::GroupBy")
     };
@@ -270,7 +275,10 @@ fn groupby_ref<'r, 'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &'r VM<'h>) -> &'
 }
 
 /// Mutable counterpart of [`groupby_ref`].
-fn groupby_mut<'r, 'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &'r mut VM<'h>) -> &'r mut GroupBy {
+fn groupby_mut<'r, 'h, H: RuntimeRef>(
+    iter: &mut HeapRead<'h, ItertoolsIter<H>>,
+    vm: &'r mut VM<'h, H>,
+) -> &'r mut GroupBy<H> {
     let ItertoolsIter::GroupBy(groupby) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::GroupBy")
     };

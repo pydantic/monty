@@ -5,7 +5,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::RunResult,
-    heap::HeapReadOutput,
+    heap::{HeapReadOutput, Reference, RuntimeRef},
     os_dispatch::PostConversionEffect,
     types::iter::iterator_next,
     value::Value,
@@ -16,11 +16,11 @@ use crate::{
 /// and the blanket `next() takes no keyword arguments` rejection.
 #[derive(FromArgs)]
 #[from_args(name = "next", style = unpack)]
-struct NextArgs {
+struct NextArgs<H: Reference> {
     #[from_args(pos_only)]
-    iterator: Value,
+    iterator: Value<H>,
     #[from_args(pos_only, default)]
-    default: Option<Value>,
+    default: Option<Value<H>>,
 }
 
 /// Implementation of the next() builtin function.
@@ -35,7 +35,7 @@ struct NextArgs {
 ///
 /// A file nobody has read yet first loads its buffer from the host: the call
 /// yields the read with a `FileNext` effect, which answers it on resume.
-pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub fn builtin_next<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
     defer_drop!(iterator, vm);
     if let Value::Ref(id) = iterator

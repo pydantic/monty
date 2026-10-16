@@ -11,13 +11,14 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapItem, HeapObjectRead, HeapRead, Reference, RuntimeRef,
         heap_read_ref_as_field_mut,
     },
     types::{Union, str::allocate_string},
     value::{EitherStr, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// A user-defined class object created by a `class Foo: ...` statement.
 ///
 /// Holds the class name and a `namespace` [`Dict`] mapping member names to values:
@@ -30,24 +31,24 @@ use crate::{
 /// but a future `bases: Vec<HeapId>` field would slot in here without disturbing
 /// the rest of the design.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Class {
+pub(crate) struct Class<H: Reference> {
     /// Class name (e.g. `Foo`), used for `repr` and `__name__`. Interned for
     /// compiled `class` statements; heap-owned for classes created at runtime
     /// via the 3-arg `type(name, bases, dict)` form, whose name cannot be
     /// interned because the intern table is frozen after prepare.
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
-    namespace: Dict,
+    namespace: Dict<H>,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
 }
 
-impl Class {
+impl<H: RuntimeRef> Class<H> {
     /// Creates a new class object from its name and member namespace.
     #[must_use]
-    pub fn new(name: EitherStr, namespace: Dict) -> Self {
+    pub fn new(name: EitherStr, namespace: Dict<H>) -> Self {
         Self {
             name,
             namespace,
@@ -76,14 +77,14 @@ impl Class {
 
     /// Returns a reference to the class member namespace.
     #[must_use]
-    pub fn namespace(&self) -> &Dict {
+    pub fn namespace(&self) -> &Dict<H> {
         &self.namespace
     }
 }
 
-impl<'h> HeapRead<'h, Class> {
-    fn namespace_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
-        heap_read_ref_as_field_mut!(self, Class, namespace)
+impl<'h, H: RuntimeRef> HeapRead<'h, Class<H>> {
+    fn namespace_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict<H>> {
+        heap_read_ref_as_field_mut!(self, Class<H>, namespace)
     }
 
     /// Sets a class attribute (`Foo.x = 1`), returning the previous value (if any)
@@ -91,7 +92,7 @@ impl<'h> HeapRead<'h, Class> {
     ///
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
-    pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    pub fn set_attr(&mut self, name: Value<H>, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         self.namespace_mut().set(name, value, vm)
     }
 
@@ -99,7 +100,7 @@ impl<'h> HeapRead<'h, Class> {
     ///
     /// Only `@dataclass` needs this, to clear the `field()` object a class body
     /// bound for a factory-only field — CPython's decorator `delattr`s it.
-    pub fn pop_attr(&mut self, name: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    pub fn pop_attr(&mut self, name: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(self.namespace_mut().pop(name, vm)?.map(|(key, value)| {
             key.drop_with(vm);
             value
@@ -107,38 +108,38 @@ impl<'h> HeapRead<'h, Class> {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Class<H>> {
     /// Constructing an instance, which runs `__init__` as an ordinary frame.
-    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_call(&mut self, args: ArgValues<H>, vm: &mut VM<'h, H>) -> RunResult<CallResult<H>> {
         vm.instantiate_class(self.id(), args)
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         // The type of a class object is `type` (matching `type(Foo) is type`).
         Type::Type
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Union::heap_or(self, other, vm)
     }
 
-    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Union::heap_ror(self, other, vm)
     }
 
     /// `Foo[int]`: a class's `__class_getitem__` is never looked up, so the
     /// wording is CPython's for a type without one.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&self, _key: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         Err(ExcType::type_error_type_not_subscriptable(
             self.get(vm.heap).name.as_str(vm.interns),
         ))
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
         let name = attribute_name_value(name, value_guard.ctx());
         let (value, vm) = value_guard.into_parts();
@@ -147,22 +148,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         Ok(())
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         // Classes return `NotImplemented`; rich equality's final identity
         // fallback makes a class equal only to itself.
         Ok(None)
     }
 
-    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         // Class objects hash by identity (like CPython type objects).
         Ok(Some(identity_hash(self.id())))
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         Ok(write!(f, "<class '{}'>", self.get(vm.heap).name.as_str(vm.interns))?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let attr_str = attr.as_str(vm.interns);
         // `Foo.__name__` returns the class name — before the namespace lookup
         // because in CPython `type.__name__` is a metaclass data descriptor that
@@ -182,7 +183,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let attr_str = attr.as_str(vm.interns);
         // `__name__` is a synthesized string, not a namespace member (see
         // `py_getattr`), so calling it goes through the normal callable
@@ -214,8 +215,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     }
 }
 
-impl HeapItem for Class {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for Class<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.namespace.py_dec_ref_ids(stack);
     }
 }

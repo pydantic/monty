@@ -5,7 +5,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     hash::{HashValue, identity_hash},
-    heap::HeapObjectRead,
+    heap::{HeapObjectRead, RuntimeRef},
     types::{LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
@@ -39,38 +39,38 @@ impl ExtFunction {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, ExtFunction> {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, ExtFunction> {
     /// Indistinguishable from a sandbox `def` to Python code, which is the
     /// point: a host function is passed around like any other function.
-    fn py_type(&self, _: &VM<'h>) -> Type {
+    fn py_type(&self, _: &VM<'h, H>) -> Type<H> {
         Type::Function
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
     /// Identity only. Two lookups of the same name share one heap entry (the
     /// weak external-function cache), so `is` already answers this.
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value<H>, _: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
-    fn py_hash(&self, _: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
 
-    fn py_bool(&self, _: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, _: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(true)
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _: &mut LazyHeapSet<H>) -> RunResult<()> {
         Ok(write!(f, "<function '{}' external>", self.get(vm.heap).as_str())?)
     }
 
     /// Suspends: only the host can run this, so the VM yields the name and the
     /// arguments and waits to be resumed with the result.
-    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_call(&mut self, args: ArgValues<H>, vm: &mut VM<'h, H>) -> RunResult<CallResult<H>> {
         Ok(CallResult::External(self.get(vm.heap).clone_name(), args))
     }
 }

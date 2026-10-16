@@ -8,7 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     fstring::decimal_digit_value,
-    heap::{ContainsHeap, DropGuard, DropWithContext},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Reference, RuntimeRef},
     string_builder::StringBuilder,
     types::{PyTrait, str::allocate_string},
     value::{EitherStr, Value},
@@ -17,7 +17,7 @@ use crate::{
 const MAX_FORMAT_RECURSION: u8 = 2;
 
 /// Renders a runtime format string with positional and keyword arguments.
-pub(crate) fn str_format(template: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn str_format<H: RuntimeRef>(template: &str, args: ArgValues<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let FormatCallArgs { positional, keywords } = FormatCallArgs::from_args(args, vm)?;
     let keywords = match keywords {
         KwargsValues::Pairs(keywords) => keywords,
@@ -34,20 +34,20 @@ pub(crate) fn str_format(template: &str, args: ArgValues, vm: &mut VM<'_>) -> Ru
 /// Arguments accepted by `str.format()`.
 #[derive(FromArgs)]
 #[from_args(name = "format")]
-struct FormatCallArgs {
+struct FormatCallArgs<H: Reference> {
     #[from_args(varargs)]
-    positional: Vec<Value>,
+    positional: Vec<Value<H>>,
     #[from_args(varkwargs)]
-    keywords: KwargsValues,
+    keywords: KwargsValues<H>,
 }
 
 /// Owns call arguments until rendering and error cleanup have finished.
-struct FormatArguments {
-    positional: Vec<Value>,
-    keywords: Vec<(Value, Value)>,
+struct FormatArguments<H: Reference> {
+    positional: Vec<Value<H>>,
+    keywords: Vec<(Value<H>, Value<H>)>,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for FormatArguments {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for FormatArguments<H> {
     fn drop_with(self, ctx: &mut C) {
         self.positional.drop_with(ctx);
         for (key, value) in self.keywords {
@@ -74,12 +74,12 @@ enum NumberingMode {
 }
 
 /// Renders one format-string level within the recursion and resource limits.
-fn render(
+fn render<H: RuntimeRef>(
     template: &str,
-    arguments: &FormatArguments,
+    arguments: &FormatArguments<H>,
     numbering: &mut Numbering,
     recursion_remaining: u8,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<String> {
     let bytes = template.as_bytes();
     let mut output = String::new();
@@ -125,13 +125,13 @@ fn render(
 }
 
 /// Resolves and formats one replacement field in CPython error order.
-fn render_field(
+fn render_field<H: RuntimeRef>(
     template: &str,
     start: usize,
-    arguments: &FormatArguments,
+    arguments: &FormatArguments<H>,
     numbering: &mut Numbering,
     recursion_remaining: u8,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<(String, usize)> {
     let (field_end, delimiter) = find_field_end(template, start, vm)?;
     let mut cursor = field_end;
@@ -212,7 +212,7 @@ fn render_field(
 }
 
 /// Finds the first field delimiter outside an item lookup.
-fn find_field_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<(usize, u8)> {
+fn find_field_end<H: RuntimeRef>(template: &str, start: usize, vm: &VM<'_, H>) -> RunResult<(usize, u8)> {
     let bytes = template.as_bytes();
     let mut index = start;
     let mut in_item = false;
@@ -232,7 +232,7 @@ fn find_field_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<(usize
 }
 
 /// Finds the closing brace and whether the spec needs expansion in one checked scan.
-fn find_spec_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<(usize, bool)> {
+fn find_spec_end<H: RuntimeRef>(template: &str, start: usize, vm: &VM<'_, H>) -> RunResult<(usize, bool)> {
     let bytes = template.as_bytes();
     let mut index = start;
     let mut nesting = 0usize;
@@ -255,12 +255,12 @@ fn find_spec_end(template: &str, start: usize, vm: &VM<'_>) -> RunResult<(usize,
 }
 
 /// Resolves a root argument followed by attribute or item accesses.
-fn resolve_field(
+fn resolve_field<H: RuntimeRef>(
     field: &str,
-    arguments: &FormatArguments,
+    arguments: &FormatArguments<H>,
     numbering: &mut Numbering,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     let first_end = field
         .as_bytes()
         .iter()
@@ -315,12 +315,12 @@ fn resolve_field(
 }
 
 /// Resolves the root argument and updates the field-numbering mode.
-fn resolve_first(
+fn resolve_first<H: RuntimeRef>(
     field: &str,
-    arguments: &FormatArguments,
+    arguments: &FormatArguments<H>,
     numbering: &mut Numbering,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     if field.is_empty() {
         return resolve_auto(arguments, numbering, vm);
     }
@@ -340,7 +340,11 @@ fn resolve_first(
 }
 
 /// Resolves the next automatic positional field.
-fn resolve_auto(arguments: &FormatArguments, numbering: &mut Numbering, vm: &VM<'_>) -> RunResult<Value> {
+fn resolve_auto<H: RuntimeRef>(
+    arguments: &FormatArguments<H>,
+    numbering: &mut Numbering,
+    vm: &VM<'_, H>,
+) -> RunResult<Value<H>> {
     if matches!(numbering.mode, NumberingMode::Manual) {
         return Err(value_error(
             "cannot switch from manual field specification to automatic field numbering",
@@ -356,7 +360,11 @@ fn resolve_auto(arguments: &FormatArguments, numbering: &mut Numbering, vm: &VM<
 }
 
 /// Clones a positional argument or raises the replacement-index error.
-fn resolve_positional(index: usize, arguments: &FormatArguments, vm: &VM<'_>) -> RunResult<Value> {
+fn resolve_positional<H: RuntimeRef>(
+    index: usize,
+    arguments: &FormatArguments<H>,
+    vm: &VM<'_, H>,
+) -> RunResult<Value<H>> {
     arguments
         .positional
         .get(index)
@@ -371,7 +379,11 @@ fn resolve_positional(index: usize, arguments: &FormatArguments, vm: &VM<'_>) ->
 }
 
 /// Clones a keyword argument or raises `KeyError`.
-fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> RunResult<Value> {
+fn resolve_keyword<H: RuntimeRef>(
+    name: &str,
+    arguments: &FormatArguments<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     for (index, (key, value)) in arguments.keywords.iter().enumerate() {
         vm.heap.tracker.check_time_every(index)?;
         if key.to_str(vm)? == name {
@@ -385,7 +397,7 @@ fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> 
 }
 
 /// Resolves an attribute without allowing a suspending lookup.
-fn resolve_attribute(value: Value, name: &str, vm: &mut VM<'_>) -> RunResult<Value> {
+fn resolve_attribute<H: RuntimeRef>(value: Value<H>, name: &str, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     defer_drop!(value, vm);
     match value.py_getattr(&EitherStr::from(name.to_owned()), vm)? {
         CallResult::Value(value) => Ok(value),
@@ -397,7 +409,7 @@ fn resolve_attribute(value: Value, name: &str, vm: &mut VM<'_>) -> RunResult<Val
 }
 
 /// Resolves an integer or string item lookup.
-fn resolve_item(value: Value, item: &str, vm: &mut VM<'_>) -> RunResult<Value> {
+fn resolve_item<H: RuntimeRef>(value: Value<H>, item: &str, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     defer_drop!(value, vm);
     let key = item_key(item, vm)?;
     defer_drop!(key, vm);
@@ -405,7 +417,7 @@ fn resolve_item(value: Value, item: &str, vm: &mut VM<'_>) -> RunResult<Value> {
 }
 
 /// Converts decimal item text to an integer key and other text to a string.
-fn item_key(item: &str, vm: &VM<'_>) -> RunResult<Value> {
+fn item_key<H: RuntimeRef>(item: &str, vm: &VM<'_, H>) -> RunResult<Value<H>> {
     if let Some(index) = decimal_index(item, vm)? {
         Ok(Value::Int(
             i64::try_from(index).expect("index is bounded by isize::MAX"),
@@ -416,7 +428,7 @@ fn item_key(item: &str, vm: &VM<'_>) -> RunResult<Value> {
 }
 
 /// Parses Unicode decimal digits using Python's field-index rules.
-fn decimal_index(field: &str, vm: &VM<'_>) -> RunResult<Option<usize>> {
+fn decimal_index<H: RuntimeRef>(field: &str, vm: &VM<'_, H>) -> RunResult<Option<usize>> {
     let mut index = 0usize;
     for (offset, character) in field.chars().enumerate() {
         vm.heap.tracker.check_time_every(offset)?;
@@ -433,7 +445,7 @@ fn decimal_index(field: &str, vm: &VM<'_>) -> RunResult<Option<usize>> {
 }
 
 /// Appends a fragment while preserving `StringBuilder` resource accounting.
-pub(crate) fn push_tracked(output: String, text: &str, vm: &VM<'_>) -> RunResult<String> {
+pub(crate) fn push_tracked<H: RuntimeRef>(output: String, text: &str, vm: &VM<'_, H>) -> RunResult<String> {
     let mut builder = StringBuilder::from_existing(output, &vm.heap.tracker);
     builder.push_str(text)?;
     builder.finish_raw()

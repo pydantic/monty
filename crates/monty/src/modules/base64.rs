@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -134,7 +134,7 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
 ];
 
 /// Creates the `base64` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Base64, vm.interns);
 
     for (name, func) in BASE64_FUNCTIONS {
@@ -150,7 +150,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 /// Dispatches a call to a `base64` module function.
 ///
 /// All functions are pure computations and return `Value` directly.
-pub(super) fn call(vm: &mut VM<'_>, function: Base64Functions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: Base64Functions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         Base64Functions::B64Encode => call_b64encode(vm, args),
         Base64Functions::B64Decode => call_b64decode(vm, args),
@@ -177,7 +181,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: Base64Functions, args: ArgValues) 
 
 /// `base64.b64encode(s, altchars=None)` — standard base64 with optional
 /// substitutes for the `+` and `/` characters.
-fn call_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b64encode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B64EncodeArgs { s, altchars } = B64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     defer_drop!(altchars, vm);
@@ -197,7 +201,7 @@ fn call_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// With `validate=False` (the default) anything outside the alphabet is
 /// discarded before the quads are assembled; `validate=True` rejects it.
-fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b64decode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B64DecodeArgs { s, altchars, validate } = B64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     defer_drop!(altchars, vm);
@@ -216,7 +220,7 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `base64.standard_b64encode(s)` — `b64encode` without `altchars`.
-fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_standard_b64encode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let StandardB64EncodeArgs { s } = StandardB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
@@ -224,7 +228,7 @@ fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 }
 
 /// `base64.standard_b64decode(s)` — `b64decode` without `altchars`.
-fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_standard_b64decode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let StandardB64DecodeArgs { s } = StandardB64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let decoded = b64_decode(decode_input(s, vm)?.as_ref(), false)?;
@@ -233,7 +237,7 @@ fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
 /// `base64.urlsafe_b64encode(s)` — standard base64 with `-` and `_` in place
 /// of `+` and `/`.
-fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_urlsafe_b64encode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let UrlsafeB64EncodeArgs { s } = UrlsafeB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let mut encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
@@ -242,7 +246,7 @@ fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 }
 
 /// `base64.urlsafe_b64decode(s)` — the inverse of [`call_urlsafe_b64encode`].
-fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_urlsafe_b64decode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let UrlsafeB64DecodeArgs { s } = UrlsafeB64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let mut data = decode_input(s, vm)?.into_owned();
@@ -252,7 +256,7 @@ fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 }
 
 /// `base64.b32encode(s)` — RFC 4648 base32.
-fn call_b32encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b32encode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B32EncodeArgs { s } = B32EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32_ALPHABET, &vm.heap.tracker)?;
@@ -263,7 +267,7 @@ fn call_b32encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// `map01` names the letter that the digit `1` maps to; `0` always maps to
 /// `O`. Both translations happen before the optional case folding.
-fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b32decode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B32DecodeArgs { s, casefold, map01 } = B32DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     defer_drop!(casefold, vm);
@@ -283,7 +287,7 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `base64.b32hexencode(s)` — base32 over the extended-hex alphabet.
-fn call_b32hexencode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b32hexencode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B32HexEncodeArgs { s } = B32HexEncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32HEX_ALPHABET, &vm.heap.tracker)?;
@@ -292,7 +296,7 @@ fn call_b32hexencode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `base64.b32hexdecode(s, casefold=False)` — no `map01`, since `0` and `1`
 /// are themselves digits in the extended-hex alphabet.
-fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b32hexdecode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B32HexDecodeArgs { s, casefold } = B32HexDecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     defer_drop!(casefold, vm);
@@ -306,7 +310,7 @@ fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `base64.b16encode(s)` — uppercase hex.
-fn call_b16encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b16encode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B16EncodeArgs { s } = B16EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let encoded = b16_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
@@ -315,7 +319,7 @@ fn call_b16encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `base64.b16decode(s, casefold=False)` — rejects lowercase hex unless
 /// `casefold` is set, as CPython does.
-fn call_b16decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b16decode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B16DecodeArgs { s, casefold } = B16DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     defer_drop!(casefold, vm);
@@ -327,7 +331,7 @@ fn call_b16decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `base64.encodebytes(s)` — base64 split into 76-character lines, each
 /// terminated by a newline (the MIME convention).
-fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_encodebytes<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let EncodebytesArgs { s } = EncodebytesArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
@@ -350,7 +354,7 @@ fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `base64.decodebytes(s)` — the inverse of [`call_encodebytes`]. Unlike
 /// `b64decode` it takes bytes only, never a `str`.
-fn call_decodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_decodebytes<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DecodebytesArgs { s } = DecodebytesArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let decoded = b64_decode(input_type_check(s, vm)?.as_ref(), false)?;
@@ -361,7 +365,7 @@ fn call_decodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// `pad` keeps the characters that encode the zero-padding of a final short
 /// group, so the output length is always a multiple of five.
-fn call_b85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b85encode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B85EncodeArgs { b, pad } = B85EncodeArgs::from_args(args, vm)?;
     defer_drop!(b, vm);
     defer_drop!(pad, vm);
@@ -372,7 +376,7 @@ fn call_b85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `base64.b85decode(b)` — the inverse of [`call_b85encode`].
-fn call_b85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b85decode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B85DecodeArgs { b } = B85DecodeArgs::from_args(args, vm)?;
     defer_drop!(b, vm);
 
@@ -381,7 +385,7 @@ fn call_b85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `base64.z85encode(s)` — base85 over the shell-safe Z85 alphabet.
-fn call_z85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_z85encode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let Z85EncodeArgs { s } = Z85EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
@@ -390,7 +394,7 @@ fn call_z85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `base64.z85decode(s)` — the inverse of [`call_z85encode`].
-fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_z85decode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let Z85DecodeArgs { s } = Z85DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
@@ -403,7 +407,7 @@ fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Zero folding to `z` is always on and `foldspaces` adds `y` for four spaces;
 /// `adobe` frames the result in `<~`/`~>`, and `wrapcol` breaks it into lines.
-fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_a85encode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let A85EncodeArgs {
         b,
         foldspaces,
@@ -453,7 +457,7 @@ fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// `foldspaces` must be set to the same value the encoder used, since `y` is
 /// otherwise not a digit at all.
-fn call_a85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_a85decode<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let A85DecodeArgs {
         b,
         foldspaces,
@@ -486,10 +490,10 @@ fn call_a85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// observable errors.
 #[derive(FromArgs)]
 #[from_args(name = "b64encode", style = def)]
-struct B64EncodeArgs {
-    s: Value,
+struct B64EncodeArgs<H: Reference> {
+    s: Value<H>,
     #[from_args(default = Value::None)]
-    altchars: Value,
+    altchars: Value<H>,
 }
 
 /// Argument shape for `b64decode(s, altchars=None, validate=False)`.
@@ -498,75 +502,75 @@ struct B64EncodeArgs {
 /// to `binascii.a2b_base64(strict_mode=...)`, which accepts any object.
 #[derive(FromArgs)]
 #[from_args(name = "b64decode", style = def)]
-struct B64DecodeArgs {
-    s: Value,
+struct B64DecodeArgs<H: Reference> {
+    s: Value<H>,
     #[from_args(default = Value::None)]
-    altchars: Value,
+    altchars: Value<H>,
     #[from_args(default = Value::Bool(false))]
-    validate: Value,
+    validate: Value<H>,
 }
 
 /// Argument shape for `b32decode(s, casefold=False, map01=None)` — see
 /// [`B64DecodeArgs`] for why the flags are raw `Value`s.
 #[derive(FromArgs)]
 #[from_args(name = "b32decode", style = def)]
-struct B32DecodeArgs {
-    s: Value,
+struct B32DecodeArgs<H: Reference> {
+    s: Value<H>,
     #[from_args(default = Value::Bool(false))]
-    casefold: Value,
+    casefold: Value<H>,
     #[from_args(default = Value::None)]
-    map01: Value,
+    map01: Value<H>,
 }
 
 /// Argument shape for `b32hexdecode(s, casefold=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "b32hexdecode", style = def)]
-struct B32HexDecodeArgs {
-    s: Value,
+struct B32HexDecodeArgs<H: Reference> {
+    s: Value<H>,
     #[from_args(default = Value::Bool(false))]
-    casefold: Value,
+    casefold: Value<H>,
 }
 
 /// Argument shape for `b16decode(s, casefold=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "b16decode", style = def)]
-struct B16DecodeArgs {
-    s: Value,
+struct B16DecodeArgs<H: Reference> {
+    s: Value<H>,
     #[from_args(default = Value::Bool(false))]
-    casefold: Value,
+    casefold: Value<H>,
 }
 
 /// Argument shape for `b85encode(b, pad=False)` — note the parameter is `b`,
 /// not the `s` the rest of the module uses, which signature errors report.
 #[derive(FromArgs)]
 #[from_args(name = "b85encode", style = def)]
-struct B85EncodeArgs {
-    b: Value,
+struct B85EncodeArgs<H: Reference> {
+    b: Value<H>,
     #[from_args(default = Value::Bool(false))]
-    pad: Value,
+    pad: Value<H>,
 }
 
 /// Argument shape for `b85decode(b)`.
 #[derive(FromArgs)]
 #[from_args(name = "b85decode", style = def)]
-struct B85DecodeArgs {
-    b: Value,
+struct B85DecodeArgs<H: Reference> {
+    b: Value<H>,
 }
 
 /// Argument shape for
 /// `a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "a85encode", style = def)]
-struct A85EncodeArgs {
-    b: Value,
+struct A85EncodeArgs<H: Reference> {
+    b: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    foldspaces: Value,
+    foldspaces: Value<H>,
     #[from_args(kw_only, default = Value::Int(0))]
-    wrapcol: Value,
+    wrapcol: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    pad: Value,
+    pad: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    adobe: Value,
+    adobe: Value<H>,
 }
 
 /// Argument shape for
@@ -577,14 +581,14 @@ struct A85EncodeArgs {
 /// from the built-in set — see [`IgnoreChars`].
 #[derive(FromArgs)]
 #[from_args(name = "a85decode", style = def)]
-struct A85DecodeArgs {
-    b: Value,
+struct A85DecodeArgs<H: Reference> {
+    b: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    foldspaces: Value,
+    foldspaces: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    adobe: Value,
+    adobe: Value<H>,
     #[from_args(kw_only, default)]
-    ignorechars: Option<Value>,
+    ignorechars: Option<Value<H>>,
 }
 
 /// Declares the argument struct for one of the module's `f(s)` functions.
@@ -596,8 +600,8 @@ macro_rules! single_arg_struct {
     ($struct_name:ident, $py_name:literal) => {
         #[derive(FromArgs)]
         #[from_args(name = $py_name, style = def)]
-        struct $struct_name {
-            s: Value,
+        struct $struct_name<H: Reference> {
+            s: Value<H>,
         }
     };
 }
@@ -1036,7 +1040,7 @@ fn a85_wrap(result: &[u8], width: usize, adobe: bool, tracker: &ResourceTracker)
 /// Both of CPython's failure modes live here: a `wrapcol` that cannot be
 /// ordered against an `int` fails in `max`, and one that wins the comparison
 /// but is no index — a `float` of one or more — fails in `range`.
-fn a85_wrapcol(wrapcol: &Value, floor: u8, vm: &mut VM<'_>) -> RunResult<usize> {
+fn a85_wrapcol<H: RuntimeRef>(wrapcol: &Value<H>, floor: u8, vm: &mut VM<'_, H>) -> RunResult<usize> {
     let wider = match wrapcol.py_cmp(&Value::Int(i64::from(floor)), vm)? {
         CmpOrder::Ordered(Ordering::Greater) => true,
         // `NaN` is neither larger nor smaller, so the floor stands, as in `max`.
@@ -1057,7 +1061,7 @@ fn a85_wrapcol(wrapcol: &Value, floor: u8, vm: &mut VM<'_>) -> RunResult<usize> 
 /// CPython feeds it to `range`, which takes an arbitrary `int`, so a width
 /// past the address space is not an error — everything lands on one line.
 /// Having beaten a floor of 1, such a width can only be large and positive.
-fn a85_width(wrapcol: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+fn a85_width<H: RuntimeRef>(wrapcol: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<usize> {
     let long = match wrapcol {
         Value::InternLongInt(_) => true,
         Value::Ref(heap_id) => matches!(vm.heap.get(*heap_id), HeapData::LongInt(_)),
@@ -1099,7 +1103,12 @@ fn a85_strip_adobe(data: &[u8], adobe: bool) -> RunResult<&[u8]> {
 ///
 /// Alone among the decoders this can outgrow its input, so its buffer is sized
 /// by [`a85_decoded_size`] rather than from the input's length.
-fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
+fn a85_decode<H: RuntimeRef>(
+    data: &[u8],
+    foldspaces: bool,
+    ignore: &IgnoreChars<'_, H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Vec<u8>> {
     let capacity = a85_decoded_size(data, foldspaces);
     check_estimated_size(capacity, &vm.heap.tracker)?;
     let mut out: Vec<u8> = Vec::with_capacity(capacity);
@@ -1180,16 +1189,16 @@ fn a85_decoded_size(data: &[u8], foldspaces: bool) -> usize {
 /// Splitting the default out keeps the common case a byte comparison: an
 /// explicit argument is tested with Python's `in`, which re-enters the
 /// interpreter and is where a `str` argument raises the way CPython's does.
-enum IgnoreChars<'a> {
+enum IgnoreChars<'a, H: Reference> {
     /// `ignorechars` left at its `b' \t\n\r\v'` default.
     Default,
     /// The object the caller passed, whatever its type.
-    Given(&'a Value),
+    Given(&'a Value<H>),
 }
 
-impl IgnoreChars<'_> {
+impl<H: RuntimeRef> IgnoreChars<'_, H> {
     /// Answers CPython's `x in ignorechars` for a byte no digit rule matched.
-    fn skips(&self, byte: u8, vm: &mut VM<'_>) -> RunResult<bool> {
+    fn skips(&self, byte: u8, vm: &mut VM<'_, H>) -> RunResult<bool> {
         match self {
             Self::Default => Ok(matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b)),
             Self::Given(value) => value.py_contains(&Value::Int(i64::from(byte)), vm),
@@ -1224,19 +1233,23 @@ fn translate(data: &mut [u8], from: &[u8], to: &[u8]) {
 ///
 /// Encoders reach `binascii` without a coercion step, so a `str` fails the
 /// buffer protocol with CPython's `a bytes-like object is required` wording.
-pub(super) fn encode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
+pub(super) fn encode_input<'a, H: RuntimeRef>(value: &'a Value<H>, vm: &'a VM<'_, H>) -> RunResult<Cow<'a, [u8]>> {
     encode_input_prefixed(value, vm, "")
 }
 
 /// Borrows the bytes of an encoder that coerces with `memoryview(s).tobytes()`
 /// first — the base32 and base85 pair — whose `TypeError` is prefixed as a
 /// result. The base64 and base16 encoders reach `binascii` directly instead.
-fn memoryview_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
+fn memoryview_input<'a, H: RuntimeRef>(value: &'a Value<H>, vm: &'a VM<'_, H>) -> RunResult<Cow<'a, [u8]>> {
     encode_input_prefixed(value, vm, "memoryview: ")
 }
 
 /// Shared body of the encoder coercions, where `prefix` selects the wording.
-fn encode_input_prefixed<'a>(value: &'a Value, vm: &'a VM<'_>, prefix: &str) -> RunResult<Cow<'a, [u8]>> {
+fn encode_input_prefixed<'a, H: RuntimeRef>(
+    value: &'a Value<H>,
+    vm: &'a VM<'_, H>,
+    prefix: &str,
+) -> RunResult<Cow<'a, [u8]>> {
     value_as_bytes(value, vm).ok_or_else(|| {
         ExcType::type_error(format!(
             "{prefix}a bytes-like object is required, not '{}'",
@@ -1248,13 +1261,17 @@ fn encode_input_prefixed<'a>(value: &'a Value, vm: &'a VM<'_>, prefix: &str) -> 
 /// Borrows the bytes of a decoder input — CPython's `_bytes_from_decode_data`.
 ///
 /// Decoders additionally accept `str`, provided it is pure ASCII.
-pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
+pub(super) fn decode_input<'a, H: RuntimeRef>(value: &'a Value<H>, vm: &'a VM<'_, H>) -> RunResult<Cow<'a, [u8]>> {
     decode_input_described(value, vm, "a bytes-like object or ASCII string")
 }
 
 /// The same coercion with `expected` naming the accepted types, which
 /// `binascii`'s own functions word differently from `base64`'s.
-pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expected: &str) -> RunResult<Cow<'a, [u8]>> {
+pub(super) fn decode_input_described<'a, H: RuntimeRef>(
+    value: &'a Value<H>,
+    vm: &'a VM<'_, H>,
+    expected: &str,
+) -> RunResult<Cow<'a, [u8]>> {
     if value.is_str(vm.heap) {
         let text = value.to_str(vm)?;
         if text.is_ascii() {
@@ -1280,7 +1297,7 @@ pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expec
 ///
 /// These two go through `base64._input_type_check`, whose message differs from
 /// both other paths.
-fn input_type_check<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
+fn input_type_check<'a, H: RuntimeRef>(value: &'a Value<H>, vm: &'a VM<'_, H>) -> RunResult<Cow<'a, [u8]>> {
     value_as_bytes(value, vm)
         .ok_or_else(|| ExcType::type_error(format!("expected bytes-like object, not {}", value.py_type_name(vm))))
 }
@@ -1288,7 +1305,7 @@ fn input_type_check<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [
 /// Borrows the bytes behind a `bytes` value, interned or heap-allocated.
 ///
 /// `None` for anything else — each caller supplies its own error message.
-fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<Cow<'a, [u8]>> {
+fn value_as_bytes<'a, H: RuntimeRef>(value: &'a Value<H>, vm: &'a VM<'_, H>) -> Option<Cow<'a, [u8]>> {
     match value {
         Value::InternBytes(bytes_id) => Some(Cow::Borrowed(vm.interns.get_bytes(*bytes_id))),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
@@ -1300,7 +1317,7 @@ fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<Cow<'a, [u8]>>
 }
 
 /// Reproduces `assert len(value) == expected, repr(value)` on a raw argument.
-fn assert_len(value: &Value, expected: usize, vm: &mut VM<'_>) -> RunResult<()> {
+fn assert_len<H: RuntimeRef>(value: &Value<H>, expected: usize, vm: &mut VM<'_, H>) -> RunResult<()> {
     let Some(len) = value.py_len(vm) else {
         return Err(ExcType::type_error(format!(
             "object of type '{}' has no len()",
@@ -1328,7 +1345,7 @@ fn assert_len_bytes(bytes: &[u8], expected: usize) -> RunResult<()> {
 }
 
 /// Builds the `AssertionError` whose message is `repr(value)`.
-fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
+fn assertion_error<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<RunError> {
     let repr = value.py_repr(vm)?;
     defer_drop!(repr, vm);
     let message = repr.to_str(vm)?.to_owned();
@@ -1339,7 +1356,7 @@ fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
 ///
 /// No resource preflight: every result here is bounded by a small constant
 /// multiple of an input that the heap already accounts for.
-pub(super) fn allocate_bytes(data: Vec<u8>, heap: &Heap) -> Value {
+pub(super) fn allocate_bytes<H: RuntimeRef>(data: Vec<u8>, heap: &Heap<H>) -> Value<H> {
     Value::Ref(heap.allocate(HeapData::Bytes(data.into())))
 }
 

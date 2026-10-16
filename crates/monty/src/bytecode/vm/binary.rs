@@ -4,12 +4,12 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::DropGuard,
+    heap::{DropGuard, RuntimeRef},
     types::PyTrait,
     value::Value,
 };
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// Unary minus (`-x`).
     pub(super) fn unary_neg(&mut self) -> Result<(), RunError> {
         self.unary_op(PyTrait::py_neg_impl, "-")
@@ -128,7 +128,7 @@ impl VM<'_> {
     /// CPython's `TypeError` (naming `symbol`) when the type has no such form.
     fn unary_op(
         &mut self,
-        operation: impl FnOnce(&Value, &mut Self) -> RunResult<Option<Value>>,
+        operation: impl FnOnce(&Value<H>, &mut Self) -> RunResult<Option<Value<H>>>,
         symbol: &str,
     ) -> Result<(), RunError> {
         let this = self;
@@ -147,7 +147,7 @@ impl VM<'_> {
     /// Applies a binary operation while owning stack-value cleanup.
     fn binary_op(
         &mut self,
-        operation: impl FnOnce(&Value, &Value, &mut Self) -> RunResult<Value>,
+        operation: impl FnOnce(&Value<H>, &Value<H>, &mut Self) -> RunResult<Value<H>>,
     ) -> Result<(), RunError> {
         let this = self;
 
@@ -169,8 +169,8 @@ impl VM<'_> {
     /// form and the ordinary binary operator produces a fresh value.
     fn inplace_op(
         &mut self,
-        inplace: impl FnOnce(&mut Value, &Value, &mut Self) -> RunResult<bool>,
-        binary: impl FnOnce(&Value, &Value, &mut Self) -> RunResult<Value>,
+        inplace: impl FnOnce(&mut Value<H>, &Value<H>, &mut Self) -> RunResult<bool>,
+        binary: impl FnOnce(&Value<H>, &Value<H>, &mut Self) -> RunResult<Value<H>>,
     ) -> Result<(), RunError> {
         let this = self;
 

@@ -18,15 +18,16 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    heap::{DropGuard, Heap, HeapData, HeapItem, HeapObjectRead, HeapRead, Reference, RuntimeRef},
     intern::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, NoHeapRef, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// A regex match result, storing captured groups and positions.
 ///
 /// Created by `re.match()`, `re.search()`, `re.fullmatch()`, and their
@@ -51,7 +52,7 @@ use crate::{
 /// Both integer and named group access are supported — named groups are looked
 /// up via the `named_groups` mapping.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ReMatch {
+pub(crate) struct ReMatch<H: Reference> {
     /// The full matched text (equivalent to `group(0)`).
     full_match: String,
     /// Start byte position of the full match in the input string.
@@ -67,7 +68,7 @@ pub(crate) struct ReMatch {
     /// The searched subject (the `.string` attribute), held as a refcounted heap
     /// reference so every match from one `finditer` shares one copy — tracked
     /// once, not per match. Always a `str` `Value` (heap `Str` or interned).
-    subject: Value,
+    subject: Value<H>,
     /// Whether the subject is pure ASCII, so byte offset == character offset.
     all_ascii: bool,
     /// Char-offset `(start, end)` of the full match, computed lazily by
@@ -76,7 +77,7 @@ pub(crate) struct ReMatch {
     char_span: OnceCell<(i64, i64)>,
 }
 
-impl ReMatch {
+impl<H: RuntimeRef> ReMatch<H> {
     /// Creates a `ReMatch` from a `fancy_regex::Captures` result.
     ///
     /// Stores byte offsets (converted to char offsets lazily — see the type docs).
@@ -84,7 +85,7 @@ impl ReMatch {
     /// (the caller clones it per match); `regex` supplies named-group mappings.
     pub fn from_captures(
         caps: &fancy_regex::Captures<'_>,
-        subject: Value,
+        subject: Value<H>,
         all_ascii: bool,
         regex: &fancy_regex::Regex,
     ) -> Self {
@@ -130,14 +131,14 @@ impl ReMatch {
 
     /// The subject `Value` this match keeps alive (its `.string`). Lets the heap
     /// walkers in `heap.rs` follow and release the shared subject reference.
-    pub(crate) fn subject_ref(&self) -> &Value {
+    pub(crate) fn subject_ref(&self) -> &Value<H> {
         &self.subject
     }
 
     /// The `(start, end)` char offsets of the full match — what `.start()`,
     /// `.end()`, `.span()`, and `repr` report. Memoized: a non-ASCII subject is
     /// scanned once (only up to the match end) on first access, O(1) after.
-    fn char_span(&self, vm: &VM<'_>) -> (i64, i64) {
+    fn char_span(&self, vm: &VM<'_, H>) -> (i64, i64) {
         *self.char_span.get_or_init(|| {
             let (start, end) = if self.all_ascii {
                 (self.start, self.end)
@@ -156,7 +157,7 @@ impl ReMatch {
     /// match's span goes through the memoized [`ReMatch::char_span`] instead).
     /// ASCII subjects need no conversion; otherwise the subject text is read
     /// back from the heap for a forward scan.
-    fn char_offset(&self, byte_offset: usize, vm: &VM<'_>) -> i64 {
+    fn char_offset(&self, byte_offset: usize, vm: &VM<'_, H>) -> i64 {
         let char_offset = if self.all_ascii {
             byte_offset
         } else {
@@ -171,7 +172,7 @@ impl ReMatch {
     /// Group 0 is the full match, groups 1..N are capture groups.
     /// Returns `Value::None` for unmatched optional groups.
     /// Raises `IndexError` for invalid group numbers.
-    fn get_group(&self, n: i64, heap: &Heap) -> RunResult<Value> {
+    fn get_group(&self, n: i64, heap: &Heap<H>) -> RunResult<Value<H>> {
         match n.cmp(&0) {
             Ordering::Equal => Ok(allocate_string(self.full_match.as_str(), heap)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
@@ -192,7 +193,7 @@ impl ReMatch {
     ///
     /// Looks up the group name in `named_groups` and delegates to `get_group`.
     /// Raises `IndexError` if the name is not found.
-    fn get_group_by_name(&self, name: &str, heap: &Heap) -> RunResult<Value> {
+    fn get_group_by_name(&self, name: &str, heap: &Heap<H>) -> RunResult<Value<H>> {
         for (group_name, idx) in &self.named_groups {
             if group_name == name {
                 #[expect(clippy::cast_possible_wrap, reason = "group indices are always small")]
@@ -203,12 +204,12 @@ impl ReMatch {
     }
 }
 
-impl<'h> HeapRead<'h, ReMatch> {
+impl<'h, H: RuntimeRef> HeapRead<'h, ReMatch<H>> {
     /// Returns a dict mapping named group names to their matched strings.
     ///
     /// Groups that didn't participate in the match have the `default` value
     /// (typically `None`).
-    fn get_groupdict(&self, default: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn get_groupdict(&self, default: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let this = self.get(vm.heap);
         let mut pairs = Vec::with_capacity(this.named_groups.len());
         for (name, idx) in &this.named_groups {
@@ -229,11 +230,11 @@ impl<'h> HeapRead<'h, ReMatch> {
     }
 }
 
-impl ReMatch {
+impl<H: RuntimeRef> ReMatch<H> {
     /// Returns a tuple of all capture group strings.
     ///
     /// Unmatched optional groups appear as `None`.
-    fn get_groups(&self, heap: &Heap) -> Value {
+    fn get_groups(&self, heap: &Heap<H>) -> Value<H> {
         let mut elements = smallvec![];
         for group in &self.groups {
             match group {
@@ -247,7 +248,7 @@ impl ReMatch {
     /// Returns the start character position for a given group.
     ///
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
-    fn get_start(&self, n: i64, vm: &VM<'_>) -> RunResult<Value> {
+    fn get_start(&self, n: i64, vm: &VM<'_, H>) -> RunResult<Value<H>> {
         match n.cmp(&0) {
             Ordering::Equal => Ok(Value::Int(self.char_span(vm).0)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
@@ -267,7 +268,7 @@ impl ReMatch {
     /// Returns the end character position for a given group.
     ///
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
-    fn get_end(&self, n: i64, vm: &VM<'_>) -> RunResult<Value> {
+    fn get_end(&self, n: i64, vm: &VM<'_, H>) -> RunResult<Value<H>> {
         match n.cmp(&0) {
             Ordering::Equal => Ok(Value::Int(self.char_span(vm).1)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
@@ -287,7 +288,7 @@ impl ReMatch {
     /// Returns a `(start, end)` tuple for a given group.
     ///
     /// Group 0 is the full match. Returns `(-1, -1)` for unmatched optional groups
-    fn get_span(&self, n: i64, vm: &VM<'_>) -> RunResult<Value> {
+    fn get_span(&self, n: i64, vm: &VM<'_, H>) -> RunResult<Value<H>> {
         match n.cmp(&0) {
             Ordering::Equal => {
                 let (start, end) = self.char_span(vm);
@@ -309,26 +310,26 @@ impl ReMatch {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, ReMatch<H>> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::ReMatch
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         // Match objects use identity equality (handled before the heap read).
         Ok(None)
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         // Match objects are always truthy
         Ok(true)
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let m = self.get(vm.heap);
         let (start, end) = m.char_span(vm);
         write!(f, "<re.Match object; span=({start}, {end}), match=")?;
@@ -336,7 +337,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
         Ok(f.write_char('>')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::StringAttr) => {
                 // Hand back the same subject object (CPython's `m.string is s`),
@@ -344,11 +345,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
                 let v = self.get(vm.heap).subject.clone_with_heap(vm);
                 Ok(Some(CallResult::Value(v)))
             }
-            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(
+                Type::<NoHeapRef>::ReMatch,
+                attr.as_str(vm.interns),
+            )),
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let result = match attr.static_string(vm.interns) {
             Some(StaticStrings::Group) => call_group(self, args, vm)?,
             Some(StaticStrings::Groups) => {
@@ -374,12 +378,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
                 let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
                 self.get(vm.heap).get_span(n, vm)?
             }
-            _ => return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm)),
+            _ => {
+                return Err(ExcType::attribute_error_method(
+                    Type::<NoHeapRef>::ReMatch,
+                    attr,
+                    args,
+                    vm,
+                ));
+            }
         };
         Ok(CallResult::Value(result))
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         match key {
             Value::Int(n) => self.get(vm.heap).get_group(*n, vm.heap),
             Value::Bool(b) => self.get(vm.heap).get_group(i64::from(*b), vm.heap),
@@ -399,8 +410,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 }
 
-impl HeapItem for ReMatch {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for ReMatch<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         // Release the shared subject reference (no-op for an interned subject).
         // `dec_ref_forget` neutralises the `Ref` so the struct's own `Drop`
         // does not trip the `memory-model-checks` leak assertion.
@@ -417,7 +428,11 @@ impl HeapItem for ReMatch {
 /// - `m.group()` → equivalent to `m.group(0)`, returns full match string
 /// - `m.group(n)` → returns the nth group (integer or named string)
 /// - `m.group(n1, n2, ...)` → returns a tuple of groups
-fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn call_group<'h, H: RuntimeRef>(
+    m: &HeapRead<'h, ReMatch<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     match args {
         ArgValues::Empty => m.get(vm.heap).get_group(0, vm.heap),
         ArgValues::One(v) => {
@@ -440,7 +455,7 @@ fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -
 }
 
 /// Resolves a single group argument — integer, bool, or string (named group).
-fn resolve_group_arg(m: &ReMatch, val: &Value, vm: &VM<'_>) -> RunResult<Value> {
+fn resolve_group_arg<H: RuntimeRef>(m: &ReMatch<H>, val: &Value<H>, vm: &VM<'_, H>) -> RunResult<Value<H>> {
     match val {
         Value::Int(n) => m.get_group(*n, vm.heap),
         Value::Bool(b) => m.get_group(i64::from(*b), vm.heap),
@@ -464,7 +479,12 @@ fn resolve_group_arg(m: &ReMatch, val: &Value, vm: &VM<'_>) -> RunResult<Value> 
 /// Many `re.Match` methods accept an optional group number that defaults to 0.
 /// This helper extracts the argument, validates it is an integer (or string for
 /// named groups), and returns the group number.
-fn extract_optional_group_arg(args: ArgValues, name: &str, default: i64, heap: &mut Heap) -> RunResult<i64> {
+fn extract_optional_group_arg<H: RuntimeRef>(
+    args: ArgValues<H>,
+    name: &str,
+    default: i64,
+    heap: &mut Heap<H>,
+) -> RunResult<i64> {
     let opt = args.get_zero_one_arg(name, heap)?;
     match opt {
         None => Ok(default),
@@ -511,7 +531,7 @@ fn group_index(n: i64) -> usize {
 /// pos-or-keyword `default` value used to fill groups that didn't match.
 #[derive(FromArgs)]
 #[from_args(name = "groupdict", at_most_total)]
-struct GroupdictArgs {
+struct GroupdictArgs<H: Reference> {
     #[from_args(default)]
-    default: Option<Value>,
+    default: Option<Value<H>>,
 }

@@ -1,0 +1,32 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error[E0521]: borrowed data escapes outside of closure
+  --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:75:13
+   |
+73 |         let id = left.heap.allocate(HeapData::List(List::new(Vec::new())));
+   |             -- `id` declared here, outside of the closure body
+74 |         right.activate(|right| {
+   |                         ----- `right` is a reference that is only valid in the closure body
+75 |             right.heap.get(id);
+   |             ^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
+   |
+   = note: requirement occurs because of the type `HeapObjectPtr<'_>`, which makes the generic argument `'_` invariant
+   = note: the struct `HeapObjectPtr<'heap>` is invariant over the parameter `'heap`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error[E0521]: borrowed data escapes outside of closure
+  --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:75:13
+   |
+72 |     left.activate(|left| {
+   |                    ----
+   |                    |
+   |                    `left` is a reference that is only valid in the closure body
+   |                    has type `&mut OwnedState<HeapObjectPtr<'1>>`
+...
+75 |             right.heap.get(id);
+   |             ^^^^^^^^^^^^^^^^^^
+   |             |
+   |             `left` escapes the closure body here
+   |             argument requires that `'1` must outlive `'static`

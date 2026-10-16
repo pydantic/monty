@@ -13,7 +13,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::{Identifier, Node},
     function::Function,
-    heap::{DropGuard, HeapData, HeapId},
+    heap::{DropGuard, HeapData, Reference, RuntimeRef},
     intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
     parse::{CodeRange, parse_expression_with_interner, parse_module_with_filename_id},
@@ -25,34 +25,34 @@ use crate::{
 /// Arguments of `eval(source, /, globals=None, locals=None)`.
 #[derive(FromArgs)]
 #[from_args(name = "eval", at_most_total)]
-struct EvalArgs {
+struct EvalArgs<H: Reference> {
     #[from_args(pos_only)]
-    source: Value,
+    source: Value<H>,
     #[from_args(default = Value::None)]
-    globals: Value,
+    globals: Value<H>,
     #[from_args(default = Value::None)]
-    locals: Value,
+    locals: Value<H>,
 }
 
 /// Arguments of `exec(source, /, globals=None, locals=None, *, closure=None)`.
 #[derive(FromArgs)]
 #[from_args(name = "exec")]
-struct ExecArgs {
+struct ExecArgs<H: Reference> {
     #[from_args(pos_only)]
-    source: Value,
+    source: Value<H>,
     #[from_args(default = Value::None)]
-    globals: Value,
+    globals: Value<H>,
     #[from_args(default = Value::None)]
-    locals: Value,
+    locals: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    closure: Value,
+    closure: Value<H>,
 }
 
 /// Implementation of the `eval()` builtin function.
 ///
 /// Parses `source` as one expression and runs it in the given (or the
 /// caller's) namespace; the expression's value is the call's result.
-pub fn builtin_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub fn builtin_eval<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let EvalArgs {
         source,
         globals,
@@ -72,7 +72,7 @@ pub fn builtin_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 ///
 /// Compiles `source` as a module and runs it in the given (or the caller's)
 /// namespace; the call's result is `None`.
-pub fn builtin_exec(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub fn builtin_exec<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let ExecArgs {
         source,
         globals,
@@ -105,13 +105,13 @@ enum Builtin {
 
 /// Compiles `source` in the namespace `globals` / `locals` describe (borrowed
 /// dict ids, validated by the caller) and pushes its frame.
-fn run_snippet(
+fn run_snippet<H: RuntimeRef>(
     builtin: Builtin,
     source: &Arc<str>,
-    globals: Option<HeapId>,
-    locals: Option<HeapId>,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    globals: Option<H>,
+    locals: Option<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     if source.contains('\0') {
         return Err(
             SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
@@ -130,13 +130,13 @@ fn run_snippet(
 }
 
 /// Compiles privately and publishes only after the snippet's frame is admitted.
-fn compile_and_push(
+fn compile_and_push<H: RuntimeRef>(
     builtin: Builtin,
     source: &Arc<str>,
     names: SnippetNames,
-    namespace: Box<FrameNamespace>,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    namespace: Box<FrameNamespace<H>>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
     let mut overlay = CompileInterns::new(vm.interns);
@@ -200,7 +200,7 @@ fn compile_and_push(
 }
 
 /// The snippet's text: a `str`, or `bytes` decoded as UTF-8.
-fn snippet_source(name: &str, source: &Value, vm: &mut VM<'_>) -> RunResult<Arc<str>> {
+fn snippet_source<H: RuntimeRef>(name: &str, source: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Arc<str>> {
     let bytes: &[u8] = match source {
         Value::InternString(id) => return Ok(Arc::from(vm.interns.get_str(*id))),
         Value::InternBytes(id) => vm.interns.get_bytes(*id),
@@ -234,7 +234,7 @@ fn source_type_error(name: &str) -> RunError {
 }
 
 /// Validates the `globals` argument: `None`, or a dict whose id is returned (borrowed).
-fn globals_dict(globals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult<Option<HeapId>> {
+fn globals_dict<H: RuntimeRef>(globals: &Value<H>, builtin: Builtin, vm: &mut VM<'_, H>) -> RunResult<Option<H>> {
     match globals {
         Value::None => Ok(None),
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)) => Ok(Some(*id)),
@@ -261,7 +261,7 @@ fn globals_dict(globals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult
 }
 
 /// Validates the `locals` argument: `None`, or a dict whose id is returned (borrowed).
-fn locals_dict(locals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult<Option<HeapId>> {
+fn locals_dict<H: RuntimeRef>(locals: &Value<H>, builtin: Builtin, vm: &mut VM<'_, H>) -> RunResult<Option<H>> {
     match locals {
         Value::None => Ok(None),
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)) => Ok(Some(*id)),

@@ -14,7 +14,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::DropGuard,
+    heap::{DropGuard, Reference, RuntimeRef},
     types::{PyTrait, Type, iter::collect_iterable},
     value::Value,
 };
@@ -22,13 +22,13 @@ use crate::{
 /// Coordinates remain owned until all conversions have succeeded.
 #[derive(FromArgs)]
 #[from_args(name = "hypot")]
-struct HypotArgs {
+struct HypotArgs<H: Reference> {
     #[from_args(varargs)]
-    coordinates: Vec<Value>,
+    coordinates: Vec<Value<H>>,
 }
 
 /// Computes a norm without overflowing intermediate squares.
-pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn hypot<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let args = args.reject_kwargs("math.hypot", vm.heap)?;
     let HypotArgs { coordinates } = HypotArgs::from_args(args, vm)?;
     defer_drop!(coordinates, vm);
@@ -42,15 +42,15 @@ pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Positional-only points; CPython qualifies only the keyword error.
 #[derive(FromArgs)]
 #[from_args(name = "dist", style = unpack, kwarg_error_name = "math.dist")]
-struct DistArgs {
+struct DistArgs<H: Reference> {
     #[from_args(pos_only)]
-    p: Value,
+    p: Value<H>,
     #[from_args(pos_only)]
-    q: Value,
+    q: Value<H>,
 }
 
 /// Collects both points before checking dimensions and converting coordinates.
-pub(super) fn dist(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn dist<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DistArgs { p, q } = DistArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     defer_drop!(q, vm);
@@ -136,7 +136,7 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 }
 
 /// Sums non-overlapping partials, preserving cancellation and half-even rounding.
-pub(super) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn fsum<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let args = args.reject_kwargs("math.fsum", vm.heap)?;
     let iterable = args.get_one_arg("math.fsum", vm.heap)?;
     let iterator = iterable.into_py_iter(vm)?;
@@ -221,15 +221,15 @@ fn round_partials(partials: &mut SmallVec<[f64; 32]>) -> f64 {
 /// `start` is keyword-only and is returned unchanged for an empty iterable.
 #[derive(FromArgs)]
 #[from_args(name = "prod", style = c_named, at_most_total)]
-struct ProdArgs {
+struct ProdArgs<H: Reference> {
     #[from_args(pos_only)]
-    iterable: Value,
+    iterable: Value<H>,
     #[from_args(kw_only, default = Value::Int(1))]
-    start: Value,
+    start: Value<H>,
 }
 
 /// Multiplies through Python's numeric protocol, retaining arbitrary-size integer results.
-pub(super) fn prod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn prod<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let ProdArgs { iterable, start } = ProdArgs::from_args(args, vm)?;
     let mut result = DropGuard::new(start, vm);
     {
@@ -281,15 +281,15 @@ impl Triple {
 /// Dot-product inputs are advanced in pairs, with strict length checking.
 #[derive(FromArgs)]
 #[from_args(name = "sumprod", style = unpack, kwarg_error_name = "math.sumprod")]
-struct SumprodArgs {
+struct SumprodArgs<H: Reference> {
     #[from_args(pos_only)]
-    p: Value,
+    p: Value<H>,
     #[from_args(pos_only)]
-    q: Value,
+    q: Value<H>,
 }
 
 /// Uses exact integer arithmetic and compensated float products before generic arithmetic.
-pub(super) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn sumprod<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let SumprodArgs { p, q } = SumprodArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     defer_drop!(q, vm);
@@ -354,7 +354,7 @@ pub(super) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// The compensated path accepts float/float and float/int pairs, including booleans.
-fn float_pair(a: &Value, b: &Value, vm: &VM<'_>) -> RunResult<Option<(f64, f64)>> {
+fn float_pair<H: RuntimeRef>(a: &Value<H>, b: &Value<H>, vm: &VM<'_, H>) -> RunResult<Option<(f64, f64)>> {
     if (matches!(a, Value::Float(_)) && matches!(b.py_type(vm), Type::Float | Type::Int | Type::Bool))
         || (matches!(b, Value::Float(_)) && matches!(a.py_type(vm), Type::Float | Type::Int | Type::Bool))
     {
@@ -365,7 +365,7 @@ fn float_pair(a: &Value, b: &Value, vm: &VM<'_>) -> RunResult<Option<(f64, f64)>
 }
 
 /// Checks mixed float/integer conversion before multiplication; generic arithmetic permits infinity.
-fn multiply(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn multiply<H: RuntimeRef>(a: &Value<H>, b: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     if let Some((a, b)) = float_pair(a, b, vm)? {
         Ok(Value::Float(a * b))
     } else {
@@ -374,7 +374,7 @@ fn multiply(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 }
 
 /// Checks mixed float/integer conversion when flushing a dot-product accumulator.
-fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn add<H: RuntimeRef>(a: &Value<H>, b: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     if let Some((a, b)) = float_pair(a, b, vm)? {
         Ok(Value::Float(a + b))
     } else {
@@ -385,17 +385,17 @@ fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// Three positional real numbers, converted in declaration order.
 #[derive(FromArgs)]
 #[from_args(name = "fma", style = unpack, kwarg_error_name = "math.fma")]
-struct FmaArgs {
+struct FmaArgs<H: Reference> {
     #[from_args(pos_only)]
-    x: Value,
+    x: Value<H>,
     #[from_args(pos_only)]
-    y: Value,
+    y: Value<H>,
     #[from_args(pos_only)]
-    z: Value,
+    z: Value<H>,
 }
 
 /// Performs one rounding and raises CPython's errors for invalid operations and overflow.
-pub(super) fn fma(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn fma<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let FmaArgs { x, y, z } = FmaArgs::from_args(args, vm)?;
     defer_drop!(x, vm);
     defer_drop!(y, vm);

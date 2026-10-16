@@ -10,6 +10,7 @@
 //! - [`load`] handles JSON text -> Monty values
 //! - [`dump`] handles Monty values -> JSON text
 
+use crate::heap::RuntimeRef;
 mod dump;
 mod load;
 mod string_cache;
@@ -22,7 +23,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{HeapData, HeapId},
+    heap::HeapData,
     intern::StaticStrings,
     types::Module,
     value::Value,
@@ -47,7 +48,7 @@ pub(crate) enum JsonFunctions {
 /// The module exposes `loads`, `dumps`, and `JSONDecodeError`. These are the
 /// most widely used parts of CPython's `json` module and are sufficient for
 /// common data interchange and round-tripping use cases inside the sandbox.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Json, vm.interns);
     module.set_attr(
         StaticStrings::Loads,
@@ -71,7 +72,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 ///
 /// Both functions are pure computations that return ordinary Monty values and
 /// never need host involvement, so the dispatcher returns `Value` directly.
-pub(super) fn call(vm: &mut VM<'_>, function: JsonFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: JsonFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         JsonFunctions::Loads => load::call_loads(vm, args),
         JsonFunctions::Dumps => dump::call_dumps(vm, args),
