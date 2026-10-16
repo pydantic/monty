@@ -168,3 +168,27 @@ async def continue_swallows_pending_failures():
 
 
 assert await continue_swallows_pending_failures() == [0, 1, 2, 'clean']  # pyright: ignore
+
+# === bare re-raise preserves exception identity across task switches ===
+import asyncio
+
+
+async def reraise_after_task_switch():
+    original = ValueError('original after task switch')
+    try:
+        raise original
+    except ValueError:
+        assert await async_call(42) == 42
+        try:
+            raise
+        except ValueError as reraised:
+            assert reraised is original
+        raise
+
+
+try:
+    await asyncio.gather(reraise_after_task_switch(), async_call(1))  # pyright: ignore
+except ValueError as exc:
+    assert str(exc) == 'original after task switch'
+else:
+    assert False, 'the active task exception must be re-raised'
