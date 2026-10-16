@@ -1564,6 +1564,19 @@ typing.Union[members]
     assert_timeout_promptly(code, "union construction");
 }
 
+/// Test that the match scans of `re.split()` and `re.findall()` respect the time limit.
+///
+/// Each scan collects its matches in one native loop, so a subject with a million
+/// matches would run to completion without the poll in `check_slice_growth`. A
+/// pattern with a capture group takes its own loop, `split_with_groups`.
+#[test]
+fn timeout_in_re_scans() {
+    for expression in ["re.split('(,)', s)", "re.split(',', s)", "re.findall(',', s)"] {
+        let code = format!("import re\ns = ',' * 1_000_000\ninterrupt()\n{expression}");
+        assert_timeout_promptly(&code, expression);
+    }
+}
+
 /// Test that `repr(large_set)` respects the time limit.
 ///
 /// The elements are ints rather than strings so that the promptness bound
