@@ -106,22 +106,24 @@ impl Script {
             limits: false,
             overlay: false,
         };
-        let header = code.lines().take_while(|line| line.starts_with('#'));
-        for option in header
-            .filter_map(|line| line.strip_prefix("# bench:"))
-            .flat_map(str::split_whitespace)
-        {
-            match option.split_once('=') {
-                Some(("data", data)) => {
-                    let data_path = path.parent().unwrap().join(data);
-                    script.input = Input::Data(fs::read_to_string(data_path).unwrap());
+        for line in code.lines().take_while(|line| line.starts_with('#')) {
+            let Some(options) = line.strip_prefix("# bench:") else {
+                assert!(!is_misspelled_header(line), "{}: malformed `{line}`", path.display());
+                continue;
+            };
+            for option in options.split_whitespace() {
+                match option.split_once('=') {
+                    Some(("data", data)) => {
+                        let data_path = path.parent().unwrap().join(data);
+                        script.input = Input::Data(fs::read_to_string(data_path).unwrap());
+                    }
+                    _ => match option {
+                        "mount" => script.input = Input::Mount,
+                        "overlay" => script.overlay = true,
+                        "limits" => script.limits = true,
+                        _ => panic!("{}: unknown `# bench:` option `{option}`", path.display()),
+                    },
                 }
-                _ => match option {
-                    "mount" => script.input = Input::Mount,
-                    "overlay" => script.overlay = true,
-                    "limits" => script.limits = true,
-                    _ => panic!("{}: unknown `# bench:` option `{option}`", path.display()),
-                },
             }
         }
         let mounted = matches!(script.input, Input::Mount);
@@ -159,7 +161,7 @@ impl Script {
             c.bench_function(&format!("{name}__monty"), |b| run_monty(b, code, &filename, data));
             if self.limits {
                 c.bench_function(&format!("{name}_limits__monty"), |b| {
-                    run_monty_limits(b, code, &filename);
+                    run_monty_limits(b, code, &filename, data);
                 });
             }
         }
@@ -174,6 +176,14 @@ impl Script {
             c.bench_function(&format!("{name}__cpython"), |b| run_cpython(b, code, &filename, data));
         }
     }
+}
+
+/// Whether a comment that isn't exactly `# bench:` still reads as a header, such as
+/// `#bench:` or `# Bench:`, so a typo panics instead of silently dropping its options.
+fn is_misspelled_header(line: &str) -> bool {
+    let comment = line.trim_start_matches('#').trim_start();
+    comment.get(..5).is_some_and(|word| word.eq_ignore_ascii_case("bench"))
+        && !comment[5..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
 }
 
 /// The `.py` files directly in `dir`.
@@ -191,26 +201,33 @@ fn file_stem(path: &Path) -> &str {
 
 /// Parses once, then benchmarks repeated execution, binding `DATA` when `data` is given.
 fn run_monty(bench: &mut Bencher, code: &str, filename: &str, data: Option<&str>) {
-    let input_names = data.map(|_| vec!["DATA".to_owned()]).unwrap_or_default();
-    let mut ex = MontyRun::new(code.to_owned(), filename, input_names, CompileOptions::default()).unwrap();
-    let inputs = || {
-        data.map(|data| vec![MontyObject::string(data.to_owned())])
-            .unwrap_or_default()
-    };
-    bench.iter(|| black_box(ex.run_no_limits(inputs()).unwrap()));
+    let mut ex = parse_with_data(code, filename, data);
+    bench.iter(|| black_box(ex.run_no_limits(data_inputs(data)).unwrap()));
 }
 
 /// Runs with production-shaped resource limits armed (generous budgets that never trip),
 /// measuring the amortized limit-checking path sandboxes run rather than the no-limits path.
-fn run_monty_limits(bench: &mut Bencher, code: &str, filename: &str) {
-    let mut ex = MontyRun::new(code.to_owned(), filename, vec![], CompileOptions::default()).unwrap();
+fn run_monty_limits(bench: &mut Bencher, code: &str, filename: &str, data: Option<&str>) {
+    let mut ex = parse_with_data(code, filename, data);
     let limits = ResourceLimits::default()
         .max_feed_duration(Duration::from_mins(10))
         .max_memory(1 << 40);
     bench.iter(|| {
         let tracker = ResourceTracker::new(limits.clone());
-        black_box(ex.run(vec![], tracker, PrintWriter::Stdout).unwrap())
+        black_box(ex.run(data_inputs(data), tracker, PrintWriter::Stdout).unwrap())
     });
+}
+
+/// Parses `code`, declaring a `DATA` input when `data` is given.
+fn parse_with_data(code: &str, filename: &str, data: Option<&str>) -> MontyRun {
+    let input_names = data.map(|_| vec!["DATA".to_owned()]).unwrap_or_default();
+    MontyRun::new(code.to_owned(), filename, input_names, CompileOptions::default()).unwrap()
+}
+
+/// The input values matching [`parse_with_data`]'s declaration.
+fn data_inputs(data: Option<&str>) -> Vec<MontyObject> {
+    data.map(|data| vec![MontyObject::string(data.to_owned())])
+        .unwrap_or_default()
 }
 
 /// Runs with `host_root` mounted at `/data` in `mode`, bound to `DATA`, answering every
