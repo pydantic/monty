@@ -1,3 +1,6 @@
+# Group-by aggregation over rows of dicts, the core loop of a data-analysis agent:
+# str-keyed dict get/insert, `sorted` with a lambda key and a filtered generator `sum`.
+
 regions = ['north', 'south', 'east', 'west']
 segments = ['consumer', 'smb', 'enterprise']
 channels = ['organic', 'paid', 'referral', 'email', 'social']
@@ -27,4 +30,4 @@ for _ in range(10):
     top_key, top_revenue = ranked[0]
     big = sum(1 for row in rows if row['amount'] > 400 and row['quantity'] >= 3)
     checksum += top_revenue + big + top_revenue // orders[top_key]
-checksum
+assert checksum == 909_800
