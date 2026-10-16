@@ -380,8 +380,9 @@ every construction request. Divergences:
     `...<N lines>...`), where CPython pins the individual decorator that raised.
     Every decorator in a stack reports that same location; only the callee frame
     identifies which one raised.
-- Dunder protocols outside the supported surface above and `__iter__`, `__next__`, `__contains__`,
-    `__index__` are not dispatched for user-defined instances.
+- Apart from the supported surface above, only `__iter__`, `__next__`, `__contains__`, and `__index__`
+    are dispatched for user-defined instances.
+    Other dunder protocols are not dispatched.
     These include `__new__`, `__ne__`, ordering comparisons, `__bool__`, `__len__`, `__abs__`, `__invert__`,
     numeric conversions, `__round__`, `__format__`, and all in-place arithmetic dunders (`__iadd__`, etc.).
     Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,

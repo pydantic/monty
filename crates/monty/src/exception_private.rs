@@ -1795,6 +1795,7 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 
     /// Float power slots reject a modulus before coercing the other operands.
+    #[must_use]
     fn type_error_pow_modulo() -> RunError {
         Self::type_error("pow() 3rd argument not allowed unless all arguments are integers")
     }

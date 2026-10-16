@@ -1622,7 +1622,9 @@ fn recursive_instance_protocols_are_bounded() {
         let code =
             format!("class Recursive:\n    def {slot}(self, *args):\n        {body}\nobj = Recursive()\n{invocation}");
         let mut runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-        let error = runner.run_no_limits(vec![]).unwrap_err();
+        let error = runner
+            .run_no_limits(vec![])
+            .expect_err(&format!("slot {slot} should exceed the recursion limit"));
         assert_eq!(error.exc_type(), ExcType::RecursionError, "slot: {slot}");
     }
 
