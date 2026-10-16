@@ -405,16 +405,22 @@ fn time_limit_covers_csv_streaming_writerows() {
 }
 
 /// A field with no special character is scanned as one run: too few rows for the
-/// per-row poll and a single run per field would otherwise never read the clock.
+/// per-row poll and a single run per field would otherwise never read the clock. The
+/// turn's closing check raises either way, so the elapsed time is what proves the poll:
+/// the rows take tens of seconds to format in full.
 #[test]
 fn time_limit_covers_csv_long_ordinary_fields() {
     let code = "import csv\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.writer(sink).writerows([['x' * 10_000_000]] * 60)\n";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
-    let exc = ex
-        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
-        .unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    let start = Instant::now();
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    let elapsed = start.elapsed();
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "formatting should stop at the first poll past the limit, took {elapsed:?}"
+    );
 }
 
 #[test]
