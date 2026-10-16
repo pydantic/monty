@@ -567,6 +567,7 @@ pub enum Node<F> {
         target: Identifier,
         object: ExprLoc,
     },
+    Delete(Vec<AssignTarget>),
     /// Tuple unpacking assignment (e.g., `a, b = some_tuple` or `(a, b), c = nested`).
     ///
     /// The right-hand side is evaluated, then unpacked into the targets in order.

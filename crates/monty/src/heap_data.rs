@@ -20,7 +20,7 @@ use crate::{
     heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::FunctionId,
     modules::collections::defaultdict::defaultdict_missing,
-    types::{LazyHeapSet, LongInt, PyTrait, Type, str::allocate_string},
+    types::{LazyHeapSet, LongInt, PyTrait, Type, attribute_deletion_error, item_deletion_error, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -1091,6 +1091,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
+    fn py_delitem(&mut self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        heap_read_output_py_trait_forward!(self, |item| item.py_delitem(key, vm), else {
+            let error = item_deletion_error(self.py_type(vm), &self.py_type_name(vm), &key, vm);
+            key.drop_with(vm);
+            Err(error)
+        })
+    }
+
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         heap_read_output_py_trait_forward!(
             self,
@@ -1104,6 +1112,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 ))
             }
         )
+    }
+
+    fn py_del_attr(&mut self, name: &EitherStr, vm: &mut VM<'h>) -> RunResult<()> {
+        heap_read_output_py_trait_forward!(self, |item| item.py_del_attr(name, vm), else {
+            Err(attribute_deletion_error(self.py_type(vm), &self.py_type_name(vm), name.as_str(vm.interns)))
+        })
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

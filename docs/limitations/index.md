@@ -46,7 +46,6 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
 - `match` statements
-- `del`, both `del x` and `del d[k]`
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions

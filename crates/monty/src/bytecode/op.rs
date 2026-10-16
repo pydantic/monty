@@ -288,7 +288,6 @@ pub enum Opcode {
     BinarySubscr = 75,
     /// a[b] = c: pop value, pop index, pop obj.
     StoreSubscr = 76,
-    // NOTE: DeleteSubscr removed - `del` statement not supported by parser
     /// Pop obj, push obj.attr. Operand: u16 name_id.
     LoadAttr = 77,
     /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
@@ -298,7 +297,6 @@ pub enum Opcode {
     LoadAttrImport = 78,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr = 79,
-    // NOTE: DeleteAttr removed - `del` statement not supported by parser
 
     // === Function Calls ===
     /// Call TOS with n positional args. Operand: u8 arg_count.
@@ -561,6 +559,12 @@ pub enum Opcode {
     /// Unbind a name through the frame's namespace; `NameError` if absent.
     /// Operands as `LoadName`.
     DeleteName = 124,
+    /// Pop index and container, then delete the indexed item.
+    DeleteSubscr = 125,
+    /// Pop object and delete its attribute. Operand: u16 name_id.
+    DeleteAttr = 126,
+    /// Delete a class-body local, raising NameError if it is absent. Operand: u16 slot.
+    DeleteClassLocal = 127,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -656,6 +660,7 @@ impl Opcode {
             | Self::ListToTuple
             | Self::BinarySubscr
             | Self::StoreSubscr
+            | Self::DeleteSubscr
             | Self::GetIter
             | Self::Raise
             | Self::Reraise
@@ -693,6 +698,7 @@ impl Opcode {
             | Self::LoadCell
             | Self::StoreCell
             | Self::DeleteCell
+            | Self::DeleteClassLocal
             | Self::BuildList
             | Self::BuildTuple
             | Self::BuildDict
@@ -702,6 +708,7 @@ impl Opcode {
             | Self::LoadAttr
             | Self::LoadAttrImport
             | Self::StoreAttr
+            | Self::DeleteAttr
             | Self::DeleteGlobal
             | Self::RaiseUnboundLocal
             | Self::MethodDictMerge => OperandShape::U16,
@@ -917,6 +924,7 @@ impl Opcode {
             (ListToTuple, Operand::None) => 0,
             (BinarySubscr, Operand::None) => -1,
             (StoreSubscr, Operand::None) => -3,
+            (DeleteSubscr, Operand::None) => -2,
             (GetIter | Await, Operand::None) => 0,
             (Raise, Operand::None) => -1,
             (Reraise | ClearException | CheckExcMatch, Operand::None) => 0,
@@ -954,9 +962,10 @@ impl Opcode {
             (LoadConst | LoadModule, Operand::U16(_)) => 1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
-            (DeleteGlobal | DeleteCell, Operand::U16(_)) => 0,
+            (DeleteGlobal | DeleteCell | DeleteClassLocal, Operand::U16(_)) => 0,
             (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
             (StoreAttr, Operand::U16(_)) => -2,
+            (DeleteAttr, Operand::U16(_)) => -1,
             // `DictMerge` takes a u16 operand carrying the func_name_id for
             // the duplicate-key TypeError message. `MethodDictMerge` shares
             // the stack effect and additionally peeks the receiver under

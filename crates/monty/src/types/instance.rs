@@ -209,6 +209,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         Ok(())
     }
 
+    fn py_del_attr(&mut self, name: &EitherStr, vm: &mut VM<'h>) -> RunResult<()> {
+        let name_value = attribute_name_value(name, vm);
+        defer_drop!(name_value, vm);
+        if let Some(exc) = dataclasses::frozen_deletion_error(self.get(vm.heap).class(), name_value, vm) {
+            return Err(exc);
+        }
+        match self.attrs_mut().pop(name_value, vm)? {
+            Some((key, value)) => {
+                key.drop_with(vm);
+                value.drop_with(vm);
+                Ok(())
+            }
+            None => Err(ExcType::attribute_error(self.py_type_name(vm), name.as_str(vm.interns))),
+        }
+    }
+
     /// Returns `NotImplemented`; comparisons dispatch at the `Value` level because
     /// user and synthesized dataclass equality require the instance's `HeapId`.
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -398,12 +414,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     fn py_exit(&mut self, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let Some(exit) = class_member(class_id, "__exit__", vm) else {
-            // Defensive tripwire — unreachable via `with`. `py_is_context_manager`
-            // gates on `__exit__` being present at entry, and Monty has no `del`,
-            // so the member cannot be removed mid-body. A reassignment (e.g. to a
-            // non-callable like `None`) keeps the member present, so this branch
-            // is not taken — that case fails later in `call_member_bound` as a
-            // `TypeError: 'NoneType' object is not callable`.
+            // The class member can be deleted inside the `with` body after
+            // `py_is_context_manager` checks it at entry.
             return Err(ExcType::attribute_error(
                 class_name(class_id, vm.heap, vm.interns),
                 "__exit__",

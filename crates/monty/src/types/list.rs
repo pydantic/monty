@@ -611,6 +611,44 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Ok(())
     }
 
+    fn py_delitem(&mut self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
+        {
+            let (start, stop, step) = slice.indices(self.get(vm.heap).len())?;
+            // i128 so `-step` and the differences cannot overflow at the i64 extremes.
+            let (start, stop, step) = (i128::from(start), i128::from(stop), i128::from(step));
+            // Taken out so `extract_if` can hold the items while `drop_with` borrows `vm`.
+            let mut items = mem::take(&mut self.get_mut(vm.heap).items);
+            let mut index = 0_i128;
+            for value in items.extract_if(.., |_| {
+                let current = index;
+                index += 1;
+                if step > 0 {
+                    current >= start && current < stop && (current - start) % step == 0
+                } else {
+                    current <= start && current > stop && (start - current) % -step == 0
+                }
+            }) {
+                value.drop_with(vm);
+            }
+            self.get_mut(vm.heap).items = items;
+            Ok(())
+        } else {
+            let index = key.as_index(vm, Type::List)?;
+            let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
+            let normalized_index = if index < 0 { index + len } else { index };
+            if normalized_index < 0 || normalized_index >= len {
+                Err(ExcType::list_assignment_index_error())
+            } else {
+                let idx = usize::try_from(normalized_index).expect("index validated non-negative");
+                self.get_mut(vm.heap).items.remove(idx).drop_with(vm);
+                Ok(())
+            }
+        }
+    }
+
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
             return Ok(None);

@@ -692,6 +692,20 @@ pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &VM<'_
     Some(SimpleException::new_msg(ExcType::FrozenInstanceError, message).into())
 }
 
+pub(crate) fn frozen_deletion_error(class_id: HeapId, name: &Value, vm: &VM<'_>) -> Option<RunError> {
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        return None;
+    };
+    if !namespace_options(class.namespace(), vm).frozen {
+        return None;
+    }
+    let message = match name.as_either_str(vm.heap) {
+        Some(field) => format!("cannot delete field '{}'", field.as_str(vm.interns)),
+        None => "cannot delete field".to_owned(),
+    };
+    Some(SimpleException::new_msg(ExcType::FrozenInstanceError, message).into())
+}
+
 /// Dataclass field names in definition order, or `None` for a plain class —
 /// the `Some`/`None` split the generic `Instance` code branches on.
 pub(crate) fn dataclass_fields(class_id: HeapId, vm: &VM<'_>) -> Option<Vec<StringId>> {

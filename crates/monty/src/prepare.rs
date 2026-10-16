@@ -702,6 +702,42 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     }
                     new_nodes.push(Node::Assign { target, object });
                 }
+                Node::Delete(targets) => {
+                    let mut prepared = Vec::with_capacity(targets.len());
+                    for target in targets {
+                        let target = match target {
+                            AssignTarget::Name(name) => {
+                                self.names_assigned_in_order.insert(name.name_id);
+                                let name = self.get_id(name)?;
+                                if self.is_class_scope {
+                                    self.bound_class_members.remove(&name.name_id);
+                                }
+                                AssignTarget::Name(name)
+                            }
+                            AssignTarget::Subscript {
+                                target,
+                                index,
+                                target_position,
+                            } => AssignTarget::Subscript {
+                                target: self.prepare_expression(target)?,
+                                index: self.prepare_expression(index)?,
+                                target_position,
+                            },
+                            AssignTarget::Attr {
+                                object,
+                                attr,
+                                target_position,
+                            } => AssignTarget::Attr {
+                                object: self.prepare_expression(object)?,
+                                attr,
+                                target_position,
+                            },
+                            AssignTarget::Unpack { .. } => unreachable!("delete targets are flattened by the parser"),
+                        };
+                        prepared.push(target);
+                    }
+                    new_nodes.push(Node::Delete(prepared));
+                }
                 Node::UnpackAssign {
                     targets,
                     targets_position,
@@ -2425,6 +2461,11 @@ fn collect_scope_info_from_node(
             // Scan value expression for walrus operators
             collect_assigned_names_from_expr(object, assigned_names, interner);
         }
+        Node::Delete(targets) => {
+            for target in targets {
+                collect_assigned_names_from_assign_target(target, assigned_names, interner);
+            }
+        }
         Node::UnpackAssign { targets, object, .. } => {
             // Recursively collect all names from nested unpack targets
             for target in targets {
@@ -2946,6 +2987,11 @@ fn collect_cell_vars_from_node(
             }
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
+        Node::Delete(targets) => {
+            for target in targets {
+                collect_cell_vars_from_assign_target(target, our_locals, cell_vars, interner);
+            }
+        }
         // Listed rather than matched by `_`: a missed capture compiles a local's
         // stores as plain stores and its later loads as cell loads.
         Node::Pass
@@ -3355,6 +3401,11 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_assign_target(target, referenced, interner);
             }
             collect_referenced_names_from_expr(object, referenced, interner);
+        }
+        Node::Delete(targets) => {
+            for target in targets {
+                collect_referenced_names_from_assign_target(target, referenced, interner);
+            }
         }
         Node::For {
             target,

@@ -31,7 +31,6 @@ The snippet can call host functions and raise into the caller; top-level `await`
     global; see [name lookups](../host-functions.md).
     A snippet run under a `globals` dict never asks the host: only the dict and the builtins are consulted, which is what
     CPython does with `exec(source, {})`.
-- **`del name` does not parse** anywhere, snippets included (see [language.md](language.md)).
 
 ## Errors
 

@@ -460,7 +460,6 @@ every construction request. Divergences:
     the walrus never binds; CPython raises `SyntaxError`. This follows from
     annotations never being evaluated, so it would change if they ever are (see
     [typing.md](typing.md)).
-- `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `object`
 

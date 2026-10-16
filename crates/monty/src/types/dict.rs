@@ -1433,6 +1433,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         Ok(())
     }
 
+    fn py_delitem(&mut self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        match self.pop(key, vm)? {
+            Some((stored_key, value)) => {
+                stored_key.drop_with(vm);
+                value.drop_with(vm);
+                Ok(())
+            }
+            None => Err(ExcType::key_error(key, vm)),
+        }
+    }
+
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string(vm.interns) else {
             let type_name = self.py_type(vm).name(vm.heap, vm.interns);
