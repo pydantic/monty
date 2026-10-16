@@ -899,17 +899,9 @@ pub struct VM<'h> {
     /// `malloc`/`free` per call. Only held transiently within
     /// `call_sync_function`, so one shared buffer is safe under recursion.
     namespace_scratch: Vec<Value>,
-    /// Remaining native Rust call-stack re-entry budget, counted down from
-    /// [`recursion::MAX_RUN_REENTRY_DEPTH`] around the two places the
-    /// interpreter recurses on its own stack instead of switching
-    /// `current_frame`: `evaluate_function`'s nested call into [`Self::run`],
-    /// and `call_heap_callable`'s re-dispatch through a `functools.partial`.
-    ///
-    /// Not serialized, because neither site is still charged at a snapshot
-    /// boundary: a nested `run()` never reaches one (its non-`Return` exits
-    /// become `NotImplementedError` in `evaluate_function`), and a partial
-    /// wrapping an external function releases its level as the suspending
-    /// `CallResult` is returned. `debug_assert!`-checked in [`Self::snapshot`].
+    /// Remaining native stack budget for `evaluate_function`, partials and callable-instance dispatch.
+    /// Not serialized: nested runs cannot suspend, and callable wrappers release their
+    /// charge before returning a suspending `CallResult`. Checked by [`Self::snapshot`].
     run_reentry_depth: u8,
 
     /// Per-run cache of compiled patterns for module-level `re.*` calls. Not

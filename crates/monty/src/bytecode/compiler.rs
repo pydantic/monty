@@ -4044,9 +4044,8 @@ fn operator_to_opcode(op: &Operator) -> Opcode {
 
 /// Maps an `Operator` to its in-place (augmented assignment) `Opcode`.
 ///
-/// Returns `None` for operators that don't have an in-place opcode (currently `MatMult`,
-/// since matrix multiplication is not yet supported). Returns `Some(opcode)` for all
-/// other valid augmented assignment operators.
+/// Returns `None` for `MatMult`: ordinary `@` supports user slots, but `@=` is
+/// still rejected. Returns `Some(opcode)` for all other valid augmented assignment operators.
 ///
 /// # Panics
 ///

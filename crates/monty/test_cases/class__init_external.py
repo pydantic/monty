@@ -14,6 +14,10 @@ class Accumulator:
         self.total = add_ints(self.total, amount)
         return self.total
 
+    def __call__(self, amount: int) -> int:
+        self.total = add_ints(self.total, amount)
+        return self.total
+
 
 a = Accumulator(5)
 assert a.base == 5
@@ -23,3 +27,7 @@ assert type(a) is Accumulator
 # A method that also suspends on an external call resumes correctly.
 assert a.bump(10) == 115
 assert a.total == 115
+
+# Calling the instance follows the same suspendable frame path as a method.
+assert a(7) == 122
+assert a.total == 122

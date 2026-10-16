@@ -1,75 +1,23 @@
 //! Implementation of the pow() builtin function.
 
-use num_bigint::BigInt;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::HeapData,
-    types::{Type, long_int::modular_pow},
+    exception_private::RunResult,
     value::Value,
 };
 
 /// Implementation of the pow() builtin function.
 ///
-/// Returns base to the power exp. With three arguments, returns (base ** exp) % mod,
-/// which is only defined for integers.
+/// Dispatches `__pow__` / `__rpow__`, passing an optional modulus unchanged.
+/// Builtin numeric types accept a modulus only for integer operands.
 pub fn builtin_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PowArgs { base, exp, modulus } = PowArgs::from_args(args, vm)?;
     defer_drop!(base, vm);
     defer_drop!(exp, vm);
     defer_drop!(modulus, vm);
-    let int_base = normalize_bool(base);
-    let int_exp = normalize_bool(exp);
-
-    match modulus {
-        // `pow(base, exp)` is `base ** exp`: the operator already covers every numeric pairing.
-        Value::None => int_base.py_pow(int_exp, None, vm),
-        modulus => {
-            let int_modulus = normalize_bool(modulus);
-            let result = match int_base {
-                Value::Int(base) => modular_pow(&BigInt::from(*base), int_exp, int_modulus, vm.heap)?,
-                Value::Ref(id) if let HeapData::LongInt(base) = vm.heap.get(*id) => {
-                    modular_pow(base.inner(), int_exp, int_modulus, vm.heap)?
-                }
-                _ => None,
-            };
-            result.ok_or_else(|| {
-                // CPython offers the triple to each operand's `__pow__` in turn: a float
-                // refuses the third argument outright, a complex does so only once both
-                // base and exponent are numbers, and any other mix is an unsupported triple.
-                let is_complex = |value: &Value| matches!(value.py_type_heap(vm.heap), Type::Complex);
-                let numeric = |value: &Value| {
-                    matches!(
-                        value.py_type_heap(vm.heap),
-                        Type::Int | Type::Bool | Type::Float | Type::Complex
-                    )
-                };
-                let refusal = [base, exp, modulus].into_iter().find_map(|value| match value {
-                    Value::Float(_) => Some(
-                        SimpleException::new_msg(
-                            ExcType::TypeError,
-                            "pow() 3rd argument not allowed unless all arguments are integers",
-                        )
-                        .into(),
-                    ),
-                    _ if is_complex(value) && numeric(base) && numeric(exp) => {
-                        Some(ExcType::value_error_complex_modulo())
-                    }
-                    _ => None,
-                });
-                refusal.unwrap_or_else(|| {
-                    ExcType::ternary_pow_type_error(
-                        base.py_type_name(vm),
-                        exp.py_type_name(vm),
-                        modulus.py_type_name(vm),
-                    )
-                })
-            })
-        }
-    }
+    base.py_pow(exp, Some(modulus), vm)
 }
 
 /// `pow(base, exp[, mod])` — CPython accepts all three as positional-or-keyword
@@ -91,18 +39,4 @@ struct PowArgs {
     exp: Value,
     #[from_args(default = Value::None)]
     modulus: Value,
-}
-
-/// Normalizes a `Bool` to its `Int` equivalent by reference.
-///
-/// Returns `&Value::Int(0)` or `&Value::Int(1)` for bools (using static storage),
-/// and the original reference unchanged for all other types.
-fn normalize_bool(value: &Value) -> &Value {
-    static FALSE_INT: Value = Value::Int(0);
-    static TRUE_INT: Value = Value::Int(1);
-    match value {
-        Value::Bool(false) => &FALSE_INT,
-        Value::Bool(true) => &TRUE_INT,
-        other => other,
-    }
 }

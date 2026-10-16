@@ -365,12 +365,9 @@ impl VM<'_> {
             // This is where the caller invoked the function that's failing.
             let call_offset = this.current_frame().call_offset;
 
-            // Pop this frame
-            if this.pop_frame() {
-                // The frame indicated evaluation should stop - e.g. inside `evaluate_function` - return the error
-                // now to stop unwinding.
-                return ExceptionHandlingResult::Unhandled(error);
-            }
+            // Synchronous evaluation stops unwinding here, but its caller still
+            // belongs in the traceback when the error crosses that boundary.
+            let should_return = this.pop_frame();
 
             // Add caller frame info to traceback (if we have a call site).
             // Resolve the offset now — against the caller, which is the current
@@ -383,6 +380,9 @@ impl VM<'_> {
                     RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
                     RunError::Internal(_) => {}
                 }
+            }
+            if should_return {
+                return ExceptionHandlingResult::Unhandled(error);
             }
         }
     }

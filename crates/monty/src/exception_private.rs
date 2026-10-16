@@ -1794,6 +1794,11 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, message).into()
     }
 
+    /// Float power slots reject a modulus before coercing the other operands.
+    fn type_error_pow_modulo() -> RunError {
+        Self::type_error("pow() 3rd argument not allowed unless all arguments are integers")
+    }
+
     /// Creates a TypeError for unsupported unary operations.
     ///
     /// Uses CPython's format: `bad operand type for unary {op}: '{type}'`
