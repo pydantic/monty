@@ -1,7 +1,10 @@
+# Serializes the parsed `medium_response.json` 1,000 times.
+# bench: data=../medium_response.json
+
 import json
 
 obj = json.loads(DATA)
 r = 0
 for _ in range(1_000):
     r = len(json.dumps(obj))
-r
+assert r == 1815

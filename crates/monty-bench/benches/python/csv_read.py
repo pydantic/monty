@@ -1,3 +1,8 @@
+# CSV parsing: `reader`, `QUOTE_NONNUMERIC` float conversion and `DictReader`. The lines are
+# formatted once up front with every string quoted, so all three readers share one input;
+# records with embedded newlines span several source lines. Exercises the per-character
+# parser state machine and per-row dict construction.
+
 import csv
 
 class Lines:
@@ -29,4 +34,4 @@ for _ in range(5):
         total += int(row[4])
     for row in csv.DictReader(lines, fieldnames=fieldnames):
         total += len(row['name'])
-total
+assert total == 2_629_450
