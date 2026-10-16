@@ -1,22 +1,21 @@
 //! Implementation of Python's `functools` module.
 //!
-//! A subset so far, currently `reduce` and `partial`. See
+//! A subset so far: `reduce`, `partial`, `lru_cache`, and `cache`. See
 //! `limitations/functools.md` for what diverges from CPython. Unimplemented
 //! names are absent from the namespace rather than stubbed, so they raise
 //! `AttributeError` up front.
 
-use std::mem;
-
 use crate::{
     args::{ArgValues, FromArgs},
-    builtins::Builtins,
-    bytecode::VM,
+    builtins::{Builtins, BuiltinsFunctions},
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    frozen::FrozenFunction,
     heap::{DropGuard, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Module, Type},
+    types::{Module, PyTrait, Type, lru_cache},
     value::Value,
 };
 
@@ -28,6 +27,8 @@ use crate::{
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FunctoolsFunctions {
     Reduce,
+    Cache,
+    LruCache,
 }
 
 /// Creates the `functools` module on the heap.
@@ -45,13 +46,25 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
+    module.set_attr(
+        StaticStrings::Cache,
+        Value::ModuleFunction(ModuleFunctions::Functools(FunctoolsFunctions::Cache)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::LruCache,
+        Value::ModuleFunction(ModuleFunctions::Functools(FunctoolsFunctions::LruCache)),
+        vm,
+    );
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Dispatches a call to a `functools` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
         FunctoolsFunctions::Reduce => call_reduce(vm, args),
+        FunctoolsFunctions::Cache => call_cache(vm, args).map(CallResult::Value),
+        FunctoolsFunctions::LruCache => call_lru_cache_factory(vm, args).map(CallResult::Value),
     }
 }
 
@@ -75,47 +88,91 @@ struct ReduceArgs {
 /// `functools.reduce(function, iterable, /[, initial])` — fold `function` over
 /// `iterable` from the left.
 ///
-/// `function` is called through [`VM::evaluate_function`], which cannot suspend
-/// to the host, so an external function or `os` callback used here raises
-/// `NotImplementedError` as it does under `map()`.
-fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Native setup preserves CPython's argument and empty-iterator errors, then a
+/// frozen Python frame owns the suspendable callback loop.
+fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let ReduceArgs {
         function,
         iterable,
         initial,
     } = ReduceArgs::from_args(args, vm)?;
-    defer_drop!(function, vm);
 
-    // `into_py_iter` consumes `iterable`, so `initial` is guarded across the
-    // conversion and reclaimed once it succeeds.
-    let mut guard = DropGuard::new(initial, vm);
-    let iter = iterable.into_py_iter(guard.ctx()).map_err(not_iterable_error)?;
-    let (initial, vm) = guard.into_parts();
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
+    // Guard values not consumed by iterator conversion, then transfer them
+    // into one setup state once conversion succeeds.
+    let mut guard = DropGuard::new((function, initial), vm);
+    let iterator = iterable.into_py_iter(guard.ctx()).map_err(not_iterable_error)?;
+    let (function, initial) = guard.into_inner();
+    let mut guard = DropGuard::new((function, (iterator, initial)), vm);
+    let ((_, (iterator, initial)), vm) = guard.as_parts_mut();
 
-    let accumulator = match initial {
-        Some(initial) => initial,
+    let accumulator = if let Some(initial) = initial.take() {
+        initial
+    } else {
         // Without `initial` the first item seeds the fold, so a one-item
         // iterable returns that item without ever calling `function`.
-        None => match iter.py_next(vm)? {
+        let mut iterator_read = iterator.read(vm);
+        match iterator_read.py_next(vm)? {
             Some(first) => first,
             None => return Err(ExcType::reduce_empty_iterable()),
-        },
+        }
     };
 
-    let mut acc_guard = DropGuard::new(accumulator, vm);
-    {
-        let (accumulator, vm) = acc_guard.as_parts_mut();
-        while let Some(item) = iter.py_next(vm)? {
-            // Move the accumulator into the call rather than cloning it: on
-            // error `evaluate_function` releases the arguments, and the
-            // placeholder left behind needs no cleanup.
-            let previous = mem::replace(accumulator, Value::None);
-            *accumulator = vm.evaluate_function("reduce()", function, ArgValues::Two(previous, item))?;
+    let ((function, (iterator, initial)), vm) = guard.into_parts();
+    debug_assert!(initial.is_none());
+    vm.call_frozen_exact(
+        FrozenFunction::FunctoolsReduce,
+        [
+            function,
+            iterator,
+            accumulator,
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
+            Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
+        ],
+    )
+}
+
+/// Arguments to the unbounded caching decorator.
+#[derive(FromArgs)]
+#[from_args(name = "cache", style = def)]
+struct CacheArgs {
+    #[from_args(pos_only, static_string = "UserFunction")]
+    user_function: Value,
+}
+
+/// Wraps a callable in an unbounded cache.
+fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let CacheArgs { user_function } = CacheArgs::from_args(args, vm)?;
+    lru_cache::allocate(Some(user_function), None, false, vm)
+}
+
+/// Arguments to the configurable caching decorator; the first may itself be callable.
+#[derive(FromArgs)]
+#[from_args(name = "lru_cache", style = def)]
+struct LruCacheArgs {
+    #[from_args(default = Value::Int(128))]
+    maxsize: Value,
+    #[from_args(default = Value::Bool(false))]
+    typed: Value,
+}
+
+/// Returns a configured decorator, or wraps a callable passed as the first argument.
+fn call_lru_cache_factory(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let LruCacheArgs { maxsize, typed } = LruCacheArgs::from_args(args, vm)?;
+    defer_drop!(maxsize, vm);
+    defer_drop!(typed, vm);
+    let typed_flag = typed.py_bool(vm)?;
+    match maxsize {
+        Value::Int(size) => {
+            let size = u64::try_from(*size).unwrap_or(0);
+            lru_cache::allocate(None, Some(size), typed_flag, vm)
         }
+        Value::Bool(flag) => lru_cache::allocate(None, Some(u64::from(*flag)), typed_flag, vm),
+        Value::None => lru_cache::allocate(None, None, typed_flag, vm),
+        _ if maxsize.is_callable(vm.heap) => {
+            lru_cache::allocate(Some(maxsize.clone_with_heap(vm)), Some(128), typed_flag, vm)
+        }
+        _ => Err(lru_cache::bad_maxsize_error()),
     }
-    Ok(acc_guard.into_inner())
 }
 
 /// Rewrites the `TypeError` from a second argument that is not iterable.

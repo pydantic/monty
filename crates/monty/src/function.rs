@@ -80,6 +80,9 @@ pub(crate) struct Function {
     /// and starts execution only when awaited.
     #[serde(rename = "A")]
     pub is_async: bool,
+    /// Interpreter implementation detail, hidden from tracebacks and namespace introspection.
+    #[serde(default, rename = "I")]
+    pub is_internal: bool,
     /// Cached binder-free call plan, derived from the fields above and cached
     /// via [`Self::exact_positional_call`].
     ///
@@ -133,6 +136,7 @@ impl Function {
             cell_param_indices,
             defaults_count,
             is_async,
+            is_internal: false,
             exact_positional_call: OnceCell::new(),
             code,
         }

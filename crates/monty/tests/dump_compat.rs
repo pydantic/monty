@@ -193,6 +193,8 @@ assert joined == 'x-y' and list(str_it) == ['b', 'c'] and list(range_it) == [1, 
 assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(counter) == 6
 assert alias == list[int] and opt == (int | None) and str(where) == '/data/file.txt'
 assert with_default(1) == 2
+assert functools.reduce(lambda a, b: a + b, [1, 2, 3]) == 6
+assert add5(2) == 7
 (result, c.value)
 ";
 

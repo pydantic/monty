@@ -15,6 +15,8 @@ use crate::{function::Function, hash::WithHash};
 pub(crate) struct CompileInterns<'i> {
     base: &'i Interns,
     pending: Option<PendingInterns>,
+    /// Marks trusted interpreter functions before publishing them.
+    internal: bool,
 }
 
 /// An unpublished suffix of a session's tables, discarded unless compilation commits.
@@ -36,6 +38,7 @@ impl<'i> CompileInterns<'i> {
         Self {
             base,
             pending: Some(PendingInterns::default()),
+            internal: false,
         }
     }
 
@@ -43,7 +46,18 @@ impl<'i> CompileInterns<'i> {
     /// Unlike `new`, this does not roll back; it is only for a fresh program, not a REPL feed.
     pub(crate) fn direct(base: &'i mut Interns) -> Self {
         assert!(!base.compiling.replace(true), "overlapping compilations");
-        Self { base, pending: None }
+        Self {
+            base,
+            pending: None,
+            internal: false,
+        }
+    }
+
+    /// Prepares trusted interpreter functions in a private compilation overlay.
+    pub(crate) fn for_frozen(base: &'i Interns) -> Self {
+        let mut interns = Self::new(base);
+        interns.internal = true;
+        interns
     }
 
     /// Publishes an overlay in provisional-ID order; direct compilation is already published.
@@ -187,7 +201,8 @@ impl<'i> CompileInterns<'i> {
     }
 
     /// Appends a compiled function under its final session ID.
-    pub(crate) fn push_function(&mut self, function: Function) -> usize {
+    pub(crate) fn push_function(&mut self, mut function: Function) -> usize {
+        function.is_internal = self.internal;
         let index = self.functions_len();
         if let Some(pending) = &mut self.pending {
             pending.functions.push(function);

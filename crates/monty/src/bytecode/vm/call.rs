@@ -16,6 +16,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    frozen::FrozenFunction,
     function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
@@ -705,18 +706,7 @@ impl<'h> VM<'h> {
             KwargsValues::Dict(kwargs_dict)
         };
 
-        Ok(
-            if copied_args.is_empty() && matches!(kwargs_values, KwargsValues::Empty) {
-                ArgValues::Empty
-            } else if copied_args.is_empty() {
-                ArgValues::Kwargs(kwargs_values)
-            } else {
-                ArgValues::ArgsKargs {
-                    args: copied_args,
-                    kwargs: kwargs_values,
-                }
-            },
-        )
+        Ok(ArgValues::from_parts(copied_args, kwargs_values))
     }
 
     /// Builds `ArgValues` from positional args only.
@@ -787,18 +777,7 @@ impl<'h> VM<'h> {
             KwargsValues::Dict(kwargs_dict)
         };
 
-        Ok(
-            if copied_args.is_empty() && matches!(kwargs_values, KwargsValues::Empty) {
-                ArgValues::Empty
-            } else if copied_args.is_empty() {
-                ArgValues::Kwargs(kwargs_values)
-            } else {
-                ArgValues::ArgsKargs {
-                    args: copied_args,
-                    kwargs: kwargs_values,
-                }
-            },
-        )
+        Ok(ArgValues::from_parts(copied_args, kwargs_values))
     }
 
     // ========================================================================
@@ -870,6 +849,55 @@ impl<'h> VM<'h> {
         let coroutine = Coroutine::new(func_id, namespace, None);
         let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
         CallResult::Value(Value::Ref(coroutine_id))
+    }
+
+    /// Calls an internal function, compiling it on first use without publishing rejected calls.
+    /// Prepared arguments transfer directly into ordinary frame locals.
+    pub(crate) fn call_frozen_exact<const N: usize>(
+        &mut self,
+        function: FrozenFunction,
+        args: [Value; N],
+    ) -> Result<CallResult, RunError> {
+        let mut args_guard = DropGuard::new(args, self);
+        let (_, vm) = args_guard.as_parts_mut();
+        let interns = vm.interns;
+        let (function_id, overlay) = if let Some(id) = interns.frozen_function(function) {
+            (id, None)
+        } else {
+            let (id, overlay) = function.compile(interns)?;
+            (id, Some(overlay))
+        };
+        if !vm.current_frame.is_parked {
+            vm.incr_recursion()?;
+        }
+        // No fallible operation or Python execution may intervene between publication and frame installation.
+        if let Some(overlay) = overlay {
+            overlay.commit();
+            interns.set_frozen_function(function, function_id);
+        }
+        let (args, vm) = args_guard.into_parts();
+        let func = interns.get_function(function_id);
+        assert!(func.is_internal);
+        assert_eq!(func.signature.exact_positional_count(), Some(N));
+        assert!(func.cell_var_slots.is_empty() && func.free_var_slots.is_empty());
+        let namespace_size = func.namespace_size;
+        let locals_count = u16::try_from(namespace_size).expect("frozen function namespace exceeds u16");
+        assert!(namespace_size >= N, "frozen function has too few local slots");
+        let stack_base = vm.stack.len();
+        vm.stack.extend(args);
+        vm.stack.resize_with(stack_base + namespace_size, || Value::Undefined);
+        let frame = CallFrame::new_function(
+            &func.code,
+            stack_base,
+            locals_count,
+            vm.exception_stack.len(),
+            function_id,
+            vm.current_offset(),
+            None,
+        );
+        vm.push_admitted_frame(frame);
+
+        Ok(CallResult::FramePushed)
     }
 
     /// Calls a defined function by pushing a new frame or creating a coroutine.

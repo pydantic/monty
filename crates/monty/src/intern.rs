@@ -22,6 +22,7 @@ mod storage;
 
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeMap,
     mem,
     slice::from_ref,
     str::FromStr,
@@ -35,6 +36,7 @@ use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
+    frozen::FrozenFunction,
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
 };
@@ -1829,6 +1831,30 @@ pub enum StaticStrings {
     RecurseSymlinks,
     /// `functools.reduce()` function.
     Reduce,
+    /// `functools.cache()` function and private helper parameter.
+    Cache,
+    /// `functools.lru_cache()` function.
+    LruCache,
+    /// Cached callable introspection and management methods.
+    CacheInfo,
+    CacheClear,
+    CacheParameters,
+    /// The named tuple returned by `cache_info()`.
+    #[strum(serialize = "CacheInfo")]
+    CacheInfoName,
+    /// `CacheInfo` fields not shared with other APIs.
+    Hits,
+    Misses,
+    Currsize,
+    /// Whether argument types distinguish cache keys.
+    Typed,
+    /// Callable accepted by caching decorators.
+    UserFunction,
+    /// The uncached callable.
+    #[strum(serialize = "__wrapped__")]
+    DunderWrapped,
+    /// Private cache insertion primitive.
+    Store,
     /// Kwarg name `rel_tol` — `math.isclose(rel_tol=...)`.
     RelTol,
     /// `sys.version_info.releaselevel` field.
@@ -2562,6 +2588,8 @@ pub(crate) struct Interns {
     long_ints: Entries<WithHash<BigInt>>,
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
     functions: Entries<Box<Function>>,
+    /// Lazily compiled interpreter functions, ordered so dump round trips preserve their bytes.
+    frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
     eval_sources: Entries<Arc<str>>,
     #[serde(skip)]
     string_id_by_name: RefCell<AHashMap<String, StringId>>,
@@ -2585,6 +2613,8 @@ struct InternsWire {
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     functions: Entries<Box<Function>>,
+    #[serde(default)]
+    frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
     eval_sources: Entries<Arc<str>>,
 }
 
@@ -2612,6 +2642,7 @@ impl TryFrom<InternsWire> for Interns {
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
+            frozen_functions: wire.frozen_functions,
             eval_sources: wire.eval_sources,
             string_id_by_name: RefCell::new(string_id_by_name),
             static_string_ids: RefCell::new(static_string_ids),
@@ -2637,6 +2668,7 @@ impl Interns {
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
+            frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
             string_id_by_name: RefCell::default(),
             static_string_ids: RefCell::default(),
@@ -2652,6 +2684,7 @@ impl Interns {
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
+            frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
             string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
@@ -2743,6 +2776,16 @@ impl Interns {
     #[inline]
     pub fn long_int_hash(&self, id: LongIntId) -> HashValue {
         self.long_ints[id.index()].hash()
+    }
+
+    /// Returns the captured implementation if this session has already compiled it.
+    pub(crate) fn frozen_function(&self, function: FrozenFunction) -> Option<FunctionId> {
+        self.frozen_functions.borrow().get(&function).copied()
+    }
+
+    /// Records an admitted implementation after its compilation overlay is committed.
+    pub(crate) fn set_frozen_function(&self, function: FrozenFunction, id: FunctionId) {
+        self.frozen_functions.borrow_mut().insert(function, id);
     }
 
     /// Finds canonical text already interned, excluding snippet filename IDs.

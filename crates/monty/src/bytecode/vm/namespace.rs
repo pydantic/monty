@@ -7,6 +7,8 @@
 //! globals through that dict at every call. [`FrameNamespace`] records which
 //! case a frame is in; the descriptor owns the dict references it names.
 
+use std::iter;
+
 use ahash::AHashSet;
 
 use super::{CallFrame, VM};
@@ -99,7 +101,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
     }
 }
 
-impl VM<'_> {
+impl<'h> VM<'h> {
     /// The namespace an `eval()` / `exec()` snippet runs in, from the call's
     /// `globals` / `locals` dicts (owned references, or `None`), and the mode
     /// its top level compiles in.
@@ -116,7 +118,7 @@ impl VM<'_> {
     ) -> RunResult<(SnippetNames, Box<FrameNamespace>)> {
         let (globals, locals) = match globals {
             Some(dict) => (FrameGlobals::Dict(dict), locals),
-            None => match self.current_frame.namespace.as_deref() {
+            None => match self.namespace_frame().namespace.as_deref() {
                 Some(FrameNamespace::Snippet {
                     globals,
                     locals: frame_locals,
@@ -145,7 +147,7 @@ impl VM<'_> {
                     (FrameGlobals::Dict(dict), locals)
                 }
                 None => {
-                    let locals = match (locals, self.current_frame.function_id) {
+                    let locals = match (locals, self.namespace_frame().function_id) {
                         (Some(dict), _) => Some(dict),
                         (None, Some(_)) => Some(self.snapshot_locals()?),
                         (None, None) => None,
@@ -198,7 +200,7 @@ impl VM<'_> {
     /// straight in a globals dict returns the dict. Every other frame gets a
     /// snapshot: named stack slots for a function, bound slots for a module.
     pub(crate) fn locals_dict(&mut self) -> RunResult<Value> {
-        let dict_id = match self.current_frame.namespace.as_deref() {
+        let dict_id = match self.namespace_frame().namespace.as_deref() {
             Some(
                 FrameNamespace::Snippet { locals: Some(dict), .. }
                 | FrameNamespace::Snippet {
@@ -215,7 +217,7 @@ impl VM<'_> {
                 locals: None,
             }) => self.snapshot_globals()?,
             Some(FrameNamespace::Function { .. }) => self.snapshot_locals()?,
-            None if self.current_frame.function_id.is_none() => self.snapshot_globals()?,
+            None if self.namespace_frame().function_id.is_none() => self.snapshot_globals()?,
             None => self.snapshot_locals()?,
         };
         Ok(Value::Ref(dict_id))
@@ -312,17 +314,17 @@ impl VM<'_> {
         // Owned by the guard until every entry is in, so a failed insert frees it.
         let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
-        let base = this.current_frame.stack_base();
-        let code = this.current_frame.code;
-        let names = (0..this.current_frame.locals_count).filter_map(|slot| {
+        let frame = this.namespace_frame();
+        let base = frame.stack_base();
+        let code = frame.code;
+        let names = (0..frame.locals_count).filter_map(|slot| {
             code.local_name(slot)
                 .filter(|name_id| *name_id != StringId::default())
                 .map(|name_id| (usize::from(slot), name_id))
         });
         // Cell slots go last so a captured parameter's live cell value replaces
         // the stale copy left in its parameter slot under the same name.
-        let cell_slots: AHashSet<usize> = this
-            .current_frame
+        let cell_slots: AHashSet<usize> = frame
             .function_id
             .map(|id| this.interns.get_function(id))
             .into_iter()
@@ -349,6 +351,21 @@ impl VM<'_> {
         }
         let (dict, _) = dict_guard.into_parts();
         Ok(dict.into_ref_id().expect("snapshot dict is a heap reference"))
+    }
+
+    /// Finds the Python caller for namespace-sensitive builtins invoked by frozen code.
+    /// Private continuation locals must never escape through `locals()`, `eval()` or `exec()`.
+    fn namespace_frame(&self) -> &CallFrame<'h> {
+        self.suspended_frames
+            .iter()
+            .chain(iter::once(&self.current_frame))
+            .rev()
+            .find(|frame| {
+                frame
+                    .function_id
+                    .is_none_or(|id| !self.interns.get_function(id).is_internal)
+            })
+            .expect("frozen code has a Python caller")
     }
 
     /// Stores one `locals()` entry, skipping unbound slots.

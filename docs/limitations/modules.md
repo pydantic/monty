@@ -68,7 +68,7 @@ excluded because they would breach the sandbox. Others (`enum`, `operator`)
 are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `functools`
-implements only `reduce` and `partial`, `copy` only `copy()` and `deepcopy()`,
+implements only `reduce`, `partial`, `lru_cache`, and `cache`, `copy` only `copy()` and `deepcopy()`,
 `time` everything but `tzset` and the `clock_*` family, `hashlib` everything but `file_digest()` and `scrypt()`,
 and `collections` only the four types above.
 The absent names are missing from

@@ -6,29 +6,22 @@ below.
 
 ## Implemented
 
-`reduce(function, iterable, /[, initial])` and `partial(func, /, *args, **keywords)`.
+`reduce(function, iterable, /[, initial])`, `partial(func, /, *args, **keywords)`,
+`lru_cache(maxsize=128, typed=False)`, and `cache(user_function)`.
 
 ## Not implemented
 
-Everything else: `cache`, `lru_cache`, `cached_property`, `wraps`, `update_wrapper`, `partialmethod`, `total_ordering`,
+Everything else: `cached_property`, `wraps`, `update_wrapper`, `partialmethod`, `total_ordering`,
 `singledispatch`, `singledispatchmethod`, `cmp_to_key`, `get_cache_token`, `WRAPPER_ASSIGNMENTS`, `WRAPPER_UPDATES`.
 
 `functools.Placeholder`, added in 3.14 to skip a positional slot when binding (`partial(f, Placeholder, 2)`), is also
 absent, so every bound positional fills a leading slot.
 
 These names are absent from the module namespace rather than stubbed, so they are rejected at type-check time
-(`Module 'functools' has no member 'lru_cache'`) and raise `AttributeError` at runtime.
+(`Module 'functools' has no member 'wraps'`) and raise `AttributeError` at runtime.
 
 ## Behavioural divergences
 
-- **`reduce()` cannot call a host function.** The reduction function runs through the same synchronous path as
-    `map()`'s, which cannot suspend the VM. An external function raises
-    `NotImplementedError: reduce(): external function 'f' is not yet supported in this context`; one that touches the
-    filesystem raises the same error naming
-    the OS function it maps to, e.g. `reduce(): OS function 'Path.iterdir' is not yet supported in this context` for
-    `os.listdir()`.
-    This covers a `partial` that wraps one.
-    Calling a `partial` anywhere else is unaffected, since that goes through the ordinary call path.
 - **Calling a `partial` charges the native re-entry budget.** A partial stored as a class attribute binds as a bound
     method whose `__func__` is another partial, so a chain of them nests on the interpreter's own call stack without
     pushing a Python frame. Monty bounds that chain at the fixed native re-entry depth (see
@@ -44,18 +37,37 @@ These names are absent from the module namespace rather than stubbed, so they ar
     objects every time.
     Mutating the dict from `p.keywords` therefore has no effect on what the partial passes on; CPython returns the live
     dict, so mutating it changes later calls.
-- **`type(...).__name__` is the dotted name.** `type(functools.partial(f)).__name__` is `'functools.partial'`, where
-    CPython reports the bare `'partial'`.
-    This is Monty's general treatment of types whose CPython `tp_name` is dotted (`re.Pattern` and `itertools.count`
-    behave the same way); `str(type(p))` matches CPython's `"<class 'functools.partial'>"`, as do error messages naming
-    the type.
 - **`partial` objects carry no dunder attributes.** `p.__call__` and `p.__doc__` both raise `AttributeError`, where
     CPython has a method-wrapper and the type's docstring respectively.
 - **A `partial` crossing the host boundary marshals as its `repr`.** Python and JavaScript hosts receive
     `MontyObject::repr("functools.partial(...)")` rather than a callable, since neither side can call back into a value
     that only exists inside the sandbox.
 
-## Notes
+## Caching divergences
 
-`partial` is a descriptor, as it is in CPython 3.14: one stored as a class attribute binds the instance as the next
-argument after those it already carries.
+- Cached functions have no `__dict__` and do not copy the wrapped function's metadata
+    (`__name__`, `__qualname__`, `__module__`, `__doc__`, or annotations).
+    `__wrapped__` is readable but not writable.
+- `cache_info()`, `cache_clear()`, and `cache_parameters()` work as calls, but retrieving those methods as values
+    raises `AttributeError`, as with other [native methods](language.md).
+    Explicit `__call__` and `__get__` attribute access is also unsupported.
+- `lru_cache(maxsize=...)` returns a configured wrapper rather than CPython's decorating closure, so its type and
+    `repr()` differ.
+    The module does not expose CPython's private `_lru_cache_wrapper` constructor or `_CacheInfo` class.
+- Integer `maxsize` values outside the signed 64-bit range are rejected with `TypeError`.
+    CPython accepts arbitrarily negative sizes as zero and raises `OverflowError` when decorating with an oversized
+    positive size.
+    `cache_parameters()` reports normalized integer/boolean settings rather than the original argument objects.
+- Cache misses consume an additional recursion frame, including for `maxsize=0`.
+    Hits do not consume a frame.
+    Consequently recursive cached functions can reach the [recursion limit](resource_limits.md) earlier than CPython.
+- Eviction removes an entry by position without running user hashing or equality methods.
+    CPython can compare colliding keys during eviction, so comparison side effects can differ.
+    The number of hash and equality calls during lookup and insertion can also differ.
+- An unhashable argument is diagnosed by hashing arguments again after hashing the complete key fails.
+    A user `__hash__` can therefore run twice on a failing call.
+    For nested unhashable values, the error can name the enclosing tuple instead of its unhashable element.
+- Applying a caching decorator to a method with `@` syntax is rejected along with other
+    [method decorators](classes.md).
+    Assigning `method = functools.cache(function)` in the class body is supported.
+- A cached function crossing the host boundary is represented by its `repr`, not a host-callable function.

@@ -27,6 +27,16 @@ def sum3(a, b, c):
 assert sum3(1, 2, 3) == 6
 
 
+# === Empty unpacked keywords preserve native argument shapes ===
+assert abs(*(-3,), **{}) == 3
+assert divmod(*(7, 3), **{}) == (2, 1)
+items = []
+items.append(*(1,), **{})
+items.insert(*(0, 2), **{})
+assert items == [2, 1]
+assert items.clear(*(), **{}) is None
+
+
 # === Local variables ===
 def f_local():
     x = 42
