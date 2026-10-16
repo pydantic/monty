@@ -72,10 +72,14 @@ jobs:
       - name: Build benchmarks
         run: cargo codspeed build -m ${{ matrix.mode }} -p monty-bench --profile codspeed --features codspeed
 
+      # ASLR picks one of several memory layouts per process, which moves the
+      # allocation-heavy benchmarks 10-40% between runs of identical code. The
+      # `-R` personality is inherited by the pool's worker children too.
+      # Same fix as https://github.com/pydantic/jiter/pull/284
       - name: Run benchmarks
         uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
         with:
           mode: ${{ matrix.mode }}
-          run: cargo codspeed run -p monty-bench
+          run: setarch $(uname -m) -R cargo codspeed run -p monty-bench
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/release/monty
