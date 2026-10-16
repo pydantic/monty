@@ -7,12 +7,20 @@ Names are bound only after the whole pattern matches, before the guard runs, as 
 CPython, so a case whose pattern fails part-way leaves no bindings behind and a case
 whose guard fails leaves them all.
 The compile-time `SyntaxError`s match CPython's wording and location: duplicate
-captures, alternatives binding different names, an irrefutable pattern before the
-last case, duplicate constant mapping keys, repeated class-pattern attributes and
+captures, alternatives binding different names, an unguarded irrefutable pattern
+before the last case, duplicate constant mapping keys, repeated class-pattern attributes and
 two starred names.
 `@dataclass` classes get `__match_args__` (the field names, in order) and
 `collections.namedtuple` classes expose it too, so positional class patterns work on
 both.
+
+## Sequence and mapping patterns
+
+- **Only builtin containers match.** Sequence patterns accept `list`, `tuple`,
+    namedtuples, `range` and `deque`; mapping patterns accept `dict`, `defaultdict`
+    and `Counter`.
+    Monty has no inheritance and no `collections.abc`, so no user or host class can
+    be a `Sequence` or `Mapping`, and its instances never match these patterns.
 
 ## Class patterns
 
@@ -25,14 +33,9 @@ both.
 
 ## Parse-time checks
 
-- **Duplicate mapping keys are only detected for literals**, optionally negated
-    (`1`, `-1`, `'a'`, `None`, `b'x'`, `1.5`, `2j`), compared by Python equality so `1`,
-    `1.0` and `True` collide.
-    CPython folds constant expressions first, so it also rejects `{1 + 0j: a, 1: b}`;
-    Monty compiles it and the second key simply never matches a distinct entry.
 - **A pattern after `**rest`** reports `SyntaxError: Pattern cannot follow a double star pattern`
     (Ruff's wording) where CPython says `invalid syntax`.
 - **Bytecode operand limits.** A sequence, mapping or class pattern with more
-    than 255 sub-patterns, or a pattern that captures more than 255 names, raises
+    than 255 sub-patterns, or a pattern that captures more than 256 names, raises
     `SyntaxError: too many sub-patterns in ... pattern` (or `too many names in pattern`)
     at compile time; CPython has no such limit.

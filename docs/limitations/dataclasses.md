@@ -30,7 +30,8 @@ around a decoration will not catch these.
     `NotImplementedError: dataclass() does not yet support the <name> option`;
     each is named individually rather than reported as an unknown keyword.
     The default `match_args=True` does write `__match_args__` (every field, in
-    order), so positional class patterns work; see [match.md](match.md).
+    order) unless the class body defines its own, so positional class patterns
+    work; see [match.md](match.md).
     Ordering dunders therefore do not exist, and hashing is whatever `eq`/`frozen`
     imply.
 - **`InitVar[...]`** — raises
