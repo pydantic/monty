@@ -13,6 +13,7 @@ use crate::{
     bytecode::{ContainsVM, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    fstring::FormatFloat,
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
@@ -739,39 +740,9 @@ fn serialize_float(value: f64, out: &mut String, config: &JsonDumpsConfig) -> Ru
     }
 }
 
-/// Writes a finite float using CPython-compatible JSON float repr rules.
-///
-/// Python switches to scientific notation when the magnitude is `>= 1e16` or
-/// `< 1e-4` (and non-zero). We decide notation by comparing the absolute value
-/// directly against these thresholds rather than using `log10().floor()`, which
-/// has precision errors at boundary values (e.g. `9999999999999998.0` whose
-/// `log10` rounds up to `16.0`). Direct comparison is exact because `1e16` is
-/// exactly representable as f64 and `1e-4` as an f64 constant aligns with
-/// Python's notation boundary.
-///
-/// Each path formats the float exactly once: the scientific path writes via
-/// `{:e}` and post-processes the exponent to Python style (`e+XX` / `e-XX`),
-/// while the fixed path uses `Display` with a `.0` suffix for whole numbers.
+/// Writes a finite float as CPython's `json` does, with `float.__repr__` (see [`FormatFloat`]).
 fn write_json_float_text(value: f64, out: &mut String) {
-    let abs = value.abs();
-    if abs != 0.0 && !(1e-4..1e16).contains(&abs) {
-        // Python-style scientific notation: format via `{:e}`, then rewrite the
-        // exponent from Rust's bare `e<N>` to Python's `e+XX` / `e-XX`.
-        let start = out.len();
-        write!(out, "{value:e}").expect("writing to String cannot fail");
-        let e_pos = out[start..].find('e').expect("scientific format must contain 'e'") + start;
-        let exponent: i32 = out[e_pos + 1..].parse().expect("exponent must be a valid integer");
-        out.truncate(e_pos);
-        let exp_sign = if exponent >= 0 { '+' } else { '-' };
-        write!(out, "e{exp_sign}{:02}", exponent.unsigned_abs()).expect("writing to String cannot fail");
-    } else {
-        // Fixed notation: single `Display` write, appending `.0` for whole numbers.
-        let start = out.len();
-        write!(out, "{value}").expect("writing to String cannot fail");
-        if !out[start..].contains('.') {
-            out.push_str(".0");
-        }
-    }
+    write!(out, "{}", FormatFloat(value)).expect("writing to String cannot fail");
 }
 
 /// Writes indentation for pretty-printed JSON output.

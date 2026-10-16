@@ -146,9 +146,11 @@ pub fn bytes_repr(bytes: &[u8]) -> String {
 /// renders NaN as `"NaN"`.
 ///
 /// As a `Display` adapter it writes straight to the caller's sink with **no
-/// heap allocation**: it borrows Rust's *shortest-digits* guarantee via `{:e}`
-/// into a small stack buffer (an `f64` `{:e}` is ASCII and ≤ 24 bytes) and
-/// re-lays-out those digits per CPython's rules.
+/// heap allocation**: it takes the shortest round-trip digits from Ryu, gathers
+/// them in a small stack buffer and re-lays them out per CPython's rules. Ryu,
+/// like CPython's `repr`, breaks an exact tie between two shortest candidates
+/// to the even digit (`1646715702483725.25` → `"1646715702483725.2"`), where
+/// Rust's own `{:e}` and `Display` round it up.
 pub struct FormatFloat(pub f64);
 
 impl fmt::Display for FormatFloat {
@@ -163,18 +165,15 @@ impl fmt::Display for FormatFloat {
         if v.is_infinite() {
             return f.write_str("inf");
         }
-        // Rust's shortest scientific form gives minimal round-tripping digits
-        // plus the base-10 exponent (`1234.5` → `"1.2345e3"`, `0.0` → `"0e0"`),
-        // captured in a stack buffer so nothing touches the heap.
-        let mut sci = StackStr::new();
-        write!(sci, "{:e}", v.abs())?;
-        let sci = sci.as_str();
-        let (mantissa, exp_str) = sci.split_once('e').ok_or(fmt::Error)?;
-        // `{:e}` always emits a single leading digit, so the integer part is one
-        // char and the fraction (if any) follows the `.`.
-        let (int_part, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-        let exp10: i32 = exp_str.parse().map_err(|_| fmt::Error)?;
-        let ndigits = int_part.len() + frac.len();
+        if v == 0.0 {
+            return f.write_str("0.0");
+        }
+        let mut ryu_buffer = ryu::Buffer::new();
+        let mut digit_buffer = StackStr::new();
+        let (digits, exp10) = significant_digits(ryu_buffer.format_finite(v.abs()), &mut digit_buffer)?;
+        // The first digit is the integer part of a `d.ddd` mantissa, the rest its fraction.
+        let (int_part, frac) = digits.split_at_checked(1).ok_or(fmt::Error)?;
+        let ndigits = digits.len();
         // `decpt` = number of digits to the left of the decimal point.
         let decpt = exp10 + 1;
 
@@ -218,11 +217,30 @@ impl fmt::Display for FormatFloat {
     }
 }
 
-/// A fixed-capacity [`fmt::Write`] sink backed by a stack array, used to capture
-/// a bounded `{:e}` rendering without a heap allocation.
+/// Splits Ryu's rendering of a finite, nonzero, non-negative `f64` (`12.34`, `0.001234`,
+/// `12340000000.0`, `1e-7` or `1.234e33`) into its significant digits and the base-10
+/// exponent of the first one: `("1234", 1)` for `12.34`. The digits are gathered in `buffer`.
+fn significant_digits<'a>(pretty: &str, buffer: &'a mut StackStr) -> Result<(&'a str, i32), fmt::Error> {
+    let (mantissa, exponent) = match pretty.split_once('e') {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().map_err(|_| fmt::Error)?),
+        None => (pretty, 0),
+    };
+    let (int_part, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    buffer.write_str(int_part)?;
+    buffer.write_str(frac)?;
+    let buffer: &'a StackStr = buffer;
+    let all = buffer.as_str();
+    // The first significant digit sits `int_part.len() - 1 - leading_zeros` places above the units.
+    let int_len = i32::try_from(int_part.len()).map_err(|_| fmt::Error)?;
+    let leading_zeros = i32::try_from(all.len() - all.trim_start_matches('0').len()).map_err(|_| fmt::Error)?;
+    Ok((all.trim_matches('0'), exponent + int_len - 1 - leading_zeros))
+}
+
+/// A fixed-capacity [`fmt::Write`] sink backed by a stack array, used to gather a
+/// float's digits, or its repr, without a heap allocation.
 ///
-/// 32 bytes comfortably holds any `f64` `{:e}` output (the longest is ~24 ASCII
-/// bytes, e.g. `2.2250738585072014e-308`). A write that would overflow returns
+/// 32 bytes comfortably holds either (the longest repr is 24 ASCII bytes, e.g.
+/// `-2.2250738585072014e-308`). A write that would overflow returns
 /// [`fmt::Error`] rather than panicking — unreachable for the bounded `f64`
 /// case, but it keeps the type panic-free for any future caller.
 struct StackStr {
@@ -236,7 +254,7 @@ impl StackStr {
     }
 
     fn as_str(&self) -> &str {
-        // Only `{:e}` of an `f64` is written here, which is always valid ASCII.
+        // Only a float's digits or repr are written here, which are always ASCII.
         str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
 }

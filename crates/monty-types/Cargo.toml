@@ -24,6 +24,7 @@ chrono = { workspace = true }
 jiff = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
+ryu = { workspace = true }
 unicode-general-category = { workspace = true }
 # Validate `ModuleStub` names, including Python keywords.
 ruff_python_stdlib = { workspace = true }

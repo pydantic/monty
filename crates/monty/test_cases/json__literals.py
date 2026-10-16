@@ -28,6 +28,9 @@ assert json.dumps(0.0001) == '0.0001'
 assert json.dumps(9.999999999999999e-05) == '9.999999999999999e-05'
 assert json.dumps(5e-324) == '5e-324'
 assert json.dumps(1e300) == '1e+300'
+# a float exactly halfway between two shortest reprs takes the even one, as repr() does
+assert json.dumps(1646715702483725.2) == '1646715702483725.2'
+assert json.dumps({2.0**-25: 1}) == '{"2.9802322387695312e-08": 1}'
 
 # === loads unicode literals ===
 assert json.loads('"☃😀"') == '☃😀'
