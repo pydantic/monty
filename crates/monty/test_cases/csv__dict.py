@@ -140,6 +140,19 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == "dict contains fields not in fieldnames: 'zz'"
+
+
+# An empty repr still separates the offending keys.
+class Blank:
+    def __repr__(self):
+        return ''
+
+
+try:
+    dw([{Blank(): 1, Blank(): 2}], [])
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'dict contains fields not in fieldnames: , '
 try:
     csv.DictWriter(Sink(), ['a'], extrasaction='nope')
     assert False, 'expected ValueError'

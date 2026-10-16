@@ -289,9 +289,14 @@ pub(crate) fn format_row(
     Ok(())
 }
 
+/// Longest stretch of a field scanned between clock polls: a field with no special
+/// character is otherwise one run, however long, and never reaches the poll.
+const FIELD_SCAN_CHUNK: usize = 64 * 1024;
+
 /// Escapes or quote-doubles the characters of one field into `buffer`, as
 /// `join_append_data` does, upgrading `quoted` when a special character requires it.
-/// `buffer` is at most twice `text`, which is already tracked; the loop polls the clock.
+/// `buffer` is at most twice `text`, which is already tracked; the loop polls the clock
+/// at least once per [`FIELD_SCAN_CHUNK`] of input.
 fn append_field_data(
     dialect: &Dialect,
     terminator_chars: &[char],
@@ -308,13 +313,21 @@ fn append_field_data(
             || c == '\r'
             || terminator_chars.binary_search(&c).is_ok()
     };
+    // One reservation for the common no-escape case, rather than doubling per chunk.
+    buffer.reserve(text.len());
     let mut rest = text;
     let mut polls = 0usize;
     while !rest.is_empty() {
         tracker.check_time_every(polls)?;
         polls += 1;
-        // Everything up to the next special character is copied as one run.
-        let run = rest.find(is_special).unwrap_or(rest.len());
+        // Everything up to the next special character is copied as one run, scanning at
+        // most a chunk at a time so a long ordinary field still reaches the poll above.
+        let window = &rest[..rest.floor_char_boundary(FIELD_SCAN_CHUNK)];
+        let Some(run) = window.find(is_special) else {
+            buffer.push_str(window);
+            rest = &rest[window.len()..];
+            continue;
+        };
         buffer.push_str(&rest[..run]);
         rest = &rest[run..];
         let Some(c) = rest.chars().next() else {

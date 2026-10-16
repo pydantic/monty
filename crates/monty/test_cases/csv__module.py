@@ -70,11 +70,15 @@ assert (csv.unix_dialect.quoting, csv.unix_dialect.lineterminator) == (csv.QUOTE
 # `csv.Dialect` is `_csv.Dialect` in Monty, which takes the format parameters; CPython's
 # is a Python base class whose constructor takes none (see limitations/csv.md).
 assert csv.Dialect.__name__ == 'Dialect'
-try:
+if is_monty:
     made = csv.Dialect(delimiter=';')
     assert (made.delimiter, made.lineterminator, type(made)) == (';', '\r\n', type(d))
-except TypeError as exc:
-    assert str(exc) == "Dialect.__init__() got an unexpected keyword argument 'delimiter'"
+else:
+    try:
+        csv.Dialect(delimiter=';')
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "Dialect.__init__() got an unexpected keyword argument 'delimiter'"
 
 # `_csv.Dialect(...)` resolves parameters the same way the reader does.
 Dialect = type(d)

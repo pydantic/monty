@@ -533,24 +533,28 @@ fn check_extra_keys<'h>(dict: &HeapRead<'h, Dict>, known: &Value, vm: &mut VM<'h
     // The reprs of the offending keys outlive the keys' own tracked reprs, so the message
     // grows through the tracker; a wide row allocates per key, so the loop also polls.
     let mut wrong = String::new();
+    // A key's repr may be empty, so the message's emptiness cannot stand in for this.
+    let mut any_wrong = false;
     for (i, key) in keys.iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         if !known.contains(key, vm)? {
             let repr = key.py_repr(vm)?;
             defer_drop!(repr, vm);
-            let separator = if wrong.is_empty() { "" } else { ", " };
             let mut builder = StringBuilder::from_existing(mem::take(&mut wrong), &vm.heap.tracker);
-            builder.push_str(separator)?;
+            if any_wrong {
+                builder.push_str(", ")?;
+            }
             builder.push_str(repr.to_str(vm)?)?;
             wrong = builder.finish_raw()?;
+            any_wrong = true;
         }
     }
-    if wrong.is_empty() {
-        Ok(())
-    } else {
+    if any_wrong {
         Err(ExcType::value_error(format!(
             "dict contains fields not in fieldnames: {wrong}"
         )))
+    } else {
+        Ok(())
     }
 }
 
