@@ -36,7 +36,7 @@ use crate::{
     types::{
         Class, Dict, Instance, LazyHeapSet, Module, PyTrait,
         host_class::{host_class_type, write_dataclass_repr},
-        instance::{class_defines, class_dunder, class_name, instance_attr},
+        instance::{class_local_defines, class_local_dunder, class_name, instance_attr},
     },
     value::{Marker, Value},
 };
@@ -661,8 +661,8 @@ pub(crate) fn hash_action(class_id: HeapId, vm: &VM<'_>) -> Option<DataclassHash
     // CPython's `has_explicit_hash`: a `__hash__ = None` beside a body `__eq__`
     // is the opt-out `type` inserted, not one the author wrote, so a generated
     // hash overwrites it. Alone, it is deliberate and survives.
-    let explicit_hash = class_dunder(class_id, "__hash__", vm)
-        .is_some_and(|hash| !(matches!(hash, Value::None) && class_defines(class_id, "__eq__", vm)));
+    let explicit_hash = class_local_dunder(class_id, "__hash__", vm)
+        .is_some_and(|hash| !(matches!(hash, Value::None) && class_local_defines(class_id, "__eq__", vm)));
     match (options.eq, options.frozen, explicit_hash) {
         (true, true, false) => Some(DataclassHash::FieldWise),
         (true, false, false) => Some(DataclassHash::Unhashable),

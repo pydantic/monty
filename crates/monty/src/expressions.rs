@@ -717,6 +717,8 @@ pub enum Node<F> {
     ClassDef {
         /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
         name: Identifier,
+        /// The base classes to inherit from (may include `*unpack` items).
+        bases: Vec<SequenceItem>,
         /// The synthetic class-body function: its body is the class statements
         /// in source order. Prepared and compiled exactly like a function; its
         /// emitted code ends by building the namespace `Dict` and returning the

@@ -27,8 +27,8 @@ pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 /// Supports:
 /// - Single builtin types: `isinstance(x, int)`
 /// - Exception types and their hierarchy: `isinstance(err, LookupError)`
-/// - User-defined classes: `isinstance(obj, Foo)` (identity of the instance's
-///   class; there is no inheritance chain to walk yet)
+/// - User-defined classes: `isinstance(obj, Foo)` (matches the instance's
+///   class or any base class in its MRO)
 /// - Host classes: `isinstance(obj, Point)` for a `HostClassType` (exact class
 ///   id; the host sends no bases)
 /// - Tuples (possibly nested) of the above
@@ -38,7 +38,7 @@ fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResul
         Value::Builtin(Builtins::ExcType(handler_type)) => {
             Ok(matches!(obj.py_type(vm), Type::Exception(exc_type) if exc_type.is_subclass_of(*handler_type)))
         }
-        // A user-defined class: true iff `obj` is an instance of exactly this class.
+        // A user-defined class: true iff `obj` is an instance of this class or one of its subclasses.
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => Ok(instance_of_class(obj, *id, vm)),
         // A `collections.namedtuple` class, matched by the instance's `class_id`.
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NamedTupleClass(_)) => {
@@ -72,9 +72,16 @@ fn instance_of_host_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
     matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::HostClass(hc) if hc.class_id() == class_id))
 }
 
-/// Whether `obj` is an instance whose class object is `class_id`.
+/// Whether `obj` is an instance whose class object is `class_id` or a subclass of it.
 fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
-    matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::Instance(inst) if inst.class() == class_id))
+    let Value::Ref(obj_id) = obj else {
+        return false;
+    };
+    let HeapData::Instance(inst) = vm.heap.get(*obj_id) else {
+        return false;
+    };
+    inst.class() == class_id
+        || matches!(vm.heap.get(inst.class()), HeapData::Class(cls) if cls.is_subclass_of(class_id))
 }
 
 /// Whether `obj` is a namedtuple instance built from the class `class_id`.

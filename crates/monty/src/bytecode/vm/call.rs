@@ -1062,12 +1062,9 @@ impl<'h> VM<'h> {
         // The instance now owns a reference to its class object.
         self.heap.inc_ref(class_id);
 
-        // Look up `__init__` in the class namespace (cloned out to release the borrow).
+        // Look up `__init__` in the class namespace or base classes (MRO).
         let init = match self.heap.get(class_id) {
-            HeapData::Class(class) => class
-                .namespace()
-                .get_by_str("__init__", self.heap, self.interns)
-                .map(|v| v.clone_with_heap(self)),
+            HeapData::Class(class) => class.mro_getattr("__init__", self.heap, self.interns),
             _ => None,
         };
 

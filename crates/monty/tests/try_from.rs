@@ -1,3 +1,5 @@
+#![allow(clippy::float_cmp)]
+
 use monty::MontyRun;
 use monty_types::CompileOptions;
 

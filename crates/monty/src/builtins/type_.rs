@@ -6,9 +6,9 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData},
+    heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait},
+    types::{Class, Dict, PyTrait, Type},
     value::Value,
 };
 
@@ -16,8 +16,8 @@ use crate::{
 ///
 /// The 1-arg form returns the type of an object; the 3-arg form
 /// `type(name, bases, dict)` dynamically creates a new class, mirroring
-/// CPython (except that `bases` must be empty — Monty classes cannot
-/// inherit). Any other positional count is a `TypeError`.
+/// CPython (supporting user-defined classes and `object` as bases).
+/// Any other positional count is a `TypeError`.
 ///
 /// This hand-rolls `args.into_parts()` rather than using `#[derive(FromArgs)]`
 /// because the "exactly 1 *or* 3 positionals, same name" overload isn't
@@ -112,20 +112,81 @@ fn create_class(
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 1, "str", got));
     };
 
-    match bases {
-        Value::Ref(id) if let HeapData::Tuple(t) = vm.heap.get(*id) => {
-            // Monty divergence: classes cannot inherit, so even `(object,)` is
-            // rejected — the parse-time equivalent (`class Foo(Bar)`) is a
-            // syntax error, and this is its runtime counterpart.
-            if !t.as_slice().is_empty() {
-                return Err(ExcType::type_error("type() bases are not supported"));
+    // Extract and validate base classes
+    let Value::Ref(tuple_id) = &bases else {
+        let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+        return Err(ExcType::type_error(format!(
+            "type.__new__() argument 2 must be tuple, not {got}"
+        )));
+    };
+    let HeapData::Tuple(tuple) = vm.heap.get(*tuple_id) else {
+        let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+        return Err(ExcType::type_error(format!(
+            "type.__new__() argument 2 must be tuple, not {got}"
+        )));
+    };
+
+    let mut bases_ids = Vec::with_capacity(tuple.as_slice().len());
+    let mut base_names = Vec::with_capacity(tuple.as_slice().len());
+    let mut seen_object = false;
+    for base in tuple.as_slice() {
+        match base {
+            Value::Builtin(Builtins::Type(Type::Object)) => {
+                if seen_object {
+                    return Err(ExcType::type_error("duplicate base class object"));
+                }
+                seen_object = true;
+                base_names.push("object");
+            }
+            Value::Builtin(Builtins::Type(ty)) => {
+                let type_name = ty.name(vm.heap, vm.interns);
+                return Err(ExcType::type_error(format!(
+                    "type '{type_name}' is not an acceptable base type"
+                )));
+            }
+            Value::Builtin(Builtins::ExcType(exc_type)) => {
+                let type_name: &'static str = (*exc_type).into();
+                return Err(ExcType::type_error(format!(
+                    "type '{type_name}' is not an acceptable base type"
+                )));
+            }
+            Value::Ref(id) => {
+                if let HeapData::Class(cls) = vm.heap.get(*id) {
+                    let cls_name = cls.name().as_str(vm.interns);
+                    if bases_ids.contains(id) {
+                        return Err(ExcType::type_error(format!("duplicate base class {cls_name}")));
+                    }
+                    bases_ids.push(*id);
+                    base_names.push(cls_name);
+                } else {
+                    let got = base.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+                    return Err(ExcType::type_error(format!(
+                        "type.__new__(X): {got} is not a type object"
+                    )));
+                }
+            }
+            _ => {
+                let got = base.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+                return Err(ExcType::type_error(format!(
+                    "type.__new__(X): {got} is not a type object"
+                )));
             }
         }
-        _ => {
-            let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
-            return Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got));
-        }
     }
+
+    if let Some(idx) = tuple
+        .as_slice()
+        .iter()
+        .position(|base| matches!(base, Value::Builtin(Builtins::Type(Type::Object))))
+        && idx < tuple.as_slice().len() - 1
+    {
+        return Err(ExcType::type_error(format!(
+            "Cannot create a consistent method resolution order (MRO) for bases {}",
+            base_names[idx..].join(", ")
+        )));
+    }
+
+    let mro = compute_c3_mro(&bases_ids, &base_names, vm.heap)?;
 
     let Value::Ref(ns_id) = namespace else {
         let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -170,8 +231,70 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
-    let class_id = vm
-        .heap
-        .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict))));
+    for &base_id in &bases_ids {
+        vm.heap.inc_ref(base_id);
+    }
+
+    let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
+        class_name,
+        namespace_dict,
+        bases_ids,
+        mro,
+    ))));
     Ok(Value::Ref(class_id))
+}
+
+/// Computes Python's C3 method resolution order for the given base classes.
+fn compute_c3_mro(bases: &[HeapId], base_names: &[&str], heap: &Heap) -> RunResult<Vec<HeapId>> {
+    let mut sequences: Vec<Vec<HeapId>> = Vec::with_capacity(bases.len() + 1);
+    for &base_id in bases {
+        if let HeapData::Class(base_cls) = heap.get(base_id) {
+            let mut seq = Vec::with_capacity(1 + base_cls.mro().len());
+            seq.push(base_id);
+            seq.extend_from_slice(base_cls.mro());
+            sequences.push(seq);
+        }
+    }
+    sequences.push(bases.to_vec());
+
+    let mut result = Vec::new();
+    let mut step: usize = 0;
+    loop {
+        sequences.retain(|seq| !seq.is_empty());
+        if sequences.is_empty() {
+            break;
+        }
+
+        let mut candidate = None;
+        'outer: for seq in &sequences {
+            let head = seq[0];
+            for other_seq in &sequences {
+                for &tail_elem in &other_seq[1..] {
+                    step = step.wrapping_add(1);
+                    heap.tracker.check_time_every(step)?;
+                    if tail_elem == head {
+                        continue 'outer;
+                    }
+                }
+            }
+            candidate = Some(head);
+            break;
+        }
+
+        let Some(selected) = candidate else {
+            return Err(ExcType::type_error(format!(
+                "Cannot create a consistent method resolution order (MRO) for bases {}",
+                base_names.join(", ")
+            )));
+        };
+
+        result.push(selected);
+        for seq in &mut sequences {
+            if seq.first() == Some(&selected) {
+                seq.remove(0);
+            }
+        }
+    }
+
+    Ok(result)
 }

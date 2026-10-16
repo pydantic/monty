@@ -19,6 +19,7 @@ uv run python examples/classes/class_instance.py
 | [`class_type.py`](class_type.py)                 | Let the sandbox instantiate a host class (`init=True`)                                       |
 | [`class_type_members.py`](class_type_members.py) | Class constants and classmethods without instantiation                                       |
 | [`sandbox_classes.py`](sandbox_classes.py)       | Classes defined inside Monty; instances return as `MontyClassProxy`                          |
+| [`class_inheritance.py`](class_inheritance.py)   | Single and multiple inheritance with C3 MRO in sandbox classes                               |
 | [`sandbox_round_trip.py`](sandbox_round_trip.py) | A `MontyClassProxy` passed back resolves to the original sandbox object; freed objects raise |
 | [`async_methods.py`](async_methods.py)           | `async def` methods awaited from sandbox code via `AsyncMonty`                               |
 
@@ -45,4 +46,5 @@ as a crash. `npx tsc -p examples/classes` type-checks them.
 | [`lazy_attrs.ts`](lazy_attrs.ts)                 | Attributes fetched from the host on demand; denial raises `AttributeError`                   |
 | [`class_type.ts`](class_type.ts)                 | Let the sandbox instantiate a host class (`init: true`)                                      |
 | [`sandbox_classes.ts`](sandbox_classes.ts)       | Classes defined inside Monty; instances return as `MontyClassProxy`                          |
+| [`class_inheritance.ts`](class_inheritance.ts)   | Single and multiple inheritance with C3 MRO in sandbox classes                               |
 | [`sandbox_round_trip.ts`](sandbox_round_trip.ts) | A `MontyClassProxy` passed back resolves to the original sandbox object; freed objects raise |

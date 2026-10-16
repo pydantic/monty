@@ -147,8 +147,15 @@ field after a defaulted one
         `__init__` its first decoration generated, which writes fields through the
         new frozen `__setattr__` and so raises `FrozenInstanceError` on construction.
 
+## Inheritance
+
+- **Subclassing dataclasses is not yet supported.** Monty constructs dataclass
+    instances by binding fields directly off `__dataclass_fields__` without synthesizing
+    bytecode `__init__` methods. Inheriting from a `@dataclass` without defining an
+    explicit `__init__` in the child class raises `TypeError: <Subclass>() takes no arguments`.
+
 ## Architectural gaps (cannot match)
 
-- **No inheritance**, so field inheritance across base dataclasses is
-    unsupported (Monty has no class inheritance at all).
+- **Dataclass inheritance** — field inheritance across base dataclasses is
+    not yet supported.
 - **`slots=True` / `weakref_slot=True`** — no `__slots__`, no weakrefs.

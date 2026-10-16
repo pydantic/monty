@@ -11,9 +11,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead,
         heap_read_ref_as_field_mut,
     },
+    heap_data::HeapData,
+    intern::Interns,
     types::{Union, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -38,6 +40,10 @@ pub(crate) struct Class {
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
+    #[serde(default)]
+    bases: Vec<HeapId>,
+    #[serde(default)]
+    mro: Vec<HeapId>,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
@@ -45,12 +51,59 @@ pub(crate) struct Class {
 }
 
 impl Class {
-    /// Creates a new class object from its name and member namespace.
+    /// Returns the direct base classes in declaration order.
+    pub(crate) fn bases(&self) -> &[HeapId] {
+        &self.bases
+    }
+
+    /// Returns the method resolution order (base classes in C3 linearization order).
+    pub(crate) fn mro(&self) -> &[HeapId] {
+        &self.mro
+    }
+
+    /// Whether this class inherits from `target`.
+    pub(crate) fn is_subclass_of(&self, target: HeapId) -> bool {
+        self.mro.contains(&target)
+    }
+
+    /// Searches the class namespace and base classes in C3 MRO order, returning a borrowed reference.
+    pub(crate) fn mro_getattr_ref<'a>(
+        &'a self,
+        attr_str: &str,
+        heap: &'a Heap,
+        interns: &Interns,
+    ) -> Option<&'a Value> {
+        // 1. Check own namespace
+        if let Some(value) = self.namespace.get_by_str(attr_str, heap, interns) {
+            return Some(value);
+        }
+
+        // 2. Check base classes in C3 MRO order
+        for &base_id in &self.mro {
+            if let HeapData::Class(base_class) = heap.get(base_id)
+                && let Some(val) = base_class.namespace.get_by_str(attr_str, heap, interns)
+            {
+                return Some(val);
+            }
+        }
+
+        None
+    }
+
+    /// Searches the class namespace and base classes in C3 MRO order, cloning the result.
+    pub(crate) fn mro_getattr(&self, attr_str: &str, heap: &Heap, interns: &Interns) -> Option<Value> {
+        self.mro_getattr_ref(attr_str, heap, interns)
+            .map(|v| v.clone_with_heap(heap))
+    }
+
+    /// Creates a new class object from its name, member namespace, direct bases, and C3 MRO.
     #[must_use]
-    pub fn new(name: EitherStr, namespace: Dict) -> Self {
+    pub fn new(name: EitherStr, namespace: Dict, bases: Vec<HeapId>, mro: Vec<HeapId>) -> Self {
         Self {
             name,
             namespace,
+            bases,
+            mro,
             uuid: None,
         }
     }
@@ -172,14 +225,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
             return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
         }
-        // Otherwise look up a member (method or class variable) in the namespace.
-        match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
-            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
-            None => Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr_str,
-            )),
+
+        // Look up a member in the class namespace or its base classes (MRO).
+        if let Some(val) = self.get(vm.heap).mro_getattr(attr_str, vm.heap, vm.interns) {
+            return Ok(Some(CallResult::Value(val)));
         }
+
+        Err(ExcType::attribute_error_type(
+            self.get(vm.heap).name.as_str(vm.interns),
+            attr_str,
+        ))
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -194,28 +249,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             defer_drop!(name_val, vm);
             return vm.call_function(name_val, args);
         }
+
         // `Foo.method(args)` calls the raw (unbound) member with the given args —
         // no `self` is inserted, the caller passes the instance explicitly.
-        let member = self
-            .get(vm.heap)
-            .namespace
-            .get_by_str(attr_str, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap));
-        if let Some(member) = member {
+        if let Some(member) = self.get(vm.heap).mro_getattr(attr_str, vm.heap, vm.interns) {
             defer_drop!(member, vm);
-            vm.call_function(member, args)
-        } else {
-            args.drop_with(vm);
-            Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr_str,
-            ))
+            return vm.call_function(member, args);
         }
+
+        args.drop_with(vm);
+        Err(ExcType::attribute_error_type(
+            self.get(vm.heap).name.as_str(vm.interns),
+            attr_str,
+        ))
     }
 }
 
 impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.namespace.py_dec_ref_ids(stack);
+        for &base_id in &self.bases {
+            stack.push(base_id);
+        }
     }
 }

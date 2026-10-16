@@ -869,21 +869,22 @@ impl<'a, 'i> Parser<'a, 'i> {
     ///
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
     /// member, and annotated names a stringized `__annotations__`. Class
-    /// decorators are supported (enclosing scope, applied bottom-up);
-    /// inheritance, function/method decorators, and anything else in the body
-    /// are rejected as not-implemented, reserving the syntax for later.
+    /// decorators and base classes are supported (enclosing scope, applied bottom-up);
+    /// metaclasses and anything else in the body are rejected as not-implemented.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
         let position = self.class_keyword_range(&class);
         let decorators = self.parse_decorators(class.decorator_list)?;
+        let mut bases = Vec::new();
         // `class.arguments` carries base classes and metaclass keywords.
         if let Some(arguments) = &class.arguments {
             // CPython rejects the repeat before it would consider the metaclass.
             self.check_repeated_keywords(&arguments.keywords)?;
-            if !arguments.args.is_empty() || !arguments.keywords.is_empty() {
-                return Err(ParseError::not_implemented(
-                    "class inheritance and metaclasses",
-                    position,
-                ));
+            if !arguments.keywords.is_empty() {
+                return Err(ParseError::not_implemented("metaclasses", position));
+            }
+
+            for base_expr in &arguments.args {
+                bases.push(self.parse_sequence_item(base_expr.clone())?);
             }
         }
 
@@ -1055,6 +1056,7 @@ impl<'a, 'i> Parser<'a, 'i> {
 
         Ok(Node::ClassDef {
             name,
+            bases,
             body,
             members,
             decorators,

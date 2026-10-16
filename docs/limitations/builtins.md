@@ -27,11 +27,11 @@ These raise `NameError`:
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
     `super`. (`@property` on functions is not recognized; use a method.)
-- **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
+- **Construction / coercion**: `bytearray`, `memoryview`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
-`super()` is the biggest practical omission: with no class inheritance either
-(see [classes.md](classes.md)), there is no inheritance mechanism at all.
+`super()` is the biggest practical omission: cooperative method calls with `super()`
+are not yet supported (see [classes.md](classes.md)).
 
 ## Behavioural divergences
 

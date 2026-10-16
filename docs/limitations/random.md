@@ -43,7 +43,7 @@ it is included in a dump, as is the session's `random_start`.
 - **`Random` instances do not convert to host values.** Returning a `Random` instance, `random.Random` or `type(rng)`
     to the host produces `unstable::MontyNode::Repr` in Rust and a string in Python.
     Return the generated values or `rng.getstate()` instead.
-- **No `SystemRandom`**, and `random.Random` cannot be subclassed (Monty has no class inheritance, see
+- **No `SystemRandom`**, and `random.Random` cannot be subclassed (built-in types cannot be subclassed, see
     [classes.md](classes.md)).
     `random.Random.VERSION` on the class raises `AttributeError`; on an instance it is `3`.
     Instances have no `gauss_next` attribute.

@@ -48,9 +48,10 @@ and function-attributes-become-methods), bound methods, class variables
 The 3-arg `type()` form creates classes at runtime with CPython's validation
 order and error wording, but with these divergences:
 
-- **`bases` must be the empty tuple `()`.** Any non-empty bases tuple, even
-    `(object,)`, raises `TypeError: type() bases are not supported`, the
-    runtime counterpart of the parse-time `class Foo(Bar)` rejection.
+- **`bases` must be user-defined classes or `object`.** Built-in types
+    like `int` or `list` cannot be subclassed and raise
+    `TypeError: type '<name>' is not an acceptable base type`. Non-types raise
+    `TypeError: type.__new__(X): <type> is not a type object`.
 - **Keywords are always rejected.** CPython forwards extra keywords to
     `__init_subclass__`; Monty has no `__init_subclass__`, but the error
     message matches what `object.__init_subclass__` produces
@@ -353,9 +354,9 @@ every construction request. Divergences:
 
 ## What does NOT exist for user code
 
-- `class Foo(Bar): ...` — no inheritance, no MRO, no `super()` (rejected at
-    parse time: "class inheritance and metaclasses"; the runtime equivalent
-    `type('Foo', (Bar,), {})` raises `TypeError`, see above).
+- `super()` is not yet supported.
+- Metaclasses (and metaclass keyword arguments in class definitions) are
+    rejected at parse time as not-implemented.
 - Metaclasses, `__init_subclass__`, `__set_name__`, and any other
     metaclass-driven namespace customization.
 - `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
@@ -465,13 +466,11 @@ every construction request. Divergences:
 ## `object`
 
 The name resolves, but it is a carrier for `object.__setattr__` rather than a
-type: Monty has no inheritance, so there is no base class for it to be.
-`isinstance(x, object)` is `True` for every value, as in CPython.
+full type: `isinstance(x, object)` is `True` for every value, as in CPython.
 
 - **`object()` cannot be constructed** — raises `TypeError: cannot create 'object' instances`, where CPython returns a
     featureless instance.
-- **`class Foo(object):` is still rejected**, like any base list (see above),
-    so the idiom carries no more weight than `class Foo:`.
+- **`class Foo(object):` is accepted**, equivalent to `class Foo:`.
 - **Only `__setattr__` and `__name__` resolve.** Every other member CPython's
     `object` carries — `__doc__`, `__init__`, `__eq__`, `__getattribute__`,
     `__class__`, `__mro__`, `__bases__`, `__qualname__`, `__module__`,

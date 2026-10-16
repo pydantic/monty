@@ -1955,6 +1955,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::Class(class) => {
+            // Base classes kept alive by this class's bases tuple.
+            // MUST stay in sync with Class::py_dec_ref_ids.
+            for &base_id in class.bases() {
+                on_child(base_id);
+            }
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
                 if let Value::Ref(id) = k {
