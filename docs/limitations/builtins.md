@@ -42,6 +42,10 @@ These raise `NameError`:
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
+- **Large integer literal identity** — separate occurrences of the same literal outside the `i64` range are not
+    deduplicated, so `a = 18446744073709551616; b = 18446744073709551616; a is b` is `False` where CPython may reuse a
+    single constant and return `True`.
+    Repeated loads of one literal share its identity; use `==` to compare numeric values.
 - **`hash(x)`** — Monty hashes `str`, `bytes`, `float`, `complex` and every container with
     its own algorithm, so the values differ from CPython's. Only `bool`,
     small `int`, and a `float` or `complex` equal to one of them agree: an `int` hashes to itself, which is what CPython does

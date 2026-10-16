@@ -7,7 +7,7 @@
 //! Module functions use the VM's generator ([`RandomTarget::Global`]);
 //! `random.Random(...)` instances use the heap.
 
-use std::{fmt::Write, mem};
+use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::{RandomSeed, RandomStart, ResourceTracker};
 use num_bigint::{BigInt, BigUint};
@@ -606,6 +606,10 @@ impl HeapItem for Random {
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::Random
+    }
+
+    fn py_type_name(&self, _: &VM<'h>) -> Cow<'h, str> {
+        Cow::Borrowed("Random")
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

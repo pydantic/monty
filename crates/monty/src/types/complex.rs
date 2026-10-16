@@ -19,6 +19,7 @@ use crate::{
     hash::{HashValue, hash_f64},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},
@@ -319,15 +320,11 @@ enum Operand {
 /// `OverflowError`); `None` for a non-number so the operation reports
 /// `NotImplemented` and the reflected form gets its turn.
 fn operand(value: &Value, vm: &VM<'_>) -> RunResult<Option<Operand>> {
-    Ok(match value {
-        Value::Float(f) => Some(Operand::Real(*f)),
-        Value::Int(i) => Some(Operand::Real(*i as f64)),
-        Value::Bool(b) => Some(Operand::Real(f64::from(*b))),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Complex(c) => Some(Operand::Complex(*c)),
-            HeapData::LongInt(li) => Some(Operand::Real(li.to_f64_checked()?)),
-            _ => None,
-        },
+    Ok(match value.py_value(vm) {
+        PyValue::Float(value) => Some(Operand::Real(value)),
+        PyValue::Int(integer) => Some(Operand::Real(integer.to_f64_checked(vm)?)),
+        PyValue::Bool(value) => Some(Operand::Real(f64::from(value))),
+        PyValue::Complex(value) => Some(Operand::Complex(*value.get(vm.heap))),
         _ => None,
     })
 }

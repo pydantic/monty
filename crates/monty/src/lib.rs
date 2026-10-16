@@ -27,6 +27,7 @@ mod parse;
 mod percent_format;
 mod predicate;
 mod prepare;
+mod py_value;
 mod repl;
 mod resource_checks;
 mod run;

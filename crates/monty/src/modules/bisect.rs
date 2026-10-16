@@ -132,11 +132,11 @@ pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) 
     defer_drop!(search_x, vm);
     let index = search(vm, a, search_x, (lo, hi), key, left, context)?;
     if insert {
-        let Value::Ref(id) = a else {
+        let Value::Ref(_) = a else {
             return Err(ExcType::attribute_error(a.py_type_name(vm), "insert"));
         };
         let argument = x.clone_with_heap(vm);
-        let result = vm.heap.read(*id).py_call_attr(
+        let result = a.py_value(vm).py_call_attr(
             vm,
             &EitherStr::Interned(vm.interns.intern_static(StaticStrings::Insert)),
             ArgValues::Two(Value::Int(index), argument),

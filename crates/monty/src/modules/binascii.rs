@@ -17,8 +17,6 @@
 //! first; `binascii` re-exposes them under the names CPython puts them at.
 
 use monty_types::ResourceTracker;
-use num_bigint::BigInt;
-use num_traits::ToPrimitive;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -34,6 +32,7 @@ use crate::{
             allocate_bytes, b64_decode, b64_encode_reserving, binascii_error, decode_input_described, encode_input,
         },
     },
+    py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{Module, PyTrait},
     value::Value,
@@ -409,19 +408,9 @@ struct A2bQpArgs {
 /// wraps modulo 2**32 rather than rejecting a value out of range — so a
 /// negative or huge `crc` seed is accepted, as CPython accepts it.
 fn wrapping_u32(value: &Value, vm: &VM<'_>) -> RunResult<u32> {
-    const MODULUS: i64 = 1 << 32;
-
-    match value {
-        Value::Int(int) => Ok(u32::try_from(int.rem_euclid(MODULUS)).expect("reduced below 2**32")),
-        Value::Bool(flag) => Ok(u32::from(*flag)),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::LongInt(long) => {
-                // `&` on a `BigInt` is two's-complement, so this is Python's
-                // own `value & 0xffffffff` for negatives as well.
-                Ok((&long.0 & BigInt::from(u32::MAX)).to_u32().expect("masked below 2**32"))
-            }
-            _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
-        },
+    match value.py_value(vm) {
+        PyValue::Int(integer) => Ok(integer.wrapping_u32(vm)),
+        PyValue::Bool(value) => Ok(u32::from(value)),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }

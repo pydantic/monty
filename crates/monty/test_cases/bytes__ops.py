@@ -1,3 +1,74 @@
+# === Interned and computed operands ===
+for left in [b'\x00\x80\xff', b''.join([b'\x00', b'\x80\xff'])]:
+    for right in [b'ab', b''.join([b'a', b'b'])]:
+        assert left + right == b'\x00\x80\xffab'
+    assert left + left == b'\x00\x80\xff\x00\x80\xff'
+    assert left + b'' == b'\x00\x80\xff'
+    assert b'' + left == b'\x00\x80\xff'
+    assert left[0] == 0
+    assert left[-1] == 255
+    assert left[True] == 128
+    assert left[1:] == b'\x80\xff'
+    assert left[::-1] == b'\xff\x80\x00'
+    assert left[::2] == b'\x00\xff'
+    assert left[20:] == b''
+    assert len(left) == 3
+    assert bool(left) is True
+    assert len(left[20:]) == 0
+    assert bool(left[20:]) is False
+    assert repr(left) == "b'\\x00\\x80\\xff'"
+    assert repr([left, left]) == "[b'\\x00\\x80\\xff', b'\\x00\\x80\\xff']"
+    assert b'' in left
+    assert left in left
+    assert 128 in left
+    assert False in left
+    assert 1 not in left
+    for probe in [b'\x80\xff', b''.join([b'\x80', b'\xff'])]:
+        assert probe in left
+    for count, expected in [
+        (-2, b''),
+        (0, b''),
+        (False, b''),
+        (1, b'\x00\x80\xff'),
+        (True, b'\x00\x80\xff'),
+        (2, b'\x00\x80\xff\x00\x80\xff'),
+    ]:
+        assert left * count == expected
+        assert count * left == expected
+        repeated = left
+        repeated *= count
+        assert repeated == expected
+    try:
+        'a' in left
+        assert False, 'expected a string probe to raise'
+    except TypeError as exc:
+        assert str(exc) == "a bytes-like object is required, not 'str'"
+    try:
+        256 in left
+        assert False, 'expected an out-of-range byte probe to raise'
+    except ValueError as exc:
+        assert str(exc) == 'byte must be in range(0, 256)'
+    try:
+        left * 2**100
+        assert False, 'expected an oversized repetition count to raise'
+    except OverflowError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    try:
+        2**100 * left
+        assert False, 'expected an oversized reflected repetition count to raise'
+    except OverflowError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    try:
+        left[3]
+        assert False, 'expected bytes index out of range'
+    except IndexError as exc:
+        assert str(exc) == 'index out of range'
+    try:
+        left[::0]
+        assert False, 'expected a zero slice step to raise'
+    except ValueError as exc:
+        assert str(exc) == 'slice step cannot be zero'
+
 # === Bytes length ===
 assert len(b'') == 0
 assert len(b'hello') == 5

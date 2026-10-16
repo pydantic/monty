@@ -83,12 +83,14 @@ use crate::{
     heap::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
     },
-    intern::{BytesId, StaticStrings, StringId},
+    identity::Identity,
+    intern::{BytesId, StaticStrings},
     percent_format::{copy_bytes_template, percent_format_bytes},
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
         long_int::repeat_count,
+        py_trait::PyObjectIdentity,
         slice::{optional_sequence_bound, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_bytes},
@@ -257,9 +259,116 @@ pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value,
 }
 
 /// Repeats bytes after validating the allocation against resource limits.
-pub(crate) fn repeat_bytes(value: &[u8], count: usize, heap: &Heap) -> Result<Value, ResourceError> {
-    check_repeat_size(value.len(), count, &heap.tracker)?;
-    Ok(Value::Ref(heap.allocate(HeapData::Bytes(value.repeat(count).into()))))
+fn repeat_bytes(value: &[u8], count: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
+    let Some(count) = repeat_count(count, vm)? else {
+        return Ok(None);
+    };
+    check_repeat_size(value.len(), count, &vm.heap.tracker)?;
+    Ok(Some(Value::Ref(
+        vm.heap.allocate(HeapData::Bytes(value.repeat(count).into())),
+    )))
+}
+
+/// An allocation-free bytes view retaining its interned or heap identity.
+/// Heap handles can remain live across `__index__` calls without borrowing the buffer.
+pub(crate) enum PyBytes<'h> {
+    Interned(BytesId),
+    Heap(HeapObjectRead<'h, Bytes>),
+}
+
+impl<'h> PyBytes<'h> {
+    /// Extracts bytes without copying their contents.
+    pub(crate) fn from_value(value: &Value, vm: &VM<'h>) -> Option<Self> {
+        match value {
+            Value::InternBytes(id) => Some(Self::Interned(*id)),
+            Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
+            _ => None,
+        }
+    }
+
+    /// Borrows the buffer only for the duration of the heap borrow.
+    pub(crate) fn as_slice<'a>(&self, vm: &'a VM<'h>) -> &'a [u8] {
+        match self {
+            Self::Interned(id) => vm.interns.get_bytes(*id),
+            Self::Heap(value) => value.get(vm.heap).as_slice(),
+        }
+    }
+}
+
+impl PyObjectIdentity for PyBytes<'_> {
+    fn py_identity(&self) -> Identity {
+        match self {
+            Self::Interned(id) => Identity::InternBytes(id.index()),
+            Self::Heap(value) => value.py_identity(),
+        }
+    }
+}
+
+impl<'h> PyTrait<'h> for PyBytes<'h> {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
+        Type::Bytes
+    }
+
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        match self {
+            Self::Interned(id) => Value::InternBytes(*id).py_eq_impl(other, vm),
+            Self::Heap(value) => value.py_eq_impl(other, vm),
+        }
+    }
+
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+        Some(self.as_slice(vm).len())
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(!self.as_slice(vm).is_empty())
+    }
+
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        Ok(bytes_repr_fmt(self.as_slice(vm), f)?)
+    }
+
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        bytes_contains(self.as_slice(vm), item, vm).map(Some)
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        repeat_bytes(self.as_slice(vm), other, vm)
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
+    }
+
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        bytes_add(self.as_slice(vm), other, vm)
+    }
+
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        match self {
+            Self::Interned(id) => bytes_getitem(&vm.heap.protect(vm.interns.get_bytes(*id)), key, vm),
+            Self::Heap(value) => value.py_getitem(key, vm),
+        }
+    }
+
+    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let template = copy_bytes_template(self.as_slice(vm), &vm.heap.tracker)?;
+        percent_format_bytes(&template, other, vm).map(Some)
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        match self {
+            Self::Interned(id) => {
+                let Some(method) = attr.static_string(vm.interns) else {
+                    args.drop_with(vm);
+                    return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
+                };
+                let bytes = vm.heap.protect(vm.interns.get_bytes(*id));
+                call_bytes_method_impl(&bytes, method, args, vm).map(CallResult::Value)
+            }
+            Self::Heap(value) => value.py_call_attr(vm, attr, args),
+        }
+    }
 }
 
 impl From<Vec<u8>> for Bytes {
@@ -311,23 +420,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = vm.heap.get(*id)
-        {
-            let b = self.get(vm.heap);
-            let sliced_bytes = slice_collect_iterator(vm, slice, b.0.iter(), |b| *b)?;
-            let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(sliced_bytes)));
-            return Ok(Value::Ref(heap_id));
-        }
-
-        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm, Type::Bytes)?;
-
-        // Use helper for byte indexing
-        let b = self.get(vm.heap);
-        let byte = get_byte_at_index(&b.0, index).ok_or_else(ExcType::bytes_index_error)?;
-        Ok(Value::Int(i64::from(byte)))
+        let bytes = heap_read_ref_as_field!(self, Bytes, 0);
+        bytes_getitem(&bytes.as_slice(vm.heap), key, vm)
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -361,19 +455,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let other = match other {
-            Value::InternBytes(id) => vm.interns.get_bytes(*id),
-            Value::Ref(id) if let HeapData::Bytes(value) = vm.heap.get(*id) => value.as_slice(),
-            _ => return Ok(None),
-        };
-        Ok(Some(concat_bytes(self.get(vm.heap).as_slice(), other, vm.heap)?))
+        bytes_add(self.get(vm.heap).as_slice(), other, vm)
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
-            return Ok(None);
-        };
-        Ok(Some(repeat_bytes(self.get(vm.heap).as_slice(), count, vm.heap)?))
+        repeat_bytes(self.get(vm.heap).as_slice(), other, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -398,22 +484,32 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     }
 }
 
+/// Concatenation shared by logical bytes views and concrete heap dispatch.
+fn bytes_add(bytes: &[u8], other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
+    match PyBytes::from_value(other, vm) {
+        Some(other) => Ok(Some(concat_bytes(bytes, other.as_slice(vm), vm.heap)?)),
+        None => Ok(None),
+    }
+}
+
+/// Indexes a protected buffer, allowing `__index__` to run before borrowing it.
+fn bytes_getitem<'h>(bytes: &HeapRead<'h, [u8]>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    if let Value::Ref(id) = key
+        && let HeapData::Slice(slice) = vm.heap.get(*id)
+    {
+        let result = slice_collect_iterator(vm, slice, bytes.get(vm.heap).iter(), |b| *b)?;
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(result)))))
+    } else {
+        let index = key.as_index(vm, Type::Bytes)?;
+        let byte = get_byte_at_index(bytes.get(vm.heap), index).ok_or_else(ExcType::bytes_index_error)?;
+        Ok(Value::Int(i64::from(byte)))
+    }
+}
+
 impl HeapItem for Bytes {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // No-op: bytes don't hold Value references
     }
-}
-
-/// Calls a bytes method on a byte slice by method name.
-///
-/// This is the entry point for bytes method calls from the VM on interned bytes.
-/// Converts the `StringId` to `StaticStrings` and delegates to `call_bytes_method_impl`.
-pub fn call_bytes_method(bytes: &[u8], method_id: StringId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let Some(method) = vm.interns.static_string(method_id) else {
-        args.drop_with(vm);
-        return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
-    };
-    call_bytes_method_impl(&vm.heap.protect(bytes), method, args, vm)
 }
 
 /// Calls a bytes method on a byte slice.

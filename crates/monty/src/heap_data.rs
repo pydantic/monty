@@ -14,13 +14,12 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::FunctionId,
-    modules::collections::defaultdict::defaultdict_missing,
-    types::{LazyHeapSet, LongInt, PyTrait, Type, str::allocate_string},
+    types::{LazyHeapSet, LongInt, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -646,8 +645,22 @@ impl HeapItem for ExternalFuture {
     }
 }
 
+/// Exhaustive concrete-type dispatch shared by storage and logical views.
 macro_rules! heap_read_output_py_trait_forward {
     ($self:expr, |$value:ident| $body:expr, else $fallback:expr) => {
+        $crate::heap_data::heap_read_output_py_trait_forward!(
+            $self, |$value| $body, {
+                Self::LongInt($value) => $body,
+                Self::Cell(_)
+                | Self::Exception(_)
+                | Self::Module(_)
+                | Self::Coroutine(_)
+                | Self::GatherFuture(_)
+                | Self::ExternalFuture(_) => $fallback,
+            }
+        )
+    };
+    ($self:expr, |$value:ident| $body:expr, {$($custom:tt)*}) => {
         match $self {
             Self::Str($value) => $body,
             Self::Bytes($value) => $body,
@@ -690,7 +703,6 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::BoundMethod($value) => $body,
             Self::DataclassField($value) => $body,
             Self::DataclassParams($value) => $body,
-            Self::LongInt($value) => $body,
             Self::Complex($value) => $body,
             Self::Path($value) => $body,
             Self::OpenFile($value) => $body,
@@ -704,33 +716,19 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Closure($value) => $body,
             Self::FunctionDefaults($value) => $body,
             Self::ExtFunction($value) => $body,
-            Self::Cell(_)
-            | Self::Exception(_)
-            | Self::Module(_)
-            | Self::Coroutine(_)
-            | Self::GatherFuture(_)
-            | Self::ExternalFuture(_) => $fallback,
+            $($custom)*
         }
     };
 }
 
-/// Subscripts a heap value, routing a `defaultdict` miss through `__missing__`
-/// and everything else — Counter included — to `py_getitem`.
-///
-/// A defaultdict's miss stores `factory()`, so that mutating case stays outside
-/// [`PyTrait::py_getitem`]'s read-only interface while retaining the identity-aware
-/// object handle supplied by `Value::py_getitem`.
-pub(crate) fn heap_subscript<'h>(value: HeapReadOutput<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-    match value {
-        HeapReadOutput::Dict(mut dict) if dict.get(vm.heap).is_defaultdict() => match dict.dict_get(key, vm)? {
-            Some(value) => Ok(value),
-            None => defaultdict_missing(&mut dict, key, vm),
-        },
-        value => value.py_getitem(key, vm),
-    }
-}
+pub(crate) use heap_read_output_py_trait_forward;
 
+// Only unmigrated protocols dispatch here; normalized operations use PyValue.
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_len(vm), else None)
+    }
+
     /// Forwards so host class instances and named tuples name their real class.
     fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
         heap_read_output_py_trait_forward!(
@@ -740,128 +738,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    /// Delegates to the types defining their own `in`; the rest keep the trait
-    /// default (`None`), leaving `Value::py_contains` to iterate or raise.
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_contains_impl(item, vm), else Ok(None))
-    }
-
-    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
-        heap_read_output_py_trait_forward!(
-            self,
-            |value| value.py_bool(vm),
-            else {
-                match self {
-                    Self::Cell(_)
-                    | Self::Exception(_)
-                    | Self::Module(_)
-                    | Self::Coroutine(_)
-                    | Self::GatherFuture(_)
-                    | Self::ExternalFuture(_) => Ok(true),
-                    _ => unreachable!("py-trait variants handled by heap_read_output_py_trait_forward"),
-                }
-            }
-        )
-    }
-
-    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_radd_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rsub_impl(other, vm), else Ok(None))
-    }
-
-    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_mul_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rmul_impl(other, vm), else Ok(None))
-    }
-
     fn py_matmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_matmul_impl(other, vm), else Ok(None))
     }
 
     fn py_rmatmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rmatmul_impl(other, vm), else Ok(None))
-    }
-
-    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_truediv_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rtruediv_impl(other, vm), else Ok(None))
-    }
-
-    fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_floordiv_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rfloordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rfloordiv_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rmod_impl(other, vm), else Ok(None))
-    }
-
-    fn py_divmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_divmod_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rdivmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rdivmod_impl(other, vm), else Ok(None))
-    }
-
-    fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_pow_impl(other, modulus, vm), else Ok(None))
-    }
-
-    fn py_rpow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rpow_impl(other, modulus, vm), else Ok(None))
-    }
-
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_and_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rand_impl(other, vm), else Ok(None))
-    }
-
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_or_impl(other, vm), else Ok(None))
-    }
-
-    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_ror_impl(other, vm), else Ok(None))
-    }
-
-    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_xor_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rxor_impl(other, vm), else Ok(None))
-    }
-
-    fn py_lshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_lshift_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rlshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rlshift_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rshift_impl(other, vm), else Ok(None))
-    }
-
-    fn py_rrshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rrshift_impl(other, vm), else Ok(None))
     }
 
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -873,22 +755,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)))
             }
         )
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> Result<CallResult, RunError> {
-        if let Self::Module(module) = self {
-            Ok(module.py_call_attr(vm, attr, args)?)
-        } else {
-            heap_read_output_py_trait_forward!(
-                self,
-                |value| Ok(value.py_call_attr(vm, attr, args)?),
-                else {
-                    args.drop_with(vm);
-                    let type_name = self.py_type_name(vm);
-                    Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
-                }
-            )
-        }
     }
 
     fn py_is_iterator(&self, vm: &VM<'h>) -> bool {
@@ -949,10 +815,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_len(vm), else None)
-    }
-
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(
             self,
@@ -991,69 +853,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        heap_read_output_py_trait_forward!(
-            self,
-            |value| value.py_repr_fmt(f, vm, heap_ids),
-            else {
-                match self {
-                    Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
-                    Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
-                    Self::Module(m) => Ok(write!(f, "<module '{}'>", m.get(vm.heap).name_str(vm.interns))?),
-                    Self::Coroutine(coro) => {
-                        let func = vm.interns.get_function(coro.get(vm.heap).func_id);
-                        let name = vm.interns.get_str(func.name.name_id);
-                        Ok(write!(f, "<coroutine object {name}>")?)
-                    }
-                    Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
-                    Self::ExternalFuture(fut) => Ok(write!(
-                        f,
-                        "<coroutine external_future({})>",
-                        fut.get(vm.heap).call_id.raw()
-                    )?),
-                    _ => unreachable!("py-trait variants handled by heap_read_output_py_trait_forward"),
-                }
-            }
-        )
-    }
-
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        heap_read_output_py_trait_forward!(
-            self,
-            |value| value.py_str(vm),
-            else {
-                match self {
-                    Self::Exception(e) => Ok(allocate_string(e.get(vm.heap).py_str(), vm.heap)),
-                    _ => self.py_repr(vm),
-                }
-            }
-        )
-    }
-
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_add_impl(other, vm), else Ok(None))
-    }
-
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_sub_impl(other, vm), else Ok(None))
-    }
-
-    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_mod_impl(other, vm), else Ok(None))
-    }
-
-    fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_index_impl(vm), else Ok(None))
-    }
-
-    fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_neg_impl(vm), else Ok(None))
-    }
-
-    fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_pos_impl(vm), else Ok(None))
-    }
-
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         heap_read_output_py_trait_forward!(self, |value| value.py_iadd_impl(other, vm), else Ok(false))
     }
@@ -1072,14 +871,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
 
     fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_cmp_op(other, op, vm), else Ok(None))
-    }
-
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        heap_read_output_py_trait_forward!(
-            self,
-            |value| value.py_getitem(key, vm),
-            else { Err(ExcType::type_error_not_sub(&self.py_type_name(vm))) }
-        )
     }
 
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {

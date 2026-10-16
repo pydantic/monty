@@ -1804,6 +1804,12 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, message).into()
     }
 
+    /// Reports an invalid repetition count after both multiplication implementations decline.
+    #[must_use]
+    fn type_error_sequence_repeat(type_name: impl Display) -> RunError {
+        Self::type_error(format!("can't multiply sequence by non-int of type '{type_name}'"))
+    }
+
     /// Creates a TypeError for unsupported unary operations.
     ///
     /// Uses CPython's format: `bad operand type for unary {op}: '{type}'`

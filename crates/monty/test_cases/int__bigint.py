@@ -1,5 +1,9 @@
 # Tests for BigInt (arbitrary precision integer) support
 
+import binascii
+import json
+from collections import Counter, deque
+
 # === Setup constants ===
 MAX_I64 = 9223372036854775807  # i64::MAX
 MIN_I64 = -MAX_I64 - 1  # i64::MIN (compute to avoid type checker overflow)
@@ -43,6 +47,69 @@ assert 10000000000000000000000000000000000000001 - 10000000000000000000000000000
 
 # bigint_literal ** int
 assert 10000000000000000000**2 == 10**38
+
+
+# === Interned literals through integer consumers ===
+def large_literal():
+    return 18446744073709551616
+
+
+literal = large_literal()
+assert large_literal() is literal
+assert int(literal) is literal
+assert +literal is literal
+computed = 1 << 64
+for n in [literal, computed]:
+    assert ~n == -18446744073709551617
+    assert abs(n) == computed
+    assert int(n) == computed
+    assert complex(n) == complex(float(computed))
+    assert n + 1j == complex(float(computed), 1)
+    assert 1j + n == complex(float(computed), 1)
+    assert bin(n) == '0b1' + '0' * 64
+    assert oct(n) == '0o2000000000000000000000'
+    assert hex(n) == '0x10000000000000000'
+    assert pow(n, 3, 7) == 1
+    assert f'{n:x}' == '10000000000000000'
+    assert f'{n:.1f}' == '18446744073709551616.0'
+    assert '%d' % n == '18446744073709551616'
+    assert b'%x' % n == b'10000000000000000'
+    assert '%.1f' % n == '18446744073709551616.0'
+    assert b'%.1f' % n == b'18446744073709551616.0'
+    assert json.dumps({n: n}) == '{"18446744073709551616": 18446744073709551616}'
+    assert binascii.crc32(b'abc', n) == binascii.crc32(b'abc', 0)
+    assert binascii.crc_hqx(b'abc', n) == binascii.crc_hqx(b'abc', 0)
+    assert Counter('aba').most_common(n) == [('a', 2), ('b', 1)]
+    assert {n: 'value'}[computed] == 'value'
+    assert {computed: 'value'}[n] == 'value'
+    for sequence in ['a', b'a', [1], (1,)]:
+        try:
+            sequence * n
+            assert False, 'expected an oversized repetition count to raise'
+        except OverflowError as exc:
+            assert str(exc) == "cannot fit 'int' into an index-sized integer"
+        try:
+            n * sequence
+            assert False, 'expected an oversized repetition count to raise'
+        except OverflowError as exc:
+            assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    for render, message in [
+        (lambda: '%c' % n, '%c arg not in range(0x110000)'),
+        (lambda: b'%c' % n, '%c arg not in range(256)'),
+        (lambda: '%*s' % (n, 'a'), 'Python int too large to convert to C ssize_t'),
+        (lambda: deque([1]).rotate(n), 'Python int too large to convert to C ssize_t'),
+    ]:
+        try:
+            render()
+            assert False, 'expected an oversized integer argument to raise'
+        except OverflowError as exc:
+            assert str(exc) == message
+    try:
+        items = [1]
+        items[n] = 2
+        assert False, 'expected an oversized assignment index to raise'
+    except IndexError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
 
 # === int() parsing of big integers ===
 assert int('10000000000000000000000000000000000000000') == 10**40

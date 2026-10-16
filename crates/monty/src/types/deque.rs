@@ -9,6 +9,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_value::PyValue,
     resource_checks::{check_estimated_size, check_repeat_size, check_value_buffer_growth},
     types::{
         LazyHeapSet, Type,
@@ -241,10 +242,9 @@ fn check_maxlen(n: i64) -> RunResult<usize> {
 /// exception kind the caller supplies (`OverflowError` for maxlen/rotate/insert,
 /// `IndexError` for subscript).
 fn read_ssize(value: &Value, vm: &VM<'_>, overflow: fn() -> RunError) -> Option<RunResult<i64>> {
-    match value {
-        Value::Int(i) => Some(Ok(*i)),
-        Value::Bool(b) => Some(Ok(i64::from(*b))),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(li.to_i64().ok_or_else(overflow)),
+    match value.py_value(vm) {
+        PyValue::Int(integer) => Some(integer.to_i64(vm).ok_or_else(overflow)),
+        PyValue::Bool(value) => Some(Ok(i64::from(value))),
         _ => None,
     }
 }

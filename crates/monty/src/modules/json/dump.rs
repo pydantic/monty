@@ -3,10 +3,7 @@
 //! This module owns encoder keyword parsing, CPython-compatible string/float
 //! formatting, and recursive serialization of Monty values.
 
-use std::{
-    cmp::Ordering,
-    fmt::{Display, Write},
-};
+use std::{cmp::Ordering, fmt::Write};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -14,6 +11,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -206,18 +204,11 @@ fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_>) -> RunResu
 fn parse_indent_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
     defer_drop!(value, vm);
 
-    match value {
-        Value::None => Ok(None),
-        Value::Bool(flag) => Ok(Some(" ".repeat(usize::from(*flag)))),
-        Value::Int(count) => spaces_from_indent_count(*count),
-        Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
-        Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
-            HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
-            HeapReadOutput::LongInt(long_int) => {
-                spaces_from_indent_count(long_int.get(vm.heap).to_i64().ok_or_else(ExcType::overflow_c_ssize_t)?)
-            }
-            _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
-        },
+    match value.py_value(vm) {
+        PyValue::None => Ok(None),
+        PyValue::Bool(value) => Ok(Some(" ".repeat(usize::from(value)))),
+        PyValue::Int(integer) => spaces_from_indent_count(integer.to_i64(vm).ok_or_else(ExcType::overflow_c_ssize_t)?),
+        PyValue::Str(value) => Ok(Some(value.as_str(vm).to_owned())),
         _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
     }
 }
@@ -621,9 +612,9 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>)
 /// coerces the non-string cases to JSON strings during output.
 fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
     matches!(
-        value,
-        Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::InternString(_)
-    ) || matches!(value, Value::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Str(_) | HeapData::LongInt(_)))
+        value.py_value(vm),
+        PyValue::None | PyValue::Bool(_) | PyValue::Int(_) | PyValue::Float(_) | PyValue::Str(_)
+    )
 }
 
 /// Serializes a dict key by applying CPython's JSON key coercions.
@@ -632,23 +623,17 @@ fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
 /// then escaped as a JSON string token.
 fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &VM<'_>) -> RunResult<()> {
     let ensure_ascii = config.ensure_ascii();
-    match key {
-        Value::None => write_json_ascii_key("null", out),
-        Value::Bool(true) => write_json_ascii_key("true", out),
-        Value::Bool(false) => write_json_ascii_key("false", out),
-        Value::Int(value) => write_json_display_key(value, out),
-        Value::Float(value) => {
-            serialize_float_key(*value, out, config)?;
+    match key.py_value(vm) {
+        PyValue::None => write_json_ascii_key("null", out),
+        PyValue::Bool(true) => write_json_ascii_key("true", out),
+        PyValue::Bool(false) => write_json_ascii_key("false", out),
+        PyValue::Int(integer) => {
+            out.push('"');
+            integer.write_decimal(out, vm)?;
+            out.push('"');
         }
-        Value::InternString(string_id) => write_json_string(vm.interns.get_str(*string_id), out, ensure_ascii),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(string) => write_json_string(string.as_str(), out, ensure_ascii),
-            HeapData::LongInt(long_int) => {
-                long_int.check_str_digits_limit()?;
-                write_json_display_key(long_int.inner(), out);
-            }
-            _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
-        },
+        PyValue::Float(value) => serialize_float_key(value, out, config)?,
+        PyValue::Str(value) => write_json_string(value.as_str(vm), out, ensure_ascii),
         _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
     }
     Ok(())
@@ -663,16 +648,6 @@ fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &
 fn write_json_ascii_key(value: &str, out: &mut String) {
     out.push('"');
     out.push_str(value);
-    out.push('"');
-}
-
-/// Writes a displayable value as a quoted JSON object key.
-///
-/// The caller is responsible for ensuring the formatted output is ASCII-safe
-/// and does not require JSON string escaping.
-fn write_json_display_key(value: impl Display, out: &mut String) {
-    out.push('"');
-    write!(out, "{value}").expect("writing to String cannot fail");
     out.push('"');
 }
 

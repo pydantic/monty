@@ -3,6 +3,18 @@ import random
 
 random.seed(1)
 
+# === Instance type names in protocol errors ===
+rng = random.Random(1)
+for operation, message in [
+    (lambda: rng[0], "'Random' object is not subscriptable"),
+    (lambda: rng(), "'Random' object is not callable"),
+]:
+    try:
+        operation()
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message
+
 # === seed() ===
 for bad in ([1], {}, (1,), range(3)):
     try:

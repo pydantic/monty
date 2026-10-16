@@ -1,14 +1,12 @@
 //! Implementation of the pow() builtin function.
 
-use num_bigint::BigInt;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::HeapData,
-    types::{Type, long_int::modular_pow},
+    py_value::PyValue,
+    types::{PyTrait, Type},
     value::Value,
 };
 
@@ -29,11 +27,8 @@ pub fn builtin_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Value::None => int_base.py_pow(int_exp, None, vm),
         modulus => {
             let int_modulus = normalize_bool(modulus);
-            let result = match int_base {
-                Value::Int(base) => modular_pow(&BigInt::from(*base), int_exp, int_modulus, vm.heap)?,
-                Value::Ref(id) if let HeapData::LongInt(base) = vm.heap.get(*id) => {
-                    modular_pow(base.inner(), int_exp, int_modulus, vm.heap)?
-                }
+            let result = match int_base.py_value(vm) {
+                PyValue::Int(base) => base.py_pow_impl(int_exp, Some(int_modulus), vm)?,
                 _ => None,
             };
             result.ok_or_else(|| {

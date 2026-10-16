@@ -18,6 +18,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
+    py_value::PyValue,
     resource_checks::check_repeat_size,
     types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
     value::{VALUE_SIZE, Value},
@@ -370,30 +371,15 @@ pub(crate) fn counter_most_common<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let n_arg = args.get_zero_one_arg("most_common", vm.heap)?;
-    // `n` goes through `__index__`, so a bool counts as `0`/`1` and a big int is
-    // accepted (clamped): a huge positive returns every item, a negative none.
-    // Only a genuinely non-integer `n` is rejected.
-    let limit = match n_arg {
-        None | Some(Value::None) => None,
-        Some(Value::Int(n)) => Some(usize::try_from(n.max(0)).unwrap_or(usize::MAX)),
-        Some(Value::Bool(b)) => Some(usize::from(b)),
-        // `value @` binds the whole `Value` (so it is dropped, not plain-`Drop`ped
-        // — the `Ref` owns a heap refcount), while `id` reads the entry.
-        Some(value @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::LongInt(_)) => {
-            let negative = match vm.heap.get(id) {
-                HeapData::LongInt(li) => li.is_negative(),
-                _ => unreachable!("guarded by the matches! above"),
-            };
-            value.drop_with(vm);
-            Some(if negative { 0 } else { usize::MAX })
-        }
-        Some(other) => {
-            let ty = other.py_type_name(vm);
-            other.drop_with(vm);
-            return Err(ExcType::type_error(format!(
-                "'{ty}' object cannot be interpreted as an integer"
-            )));
+    // Huge positive limits return every item; negative limits return none.
+    let limit = {
+        let n_arg = args.get_zero_one_arg("most_common", vm.heap)?;
+        defer_drop!(n_arg, vm);
+        match n_arg.as_ref().map(|value| value.py_value(vm)) {
+            None | Some(PyValue::None) => None,
+            Some(PyValue::Int(integer)) => Some(integer.collection_limit(vm)),
+            Some(PyValue::Bool(value)) => Some(usize::from(value)),
+            Some(other) => return Err(ExcType::type_error_not_integer(&other.py_type_name(vm))),
         }
     };
 

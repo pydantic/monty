@@ -16,9 +16,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{
-        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field,
-    },
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field},
+    identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
     resource_checks::{check_repeat_size, check_replace_size},
@@ -27,6 +26,7 @@ use crate::{
     types::{
         LazyHeapSet, Type,
         long_int::repeat_count,
+        py_trait::PyObjectIdentity,
         slice::{optional_sequence_bound, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_str},
@@ -110,13 +110,116 @@ impl Str {
         let s = codec.decode(bytes, errors)?;
         Ok(allocate_string(s, vm.heap))
     }
+}
 
-    /// Handles slice-based indexing for strings.
-    ///
-    /// Returns a new string containing the selected characters (Unicode-aware).
-    fn getitem_slice(&self, vm: &VM<'_>, slice: &super::Slice) -> RunResult<Value> {
-        let result_str: Box<str> = slice_collect_iterator(vm, slice, self.0.chars(), |c| c)?;
-        Ok(allocate_string(result_str, vm.heap))
+/// An allocation-free string view that retains interned or heap identity.
+///
+/// Heap reads keep the receiver available across calls such as `__index__` without
+/// holding a Rust borrow of its text during Python execution.
+pub(crate) enum PyStr<'h> {
+    Interned(StringId),
+    Heap(HeapObjectRead<'h, Str>),
+}
+
+impl<'h> PyStr<'h> {
+    /// Extracts a string without copying its contents.
+    pub(crate) fn from_value(value: &Value, vm: &VM<'h>) -> Option<Self> {
+        match value {
+            Value::InternString(id) => Some(Self::Interned(*id)),
+            Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
+            _ => None,
+        }
+    }
+
+    /// Borrows the text only for the duration of the heap borrow.
+    pub(crate) fn as_str<'a>(&self, vm: &'a VM<'h>) -> &'a str {
+        match self {
+            Self::Interned(id) => vm.interns.get_str(*id),
+            Self::Heap(value) => value.get(vm.heap).as_str(),
+        }
+    }
+}
+
+impl PyObjectIdentity for PyStr<'_> {
+    fn py_identity(&self) -> Identity {
+        match self {
+            Self::Interned(id) => Identity::InternString(id.index()),
+            Self::Heap(value) => value.py_identity(),
+        }
+    }
+}
+
+impl<'h> PyTrait<'h> for PyStr<'h> {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
+        Type::Str
+    }
+
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        match self {
+            Self::Interned(id) => Value::InternString(*id).py_eq_impl(other, vm),
+            Self::Heap(value) => value.py_eq_impl(other, vm),
+        }
+    }
+
+    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(match self {
+            Self::Interned(id) => Value::InternString(*id),
+            Self::Heap(value) => value.clone_value(vm.heap),
+        })
+    }
+
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+        Some(self.as_str(vm).chars().count())
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(!self.as_str(vm).is_empty())
+    }
+
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        Ok(string_repr_fmt(self.as_str(vm), f)?)
+    }
+
+    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        str_contains(self.as_str(vm), item, vm.heap, vm.interns).map(Some)
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        repeat_str(self.as_str(vm), other, vm)
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
+    }
+
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        str_add(self.as_str(vm), other, vm)
+    }
+
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        match self {
+            Self::Interned(id) => str_getitem(&vm.heap.protect(vm.interns.get_str(*id)), key, vm),
+            Self::Heap(value) => value.py_getitem(key, vm),
+        }
+    }
+
+    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let template = copy_format_template(self.as_str(vm), &vm.heap.tracker)?;
+        percent_format(&template, other, vm).map(Some)
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        match self {
+            Self::Interned(id) => {
+                let Some(method) = attr.static_string(vm.interns) else {
+                    args.drop_with(vm);
+                    return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
+                };
+                let text = vm.heap.protect(vm.interns.get_str(*id));
+                call_str_method_impl(&text, method, args, vm).map(CallResult::Value)
+            }
+            Self::Heap(value) => value.py_call_attr(vm, attr, args),
+        }
     }
 }
 
@@ -185,10 +288,13 @@ pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Valu
     Value::Ref(heap_id)
 }
 
-/// Repeats a string after validating the allocation against resource limits.
-pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap) -> Result<Value, ResourceError> {
-    check_repeat_size(value.len(), count, &heap.tracker)?;
-    Ok(allocate_string(value.repeat(count), heap))
+/// Converts a native integer count and preflights the repeated string allocation.
+fn repeat_str(value: &str, count: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
+    let Some(count) = repeat_count(count, vm)? else {
+        return Ok(None);
+    };
+    check_repeat_size(value.len(), count, &vm.heap.tracker)?;
+    Ok(Some(allocate_string(value.repeat(count), vm.heap)))
 }
 
 /// Allocates a single character as a string value.
@@ -277,20 +383,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = vm.heap.get(*id)
-        {
-            return self.get(vm.heap).getitem_slice(vm, slice);
-        }
-
-        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(vm, Type::Str)?;
-
-        // Use single-pass indexing to avoid Vec<char> allocation
-        let s = self.get(vm.heap);
-        let c = get_char_at_index(&s.0, index).ok_or_else(ExcType::str_index_error)?;
-        Ok(allocate_char(c, vm.heap))
+        let s = heap_read_ref_as_field!(self, Str, 0);
+        str_getitem(&s.as_box_value(vm.heap), key, vm)
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -328,19 +422,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let other = match other {
-            Value::InternString(id) => vm.interns.get_str(*id),
-            Value::Ref(id) if let HeapData::Str(value) = vm.heap.get(*id) => value.as_str(),
-            _ => return Ok(None),
-        };
-        Ok(Some(concat_allocate_str(self.get(vm.heap).as_str(), other, vm.heap)?))
+        str_add(self.get(vm.heap).as_str(), other, vm)
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
-            return Ok(None);
-        };
-        Ok(Some(repeat_str(self.get(vm.heap).as_str(), count, vm.heap)?))
+        repeat_str(self.get(vm.heap).as_str(), other, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -365,27 +451,37 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 }
 
+/// Concatenation shared by logical string views and concrete heap dispatch.
+fn str_add(s: &str, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
+    match PyStr::from_value(other, vm) {
+        Some(other) => Ok(Some(concat_allocate_str(s, other.as_str(vm), vm.heap)?)),
+        None => Ok(None),
+    }
+}
+
+/// Indexes protected text, allowing `__index__` to execute before borrowing it.
+fn str_getitem<'h>(s: &HeapRead<'h, str>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    if let Value::Ref(id) = key
+        && let HeapData::Slice(slice) = vm.heap.get(*id)
+    {
+        let result: Box<str> = slice_collect_iterator(vm, slice, s.get(vm.heap).chars(), |c| c)?;
+        Ok(allocate_string(result, vm.heap))
+    } else {
+        let index = key.as_index(vm, Type::Str)?;
+        let c = get_char_at_index(s.get(vm.heap), index).ok_or_else(ExcType::str_index_error)?;
+        Ok(allocate_char(c, vm.heap))
+    }
+}
+
 impl HeapItem for Str {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // No-op: strings don't hold Value references
     }
 }
 
-/// Dispatches a method call on a string value by method name.
-///
-/// This is the entry point for string method calls from the VM on interned strings.
-/// Converts the `StringId` to `StaticStrings` and delegates to `call_str_method_impl`.
-pub fn call_str_method(s: &str, method_id: StringId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let args_guard = DropGuard::new(args, vm.heap);
-    let Some(method) = vm.interns.static_string(method_id) else {
-        return Err(ExcType::attribute_error(Type::Str, vm.interns.get_str(method_id)));
-    };
-    let args = args_guard.into_inner();
-    call_str_method_impl(&vm.heap.protect(s), method, args, vm)
-}
-
 const FORMAT_TEMPLATE_COPY_CHUNK: usize = 64 * 1024;
 
+/// Copies a formatting template with resource checks before Python callbacks can mutate the heap.
 pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) -> RunResult<String> {
     tracker.check_time()?;
     let mut copy = StringBuilder::with_capacity(template.len(), tracker)?;
@@ -403,20 +499,8 @@ pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) ->
     copy.finish_raw()
 }
 
-/// Dispatches a method call on a string value.
-///
-/// This is the unified implementation for string method calls, used by both:
-/// - `HeapObjectRead<Str>::py_call_attr()` for heap-allocated strings
-/// - `call_str_method()` for interned string literals from the VM
-///
-/// # Not Yet Implemented
-///
-/// The following Python string methods are not yet implemented:
-///
-/// - `format_map(mapping)` - Mapping-only variant of `format()`.
-/// - `maketrans()` / `translate()` - Character translation tables; moderate complexity,
-///   requires building and applying Unicode translation maps.
-/// - `expandtabs(tabsize=8)` - Tab expansion; simple but rarely used in practice.
+/// Dispatches methods for both logical strings and concrete heap strings.
+/// The protected text can remain live while a method re-enters Python.
 fn call_str_method_impl<'h>(
     s: &HeapRead<'h, str>,
     method: StaticStrings,
@@ -1973,8 +2057,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
 
 /// Helper for substring containment check in strings.
 ///
-/// Called by `HeapObjectRead<Str>::py_contains_impl` and, for interned strings, by
-/// `Value::py_contains`. A non-str probe reports its own type, as CPython does.
+/// Shared by logical string views and concrete heap dispatch.
+/// A non-str probe reports its own type, as CPython does.
 pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
     match item {
         Value::InternString(item_id) => {

@@ -2,17 +2,6 @@ use std::{borrow::Cow, cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 
-/// Trait for heap-allocated Python values that need common operations.
-///
-/// This trait abstracts over container types (List, Tuple, Str, Bytes) stored
-/// in the heap, providing a unified interface for operations like length,
-/// equality, reference counting support, and attribute dispatch.
-///
-/// The lifetime `'h` ties methods to the heap lifetime so that
-/// `HeapObjectRead<'h, T>` types can implement the trait with access to the `VM<'h, …>`.
-///
-/// The trait is designed to work with `enum_dispatch` for efficient virtual
-/// dispatch on `HeapData` without boxing overhead.
 use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
@@ -109,16 +98,11 @@ impl PyObjectIdentity for Value {
     }
 }
 
-/// Common operations for Python values.
+/// Common operations for Python values, with `'h` tying heap handles to their VM.
 ///
-/// Implementers should provide Python-compatible semantics for all operations.
-/// Dynamic heap calls are forwarded exhaustively through [`HeapReadOutput`]
-/// without boxing.
-///
-/// Methods take the concrete [`VM`]/`Heap` types, which own the resource
-/// tracker enforcing time/memory/recursion limits. The lifetime `'h` connects
-/// [`HeapObjectRead`] implementations to the VM's heap reference; immediate
-/// [`Value`] implementations use it only through the VM argument.
+/// [`PyValue`](crate::py_value::PyValue) unifies storage representations
+/// for migrated protocols; other operations still dispatch through [`Value`].
+/// [`HeapReadOutput`] retains exhaustive forwarding for unmigrated heap protocols.
 pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///

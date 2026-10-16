@@ -383,9 +383,7 @@ every construction request. Divergences:
     a slice bound (`seq[obj:]`, `slice(obj)`), and as an integer argument
     (`range(obj)`, `'x'.center(obj)`, `s.find(sub, obj)`). It is **not**
     consulted by sequence repetition, so `'ab' * obj` and `[0] * obj` raise
-    `TypeError: unsupported operand type(s) for *` where CPython repeats — each
-    numeric operator carries its own coercion, which does not route through the
-    shared index path.
+    `TypeError: can't multiply sequence by non-int of type 'Foo'` for an instance of `Foo`, where CPython repeats.
 - **Subscript assignment does not dispatch `__index__`.** `lst[obj] = x` raises
     `TypeError: list indices must be integers or slices, not Foo` where CPython
     coerces and assigns; only the read side takes the index path.

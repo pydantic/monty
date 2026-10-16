@@ -18,6 +18,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_value::PyValue,
     resource_checks::{check_repeat_size, check_value_buffer_growth},
     sorting::parse_and_sort,
     types::{
@@ -562,26 +563,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             return self.setitem_slice(&slice, value, vm);
         }
 
-        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt.
-        // Note: The LongInt-to-i64 conversion is defensive code. In normal execution,
-        // heap-allocated LongInt values always exceed i64 range because into_value()
-        // demotes i64-fitting values to Value::Int. However, this could be reached via
-        // deserialization of crafted snapshot data.
-        let index = match *key {
-            Value::Int(i) => i,
-            Value::Bool(b) => i64::from(b),
-            Value::Ref(heap_id) => {
-                if let HeapData::LongInt(li) = vm.heap.get(heap_id) {
-                    if let Some(i) = li.to_i64() {
-                        i
-                    } else {
-                        return Err(ExcType::index_error_int_too_large());
-                    }
-                } else {
-                    let key_type = key.py_type_name(vm);
-                    return Err(ExcType::type_error_indices(Type::List, &key_type));
-                }
-            }
+        let index = match key.py_value(vm) {
+            PyValue::Int(integer) => integer.to_i64(vm).ok_or_else(ExcType::index_error_int_too_large)?,
+            PyValue::Bool(value) => i64::from(value),
             _ => {
                 let key_type = key.py_type_name(vm);
                 return Err(ExcType::type_error_indices(Type::List, &key_type));

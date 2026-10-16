@@ -12,7 +12,7 @@ use super::{CallFrame, VM, attr::PendingLookupEffect, function_namespace, recurs
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
-    builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt},
+    builtins::{BuiltinsFunctions, BuiltinsFunctionsExt},
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -23,7 +23,7 @@ use crate::{
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     resource_checks::check_estimated_size,
-    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
+    types::{Dict, Instance, PyTrait, Type, instance::class_name},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -331,13 +331,8 @@ impl<'h> VM<'h> {
 
     /// Calls an attribute on an object.
     ///
-    /// For heap-allocated objects (`Value::Ref`), dispatches to the type's
-    /// attribute call implementation via `py_call_attr`, which may return
-    /// `CallResult::OsCall`, `CallResult::External`, or
-    /// `CallResult::MethodCall` for operations that require host involvement.
-    ///
-    /// For interned strings (`Value::InternString`), uses the unified `call_str_method`.
-    /// For interned bytes (`Value::InternBytes`), uses the unified `call_bytes_method`.
+    /// Logical dispatch hides interned versus heap storage and preserves suspendable
+    /// results for methods requiring host involvement.
     ///
     /// **Dunder dispatch**: before reaching the type-specific dispatcher, this
     /// method intercepts known dunder names (`__enter__`, `__exit__`, …) and
@@ -365,32 +360,8 @@ impl<'h> VM<'h> {
         }
         let args = args_slot.expect("dispatch_dunder returned None without taking args");
 
-        match obj {
-            Value::Ref(heap_id) => {
-                defer_drop!(obj, this);
-                this.heap.read(heap_id).py_call_attr(this, &attr, args)
-            }
-            Value::InternString(string_id) => {
-                // Call string method on interned string literal using the unified dispatcher
-                let s = this.interns.get_str(string_id);
-                call_str_method(s, name_id, args, this).map(CallResult::Value)
-            }
-            Value::InternBytes(bytes_id) => {
-                // Call bytes method on interned bytes literal using the unified dispatcher
-                let b = this.interns.get_bytes(bytes_id);
-                call_bytes_method(b, name_id, args, this).map(CallResult::Value)
-            }
-            Value::Builtin(Builtins::Type(t)) => {
-                // Handle classmethods on type objects like dict.fromkeys()
-                t.call_class_method(name_id, args, this)
-            }
-            _ => {
-                // Non-heap values without method support
-                let type_name = obj.py_type_name(this);
-                args.drop_with(this);
-                Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
-            }
-        }
+        defer_drop!(obj, this);
+        obj.py_value(this).py_call_attr(this, &attr, args)
     }
 
     /// Evaluates a function in a synchronous position that cannot suspend to the host.
