@@ -3,7 +3,7 @@ use std::{borrow::Cow, cmp::Ordering, fmt};
 use ahash::AHashSet;
 use monty_types::{FormatComplex, FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
 use num_bigint::BigInt;
-use num_traits::{Num, Zero};
+use num_traits::{Num, ToPrimitive};
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Pattern as AstPattern,
@@ -559,10 +559,10 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// The pairwise scan is bounded by [`check_subpattern_count`].
     fn check_duplicate_mapping_keys(&self, keys: &[ExprLoc], position: CodeRange) -> Result<(), ParseError> {
         for (i, key) in keys.iter().enumerate() {
-            if let Some(constant) = ConstantKey::of(key)
+            if let Some(constant) = ConstantKey::of(key, self.interner)
                 && keys[..i]
                     .iter()
-                    .filter_map(ConstantKey::of)
+                    .filter_map(|seen| ConstantKey::of(seen, self.interner))
                     .any(|seen| seen.py_eq(constant, self.interner))
             {
                 let repr = constant.repr(self.interner);
@@ -2875,29 +2875,60 @@ fn check_subpattern_count(count: usize, kind: &str, position: CodeRange) -> Resu
     }
 }
 
-/// A mapping-pattern key the parser can evaluate: a literal, optionally negated.
+/// A mapping-pattern key the parser can evaluate: a literal, optionally negated,
+/// or a `real ± imag j` complex number.
 ///
 /// Mirrors the constant folding CPython applies before its duplicate-key check,
-/// so `-1` is a constant key while `Color.RED` is not.
+/// so `-1` and `1+2j` are constant keys while `Color.RED` is not.
 #[derive(Clone, Copy)]
-struct ConstantKey<'a> {
-    literal: &'a Literal,
-    negated: bool,
+enum ConstantKey<'a> {
+    Literal {
+        literal: &'a Literal,
+        negated: bool,
+    },
+    /// `1+2j`, folded as CPython does: `complex(real) ± complex(0, imag)`.
+    Complex {
+        real: f64,
+        imag: f64,
+    },
 }
 
 impl<'a> ConstantKey<'a> {
-    fn of(key: &'a ExprLoc) -> Option<Self> {
+    fn of(key: &'a ExprLoc, interner: &CompileInterns<'_>) -> Option<Self> {
         match &key.expr {
-            Expr::Literal(literal) => Some(Self {
+            Expr::Literal(literal) => Some(Self::Literal {
                 literal,
                 negated: false,
             }),
             Expr::UnaryMinus(inner) => match &inner.expr {
                 Expr::Literal(
                     literal @ (Literal::Int(_) | Literal::Float(_) | Literal::LongInt(_) | Literal::Complex(_)),
-                ) => Some(Self { literal, negated: true }),
+                ) => Some(Self::Literal { literal, negated: true }),
                 _ => None,
             },
+            // The grammar only allows a signed real on the left and an
+            // imaginary literal on the right.
+            Expr::Op { left, op, right } => {
+                let Expr::Literal(Literal::Complex(imag)) = right.expr else {
+                    return None;
+                };
+                let real = match Self::of(left, interner)?.number(interner)? {
+                    ConstantNumber::Int(i) => i.to_f64().filter(|f| f.is_finite())?,
+                    ConstantNumber::Float(f) => f,
+                    ConstantNumber::Complex { .. } => return None,
+                };
+                match op {
+                    Operator::Add => Some(Self::Complex {
+                        real: real + 0.0,
+                        imag: 0.0 + imag,
+                    }),
+                    Operator::Sub => Some(Self::Complex {
+                        real: real - 0.0,
+                        imag: 0.0 - imag,
+                    }),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -2906,10 +2937,13 @@ impl<'a> ConstantKey<'a> {
     fn py_eq(self, other: Self, interner: &CompileInterns<'_>) -> bool {
         match (self.number(interner), other.number(interner)) {
             (Some(a), Some(b)) => a.py_eq(&b),
-            (None, None) => match (self.literal, other.literal) {
-                (Literal::None, Literal::None) => true,
-                (Literal::Str(a), Literal::Str(b)) => a == b,
-                (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
+            (None, None) => match (self, other) {
+                (Self::Literal { literal: a, .. }, Self::Literal { literal: b, .. }) => match (a, b) {
+                    (Literal::None, Literal::None) => true,
+                    (Literal::Str(a), Literal::Str(b)) => a == b,
+                    (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
+                    _ => false,
+                },
                 _ => false,
             },
             _ => false,
@@ -2918,26 +2952,29 @@ impl<'a> ConstantKey<'a> {
 
     /// The key as an exact number (`bool` included), with its sign applied.
     fn number(self, interner: &CompileInterns<'_>) -> Option<ConstantNumber> {
-        let number = match self.literal {
+        let (literal, negated) = match self {
+            Self::Literal { literal, negated } => (literal, negated),
+            Self::Complex { real, imag } => return Some(ConstantNumber::Complex { real, imag }),
+        };
+        let number = match literal {
             Literal::Bool(b) => ConstantNumber::Int(BigInt::from(u8::from(*b))),
             Literal::Int(i) => ConstantNumber::Int(BigInt::from(*i)),
             Literal::LongInt(id) => ConstantNumber::Int(interner.get_long_int(*id).clone()),
             Literal::Float(f) => ConstantNumber::Float(*f),
-            Literal::Complex(imag) => ConstantNumber::Complex(*imag),
+            Literal::Complex(imag) => ConstantNumber::Complex { real: 0.0, imag: *imag },
             _ => return None,
         };
-        Some(if self.negated { number.neg() } else { number })
-    }
-
-    /// Applies the key's sign to a literal magnitude.
-    fn signed(self, magnitude: f64) -> f64 {
-        if self.negated { -magnitude } else { magnitude }
+        Some(if negated { number.neg() } else { number })
     }
 
     /// The key's `repr`, for the duplicate-key diagnostic.
     fn repr(self, interner: &CompileInterns<'_>) -> String {
-        let sign = if self.negated { "-" } else { "" };
-        match self.literal {
+        let (literal, negated) = match self {
+            Self::Literal { literal, negated } => (literal, negated),
+            Self::Complex { real, imag } => return FormatComplex { real, imag }.to_string(),
+        };
+        let sign = if negated { "-" } else { "" };
+        match literal {
             Literal::None => "None".to_owned(),
             Literal::Bool(true) => "True".to_owned(),
             Literal::Bool(false) => "False".to_owned(),
@@ -2948,8 +2985,8 @@ impl<'a> ConstantKey<'a> {
             Literal::LongInt(id) => format!("{sign}{}", interner.get_long_int(*id)),
             // `-2j` negates `0+2j`, so its real part is `-0.0` and CPython shows `(-0-2j)`.
             Literal::Complex(imag) => FormatComplex {
-                real: if self.negated { -0.0 } else { 0.0 },
-                imag: self.signed(*imag),
+                real: if negated { -0.0 } else { 0.0 },
+                imag: if negated { -imag } else { *imag },
             }
             .to_string(),
             Literal::Ellipsis => "Ellipsis".to_owned(),
@@ -2963,8 +3000,7 @@ impl<'a> ConstantKey<'a> {
 enum ConstantNumber {
     Int(BigInt),
     Float(f64),
-    /// A pure imaginary literal (`2j`); the real part is zero.
-    Complex(f64),
+    Complex { real: f64, imag: f64 },
 }
 
 impl ConstantNumber {
@@ -2972,7 +3008,10 @@ impl ConstantNumber {
         match self {
             Self::Int(i) => Self::Int(-i),
             Self::Float(f) => Self::Float(-f),
-            Self::Complex(imag) => Self::Complex(-imag),
+            Self::Complex { real, imag } => Self::Complex {
+                real: -real,
+                imag: -imag,
+            },
         }
     }
 
@@ -2984,16 +3023,11 @@ impl ConstantNumber {
             (Self::Int(i), Self::Float(f)) | (Self::Float(f), Self::Int(i)) => {
                 bigint_cmp_f64(i, *f) == Some(Ordering::Equal)
             }
-            (Self::Complex(a), Self::Complex(b)) => a == b,
-            // `0j == 0`: a pure imaginary equals a real only when both are zero.
-            (Self::Complex(imag), real) | (real, Self::Complex(imag)) => *imag == 0.0 && real.is_zero(),
-        }
-    }
-
-    fn is_zero(&self) -> bool {
-        match self {
-            Self::Int(i) => i.is_zero(),
-            Self::Float(f) | Self::Complex(f) => *f == 0.0,
+            (Self::Complex { real: ar, imag: ai }, Self::Complex { real: br, imag: bi }) => ar == br && ai == bi,
+            // A complex equals a real only when its imaginary part is zero.
+            (Self::Complex { real, imag }, other) | (other, Self::Complex { real, imag }) => {
+                *imag == 0.0 && other.py_eq(&Self::Float(*real))
+            }
         }
     }
 }

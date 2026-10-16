@@ -853,12 +853,12 @@ impl NamedTupleClass {
         }
     }
 
-    /// The stored `__module__` value, for GC tracing and attribute reads.
     /// Field names in definition order; also the class's `__match_args__`.
     pub(crate) fn field_names(&self) -> &[EitherStr] {
         &self.field_names
     }
 
+    /// The stored `__module__` value, for GC tracing and attribute reads.
     pub(crate) fn module(&self) -> &Value {
         &self.module
     }

@@ -35,13 +35,13 @@ const SELF_MATCHING_TYPES: [Type; 10] = [
     Type::Tuple,
 ];
 
-/// What a class's `__match_args__` allows for positional sub-patterns.
+/// How a class pattern's positional sub-patterns read the subject, once their
+/// count has been checked against `__match_args__`.
 enum MatchArgs {
     /// A self-matching builtin: the single positional sub-pattern gets the subject.
     SelfMatch,
-    /// Attribute names in `__match_args__` order, truncated to the names actually
-    /// used, plus the total count for the arity error.
-    Names { allowed: usize, names: Vec<EitherStr> },
+    /// The attribute name for each positional sub-pattern, in order.
+    Names(Vec<EitherStr>),
 }
 
 impl VM<'_> {
@@ -299,19 +299,8 @@ fn class_pattern_names(
     let (names, vm) = guard.as_parts_mut();
     if nargs > 0 {
         match class_match_args(cls, nargs, vm)? {
-            MatchArgs::SelfMatch => {
-                if nargs > 1 {
-                    return Err(positional_count_error(cls, 1, nargs, vm));
-                }
-                names.push(Value::None);
-            }
-            MatchArgs::Names {
-                allowed,
-                names: positional,
-            } => {
-                if allowed < nargs {
-                    return Err(positional_count_error(cls, allowed, nargs, vm));
-                }
+            MatchArgs::SelfMatch => names.push(Value::None),
+            MatchArgs::Names(positional) => {
                 names.extend(positional.iter().map(|name| either_str_value(name, vm.heap)));
             }
         }
@@ -346,25 +335,29 @@ fn is_class_object(value: &Value, vm: &VM<'_>) -> bool {
 /// Builtins carry no `__match_args__`: the self-matching ones accept one
 /// positional sub-pattern, the rest none. A namedtuple's are its fields; a
 /// user or host class's come from its namespace and must be a tuple of strings
-/// (checked only as far as `nargs`, like CPython).
+/// (checked only as far as `nargs`, like CPython). Too many positional
+/// sub-patterns is reported before a bad element, as CPython does.
 fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<MatchArgs> {
-    let no_match_args = MatchArgs::Names {
-        allowed: 0,
-        names: Vec::new(),
+    let check_count = |allowed: usize, vm: &VM<'_>| {
+        if allowed < nargs {
+            Err(positional_count_error(cls, allowed, nargs, vm))
+        } else {
+            Ok(())
+        }
     };
     let Value::Ref(cls_id) = cls else {
-        return Ok(match cls {
-            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(t) => MatchArgs::SelfMatch,
-            _ => no_match_args,
-        });
+        return match cls {
+            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(t) => {
+                check_count(1, vm).map(|()| MatchArgs::SelfMatch)
+            }
+            _ => check_count(0, vm).map(|()| MatchArgs::Names(Vec::new())),
+        };
     };
     let match_args = match vm.heap.get(*cls_id) {
         HeapData::NamedTupleClass(class) => {
             let fields = class.field_names();
-            return Ok(MatchArgs::Names {
-                allowed: fields.len(),
-                names: fields.iter().take(nargs).cloned().collect(),
-            });
+            check_count(fields.len(), vm)?;
+            return Ok(MatchArgs::Names(fields[..nargs].to_vec()));
         }
         HeapData::Class(class) => class
             .namespace()
@@ -378,7 +371,8 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         _ => None,
     };
     let Some(match_args) = match_args else {
-        return Ok(no_match_args);
+        check_count(0, vm)?;
+        return Ok(MatchArgs::Names(Vec::new()));
     };
     defer_drop!(match_args, vm);
     let Value::Ref(args_id) = match_args else {
@@ -387,9 +381,9 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
     let HeapReadOutput::Tuple(tuple) = vm.heap.read(*args_id) else {
         return Err(match_args_type_error(cls, match_args, vm));
     };
-    let allowed = tuple.get(vm.heap).as_slice().len();
-    let mut names = Vec::with_capacity(nargs.min(allowed));
-    for i in 0..nargs.min(allowed) {
+    check_count(tuple.get(vm.heap).as_slice().len(), vm)?;
+    let mut names = Vec::with_capacity(nargs);
+    for i in 0..nargs {
         let item = tuple.clone_item(i, vm);
         defer_drop!(item, vm);
         let Some(name) = item.as_either_str(vm.heap) else {
@@ -400,7 +394,7 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         };
         names.push(name);
     }
-    Ok(MatchArgs::Names { allowed, names })
+    Ok(MatchArgs::Names(names))
 }
 
 /// An attribute name as a `str` value for the `MatchClass` names tuple.

@@ -301,6 +301,12 @@ match {9007199254740992: 'p', 9007199254740993: 'q'}:
         pass
 assert (p, q) == ('p', 'q')
 
+# complex keys differing only in the imaginary sign are distinct
+match {1 + 2j: 'p', 1 - 2j: 'q'}:
+    case {1 + 2j: p, 1 - 2j: q}:
+        pass
+assert (p, q) == ('p', 'q')
+
 # non-string and dotted-name keys
 match {1: 'one', Color.RED: 'red', None: 'nil'}:
     case {1: v1, None: v2}:
@@ -617,6 +623,14 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == '__match_args__ elements must be strings (got int)'
+# too many positional sub-patterns is reported before a bad element
+try:
+    match BadElements():
+        case BadElements(q, r):
+            pass
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'BadElements() accepts 1 positional sub-pattern (2 given)'
 # elements past the ones used are not checked
 match BadElements():
     case BadElements():
