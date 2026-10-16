@@ -37,6 +37,8 @@ and function-attributes-become-methods), bound methods, class variables
 (arbitrary expressions, evaluated in a real suspendable class-body scope),
 **class decorators** (`@deco class Foo`),
 `__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
+`__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
+(including `@`, `divmod()` and `pow()`) with their reflected forms,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (ordered; values stringized and provisional, see
 [typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
@@ -103,6 +105,10 @@ order and error wording, but with these divergences:
     function raises rather than yielding to the host. An exception raised by
     `__eq__` terminates the run instead of being catchable by a `try` around the
     comparison.
+- **Arithmetic and subscript dunders cannot suspend.** `__neg__`, `__pos__`, binary numeric dunders
+    (including reflected forms), `__getitem__` and `__setitem__` run synchronously.
+    An external or OS call raises `NotImplementedError` rather than yielding to the host.
+    `__call__` uses the ordinary suspendable call path.
 - **Ordering dunders are still not dispatched**; see the entry above.
     Instances are always truthy (no `__bool__`/`__len__` dispatch).
 - **Bound methods compare and hash by identity**: each `obj.method` access
@@ -133,8 +139,10 @@ order and error wording, but with these divergences:
     CPython's default 1000-frame limit would still render may raise
     `RecursionError` in Monty. The same cap applies to synchronous callback
     evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
-    `min()`/`max(key=...)`, and exotic `__init__` recursion (see the "Recursion"
-    section of [resource_limits.md](resource_limits.md)).
+    `min()`/`max(key=...)`, arithmetic and subscript dunders, and exotic `__init__` recursion.
+    A chain of callable instances stored as class-level `__call__` members also has this cap;
+    ordinary Python-function `__call__` recursion uses the normal frame limit
+    (see the "Recursion" section of [resource_limits.md](resource_limits.md)).
 - **Comprehensions in the class body** can see class variables, because Monty
     inlines comprehensions into the enclosing scope. In CPython a comprehension
     has its own scope that skips the class scope, so only the *leftmost iterable*
@@ -372,12 +380,14 @@ every construction request. Divergences:
     `...<N lines>...`), where CPython pins the individual decorator that raised.
     Every decorator in a stack reports that same location; only the callee frame
     identifies which one raised.
-- Dunder protocols other than `__init__`, `__repr__`, `__str__`,
-    `__enter__`, `__exit__`, `__iter__`, `__next__`, `__contains__`, `__eq__`,
-    `__hash__`, and `__index__`: `__new__`, `__call__`, `__getitem__`,
-    `__setitem__`, `__add__`, `__ne__`, `__bool__`, etc. are not dispatched for
-    user-defined instances. `__ne__` is always the negation of `__eq__`, as
-    CPython derives it by default, so a custom `__ne__` is ignored.
+- Apart from the supported surface above, only `__iter__`, `__next__`, `__contains__`, and `__index__`
+    are dispatched for user-defined instances.
+    Other dunder protocols are not dispatched.
+    These include `__new__`, `__ne__`, ordering comparisons, `__bool__`, `__len__`, `__abs__`, `__invert__`,
+    numeric conversions, `__round__`, `__format__`, and all in-place arithmetic dunders (`__iadd__`, etc.).
+    Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,
+    except `@=`, which is rejected at compile time.
+    `__ne__` is always the negation of `__eq__`, so a custom `__ne__` is ignored.
 - **`__index__` is dispatched for indexing, but not for arithmetic
     operators.** A class defining it works as a subscript *read* (`seq[obj]`), as
     a slice bound (`seq[obj:]`, `slice(obj)`), and as an integer argument

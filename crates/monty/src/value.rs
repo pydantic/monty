@@ -31,10 +31,10 @@ use crate::{
         Type, Union,
         bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
         host_class_type,
-        instance::{instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
+        instance::{class_defines, instance_dataclass_eq, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, bigint_true_divide,
-            check_bits_str_digits_limit, i64_cmp_f64, repeat_count, wide_i128_into_value,
+            check_bits_str_digits_limit, i64_cmp_f64, modular_pow, repeat_count, wide_i128_into_value,
         },
         namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
@@ -771,13 +771,13 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Bool(a), Self::Float(b)) => Ok(Some(Self::Float(f64::from(*a) * b))),
             (Self::Float(a), Self::Bool(b)) => Ok(Some(Self::Float(a * f64::from(*b)))),
             (Self::Bool(a), Self::Bool(b)) => Ok(Some(Self::Int(i64::from(*a) * i64::from(*b)))),
-            (Self::InternString(id), count) | (count, Self::InternString(id)) => {
+            (Self::InternString(id), count) => {
                 let Some(count) = repeat_count(count, vm)? else {
                     return Ok(None);
                 };
                 Ok(Some(repeat_str(vm.interns.get_str(*id), count, vm.heap)?))
             }
-            (Self::InternBytes(id), count) | (count, Self::InternBytes(id)) => {
+            (Self::InternBytes(id), count) => {
                 let Some(count) = repeat_count(count, vm)? else {
                     return Ok(None);
                 };
@@ -790,10 +790,10 @@ impl<'h> PyTrait<'h> for Value {
 
     /// Reflected implementation of Python `*`.
     fn py_rmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_rmul_impl(other, vm)
-        } else {
-            Ok(None)
+        match self {
+            Self::InternString(_) | Self::InternBytes(_) => self.py_mul_impl(other, vm),
+            Self::Ref(id) => vm.heap.read(*id).py_rmul_impl(other, vm),
+            _ => Ok(None),
         }
     }
 
@@ -1048,11 +1048,13 @@ impl<'h> PyTrait<'h> for Value {
 
     /// One-sided implementation of Python `** or pow()`.
     fn py_pow_impl(&self, other: &Self, modulus: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if modulus.is_some() {
-            if let Self::Ref(id) = self {
-                vm.heap.read(*id).py_pow_impl(other, modulus, vm)
-            } else {
-                Ok(None)
+        if let Some(modulus) = modulus {
+            match self {
+                Self::Int(base) => modular_pow(&BigInt::from(*base), other, modulus, vm.heap),
+                Self::Bool(base) => modular_pow(&BigInt::from(u8::from(*base)), other, modulus, vm.heap),
+                Self::Float(_) => Err(ExcType::type_error_pow_modulo()),
+                Self::Ref(id) => vm.heap.read(*id).py_pow_impl(other, Some(modulus), vm),
+                _ => Ok(None),
             }
         } else {
             match (self, other) {
@@ -1133,7 +1135,9 @@ impl<'h> PyTrait<'h> for Value {
 
     /// Reflected implementation of Python `** or pow()`.
     fn py_rpow_impl(&self, other: &Self, modulus: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Self::Ref(id) = self {
+        if modulus.is_some() && matches!(self, Self::Float(_)) {
+            Err(ExcType::type_error_pow_modulo())
+        } else if let Self::Ref(id) = self {
             vm.heap.read(*id).py_rpow_impl(other, modulus, vm)
         } else {
             Ok(None)
@@ -1269,13 +1273,21 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     /// One-sided implementation of matrix multiplication.
-    fn py_matmul_impl(&self, _other: &Self, _vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into())
+    fn py_matmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_matmul_impl(other, vm)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Reflected implementation of matrix multiplication.
-    fn py_rmatmul_impl(&self, _other: &Self, _vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        Ok(None)
+    fn py_rmatmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_rmatmul_impl(other, vm)
+        } else {
+            Ok(None)
+        }
     }
 
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
@@ -1950,11 +1962,12 @@ impl Value {
 
     /// Tries direct and reflected addition without producing the final type error.
     pub(crate) fn py_add_result(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Some(result) = self.py_add_impl(other, vm)? {
-            Ok(Some(result))
-        } else {
-            other.py_radd_impl(self, vm)
-        }
+        self.binary_op_result(
+            other,
+            vm,
+            |vm| self.py_add_impl(other, vm),
+            |vm| other.py_radd_impl(self, vm),
+        )
     }
 
     /// Performs Python `-` with reflected-operation fallback.
@@ -2039,13 +2052,41 @@ impl Value {
 
     /// Performs Python `** or pow()` with reflected-operation fallback.
     pub(crate) fn py_pow(&self, other: &Self, modulus: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Self> {
-        self.binary_op(
+        let modulus = modulus.filter(|value| !matches!(value, Self::None));
+        let result = self.binary_op_result(
             other,
             vm,
             |vm| self.py_pow_impl(other, modulus, vm),
             |vm| other.py_rpow_impl(self, modulus, vm),
-            "** or pow()",
-        )
+        )?;
+        if let Some(result) = result {
+            Ok(result)
+        } else if let Some(modulus) = modulus {
+            // CPython also offers builtin numeric slots on the third operand
+            // the triple. A user modulus does not dispatch its __pow__.
+            if matches!(modulus, Self::Float(_)) {
+                Err(ExcType::type_error_pow_modulo())
+            } else if modulus.py_type(vm) == Type::Complex
+                && [self, other]
+                    .iter()
+                    .all(|value| matches!(value.py_type(vm), Type::Int | Type::Bool | Type::Float | Type::Complex))
+            {
+                Err(ExcType::value_error_complex_modulo())
+            } else {
+                Err(ExcType::ternary_pow_type_error(
+                    self.py_type_name(vm),
+                    other.py_type_name(vm),
+                    modulus.py_type_name(vm),
+                ))
+            }
+        } else {
+            Err(ExcType::binary_type_error(
+                "** or pow()",
+                self.py_type(vm),
+                self.py_type_name(vm),
+                other.py_type_name(vm),
+            ))
+        }
     }
 
     /// Performs Python `&` with reflected-operation fallback.
@@ -2112,9 +2153,7 @@ impl Value {
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         operator: &'static str,
     ) -> RunResult<Self> {
-        if let Some(result) = direct(vm)? {
-            Ok(result)
-        } else if let Some(result) = reflected(vm)? {
+        if let Some(result) = self.binary_op_result(other, vm, direct, reflected)? {
             Ok(result)
         } else {
             let lhs_type = self.py_type(vm);
@@ -2125,6 +2164,25 @@ impl Value {
                 lhs_name,
                 other.py_type_name(vm),
             ))
+        }
+    }
+
+    /// Tries numeric slots, suppressing reflected dispatch between instances of the same class.
+    /// Builtin representations still need both sides: an immediate `int` can
+    /// delegate to a heap `LongInt` even though both have Python type `int`.
+    fn binary_op_result(
+        &self,
+        other: &Self,
+        vm: &mut VM<'_>,
+        direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+    ) -> RunResult<Option<Self>> {
+        if let Some(result) = direct(vm)? {
+            Ok(Some(result))
+        } else if matches!(self.py_type(vm), Type::Instance(_)) && self.py_type(vm) == other.py_type(vm) {
+            Ok(None)
+        } else {
+            reflected(vm)
         }
     }
 
@@ -2302,12 +2360,15 @@ impl Value {
     /// Whether calling this value would succeed at dispatch.
     ///
     /// Dispatch can't double as the predicate — it pushes a frame, clones
-    /// defaults, constructs an instance — so the two are kept in lockstep by
-    /// `debug_assert!`s in dispatch's "not callable" arms.
-    pub(crate) fn is_callable(&self, heap: &Heap) -> bool {
+    /// defaults, constructs an instance. For user instances, a class-level
+    /// `__call__` enables the protocol even when that member is not callable.
+    pub(crate) fn is_callable(&self, vm: &VM<'_>) -> bool {
         match self {
             Self::Builtin(_) | Self::ModuleFunction(_) | Self::DefFunction(_) => true,
-            Self::Ref(id) => heap.get(*id).is_callable(),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Instance(instance) => class_defines(instance.class(), "__call__", vm),
+                value => value.is_callable(),
+            },
             _ => false,
         }
     }

@@ -460,7 +460,7 @@ impl<'h> HeapRead<'h, Dict> {
             // `defaultdict(None)` is the factory-less form, so a hook returning
             // `None` lands there rather than raising.
             Value::None => None,
-            copied if copied.is_callable(vm.heap) => Some(copied),
+            copied if copied.is_callable(vm) => Some(copied),
             copied => {
                 copied.drop_with(vm);
                 return Err(ExcType::defaultdict_factory_not_callable());

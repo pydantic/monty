@@ -1657,6 +1657,38 @@ re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
     );
 }
 
+/// User slots that recurse through native dispatch must fail before exhausting the Rust stack.
+#[test]
+fn recursive_instance_protocols_are_bounded() {
+    for (slot, body, invocation) in [
+        ("__neg__", "return -self", "-obj"),
+        ("__add__", "return self + args[0]", "obj + ['argument']"),
+        ("__radd__", "return args[0] + self", "['argument'] + obj"),
+        (
+            "__pow__",
+            "return pow(self, *args)",
+            "pow(obj, ['exponent'], ['modulus'])",
+        ),
+        ("__getitem__", "return self[args[0]]", "obj[['key']]"),
+        ("__setitem__", "self[args[0]] = args[1]", "obj[['key']] = ['value']"),
+        ("__call__", "return self(*args)", "obj(['argument'])"),
+    ] {
+        let code =
+            format!("class Recursive:\n    def {slot}(self, *args):\n        {body}\nobj = Recursive()\n{invocation}");
+        let mut runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let error = runner
+            .run_no_limits(vec![])
+            .expect_err(&format!("slot {slot} should exceed the recursion limit"));
+        assert_eq!(error.exc_type(), ExcType::RecursionError, "slot: {slot}");
+    }
+
+    // This cycle never pushes a Python frame: the slot is itself a callable instance.
+    let code = "class Recursive:\n    pass\nobj = Recursive()\nRecursive.__call__ = obj\nobj(['argument'])";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let error = runner.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RecursionError);
+}
+
 /// Source-driving `itertools` adaptors delegate `next()` to their wrapped
 /// iterator on the native Rust stack, so attacker-controlled nesting depth
 /// must be charged against the recursion limit — without the guard in
