@@ -13,6 +13,7 @@ mod context_manager;
 mod exceptions;
 mod format;
 mod namespace;
+mod pattern;
 mod recursion;
 mod scheduler;
 
@@ -32,7 +33,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::{Opcode, decode_assert_flags},
+        op::{MATCH_KEYS_REST, Opcode, decode_assert_flags},
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -139,80 +140,21 @@ macro_rules! handle_load_result {
 
 /// Handles the result of a call operation that returns `CallResult`.
 ///
-/// This macro eliminates the repetitive pattern of matching on `CallResult`
-/// variants that appears in LoadAttr, CallFunction, CallFunctionKw, CallAttr,
-/// CallAttrKw, and CallFunctionExtended opcodes.
-///
-/// Actions taken for each variant:
-/// - `Push(value)`: Push the value onto the stack
-/// - `FramePushed`: Continue with the newly current frame
-/// - `External(ext_id, args)`: Return `FrameExit::ExternalCall` to yield to host
-/// - `OsCall(call)`: Return `FrameExit::OsCall` to yield to host
-/// - `MethodCall { .. }`: Return `FrameExit::MethodCall` to yield to host
-/// - `AttrLookup { .. }`: Return `FrameExit::AttrLookup` to yield to host
-/// - `AwaitValue(value)`: Push value, then implicitly await it via `exec_get_awaitable`
-/// - `Err(err)`: Handle the exception via `catch!`
+/// Used by LoadAttr, the call opcodes, `MatchAttr` and the context-manager
+/// opcodes. `Value` and `FramePushed` are handled inline; every suspending or
+/// awaiting variant goes through the outlined [`VM::suspend_call_result`], so
+/// each expansion adds little to the dispatch loop's stack frame — native
+/// recursion (`__repr__` calling `repr`) re-enters that loop once per level.
 macro_rules! handle_call_result {
     ($self:expr, $result:expr) => {
         match $result {
             Ok(CallResult::Value(result)) => $self.push(result),
             Ok(CallResult::FramePushed) => {}
-            Ok(CallResult::External(name, args)) => {
-                let call_id = $self.allocate_call_id();
-                let name_load_ip = $self.ext_function_load_ip.take();
-                return Ok(FrameExit::ExternalCall {
-                    function_name: name,
-                    args,
-                    call_id,
-                    name_load_ip,
-                });
-            }
-            Ok(CallResult::OsCall(call)) => match $self.prepare_os_call(call, None) {
-                Ok(Some(exit)) => return Ok(exit),
+            Ok(other) => match $self.suspend_call_result(other) {
                 Ok(None) => {}
+                Ok(Some(exit)) => return Ok(exit),
                 Err(err) => catch!($self, err),
             },
-            Ok(CallResult::OsCallWithEffect { call, effect }) => match $self.prepare_os_call(call, Some(effect)) {
-                Ok(Some(exit)) => return Ok(exit),
-                Ok(None) => {}
-                Err(err) => catch!($self, err),
-            },
-            Ok(CallResult::MethodCall { name, args, object_id }) => {
-                let call_id = $self.allocate_call_id();
-                return Ok(FrameExit::MethodCall {
-                    method_name: name,
-                    args,
-                    call_id,
-                    object_id,
-                });
-            }
-            Ok(CallResult::AttrLookup {
-                name,
-                class_name,
-                object_id,
-                type_object,
-                effect,
-            }) => {
-                return Ok(FrameExit::AttrLookup {
-                    name,
-                    class_name,
-                    object_id,
-                    type_object,
-                    effect,
-                });
-            }
-            Ok(CallResult::AwaitValue(value)) => {
-                // Push the value and implicitly await it (used by asyncio.run())
-                $self.push(value);
-                match $self.exec_get_awaitable() {
-                    Ok(AwaitResult::ValueReady(value)) => $self.push(value),
-                    Ok(AwaitResult::FramePushed) => {}
-                    Ok(AwaitResult::Yield(pending_calls)) => {
-                        return Ok(FrameExit::ResolveFutures(pending_calls));
-                    }
-                    Err(e) => catch!($self, e),
-                }
-            }
             Err(err) => catch!($self, err),
         }
     };
@@ -1216,6 +1158,60 @@ impl<'h> VM<'h> {
         }
     }
 
+    /// The rarely taken arms of [`handle_call_result!`]: turns a suspending
+    /// `CallResult` into the `FrameExit` that yields to the host, or awaits an
+    /// `AwaitValue`. `Ok(None)` means execution continues in the current frame.
+    #[inline(never)]
+    fn suspend_call_result(&mut self, result: CallResult) -> Result<Option<FrameExit>, RunError> {
+        let exit = match result {
+            CallResult::Value(value) => {
+                self.push(value);
+                return Ok(None);
+            }
+            CallResult::FramePushed => return Ok(None),
+            CallResult::External(name, args) => FrameExit::ExternalCall {
+                function_name: name,
+                args,
+                call_id: self.allocate_call_id(),
+                name_load_ip: self.ext_function_load_ip.take(),
+            },
+            CallResult::OsCall(call) => return self.prepare_os_call(call, None),
+            CallResult::OsCallWithEffect { call, effect } => return self.prepare_os_call(call, Some(effect)),
+            CallResult::MethodCall { name, args, object_id } => FrameExit::MethodCall {
+                method_name: name,
+                args,
+                call_id: self.allocate_call_id(),
+                object_id,
+            },
+            CallResult::AttrLookup {
+                name,
+                class_name,
+                object_id,
+                type_object,
+                effect,
+            } => FrameExit::AttrLookup {
+                name,
+                class_name,
+                object_id,
+                type_object,
+                effect,
+            },
+            CallResult::AwaitValue(value) => {
+                // Push the value and implicitly await it (used by asyncio.run())
+                self.push(value);
+                return match self.exec_get_awaitable()? {
+                    AwaitResult::ValueReady(value) => {
+                        self.push(value);
+                        Ok(None)
+                    }
+                    AwaitResult::FramePushed => Ok(None),
+                    AwaitResult::Yield(pending_calls) => Ok(Some(FrameExit::ResolveFutures(pending_calls))),
+                };
+            }
+        };
+        Ok(Some(exit))
+    }
+
     /// Periodic dispatch-loop work, outlined (`#[inline(never)]`) so the hot
     /// loop stays small: the amortized memory + time check — where a timeout
     /// swallowed by a truncating caller re-detects (elapsed time is
@@ -1383,6 +1379,13 @@ impl<'h> VM<'h> {
                     let len = self.stack.len();
                     let src_idx = len - 1 - n as usize;
                     self.stack[src_idx..].rotate_left(1);
+                }
+                Opcode::SinkTop => {
+                    let n = usize::from(self.current_frame.fetch_u8());
+                    // Move TOS beneath the n items below it: one rotation of the
+                    // affected slice, the mirror image of `LiftToTop`.
+                    let len = self.stack.len();
+                    self.stack[len - 1 - n..].rotate_right(1);
                 }
                 Opcode::RaiseUnboundLocal => {
                     let name_idx = self.current_frame.fetch_u16();
@@ -2069,6 +2072,27 @@ impl<'h> VM<'h> {
                 Opcode::UnpackEx => {
                     let (before, after) = self.current_frame.fetch_u8_u8();
                     try_catch!(self, self.unpack_ex(before as usize, after as usize));
+                }
+                // Pattern matching
+                Opcode::MatchShape => {
+                    let (length, flags) = self.current_frame.fetch_u16_u8();
+                    self.match_shape(length, flags);
+                }
+                Opcode::MatchKeys => {
+                    let mode = self.current_frame.fetch_u8();
+                    if mode == MATCH_KEYS_REST {
+                        try_catch!(self, self.match_keys_rest());
+                    } else {
+                        try_catch!(self, self.match_keys());
+                    }
+                }
+                Opcode::MatchClass => {
+                    let nargs = usize::from(self.current_frame.fetch_u8());
+                    try_catch!(self, self.match_class(nargs));
+                }
+                Opcode::MatchAttr => {
+                    let index = usize::from(self.current_frame.fetch_u8());
+                    handle_call_result!(self, self.match_attr(index));
                 }
                 // Special
                 Opcode::Nop => {

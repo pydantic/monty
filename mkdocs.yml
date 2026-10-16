@@ -53,6 +53,7 @@ nav:
       - iter() and iterators: 'limitations/iter.md'
       - Comprehensions: 'limitations/comprehensions.md'
       - with statement: 'limitations/with.md'
+      - match statement: 'limitations/match.md'
       - assert: 'limitations/assert.md'
       - print(): 'limitations/print.md'
       - Format mini-language: 'limitations/format.md'
