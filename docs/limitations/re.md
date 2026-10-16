@@ -88,3 +88,15 @@ representation does not carry them.
 - Patterns whose *compiled* form is very large, e.g. huge counted repeats
     like `a{5000000}`, raise `re.PatternError` (`fancy-regex`/`regex` enforce a
     compiled-size limit), whereas CPython compiles them.
+- A pattern with a backreference or a lookaround runs on `fancy-regex`'s backtracking VM.
+    The exception is a positive lookahead that ends a pattern with no other lookaround or backreference, which
+    `search()`, `findall()`, `finditer()`, `sub()` and `split()` run on the linear engine.
+    A search on the VM raises `re.PatternError: Error executing regex: Max limit for backtracking count exceeded` once
+    it has taken 1,000,000 backtracking steps, where CPython continues.
+    The steps add up over every start position the search tries, so a pattern can work on a short subject and raise on a
+    long one whose next match is far from where the search starts.
+    The VM's backtracking stack counts toward `max_memory`, but no checkpoint runs during a search, so only the hard
+    ceiling applies to it: see [resource_limits.md](resource_limits.md).
+- For a subject ending in `\n`, a `$` outside MULTILINE also puts the pattern on that VM, unless the `$` ends the
+    pattern or ends an alternative of a lookahead that ends the pattern.
+    So `re.findall(r'\w+(?:,|$)', text)` can raise on a long `text` ending in `\n`, where `r'\w+(?=,|$)'` does not.
