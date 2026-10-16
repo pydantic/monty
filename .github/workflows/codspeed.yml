@@ -19,8 +19,11 @@ jobs:
         include:
           - mode: walltime
             runner: codspeed-macro-arm64-graviton-ubuntu-22-04
+            # Fixed glibc malloc thresholds, see "Run benchmarks" below.
+            glibc_tunables: glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=67108864
           - mode: memory
             runner: ubuntu-24.04-arm
+            glibc_tunables: ''
     # CodSpeed's bare-metal Graviton macro runner, for walltime measurement. Pinned
     # rather than `codspeed-macro` so the baseline stays on the same hardware,
     # see https://codspeed.io/docs/features/macro-runners
@@ -72,6 +75,17 @@ jobs:
       - name: Build benchmarks
         run: cargo codspeed build -m ${{ matrix.mode }} -p monty-bench --profile codspeed --features codspeed
 
+      # Every benchmark in a target runs in one process, so glibc's malloc
+      # state carries over between them. By default glibc raises its mmap and
+      # trim thresholds on the fly, based on what has been freed so far, so a
+      # benchmark's cost depended on which benchmarks ran before it: with a
+      # low trim threshold, freeing the heap at the end of each iteration
+      # gives the memory back to the OS (`systrim`) and the next iteration
+      # page-faults it in again (pair_tuples went from 38 ms to 51 ms when
+      # unrelated benchmarks were removed). Setting the thresholds turns the
+      # dynamic adjustment off. The values are the ceilings the heuristic
+      # reaches in a long-running process (32 MiB mmap, twice that for trim).
+      # Walltime only: memory mode counts allocations, which these don't change.
       - name: Run benchmarks
         uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
         with:
@@ -79,3 +93,4 @@ jobs:
           run: cargo codspeed run -p monty-bench
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/release/monty
+          GLIBC_TUNABLES: ${{ matrix.glibc_tunables }}
