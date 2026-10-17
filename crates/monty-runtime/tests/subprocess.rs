@@ -1197,6 +1197,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_042_653,
         ),
+        // `json.dumps` preflights the `' ' * indent` string.
+        ("import json\njson.dumps([1], indent=2_000_000)", 2_043_478),
         // `randbytes` charges its word buffer and the byte buffer it fills.
         ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_167),
         // A `range` population can be as long as `i64::MAX` while costing nothing,

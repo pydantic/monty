@@ -1097,6 +1097,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("cannot create '{type_}' instances")).into()
     }
 
+    /// Creates a TypeError for repeating a sequence by a non-integer count.
+    ///
+    /// Matches CPython's format: `TypeError: can't multiply sequence by non-int of type '{type}'`
+    #[must_use]
+    fn type_error_multiply_sequence(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("can't multiply sequence by non-int of type '{type_}'"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for calling a non-callable object.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not callable`

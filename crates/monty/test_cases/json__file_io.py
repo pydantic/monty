@@ -105,6 +105,14 @@ with open(path, 'a') as f:
     json.dump([3], f)
 assert path.read_text() == 'x[1][2][3]'
 
+# === dump builds the encoder even for a str document ===
+with open(path, 'w') as f:
+    try:
+        json.dump('x', f, indent=0.5)
+        assert False, 'float indent should raise TypeError'
+    except TypeError as exc:
+        assert str(exc) == "can't multiply sequence by non-int of type 'float'"
+
 # === dump honours the file's newline translation ===
 with open(path, 'w', newline='\r\n') as f:
     json.dump([1], f, indent=1)

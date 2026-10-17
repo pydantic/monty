@@ -15,8 +15,9 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, ContainsVM, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    resource_checks::check_repeat_size,
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -82,31 +83,28 @@ impl JsonDumpsConfig {
 
     /// Builds the encoder config from the bound keyword arguments.
     ///
-    /// The `FromArgs` structs already performed the positional/kwargs split,
-    /// the per-name duplicate detection, and the unknown-keyword rejection
-    /// (with the "JSONEncoder.__init__" prefix that matches CPython's error
-    /// wording). This method only translates the raw `Value` slots into the
-    /// concrete encoder options used by the serializer.
-    fn from_kwargs(kwargs: &EncoderKwargs, vm: &mut VM<'_>) -> RunResult<Self> {
+    /// The `FromArgs` structs already bound the arguments and rejected unknown
+    /// keywords. This translates the raw values into encoder options, raising in
+    /// CPython's order: `separators` is unpacked by `JSONEncoder.__init__`, then
+    /// `' ' * indent` and the separator types are checked as the encoder is built.
+    /// `json.dumps` of a `str` never builds one (`skip_encoder_checks`).
+    fn from_kwargs(kwargs: &EncoderKwargs, skip_encoder_checks: bool, vm: &mut VM<'_>) -> RunResult<Self> {
         let mut config = Self::default();
 
-        config.indent = parse_indent_value(&kwargs.indent, vm)?;
+        let separators_were_set = check_separators_shape(&kwargs.separators, vm)?;
+        if !skip_encoder_checks {
+            config.indent = parse_indent_value(&kwargs.indent, vm)?;
+            // `separators=None` means the indent-aware defaults below.
+            if let Some((item, key)) = parse_separators_value(&kwargs.separators, vm)? {
+                config.item_separator = item;
+                config.key_separator = key;
+            }
+        }
 
         config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, &kwargs.sort_keys, vm)?;
         config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, &kwargs.ensure_ascii, vm)?;
         config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, &kwargs.allow_nan, vm)?;
         config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, &kwargs.skipkeys, vm)?;
-
-        // `separators=None` is documented as equivalent to "use the indent-
-        // aware defaults", so we only override the per-instance separators
-        // when `parse_separators_value` actually returned a pair.
-        let separators_were_set = if let Some((item, key)) = parse_separators_value(&kwargs.separators, vm)? {
-            config.item_separator = item;
-            config.key_separator = key;
-            true
-        } else {
-            false
-        };
 
         if config.indent.is_some() && !separators_were_set {
             ",".clone_into(&mut config.item_separator);
@@ -169,7 +167,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         skipkeys,
     };
     defer_drop!(kwargs, vm);
-    let config = JsonDumpsConfig::from_kwargs(kwargs, vm)?;
+    let config = JsonDumpsConfig::from_kwargs(kwargs, obj.is_str(vm.heap), vm)?;
     let output = encode(obj, &config, vm)?;
     Ok(allocate_string(output, vm.heap))
 }
@@ -205,7 +203,8 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
         skipkeys,
     };
     defer_drop!(kwargs, vm);
-    let config = JsonDumpsConfig::from_kwargs(kwargs, vm)?;
+    // `dump` always builds the encoder, even for a `str` document.
+    let config = JsonDumpsConfig::from_kwargs(kwargs, false, vm)?;
 
     let early_target = if is_container(obj, vm) {
         Some(FileTarget::writer(fp, vm)?)
@@ -315,88 +314,71 @@ fn apply_bool_flag(flags: u8, bit: u8, value: &Value, vm: &mut VM<'_>) -> RunRes
 
 /// Parses the `indent=` value for `json.dumps()`.
 ///
-/// `None` keeps compact mode, integers switch to pretty mode using that many
-/// spaces per nesting level (with zero and negative values enabling newline-
-/// only pretty printing), and
-/// strings are repeated once per depth level exactly like CPython.
+/// `None` keeps compact mode, a string is repeated once per depth level, and
+/// any other value becomes CPython's `' ' * indent`: integers give that many
+/// spaces (none when zero or negative) and other types raise its `TypeError`.
 fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
     match value {
         Value::None => Ok(None),
-        Value::Bool(flag) => Ok(Some(" ".repeat(usize::from(*flag)))),
-        Value::Int(count) => spaces_from_indent_count(*count),
+        Value::Bool(flag) => spaces_from_indent_count(i64::from(*flag), vm),
+        Value::Int(count) => spaces_from_indent_count(*count, vm),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
-            HeapReadOutput::LongInt(long_int) => spaces_from_indent_count(
-                long_int
-                    .get(vm.heap)
-                    .to_i64()
-                    .ok_or_else(ExcType::overflow_index_sized_int)?,
-            ),
-            _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
+            HeapReadOutput::LongInt(long_int) => {
+                let count = long_int.get(vm.heap).to_i64();
+                spaces_from_indent_count(count.ok_or_else(ExcType::overflow_index_sized_int)?, vm)
+            }
+            _ => Err(ExcType::type_error_multiply_sequence(&value.py_type_name(vm))),
         },
-        _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
+        _ => Err(ExcType::type_error_multiply_sequence(&value.py_type_name(vm))),
     }
 }
 
-/// Converts an integer indent width into the repeated-space string used per level.
-///
-/// Zero and negative values return an empty indent string, which keeps pretty
-/// printing enabled while omitting leading spaces on each line like CPython.
-fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
-    if count <= 0 {
-        Ok(Some(String::new()))
-    } else {
-        match usize::try_from(count) {
-            Ok(count) => Ok(Some(" ".repeat(count))),
-            Err(_) => Err(ExcType::overflow_index_sized_int().into()),
-        }
-    }
+/// Builds the `' ' * count` indent string, preflighting its size: an
+/// attacker-chosen count would otherwise allocate past the memory limit.
+fn spaces_from_indent_count(count: i64, vm: &VM<'_>) -> RunResult<Option<String>> {
+    let count = usize::try_from(count).unwrap_or(0);
+    check_repeat_size(1, count, &vm.heap.tracker)?;
+    Ok(Some(" ".repeat(count)))
 }
 
-/// Parses the `separators=` value for `json.dumps()`.
-///
-/// `None` leaves the default separators intact. Otherwise the value must be a
-/// two-item list or tuple of strings representing the item and key separators.
-fn parse_separators_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<(String, String)>> {
-    if matches!(value, Value::None) {
-        return Ok(None);
-    }
-
-    let pair = match value {
-        Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
-            HeapReadOutput::Tuple(tuple) => {
-                let items = tuple.get(vm.heap).as_slice();
-                check_separators_length(items.len())?;
-                (
-                    json_separator_to_string(&items[0], "item_separator", vm)?,
-                    json_separator_to_string(&items[1], "key_separator", vm)?,
-                )
-            }
-            HeapReadOutput::List(list) => {
-                let items = list.get(vm.heap).as_slice();
-                check_separators_length(items.len())?;
-                (
-                    json_separator_to_string(&items[0], "item_separator", vm)?,
-                    json_separator_to_string(&items[1], "key_separator", vm)?,
-                )
-            }
-            _ => {
-                return Err(ExcType::type_error(format!(
-                    "cannot unpack non-iterable {} object",
-                    value.py_type_name(vm)
-                )));
-            }
+/// Raises the unpacking errors `JSONEncoder.__init__` gives `separators`,
+/// returning whether a pair was passed.
+fn check_separators_shape(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
+    let len = match value {
+        Value::None => return Ok(false),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::Tuple(tuple) => tuple.as_slice().len(),
+            HeapData::List(list) => list.as_slice().len(),
+            _ => return Err(separators_not_iterable(value, vm)),
         },
-        _ => {
-            return Err(ExcType::type_error(format!(
-                "cannot unpack non-iterable {} object",
-                value.py_type_name(vm)
-            )));
-        }
+        _ => return Err(separators_not_iterable(value, vm)),
     };
+    check_separators_length(len)?;
+    Ok(true)
+}
 
-    Ok(Some(pair))
+/// CPython's error unpacking a non-iterable `separators` value.
+fn separators_not_iterable(value: &Value, vm: &VM<'_>) -> RunError {
+    ExcType::type_error(format!("cannot unpack non-iterable {} object", value.py_type_name(vm)))
+}
+
+/// Converts the `separators=` pair for the encoder, after
+/// [`check_separators_shape`] has accepted it; `None` keeps the defaults.
+fn parse_separators_value(value: &Value, vm: &VM<'_>) -> RunResult<Option<(String, String)>> {
+    let Value::Ref(heap_id) = value else {
+        return Ok(None);
+    };
+    let items = match vm.heap.get(*heap_id) {
+        HeapData::Tuple(tuple) => tuple.as_slice(),
+        HeapData::List(list) => list.as_slice(),
+        _ => return Ok(None),
+    };
+    Ok(Some((
+        json_separator_to_string(&items[0], "item_separator", vm)?,
+        json_separator_to_string(&items[1], "key_separator", vm)?,
+    )))
 }
 
 /// Validates that the separators sequence has exactly two elements.
