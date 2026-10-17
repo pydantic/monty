@@ -1,5 +1,7 @@
-# call-external
-# skip-cpython-windows — os.path is ntpath on Windows CPython; Monty's is always posixpath
+# /// monty
+# call-external = true
+# skip-cpython-windows = true  # os.path is ntpath on Windows CPython; Monty's is always posixpath
+# ///
 # Pure os.path functions (no filesystem), plus expanduser/expandvars which
 # consult the host environment. Filesystem-backed functions are in os_path__fs.py.
 import os

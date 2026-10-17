@@ -2568,6 +2568,7 @@ dependencies = [
  "criterion",
  "monty",
  "monty-alloc",
+ "monty-fixture",
  "monty-fs",
  "monty-pool",
  "monty-proto",
@@ -2586,6 +2587,7 @@ dependencies = [
  "ahash",
  "datatest-stable",
  "monty",
+ "monty-fixture",
  "monty-fs",
  "monty-pool",
  "monty-types",
@@ -2604,6 +2606,14 @@ dependencies = [
  "monty-pool",
  "monty-types",
  "tokio",
+]
+
+[[package]]
+name = "monty-fixture"
+version = "1.1.0"
+dependencies = [
+ "serde",
+ "toml",
 ]
 
 [[package]]

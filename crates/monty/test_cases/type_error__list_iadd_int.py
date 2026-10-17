@@ -1,4 +1,6 @@
-# xfail=monty
+# /// monty
+# xfail = ['monty']
+# ///
 # Monty's list += only supports other lists, not arbitrary iterables.
 # CPython's list += calls extend() which requires an iterable.
 x = [1]

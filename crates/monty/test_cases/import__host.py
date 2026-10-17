@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # An import of a module the sandbox does not have asks the host, which answers
 # with an object whose attributes are the tools; `tools` is the harness fixture.
 import tools

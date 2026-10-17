@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # === External calls in elif conditions ===
 
 # External call in elif condition - true

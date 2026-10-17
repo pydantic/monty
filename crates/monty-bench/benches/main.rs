@@ -2,13 +2,13 @@
 //!
 //! Every top-level `python/*.py` script, and every `bench__*.py` test case, is read at run time
 //! and registered as `<name>__monty`, plus `<name>__cpython` locally, so adding a file adds a
-//! benchmark. Scripts are plain Python that check their own results with `assert`. A
-//! `# bench:` line in the leading comment block takes these options:
+//! benchmark. Scripts are plain Python that check their own results with `assert`. The
+//! `[bench]` table of a script's `# /// monty` header (`monty_fixture::Bench`) takes:
 //!
-//! - `data=<path>`: bind `DATA` to the contents of `<path>`, relative to the script
-//! - `mount`: bind `DATA` to the root of the mounted [`scan_tree`]
-//! - `overlay`: with `mount`, also register `<name>_overlay__monty` over an overlay mount
-//! - `limits`: also register `<name>_limits__monty` with resource limits armed
+//! - `data = '<path>'`: bind `DATA` to the contents of `<path>`, relative to the script
+//! - `mount = true`: bind `DATA` to the root of the mounted [`scan_tree`]
+//! - `overlay = true`: with `mount`, also register `<name>_overlay__monty` over an overlay mount
+//! - `limits = true`: also register `<name>_limits__monty` with resource limits armed
 
 use std::{
     fs,
@@ -22,6 +22,7 @@ use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, 
 #[cfg(not(feature = "codspeed"))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, SessionRef};
+use monty_fixture::{Bench, Header};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{CompileOptions, ExtFunctionResult, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(feature = "codspeed"), unix))]
@@ -65,7 +66,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("session_load__monty", session_load);
 }
 
-/// A benchmark script with the options from its `# bench:` header.
+/// A benchmark script with the options from its header's `[bench]` table.
 struct Script {
     /// The file stem, without a test case's `bench__` prefix.
     name: String,
@@ -95,46 +96,32 @@ impl Script {
         paths.iter().map(|path| Self::parse(path)).collect()
     }
 
-    /// Reads one script and its header, panicking on an unknown or inconsistent option.
+    /// Reads one script and its header, panicking on a malformed header or inconsistent options.
     fn parse(path: &Path) -> Self {
         let code = fs::read_to_string(path).unwrap();
-        let stem = file_stem(path);
-        let mut script = Self {
-            name: stem.strip_prefix("bench__").unwrap_or(stem).to_owned(),
-            code: String::new(),
-            input: Input::None,
-            limits: false,
-            overlay: false,
+        let header = Header::parse(&code).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let Bench {
+            data,
+            mount,
+            overlay,
+            limits,
+        } = header.bench;
+        let input = match (data, mount) {
+            (Some(_), true) => panic!("{}: `data` with `mount`", path.display()),
+            (Some(data), false) => Input::Data(fs::read_to_string(path.parent().unwrap().join(data)).unwrap()),
+            (None, true) => Input::Mount,
+            (None, false) => Input::None,
         };
-        for line in code.lines().take_while(|line| line.starts_with('#')) {
-            let Some(options) = line.strip_prefix("# bench:") else {
-                assert!(!is_misspelled_header(line), "{}: malformed `{line}`", path.display());
-                continue;
-            };
-            for option in options.split_whitespace() {
-                match option.split_once('=') {
-                    Some(("data", data)) => {
-                        let data_path = path.parent().unwrap().join(data);
-                        script.input = Input::Data(fs::read_to_string(data_path).unwrap());
-                    }
-                    _ => match option {
-                        "mount" => script.input = Input::Mount,
-                        "overlay" => script.overlay = true,
-                        "limits" => script.limits = true,
-                        _ => panic!("{}: unknown `# bench:` option `{option}`", path.display()),
-                    },
-                }
-            }
+        assert!(!overlay || mount, "{}: `overlay` needs `mount`", path.display());
+        assert!(!limits || !mount, "{}: `limits` with `mount`", path.display());
+        let stem = file_stem(path);
+        Self {
+            name: stem.strip_prefix("bench__").unwrap_or(stem).to_owned(),
+            code,
+            input,
+            limits,
+            overlay,
         }
-        let mounted = matches!(script.input, Input::Mount);
-        assert!(
-            !script.overlay || mounted,
-            "{}: `overlay` needs `mount`",
-            path.display()
-        );
-        assert!(!script.limits || !mounted, "{}: `limits` with `mount`", path.display());
-        script.code = code;
-        script
     }
 
     /// Registers this script's benchmarks; `tree` is the host root of the scan tree.
@@ -176,14 +163,6 @@ impl Script {
             c.bench_function(&format!("{name}__cpython"), |b| run_cpython(b, code, &filename, data));
         }
     }
-}
-
-/// Whether a comment that isn't exactly `# bench:` still reads as a header, such as
-/// `#bench:` or `# Bench:`, so a typo panics instead of silently dropping its options.
-fn is_misspelled_header(line: &str) -> bool {
-    let comment = line.trim_start_matches('#').trim_start();
-    comment.get(..5).is_some_and(|word| word.eq_ignore_ascii_case("bench"))
-        && !comment[5..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
 }
 
 /// The `.py` files directly in `dir`.

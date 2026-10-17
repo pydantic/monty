@@ -1,6 +1,10 @@
+# /// monty
+# [bench]
+# mount = true
+# overlay = true
+# ///
 # A recursive glob over the mounted scan tree: every directory is listed.
 # `overlay` also runs it over an overlay mount.
-# bench: mount overlay
 
 from pathlib import Path
 

@@ -1,5 +1,7 @@
-# call-external
-# run-async
+# /// monty
+# call-external = true
+# run-async = true
+# ///
 # An __init__ that suspends while the module is driven in async mode: the
 # external call inside __init__ goes through the pending-futures path and
 # resumes mid-construction (the async-mode counterpart of

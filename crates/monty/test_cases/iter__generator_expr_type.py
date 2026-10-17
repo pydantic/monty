@@ -1,4 +1,6 @@
-# xfail=cpython
+# /// monty
+# xfail = ['cpython']
+# ///
 # TODO: When proper generators are implemented, this test should be removed.
 # Currently generator expressions return lists in Monty, not generator objects.
 # This test verifies the temporary behavior until generators are properly implemented.

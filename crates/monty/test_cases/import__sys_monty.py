@@ -1,4 +1,6 @@
-# xfail=cpython
+# /// monty
+# xfail = ['cpython']
+# ///
 # Tests for Monty-specific sys module values
 
 import sys

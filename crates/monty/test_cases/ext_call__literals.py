@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # External calls in list and dict literals
 
 # External call in list literal

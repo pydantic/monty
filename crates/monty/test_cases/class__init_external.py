@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # An __init__ that suspends on an external call. Because __init__ runs as a real
 # frame, the VM yields to the host mid-construction and resumes — exercising the
 # initializer frame (and its is_initializer flag) across the suspend point.

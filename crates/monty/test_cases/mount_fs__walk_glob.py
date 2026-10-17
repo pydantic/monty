@@ -1,5 +1,7 @@
-# mount-fs
-# skip-cpython-windows
+# /// monty
+# mount-fs = true
+# skip-cpython-windows = true
+# ///
 import os
 from collections import namedtuple
 from pathlib import Path

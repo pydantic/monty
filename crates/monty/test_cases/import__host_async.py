@@ -1,5 +1,7 @@
-# call-external
-# run-async
+# /// monty
+# call-external = true
+# run-async = true
+# ///
 # Awaiting a host module's async tools: the host answers each call with a future.
 import asyncio
 import tools

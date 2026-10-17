@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # Calling a `partial` goes through the ordinary call path, so a wrapped host
 # function still suspends to the host with the merged arguments — unlike
 # `reduce`, whose function runs in a context that cannot suspend (see

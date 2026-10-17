@@ -1,5 +1,7 @@
-# call-external
-# skip-cpython-windows — pathlib uses POSIX paths in Monty's sandbox, Windows CPython resolves differently
+# /// monty
+# call-external = true
+# skip-cpython-windows = true  # pathlib uses POSIX paths in Monty's sandbox, Windows CPython resolves differently
+# ///
 from pathlib import Path
 
 # === exists() ===

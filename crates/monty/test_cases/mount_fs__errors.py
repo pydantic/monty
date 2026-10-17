@@ -1,4 +1,6 @@
-# mount-fs
+# /// monty
+# mount-fs = true
+# ///
 import sys
 from pathlib import Path
 

@@ -1,5 +1,8 @@
+# /// monty
+# [bench]
+# mount = true
+# ///
 # A top-down `os.walk` over the mounted scan tree, counting files.
-# bench: mount
 
 import os
 

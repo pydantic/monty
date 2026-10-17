@@ -1,4 +1,6 @@
-# mount-fs
+# /// monty
+# mount-fs = true
+# ///
 # `csv` over `open()` files: the idiomatic shapes, including the ones that consume the
 # file through a builtin rather than a `for` loop.
 import csv
