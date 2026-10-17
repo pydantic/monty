@@ -271,7 +271,10 @@ assert type(others) is dict
 class Alias:
     A = 1
     B = 1
+    F = 1.0
     S = 'k'
+    L = []
+    T = (1, [])
 
 
 try:
@@ -294,6 +297,29 @@ match {1: 'x', 2: 'y'}:
     case _:
         result = 'missing key before the duplicate'
 assert result == 'missing key before the duplicate'
+# equal keys of different types still collide
+try:
+    match {1: 'x', 2: 'y'}:
+        case {Alias.A: a, Alias.F: b}:
+            pass
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'mapping pattern checks duplicate key (1.0)'
+# an unhashable key fails as a set element would, before its lookup
+try:
+    match {1: 'x', 2: 'y'}:
+        case {Alias.A: a, Alias.L: b}:
+            pass
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'list' as a set element (unhashable type: 'list')"
+try:
+    match {1: 'x', 2: 'y'}:
+        case {Alias.T: a, Alias.A: b}:
+            pass
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'tuple' as a set element (unhashable type: 'list')"
 
 # integers past 2**53 are distinct constant keys
 match {9007199254740992: 'p', 9007199254740993: 'q'}:
@@ -373,6 +399,15 @@ assert classify({1}) == ('set', {1})
 assert classify(frozenset({1})) == ('frozenset', frozenset({1}))
 assert classify(None) == 'other'
 assert classify(1j) == 'other'
+# `dict` subclasses inherit self-matching
+match Counter(a=1):
+    case Counter(c):
+        pass
+assert c == Counter(a=1)
+match defaultdict(list, k=[1]):
+    case defaultdict(dd):
+        pass
+assert dd == {'k': [1]}
 
 
 # bare class patterns and or-combinations

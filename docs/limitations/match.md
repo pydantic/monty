@@ -39,3 +39,6 @@ both.
     than 255 sub-patterns, or a pattern that captures more than 256 names, raises
     `SyntaxError: too many sub-patterns in ... pattern` (or `too many names in pattern`)
     at compile time; CPython has no such limit.
+- **A duplicate integer mapping key past 4300 decimal digits** (a long hex literal)
+    raises `SyntaxError: Exceeds the limit (4300 digits) for integer string conversion; ...`
+    where CPython's compiler raises `ValueError` with the same message.

@@ -16,15 +16,20 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
-    types::{Dict, PyTrait, Type, instance::class_name, str::allocate_string, tuple::allocate_tuple},
+    types::{
+        Dict, PyTrait, Type, instance::class_name, set::set_element_hash, str::allocate_string, tuple::allocate_tuple,
+    },
     value::{EitherStr, Value},
 };
 
 /// Builtin types whose class pattern with one positional sub-pattern matches
 /// the subject itself (`case int(x)`), CPython's `_Py_TPFLAGS_MATCH_SELF`.
-const SELF_MATCHING_TYPES: [Type; 10] = [
+/// Subclasses inherit the flag, hence `defaultdict` and `Counter`.
+const SELF_MATCHING_TYPES: [Type; 12] = [
     Type::Bool,
     Type::Bytes,
+    Type::Counter,
+    Type::DefaultDict,
     Type::Dict,
     Type::Float,
     Type::FrozenSet,
@@ -220,8 +225,8 @@ impl VM<'_> {
 ///
 /// Keys are checked in order against the ones before them, like CPython's
 /// `seen` set: a key equal to an earlier one is a `ValueError`, unless an
-/// earlier key was already found missing. The pattern's key count is bounded
-/// by the compiler (255), so the pairwise scan stays small.
+/// earlier key was already found missing. Only keys with equal hashes are
+/// compared, so large distinct keys never cost a full `==` each.
 fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
     let (Value::Ref(subject_id), Value::Ref(keys_id)) = (subject, keys) else {
         return Ok(None);
@@ -233,16 +238,19 @@ fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunRes
     let len = keys.get(vm.heap).as_slice().len();
     let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
     let (values, vm) = guard.as_parts_mut();
+    let mut hashes = Vec::with_capacity(len);
     for i in 0..len {
         let key = keys.clone_item(i, vm);
         defer_drop!(key, vm);
-        for earlier in 0..i {
+        let hash = set_element_hash(key, vm)?;
+        for earlier in (0..i).filter(|&earlier| hashes[earlier] == hash) {
             let earlier = keys.clone_item(earlier, vm);
             defer_drop!(earlier, vm);
             if earlier.py_eq(key, vm)? {
                 return Err(ExcType::value_error_duplicate_mapping_key(key, vm));
             }
         }
+        hashes.push(hash);
         match dict.dict_get(key, vm)? {
             Some(value) => values.push(value),
             None => return Ok(None),

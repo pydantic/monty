@@ -27,7 +27,7 @@ use crate::{
     source_map::{SourceMap, StackFrameExt},
     source_nesting::nesting_bound_exceeded,
     stringize::stringize_annotation,
-    types::long_int::{INT_MAX_STR_DIGITS, bigint_cmp_f64},
+    types::long_int::{INT_MAX_STR_DIGITS, bigint_cmp_f64, check_bigint_str_digits_limit},
     value::EitherStr,
 };
 
@@ -556,20 +556,29 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// Rejects a mapping pattern that checks one constant key twice (`{1: a, 1: b}`),
     /// as CPython's compiler does. Keys compare by Python equality, so `1`, `1.0`
     /// and `True` collide; dotted-name keys are runtime values and are not checked.
-    /// The pairwise scan is bounded by [`check_subpattern_count`].
+    /// The pairwise scan is bounded by [`check_subpattern_count`]; each key is
+    /// folded once beforehand, so it never re-clones a big integer per pair.
     fn check_duplicate_mapping_keys(&self, keys: &[ExprLoc], position: CodeRange) -> Result<(), ParseError> {
-        for (i, key) in keys.iter().enumerate() {
-            if let Some(constant) = ConstantKey::of(key, self.interner)
-                && keys[..i]
-                    .iter()
-                    .filter_map(|seen| ConstantKey::of(seen, self.interner))
-                    .any(|seen| seen.py_eq(constant, self.interner))
-            {
-                let repr = constant.repr(self.interner);
-                return Err(ParseError::syntax(
-                    format!("mapping pattern checks duplicate key ({repr})"),
-                    position,
-                ));
+        let folded: Vec<FoldedKey<'_>> = keys
+            .iter()
+            .filter_map(|key| ConstantKey::of(key, self.interner))
+            .map(|key| FoldedKey {
+                key,
+                number: key.number(self.interner),
+            })
+            .collect();
+        for (i, constant) in folded.iter().enumerate() {
+            if folded[..i].iter().any(|seen| seen.py_eq(constant)) {
+                let constant = constant.key;
+                // CPython's compiler raises `ValueError` formatting a key past the digit limit.
+                let msg = match constant.repr(self.interner) {
+                    Some(repr) => format!("mapping pattern checks duplicate key ({repr})"),
+                    None => format!(
+                        "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; use \
+                         sys.set_int_max_str_digits() to increase the limit"
+                    ),
+                };
+                return Err(ParseError::syntax(msg, position));
             }
         }
         Ok(())
@@ -2933,23 +2942,6 @@ impl<'a> ConstantKey<'a> {
         }
     }
 
-    /// Python equality between two constant keys, as a `set` of them would see it.
-    fn py_eq(self, other: Self, interner: &CompileInterns<'_>) -> bool {
-        match (self.number(interner), other.number(interner)) {
-            (Some(a), Some(b)) => a.py_eq(&b),
-            (None, None) => match (self, other) {
-                (Self::Literal { literal: a, .. }, Self::Literal { literal: b, .. }) => match (a, b) {
-                    (Literal::None, Literal::None) => true,
-                    (Literal::Str(a), Literal::Str(b)) => a == b,
-                    (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
-                    _ => false,
-                },
-                _ => false,
-            },
-            _ => false,
-        }
-    }
-
     /// The key as an exact number (`bool` included), with its sign applied.
     fn number(self, interner: &CompileInterns<'_>) -> Option<ConstantNumber> {
         let (literal, negated) = match self {
@@ -2967,14 +2959,15 @@ impl<'a> ConstantKey<'a> {
         Some(if negated { number.neg() } else { number })
     }
 
-    /// The key's `repr`, for the duplicate-key diagnostic.
-    fn repr(self, interner: &CompileInterns<'_>) -> String {
+    /// The key's `repr`, for the duplicate-key diagnostic, or `None` for an
+    /// integer (e.g. a long hex literal) past the decimal digit limit.
+    fn repr(self, interner: &CompileInterns<'_>) -> Option<String> {
         let (literal, negated) = match self {
             Self::Literal { literal, negated } => (literal, negated),
-            Self::Complex { real, imag } => return FormatComplex { real, imag }.to_string(),
+            Self::Complex { real, imag } => return Some(FormatComplex { real, imag }.to_string()),
         };
         let sign = if negated { "-" } else { "" };
-        match literal {
+        let repr = match literal {
             Literal::None => "None".to_owned(),
             Literal::Bool(true) => "True".to_owned(),
             Literal::Bool(false) => "False".to_owned(),
@@ -2982,7 +2975,11 @@ impl<'a> ConstantKey<'a> {
             Literal::Float(f) => format!("{sign}{}", FormatFloat(*f)),
             Literal::Str(id) => StringRepr(interner.get_str(*id)).to_string(),
             Literal::Bytes(id) => bytes_repr(interner.get_bytes(*id)),
-            Literal::LongInt(id) => format!("{sign}{}", interner.get_long_int(*id)),
+            Literal::LongInt(id) => {
+                let value = interner.get_long_int(*id);
+                check_bigint_str_digits_limit(value).ok()?;
+                format!("{sign}{value}")
+            }
             // `-2j` negates `0+2j`, so its real part is `-0.0` and CPython shows `(-0-2j)`.
             Literal::Complex(imag) => FormatComplex {
                 real: if negated { -0.0 } else { 0.0 },
@@ -2991,6 +2988,32 @@ impl<'a> ConstantKey<'a> {
             .to_string(),
             Literal::Ellipsis => "Ellipsis".to_owned(),
             Literal::Marker(_) => "<marker>".to_owned(),
+        };
+        Some(repr)
+    }
+}
+
+/// A [`ConstantKey`] with its numeric value computed once, for the pairwise duplicate scan.
+struct FoldedKey<'a> {
+    key: ConstantKey<'a>,
+    number: Option<ConstantNumber>,
+}
+
+impl FoldedKey<'_> {
+    /// Python equality between two constant keys, as a `set` of them would see it.
+    fn py_eq(&self, other: &Self) -> bool {
+        match (&self.number, &other.number) {
+            (Some(a), Some(b)) => a.py_eq(b),
+            (None, None) => match (self.key, other.key) {
+                (ConstantKey::Literal { literal: a, .. }, ConstantKey::Literal { literal: b, .. }) => match (a, b) {
+                    (Literal::None, Literal::None) => true,
+                    (Literal::Str(a), Literal::Str(b)) => a == b,
+                    (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
+                    _ => false,
+                },
+                _ => false,
+            },
+            _ => false,
         }
     }
 }
