@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # BUG: External calls in recursive functions produce wrong results
 # Recursion with external calls doesn't compute the correct value
 

@@ -794,30 +794,45 @@ stop and report the problem!
 
 Only use `# Raise=` when you only care about the exception type/message and not the traceback and you can't use a try/except block.
 
-### Python fixture markers
+### Python fixture headers
 
-You may mark python files with:
+Configure a case with a `# /// monty` header: a [PEP 723](https://peps.python.org/pep-0723/) comment block of TOML,
+on the first lines of the file.
+`monty_fixture::Header` (`crates/monty-fixture`) parses it for both the datatest harness and `monty-bench`.
+Unknown keys, wrong types and malformed blocks are errors, and every key defaults to off:
 
-- `# call-external` to support calling external functions
-- `# run-async` to support running async code
-- `# timezone=Europe/London` to run the case in an IANA zone rather than the UTC default:
+```python
+# /// monty
+# call-external = true
+# run-async = true
+# ///
+```
+
+- `call-external = true` to support calling external functions
+- `run-async = true` to support running async code
+- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both
+- `skip-cpython-windows = true` to skip the CPython side on Windows (POSIX path semantics)
+- `cpython-main-module = true` to set `__name__ = '__main__'` on CPython only
+- `gc-interval = <N>` to override the GC interval
+- `timezone = 'Europe/London'` to run the case in an IANA zone rather than the UTC default:
     it sets `OsPolicy::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
     a naive `timestamp()`, `%Z`/`%z` and the `time` zone constants can be compared.
     The CPython side is skipped on Windows, which has no `time.tzset`.
-    Without the marker both sides run in UTC — except on Windows, where the harness
-    cannot move CPython, so a case asserting zone values needs `# skip-cpython-windows`
+    Without the key both sides run in UTC — except on Windows, where the harness
+    cannot move CPython, so a case asserting zone values needs `skip-cpython-windows`
     (see `datetime__zone_default.py`).
+- `[bench]` table: options for `bench__*.py` cases and `monty-bench` scripts (see `crates/monty-bench/benches/main.rs`)
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
 Never mark tests as:
 
-- `# xfail=cpython` - Test is required to fail on CPython
-- `# xfail=monty` - Test is required to fail on Monty
+- `xfail = ['cpython']` - Test is required to fail on CPython
+- `xfail = ['monty']` - Test is required to fail on Monty
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
-All these markers must be at the start of comment lines to be recognized.
+The header shifts line numbers, so `TRACEBACK` expectations count its lines.
 
 ### Other Notes
 

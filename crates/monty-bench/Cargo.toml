@@ -21,6 +21,7 @@ codspeed = []
 monty = { workspace = true, features = ["test-hooks"] }
 monty-types = { workspace = true }
 monty-fs = { workspace = true }
+monty-fixture = { path = "../monty-fixture" }
 monty-alloc = { workspace = true, optional = true }
 monty-pool = { workspace = true }
 monty-proto = { workspace = true }

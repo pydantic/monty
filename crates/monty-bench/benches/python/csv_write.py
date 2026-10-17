@@ -1,3 +1,8 @@
+# CSV formatting, how agents hand tabular results back: `writer.writerow` in a loop,
+# `writerows` under `QUOTE_ALL`, and `DictWriter`. Fields mix plain values with ones that
+# force quoting (commas, embedded quotes, newlines). The `write()` target is a class, since
+# Monty has no `io.StringIO`; it counts characters written.
+
 import csv
 
 class Sink:
@@ -27,4 +32,4 @@ csv.writer(sink, quoting=csv.QUOTE_ALL).writerows(rows)
 dw = csv.DictWriter(sink, fieldnames=fieldnames)
 dw.writeheader()
 dw.writerows(dict_rows)
-sink.chars
+assert sink.chars == 265_163

@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 import datetime
 import sys
 

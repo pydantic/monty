@@ -42,7 +42,7 @@ impl FileTarget {
                 }
                 Ok(Self::OpenFile(file_id))
             }
-            Self::Method(write) if write.is_callable(vm.heap) => Ok(Self::Method(write)),
+            Self::Method(write) if write.is_callable(vm) => Ok(Self::Method(write)),
             Self::Method(write) => {
                 defer_drop!(write, vm);
                 Err(ExcType::type_error_not_callable_object(&write.py_type_name(vm)))

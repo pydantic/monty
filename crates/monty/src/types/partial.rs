@@ -77,7 +77,7 @@ impl Partial {
         defer_drop_mut!(keywords, vm);
 
         let func = positional.remove(0);
-        if !func.is_callable(vm.heap) {
+        if !func.is_callable(vm) {
             func.drop_with(vm);
             return Err(ExcType::partial_not_callable());
         }
@@ -484,7 +484,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Partial> {
         let copied = copied?;
         // CPython's `partial.__setstate__` rejects a non-callable too, which is
         // reachable through a `__deepcopy__` that returns something else.
-        if !copied.is_callable(vm.heap) {
+        if !copied.is_callable(vm) {
             copied.drop_with(vm);
             return Err(ExcType::partial_not_callable());
         }

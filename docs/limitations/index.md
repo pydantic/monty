@@ -23,7 +23,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `def`, `async def`, nested functions, closures, `lambda`
 - Decorators on functions and classes
 - Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
-    `__contains__`, `__index__`, class variables
+    `__contains__`, `__index__`, `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, binary arithmetic
+    and reflected operators, class variables
 - `@dataclass`, with the `eq=` and `frozen=` options only (every other option raises `NotImplementedError`),
     `field()` (with `default=...` / `default_factory=...`) and `__post_init__`, but no `fields()` or `asdict()`, plus host
     class instances passed in and out (and host classes the sandbox may instantiate when granted)
@@ -31,6 +32,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
+- `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
 - `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
@@ -45,7 +47,6 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
-- `match` statements
 - `del`, both `del x` and `del d[k]`
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
@@ -123,9 +124,11 @@ Each links to the page that owns it, which is where the full account lives:
     ([builtins.md](builtins.md)).
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
     error messages differ ([re.md](re.md)).
-- **Only the class dunders listed above are dispatched.** `__lt__`, `__len__`, `__getitem__`, `__call__` and the
-    arithmetic dunders raise `TypeError` as if undefined, while `__bool__` and the `__getattr__` family are ignored
-    silently, so an instance is always truthy ([classes.md](classes.md)).
+- **Only the class dunders listed above are dispatched.** `__lt__`, `__len__`, `__abs__` and `__invert__` raise
+    `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic
+    (`@=` is rejected at compile time).
+    `__bool__` and the `__getattr__` family are ignored silently, so an instance is always truthy
+    ([classes.md](classes.md)).
 - **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly three functions:
     `run`, `gather`, which runs host calls concurrently, and `sleep`, which asks the host to wait.
     `create_task` and everything else do not exist

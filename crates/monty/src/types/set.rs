@@ -1762,7 +1762,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
     }
 }
 
-fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
+/// Hashes a value about to become a set element, raising CPython's
+/// `cannot use 'T' as a set element (unhashable type: 'U')` when it cannot be.
+pub(crate) fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
     if let Some(hash) = value.py_hash(vm)? {
         Ok(hash.raw())
     } else {

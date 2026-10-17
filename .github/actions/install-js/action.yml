@@ -1,0 +1,41 @@
+name: Install JavaScript dependencies
+description: Install Node and npm dependencies, restoring caches on PRs without saving them unless opted in.
+inputs:
+  node-version:
+    description: Node version to install.
+    required: true
+  cache:
+    description: Disable cache reads and writes for release artifact builds.
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-cache: false
+
+    # setup-node cannot restore without also saving, so manage npm's cache separately.
+    - name: Locate npm cache
+      if: inputs.cache == 'true'
+      id: npm-cache-dir
+      shell: bash
+      run: echo "path=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+      if: inputs.cache == 'true'
+      id: npm-cache
+      with:
+        path: ${{ steps.npm-cache-dir.outputs.path }}
+        key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/monty-js/package-lock.json') }}
+
+    - name: Install dependencies
+      shell: bash
+      run: npm install
+      working-directory: crates/monty-js
+
+    - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+      if: inputs.cache == 'true' && steps.npm-cache.outputs.cache-hit != 'true' && (github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Save CI cache'))
+      with:
+        path: ${{ steps.npm-cache-dir.outputs.path }}
+        key: ${{ steps.npm-cache.outputs.cache-primary-key }}

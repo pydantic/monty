@@ -1,4 +1,6 @@
-# timezone=Australia/Sydney
+# /// monty
+# timezone = 'Australia/Sydney'
+# ///
 # `Australia/Sydney` covers the southern hemisphere, so the `time` halves swap.
 # Every expectation is CPython 3.14 under the same `TZ`.
 import time

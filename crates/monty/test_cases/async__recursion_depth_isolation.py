@@ -1,5 +1,7 @@
-# call-external
-# run-async
+# /// monty
+# call-external = true
+# run-async = true
+# ///
 # Test that recursion depth is per-task, not global.
 #
 # With a recursion limit of 50, a gathered task that recurses 40 deep

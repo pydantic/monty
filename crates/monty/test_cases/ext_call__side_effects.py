@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 def log(msg):
     print(msg)
     return 1

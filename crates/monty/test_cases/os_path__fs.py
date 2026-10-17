@@ -1,5 +1,7 @@
-# mount-fs
-# skip-cpython-windows — os.path is ntpath on Windows CPython; Monty's is always posixpath
+# /// monty
+# mount-fs = true
+# skip-cpython-windows = true  # os.path is ntpath on Windows CPython; Monty's is always posixpath
+# ///
 # Filesystem-backed os.path functions against the mounted test directory.
 import os
 import sys

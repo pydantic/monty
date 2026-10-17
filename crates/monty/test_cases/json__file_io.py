@@ -1,5 +1,8 @@
-# mount-fs
-# skip-cpython-windows — CPython on Windows defaults text I/O to cp1252 which can't encode é.
+# /// monty
+# mount-fs = true
+# skip-cpython-windows = true
+# ///
+# CPython on Windows defaults text I/O to cp1252, which can't encode é.
 import json
 import sys
 

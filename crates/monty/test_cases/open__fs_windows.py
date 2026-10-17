@@ -1,4 +1,6 @@
-# mount-fs
+# /// monty
+# mount-fs = true
+# ///
 # Windows-safe companion to open__fs.py covering the non-ASCII text I/O paths.
 #
 # open__fs.py is skipped on Windows CPython because its default text encoding

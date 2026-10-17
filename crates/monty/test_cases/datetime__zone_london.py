@@ -1,4 +1,6 @@
-# timezone=Europe/London
+# /// monty
+# timezone = 'Europe/London'
+# ///
 # `Europe/London` covers northern DST, a near-zero offset and GMT/BST.
 # Every expectation is CPython 3.14 under the same `TZ`.
 import time

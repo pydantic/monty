@@ -1,12 +1,13 @@
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, cmp::Ordering, fmt};
 
 use ahash::AHashSet;
-use monty_types::{MontyException, StackFrame};
+use monty_types::{FormatComplex, FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
 use num_bigint::BigInt;
-use num_traits::Num;
+use num_traits::{Num, ToPrimitive};
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
-    InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
+    InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Pattern as AstPattern,
+    Singleton, Stmt, UnaryOp,
     name::Name,
     token::TokenKind,
     visitor::{Visitor, walk_expr},
@@ -19,14 +20,14 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
-        Node, Operator, SequenceItem, Submodule, UnpackTarget,
+        MatchCase, Node, Operator, Pattern, SequenceItem, Submodule, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{CompileInterns, StringId},
     source_map::{SourceMap, StackFrameExt},
     source_nesting::nesting_bound_exceeded,
     stringize::stringize_annotation,
-    types::long_int::INT_MAX_STR_DIGITS,
+    types::long_int::{INT_MAX_STR_DIGITS, bigint_cmp_f64, check_bigint_str_digits_limit},
     value::EitherStr,
 };
 
@@ -401,6 +402,188 @@ impl<'a, 'i> Parser<'a, 'i> {
         Ok(ExceptHandler { exc_type, name, body })
     }
 
+    /// Parses `match SUBJECT:` and its `case` clauses into [`Node::Match`].
+    fn parse_match(&mut self, m: ast::StmtMatch) -> Result<ParseNode, ParseError> {
+        let position = self.convert_range(m.range);
+        let subject = self.parse_expression(*m.subject)?;
+        let cases = m
+            .cases
+            .into_iter()
+            .map(|case| self.parse_match_case(case))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Node::Match {
+            subject,
+            cases,
+            position,
+        })
+    }
+
+    /// Parses one `case PATTERN [if GUARD]:` clause.
+    fn parse_match_case(&mut self, case: ast::MatchCase) -> Result<MatchCase<ParseNode>, ParseError> {
+        let position = self.convert_range(case.pattern.range());
+        let pattern = self.parse_pattern(case.pattern)?;
+        let guard = match case.guard {
+            Some(guard) => Some(self.parse_expression(*guard)?),
+            None => None,
+        };
+        let body = self.parse_statements(case.body)?;
+        Ok(MatchCase {
+            pattern,
+            guard,
+            body,
+            position,
+        })
+    }
+
+    /// Parses a pattern, charging each nesting level against the depth budget
+    /// like [`Self::parse_expression`], so a deeply nested pattern cannot
+    /// overflow the host stack in the prepare and compile passes.
+    fn parse_pattern(&mut self, pattern: AstPattern) -> Result<Pattern, ParseError> {
+        self.decr_depth_remaining(|| pattern.range())?;
+        let result = self.parse_pattern_impl(pattern);
+        self.depth_remaining += 1;
+        result
+    }
+
+    /// Converts one Ruff pattern, raising the shape errors CPython's compiler
+    /// raises: two starred names, duplicate constant mapping keys and repeated
+    /// class attributes. Context-dependent errors (duplicate captures,
+    /// unreachable irrefutable patterns, mismatched alternatives) belong to the
+    /// bytecode compiler.
+    fn parse_pattern_impl(&mut self, pattern: AstPattern) -> Result<Pattern, ParseError> {
+        match pattern {
+            AstPattern::MatchValue(p) => Ok(Pattern::Value(self.parse_expression(*p.value)?)),
+            AstPattern::MatchSingleton(p) => {
+                let literal = match p.value {
+                    Singleton::None => Literal::None,
+                    Singleton::True => Literal::Bool(true),
+                    Singleton::False => Literal::Bool(false),
+                };
+                let position = self.convert_range(p.range);
+                Ok(Pattern::Singleton(ExprLoc::new(position, Expr::Literal(literal))))
+            }
+            AstPattern::MatchSequence(p) => {
+                let position = self.convert_range(p.range);
+                let patterns = self.parse_patterns(p.patterns)?;
+                let stars = patterns.iter().filter(|p| matches!(p, Pattern::Star { .. })).count();
+                if stars > 1 {
+                    Err(ParseError::syntax(
+                        "multiple starred names in sequence pattern",
+                        position,
+                    ))
+                } else {
+                    Ok(Pattern::Sequence { patterns, position })
+                }
+            }
+            AstPattern::MatchMapping(p) => {
+                let position = self.convert_range(p.range);
+                check_subpattern_count(p.keys.len(), "mapping", position)?;
+                let keys = p
+                    .keys
+                    .into_iter()
+                    .map(|key| self.parse_expression(key))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.check_duplicate_mapping_keys(&keys, position)?;
+                let patterns = self.parse_patterns(p.patterns)?;
+                let rest = p.rest.map(|name| self.identifier(&name.id, name.range));
+                Ok(Pattern::Mapping {
+                    keys,
+                    patterns,
+                    rest,
+                    position,
+                })
+            }
+            AstPattern::MatchClass(p) => {
+                let position = self.convert_range(p.range);
+                check_subpattern_count(
+                    p.arguments.patterns.len() + p.arguments.keywords.len(),
+                    "class",
+                    position,
+                )?;
+                let cls = self.parse_expression(*p.cls)?;
+                let patterns = self.parse_patterns(p.arguments.patterns)?;
+                let mut kwd_attrs: Vec<StringId> = Vec::with_capacity(p.arguments.keywords.len());
+                let mut kwd_patterns = Vec::with_capacity(p.arguments.keywords.len());
+                for keyword in p.arguments.keywords {
+                    let attr = self.interner.intern(&keyword.attr.id);
+                    let pattern = self.parse_pattern(keyword.pattern)?;
+                    // CPython anchors the diagnostic on the repeated keyword's sub-pattern.
+                    if kwd_attrs.contains(&attr) {
+                        return Err(ParseError::syntax(
+                            format!("attribute name repeated in class pattern: {}", keyword.attr.id),
+                            pattern.position(),
+                        ));
+                    }
+                    kwd_attrs.push(attr);
+                    kwd_patterns.push(pattern);
+                }
+                Ok(Pattern::Class {
+                    cls,
+                    patterns,
+                    kwd_attrs,
+                    kwd_patterns,
+                    position,
+                })
+            }
+            AstPattern::MatchStar(p) => Ok(Pattern::Star {
+                name: p.name.map(|name| self.identifier(&name.id, name.range)),
+                position: self.convert_range(p.range),
+            }),
+            AstPattern::MatchAs(p) => {
+                let position = self.convert_range(p.range);
+                let pattern = match p.pattern {
+                    Some(inner) => Some(Box::new(self.parse_pattern(*inner)?)),
+                    None => None,
+                };
+                let name = p.name.map(|name| self.identifier(&name.id, name.range));
+                Ok(Pattern::As {
+                    pattern,
+                    name,
+                    position,
+                })
+            }
+            AstPattern::MatchOr(p) => Ok(Pattern::Or {
+                patterns: self.parse_patterns(p.patterns)?,
+                position: self.convert_range(p.range),
+            }),
+        }
+    }
+
+    fn parse_patterns(&mut self, patterns: impl IntoIterator<Item = AstPattern>) -> Result<Vec<Pattern>, ParseError> {
+        patterns.into_iter().map(|p| self.parse_pattern(p)).collect()
+    }
+
+    /// Rejects a mapping pattern that checks one constant key twice (`{1: a, 1: b}`),
+    /// as CPython's compiler does. Keys compare by Python equality, so `1`, `1.0`
+    /// and `True` collide; dotted-name keys are runtime values and are not checked.
+    /// The pairwise scan is bounded by [`check_subpattern_count`]; each key is
+    /// folded once beforehand, so it never re-clones a big integer per pair.
+    fn check_duplicate_mapping_keys(&self, keys: &[ExprLoc], position: CodeRange) -> Result<(), ParseError> {
+        let folded: Vec<FoldedKey<'_>> = keys
+            .iter()
+            .filter_map(|key| ConstantKey::of(key, self.interner))
+            .map(|key| FoldedKey {
+                key,
+                number: key.number(self.interner),
+            })
+            .collect();
+        for (i, constant) in folded.iter().enumerate() {
+            if folded[..i].iter().any(|seen| seen.py_eq(constant)) {
+                let constant = constant.key;
+                // CPython's compiler raises `ValueError` formatting a key past the digit limit.
+                let msg = match constant.repr(self.interner) {
+                    Some(repr) => format!("mapping pattern checks duplicate key ({repr})"),
+                    None => format!(
+                        "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; use \
+                         sys.set_int_max_str_digits() to increase the limit"
+                    ),
+                };
+                return Err(ParseError::syntax(msg, position));
+            }
+        }
+        Ok(())
+    }
+
     fn parse_statement(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         self.decr_depth_remaining(|| statement.range())?;
         let result = self.parse_statement_impl(statement);
@@ -592,10 +775,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 self.depth_remaining += levels;
                 Ok(node)
             }
-            Stmt::Match(m) => Err(ParseError::not_implemented(
-                "pattern matching (match statements)",
-                self.convert_range(m.range),
-            )),
+            Stmt::Match(m) => self.parse_match(m),
             Stmt::Raise(ast::StmtRaise { exc, .. }) => {
                 // TODO add cause to Node::Raise
                 let expr = match exc {
@@ -2684,5 +2864,193 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
         cleaned
             .parse::<BigInt>()
             .map_err(|e| ParseError::syntax(format!("invalid integer literal {s:?}, error: {e}"), position))
+    }
+}
+
+/// The widest pattern the bytecode can encode: sub-pattern counts and attribute
+/// indexes are `u8` operands. Checked before any pairwise scan over a pattern's
+/// parts so untrusted source cannot buy quadratic parse time with a wide pattern.
+const MAX_SUBPATTERNS: usize = u8::MAX as usize;
+
+/// `SyntaxError: too many sub-patterns in <kind> pattern` past [`MAX_SUBPATTERNS`].
+fn check_subpattern_count(count: usize, kind: &str, position: CodeRange) -> Result<(), ParseError> {
+    if count > MAX_SUBPATTERNS {
+        Err(ParseError::syntax(
+            format!("too many sub-patterns in {kind} pattern"),
+            position,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// A mapping-pattern key the parser can evaluate: a literal, optionally negated,
+/// or a `real ± imag j` complex number.
+///
+/// Mirrors the constant folding CPython applies before its duplicate-key check,
+/// so `-1` and `1+2j` are constant keys while `Color.RED` is not.
+#[derive(Clone, Copy)]
+enum ConstantKey<'a> {
+    Literal {
+        literal: &'a Literal,
+        negated: bool,
+    },
+    /// `1+2j`, folded as CPython does: `complex(real) ± complex(0, imag)`.
+    Complex {
+        real: f64,
+        imag: f64,
+    },
+}
+
+impl<'a> ConstantKey<'a> {
+    fn of(key: &'a ExprLoc, interner: &CompileInterns<'_>) -> Option<Self> {
+        match &key.expr {
+            Expr::Literal(literal) => Some(Self::Literal {
+                literal,
+                negated: false,
+            }),
+            Expr::UnaryMinus(inner) => match &inner.expr {
+                Expr::Literal(
+                    literal @ (Literal::Int(_) | Literal::Float(_) | Literal::LongInt(_) | Literal::Complex(_)),
+                ) => Some(Self::Literal { literal, negated: true }),
+                _ => None,
+            },
+            // The grammar only allows a signed real on the left and an
+            // imaginary literal on the right.
+            Expr::Op { left, op, right } => {
+                let Expr::Literal(Literal::Complex(imag)) = right.expr else {
+                    return None;
+                };
+                let real = match Self::of(left, interner)?.number(interner)? {
+                    ConstantNumber::Int(i) => i.to_f64().filter(|f| f.is_finite())?,
+                    ConstantNumber::Float(f) => f,
+                    ConstantNumber::Complex { .. } => return None,
+                };
+                match op {
+                    Operator::Add => Some(Self::Complex {
+                        real: real + 0.0,
+                        imag: 0.0 + imag,
+                    }),
+                    Operator::Sub => Some(Self::Complex {
+                        real: real - 0.0,
+                        imag: 0.0 - imag,
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The key as an exact number (`bool` included), with its sign applied.
+    fn number(self, interner: &CompileInterns<'_>) -> Option<ConstantNumber> {
+        let (literal, negated) = match self {
+            Self::Literal { literal, negated } => (literal, negated),
+            Self::Complex { real, imag } => return Some(ConstantNumber::Complex { real, imag }),
+        };
+        let number = match literal {
+            Literal::Bool(b) => ConstantNumber::Int(BigInt::from(u8::from(*b))),
+            Literal::Int(i) => ConstantNumber::Int(BigInt::from(*i)),
+            Literal::LongInt(id) => ConstantNumber::Int(interner.get_long_int(*id).clone()),
+            Literal::Float(f) => ConstantNumber::Float(*f),
+            Literal::Complex(imag) => ConstantNumber::Complex { real: 0.0, imag: *imag },
+            _ => return None,
+        };
+        Some(if negated { number.neg() } else { number })
+    }
+
+    /// The key's `repr`, for the duplicate-key diagnostic, or `None` for an
+    /// integer (e.g. a long hex literal) past the decimal digit limit.
+    fn repr(self, interner: &CompileInterns<'_>) -> Option<String> {
+        let (literal, negated) = match self {
+            Self::Literal { literal, negated } => (literal, negated),
+            Self::Complex { real, imag } => return Some(FormatComplex { real, imag }.to_string()),
+        };
+        let sign = if negated { "-" } else { "" };
+        let repr = match literal {
+            Literal::None => "None".to_owned(),
+            Literal::Bool(true) => "True".to_owned(),
+            Literal::Bool(false) => "False".to_owned(),
+            Literal::Int(i) => format!("{sign}{i}"),
+            Literal::Float(f) => format!("{sign}{}", FormatFloat(*f)),
+            Literal::Str(id) => StringRepr(interner.get_str(*id)).to_string(),
+            Literal::Bytes(id) => bytes_repr(interner.get_bytes(*id)),
+            Literal::LongInt(id) => {
+                let value = interner.get_long_int(*id);
+                check_bigint_str_digits_limit(value).ok()?;
+                format!("{sign}{value}")
+            }
+            // `-2j` negates `0+2j`, so its real part is `-0.0` and CPython shows `(-0-2j)`.
+            Literal::Complex(imag) => FormatComplex {
+                real: if negated { -0.0 } else { 0.0 },
+                imag: if negated { -imag } else { *imag },
+            }
+            .to_string(),
+            Literal::Ellipsis => "Ellipsis".to_owned(),
+            Literal::Marker(_) => "<marker>".to_owned(),
+        };
+        Some(repr)
+    }
+}
+
+/// A [`ConstantKey`] with its numeric value computed once, for the pairwise duplicate scan.
+struct FoldedKey<'a> {
+    key: ConstantKey<'a>,
+    number: Option<ConstantNumber>,
+}
+
+impl FoldedKey<'_> {
+    /// Python equality between two constant keys, as a `set` of them would see it.
+    fn py_eq(&self, other: &Self) -> bool {
+        match (&self.number, &other.number) {
+            (Some(a), Some(b)) => a.py_eq(b),
+            (None, None) => match (self.key, other.key) {
+                (ConstantKey::Literal { literal: a, .. }, ConstantKey::Literal { literal: b, .. }) => match (a, b) {
+                    (Literal::None, Literal::None) => true,
+                    (Literal::Str(a), Literal::Str(b)) => a == b,
+                    (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
+                    _ => false,
+                },
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+}
+
+/// A constant mapping-pattern key's numeric value, compared without rounding
+/// so distinct integers above 2**53 never collide and `2**63 == 2.0**63` does.
+enum ConstantNumber {
+    Int(BigInt),
+    Float(f64),
+    Complex { real: f64, imag: f64 },
+}
+
+impl ConstantNumber {
+    fn neg(self) -> Self {
+        match self {
+            Self::Int(i) => Self::Int(-i),
+            Self::Float(f) => Self::Float(-f),
+            Self::Complex { real, imag } => Self::Complex {
+                real: -real,
+                imag: -imag,
+            },
+        }
+    }
+
+    /// Python `==` across `int`, `float` and `complex`.
+    fn py_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => a == b,
+            (Self::Int(i), Self::Float(f)) | (Self::Float(f), Self::Int(i)) => {
+                bigint_cmp_f64(i, *f) == Some(Ordering::Equal)
+            }
+            (Self::Complex { real: ar, imag: ai }, Self::Complex { real: br, imag: bi }) => ar == br && ai == bi,
+            // A complex equals a real only when its imaginary part is zero.
+            (Self::Complex { real, imag }, other) | (other, Self::Complex { real, imag }) => {
+                *imag == 0.0 && other.py_eq(&Self::Float(*real))
+            }
+        }
     }
 }

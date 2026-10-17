@@ -86,7 +86,7 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
     }
     let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::Write));
     match target.py_getattr(&name, vm) {
-        Ok(CallResult::Value(method)) if method.is_callable(vm.heap) => Ok(Some(method)),
+        Ok(CallResult::Value(method)) if method.is_callable(vm) => Ok(Some(method)),
         Ok(result) => {
             result.drop_with(vm);
             Ok(None)

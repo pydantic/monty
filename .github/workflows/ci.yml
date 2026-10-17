@@ -22,6 +22,8 @@ env:
   UV_FROZEN: '1'
   DEBUG: 'napi:*'
   LLVM_COV_IGNORE_FILENAME_REGEX: '(tests/|test_cases/|/tests\.rs$$)'
+  # PR-scoped caches share the repository quota and can evict main's reusable caches.
+  SAVE_CI_CACHE: ${{ github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Save CI cache') }}
 
 jobs:
   lint:
@@ -55,29 +57,39 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust'
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          save-cache: ${{ env.SAVE_CI_CACHE }}
 
       - run: uv sync --all-packages --only-dev
 
-      - name: Setup node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0 # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+      - uses: ./.github/actions/install-js
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
 
-      - name: Install node dependencies
-        run: npm install
-        working-directory: crates/monty-js
+      # prek-action has no restore-only option, so manage its cache separately.
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: prek-cache
+        with:
+          path: ~/.cache/prek
+          key: prek-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Run prek
         uses: j178/prek-action@1382ad72dea72f9d53832f2bcb65b3e87a947204 # v3.0.1
+        with:
+          cache: false
         env:
           SKIP: no-commit-to-branch
+
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        if: env.SAVE_CI_CACHE == 'true' && steps.prek-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/prek
+          key: ${{ steps.prek-cache.outputs.cache-primary-key }}
 
       # the protobuf schema and the checked-in prost output must never drift
       - name: Check generated protobuf code is in sync
@@ -128,6 +140,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          save-if: ${{ env.SAVE_CI_CACHE }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
@@ -191,6 +204,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          save-if: ${{ env.SAVE_CI_CACHE }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
@@ -250,6 +264,7 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
 
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
@@ -265,6 +280,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          save-cache: ${{ env.SAVE_CI_CACHE }}
 
       - run: rustc --version --verbose
       - run: python3 -V
@@ -336,8 +352,51 @@ jobs:
           post-pr-comment: true
           name: rust-coverage
 
+  # The worker has no Python ABI dependency; share one wheel per profile across the matrix.
+  build-python-worker:
+    name: build Python worker (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [dev, release]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.profile }}
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Artifacts are only used for tests in this workflow run
+          cache-on-failure: true
+          cache-workspace-crates: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Artifacts are only used for tests in this workflow run
+          save-cache: ${{ env.SAVE_CI_CACHE }}
+
+      - run: make install-py
+      - name: Build runtime wheel
+        run: uv run maturin build -m crates/monty-runtime/Cargo.toml --profile ${{ matrix.profile }} --out runtime-wheels
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-worker-${{ matrix.profile }}
+          path: runtime-wheels/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
   test-python:
     name: test python ${{ matrix.python-version }}
+    needs: [build-python-worker]
     runs-on: ubuntu-latest
 
     strategy:
@@ -364,21 +423,33 @@ jobs:
           # free-threaded builds lay `PyObject` out differently. Without the version in
           # the key every entry in this matrix shares one cache, breaking 3.14t
           key: ${{ matrix.python-version }}
+          # Start fresh rather than retaining immutable, dependency-only cache entries.
+          prefix-key: v1-python-bindings
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          cache-workspace-crates: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          save-cache: ${{ env.SAVE_CI_CACHE }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: python-worker-*
+          path: runtime-wheels
 
       - run: uv sync --all-packages --only-dev
       # workaround for https://github.com/PyO3/maturin/pull/3299
       # (dev-py doesn't invalidate all cache properly)
       - run: cargo clean -p pyo3-ffi
-      - run: make dev-py
+      - run: uv pip install --reinstall --no-deps runtime-wheels/python-worker-dev/*.whl
+      - run: make dev-py-bindings
       - run: make pytest
-        # also test with a release build
-      - run: make dev-py-release
+        # also test with a release build; both wheels have the same package version
+      - run: uv pip install --reinstall --no-deps runtime-wheels/python-worker-release/*.whl
+      - run: make dev-py-bindings-release
       - run: make pytest
         # test uv run exercise script
       - run: uv run --no-sync crates/monty-python/exercise.py
@@ -408,6 +479,7 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
 
       - name: set up python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -460,6 +532,7 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
 
       - name: set up python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -488,6 +561,7 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
 
       - name: Run miri tests
         run: make miri
@@ -519,6 +593,7 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust-fuzz'
           workspaces: 'crates/fuzz -> target'
 
@@ -543,6 +618,7 @@ jobs:
       - coverage-upload
       - test-rust-os
       - test-python
+      - build-python-worker
       - test-js
       - test-js-packages
       - test-js-browser-package
@@ -597,11 +673,13 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust'
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
+          save-cache: ${{ env.SAVE_CI_CACHE }}
 
       - name: Generate the Rust API reference
         run: make generate-api-docs
@@ -680,6 +758,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          save-cache: ${{ env.SAVE_CI_CACHE }}
 
       # the `pydantic-monty` metapackage is pure metadata pinning the client and
       # runtime distributions, so one sdist plus one universal wheel cover every
@@ -1083,17 +1162,11 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - name: Setup node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+      - uses: ./.github/actions/install-js
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
 
       # the workers the JS client drives
       - name: Build the monty binary
@@ -1162,6 +1235,7 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Cache is disabled on tag and release runs, which produce release artifacts
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: v1-rust-js-bin
 
       - name: Setup node
@@ -1204,13 +1278,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: ./.github/actions/install-js
         with:
           node-version: 24
-          package-manager-cache: false
-          cache: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release && 'npm' || '' }} # zizmor: ignore[cache-poisoning] -- Cache is disabled on tag and release runs, which produce release artifacts
-          cache-dependency-path: crates/monty-js/package-lock.json
+          cache: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release }}
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
@@ -1222,11 +1293,8 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Cache is disabled on tag and release runs, which produce release artifacts
           cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-wasm32-wasip1'
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
 
       - name: Build wasm package assets and verify generated declarations
         run: make check-wasm-types
@@ -1250,16 +1318,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+      - uses: ./.github/actions/install-js
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
 
       - name: Build TypeScript
         run: npm run build:ts

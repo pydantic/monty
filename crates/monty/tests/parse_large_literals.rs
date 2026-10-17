@@ -150,3 +150,18 @@ fn monty_object_repr_or_error_with_huge_int() {
         )
     );
 }
+
+#[test]
+fn duplicate_large_hex_mapping_key_rejected_without_repr() {
+    // The duplicate-key diagnostic must not format a key past the decimal digit limit.
+    let key = format!("0x{}", "f".repeat(5000));
+    let code = format!("match x:\n    case {{{key}: a, {key}: b}}:\n        pass\n");
+    let err = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+        .expect_err("should reject duplicate mapping key");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(
+        err.message().expect("should have a message"),
+        "Exceeds the limit (4300 digits) for integer string conversion; use \
+         sys.set_int_max_str_digits() to increase the limit"
+    );
+}

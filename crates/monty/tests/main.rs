@@ -1,5 +1,6 @@
 use std::mem;
 
+use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_types::{
     CompileOptions, ExcType, MontyObject, MontyUuid,
@@ -107,8 +108,8 @@ fn class_instance_method_call_in_standard_mode_errors() {
 ///
 /// CPython supports `@=` syntax, so the comparative Python test-case suite
 /// cannot cover Monty's current compile-time rejection of this operator. Keep
-/// this as a Rust-side regression test until matrix multiplication support
-/// exists.
+/// this as a Rust-side regression test until augmented matrix multiplication
+/// is supported; ordinary `@` already dispatches user slots.
 #[test]
 fn subscript_augassign_matmul_reports_not_supported() {
     let err = MontyRun::new(
@@ -209,10 +210,16 @@ fn external_function_in_deepcopy_raises_not_implemented() {
     let err = ex
         .run_no_limits(vec![MontyObject::function("ext_fn", None)])
         .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 6, in __deepcopy__\n    return ext_fn()\n           ~~~~~~~~\nNotImplementedError: __deepcopy__: external function 'ext_fn' is not yet supported in this context"
-    );
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 9, in <module>
+        copy.deepcopy(Foo())
+        ~~~~~~~~~~~~~~~~~~~~
+      File "test.py", line 6, in __deepcopy__
+        return ext_fn()
+               ~~~~~~~~
+    NotImplementedError: __deepcopy__: external function 'ext_fn' is not yet supported in this context
+    "#);
 }
 
 /// A user `__next__` calling an external function cannot suspend: like
@@ -234,10 +241,16 @@ fn external_function_in_next_raises_not_implemented() {
     let err = ex
         .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 6, in __next__\n    return ext_fn()\n           ~~~~~~~~\nNotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context"
-    );
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 8, in <module>
+        for _x in Foo():
+                  ~~~~~
+      File "test.py", line 6, in __next__
+        return ext_fn()
+               ~~~~~~~~
+    NotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context
+    "#);
 }
 
 /// Rejected suspensions are raised inside the key function's frame, where an
@@ -322,10 +335,16 @@ fn not_implemented_in_list_sort_key_names_sort() {
     let err = ex
         .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <lambda>\n    [1, 2].sort(key=lambda x: ext_fn())\n                              ~~~~~~~~\nNotImplementedError: sort() key argument: external function 'ext_fn' is not yet supported in this context"
-    );
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        [1, 2].sort(key=lambda x: ext_fn())
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      File "test.py", line 1, in <lambda>
+        [1, 2].sort(key=lambda x: ext_fn())
+                                  ~~~~~~~~
+    NotImplementedError: sort() key argument: external function 'ext_fn' is not yet supported in this context
+    "#);
 }
 
 /// The `itertools` adaptors that apply a callable drive it through

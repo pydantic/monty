@@ -32,6 +32,7 @@ use ahash::AHashMap;
 #[cfg(not(feature = "memory-model-checks"))]
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
 use monty::{MontyRun, RunProgress};
+use monty_fixture::{Header, Interpreter};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
@@ -60,8 +61,8 @@ static CANONICAL_WS_DIR: LazyLock<PathBuf> =
 /// * and, stack overflows in debug rust (if it's too high)
 const TEST_RECURSION_LIMIT: usize = 50;
 
-/// The `ResourceLimits` applied to every datatest run when the fixture omits
-/// the `# gc-interval=` directive.
+/// The `ResourceLimits` applied to every datatest run when the fixture's header
+/// omits `gc-interval`.
 ///
 /// Caps recursion at `TEST_RECURSION_LIMIT` and otherwise leaves limits at their
 /// builder defaults. Fixtures that need a tighter recursion ceiling call
@@ -71,7 +72,7 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// The underlying default GC interval is `GC_INTERVAL` in
 /// `crates/monty/src/heap/mod.rs`, which is 1 under `memory-model-checks` and
 /// `monty_types::DEFAULT_GC_INTERVAL` (100_000) otherwise — tests that need a larger value to stay within the
-/// timeout opt into it via `# gc-interval=<N>`.
+/// timeout opt into it via `gc-interval = <N>`.
 fn default_test_limits() -> ResourceLimits {
     ResourceLimits::default().max_recursion_depth(TEST_RECURSION_LIMIT)
 }
@@ -85,27 +86,10 @@ fn new_monty_run(code: &str, test_name: &str, config: &TestConfig) -> Result<Mon
         .map(|run| run.with_os_policy(config.os_policy.clone()))
 }
 
-/// Test configuration parsed from directive comments.
+/// How to run one test case, derived from its `# /// monty` header (see `monty_fixture::Header`
+/// for the keys). Without a header, the case runs on both interpreters in standard mode.
 ///
-/// Parsed from an optional first-line comment like `# xfail=monty,cpython` or `# call-external`.
-/// If not present, defaults to running on both interpreters in standard mode.
-///
-/// ## Xfail Semantics (Strict)
-/// - `xfail=monty` - Test is expected to fail on Monty; if it passes, that's an error
-/// - `xfail=cpython` - Test is expected to fail on CPython; if it passes, that's an error
-///
-/// ## Platform-Specific Skips
-/// - `skip-cpython-windows` - Skip CPython test on Windows (Monty test still runs).
-///   Used for tests that rely on POSIX path semantics which Monty's sandbox always
-///   provides but Windows CPython does not.
-/// - `cpython-main-module` - Set `__name__ = '__main__'` for CPython only,
-///   matching script-style module globals for tests that directly inspect it.
-/// - `xfail=monty,cpython` - Expected to fail on both interpreters
-///
-/// ## Session zone
-/// - `timezone=Europe/London` - Run both sides in that IANA zone: Monty's
-///   `OsPolicy::timezone`, and `TZ` for CPython. CPython is skipped on
-///   Windows, which has no `time.tzset`.
+/// `xfail` is strict: a case marked to fail on an interpreter is an error if it passes there.
 #[derive(Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
 struct TestConfig {
@@ -131,16 +115,16 @@ struct TestConfig {
     /// function error messages to include `__main__.` qualifiers.
     cpython_main_module: bool,
     /// Resource limits applied to this test's Monty run. Defaults to
-    /// `default_test_limits()`; the `# gc-interval=<N>` directive mutates
-    /// this in `parse_fixture`. The recursion ceiling is tightened from the
+    /// `default_test_limits()`; the header's `gc-interval` overrides
+    /// the interval in `parse_fixture`. The recursion ceiling is tightened from the
     /// fixture itself via `sys.setrecursionlimit(N)` (works on both Monty
     /// under `test-hooks` and CPython), so neither runner needs a special
-    /// directive for it.
+    /// header key for it.
     limits: ResourceLimits,
-    /// Session policies for this test's Monty run; the `# timezone=<NAME>`
-    /// directive sets the zone, which `cpython_timezone` mirrors onto `TZ`.
+    /// Session policies for this test's Monty run; the header's `timezone`
+    /// sets the zone, which `cpython_timezone` mirrors onto `TZ`.
     os_policy: OsPolicy,
-    /// The zone `# timezone=<NAME>` named, for the CPython side and the
+    /// The zone the header's `timezone` named, for the CPython side and the
     /// Windows skip. `None` leaves both sides on their default.
     timezone: Option<String>,
 }
@@ -196,9 +180,7 @@ impl Expectation {
 
 /// Parse a Python fixture file into code, expected outcome, and test configuration.
 ///
-/// The file may optionally contain a `# xfail=monty,cpython` comment to specify
-/// which interpreters the test is expected to fail on. If not present, defaults to
-/// running on both and expecting success.
+/// The file may open with a `# /// monty` header, read by `monty_fixture::Header::parse`.
 ///
 /// The file may have an expectation comment as the LAST line:
 /// - `# Raise=ExceptionType('message')` - Exception (parse-time or runtime)
@@ -218,52 +200,33 @@ impl Expectation {
 /// ```
 ///
 /// If no expectation comment is present, the test just verifies the code runs without exception.
+///
+/// Panics on a malformed header: headers are author-controlled, so that's a test bug.
 fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
     let lines: Vec<&str> = content.lines().collect();
 
     assert!(!lines.is_empty(), "Empty fixture file");
 
-    // comment lines with leading # and spaces stripped
-    let comment_lines = lines
-        .iter()
-        .filter(|line| line.starts_with('#'))
-        .map(|line| line.trim_start_matches('#').trim())
-        .collect::<Vec<_>>();
-
-    let mount_fs = comment_lines.iter().any(|line| line.starts_with("mount-fs"));
+    let header = Header::parse(content).unwrap_or_else(|err| panic!("invalid `# /// monty` header: {err}"));
     let mut config = TestConfig {
-        iter_mode: comment_lines.iter().any(|line| line.starts_with("call-external")) || mount_fs,
-        async_mode: comment_lines.iter().any(|line| line.starts_with("run-async")),
-        mount_fs,
-        skip_cpython_windows: comment_lines
-            .iter()
-            .any(|line| line.starts_with("skip-cpython-windows")),
-        cpython_main_module: comment_lines.iter().any(|line| line.starts_with("cpython-main-module")),
+        xfail_monty: header.xfails(Interpreter::Monty),
+        xfail_cpython: header.xfails(Interpreter::Cpython),
+        iter_mode: header.call_external || header.mount_fs,
+        async_mode: header.run_async,
+        mount_fs: header.mount_fs,
+        skip_cpython_windows: header.skip_cpython_windows,
+        cpython_main_module: header.cpython_main_module,
         ..Default::default()
     };
-    // Check for "xfail=" directive
-    if let Some(&xfail_line) = comment_lines.iter().find(|line| line.starts_with("xfail=")) {
-        // Parse until whitespace or end of line
-        let xfail_end = xfail_line.find(|c: char| c.is_whitespace()).unwrap_or(xfail_line.len());
-        let xfail_str = &xfail_line[..xfail_end];
-        config.xfail_monty = xfail_str.contains("monty");
-        config.xfail_cpython = xfail_str.contains("cpython");
-    }
-
-    // Parse resource-limit directives. `config.limits` starts as
-    // `default_test_limits()`; each directive overrides one field, preserving
-    // the standard test recursion cap unless explicitly overridden. The
-    // recursion ceiling is tightened from Python instead, via
-    // `sys.setrecursionlimit(N)`.
-    if let Some(interval) = parse_usize_directive(&comment_lines, "gc-interval=") {
+    // Overrides one field, keeping the standard test recursion cap; the recursion
+    // ceiling is tightened from Python instead, via `sys.setrecursionlimit(N)`.
+    if let Some(interval) = header.gc_interval {
         config.limits.gc_interval = Some(interval);
     }
-
-    // `# timezone=<IANA name>` runs the case in that zone on both sides.
-    if let Some(name) = parse_str_directive(&comment_lines, "timezone=") {
+    if let Some(name) = header.timezone {
         config.os_policy.timezone =
-            SandboxTimeZone::named(name).unwrap_or_else(|e| panic!("invalid # timezone={name:?} directive: {e}"));
-        config.timezone = Some(name.to_owned());
+            SandboxTimeZone::named(&name).unwrap_or_else(|e| panic!("invalid timezone {name:?}: {e}"));
+        config.timezone = Some(name);
     }
 
     // Check for TRACEBACK expectation (triple-quoted string at end of file)
@@ -295,36 +258,10 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         (Expectation::NoException, &lines[..])
     };
 
-    // Code is everything except the directive comment (and expectation comment if present)
+    // The header stays in the code, so traceback line numbers match the file
     let code = code_lines.join("\n");
 
     (code, expectation, config)
-}
-
-/// Parses a `# <prefix><usize>` directive, ignoring trailing whitespace and
-/// trailing comment text so `# gc-interval=100  recursive test` works.
-///
-/// Panics if a directive is present but the value isn't a valid `usize` — these
-/// are author-controlled, so a malformed directive is a test bug, not a runtime
-/// error to be surfaced gracefully.
-fn parse_usize_directive(comment_lines: &[&str], prefix: &str) -> Option<usize> {
-    let line = comment_lines.iter().find(|line| line.starts_with(prefix))?;
-    let value = &line[prefix.len()..];
-    let value_end = value.find(|c: char| c.is_whitespace()).unwrap_or(value.len());
-    let value_str = value[..value_end].trim();
-    Some(
-        value_str
-            .parse()
-            .unwrap_or_else(|e| panic!("invalid {prefix}{value_str:?} directive: {e}")),
-    )
-}
-
-/// Reads the value of a `# <prefix><value>` directive, up to the first space.
-fn parse_str_directive<'a>(comment_lines: &[&'a str], prefix: &str) -> Option<&'a str> {
-    let line = comment_lines.iter().find(|line| line.starts_with(prefix))?;
-    let value = &line[prefix.len()..];
-    let value_end = value.find(|c: char| c.is_whitespace()).unwrap_or(value.len());
-    Some(value[..value_end].trim())
 }
 
 /// Parses a TRACEBACK expectation from the end of a fixture file.
@@ -391,7 +328,7 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
 // (cached in `sys.modules`) and its `exported_globals` dict is merged into
 // each CPython test's globals — see `import_shared_test_globals`.
 
-/// Creates a temporary directory with a known structure for `# mount-fs` tests.
+/// Creates a temporary directory with a known structure for `mount-fs` tests.
 ///
 /// The directory layout is:
 /// ```text
@@ -1642,7 +1579,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, config: &Tes
 
 /// Try to run a test using MontyRun with external function support.
 ///
-/// This function handles tests marked with `# call-external` directive by using the
+/// This function handles tests whose header sets `call-external` by using the
 /// iterative executor API and providing implementations for predefined external functions.
 fn try_run_iter_test(
     path: &Path,
@@ -1791,7 +1728,7 @@ fn try_run_iter_test(
     Ok(())
 }
 
-/// Runs a `# mount-fs` test: creates a temp directory, mounts it via `MountTable`,
+/// Runs a `mount-fs` test: creates a temp directory, mounts it via `MountTable`,
 /// and dispatches OS calls through the mount table instead of the virtual filesystem.
 fn try_run_mount_fs_test(
     path: &Path,
@@ -1881,7 +1818,7 @@ fn try_run_mount_fs_test(
     Ok(())
 }
 
-/// Execution loop for `# mount-fs` tests.
+/// Execution loop for `mount-fs` tests.
 ///
 /// Dispatches OS calls through the mount table. Name lookups resolve `root`
 /// to `Path('/mnt')` so Python code can access the mounted directory.
@@ -2288,7 +2225,7 @@ fn format_traceback(py: Python<'_>, exc: &PyErr) -> String {
 /// not affected and continues to run concurrently with other Monty cases.
 static CPYTHON_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-/// Points CPython's local zone at the `# timezone=` name for one fixture and
+/// Points CPython's local zone at the header's `timezone` for one fixture and
 /// puts `TZ` back after it, so `astimezone()`, `timestamp()` and `%Z` read the
 /// same zone Monty's side was configured with. The whole CPython side of a case
 /// runs under [`CPYTHON_TEST_LOCK`], so this process-global edit races nothing;
@@ -2300,7 +2237,7 @@ struct CpythonTimeZone {
 impl CpythonTimeZone {
     /// Applies `zone`, remembering whatever `TZ` held.
     ///
-    /// A case without a `# timezone=` marker gets UTC, the zone Monty defaults
+    /// A case without a `timezone` key gets UTC, the zone Monty defaults
     /// to: leaving CPython on the host's zone would make the two sides disagree
     /// on every unmarked case that reads the local zone, on whichever developer
     /// machine or CI runner is not itself UTC.
@@ -2840,7 +2777,7 @@ where
 
 /// Test function that runs each fixture through Monty.
 ///
-/// Handles xfail with strict semantics: if a test is marked `xfail=monty`, it must fail.
+/// Handles xfail with strict semantics: if a test's header sets `xfail = ['monty']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     // Joined onto the workspace rather than read relative to the process cwd:
@@ -2901,7 +2838,7 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
         // Strict xfail: test must fail; if it passed, xfail should be removed
         assert!(
             result.is_err(),
-            "[{test_name}] Test marked xfail=monty passed unexpectedly. Remove xfail if the test is now fixed."
+            "[{test_name}] Test marked xfail monty passed unexpectedly. Remove xfail if the test is now fixed."
         );
     } else if let Err(failure) = result {
         panic!("{failure}");
@@ -2911,7 +2848,7 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
 
 /// Test function that runs each fixture through CPython.
 ///
-/// Handles xfail with strict semantics: if a test is marked `xfail=cpython`, it must fail.
+/// Handles xfail with strict semantics: if a test's header sets `xfail = ['cpython']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     // Joined onto the workspace rather than read relative to the process cwd:
@@ -2929,7 +2866,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
         .to_string();
 
     // Skip CPython tests that rely on POSIX path semantics when running on Windows,
-    // and `# timezone=` cases, which need the POSIX-only `time.tzset`.
+    // and `timezone` cases, which need the POSIX-only `time.tzset`.
     if cfg!(windows) && (config.skip_cpython_windows || config.timezone.is_some()) {
         return Ok(());
     }
@@ -2940,7 +2877,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
         // Strict xfail: test must fail; if it passed, xfail should be removed
         assert!(
             result.is_err(),
-            "[{test_name}] Test marked xfail=cpython passed unexpectedly. Remove xfail if the test is now fixed."
+            "[{test_name}] Test marked xfail cpython passed unexpectedly. Remove xfail if the test is now fixed."
         );
     } else if let Err(failure) = result {
         panic!("{failure}");

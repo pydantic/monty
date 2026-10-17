@@ -1,6 +1,9 @@
-# mount-fs
-# skip-cpython-windows — CPython on Windows defaults text I/O to cp1252 which can't encode β;
-# Windows-specific coverage lives in open__fs_windows.py.
+# /// monty
+# mount-fs = true
+# # CPython on Windows defaults text I/O to cp1252, which can't encode β;
+# # Windows-specific coverage lives in open__fs_windows.py.
+# skip-cpython-windows = true
+# ///
 import sys
 
 is_monty = sys.platform == 'monty'

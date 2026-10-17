@@ -139,7 +139,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 
     let factory = match factory_arg {
         None | Some(Value::None) => None,
-        Some(value) if value.is_callable(vm.heap) => Some(value),
+        Some(value) if value.is_callable(vm) => Some(value),
         Some(value) => {
             value.drop_with(vm);
             pos.drop_with(vm);

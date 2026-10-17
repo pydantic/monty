@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # === External function exceptions ===
 # Tests for exceptions raised by external functions
 
