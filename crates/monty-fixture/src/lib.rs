@@ -24,7 +24,7 @@ const BLOCK_END: &str = "# ///";
 
 /// A fixture's settings; every field defaults to off, so a file without a header gets
 /// `Header::default()`. Unknown keys are errors, so a typo can't silently drop a setting.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 #[expect(clippy::struct_excessive_bools, reason = "one bool per TOML flag")]
 pub struct Header {
@@ -51,11 +51,12 @@ pub struct Header {
 impl Header {
     /// Reads the `# /// monty` block from `source`, or returns the default header if there is none.
     ///
-    /// Errors on malformed TOML, unknown keys, an unterminated or repeated block, and any other
-    /// `# ///` line, such as a misspelt block type.
+    /// Errors on malformed TOML, unknown keys, an unterminated, repeated or misplaced block, and
+    /// any other `# ///` line, such as a misspelt block type.
     pub fn parse(source: &str) -> Result<Self, HeaderError> {
         match extract_block(source)? {
-            Some(toml) => toml::from_str(&toml).map_err(|err| HeaderError(err.to_string())),
+            Some((start, toml)) => toml::from_str(&toml)
+                .map_err(|err| HeaderError(format!("in the header opening on line {}: {err}", start + 1))),
             None => Ok(Self::default()),
         }
     }
@@ -76,7 +77,7 @@ pub enum Interpreter {
 }
 
 /// The `[bench]` table: how `monty-bench` runs a script.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Bench {
     /// Bind `DATA` to the contents of this file, relative to the script.
@@ -101,22 +102,31 @@ impl fmt::Display for HeaderError {
 
 impl Error for HeaderError {}
 
-/// Returns the TOML inside the `# /// monty` block, with each line's `#` prefix removed.
-fn extract_block(source: &str) -> Result<Option<String>, HeaderError> {
-    let mut block: Option<String> = None;
+/// Returns the index of the `# /// monty` line and the TOML inside its block, each line's `#`
+/// prefix removed.
+///
+/// The block must sit in the file's leading comment and blank lines, so code and strings can't
+/// configure a fixture; a block marker anywhere after them is an error rather than ignored.
+fn extract_block(source: &str) -> Result<Option<(usize, String)>, HeaderError> {
+    let mut block: Option<(usize, String)> = None;
+    let mut before_code = true;
     let mut lines = source.lines().enumerate();
     while let Some((index, line)) = lines.next() {
-        if line == BLOCK_START {
-            if block.is_some() {
-                return Err(HeaderError(format!("line {}: second `{BLOCK_START}` block", index + 1)));
-            }
-            block = Some(read_block_body(&mut lines, index)?);
-        } else if is_block_marker(line) {
-            return Err(HeaderError(format!(
-                "line {}: `{line}` is not `{BLOCK_START}` or a block's closing `{BLOCK_END}`",
-                index + 1
-            )));
+        before_code &= line.starts_with('#') || line.trim().is_empty();
+        if !is_block_marker(line) {
+            continue;
         }
+        let problem = if line != BLOCK_START {
+            format!("`{line}` is not `{BLOCK_START}` or a block's closing `{BLOCK_END}`")
+        } else if !before_code {
+            format!("`{BLOCK_START}` must come before any code")
+        } else if block.is_some() {
+            format!("second `{BLOCK_START}` block")
+        } else {
+            block = Some((index, read_block_body(&mut lines, index)?));
+            continue;
+        };
+        return Err(HeaderError(format!("line {}: {problem}", index + 1)));
     }
     Ok(block)
 }

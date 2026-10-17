@@ -11,7 +11,7 @@
 //! - `limits = true`: also register `<name>_limits__monty` with resource limits armed
 
 use std::{
-    fs,
+    fs, mem,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -70,6 +70,8 @@ fn criterion_benchmark(c: &mut Criterion) {
 struct Script {
     /// The file stem, without a test case's `bench__` prefix.
     name: String,
+    /// The file's real name, for tracebacks.
+    filename: String,
     code: String,
     input: Input,
     /// Also benchmark with resource limits armed.
@@ -81,7 +83,7 @@ struct Script {
 /// What a script's `DATA` global is bound to.
 enum Input {
     None,
-    /// The contents of a file, from `data=<path>`.
+    /// The contents of the file `data` names.
     Data(String),
     /// The scan tree's root: `/data` for Monty's mount, the host path for CPython.
     Mount,
@@ -96,16 +98,22 @@ impl Script {
         paths.iter().map(|path| Self::parse(path)).collect()
     }
 
-    /// Reads one script and its header, panicking on a malformed header or inconsistent options.
+    /// Reads one script and its header, panicking on a malformed header, inconsistent options or
+    /// a test-case key, which a benchmark would otherwise silently ignore.
     fn parse(path: &Path) -> Self {
         let code = fs::read_to_string(path).unwrap();
-        let header = Header::parse(&code).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let mut header = Header::parse(&code).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
         let Bench {
             data,
             mount,
             overlay,
             limits,
-        } = header.bench;
+        } = mem::take(&mut header.bench);
+        assert!(
+            header == Header::default(),
+            "{}: only `[bench]` options apply to benchmarks",
+            path.display()
+        );
         let input = match (data, mount) {
             (Some(_), true) => panic!("{}: `data` with `mount`", path.display()),
             (Some(data), false) => Input::Data(fs::read_to_string(path.parent().unwrap().join(data)).unwrap()),
@@ -117,6 +125,7 @@ impl Script {
         let stem = file_stem(path);
         Self {
             name: stem.strip_prefix("bench__").unwrap_or(stem).to_owned(),
+            filename: path.file_name().unwrap().to_str().unwrap().to_owned(),
             code,
             input,
             limits,
@@ -128,7 +137,7 @@ impl Script {
     fn register(&self, c: &mut Criterion, tree: &Path) {
         let name = &self.name;
         let code = self.code.as_str();
-        let filename = format!("{name}.py");
+        let filename = &self.filename;
         let data = match &self.input {
             Input::None => None,
             Input::Data(data) => Some(data.as_str()),
@@ -136,19 +145,19 @@ impl Script {
         };
         if matches!(self.input, Input::Mount) {
             c.bench_function(&format!("{name}__monty"), |b| {
-                run_monty_mounted(b, code, &filename, tree, MountMode::ReadOnly);
+                run_monty_mounted(b, code, filename, tree, MountMode::ReadOnly);
             });
             if self.overlay {
                 c.bench_function(&format!("{name}_overlay__monty"), |b| {
                     let mode = MountMode::OverlayMemory(OverlayState::new());
-                    run_monty_mounted(b, code, &filename, tree, mode);
+                    run_monty_mounted(b, code, filename, tree, mode);
                 });
             }
         } else {
-            c.bench_function(&format!("{name}__monty"), |b| run_monty(b, code, &filename, data));
+            c.bench_function(&format!("{name}__monty"), |b| run_monty(b, code, filename, data));
             if self.limits {
                 c.bench_function(&format!("{name}_limits__monty"), |b| {
-                    run_monty_limits(b, code, &filename, data);
+                    run_monty_limits(b, code, filename, data);
                 });
             }
         }
@@ -160,7 +169,7 @@ impl Script {
             } else {
                 data
             };
-            c.bench_function(&format!("{name}__cpython"), |b| run_cpython(b, code, &filename, data));
+            c.bench_function(&format!("{name}__cpython"), |b| run_cpython(b, code, filename, data));
         }
     }
 }
