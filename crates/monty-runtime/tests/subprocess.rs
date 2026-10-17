@@ -955,13 +955,31 @@ fn formatting_without_padding_does_not_charge_fill() {
     child.shutdown();
 }
 
-/// Generic string fallback must use the same exact output bound as direct strings.
+/// Explicit string conversion must use the same exact output bound as direct strings.
 #[test]
-fn formatting_generic_value_without_padding_does_not_charge_fill() {
+fn formatting_converted_value_without_padding_does_not_charge_fill() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
-    let code = "s = 'x' * 400_000\nclass Value:\n    def __str__(self):\n        return s\nvalue = Value()\nlen(f'{value:é<400000}')";
-    assert_eq!(child.feed_complete(code), MontyObject::int(400_000));
+    // Leave room for the explicit conversion's temporary string.
+    child.feed_complete("s = 'x' * 262_144\nclass Value:\n    def __str__(self):\n        return s\nvalue = Value()");
+    for code in [
+        "f'{value:é<262144}'",
+        "format(value, 'é<262144')",
+        "'{:é<262144}'.format(value)",
+    ] {
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "TypeError", "{code}");
+        assert_eq!(
+            error.message.as_deref(),
+            Some("unsupported format string passed to Value.__format__"),
+            "{code}"
+        );
+    }
+    assert_eq!(
+        child.feed_complete("len(f'{value!s:é<262144}')"),
+        MontyObject::int(262_144)
+    );
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
