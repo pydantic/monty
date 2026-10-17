@@ -250,6 +250,23 @@ impl ArgValues {
         call
     }
 
+    /// The first positional argument, if any, without consuming the arguments.
+    pub(crate) fn first_positional(&self) -> Option<&Value> {
+        match self {
+            Self::Empty | Self::Kwargs(_) => None,
+            Self::One(v) | Self::Two(v, _) => Some(v),
+            Self::ArgsKargs { args, .. } => args.first(),
+        }
+    }
+
+    /// The keyword argument called `name`, if any, without consuming the arguments.
+    pub(crate) fn keyword(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
+        match self {
+            Self::Empty | Self::One(_) | Self::Two(_, _) => None,
+            Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => kwargs.get(name, heap, interns),
+        }
+    }
+
     /// Returns the number of positional arguments.
     ///
     /// For `Kwargs` returns 0, for `ArgsKargs` returns only the positional args count.
@@ -390,6 +407,21 @@ impl KwargsValues {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The value passed under `name`, if any; a non-string key (only possible via `**`
+    /// unpacking) never matches.
+    pub(crate) fn get(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
+        let is_name = |key: &Value| key.as_either_str(heap).is_some_and(|key| key.as_str(interns) == name);
+        match self {
+            Self::Empty => None,
+            Self::Inline(kvs) => kvs
+                .iter()
+                .find(|(id, _)| interns.get_str(*id) == name)
+                .map(|(_, value)| value),
+            Self::Pairs(kvs) => kvs.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
+            Self::Dict(dict) => dict.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
+        }
     }
 
     /// The first keyword's name, for callables that accept none and report

@@ -16,8 +16,9 @@ use monty_proto::{
     WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, DateTimeSource, ExtFunctionResult, IMPORT_STUBS_CALL_ID, MontyDate, MontyDateTime, MontyObject,
-    NameLookupResult, NamedValues, OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
+    CallArgs, DateTimeSource, ExtFunctionResult, FileMode, IMPORT_STUBS_CALL_ID, MontyDate, MontyDateTime,
+    MontyFileHandle, MontyObject, NameLookupResult, NamedValues, OsPolicy, RandomSeed, RandomStart, SandboxTimeZone,
+    SleepMode, SourceRange,
     scan::{EntryInfo, ScanEntry, scan_reply},
     unstable::{self, MontyNode},
 };
@@ -1225,6 +1226,28 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // would fit is still refused.
         ("import hashlib\nhashlib.shake_128().digest(2_000_000)", 2_045_903),
         ("import hashlib\nhashlib.shake_128().hexdigest(400_000)", 1_245_904),
+        // A csv record copies its fields' text into the line, refused at a capacity
+        // doubling like the formatter cases above.
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\ns = 'x' * 400_000\ncsv.writer(S()).writerow([s, s])",
+            1_250_723,
+        ),
+        // A `DictReader` row's dict is sized from `fieldnames` up front, preflighted like a
+        // dict copy.
+        (
+            "import csv\nnames = list(range(30_000))\nnext(csv.DictReader(['x'], fieldnames=names))",
+            1_965_832,
+        ),
+        // A list `fieldnames` is copied per row, and the keys of a row dict are copied for
+        // the `extrasaction='raise'` check: both bulk copies are preflighted.
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\nnames = [None] * 40_000\ncsv.DictWriter(S(), names).writerow({})",
+            1_331_169,
+        ),
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\nrow = {i: None for i in range(10_000)}\ncsv.DictWriter(S(), []).writerow(row)",
+            1_079_568,
+        ),
     ];
 
     for (code, expected) in cases {
@@ -1238,6 +1261,32 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// `DictWriter.writerows()` on a file keeps one list per row until its single
+/// write, so wide `fieldnames` over many sparse dicts amplify the input: each
+/// row's list is preflighted against the usage so far.
+#[test]
+fn dict_writer_rows_are_rejected_before_the_hard_limit() {
+    let code = "import csv\nf = open('/out.csv', 'w')\ncsv.DictWriter(f, range(20_000)).writerows([{}] * 100)";
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed(code);
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let handle = MontyFileHandle {
+        path: "/out.csv".to_owned(),
+        mode: "w".parse::<FileMode>().unwrap(),
+        position: 0,
+    };
+    let (_, event) = child.resume_return(call.call_id, MontyObject::file_handle(handle));
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError", "{code}");
+    let message = error.message.expect("MemoryError should have a message");
+    assert_reported_usage(&message, 1_206_975, code);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+    child.shutdown();
 }
 
 /// `os.path.expandvars` amplifies its input by the length of the values it

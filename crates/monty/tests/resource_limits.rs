@@ -369,6 +369,60 @@ x
     );
 }
 
+/// `DictReader` skips blank rows in a native loop over the source, which must poll the
+/// clock: an endless source of blank lines never reaches a Python-level checkpoint.
+#[test]
+fn time_limit_covers_csv_blank_row_skipping() {
+    let code = r"
+import csv
+import itertools
+next(csv.DictReader(itertools.repeat(''), fieldnames=['a']))
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// The streaming `writerows()` loops feed a non-file target from a native loop, which
+/// polls through its retained iterator view; a `write` that is a builtin never runs a
+/// frame, so nothing else would check the clock.
+#[test]
+fn time_limit_covers_csv_streaming_writerows() {
+    for code in [
+        "import csv\nimport itertools\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.writer(sink).writerows(itertools.repeat([]))\n",
+        "import csv\nimport itertools\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.DictWriter(sink, ['a']).writerows(itertools.repeat({}))\n",
+    ] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+    }
+}
+
+/// A field with no special character is scanned as one run: too few rows for the
+/// per-row poll and a single run per field would otherwise never read the clock. The
+/// turn's closing check raises either way, so the elapsed time is what proves the poll:
+/// the rows take tens of seconds to format in full.
+#[test]
+fn time_limit_covers_csv_long_ordinary_fields() {
+    let code = "import csv\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.writer(sink).writerows([['x' * 10_000_000]] * 60)\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    let elapsed = start.elapsed();
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "formatting should stop at the first poll past the limit, took {elapsed:?}"
+    );
+}
+
 #[test]
 fn time_limit_not_exceeded() {
     // Simple code that runs quickly

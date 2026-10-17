@@ -120,6 +120,7 @@ const SANDBOX_MODULES = new Set([
   'binascii',
   'collections',
   'copy',
+  'csv',
   'dataclasses',
   'datetime',
   'functools',

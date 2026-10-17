@@ -1036,6 +1036,26 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// `ValueError: mapping pattern checks duplicate key (<repr>)`: two keys of
+    /// one mapping pattern compared equal at run time (`case {A: x, B: y}` with
+    /// `A == B`), as CPython's `MATCH_KEYS` reports it.
+    fn value_error_duplicate_mapping_key(key: &Value, vm: &mut VM<'_>) -> RunError {
+        let repr = match key.py_repr(vm) {
+            Ok(repr_value) => {
+                defer_drop!(repr_value, vm);
+                repr_value
+                    .to_str(vm)
+                    .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
+            }
+            Err(err) => return err,
+        };
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("mapping pattern checks duplicate key ({repr})"),
+        )
+        .into()
+    }
+
     /// Creates a generic `ValueError` with a custom message.
     fn value_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
@@ -1441,6 +1461,16 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("{name}() does not yet support keyword arguments"),
         )
         .into()
+    }
+
+    /// A `_csv.Error` with the given message.
+    fn csv_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::CsvError, msg).into()
+    }
+
+    /// The `_csv.Error` for a dialect name that is not registered.
+    fn csv_unknown_dialect() -> RunError {
+        Self::csv_error("unknown dialect")
     }
 
     /// Creates an IndexError for list index out of range (getitem).
@@ -2871,6 +2901,12 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
+    /// Whether this is a catchable `exc_type`, matching only `Exc` so an uncatchable
+    /// host or resource error is never swallowed by a guard that expects one.
+    pub(crate) fn is_catchable(&self, exc_type: ExcType) -> bool {
+        matches!(self, Self::Exc(raise) if raise.exc.exc_type() == exc_type)
+    }
+
     /// Whether this is a catchable `StopIteration` from `__next__`.
     ///
     /// Matching only `Exc` prevents uncatchable errors being mistaken for exhaustion.

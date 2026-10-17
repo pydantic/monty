@@ -198,6 +198,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "bisect",
     "collections",
     "copy",
+    "csv",
     "dataclasses",
     "datetime",
     "functools",

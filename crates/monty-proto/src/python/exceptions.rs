@@ -107,6 +107,16 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyException::new_err(msg)
             }
         }
+        ExcType::CsvError => {
+            if let Ok(csv_error) = get_csv_error(py)
+                && let Ok(exc_instance) = csv_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Falls back to its parent, `Exception`.
+                exceptions::PyException::new_err(msg)
+            }
+        }
     }
 }
 
@@ -350,6 +360,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         // last as it needs a python isinstance call against an imported class
         } else if is_re_pattern_error(exc) {
             ExcType::RePatternError
+        } else if is_csv_error(exc) {
+            ExcType::CsvError
         } else {
             ExcType::Exception
         }
@@ -425,6 +437,21 @@ fn is_re_pattern_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     } else {
         false
     }
+}
+
+/// Checks if an exception is a `csv.Error`, a direct `Exception` subclass.
+fn is_csv_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(csv_error_cls) = get_csv_error(exc.py()) {
+        exc.is_instance(csv_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `csv.Error` class.
+fn get_csv_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static CSV_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    CSV_ERROR.import(py, "csv", "Error")
 }
 
 /// Returns the cached `re.PatternError` class (named `re.error` before 3.13).
