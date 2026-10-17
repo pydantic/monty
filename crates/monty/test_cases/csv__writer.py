@@ -156,6 +156,27 @@ try:
 except TypeError as exc:
     assert str(exc) == 'writer.writerow() takes exactly one argument (2 given)'
 
+
+# === A write attribute can be a callable user instance ===
+class WriteCallback:
+    def __init__(self):
+        self.lines = []
+        self.result = ['write result']
+
+    def __call__(self, text):
+        self.lines.append(text)
+        return self.result
+
+
+callback = WriteCallback()
+sink = Sink()
+sink.write = callback
+writer = csv.writer(sink)
+sink.write = None
+assert writer.writerow(['a', 'b']) is callback.result
+assert writer.writerows([['c'], ['d']]) is None
+assert callback.lines == ['a,b\r\n', 'c\r\n', 'd\r\n']
+
 # === Constructor ===
 try:
     csv.writer(5)
