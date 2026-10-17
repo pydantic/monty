@@ -1470,6 +1470,59 @@ def test_rename_directory_updates_file_paths_direct():
     assert fs.path_exists(P('/old/dir/file1.txt')) is False
 
 
+@pytest.mark.parametrize('via_monty', [False, True])
+@pytest.mark.parametrize(
+    ('target', 'error_type', 'message'),
+    [
+        ('/a/moved', OSError, '[Errno 22] Invalid argument'),
+        ('/a/b/moved', OSError, '[Errno 22] Invalid argument'),
+        ('/a/b/c/moved', OSError, '[Errno 22] Invalid argument'),
+        ('/a/b/c', OSError, '[Errno 22] Invalid argument'),
+        ('/a/b', OSError, '[Errno 22] Invalid argument'),
+        ('/a/file.txt', NotADirectoryError, '[Errno 20] Not a directory'),
+    ],
+)
+def test_rename_directory_into_descendant(
+    monty_run: RunMonty, target: str, error_type: type[OSError], message: str, via_monty: bool
+):
+    """A rejected move into a descendant leaves the original tree usable."""
+    files = [MemoryFile('/a/file.txt', 'root data'), MemoryFile('/a/b/nested.txt', 'nested data')]
+    fs = OSAccess([*files, MemoryFile('/keep.txt', 'keep data')])
+    fs.path_mkdir(P('/a/b/c'), parents=False, exist_ok=False)
+
+    with pytest.raises(MontyRuntimeError if via_monty else error_type) as exc_info:
+        if via_monty:
+            monty_run(f'from pathlib import Path; Path("/a").rename(Path("{target}"))', os=fs)
+        else:
+            fs.path_rename(P('/a'), P(target))
+    prefix = f'{error_type.__name__}: ' if via_monty else ''
+    assert str(exc_info.value) == f"{prefix}{message}: '/a' -> '{target}'"
+
+    assert fs.path_iterdir(P('/')) == [P('/a'), P('/keep.txt')]
+    assert fs.path_iterdir(P('/a')) == [P('/a/file.txt'), P('/a/b')]
+    assert fs.path_iterdir(P('/a/b')) == [P('/a/b/nested.txt'), P('/a/b/c')]
+    assert fs.path_iterdir(P('/a/b/c')) == []
+    assert fs.path_read_text(P('/a/file.txt')) == 'root data'
+    assert fs.path_read_text(P('/a/b/nested.txt')) == 'nested data'
+    assert fs.path_read_text(P('/keep.txt')) == 'keep data'
+    assert [(file.path, file.deleted) for file in files] == [(P('/a/file.txt'), False), (P('/a/b/nested.txt'), False)]
+    if via_monty:
+        assert monty_run('from pathlib import Path; Path("/a/b/nested.txt").read_text()', os=fs) == 'nested data'
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+def test_rename_directory_similar_prefix(monty_run: RunMonty, via_monty: bool):
+    """A shared name prefix does not make the destination a descendant."""
+    fs = OSAccess([MemoryFile('/a/file.txt', 'data'), MemoryFile('/ab/keep.txt', 'keep')])
+    if via_monty:
+        monty_run('from pathlib import Path; Path("/a").rename(Path("/ab/moved"))', os=fs)
+    else:
+        fs.path_rename(P('/a'), P('/ab/moved'))
+    assert fs.path_exists(P('/a')) is False
+    assert fs.path_read_text(P('/ab/moved/file.txt')) == 'data'
+    assert fs.path_read_text(P('/ab/keep.txt')) == 'keep'
+
+
 # =============================================================================
 # Path Resolution (via Monty)
 # =============================================================================

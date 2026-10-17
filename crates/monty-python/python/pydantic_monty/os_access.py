@@ -1275,6 +1275,7 @@ class OSAccess(AbstractOS):
             return StatResult.dir_stat()
 
     def path_rename(self, path: PurePosixPath, target: PurePosixPath) -> None:
+        """Rename a file or directory; moving a directory into its subtree raises `OSError`."""
         src_entry = self._get_entry(path)
         if src_entry is None:
             raise FileNotFoundError(f'[Errno 2] No such file or directory: {str(path)!r} -> {str(target)!r}')
@@ -1304,6 +1305,8 @@ class OSAccess(AbstractOS):
             assert _is_dir(src_entry), 'src path must be a directory here'
             if _is_file(target_entry):
                 raise NotADirectoryError(f'[Errno 20] Not a directory: {str(path)!r} -> {str(target)!r}')
+            elif PurePosixPath(path) in PurePosixPath(target).parents:
+                raise OSError(f'[Errno 22] Invalid argument: {str(path)!r} -> {str(target)!r}')
             elif _is_dir(target_entry) and target_entry:
                 raise OSError(f'[Errno 66] Directory not empty: {str(path)!r} -> {str(target)!r}')
 

@@ -170,6 +170,9 @@ Larger requests raise `MemoryError` before allocating.
 Unseeded `random` generators request host entropy only under `os_policy={'random_start': 'call_host'}`.
 Otherwise they use worker OS entropy or the configured seed.
 
+`OSAccess.path_rename()` raises `OSError` when a directory's destination is below that directory.
+Rejected moves leave the virtual filesystem unchanged.
+
 By default, `date.today()`, `datetime.now()` and the `time` module's clocks read the worker's clock.
 `time.process_time()` reports `0.0` unless `os_policy={'process_time': 'elapsed'}` opts into the session's
 execution time.
