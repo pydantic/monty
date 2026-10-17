@@ -1276,6 +1276,10 @@ fn fields_tuple_from(names: &[EitherStr], vm: &mut VM<'_>) -> Value {
 fn field_name_value(name: &EitherStr, vm: &mut VM<'_>) -> Value {
     match name {
         EitherStr::Interned(id) => Value::InternString(*id),
+        EitherStr::Inline { len, bytes } => Value::InlineString {
+            len: *len,
+            bytes: *bytes,
+        },
         EitherStr::Heap(s) => allocate_string(s.clone(), vm.heap),
     }
 }

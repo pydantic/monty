@@ -178,6 +178,7 @@ impl GraphExporter {
             Value::Int(i) => MontyNode::Int(*i),
             Value::Float(f) => MontyNode::Float(*f),
             Value::InternString(string_id) => MontyNode::String(interns.get_str(*string_id).to_owned()),
+            Value::InlineString { .. } => MontyNode::String(value.inline_str().unwrap().to_owned()),
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),

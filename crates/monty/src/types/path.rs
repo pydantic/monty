@@ -408,7 +408,7 @@ fn path_glob(
 }
 
 /// Extracts a string from a Value for use as a path.
-fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
+fn extract_path_string<'a>(val: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     value_as_path_str(val, vm.heap, vm.interns)
         .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
 }

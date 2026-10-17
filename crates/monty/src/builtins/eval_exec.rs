@@ -203,6 +203,7 @@ fn compile_and_push(
 fn snippet_source(name: &str, source: &Value, vm: &mut VM<'_>) -> RunResult<Arc<str>> {
     let bytes: &[u8] = match source {
         Value::InternString(id) => return Ok(Arc::from(vm.interns.get_str(*id))),
+        Value::InlineString { .. } => return Ok(Arc::from(source.inline_str().unwrap())),
         Value::InternBytes(id) => vm.interns.get_bytes(*id),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Str(s) => return Ok(Arc::from(s.as_str())),

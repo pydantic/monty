@@ -860,9 +860,10 @@ pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Intern
 
 /// The text of a `str`, `Path` or `DirEntry` `value`, borrowed, else `None`:
 /// what [`value_to_owned_string`] copies, for sizing the copy first.
-pub(crate) fn value_as_path_str<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
+pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match value {
         Value::InternString(id) => Some(interns.get_str(*id)),
+        Value::InlineString { .. } => Some(value.inline_str().unwrap()),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Str(s) => Some(s.as_str()),
             HeapData::Path(p) => Some(p.as_str()),

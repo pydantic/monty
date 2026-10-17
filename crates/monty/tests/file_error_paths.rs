@@ -583,3 +583,30 @@ fn csv_reader_load_rejects_future_reply() {
     assert_eq!(err.exc_type(), ExcType::RuntimeError);
     assert_eq!(err.message().unwrap(), "file loading cannot be answered with a future");
 }
+
+#[test]
+fn inline_read_buffer_translates_newlines_and_survives_slicing() {
+    let result = run_with_open_then_io(
+        "f = open('/x.txt' + '', 'r' + '', encoding='utf-' + '8', newline=None)\n(f.read(2), f.read())",
+        "Path.read_text",
+        file_handle("/x.txt", "r"),
+        MontyObject::string("a\r\nb\r").into(),
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::tuple([MontyObject::string("a\n"), MontyObject::string("b\n")]),
+    );
+}
+
+#[test]
+fn inline_read_buffer_preserves_explicit_newlines() {
+    let result = run_with_open_then_io(
+        "f = open('/x.txt' + '', newline='\\r' + '\\n')\nf.read()",
+        "Path.read_text",
+        file_handle("/x.txt", "r"),
+        MontyObject::string("a\r\nb").into(),
+    )
+    .unwrap();
+    assert_eq!(result, MontyObject::string("a\r\nb"));
+}
