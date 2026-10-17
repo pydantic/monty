@@ -122,7 +122,8 @@ Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
 
-Imports of unknown modules suspend with `OsFunctionCall::Import` and the top-level module name.
+Without a [sandbox import hook](https://pydantic.dev/docs/monty/limitations/modules/#sandbox-import-hook),
+imports of unknown modules suspend with `OsFunctionCall::Import` and the top-level module name.
 The host's answer becomes the module; dotted imports read subsequent components as attributes of that value.
 Hosts usually return a host-backed class instance containing the module's attributes.
 `ExtFunctionResult::NotFound`, or running without a host, raises `ModuleNotFoundError`.

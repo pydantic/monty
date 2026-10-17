@@ -1148,7 +1148,7 @@ impl<'h> VM<'h> {
     /// Whether `value` is a plain Python function object (`def`, closure, or
     /// function-with-defaults — sync or async): the kinds that act as descriptors
     /// in CPython and therefore bind an instance when looked up as a class member.
-    fn is_function_value(&self, value: &Value) -> bool {
+    pub(super) fn is_function_value(&self, value: &Value) -> bool {
         match value {
             Value::DefFunction(_) => true,
             Value::Ref(id) => matches!(self.heap.get(*id), HeapData::Closure(_) | HeapData::FunctionDefaults(_)),
@@ -1161,7 +1161,7 @@ impl<'h> VM<'h> {
     /// or a bound method wrapping one — but not an `async def`, whose call creates
     /// a coroutine instead. Used by [`instantiate_class`](Self::instantiate_class)
     /// to decide whether `__init__` can run as a suspendable initializer frame.
-    fn is_plain_sync_function(&self, value: &Value) -> bool {
+    pub(super) fn is_plain_sync_function(&self, value: &Value) -> bool {
         match value {
             Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
             Value::Ref(id) => match self.heap.get(*id) {

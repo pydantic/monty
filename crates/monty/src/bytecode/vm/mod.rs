@@ -34,7 +34,7 @@ use crate::{
         code::{Code, LocationEntry},
         op::{Opcode, decode_assert_flags},
     },
-    defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
@@ -2079,7 +2079,7 @@ impl<'h> VM<'h> {
                     let module_id = self.current_frame.fetch_u16();
                     // for the `LoadAttrImport`s of a `from ... import`; harmless for a bare `import`
                     self.current_frame.import_from_module = Some(StringId::from_index(module_id));
-                    handle_call_result!(self, Ok(self.load_module(module_id)));
+                    handle_call_result!(self, self.load_module(module_id));
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
@@ -2095,14 +2095,28 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a top-level built-in or suspends with [`OsFunctionCall::Import`].
-    /// The host's value becomes the module; `NotFound` raises `ModuleNotFoundError`.
+    /// Loads a top-level built-in, calls the sandbox hook, or requests a host import.
     /// `LoadSubmodule` resolves the remaining dotted components.
-    fn load_module(&mut self, module_id: u16) -> CallResult {
+    fn load_module(&mut self, module_id: u16) -> RunResult<CallResult> {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
-            Some(module) => CallResult::Value(Value::Ref(module.create(self))),
-            None => CallResult::OsCall(OsFunctionCall::Import(self.interns.get_str(name_id).to_owned())),
+            Some(module) => Ok(CallResult::Value(Value::Ref(module.create(self)))),
+            None => match self.import_loader()? {
+                Some(loader) => {
+                    let this = self;
+                    defer_drop!(loader, this);
+                    if this.is_function_value(loader) && this.is_plain_sync_function(loader) {
+                        this.call_function(loader, ArgValues::One(Value::InternString(name_id)))
+                    } else {
+                        Err(ExcType::type_error(
+                            "__monty_import__ must be a synchronous sandbox-defined function",
+                        ))
+                    }
+                }
+                None => Ok(CallResult::OsCall(OsFunctionCall::Import(
+                    self.interns.get_str(name_id).to_owned(),
+                ))),
+            },
         }
     }
 

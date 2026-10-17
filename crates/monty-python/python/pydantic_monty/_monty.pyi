@@ -690,7 +690,8 @@ class Monty:
                 `ExternalModule` or a zero-argument factory returning one, called
                 once per session when first needed. The mapping is read live and
                 each entry validated when first imported, so modules may be
-                added later.
+                added later. For non-builtin imports, a sandbox `__monty_import__`
+                hook takes precedence over this mapping, with no host fallback if it fails.
         """
 
 @final

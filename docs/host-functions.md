@@ -299,7 +299,8 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
 
 ## Importing host modules
 
-Imports of unknown modules ask the host for them.
+Imports of unknown modules ask the host for them unless a
+[sandbox import hook](limitations/modules.md#sandbox-import-hook) overrides host imports.
 Pass `external_modules` to `checkout()` (`externalModules` in JavaScript): an imported module stays bound for the
 session, and the mapping is read live, so a module added to it later is importable by later feeds.
 It maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values holding the module's attributes and

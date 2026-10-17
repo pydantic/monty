@@ -81,6 +81,8 @@ export interface CheckoutOptions {
    * Importable host modules for every feed of the session (see [`ExternalModules`]); missing
    * imports raise `ModuleNotFoundError`. The record is read live, each entry validated when a
    * snippet first imports it, so modules may be added later; a factory runs once per session.
+   * For non-builtin imports, a sandbox `__monty_import__` hook takes precedence over `externalModules`,
+   * with no host fallback if the hook fails.
    */
   externalModules?: ExternalModules
   /**

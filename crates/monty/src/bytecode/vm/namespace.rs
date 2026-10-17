@@ -100,6 +100,28 @@ impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
 }
 
 impl VM<'_> {
+    /// Looks up the import hook only in the current frame's globals, never on the host.
+    pub(super) fn import_loader(&mut self) -> RunResult<Option<Value>> {
+        match self.frame_namespace().0 {
+            FrameGlobals::Slots => Ok(self
+                .interns
+                .get_string_id_by_name("__monty_import__")
+                .and_then(|name_id| self.global_names.get(name_id))
+                .and_then(|slot| self.globals.get(slot.index()))
+                .filter(|value| !matches!(value, Value::Undefined))
+                .map(|value| value.clone_with_heap(self.heap))),
+            FrameGlobals::Dict(dict_id) => {
+                let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
+                    return Err(RunError::internal("namespace is not a dict"));
+                };
+                Ok(dict
+                    .get(self.heap)
+                    .get_by_str("__monty_import__", self.heap, self.interns)
+                    .map(|value| value.clone_with_heap(self.heap)))
+            }
+        }
+    }
+
     /// The namespace an `eval()` / `exec()` snippet runs in, from the call's
     /// `globals` / `locals` dicts (owned references, or `None`), and the mode
     /// its top level compiles in.

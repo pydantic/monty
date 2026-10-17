@@ -6,8 +6,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import types
+import unittest
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 from typing import Any
 
 import pytest
@@ -65,6 +67,45 @@ class _Tools:
 def test_import_binds_the_host_module(pool: Monty):
     with pool.checkout(external_modules=MODULES) as session:
         assert session.feed_run(CODE) == snapshot([3, 'ab', 3])
+
+
+class TestSandboxImportHook(unittest.TestCase):
+    def setUp(self) -> None:
+        resources = ExitStack()
+        self.addCleanup(resources.close)
+        self.pool = resources.enter_context(Monty())
+
+    def test_installed_hook__overrides_host_modules_without_fallback(self) -> None:
+        calls: list[str] = []
+
+        def factory() -> ExternalModule:
+            calls.append('tools')
+            return ExternalModule({'VERSION': 3})
+
+        with self.pool.checkout(external_modules={'tools': factory}) as session:
+            result = session.feed_run("""
+class Library:
+    VERSION = 42
+def __monty_import__(name):
+    return Library()
+import tools
+from tools import VERSION
+[tools.VERSION, VERSION]
+""")
+            self.assertEqual([42, 42], result)
+            for exception in ['ModuleNotFoundError', 'ValueError']:
+                with self.subTest(exception=exception):
+                    session.feed_run(f"""
+def __monty_import__(name):
+    raise {exception}('hook refused ' + name)
+""")
+                    with self.assertRaisesRegex(MontyRuntimeError, f'{exception}: hook refused tools'):
+                        session.feed_run('import tools')
+            self.assertEqual([], calls)
+
+        with self.pool.checkout(external_modules={'tools': factory}) as session:
+            self.assertEqual(3, session.feed_run('from tools import VERSION\nVERSION'))
+        self.assertEqual(['tools'], calls)
 
 
 @pytest.mark.parametrize(

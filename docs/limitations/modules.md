@@ -1,8 +1,9 @@
 # Standard library modules
 
 Monty provides a fixed set of stdlib modules.
-Other imports request [host modules](#host-modules) and raise `ModuleNotFoundError` if none is provided.
-There is no `sys.path` or site-packages; sandboxed code cannot load additional modules itself.
+Other imports call an opt-in [sandbox import hook](#sandbox-import-hook) when installed; otherwise they request
+[host modules](#host-modules) and raise `ModuleNotFoundError` if none is provided.
+There is no `sys.path` or site-packages.
 
 `os.path` (also importable as `posixpath`) is the only submodule.
 
@@ -14,6 +15,19 @@ Assigning a bundled module's attributes raises `AttributeError`, as in `sys.x = 
 The one exception is `random`'s module-level generator, which is session
 state: a `random.seed(...)` is still in effect after a later `import random`,
 in the next feed, and after a dump (see [random.md](random.md)).
+
+## Sandbox import hook
+
+A global synchronous sandbox-defined function `__monty_import__(name)` handles non-builtin top-level names.
+`import a.b` loads `a`, then reads `b`; `from a import b` reads an exported attribute.
+Builtins take precedence; the hook overrides `external_modules`. Hook errors propagate without host fallback.
+Async functions, bound methods and other callable objects are rejected with `TypeError`.
+Tracebacks retain hook and `exec` frames, unlike CPython's filtered importlib frames.
+
+The loader owns file access, caching, cycle detection and package discovery; the hook supplies none of these.
+The hook does not make exports immutable.
+Isolated [exec](eval_exec.md) globals must supply the hook for nested imports.
+Relative and wildcard imports remain unsupported; type checking does not infer hook exports.
 
 ## Modules available
 
@@ -85,7 +99,8 @@ typeshed's `abc` declarations.
 
 ## Host modules
 
-Unknown imports request the top-level name through the `import` OS call; `__import__` is undefined.
+Without a sandbox import hook, unknown imports request the top-level name through the `import` OS call;
+`__import__` is undefined.
 Dotted imports such as `import a.b.c` request `a`, then read `b` and `c` as successive attributes.
 Bundled modules that are not packages never request host submodules: `import os.x` raises
 `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package`.
@@ -106,4 +121,4 @@ The host's answer becomes the imported `module` object, with these differences f
     Wrap a class in `ClassType` to send it as a type.
 - Imports with more than 32 dotted components raise `SyntaxError`; `import a.b.c` has three.
 
-With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.
+With no sandbox hook or host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.

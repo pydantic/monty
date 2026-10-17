@@ -82,11 +82,10 @@ exactly, except for the comprehension target restriction in
 
 ## Imports
 
-- Only the bundled stdlib modules listed in [modules.md](modules.md) can be
-    imported. Importing anything else raises `ModuleNotFoundError`.
+- Built-in modules are listed in [modules.md](modules.md); other names use a
+    [sandbox hook](modules.md#sandbox-import-hook) or [host modules](modules.md#host-modules).
 - Relative imports (`from . import x`) raise `ImportError: "attempted relative import with no known parent package"`;
-    there is no package
-    system.
+    there is no filesystem package discovery.
 - `__import__` is not defined.
 
 ## `__future__` imports

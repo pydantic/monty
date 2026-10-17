@@ -305,7 +305,8 @@ code can `await`, and when every task is blocked the run yields [`RunProgress::R
 When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
 result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
-Unknown imports suspend with [`OsFunctionCall::Import`](../api/rust/monty-types.md#osfunctioncall) and the top-level
+Without a [sandbox import hook](../limitations/modules.md#sandbox-import-hook),
+unknown imports suspend with [`OsFunctionCall::Import`](../api/rust/monty-types.md#osfunctioncall) and the top-level
 name.
 The host's answer becomes the module; dotted imports read subsequent components as attributes.
 Hosts usually return a host-backed class instance containing the module's attributes.

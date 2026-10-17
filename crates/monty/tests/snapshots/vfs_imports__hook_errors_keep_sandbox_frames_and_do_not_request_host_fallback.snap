@@ -1,0 +1,13 @@
+---
+source: crates/monty/tests/vfs_imports.rs
+expression: error
+---
+Traceback (most recent call last):
+  File "main.py", line 3, in <module>
+    import library
+    ~~~~~~~~~~~~~~
+  File "main.py", line 2, in __monty_import__
+    exec('raise ModuleNotFoundError(name)', {'name': name})
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: library
