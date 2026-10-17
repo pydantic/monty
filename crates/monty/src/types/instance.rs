@@ -7,7 +7,7 @@ use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
     builtins::Builtins,
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
@@ -141,7 +141,99 @@ impl<'h> HeapRead<'h, Instance> {
     }
 }
 
+/// Defines the one-argument numeric slots, sharing binding and `NotImplemented` handling.
+macro_rules! instance_binary_slots {
+    ($($method:ident => $dunder:literal,)*) => {
+        $(
+            fn $method(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+                let args = ArgValues::One(other.clone_with_heap(vm.heap));
+                call_binary_dunder(self.id(), $dunder, args, vm)
+            }
+        )*
+    };
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
+    fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        instance_call_dunder_sync(self.id(), "__neg__", None, vm)
+    }
+
+    fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        instance_call_dunder_sync(self.id(), "__pos__", None, vm)
+    }
+
+    instance_binary_slots! {
+        py_add_impl => "__add__",
+        py_radd_impl => "__radd__",
+        py_sub_impl => "__sub__",
+        py_rsub_impl => "__rsub__",
+        py_mul_impl => "__mul__",
+        py_rmul_impl => "__rmul__",
+        py_matmul_impl => "__matmul__",
+        py_rmatmul_impl => "__rmatmul__",
+        py_truediv_impl => "__truediv__",
+        py_rtruediv_impl => "__rtruediv__",
+        py_floordiv_impl => "__floordiv__",
+        py_rfloordiv_impl => "__rfloordiv__",
+        py_mod_impl => "__mod__",
+        py_rmod_impl => "__rmod__",
+        py_divmod_impl => "__divmod__",
+        py_rdivmod_impl => "__rdivmod__",
+        py_and_impl => "__and__",
+        py_rand_impl => "__rand__",
+        py_or_impl => "__or__",
+        py_ror_impl => "__ror__",
+        py_xor_impl => "__xor__",
+        py_rxor_impl => "__rxor__",
+        py_lshift_impl => "__lshift__",
+        py_rlshift_impl => "__rlshift__",
+        py_rshift_impl => "__rshift__",
+        py_rrshift_impl => "__rrshift__",
+    }
+
+    fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        call_power_dunder(self.id(), "__pow__", other, modulus, vm)
+    }
+
+    fn py_rpow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        call_power_dunder(self.id(), "__rpow__", other, modulus, vm)
+    }
+
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        let key = key.clone_with_heap(vm.heap);
+        instance_call_dunder_sync(self.id(), "__getitem__", Some(key), vm)?
+            .ok_or_else(|| ExcType::type_error_not_sub(&self.py_type_name(vm)))
+    }
+
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        match call_dunder_args_sync(self.id(), "__setitem__", ArgValues::Two(key, value), vm)? {
+            Some(result) => {
+                result.drop_with(vm);
+                Ok(())
+            }
+            None => Err(ExcType::type_error_not_sub_assignment(&self.py_type_name(vm))),
+        }
+    }
+
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        // A callable instance can itself be the class's __call__; bound native
+        // dispatch must be guarded even when no Python frame is pushed.
+        if let Err(err) = vm.enter_run_reentry() {
+            args.drop_with(vm);
+            return Err(err.into());
+        }
+        let mut guard = RunReentryGuard::new(vm);
+        let vm = &mut *guard;
+        let class_id = self.get(vm.heap).class();
+        if let Some(member) = class_member(class_id, "__call__", vm) {
+            defer_drop!(member, vm);
+            call_member_bound(member, self.id(), args, vm)
+        } else {
+            args.drop_with(vm);
+            Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)))
+        }
+    }
+
     /// Evaluates `item in self` through the class's `__contains__`.
     ///
     /// `None` leaves the caller to fall back to iteration. An explicit
@@ -605,27 +697,63 @@ fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'
     }
 }
 
-/// Calls a zero- or one-argument dunder (`__repr__`, `__next__`,
-/// `__contains__`, ...) on the instance, binding `self` for a plain-function
-/// member. `Ok(None)` if the class does not define it — `arg` is dropped here
-/// in that case, so callers hand over ownership unconditionally.
-///
-/// Synchronous: the callee runs inside `evaluate_function` rather than as a
-/// pushed frame, so — unlike `__enter__` via [`call_member_bound`] — it cannot
-/// suspend on an external/OS call. That is forced by the callers' signatures,
-/// which must hand a `Value` straight back; see `limitations/classes.md`.
+/// Calls a zero- or one-argument dunder using class-only lookup and descriptor binding.
+/// Returns `Ok(None)` if absent, consuming `arg` on every path.
+/// Runs synchronously via `evaluate_function`: external/OS calls cannot suspend,
+/// unlike `__call__` and `__enter__` via [`call_member_bound`].
 pub(crate) fn instance_call_dunder_sync(
     self_id: HeapId,
     dunder: &'static str,
     arg: Option<Value>,
     vm: &mut VM<'_>,
 ) -> RunResult<Option<Value>> {
+    let args = arg.map_or(ArgValues::Empty, ArgValues::One);
+    call_dunder_args_sync(self_id, dunder, args, vm)
+}
+
+/// Calls a synchronous special method, consuming its arguments even when absent.
+fn call_dunder_args_sync(
+    self_id: HeapId,
+    dunder: &'static str,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<Value>> {
     let class_id = instance_class(self_id, vm);
-    let Some(func) = class_member(class_id, dunder, vm) else {
-        arg.drop_with(vm);
-        return Ok(None);
+    if let Some(func) = class_member(class_id, dunder, vm) {
+        call_dunder_member(self_id, dunder, func, args, vm).map(Some)
+    } else {
+        args.drop_with(vm);
+        Ok(None)
+    }
+}
+
+/// Numeric binary slots alone translate `NotImplemented` into reflected fallback.
+fn call_binary_dunder(
+    self_id: HeapId,
+    dunder: &'static str,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<Value>> {
+    Ok(match call_dunder_args_sync(self_id, dunder, args, vm)? {
+        Some(Value::NotImplemented) => None,
+        result => result,
+    })
+}
+
+/// Passes a power slot its original operands, omitting a `None` modulus.
+fn call_power_dunder(
+    self_id: HeapId,
+    dunder: &'static str,
+    other: &Value,
+    modulus: Option<&Value>,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<Value>> {
+    let other = other.clone_with_heap(vm.heap);
+    let args = match modulus {
+        Some(modulus) => ArgValues::Two(other, modulus.clone_with_heap(vm.heap)),
+        None => ArgValues::One(other),
     };
-    call_dunder_member(self_id, dunder, func, arg, vm).map(Some)
+    call_binary_dunder(self_id, dunder, args, vm)
 }
 
 /// As [`instance_call_dunder_sync`], but a `None` member counts as absent.
@@ -648,7 +776,9 @@ pub(crate) fn instance_call_copy_hook(
             arg.drop_with(vm);
             Ok(None)
         }
-        Some(func) => call_dunder_member(self_id, dunder, func, arg, vm).map(Some),
+        Some(func) => {
+            call_dunder_member(self_id, dunder, func, arg.map_or(ArgValues::Empty, ArgValues::One), vm).map(Some)
+        }
     }
 }
 
@@ -657,7 +787,7 @@ fn call_dunder_member(
     self_id: HeapId,
     dunder: &'static str,
     func: Value,
-    arg: Option<Value>,
+    args: ArgValues,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     defer_drop!(func, vm);
@@ -666,16 +796,9 @@ fn call_dunder_member(
     // method or other callable value is invoked without it.
     let args = if is_method_value(func, vm) {
         vm.heap.inc_ref(self_id);
-        let this = Value::Ref(self_id);
-        match arg {
-            Some(arg) => ArgValues::Two(this, arg),
-            None => ArgValues::One(this),
-        }
+        args.prepend(Value::Ref(self_id))
     } else {
-        match arg {
-            Some(arg) => ArgValues::One(arg),
-            None => ArgValues::Empty,
-        }
+        args
     };
     vm.evaluate_function(dunder, func, args)
 }

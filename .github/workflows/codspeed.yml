@@ -10,17 +10,63 @@ on:
 permissions:
   contents: read
 
+env:
+  SAVE_CI_CACHE: ${{ github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Save CI cache') }}
+
 jobs:
+  build-worker:
+    name: Build release worker
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: manylinux_2_28
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Artifacts are only used for benchmarks in this workflow run
+          cache-on-failure: true
+          cache-workspace-crates: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
+
+      # Build on the faster runner, but target a glibc baseline supported by the
+      # Ubuntu 22.04 measurement runner. Keep release codegen, without PGO.
+      - name: Build release worker wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: aarch64
+          manylinux: manylinux_2_28
+          args: --release --out dist
+          rust-toolchain: stable
+          working-directory: crates/monty-runtime
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codspeed-worker
+          path: crates/monty-runtime/dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
   benchmarks:
     name: Run benchmarks (${{ matrix.mode }})
+    needs: [build-worker]
     strategy:
       fail-fast: false
       matrix:
         include:
           - mode: walltime
             runner: codspeed-macro-arm64-graviton-ubuntu-22-04
+            # Fixed glibc malloc thresholds, see "Run benchmarks" below.
+            glibc_tunables: glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=67108864
           - mode: memory
             runner: ubuntu-24.04-arm
+            glibc_tunables: ''
     # CodSpeed's bare-metal Graviton macro runner, for walltime measurement. Pinned
     # rather than `codspeed-macro` so the baseline stays on the same hardware,
     # see https://codspeed.io/docs/features/macro-runners
@@ -43,6 +89,9 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
+          key: ${{ matrix.mode }}
+          cache-workspace-crates: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -54,14 +103,17 @@ jobs:
       - name: Install cargo-codspeed
         run: cargo install cargo-codspeed --version 5.0.1 --locked
 
-      # The `pool` bench's workers run the `monty` CLI. Build it in RELEASE so
-      # the workers are optimized (a debug interpreter would make the pool
-      # numbers meaningless), and point the bench at it via MONTY_TEST_BIN so it
-      # resolves the binary instead of shelling out to `cargo build` mid-run.
-      # (Walltime measurement counts the worker children too, so the pool
-      # benches measure end-to-end spawn/checkout/round-trip latency.)
-      - name: Build the monty worker binary
-        run: cargo build -p monty-runtime --release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: codspeed-worker
+          path: worker-wheels
+
+      # MONTY_TEST_BIN prevents the pool benchmarks from building a worker mid-run.
+      # Both measurement modes use the same optimized worker from this workflow run.
+      - name: Install the release worker
+        run: |
+          python -m venv worker
+          worker/bin/python -m pip install --no-deps worker-wheels/*.whl
 
       # No `--bench` filter: build and run every monty-bench target. The
       # `codspeed` profile (root Cargo.toml) is release codegen — fat LTO,
@@ -72,6 +124,18 @@ jobs:
       - name: Build benchmarks
         run: cargo codspeed build -m ${{ matrix.mode }} -p monty-bench --profile codspeed --features codspeed
 
+      # Every benchmark in a target runs in one process, so glibc's malloc
+      # state carries over between them. By default glibc raises its mmap and
+      # trim thresholds on the fly, based on what has been freed so far, so a
+      # benchmark's cost depended on which benchmarks ran before it: with a
+      # low trim threshold, freeing the heap at the end of each iteration
+      # gives the memory back to the OS (`systrim`) and the next iteration
+      # page-faults it in again (pair_tuples went from 38 ms to 51 ms when
+      # unrelated benchmarks were removed). Setting the thresholds turns the
+      # dynamic adjustment off. The values are the ceilings the heuristic
+      # reaches in a long-running process (32 MiB mmap, twice that for trim).
+      # Walltime only: memory mode counts allocations, which these don't change.
+      #
       # ASLR picks one of several memory layouts per process, which moves the
       # allocation-heavy benchmarks 10-40% between runs of identical code. The
       # `-R` personality is inherited by the pool's worker children too.
@@ -82,4 +146,5 @@ jobs:
           mode: ${{ matrix.mode }}
           run: setarch $(uname -m) -R cargo codspeed run -p monty-bench
         env:
-          MONTY_TEST_BIN: ${{ github.workspace }}/target/release/monty
+          MONTY_TEST_BIN: ${{ github.workspace }}/worker/bin/monty
+          GLIBC_TUNABLES: ${{ matrix.glibc_tunables }}

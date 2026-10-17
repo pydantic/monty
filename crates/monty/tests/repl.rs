@@ -958,6 +958,68 @@ fn repl_hasattr_getattr_lookup_effects_survive_dump() {
     );
 }
 
+/// A class pattern on a host object reads each attribute as its own lookup:
+/// an eager attribute (`x`) is served locally, a lazy one suspends to the host,
+/// where a served value matches and `Undefined` fails the case, and the
+/// suspended pattern survives a dump/restore mid-way through.
+#[test]
+fn repl_class_pattern_host_lookup_suspends_and_resumes() {
+    let point = MontyObject::class_instance(
+        host_point_class_type("Point", []),
+        MontyUuid::from_u128(42),
+        [(MontyObject::string("x".to_owned()), MontyObject::int(1))],
+    );
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+    let code = [
+        "Point = point.__class__",
+        "results = []",
+        "match point:",
+        "    case Point(x=x, nope=n):",
+        "        results.append(('nope', x, n))",
+        "    case Point(x=x, dims=d, depth=z):",
+        "        results.append(('dims', x, d, z))",
+        "    case Point():",
+        "        results.append('bare')",
+        "results",
+    ]
+    .join("\n");
+    let mut progress = repl
+        .feed_start(&code, vec![("point".to_string(), point)], PrintWriter::Stdout)
+        .unwrap();
+    // (name, answer, round-trip through the dump format first)
+    let steps = [
+        ("nope", NameLookupResult::Undefined, false),
+        ("dims", NameLookupResult::Value(MontyObject::int(2)), true),
+        ("depth", NameLookupResult::Value(MontyObject::int(3)), false),
+    ];
+    for (name, answer, round_trip) in steps {
+        let progress_in = if round_trip {
+            let restored = round_trip_progress(&progress);
+            drop(progress.into_name_lookup().unwrap().into_repl());
+            restored
+        } else {
+            progress
+        };
+        let lookup = progress_in
+            .into_name_lookup()
+            .expect("expected a lazy attribute lookup");
+        assert_eq!(lookup.name, name);
+        assert_eq!(lookup.object_id(), Some(MontyUuid::from_u128(42)));
+        progress = lookup.resume(answer, PrintWriter::Stdout).unwrap();
+    }
+    let (mut repl, value) = progress.into_complete().expect("expected completion");
+    assert_eq!(
+        value,
+        MontyObject::list([MontyObject::tuple([
+            MontyObject::string("dims".to_owned()),
+            MontyObject::int(1),
+            MontyObject::int(2),
+            MontyObject::int(3),
+        ])])
+    );
+    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::int(2));
+}
+
 /// A lazy lookup answered with a host exception raises it where the
 /// attribute was read: `hasattr()` / `getattr()` defaults only cover
 /// `Undefined` (CPython swallows only `AttributeError` there), so the error

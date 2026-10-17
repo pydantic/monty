@@ -29,13 +29,25 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 	uvx prek install --install-hooks
 
 .PHONY: dev-py
-dev-py: install-py ## Install python packages for development
+dev-py: dev-py-runtime dev-py-bindings ## Install python packages for development
+
+.PHONY: dev-py-runtime
+dev-py-runtime: install-py ## Install the debug worker for Python development
 	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml
+
+.PHONY: dev-py-bindings
+dev-py-bindings: install-py ## Install debug Python bindings without rebuilding the worker
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
 .PHONY: dev-py-release
-dev-py-release: install-py ## Install python packages for development with a release build
+dev-py-release: dev-py-runtime-release dev-py-bindings-release ## Install python packages for development with a release build
+
+.PHONY: dev-py-runtime-release
+dev-py-runtime-release: install-py ## Install the release worker for Python development
 	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
+
+.PHONY: dev-py-bindings-release
+dev-py-bindings-release: install-py ## Install release Python bindings without rebuilding the worker
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: build-js

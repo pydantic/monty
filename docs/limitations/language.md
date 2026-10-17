@@ -23,7 +23,6 @@ any code runs.
     *expressions* (`(x for x in ...)`) parse but currently materialize to a
     `list` rather than a lazy iterator, a known temporary divergence; see
     `iter__generator_expr_type.py`.
-- **`match` statements** — structural pattern matching is not supported.
 - **`del` statements** — neither `del x` nor `del d[k]` parse.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
