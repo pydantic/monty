@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 # === match statements inside async functions, with await in guards and bodies ===
 import asyncio
 
