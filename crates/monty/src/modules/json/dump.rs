@@ -87,30 +87,20 @@ impl JsonDumpsConfig {
     /// (with the "JSONEncoder.__init__" prefix that matches CPython's error
     /// wording). This method only translates the raw `Value` slots into the
     /// concrete encoder options used by the serializer.
-    fn from_kwargs(kwargs: EncoderKwargs, vm: &mut VM<'_>) -> RunResult<Self> {
-        let EncoderKwargs {
-            indent,
-            sort_keys,
-            ensure_ascii,
-            allow_nan,
-            separators,
-            skipkeys,
-        } = kwargs;
-
+    fn from_kwargs(kwargs: &EncoderKwargs, vm: &mut VM<'_>) -> RunResult<Self> {
         let mut config = Self::default();
 
-        let indent = parse_indent_value(indent, vm)?;
-        config.indent = indent;
+        config.indent = parse_indent_value(&kwargs.indent, vm)?;
 
-        config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, sort_keys, vm)?;
-        config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, ensure_ascii, vm)?;
-        config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, allow_nan, vm)?;
-        config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, skipkeys, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, &kwargs.sort_keys, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, &kwargs.ensure_ascii, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, &kwargs.allow_nan, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, &kwargs.skipkeys, vm)?;
 
         // `separators=None` is documented as equivalent to "use the indent-
         // aware defaults", so we only override the per-instance separators
         // when `parse_separators_value` actually returned a pair.
-        let separators_were_set = if let Some((item, key)) = parse_separators_value(separators, vm)? {
+        let separators_were_set = if let Some((item, key)) = parse_separators_value(&kwargs.separators, vm)? {
             config.item_separator = item;
             config.key_separator = key;
             true
@@ -128,8 +118,8 @@ impl JsonDumpsConfig {
 }
 
 /// The encoder keyword arguments as bound by [`JsonDumpsArgs`] / [`JsonDumpArgs`],
-/// before [`JsonDumpsConfig::from_kwargs`] coerces them. Every field holds a
-/// value the config builder consumes, so it is never dropped as a whole.
+/// before [`JsonDumpsConfig::from_kwargs`] coerces them. Callers hold it under
+/// `defer_drop!` so a coercion error part-way through releases every field.
 struct EncoderKwargs {
     indent: Value,
     sort_keys: Value,
@@ -137,6 +127,17 @@ struct EncoderKwargs {
     allow_nan: Value,
     separators: Value,
     skipkeys: Value,
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for EncoderKwargs {
+    fn drop_with(self, ctx: &mut C) {
+        self.indent.drop_with(ctx);
+        self.sort_keys.drop_with(ctx);
+        self.ensure_ascii.drop_with(ctx);
+        self.allow_nan.drop_with(ctx);
+        self.separators.drop_with(ctx);
+        self.skipkeys.drop_with(ctx);
+    }
 }
 
 /// Implements `json.dumps(obj, **kwargs)`.
@@ -167,6 +168,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         separators,
         skipkeys,
     };
+    defer_drop!(kwargs, vm);
     let config = JsonDumpsConfig::from_kwargs(kwargs, vm)?;
     let output = encode(obj, &config, vm)?;
     Ok(allocate_string(output, vm.heap))
@@ -202,6 +204,7 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
         separators,
         skipkeys,
     };
+    defer_drop!(kwargs, vm);
     let config = JsonDumpsConfig::from_kwargs(kwargs, vm)?;
 
     let early_target = if is_container(obj, vm) {
@@ -300,11 +303,9 @@ struct JsonDumpArgs {
     skipkeys: Value,
 }
 
-/// Sets `bit` in `flags` when `value` is truthy, clearing it otherwise. The
-/// value is dropped afterwards. Used by the json.dumps kwarg pipeline so each
+/// Sets `bit` in `flags` when `value` is truthy, clearing it otherwise. Used by the json.dumps kwarg pipeline so each
 /// boolean-style flag is handled with a single line.
-fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_>) -> RunResult<u8> {
-    defer_drop!(value, vm);
+fn apply_bool_flag(flags: u8, bit: u8, value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
     if value.py_bool(vm)? {
         Ok(flags | bit)
     } else {
@@ -318,9 +319,7 @@ fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_>) -> RunResu
 /// spaces per nesting level (with zero and negative values enabling newline-
 /// only pretty printing), and
 /// strings are repeated once per depth level exactly like CPython.
-fn parse_indent_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
-    defer_drop!(value, vm);
-
+fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
     match value {
         Value::None => Ok(None),
         Value::Bool(flag) => Ok(Some(" ".repeat(usize::from(*flag)))),
@@ -328,9 +327,12 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<String>
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
-            HeapReadOutput::LongInt(long_int) => {
-                spaces_from_indent_count(long_int.get(vm.heap).to_i64().ok_or_else(ExcType::overflow_c_ssize_t)?)
-            }
+            HeapReadOutput::LongInt(long_int) => spaces_from_indent_count(
+                long_int
+                    .get(vm.heap)
+                    .to_i64()
+                    .ok_or_else(ExcType::overflow_index_sized_int)?,
+            ),
             _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
         },
         _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
@@ -347,7 +349,7 @@ fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
     } else {
         match usize::try_from(count) {
             Ok(count) => Ok(Some(" ".repeat(count))),
-            Err(_) => Err(ExcType::overflow_c_ssize_t()),
+            Err(_) => Err(ExcType::overflow_index_sized_int().into()),
         }
     }
 }
@@ -356,9 +358,7 @@ fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
 ///
 /// `None` leaves the default separators intact. Otherwise the value must be a
 /// two-item list or tuple of strings representing the item and key separators.
-fn parse_separators_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<(String, String)>> {
-    defer_drop!(value, vm);
-
+fn parse_separators_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<(String, String)>> {
     if matches!(value, Value::None) {
         return Ok(None);
     }

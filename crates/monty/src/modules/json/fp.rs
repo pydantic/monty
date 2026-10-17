@@ -9,7 +9,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapId, HeapReadOutput},
     intern::StaticStrings,
     types::str::allocate_string,
@@ -31,16 +31,23 @@ impl FileTarget {
     }
 
     /// Resolves `fp` for `json.dump`, running the checks `fp.write(str)` makes
-    /// before reaching the host (text mode, open, writable) so they are
-    /// raised before the document is encoded, as CPython's first chunk would.
+    /// before reaching the host (text mode, open, writable; a callable `write`
+    /// otherwise) so they are raised before the document is encoded, as
+    /// CPython's first chunk would.
     pub(super) fn writer(fp: &Value, vm: &mut VM<'_>) -> RunResult<Self> {
-        let target = Self::resolve(fp, StaticStrings::Write, vm)?;
-        if let Self::OpenFile(file_id) = target
-            && let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id)
-        {
-            file.check_text_write(vm)?;
+        match Self::resolve(fp, StaticStrings::Write, vm)? {
+            Self::OpenFile(file_id) => {
+                if let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) {
+                    file.check_text_write(vm)?;
+                }
+                Ok(Self::OpenFile(file_id))
+            }
+            Self::Method(write) if write.is_callable(vm.heap) => Ok(Self::Method(write)),
+            Self::Method(write) => {
+                defer_drop!(write, vm);
+                Err(ExcType::type_error_not_callable_object(&write.py_type_name(vm)))
+            }
         }
-        Ok(target)
     }
 
     /// `fp.write(text)` for `json.dump`: the host write for an `open()` handle

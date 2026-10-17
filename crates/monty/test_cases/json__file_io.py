@@ -218,6 +218,19 @@ except TypeError as exc:
     assert str(exc) == "'int' object is not callable"
 
 
+class BadWriter:
+    write = 5
+
+
+# a container's `[` reaches CPython's `fp.write` before its bad element fails to encode
+for obj in [[{1}], {'a': {1}}, 1]:
+    try:
+        json.dump(obj, BadWriter())
+        assert False, 'expected a non-callable write to fail'
+    except TypeError as exc:
+        assert str(exc) == "'int' object is not callable"
+
+
 class Writer:
     def __init__(self):
         self.chunks = []

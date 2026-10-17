@@ -2187,8 +2187,12 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {
                 apply_buffer_store(file_id, value, self).map(Some)
             }
+            // Parsing runs outside `run_external`, so it needs its own execution-clock window.
             Some(PendingEffect::Post(PostConversionEffect::JsonLoad { file_id })) => {
-                apply_json_load(file_id, value, self).map(Some)
+                self.heap.tracker.on_execution_start();
+                let parsed = apply_json_load(file_id, value, self);
+                self.heap.tracker.on_execution_stop();
+                parsed.map(Some)
             }
             // Answers nothing: the `ForIter` that asked for the load re-dispatches.
             Some(PendingEffect::Post(PostConversionEffect::BufferLoad { file_id })) => {

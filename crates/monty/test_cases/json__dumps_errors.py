@@ -51,6 +51,14 @@ try:
 except TypeError as exc:
     assert str(exc) == 'make_encoder() argument 5 must be str, not int'
 
+# === indent errors ===
+# the heap-backed kwargs after `indent` are released when it fails
+try:
+    json.dumps({'a': 1}, indent=10**30, sort_keys=[1], allow_nan=[2], separators=[',', ':'])
+    assert False, 'huge indent should raise OverflowError'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+
 # === unexpected keyword argument ===
 try:
     json.dumps(None, foobar_not_static=True)

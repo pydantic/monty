@@ -15,8 +15,8 @@ keyword is rejected.
 - **No keyword arguments are accepted.** Passing any of `cls`,
     `object_hook`, `parse_float`, `parse_int`, `parse_constant`, or
     `object_pairs_hook` raises
-    `TypeError: JSONDecoder.__init__() got an unexpected keyword argument '...'`,
-    the message CPython gives a keyword the decoder does not know.
+    `TypeError: JSONDecoder.__init__() got an unexpected keyword argument '...'`.
+    CPython accepts all six and uses this message only for a keyword the decoder does not know.
 - `NaN`, `Infinity`, `-Infinity` are *always* accepted, with no toggle to
     reject them.
 - Nesting depth is capped at 200 levels; deeper inputs raise
@@ -29,9 +29,10 @@ keyword is rejected.
 
 `json.load(fp)` is `json.loads(fp.read())` and takes the same keyword policy as
 `loads`. A file from `open()` or `Path.open()` is read to EOF through the file's
-own buffering, so `load` suspends to the host only when nothing has been read
-from the file yet and sees the same errors as `fp.read()` (`ValueError` on a
-closed file, `io.UnsupportedOperation: not readable` on a write-only one).
+own buffering, so `load` suspends to the host only when the buffer has not
+been loaded yet by a read, `seek()` or iteration step (see [open.md](open.md)).
+It sees the same errors as `fp.read()` (`ValueError` on a closed file,
+`io.UnsupportedOperation: not readable` on a write-only one).
 
 Any other object has its `read` attribute called synchronously, with the
 restrictions of a synchronous call (see [classes.md](classes.md)): a `read`
