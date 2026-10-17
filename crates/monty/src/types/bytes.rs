@@ -87,7 +87,7 @@ use crate::{
     percent_format::{copy_bytes_template, percent_format_bytes},
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
-        List,
+        SpecializedList,
         long_int::repeat_count,
         slice::{optional_sequence_bound, slice_collect_iterator},
     },
@@ -1329,8 +1329,8 @@ fn bytes_split<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         list_items.push(allocate_bytes(part.to_vec(), vm.heap));
     }
 
-    let list = List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
+    let list = SpecializedList::new(list_items);
+    let heap_id = vm.heap.allocate(HeapData::SpecializedList(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1370,8 +1370,8 @@ fn bytes_rsplit<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
         list_items.push(allocate_bytes(part.to_vec(), vm.heap));
     }
 
-    let list = List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
+    let list = SpecializedList::new(list_items);
+    let heap_id = vm.heap.allocate(HeapData::SpecializedList(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1629,8 +1629,8 @@ fn bytes_splitlines<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM
     }
 
     let (lines, vm) = lines_guard.into_parts();
-    let list = List::new(lines);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
+    let list = SpecializedList::new(lines);
+    let heap_id = vm.heap.allocate(HeapData::SpecializedList(list));
     Ok(Value::Ref(heap_id))
 }
 

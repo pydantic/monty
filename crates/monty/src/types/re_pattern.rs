@@ -24,7 +24,7 @@ use crate::{
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
     types::{
-        LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
+        LazyHeapSet, PyTrait, ReMatch, SpecializedList, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
@@ -348,8 +348,8 @@ impl RePattern {
             results.push(self.build_match(&caps, subject, all_ascii, heap));
         }
 
-        let list = List::new(results);
-        Ok(Value::Ref(heap.allocate(HeapData::List(list))))
+        let list = SpecializedList::new(results);
+        Ok(Value::Ref(heap.allocate(HeapData::SpecializedList(list))))
     }
 }
 
@@ -394,7 +394,9 @@ fn collect_slices<'t>(
 fn allocate_str_list(slices: &[&str], heap: &Heap) -> RunResult<Value> {
     heap.tracker.check_allocation(slices.len().saturating_mul(VALUE_SIZE))?;
     let results = slices.iter().map(|s| allocate_string(*s, heap)).collect();
-    Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
+    Ok(Value::Ref(
+        heap.allocate(HeapData::SpecializedList(SpecializedList::new(results))),
+    ))
 }
 
 /// [`allocate_str_list`] for rows of `groups` slices, one tuple per row.
@@ -408,7 +410,9 @@ fn allocate_tuple_list(flat: &[&str], groups: usize, heap: &Heap) -> RunResult<V
             allocate_tuple(elements, heap)
         })
         .collect();
-    Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
+    Ok(Value::Ref(
+        heap.allocate(HeapData::SpecializedList(SpecializedList::new(results))),
+    ))
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {

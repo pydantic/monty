@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
     resource_checks::check_repeat_size,
-    types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
+    types::{Dict, PyTrait, SpecializedList, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
     value::{VALUE_SIZE, Value},
 };
 
@@ -399,7 +399,7 @@ pub(crate) fn counter_most_common<'h>(
 
     // CPython's `heapq.nlargest(0, ...)` returns before comparing anything.
     if limit == Some(0) {
-        return Ok(vm.heap.allocate_as(List::new(Vec::new())).into_value());
+        return Ok(vm.heap.allocate_as(SpecializedList::new(Vec::new())).into_value());
     }
     // Snapshot the entries before ordering: comparing counts can run a user
     // `__eq__` that mutates the Counter, so the ordered indices must refer to
@@ -425,7 +425,7 @@ pub(crate) fn counter_most_common<'h>(
             )
         })
         .collect();
-    Ok(vm.heap.allocate_as(List::new(items)).into_value())
+    Ok(vm.heap.allocate_as(SpecializedList::new(items)).into_value())
 }
 
 /// `Counter.elements()` — a list repeating each element by its count, skipping
@@ -466,7 +466,7 @@ pub(crate) fn counter_elements<'h>(
             items.push(key.clone_with_heap(vm.heap));
         }
     }
-    Ok(vm.heap.allocate_as(List::new(items)).into_value())
+    Ok(vm.heap.allocate_as(SpecializedList::new(items)).into_value())
 }
 
 /// The four binary `Counter` algebra operators.

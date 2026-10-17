@@ -6,7 +6,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData},
     sorting::parse_and_sort,
-    types::{List, iter::collect_owned_iterable},
+    types::{SpecializedList, iter::collect_owned_iterable},
     value::Value,
 };
 
@@ -42,6 +42,6 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     parse_and_sort("sorted() key argument", items, sort_args, vm)?;
 
     let (items, vm) = items_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
+    let heap_id = vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(items)));
     Ok(Value::Ref(heap_id))
 }

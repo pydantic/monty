@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::DropGuard,
+    heap::{DropGuard, HeapReadOutput},
     types::{PyTrait, Type},
     value::Value,
 };
@@ -34,6 +34,14 @@ pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
 
+    let mut iterable_guard = DropGuard::new(iterable, vm);
+    let (iterable, vm) = iterable_guard.as_parts_mut();
+    if let Some(HeapReadOutput::SpecializedList(list)) = iterable.read_heap(vm)
+        && let Some(result) = list.sum(start, vm)?
+    {
+        return Ok(result);
+    }
+    let (iterable, vm) = iterable_guard.into_parts();
     let iter = iterable.into_py_iter(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);

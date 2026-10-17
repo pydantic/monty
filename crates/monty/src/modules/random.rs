@@ -36,7 +36,7 @@ use crate::{
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
-        List, LongInt, Module, PyTrait, Type,
+        LongInt, Module, PyTrait, SpecializedList, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
@@ -766,9 +766,19 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             for i in (1..len).rev() {
                 vm.heap.tracker.check_time_every(i)?;
                 let j = index_value(random.rng().randbelow(i as u128 + 1, &vm.heap.tracker)?);
-                list.get_mut(vm.heap)
-                    .as_vec_mut()
-                    .swap(i, usize::try_from(j).expect("j <= i"));
+                list.get_mut(vm.heap).swap(i, usize::try_from(j).expect("j <= i"));
+            }
+            Ok(Value::None)
+        });
+    }
+    if let Value::Ref(id) = x
+        && let HeapReadOutput::SpecializedList(mut list) = vm.heap.read(*id)
+    {
+        return target.with_generator(vm, |random, vm| {
+            for i in (1..len).rev() {
+                vm.heap.tracker.check_time_every(i)?;
+                let j = index_value(random.rng().randbelow(i as u128 + 1, &vm.heap.tracker)?);
+                list.get_mut(vm.heap).swap(i, usize::try_from(j).expect("j <= i"));
             }
             Ok(Value::None)
         });
@@ -847,7 +857,9 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
             .map(|s| bisect_right(&cum_counts, i128::try_from(s).expect("selection below total")));
         collect_items(population, indices, vm)?
     };
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(picks)))))
+    Ok(Value::Ref(
+        vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(picks))),
+    ))
 }
 
 /// The positions `sample` picks from a population of `n` — the whole
@@ -1040,7 +1052,9 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
         }
     };
     let picks = collect_items(population, indices.into_iter(), vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(picks)))))
+    Ok(Value::Ref(
+        vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(picks))),
+    ))
 }
 
 /// `list(accumulate(weights))` for `choices`, as floats.

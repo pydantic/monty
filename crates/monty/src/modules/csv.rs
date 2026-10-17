@@ -23,7 +23,7 @@ use crate::{
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
     types::{
-        CsvObject, List, Module, PyTrait, Type,
+        CsvObject, Module, PyTrait, SpecializedList, Type,
         csv::{
             DIALECT_NAMES, Dialect, DictReader, DictWriter, FIELD_SIZE_LIMIT, FmtParams, Quoting, Reader, Writer,
             write_method,
@@ -263,7 +263,9 @@ fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .iter()
         .map(|name| allocate_string(*name, vm.heap))
         .collect();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(names)))))
+    Ok(Value::Ref(
+        vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(names))),
+    ))
 }
 
 /// `get_dialect(name)`: Argument Clinic, so `name` may be a keyword.
@@ -472,7 +474,7 @@ fn materialize_fieldnames(fieldnames: &mut Value, vm: &mut VM<'_>) -> RunResult<
     defer_drop!(iterator, vm);
     if iterator.is(fieldnames) {
         let names = collect_iterable(fieldnames, vm)?;
-        let list = Value::Ref(vm.heap.allocate(HeapData::List(List::new(names))));
+        let list = Value::Ref(vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(names))));
         mem::replace(fieldnames, list).drop_with(vm);
     }
     Ok(())

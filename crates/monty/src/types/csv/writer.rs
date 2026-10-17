@@ -405,7 +405,18 @@ fn is_file(value: &Value, vm: &VM<'_>) -> bool {
 fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     let direct = match row {
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::List(list) => Some(list.as_slice()),
+            HeapData::List(list) => {
+                vm.heap
+                    .tracker
+                    .check_allocation(list.len().saturating_mul(VALUE_SIZE))?;
+                return Ok(list.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
+            }
+            HeapData::SpecializedList(list) => {
+                vm.heap
+                    .tracker
+                    .check_allocation(list.len().saturating_mul(VALUE_SIZE))?;
+                return Ok(list.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
+            }
             HeapData::Tuple(tuple) => Some(tuple.as_slice()),
             _ => None,
         },

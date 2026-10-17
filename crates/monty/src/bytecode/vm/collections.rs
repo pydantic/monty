@@ -1,5 +1,7 @@
 //! Collection building and unpacking helpers for the VM.
 
+use std::mem;
+
 use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
@@ -7,7 +9,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
     intern::StringId,
     types::{
-        Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
+        Dict, PyTrait, Set, Slice, SpecializedList, allocate_tuple, collect_iterable, collect_iterable_bounded,
         instance::instance_defines_iter, slice::value_to_option_i64,
     },
     value::{VALUE_SIZE, Value},
@@ -17,8 +19,8 @@ impl VM<'_> {
     /// Builds a list from the top n stack values.
     pub(super) fn build_list(&mut self, count: usize) {
         let items = self.pop_n(count);
-        let list = List::new(items);
-        let heap_id = self.heap.allocate(HeapData::List(list));
+        let list = SpecializedList::new(items);
+        let heap_id = self.heap.allocate(HeapData::SpecializedList(list));
         self.push(Value::Ref(heap_id));
     }
 
@@ -138,20 +140,13 @@ impl VM<'_> {
             let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
             defer_drop_mut!(copied_items, this);
 
-            // Check if any copied items are refs (for updating contains_refs)
-            let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
-
             // Extend the list
             if let Value::Ref(id) = list_ref {
-                let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
-                    panic!("list_extend: expected List on heap");
-                };
-                let list = list.get_mut(this.heap);
-                // Update contains_refs before extending
-                if has_refs {
-                    list.set_contains_refs();
+                match this.heap.read(*id) {
+                    HeapReadOutput::List(mut list) => list.extend_items(this, mem::take(copied_items))?,
+                    HeapReadOutput::SpecializedList(mut list) => list.extend_items(this, mem::take(copied_items))?,
+                    _ => panic!("list_extend: expected List on heap"),
                 }
-                list.as_vec_mut().append(copied_items);
             }
         }
 
@@ -173,10 +168,11 @@ impl VM<'_> {
         let Value::Ref(id) = list_ref else {
             return Err(RunError::internal("ListToTuple: expected list ref"));
         };
-        let HeapData::List(list) = this.heap.get(*id) else {
-            return Err(RunError::internal("ListToTuple: expected list"));
+        let items = match this.heap.get(*id) {
+            HeapData::List(list) => list.iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+            HeapData::SpecializedList(list) => list.iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+            _ => return Err(RunError::internal("ListToTuple: expected list")),
         };
-        let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
         let value = allocate_tuple(items, this.heap);
         this.push(value);
         Ok(())
@@ -417,11 +413,14 @@ impl VM<'_> {
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
 
-        let HeapReadOutput::List(mut list) = self.heap.read(list_id) else {
-            value.drop_with(self);
-            return Err(RunError::internal("ListAppend: expected list on heap"));
-        };
-        list.append(self, value)
+        match self.heap.read(list_id) {
+            HeapReadOutput::List(mut list) => list.append(self, value),
+            HeapReadOutput::SpecializedList(mut list) => list.append(self, value),
+            _ => {
+                value.drop_with(self);
+                Err(RunError::internal("ListAppend: expected list on heap"))
+            }
+        }
     }
 
     /// Adds TOS to set for comprehension.
@@ -568,7 +567,9 @@ impl VM<'_> {
 
         // Middle items as a list (starred target)
         let middle_list: Vec<Value> = items.drain(before..).collect();
-        let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)));
+        let list_id = this
+            .heap
+            .allocate(HeapData::SpecializedList(SpecializedList::new(middle_list)));
         this.push(Value::Ref(list_id));
 
         // Before items
@@ -599,6 +600,26 @@ fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
 /// Python unpack (`random.setstate`). Consumes at most `count + 1` items, so an
 /// endless iterable still fails.
 pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+    if let Value::Ref(id) = value
+        && let HeapData::List(list) = vm.heap.get(*id)
+    {
+        if list.len() != count {
+            return Err(unpack_size_error(count, list.len()));
+        }
+        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
+        return Ok(list.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
+    }
+
+    if let Value::Ref(id) = value
+        && let HeapData::SpecializedList(list) = vm.heap.get(*id)
+    {
+        if list.len() != count {
+            return Err(unpack_size_error(count, list.len()));
+        }
+        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
+        return Ok(list.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
+    }
+
     // Fast path: tuple, list; unpack without iterator.
     if let Some(items) = exact_sequence_items(value, vm.heap) {
         if items.len() != count {
@@ -648,7 +669,6 @@ fn exact_sequence_items<'a>(value: &Value, heap: &'a Heap) -> Option<&'a [Value]
     };
     match heap.get(*id) {
         HeapData::Tuple(tuple) => Some(tuple.as_slice()),
-        HeapData::List(list) => Some(list.as_slice()),
         _ => None,
     }
 }

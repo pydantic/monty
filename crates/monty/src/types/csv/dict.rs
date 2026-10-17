@@ -13,7 +13,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput},
     string_builder::StringBuilder,
     types::{
-        CsvObject, Dict, List, PyTrait, Set,
+        CsvObject, Dict, PyTrait, Set, SpecializedList,
         csv::{
             Dialect,
             writer::{terminator_chars, writerow_now},
@@ -148,7 +148,10 @@ pub(super) fn reader_fieldnames<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut 
     };
     defer_drop!(reader, vm);
     if unset && let Some(header) = next_row(reader, vm)? {
-        let header = Value::Ref(vm.heap.allocate(HeapData::List(List::new(header))));
+        let header = Value::Ref(
+            vm.heap
+                .allocate(HeapData::SpecializedList(SpecializedList::new(header))),
+        );
         if let CsvObject::DictReader(dict_reader) = obj.get_mut(vm.heap) {
             dict_reader.fieldnames = Some(header);
         }
@@ -242,8 +245,8 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
         }
     }
     if name_count < item_count {
-        let extra = List::new(mem::take(items));
-        let extra = Value::Ref(vm.heap.allocate(HeapData::List(extra)));
+        let extra = SpecializedList::new(mem::take(items));
+        let extra = Value::Ref(vm.heap.allocate(HeapData::SpecializedList(extra)));
         if let Some(old) = dict.set(restkey.clone_with_heap(vm.heap), extra, vm)? {
             old.drop_with(vm);
         }
@@ -334,10 +337,12 @@ pub(super) fn writer_writerows<'h>(
         let (flattened, vm) = lists_guard.as_parts_mut();
         for rowdict in rows {
             let items = dict_to_list(obj, spec, rowdict, vm)?;
-            flattened.push(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))));
+            flattened.push(Value::Ref(
+                vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(items))),
+            ));
         }
         let (lists, vm) = lists_guard.into_parts();
-        let rows = Value::Ref(vm.heap.allocate(HeapData::List(List::new(lists))));
+        let rows = Value::Ref(vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(lists))));
         defer_drop!(rows, vm);
         with_writer(writer, vm, |writer_obj, vm| {
             let rows = rows.clone_with_heap(vm.heap);
@@ -430,8 +435,12 @@ impl RowSpec {
             && match fieldnames {
                 Value::Ref(id) => match vm.heap.get(*id) {
                     HeapData::List(list) => {
-                        let items = list.as_slice();
-                        items.len() == self.names.len() && items.iter().zip(&self.names).all(|(a, b)| a.is(b))
+                        let items = list.iter();
+                        items.len() == self.names.len() && items.zip(&self.names).all(|(a, b)| a.is(b))
+                    }
+                    HeapData::SpecializedList(list) => {
+                        let items = list.iter();
+                        items.len() == self.names.len() && items.zip(&self.names).all(|(a, b)| a.is(b))
                     }
                     HeapData::Tuple(_)
                     | HeapData::Str(_)
@@ -637,11 +646,18 @@ fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>
     match fieldnames {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::List(list) => {
-                let items = list.as_slice();
+                let items = list.iter();
                 vm.heap
                     .tracker
                     .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
-                Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
+                Ok(items.map(|item| item.clone_with_heap(vm.heap)).collect())
+            }
+            HeapData::SpecializedList(list) => {
+                let items = list.iter();
+                vm.heap
+                    .tracker
+                    .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
+                Ok(items.map(|item| item.clone_with_heap(vm.heap)).collect())
             }
             _ => collect_iterable(fieldnames, vm),
         },

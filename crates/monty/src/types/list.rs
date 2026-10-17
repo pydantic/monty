@@ -1,5 +1,6 @@
-use std::{cmp::Ordering, fmt::Write, mem};
+use std::{cmp::Ordering, fmt::Write, mem, ops::Deref};
 
+use monty_types::{ResourceError, ResourceTracker};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -13,125 +14,358 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
-        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
-        HeapReader,
+        ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
+        HeapReadOutput, HeapReader,
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
-    resource_checks::{check_repeat_size, check_value_buffer_growth},
+    resource_checks::check_repeat_size,
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type,
-        long_int::repeat_count,
-        slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
+        long_int::{repeat_count, wide_i128_into_value},
+        slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
-/// Python list type, wrapping a Vec of Values.
-///
-/// This type provides Python list semantics including dynamic growth,
-/// reference counting for heap values, and standard list methods.
-///
-/// # Implemented Methods
-/// - `append(item)` - Add item to end
-/// - `insert(index, item)` - Insert item at index
-/// - `pop([index])` - Remove and return item (default: last)
-/// - `remove(value)` - Remove first occurrence of value
-/// - `clear()` - Remove all items
-/// - `copy()` - Shallow copy
-/// - `extend(iterable)` - Append items from iterable
-/// - `index(value[, start[, end]])` - Find first index of value
-/// - `count(value)` - Count occurrences
-/// - `reverse()` - Reverse in place
-/// - `sort([key][, reverse])` - Sort in place
-///
-/// Note: `sort(key=...)` supports builtin key functions (len, abs, etc.)
-/// but not user-defined functions. This is handled at VM level for access
-/// to function calling machinery.
-///
-/// All list methods from Python's builtins are implemented.
-///
-/// # Reference Counting
-/// When values are added to the list (via append, insert, etc.), their
-/// reference counts are incremented if they are heap-allocated (Ref variants).
-/// This ensures values remain valid while referenced by the list.
-///
-/// # GC Optimization
-/// The `contains_refs` flag tracks whether the list contains any `Value::Ref` items.
-/// This allows `collect_child_ids` and `py_dec_ref_ids` to skip iteration when the
-/// list contains only primitive values (ints, bools, None, etc.), significantly
-/// improving GC performance for lists of primitives.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+/// The legacy list payload. Its fields and serde names retain version-13 dump compatibility.
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct List {
     #[serde(rename = "I")]
     items: Vec<Value>,
-    /// True if any item in the list is a `Value::Ref`. Used to skip iteration
-    /// in `collect_child_ids` and `py_dec_ref_ids` when no refs are present.
     #[serde(rename = "C")]
     contains_refs: bool,
 }
 
 impl List {
-    /// Creates a new list from a vector of values.
-    ///
-    /// Automatically computes the `contains_refs` flag by checking if any value
-    /// is a `Value::Ref`.
-    ///
-    /// Note: This does NOT increment reference counts - the caller must
-    /// ensure refcounts are properly managed.
-    #[must_use]
-    pub fn new(vec: Vec<Value>) -> Self {
-        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
+    pub fn new(items: Vec<Value>) -> Self {
         Self {
-            items: vec,
-            contains_refs,
+            contains_refs: items.iter().any(|v| matches!(v, Value::Ref(_))),
+            items,
         }
     }
 
-    /// Returns a reference to the underlying vector.
-    #[must_use]
-    pub fn as_slice(&self) -> &[Value] {
-        &self.items
-    }
-
-    /// Returns a mutable reference to the underlying vector.
-    ///
-    /// # Safety Considerations
-    /// Be careful when mutating the vector directly - you must manually
-    /// manage reference counts for any heap values you add or remove.
-    /// The `contains_refs` flag is NOT automatically updated by direct
-    /// vector mutations. Prefer using `append()` or `insert()` instead.
-    pub fn as_vec_mut(&mut self) -> &mut Vec<Value> {
-        &mut self.items
-    }
-
-    /// Returns the number of elements in the list.
-    #[must_use]
     pub fn len(&self) -> usize {
         self.items.len()
     }
-
-    /// Returns whether the list contains any heap references.
-    ///
-    /// When false, `collect_child_ids` and `py_dec_ref_ids` can skip iteration.
-    #[inline]
-    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
     pub fn contains_refs(&self) -> bool {
         self.contains_refs
     }
-
-    /// Marks that the list contains heap references.
-    ///
-    /// This should be called when directly mutating the list's items vector
-    /// (via `as_vec_mut()`) with values that include `Value::Ref` variants.
-    #[inline]
-    pub fn set_contains_refs(&mut self) {
-        self.contains_refs = true;
+    pub fn get(&self, index: usize) -> Option<Item<'_>> {
+        self.items.get(index).map(Item::Borrowed)
+    }
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Item<'_>> + DoubleEndedIterator + Clone {
+        self.items.iter().map(Item::Borrowed)
+    }
+    pub fn extend_owned(&mut self, values: Vec<Value>) {
+        self.contains_refs |= values.iter().any(|v| matches!(v, Value::Ref(_)));
+        self.items.extend(values);
+    }
+    pub fn swap(&mut self, a: usize, b: usize) {
+        self.items.swap(a, b);
     }
 }
 
-impl<'h> HeapRead<'h, List> {
+impl<C: ContainsHeap> DropWithContext<C> for List {
+    fn drop_with(self, ctx: &mut C) {
+        self.items.drop_with(ctx);
+    }
+}
+
+impl HeapItem for List {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if !self.contains_refs {
+            return;
+        }
+        for value in &mut self.items {
+            if let Value::Ref(id) = value {
+                stack.push(*id);
+                #[cfg(feature = "memory-model-checks")]
+                value.dec_ref_forget();
+            }
+        }
+    }
+}
+
+/// Shares Python list operations while each heap payload keeps its concrete type for its lifetime.
+pub(crate) trait ListStorage: Default {
+    fn from_values(values: Vec<Value>) -> Self;
+    fn specialized(&self) -> Option<&SpecializedList> {
+        None
+    }
+
+    fn specialized_mut(&mut self) -> Option<&mut SpecializedList> {
+        None
+    }
+
+    fn generic(&self) -> &List;
+    fn generic_mut(&mut self, additional: usize) -> &mut List;
+    fn into_values(self) -> Vec<Value>;
+    fn discard<C: ContainsHeap>(self, ctx: &mut C);
+
+    fn len(&self) -> usize {
+        self.specialized()
+            .map_or_else(|| self.generic().len(), SpecializedList::len)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.specialized()
+            .map_or_else(|| self.generic().is_empty(), SpecializedList::is_empty)
+    }
+
+    fn contains_refs(&self) -> bool {
+        self.specialized()
+            .map_or_else(|| self.generic().contains_refs(), SpecializedList::contains_refs)
+    }
+
+    fn get(&self, index: usize) -> Option<Item<'_>> {
+        self.specialized()
+            .map_or_else(|| self.generic().get(index), |list| list.get(index))
+    }
+
+    fn iter(&self) -> impl ExactSizeIterator<Item = Item<'_>> + DoubleEndedIterator + Clone {
+        (0..self.len()).map(|i| self.get(i).expect("index within list"))
+    }
+
+    fn element_size(&self) -> usize {
+        self.specialized().map_or(VALUE_SIZE, SpecializedList::element_size)
+    }
+
+    fn check_insert(&self, value: &Value, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+        if let Some(list) = self.specialized() {
+            return list.check_insert(value, tracker);
+        }
+        tracker.check_growth(self.len(), self.generic().items.capacity(), VALUE_SIZE)
+    }
+
+    fn check_replace(&self, value: &Value, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+        self.specialized()
+            .map_or(Ok(()), |list| list.check_replace(value, tracker))
+    }
+
+    fn check_extend(&self, values: &[Value], tracker: &ResourceTracker) -> Result<(), ResourceError> {
+        if let Some(list) = self.specialized() {
+            return list.check_extend(values, tracker);
+        }
+        let additional = self
+            .len()
+            .saturating_add(values.len())
+            .saturating_sub(self.generic().items.capacity());
+        tracker.check_pending_allocation(additional.saturating_mul(VALUE_SIZE))
+    }
+
+    fn push(&mut self, value: Value) {
+        if let Some(list) = self.specialized_mut() {
+            list.push(value);
+            return;
+        }
+        let list = self.generic_mut(0);
+        list.contains_refs |= matches!(value, Value::Ref(_));
+        list.items.push(value);
+    }
+
+    fn insert(&mut self, index: usize, value: Value) {
+        if let Some(list) = self.specialized_mut() {
+            list.insert(index, value);
+            return;
+        }
+        let list = self.generic_mut(0);
+        list.contains_refs |= matches!(value, Value::Ref(_));
+        list.items.insert(index.min(list.items.len()), value);
+    }
+
+    fn replace(&mut self, index: usize, value: &mut Value) {
+        if let Some(list) = self.specialized_mut() {
+            list.replace(index, value);
+            return;
+        }
+        let list = self.generic_mut(0);
+        list.contains_refs |= matches!(value, Value::Ref(_));
+        mem::swap(&mut list.items[index], value);
+    }
+
+    fn extend_owned(&mut self, values: Vec<Value>) {
+        if let Some(list) = self.specialized_mut() {
+            list.extend_owned(values);
+            return;
+        }
+        self.generic_mut(0).extend_owned(values);
+    }
+
+    fn remove(&mut self, index: usize) -> Value {
+        if let Some(list) = self.specialized_mut() {
+            return list.remove(index);
+        }
+        self.generic_mut(0).items.remove(index)
+    }
+
+    fn reverse(&mut self) {
+        if let Some(list) = self.specialized_mut() {
+            list.reverse();
+            return;
+        }
+        self.generic_mut(0).items.reverse();
+    }
+
+    fn copy(&self, heap: &Heap) -> SpecializedList {
+        if let Some(list) = self.specialized() {
+            return list.copy(heap);
+        }
+        SpecializedList::Generic(List {
+            items: self.iter().map(|v| v.clone_with_heap(heap)).collect(),
+            contains_refs: self.contains_refs(),
+        })
+    }
+
+    fn concat_element_size<U: ListStorage>(&self, other: &U) -> usize {
+        if let (Some(a), Some(b)) = (self.specialized(), other.specialized()) {
+            return a.concat_element_size(b);
+        }
+        VALUE_SIZE
+    }
+
+    fn concat<U: ListStorage>(&self, other: &U, heap: &Heap) -> SpecializedList {
+        if let (Some(a), Some(b)) = (self.specialized(), other.specialized()) {
+            return a.concat(b, heap);
+        }
+        SpecializedList::Generic(List {
+            items: self
+                .iter()
+                .chain(other.iter())
+                .map(|v| v.clone_with_heap(heap))
+                .collect(),
+            contains_refs: self.contains_refs() || other.contains_refs(),
+        })
+    }
+}
+
+impl ListStorage for List {
+    fn from_values(values: Vec<Value>) -> Self {
+        Self::new(values)
+    }
+
+    fn generic(&self) -> &List {
+        self
+    }
+
+    fn generic_mut(&mut self, _: usize) -> &mut List {
+        self
+    }
+
+    fn into_values(self) -> Vec<Value> {
+        self.items
+    }
+
+    fn discard<C: ContainsHeap>(self, ctx: &mut C) {
+        self.drop_with(ctx);
+    }
+}
+
+impl ListStorage for SpecializedList {
+    fn from_values(values: Vec<Value>) -> Self {
+        Self::new(values)
+    }
+
+    fn specialized(&self) -> Option<&SpecializedList> {
+        Some(self)
+    }
+
+    fn specialized_mut(&mut self) -> Option<&mut SpecializedList> {
+        Some(self)
+    }
+
+    fn generic(&self) -> &List {
+        let Self::Generic(list) = self else {
+            unreachable!("generic storage required")
+        };
+        list
+    }
+
+    fn generic_mut(&mut self, additional: usize) -> &mut List {
+        self.promote(additional);
+        let Self::Generic(list) = self else {
+            unreachable!("promoted to generic storage")
+        };
+        list
+    }
+
+    fn into_values(self) -> Vec<Value> {
+        self.into_values()
+    }
+
+    fn discard<C: ContainsHeap>(self, ctx: &mut C) {
+        self.drop_with(ctx);
+    }
+}
+
+/// Python list with compact numeric buffers and generic reference-owning storage.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) enum SpecializedList {
+    #[default]
+    #[serde(rename = "E")]
+    Empty,
+    #[serde(rename = "I")]
+    Int(Vec<i64>),
+    #[serde(rename = "F")]
+    Float(Vec<f64>),
+    #[serde(rename = "G")]
+    Generic(List),
+}
+
+impl SpecializedList {
+    /// False for numeric buffers and generic buffers that have never held references.
+    #[inline]
+    #[must_use]
+    pub fn contains_refs(&self) -> bool {
+        matches!(
+            self,
+            Self::Generic(List {
+                contains_refs: true,
+                ..
+            })
+        )
+    }
+}
+
+impl<'h, T: ListStorage> HeapRead<'h, T> {
+    fn eq_list<U: ListStorage>(&self, other: &HeapRead<'h, U>, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(Some(false));
+        }
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((i, a)) = iter.next_with_index(vm)? {
+            // `ListIter` re-reads `self`'s length each step, but `other` is
+            // indexed directly and a user `__eq__` may have shrunk it.
+            let Some(b) = other.try_clone_item(i, vm) else {
+                break;
+            };
+            defer_drop!(b, vm);
+            if !a.py_eq(b, vm)? {
+                return Ok(Some(false));
+            }
+        }
+        // Equal element-wise as far as both lists still reach; a mutating
+        // `__eq__` can leave them different lengths, which CPython reports as
+        // not equal.
+        Ok(Some(self.get(vm.heap).len() == other.get(vm.heap).len()))
+    }
+
+    fn concat_list<U: ListStorage>(&self, other: &HeapRead<'h, U>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let a = self.get(vm.heap);
+        let b = other.get(vm.heap);
+        let size = a.concat_element_size(b);
+        vm.heap
+            .tracker
+            .check_allocation(a.len().saturating_add(b.len()).saturating_mul(size))?;
+        let result = a.concat(b, vm.heap);
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::SpecializedList(result)))))
+    }
+
     /// Collects replacements before assignment to support self-assignment and avoid
     /// partial writes on iterator failure. Bounds are normalized after collection
     /// because the iterator may have resized the target.
@@ -142,6 +376,7 @@ impl<'h> HeapRead<'h, List> {
         // Collect replacements before mutation to support self-assignment.
         let items = match value.read_heap(vm) {
             Some(HeapReadOutput::List(list)) => list.clone_all_items(vm)?,
+            Some(HeapReadOutput::SpecializedList(list)) => list.clone_all_items(vm)?,
             Some(HeapReadOutput::Tuple(tuple)) => tuple.cloned_items(vm)?,
             _ => {
                 let iterator = value.py_iter(vm).map_err(|error| {
@@ -175,17 +410,36 @@ impl<'h> HeapRead<'h, List> {
             )));
         }
 
+        let growth = items.len().saturating_sub(count);
+        if !self
+            .get(vm.heap)
+            .specialized()
+            .is_none_or(|s| matches!(s, SpecializedList::Generic(_)))
+        {
+            // Slice assignment uses generic storage; preflight conversion while the numeric buffer is live.
+            vm.heap.tracker.check_allocation(
+                self.get(vm.heap)
+                    .len()
+                    .saturating_add(growth)
+                    .max(4)
+                    .saturating_mul(VALUE_SIZE),
+            )?;
+        }
+
         if items.len() == count {
-            let list = self.get_mut(vm.heap);
-            list.contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
+            let List {
+                items: target,
+                contains_refs,
+            } = self.get_mut(vm.heap).generic_mut(0);
+            *contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
             if step == 1 {
                 let start = usize::try_from(start).expect("positive slice start is non-negative");
-                list.items[start..start + count].swap_with_slice(items);
+                target[start..start + count].swap_with_slice(items);
             } else {
                 let mut index = i128::from(start);
                 for item in items.iter_mut() {
                     mem::swap(
-                        &mut list.items[usize::try_from(index).expect("slice index is within the list")],
+                        &mut target[usize::try_from(index).expect("slice index is within the list")],
                         item,
                     );
                     index += i128::from(step);
@@ -197,14 +451,440 @@ impl<'h> HeapRead<'h, List> {
                 .tracker
                 .check_allocation(growth.saturating_add(count).saturating_mul(VALUE_SIZE))?;
 
-            let list = self.get_mut(vm.heap);
-            list.contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
+            let List {
+                items: target,
+                contains_refs,
+            } = self.get_mut(vm.heap).generic_mut(growth);
+            *contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
             let start = usize::try_from(start).expect("positive slice start is non-negative");
-            let removed: Vec<Value> = list.items.splice(start..start + count, items.drain(..)).collect();
+            let removed: Vec<Value> = target.splice(start..start + count, items.drain(..)).collect();
             removed.drop_with(vm);
         }
 
         Ok(())
+    }
+}
+
+/// A numeric element materialized on the stack, or a borrowed generic element.
+pub(crate) enum Item<'a> {
+    Immediate(Value),
+    Borrowed(&'a Value),
+}
+
+impl Deref for Item<'_> {
+    type Target = Value;
+
+    fn deref(&self) -> &Value {
+        match self {
+            Self::Immediate(value) => value,
+            Self::Borrowed(value) => value,
+        }
+    }
+}
+
+impl SpecializedList {
+    /// Takes ownership of values without incrementing their reference counts.
+    pub fn new(values: Vec<Value>) -> Self {
+        if values.is_empty() {
+            Self::Empty
+        } else if values.iter().all(|v| matches!(v, Value::Int(_))) {
+            let mut ints: Vec<i64> = values
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(i) => i,
+                    _ => unreachable!(),
+                })
+                .collect();
+            ints.shrink_to_fit();
+            Self::Int(ints)
+        } else if values.iter().all(|v| matches!(v, Value::Float(_))) {
+            let mut floats: Vec<f64> = values
+                .into_iter()
+                .map(|v| match v {
+                    Value::Float(f) => f,
+                    _ => unreachable!(),
+                })
+                .collect();
+            floats.shrink_to_fit();
+            Self::Float(floats)
+        } else {
+            Self::Generic(List {
+                contains_refs: values.iter().any(|v| matches!(v, Value::Ref(_))),
+                items: values,
+            })
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Int(v) => v.len(),
+            Self::Float(v) => v.len(),
+            Self::Generic(List { items: v, .. }) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&self, index: usize) -> Option<Item<'_>> {
+        match self {
+            Self::Empty => None,
+            Self::Int(v) => v.get(index).map(|&i| Item::Immediate(Value::Int(i))),
+            Self::Float(v) => v.get(index).map(|&f| Item::Immediate(Value::Float(f))),
+            Self::Generic(List { items: v, .. }) => v.get(index).map(Item::Borrowed),
+        }
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Item<'_>> + DoubleEndedIterator + Clone {
+        (0..self.len()).map(|i| self.get(i).expect("index within storage"))
+    }
+
+    fn accepts(&self, value: &Value) -> bool {
+        match self {
+            Self::Empty | Self::Generic(_) => true,
+            Self::Int(_) => matches!(value, Value::Int(_)),
+            Self::Float(_) => matches!(value, Value::Float(_)),
+        }
+    }
+
+    fn element_size(&self) -> usize {
+        match self {
+            Self::Empty | Self::Int(_) | Self::Float(_) => 8,
+            Self::Generic(_) => VALUE_SIZE,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Int(v) => v.capacity(),
+            Self::Float(v) => v.capacity(),
+            Self::Generic(List { items: v, .. }) => v.capacity(),
+        }
+    }
+
+    /// Promotion allocates the entire generic buffer while the numeric buffer is live.
+    fn check_insert(&self, value: &Value, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+        if !self.accepts(value) {
+            return tracker.check_allocation(self.len().saturating_add(1).max(4).saturating_mul(VALUE_SIZE));
+        }
+        let size = if matches!(self, Self::Empty) && !matches!(value, Value::Int(_) | Value::Float(_)) {
+            VALUE_SIZE
+        } else {
+            self.element_size()
+        };
+        tracker.check_growth(self.len(), self.capacity(), size)
+    }
+
+    fn check_replace(&self, value: &Value, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+        if self.accepts(value) {
+            Ok(())
+        } else {
+            tracker.check_allocation(self.len().max(4).saturating_mul(VALUE_SIZE))
+        }
+    }
+
+    fn check_extend(&self, values: &[Value], tracker: &ResourceTracker) -> Result<(), ResourceError> {
+        if values.is_empty() || matches!(self, Self::Empty) {
+            // Empty storage takes the admitted vector, compacting numeric values in place.
+            return Ok(());
+        }
+        if values.iter().any(|v| !self.accepts(v)) {
+            tracker.check_allocation(
+                self.len()
+                    .saturating_add(values.len())
+                    .max(4)
+                    .saturating_mul(VALUE_SIZE),
+            )
+        } else {
+            let additional = self.len().saturating_add(values.len()).saturating_sub(self.capacity());
+            tracker.check_pending_allocation(additional.saturating_mul(self.element_size()))
+        }
+    }
+
+    /// Callers preflight before changing representation; no Python runs during conversion.
+    fn promote(&mut self, additional: usize) {
+        if matches!(self, Self::Generic(_)) {
+            return;
+        }
+        let mut values = Vec::with_capacity(self.len().saturating_add(additional).max(4));
+        match mem::take(self) {
+            Self::Int(v) => values.extend(v.into_iter().map(Value::Int)),
+            Self::Float(v) => values.extend(v.into_iter().map(Value::Float)),
+            Self::Empty => {}
+            Self::Generic(_) => unreachable!(),
+        }
+        *self = Self::Generic(List {
+            items: values,
+            contains_refs: false,
+        });
+    }
+
+    fn push(&mut self, value: Value) {
+        if matches!(self, Self::Empty) {
+            *self = match &value {
+                Value::Int(_) => Self::Int(Vec::new()),
+                Value::Float(_) => Self::Float(Vec::new()),
+                _ => Self::Generic(List {
+                    items: Vec::new(),
+                    contains_refs: false,
+                }),
+            };
+        }
+        if !self.accepts(&value) {
+            self.promote(1);
+        }
+        match (self, value) {
+            (Self::Int(v), Value::Int(i)) => v.push(i),
+            (Self::Float(v), Value::Float(f)) => v.push(f),
+            (
+                Self::Generic(List {
+                    items: v,
+                    contains_refs,
+                }),
+                value,
+            ) => {
+                *contains_refs |= matches!(value, Value::Ref(_));
+                v.push(value);
+            }
+            _ => unreachable!("storage accepts value"),
+        }
+    }
+
+    fn insert(&mut self, index: usize, value: Value) {
+        if index >= self.len() {
+            self.push(value);
+            return;
+        }
+        if !self.accepts(&value) {
+            self.promote(1);
+        }
+        match (self, value) {
+            (Self::Int(v), Value::Int(i)) => v.insert(index, i),
+            (Self::Float(v), Value::Float(f)) => v.insert(index, f),
+            (
+                Self::Generic(List {
+                    items: v,
+                    contains_refs,
+                }),
+                value,
+            ) => {
+                *contains_refs |= matches!(value, Value::Ref(_));
+                v.insert(index, value);
+            }
+            _ => unreachable!("storage accepts value"),
+        }
+    }
+
+    fn replace(&mut self, index: usize, value: &mut Value) {
+        if !self.accepts(value) {
+            self.promote(0);
+        }
+        match self {
+            Self::Int(v) => {
+                let Value::Int(i) = value else { unreachable!() };
+                mem::swap(&mut v[index], i);
+            }
+            Self::Float(v) => {
+                let Value::Float(f) = value else { unreachable!() };
+                mem::swap(&mut v[index], f);
+            }
+            Self::Generic(List {
+                items: v,
+                contains_refs,
+            }) => {
+                *contains_refs |= matches!(*value, Value::Ref(_));
+                mem::swap(&mut v[index], value);
+            }
+            Self::Empty => unreachable!("index validated"),
+        }
+    }
+
+    /// Takes ownership of preflighted values, preserving their reference counts.
+    pub fn extend_owned(&mut self, values: Vec<Value>) {
+        if values.is_empty() {
+            return;
+        }
+        if matches!(self, Self::Empty) {
+            *self = Self::new(values);
+            return;
+        }
+        if values.iter().any(|v| !self.accepts(v)) {
+            self.promote(values.len());
+        }
+        match self {
+            Self::Int(v) => {
+                v.reserve_exact(values.len());
+                v.extend(values.into_iter().map(|v| match v {
+                    Value::Int(i) => i,
+                    _ => unreachable!(),
+                }));
+            }
+            Self::Float(v) => {
+                v.reserve_exact(values.len());
+                v.extend(values.into_iter().map(|v| match v {
+                    Value::Float(f) => f,
+                    _ => unreachable!(),
+                }));
+            }
+            Self::Generic(List {
+                items: v,
+                contains_refs,
+            }) => {
+                *contains_refs |= values.iter().any(|v| matches!(v, Value::Ref(_)));
+                v.reserve_exact(values.len());
+                v.extend(values);
+            }
+            Self::Empty => unreachable!(),
+        }
+    }
+
+    fn remove(&mut self, index: usize) -> Value {
+        match self {
+            Self::Int(v) => Value::Int(v.remove(index)),
+            Self::Float(v) => Value::Float(v.remove(index)),
+            Self::Generic(List { items: v, .. }) => v.remove(index),
+            Self::Empty => unreachable!("index validated"),
+        }
+    }
+
+    fn reverse(&mut self) {
+        match self {
+            Self::Empty => {}
+            Self::Int(v) => v.reverse(),
+            Self::Float(v) => v.reverse(),
+            Self::Generic(List { items: v, .. }) => v.reverse(),
+        }
+    }
+
+    pub fn swap(&mut self, a: usize, b: usize) {
+        match self {
+            Self::Empty => unreachable!("indices validated"),
+            Self::Int(v) => v.swap(a, b),
+            Self::Float(v) => v.swap(a, b),
+            Self::Generic(List { items: v, .. }) => v.swap(a, b),
+        }
+    }
+
+    fn copy(&self, heap: &Heap) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Int(v) => Self::Int(v.clone()),
+            Self::Float(v) => Self::Float(v.clone()),
+            Self::Generic(List {
+                items: v,
+                contains_refs,
+            }) => Self::Generic(List {
+                items: v.iter().map(|v| v.clone_with_heap(heap)).collect(),
+                contains_refs: *contains_refs,
+            }),
+        }
+    }
+
+    fn concat_element_size(&self, other: &Self) -> usize {
+        if self.is_empty() {
+            other.element_size()
+        } else if other.is_empty() {
+            self.element_size()
+        } else {
+            match (self, other) {
+                (Self::Int(_), Self::Int(_)) | (Self::Float(_), Self::Float(_)) => 8,
+                _ => VALUE_SIZE,
+            }
+        }
+    }
+
+    fn concat(&self, other: &Self, heap: &Heap) -> Self {
+        if self.is_empty() {
+            return other.copy(heap);
+        }
+        if other.is_empty() {
+            return self.copy(heap);
+        }
+        let len = self.len() + other.len();
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => {
+                let mut values = Vec::with_capacity(len);
+                values.extend_from_slice(a);
+                values.extend_from_slice(b);
+                Self::Int(values)
+            }
+            (Self::Float(a), Self::Float(b)) => {
+                let mut values = Vec::with_capacity(len);
+                values.extend_from_slice(a);
+                values.extend_from_slice(b);
+                Self::Float(values)
+            }
+            _ => {
+                let mut values = Vec::with_capacity(len);
+                values.extend(self.iter().chain(other.iter()).map(|v| v.clone_with_heap(heap)));
+                Self::Generic(List {
+                    items: values,
+                    contains_refs: self.contains_refs() || other.contains_refs(),
+                })
+            }
+        }
+    }
+
+    fn into_values(self) -> Vec<Value> {
+        match self {
+            Self::Empty => Vec::new(),
+            Self::Int(v) => v.into_iter().map(Value::Int).collect(),
+            Self::Float(v) => v.into_iter().map(Value::Float).collect(),
+            Self::Generic(List { items: v, .. }) => v,
+        }
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for SpecializedList {
+    fn drop_with(self, ctx: &mut C) {
+        if let Self::Generic(List { items: values, .. }) = self {
+            values.drop_with(ctx);
+        }
+    }
+}
+
+impl<'h, T: ListStorage> HeapRead<'h, T> {
+    /// Returns None when storage or the start value requires generic iteration.
+    pub(crate) fn sum(&self, start: &Value, vm: &VM<'h>) -> RunResult<Option<Value>> {
+        match self.get(vm.heap).specialized() {
+            Some(SpecializedList::Int(items)) => {
+                let mut total = match start {
+                    Value::Int(i) => i128::from(*i),
+                    Value::Bool(b) if !items.is_empty() => i128::from(*b),
+                    _ => return Ok(None),
+                };
+                // Even usize::MAX i64 elements plus an i64 start fit in i128.
+                for chunk in items.chunks(64) {
+                    vm.heap.tracker.check_time()?;
+                    total += chunk.iter().map(|&i| i128::from(i)).sum::<i128>();
+                }
+                let result = match i64::try_from(total) {
+                    Ok(i) => Value::Int(i),
+                    Err(_) => wide_i128_into_value(total, vm.heap),
+                };
+                Ok(Some(result))
+            }
+            Some(SpecializedList::Float(items)) if !items.is_empty() => {
+                let mut total = match start {
+                    Value::Float(f) => *f,
+                    Value::Int(i) => *i as f64,
+                    Value::Bool(b) => f64::from(*b),
+                    _ => return Ok(None),
+                };
+                // Preserve the generic reduction's left-to-right additions.
+                for chunk in items.chunks(64) {
+                    vm.heap.tracker.check_time()?;
+                    for &value in chunk {
+                        total += value;
+                    }
+                }
+                Ok(Some(Value::Float(total)))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Appends an element to the end of the list.
@@ -216,24 +896,22 @@ impl<'h> HeapRead<'h, List> {
     /// A push that would grow the buffer past the memory limit fails with
     /// `MemoryError` and drops `item`, so the ownership transfer holds either way.
     pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
-        // Track whether the list now contains heap refs so child-walk fast paths
-        // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
-        // not at mutation time.
-        let is_ref = matches!(item, Value::Ref(_));
-        let this = self.get_mut(vm.heap);
-        if is_ref {
-            this.contains_refs = true;
-        }
-        // Ownership transfer - refcount was already handled by caller
-        let (len, capacity) = (this.items.len(), this.items.capacity());
-        if len < capacity {
-            this.items.push(item);
-            Ok(())
-        } else {
-            let item = check_value_buffer_growth(vm, len, capacity, item)?;
-            self.get_mut(vm.heap).items.push(item);
-            Ok(())
-        }
+        let mut guard = DropGuard::new(item, vm);
+        let (item, vm) = guard.as_parts_mut();
+        self.get(vm.heap).check_insert(item, &vm.heap.tracker)?;
+        let (item, vm) = guard.into_parts();
+        let list = self.get_mut(vm.heap);
+        list.push(item);
+        Ok(())
+    }
+
+    pub(crate) fn extend_items(&mut self, vm: &mut VM<'h>, items: Vec<Value>) -> RunResult<()> {
+        let mut guard = DropGuard::new(items, vm);
+        let (items, vm) = guard.as_parts_mut();
+        self.get(vm.heap).check_extend(items, &vm.heap.tracker)?;
+        let (items, vm) = guard.into_parts();
+        self.get_mut(vm.heap).extend_owned(items);
+        Ok(())
     }
 
     /// Inserts an element at the specified index.
@@ -249,31 +927,17 @@ impl<'h> HeapRead<'h, List> {
     /// * `index` - The position to insert at (0-based). If index >= len(),
     ///   the item is appended to the end (matching Python semantics).
     pub fn insert(&mut self, vm: &mut VM<'h>, index: usize, item: Value) -> RunResult<()> {
-        let items = &self.get(vm.heap).items;
-        let (len, capacity) = (items.len(), items.capacity());
-        let item = if len < capacity {
-            item
-        } else {
-            check_value_buffer_growth(vm, len, capacity, item)?
-        };
-        // Track whether the list now contains heap refs so child-walk fast paths
-        // can short-circuit; cycle-collector seeding is handled by `dec_ref`.
-        if matches!(item, Value::Ref(_)) {
-            self.get_mut(vm.heap).contains_refs = true;
-        }
-        // Ownership transfer - refcount was already handled by caller
-        // Python's insert() appends if index is out of bounds
-        let this = self.get_mut(vm.heap);
-        if index >= this.items.len() {
-            this.items.push(item);
-        } else {
-            this.items.insert(index, item);
-        }
+        let mut guard = DropGuard::new(item, vm);
+        let (item, vm) = guard.as_parts_mut();
+        self.get(vm.heap).check_insert(item, &vm.heap.tracker)?;
+        let (item, vm) = guard.into_parts();
+        let list = self.get_mut(vm.heap);
+        list.insert(index, item);
         Ok(())
     }
 }
 
-impl List {
+impl SpecializedList {
     /// Creates a list from the `list()` constructor call.
     ///
     /// - `list()` with no args returns an empty list
@@ -282,28 +946,77 @@ impl List {
         let value = args.get_zero_one_arg("list", vm.heap)?;
         match value {
             None => {
-                let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())));
+                let heap_id = vm.heap.allocate(HeapData::SpecializedList(Self::new(Vec::new())));
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
-                let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)));
+                let heap_id = vm.heap.allocate(HeapData::SpecializedList(Self::new(items)));
                 Ok(Value::Ref(heap_id))
             }
         }
     }
 }
 
-impl<'h> HeapRead<'h, List> {
+impl<'h, T: ListStorage> HeapRead<'h, T> {
     /// Handles slice-based indexing for lists.
     ///
     /// Returns a new list containing the selected elements.
-    fn getitem_slice(&self, slice: &super::Slice, vm: &VM<'h>) -> RunResult<Value> {
-        let items = slice_collect_iterator(vm, slice, self.get(vm.heap).items.iter(), |item| {
-            item.clone_with_heap(vm.heap)
-        })?;
-        let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
-        Ok(Value::Ref(heap_id))
+    fn getitem_slice(&self, slice: &super::Slice, vm: &mut VM<'h>) -> RunResult<Value> {
+        let storage = self.get(vm.heap);
+        let (mut index, stop, step) = slice.indices(storage.len())?;
+        let distance = if step > 0 {
+            stop.saturating_sub(index)
+        } else {
+            index.saturating_sub(stop)
+        };
+        let count = usize::try_from(
+            u64::try_from(distance.max(0))
+                .expect("nonnegative distance")
+                .div_ceil(step.unsigned_abs()),
+        )
+        .expect("slice length fits usize");
+        vm.heap
+            .tracker
+            .check_allocation(count.saturating_mul(storage.element_size()))?;
+        let numeric = match storage.specialized() {
+            Some(SpecializedList::Int(items)) => {
+                let mut result = Vec::with_capacity(count);
+                for i in 0..count {
+                    vm.heap.tracker.check_time_every(i)?;
+                    result.push(items[usize::try_from(index).expect("slice index nonnegative")]);
+                    index = index.saturating_add(step);
+                }
+                Some(SpecializedList::Int(result))
+            }
+            Some(SpecializedList::Float(items)) => {
+                let mut result = Vec::with_capacity(count);
+                for i in 0..count {
+                    vm.heap.tracker.check_time_every(i)?;
+                    result.push(items[usize::try_from(index).expect("slice index nonnegative")]);
+                    index = index.saturating_add(step);
+                }
+                Some(SpecializedList::Float(result))
+            }
+            Some(SpecializedList::Empty) => Some(SpecializedList::Empty),
+            _ => None,
+        };
+        if let Some(items) = numeric {
+            return Ok(Value::Ref(vm.heap.allocate(HeapData::SpecializedList(items))));
+        }
+        let mut guard = DropGuard::new(Vec::with_capacity(count), vm);
+        let (items, vm) = guard.as_parts_mut();
+        while if step > 0 { index < stop } else { index > stop } {
+            vm.heap.tracker.check_time_every(items.len())?;
+            items.push(self.clone_item(usize::try_from(index).expect("slice index nonnegative"), vm));
+            index = index.saturating_add(step);
+        }
+        let (items, vm) = guard.into_parts();
+        let result = SpecializedList::Generic(List {
+            items,
+            contains_refs: self.get(vm.heap).contains_refs(),
+        });
+        Ok(Value::Ref(vm.heap.allocate(HeapData::SpecializedList(result))))
     }
 
     /// Clones the item at the given index with proper refcount management.
@@ -312,7 +1025,10 @@ impl<'h> HeapRead<'h, List> {
     /// read without a user callback running since — the comparison walks below
     /// use [`Self::try_clone_item`] instead.
     pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h>) -> Value {
-        self.get(vm.heap).items[index].clone_with_heap(vm.heap)
+        self.get(vm.heap)
+            .get(index)
+            .expect("index validated")
+            .clone_with_heap(vm.heap)
     }
 
     /// Clones the item at `index`, or `None` once the list has shrunk past it.
@@ -322,10 +1038,7 @@ impl<'h> HeapRead<'h, List> {
     /// while a user `__eq__` may be shrinking it, and `copy.deepcopy` runs a
     /// `__deepcopy__` hook between items.
     pub(crate) fn try_clone_item(&self, index: usize, vm: &mut VM<'h>) -> Option<Value> {
-        self.get(vm.heap)
-            .items
-            .get(index)
-            .map(|item| item.clone_with_heap(vm.heap))
+        self.get(vm.heap).get(index).map(|item| item.clone_with_heap(vm.heap))
     }
 
     /// Lexicographic comparison for lists — the ordering behind `<`/`<=`/`>`/`>=`.
@@ -337,9 +1050,9 @@ impl<'h> HeapRead<'h, List> {
     /// type-mismatched element makes it [`CmpOrder::Incomparable`] (`[1] < ['a']`
     /// raises `TypeError`). Mirrors [`Tuple::py_cmp`](super::Tuple) — the
     /// `ListIter` holds the recursion token that bounds nested-container depth.
-    pub(crate) fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        let a_len = self.get(vm.heap).items.len();
-        let b_len = other.get(vm.heap).items.len();
+    pub(crate) fn py_cmp<U: ListStorage>(&self, other: &HeapRead<'h, U>, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+        let a_len = self.get(vm.heap).len();
+        let b_len = other.get(vm.heap).len();
         let min_len = a_len.min(b_len);
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
@@ -370,8 +1083,8 @@ impl<'h> HeapRead<'h, List> {
         }
         // Re-read: a user comparison may have resized either list, and CPython
         // settles an all-equal prefix on the lengths as they are now.
-        let a_len = self.get(vm.heap).items.len();
-        let b_len = other.get(vm.heap).items.len();
+        let a_len = self.get(vm.heap).len();
+        let b_len = other.get(vm.heap).len();
         Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
@@ -380,7 +1093,7 @@ impl<'h> HeapRead<'h, List> {
     /// Preflights the slot bytes so an over-budget clone raises a graceful
     /// `MemoryError` instead of bursting past the allocator's hard limit.
     fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
-        let len = self.get(vm.heap).items.len();
+        let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut result = Vec::with_capacity(len);
         for i in 0..len {
@@ -398,7 +1111,7 @@ impl<'h> HeapRead<'h, List> {
     /// type, and exposing `next(vm)` makes it self-evident the result is
     /// not a [`Iterator`](core::iter::Iterator).
     #[expect(clippy::iter_not_returning_iterator)]
-    pub(crate) fn iter(&self, vm: &mut VM<'h>) -> RunResult<ListIter<'_, 'h>> {
+    pub(crate) fn iter(&self, vm: &mut VM<'h>) -> RunResult<ListIter<'_, 'h, T>> {
         ListIter::new(self, vm)
     }
 }
@@ -429,8 +1142,8 @@ impl<'h> HeapRead<'h, List> {
 /// so items appended during iteration may be visited and shrinking past the
 /// current index halts iteration cleanly rather than panicking on an
 /// out-of-bounds index.
-pub(crate) struct ListIter<'a, 'h> {
-    list: &'a HeapRead<'h, List>,
+pub(crate) struct ListIter<'a, 'h, T: ListStorage> {
+    list: &'a HeapRead<'h, T>,
     index: usize,
     token: RecursionToken,
     /// Most-recently-yielded item. `Value::Undefined` when nothing is held —
@@ -439,8 +1152,8 @@ pub(crate) struct ListIter<'a, 'h> {
     current: Value,
 }
 
-impl<'a, 'h> ListIter<'a, 'h> {
-    fn new(list: &'a HeapRead<'h, List>, vm: &mut VM<'h>) -> RunResult<Self> {
+impl<'a, 'h, T: ListStorage> ListIter<'a, 'h, T> {
+    fn new(list: &'a HeapRead<'h, T>, vm: &mut VM<'h>) -> RunResult<Self> {
         let token = vm.recursion_token()?;
         Ok(Self {
             list,
@@ -467,7 +1180,12 @@ impl<'a, 'h> ListIter<'a, 'h> {
         if self.index >= self.list.get(vm.heap).len() {
             return Ok(None);
         }
-        self.current = self.list.get(vm.heap).items[self.index].clone_with_heap(vm.heap);
+        self.current = self
+            .list
+            .get(vm.heap)
+            .get(self.index)
+            .expect("index validated")
+            .clone_with_heap(vm.heap);
         self.index += 1;
         Ok(Some(&self.current))
     }
@@ -486,14 +1204,14 @@ impl<'a, 'h> ListIter<'a, 'h> {
     }
 }
 
-impl<'h, C: ContainsVM<'h>> DropWithContext<C> for ListIter<'_, 'h> {
+impl<'h, T: ListStorage, C: ContainsVM<'h>> DropWithContext<C> for ListIter<'_, 'h, T> {
     fn drop_with(self, container: &mut C) {
         self.current.drop_with(container);
         self.token.drop_with(container);
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
+impl<'h, T: ListStorage> PyTrait<'h> for HeapObjectRead<'h, T> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -518,7 +1236,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        Some(self.get(vm.heap).items.len())
+        Some(self.get(vm.heap).len())
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
@@ -530,7 +1248,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            return self.getitem_slice(slice, vm);
+            let slice = slice.clone();
+            return self.getitem_slice(&slice, vm);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
@@ -548,7 +1267,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         // Return clone of the item with proper refcount increment
         // Safety: normalized_index is validated to be in [0, len) above
         let idx = usize::try_from(normalized_index).expect("list index validated non-negative");
-        Ok(self.get(vm.heap).items[idx].clone_with_heap(vm))
+        Ok(self
+            .get(vm.heap)
+            .get(idx)
+            .expect("index validated")
+            .clone_with_heap(vm.heap))
     }
 
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
@@ -599,60 +1322,42 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
         let idx = usize::try_from(normalized_index).expect("index validated non-negative");
 
-        // Update contains_refs if storing a Ref (must check before swap,
-        // since after swap `value` holds the old item)
-        if matches!(*value, Value::Ref(_)) {
-            self.get_mut(vm.heap).contains_refs = true;
-        }
-
         // Replace value (old one dropped by defer_drop_mut guard)
-        mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
+        self.get(vm.heap).check_replace(value, &vm.heap.tracker)?;
+        self.get_mut(vm.heap).replace(idx, value);
 
         Ok(())
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
-            return Ok(Some(false));
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::List(other)) => self.eq_list(&other, vm),
+            Some(HeapReadOutput::SpecializedList(other)) => self.eq_list(&other, vm),
+            _ => Ok(None),
         }
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((i, a)) = iter.next_with_index(vm)? {
-            // `ListIter` re-reads `self`'s length each step, but `other` is
-            // indexed directly and a user `__eq__` may have shrunk it.
-            let Some(b) = other.try_clone_item(i, vm) else {
-                break;
-            };
-            defer_drop!(b, vm);
-            if !a.py_eq(b, vm)? {
-                return Ok(Some(false));
-            }
-        }
-        // Equal element-wise as far as both lists still reach; a mutating
-        // `__eq__` can leave them different lengths, which CPython reports as
-        // not equal.
-        Ok(Some(self.get(vm.heap).items.len() == other.get(vm.heap).items.len()))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
-        Ok(!self.get(vm.heap).items.is_empty())
+        Ok(!self.get(vm.heap).is_empty())
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        repr_sequence_fmt('[', ']', |heap, i| self.get(heap).as_slice().get(i), f, vm, heap_ids)
+        repr_sequence_fmt(
+            '[',
+            ']',
+            |heap, i| self.get(heap).get(i).map(|item| item.clone_with_heap(heap)),
+            f,
+            vm,
+            heap_ids,
+        )
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        let mut items = self.clone_all_items(vm)?;
-        items.extend(other.clone_all_items(vm)?);
-        let id = vm.heap.allocate(HeapData::List(List::new(items)));
-        Ok(Some(Value::Ref(id)))
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::List(other)) => self.concat_list(&other, vm),
+            Some(HeapReadOutput::SpecializedList(other)) => self.concat_list(&other, vm),
+            _ => Ok(None),
+        }
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -660,13 +1365,51 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             return Ok(None);
         };
         let value = self.get(vm.heap);
-        check_repeat_size(value.len().saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
-        let mut result = Vec::with_capacity(value.len() * count);
-        for rep in 0..count {
-            result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
-            vm.heap.tracker.check_time_every(rep)?;
+        if count == 0 || value.is_empty() {
+            return Ok(Some(Value::Ref(
+                vm.heap.allocate(HeapData::SpecializedList(SpecializedList::default())),
+            )));
         }
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result))))))
+        check_repeat_size(
+            value.len().saturating_mul(value.element_size()),
+            count,
+            &vm.heap.tracker,
+        )?;
+        let numeric = match value.specialized() {
+            Some(SpecializedList::Int(items)) => {
+                let mut result = Vec::with_capacity(items.len() * count);
+                for rep in 0..count {
+                    vm.heap.tracker.check_time_every(rep)?;
+                    result.extend_from_slice(items);
+                }
+                Some(SpecializedList::Int(result))
+            }
+            Some(SpecializedList::Float(items)) => {
+                let mut result = Vec::with_capacity(items.len() * count);
+                for rep in 0..count {
+                    vm.heap.tracker.check_time_every(rep)?;
+                    result.extend_from_slice(items);
+                }
+                Some(SpecializedList::Float(result))
+            }
+            _ => None,
+        };
+        if let Some(items) = numeric {
+            return Ok(Some(Value::Ref(vm.heap.allocate(HeapData::SpecializedList(items)))));
+        }
+        let len = value.len();
+        let mut guard = DropGuard::new(Vec::with_capacity(len * count), vm);
+        let (result, vm) = guard.as_parts_mut();
+        for rep in 0..count {
+            vm.heap.tracker.check_time_every(rep)?;
+            result.extend(self.get(vm.heap).iter().map(|value| value.clone_with_heap(vm.heap)));
+        }
+        let (result, vm) = guard.into_parts();
+        let result = SpecializedList::Generic(List {
+            items: result,
+            contains_refs: self.get(vm.heap).contains_refs(),
+        });
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::SpecializedList(result)))))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -682,28 +1425,30 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             // Self-extend: clone our own items with proper refcounting. Checked
             // at 2× — the temporary clone plus the equal-sized target growth —
             // up front, while no owned values need releasing on failure.
-            let len = self.get(vm.heap).items.len();
+            let len = self.get(vm.heap).len();
             vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
             let items = self.clone_all_items(vm)?;
-            self.get_mut(vm.heap).items.extend(items);
+            self.extend_items(vm, items)?;
         } else {
             // Read source list via HeapRead, clone items into a temporary Vec.
             // Checked at 2× — the clone plus the target growth — see above.
             let source = vm.heap.read(*other_id);
-            let HeapReadOutput::List(source_list) = source else {
-                return Ok(false);
+            let source_items = match source {
+                HeapReadOutput::List(source) => {
+                    vm.heap
+                        .tracker
+                        .check_allocation(source.get(vm.heap).len().saturating_mul(2 * VALUE_SIZE))?;
+                    source.clone_all_items(vm)?
+                }
+                HeapReadOutput::SpecializedList(source) => {
+                    vm.heap
+                        .tracker
+                        .check_allocation(source.get(vm.heap).len().saturating_mul(2 * VALUE_SIZE))?;
+                    source.clone_all_items(vm)?
+                }
+                _ => return Ok(false),
             };
-            let source_len = source_list.get(vm.heap).len();
-            vm.heap
-                .tracker
-                .check_allocation(source_len.saturating_mul(2 * VALUE_SIZE))?;
-            let source_items = source_list.clone_all_items(vm)?;
-            // Check if new items contain refs
-            let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
-            self.get_mut(vm.heap).items.extend(source_items);
-            if has_new_refs {
-                self.get_mut(vm.heap).contains_refs = true;
-            }
+            self.extend_items(vm, source_items)?;
         }
 
         Ok(true)
@@ -732,13 +1477,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 }
 
-impl HeapItem for List {
+impl HeapItem for SpecializedList {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Skip iteration if no refs - major GC optimization for lists of primitives
-        if !self.contains_refs {
+        if !self.contains_refs() {
             return;
         }
-        for obj in &mut self.items {
+        let Self::Generic(List { items, .. }) = self else {
+            return;
+        };
+        for obj in items {
             if let Value::Ref(id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
@@ -757,8 +1505,8 @@ impl HeapItem for List {
 /// * `method` - The method to call (e.g., `StaticStrings::Append`)
 /// * `args` - The method arguments
 /// * `heap` - The heap for allocation and reference counting
-fn call_list_method<'h>(
-    list: &mut HeapRead<'h, List>,
+fn call_list_method<'h, T: ListStorage>(
+    list: &mut HeapRead<'h, T>,
     method: StaticStrings,
     args: ArgValues,
     vm: &mut VM<'h>,
@@ -787,7 +1535,7 @@ fn call_list_method<'h>(
         StaticStrings::Count => list_count(list, args, vm),
         StaticStrings::Reverse => {
             args.check_zero_args("list.reverse", heap)?;
-            list.get_mut(vm.heap).items.reverse();
+            list.get_mut(vm.heap).reverse();
             Ok(Value::None)
         }
         // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
@@ -799,7 +1547,7 @@ fn call_list_method<'h>(
 }
 
 /// Implements Python's `list.insert(index, item)` method.
-fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_insert<'h, T: ListStorage>(list: &mut HeapRead<'h, T>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
     defer_drop!(index_obj, vm);
     let mut item_guard = DropGuard::new(item, vm);
@@ -808,7 +1556,7 @@ fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
     // If still negative after adding len, clamps to 0
     // If >= len, appends to end
     let index_i64 = index_obj.as_int(vm)?;
-    let len = list.get(vm.heap).items.len();
+    let len = list.get(vm.heap).len();
     let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
     let index = if index_i64 < 0 {
         // Negative index: add length, clamp to 0 if still negative
@@ -827,7 +1575,7 @@ fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
 ///
 /// Removes the item at the given index (default: -1) and returns it.
 /// Raises IndexError if the list is empty or the index is out of range.
-fn list_pop<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_pop<'h, T: ListStorage>(list: &mut HeapRead<'h, T>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
 
     // Validate index type FIRST (if provided), matching Python's validation order.
@@ -841,12 +1589,12 @@ fn list_pop<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>)
     };
 
     // THEN check empty list
-    if list.get(vm.heap).items.is_empty() {
+    if list.get(vm.heap).is_empty() {
         return Err(ExcType::index_error_pop_empty_list());
     }
 
     // Normalize index
-    let len = list.get(vm.heap).items.len();
+    let len = list.get(vm.heap).len();
     let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
     let normalized = if index_i64 < 0 { index_i64 + len_i64 } else { index_i64 };
 
@@ -857,13 +1605,13 @@ fn list_pop<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>)
 
     // Remove and return the item
     let idx = usize::try_from(normalized).expect("index validated non-negative");
-    Ok(list.get_mut(vm.heap).items.remove(idx))
+    Ok(list.get_mut(vm.heap).remove(idx))
 }
 
 /// Implements Python's `list.remove(value)` method.
 ///
 /// Removes the first occurrence of value. Raises ValueError if not found.
-fn list_remove<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_remove<'h, T: ListStorage>(list: &mut HeapRead<'h, T>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let value = args.get_one_arg("list.remove", vm.heap)?;
     defer_drop!(value, vm);
 
@@ -885,8 +1633,8 @@ fn list_remove<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
             // `idx` stale; CPython clamps the deletion (`list_ass_slice`), so a
             // gone index removes nothing rather than panicking.
             let this = list.get_mut(vm.heap);
-            if idx < this.items.len() {
-                let removed = this.items.remove(idx);
+            if idx < this.len() {
+                let removed = this.remove(idx);
                 removed.drop_with(vm.heap);
             }
             Ok(Value::None)
@@ -898,35 +1646,28 @@ fn list_remove<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
 /// Implements Python's `list.clear()` method.
 ///
 /// Removes all items from the list.
-fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h>) {
-    mem::take(&mut list.get_mut(vm.heap).items).drop_with(vm);
-    // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
+fn list_clear<'h, T: ListStorage>(list: &mut HeapRead<'h, T>, vm: &mut VM<'h>) {
+    mem::take(list.get_mut(vm.heap)).discard(vm);
 }
 
 /// Implements Python's `list.copy()` method.
 ///
 /// Returns a shallow copy of the list, preflighting the slot bytes like
 /// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
-fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
+fn list_copy<T: ListStorage>(list: &T, heap: &Heap) -> RunResult<Value> {
     heap.tracker
-        .check_allocation(list.items.len().saturating_mul(VALUE_SIZE))?;
-    let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
-    let heap_id = heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
+        .check_allocation(list.len().saturating_mul(list.element_size()))?;
+    let copied = list.copy(heap);
+    Ok(Value::Ref(heap.allocate(HeapData::SpecializedList(copied))))
 }
 
 /// Implements Python's `list.extend(iterable)` method.
 ///
 /// Extends the list by appending all items from the iterable.
-fn list_extend<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_extend<'h, T: ListStorage>(list: &mut HeapRead<'h, T>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let iterable = args.get_one_arg("list.extend", vm.heap)?;
     let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
-
-    let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
-    if has_refs {
-        list.get_mut(vm.heap).set_contains_refs();
-    }
-    list.get_mut(vm.heap).as_vec_mut().extend(items);
+    list.extend_items(vm, items.into_vec())?;
 
     Ok(Value::None)
 }
@@ -935,7 +1676,7 @@ fn list_extend<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
 ///
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
-fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_index<'h, T: ListStorage>(list: &HeapRead<'h, T>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let pos_args = args.into_pos_only("list.index", vm.heap)?;
     defer_drop!(pos_args, vm);
 
@@ -955,7 +1696,7 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
         other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
     };
 
-    let len = list.get(vm.heap).items.len();
+    let len = list.get(vm.heap).len();
     let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
     let end = end_arg.map_or(len, |i| normalize_sequence_index(i, len)).max(start);
 
@@ -978,7 +1719,7 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
 /// Implements Python's `list.count(value)` method.
 ///
 /// Returns the number of occurrences of value in the list.
-fn list_count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_count<'h, T: ListStorage>(list: &HeapRead<'h, T>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let value = args.get_one_arg("list.count", vm.heap)?;
     defer_drop!(value, vm);
 
@@ -1005,30 +1746,45 @@ fn list_count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
 /// list afterwards. If the user mutated the live (empty) list during the
 /// sort, we additionally raise `ValueError: list modified during sort`,
 /// matching CPython exactly.
-fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> Result<(), RunError> {
+fn do_list_sort<'h, T: ListStorage>(
+    list: &mut HeapRead<'h, T>,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> Result<(), RunError> {
     // Detach the list's items so reentrant access via the list's heap id sees
     // an empty list. The detached buffer is always swapped back into the list
     // when we're done. Done *before* parsing args so the reentrancy guard is
     // in place if parsing somehow allocates or drops user values that run
     // arbitrary code.
-    let items = mem::take(&mut list.get_mut(vm.heap).items);
+    let mut args_guard = DropGuard::new(args, vm);
+    let (_, vm) = args_guard.as_parts_mut();
+    let storage = list.get(vm.heap);
+    if matches!(
+        storage.specialized(),
+        Some(SpecializedList::Int(_) | SpecializedList::Float(_))
+    ) {
+        vm.heap
+            .tracker
+            .check_allocation(storage.len().saturating_mul(VALUE_SIZE))?;
+    }
+    let (args, vm) = args_guard.into_parts();
+    let items = mem::take(list.get_mut(vm.heap)).into_values();
     defer_drop_mut!(items, vm);
 
     let sort_result = parse_and_sort("sort() key argument", items, args, vm);
 
-    // Swap our (sorted) buffer back into the list. Whatever the user placed
-    // on the live empty list during the sort ends up in `items`; if
-    // it's not empty, the user mutated the list. The `contains_refs` flag
-    // survives `mem::take`, so it still describes the buffer being swapped
-    // back.
-    mem::swap(list.get_mut(vm.heap).as_vec_mut(), items);
+    // Restore the detached values, then release anything callbacks put on the live list.
+    let restored = T::from_values(mem::take(items));
+    let modified = mem::replace(list.get_mut(vm.heap), restored);
+    let was_modified = !modified.is_empty();
+    modified.discard(vm);
 
     // Surface any sort error first; otherwise the modification error (if any).
     sort_result?;
-    if items.is_empty() {
-        Ok(())
-    } else {
+    if was_modified {
         Err(SimpleException::new_msg(ExcType::ValueError, "list modified during sort").into())
+    } else {
+        Ok(())
     }
 }
 
@@ -1056,7 +1812,7 @@ fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<
 pub(crate) fn repr_sequence_fmt<'h>(
     start: char,
     end: char,
-    get_item: impl for<'r> Fn(&'r HeapReader<'h>, usize) -> Option<&'r Value>,
+    get_item: impl Fn(&HeapReader<'h>, usize) -> Option<Value>,
     f: &mut impl Write,
     vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
@@ -1073,11 +1829,6 @@ pub(crate) fn repr_sequence_fmt<'h>(
     // reprs that keep growing the sequence from inside a user `__repr__`.
     for i in 0.. {
         let Some(item) = get_item(vm.heap, i) else { break };
-        // The clone (a refcount bump, not a deep copy) is load-bearing: the
-        // recursion below runs user `__repr__` code that may drop the
-        // container's reference to this very item — CPython incref's the same
-        // way. It also releases the heap borrow the getter's reference holds.
-        let item = item.clone_with_heap(vm.heap);
         defer_drop!(item, vm);
         if i > 0 {
             if repr_check_time(i, vm) {
@@ -1148,10 +1899,12 @@ impl ListIterator {
 
     /// Returns the number of items remaining in the list's current contents.
     pub(crate) fn size_hint(&self, heap: &Heap) -> usize {
-        let HeapData::List(list) = heap.get(self.list) else {
-            unreachable!("list iterator must reference a list")
+        let len = match heap.get(self.list) {
+            HeapData::List(list) => list.len(),
+            HeapData::SpecializedList(list) => list.len(),
+            _ => unreachable!("list iterator must reference a list"),
         };
-        list.len().saturating_sub(self.index)
+        len.saturating_sub(self.index)
     }
 }
 
@@ -1192,7 +1945,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
             (iterator.list, iterator.index)
         };
         let item = match vm.heap.get(list_id) {
-            HeapData::List(list) => list.items.get(index).map(|item| item.clone_with_heap(vm.heap)),
+            HeapData::List(list) => list.get(index).map(|item| item.clone_with_heap(vm.heap)),
+            HeapData::SpecializedList(list) => list.get(index).map(|item| item.clone_with_heap(vm.heap)),
             _ => unreachable!("list iterator must reference a list"),
         };
         if item.is_some() {
@@ -1202,12 +1956,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
     }
 }
 
-impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
+impl<'h, T: ListStorage> PyDeepCopy<'h> for HeapRead<'h, T> {
     /// Copies into a shell memoized before its items are, so a list holding
     /// itself resolves to the shell rather than recursing forever.
     #[inline(never)]
     fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
-        let copy_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
+        let copy_id = vm
+            .heap
+            .allocate(HeapData::SpecializedList(SpecializedList::new(Vec::new())));
         let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;
@@ -1226,7 +1982,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
             let copied = deep_copy(&item, memo, vm);
             item.drop_with(vm);
             let copied = copied?;
-            let HeapReadOutput::List(mut dest) = vm.heap.read(copy_id) else {
+            let HeapReadOutput::SpecializedList(mut dest) = vm.heap.read(copy_id) else {
                 unreachable!("copy was allocated as a list")
             };
             dest.append(vm, copied)?;
@@ -1238,23 +1994,94 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{PrintWriter, ResourceTracker};
+    use std::time::Duration;
+
+    use monty_types::{PrintWriter, ResourceLimits, ResourceTracker};
     use num_bigint::BigInt;
 
     use super::*;
     use crate::{
         heap::{Heap, HeapReader},
         run::{Program, SessionTables},
-        types::LongInt,
+        types::{LongInt, Slice},
     };
+
+    #[test]
+    fn promotion_preserves_heap_identity_handles_and_iterators() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let id = heap.allocate(HeapData::SpecializedList(SpecializedList::Int(vec![1, 2])));
+        let legacy_id = heap.allocate(HeapData::List(List::new(vec![Value::Int(1), Value::Int(2)])));
+        let value = Value::Ref(id);
+        let legacy_value = Value::Ref(legacy_id);
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let iterator = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let HeapReadOutput::SpecializedList(mut list) = vm.heap.read(id) else {
+                unreachable!()
+            };
+            let HeapReadOutput::SpecializedList(alias) = vm.heap.read(id) else {
+                unreachable!()
+            };
+            let HeapReadOutput::List(legacy) = vm.heap.read(legacy_id) else {
+                unreachable!()
+            };
+
+            assert!(value.py_eq(&legacy_value, &mut vm).unwrap());
+            assert!(legacy_value.py_eq(&value, &mut vm).unwrap());
+            assert_eq!(
+                HeapRead::py_cmp(&list, &legacy, &mut vm).unwrap(),
+                CmpOrder::Ordered(Ordering::Equal)
+            );
+            let concatenated = list.py_add_impl(&legacy_value, &mut vm).unwrap().unwrap();
+            assert_eq!(concatenated.py_len(&vm), Some(4));
+            concatenated.drop_with(&mut vm);
+
+            let mut iterator = list.py_iter(&mut vm).unwrap();
+            assert!(matches!(iterator.py_next(&mut vm).unwrap(), Some(Value::Int(1))));
+            list.append(&mut vm, Value::None).unwrap();
+
+            assert_eq!(list.id(), alias.id());
+            assert!(matches!(alias.get(vm.heap), SpecializedList::Generic(_)));
+            assert!(matches!(alias.clone_item(2, &mut vm), Value::None));
+            assert!(matches!(iterator.py_next(&mut vm).unwrap(), Some(Value::Int(2))));
+            assert!(matches!(iterator.py_next(&mut vm).unwrap(), Some(Value::None)));
+            assert!(iterator.py_next(&mut vm).unwrap().is_none());
+            iterator
+        });
+        iterator.drop_with(&mut heap);
+        value.drop_with(&mut heap);
+        legacy_value.drop_with(&mut heap);
+    }
+
+    #[test]
+    fn numeric_sum_checks_the_deadline_inside_the_buffer_walk() {
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_turn_duration(Duration::ZERO));
+        let mut heap = Heap::new(16, tracker);
+        let id = heap.allocate(HeapData::SpecializedList(SpecializedList::default()));
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let HeapReadOutput::SpecializedList(mut list) = vm.heap.read(id) else {
+                unreachable!()
+            };
+            list.get_mut(vm.heap).extend_owned((0..1024).map(Value::Int).collect());
+            vm.heap.tracker.on_execution_start();
+            assert!(list.sum(&Value::Int(0), &vm).is_err());
+            *list.get_mut(vm.heap) = SpecializedList::Float(vec![1.0; 1024]);
+            assert!(list.sum(&Value::Int(0), &vm).is_err());
+        });
+        Value::Ref(id).drop_with(&mut heap);
+    }
 
     /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.
     ///
     /// This allows testing the defensive code path where a LongInt contains an i64-fitting value.
     fn create_heap_with_list_and_longint(list_items: Vec<Value>, index_value: BigInt) -> (Heap, HeapId, HeapId) {
         let heap = Heap::new(16, ResourceTracker::default());
-        let list = List::new(list_items);
-        let list_id = heap.allocate(HeapData::List(list));
+        let list = SpecializedList::new(list_items);
+        let list_id = heap.allocate(HeapData::SpecializedList(list));
         let long_int = LongInt::new(index_value);
         let index_id = heap.allocate(HeapData::LongInt(long_int));
         (heap, list_id, index_id)
@@ -1278,7 +2105,7 @@ mod tests {
 
         let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
             let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+            let HeapReadOutput::SpecializedList(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
             list.py_setitem(key, new_value, &mut vm)
@@ -1287,10 +2114,10 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify the list was updated by checking it matches expected Int value
-        let HeapData::List(list) = heap.get(list_id) else {
+        let HeapData::SpecializedList(list) = heap.get(list_id) else {
             panic!("expected list");
         };
-        assert!(matches!(list.as_slice()[1], Value::Int(99)));
+        assert!(matches!(*list.get(1).unwrap(), Value::Int(99)));
 
         // Clean up
         Value::Ref(list_id).drop_with(&mut heap);
@@ -1312,7 +2139,7 @@ mod tests {
 
         let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
             let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+            let HeapReadOutput::SpecializedList(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
             list.py_setitem(key, new_value, &mut vm)
@@ -1321,10 +2148,10 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify the last element was updated
-        let HeapData::List(list) = heap.get(list_id) else {
+        let HeapData::SpecializedList(list) = heap.get(list_id) else {
             panic!("expected list");
         };
-        assert!(matches!(list.as_slice()[2], Value::Int(99)));
+        assert!(matches!(*list.get(2).unwrap(), Value::Int(99)));
 
         Value::Ref(list_id).drop_with(&mut heap);
     }
@@ -1343,7 +2170,7 @@ mod tests {
 
         let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
             let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
+            let HeapReadOutput::SpecializedList(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
             list.py_setitem(key, new_value, &mut vm)
@@ -1352,5 +2179,74 @@ mod tests {
         assert!(result.is_err());
 
         Value::Ref(list_id).drop_with(&mut heap);
+    }
+    #[test]
+    fn generic_numeric_slices_and_repeats_keep_the_preflighted_representation() {
+        for items in [
+            vec![Value::Int(1), Value::Int(2)],
+            vec![Value::Float(1.0), Value::Float(2.0)],
+        ] {
+            let mut heap = Heap::new(16, ResourceTracker::default());
+            let id = heap.allocate(HeapData::SpecializedList(SpecializedList::Generic(List {
+                items,
+                contains_refs: false,
+            })));
+            let mut tables = SessionTables::default();
+            let program = Program::for_tests();
+            HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+                let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+                let HeapReadOutput::SpecializedList(list) = vm.heap.read(id) else {
+                    unreachable!()
+                };
+                let slice = list.getitem_slice(&Slice::new(None, None, None), &mut vm).unwrap();
+                let repeated = list.py_mul_impl(&Value::Int(2), &mut vm).unwrap().unwrap();
+                for result in [slice, repeated] {
+                    let Value::Ref(result_id) = &result else { unreachable!() };
+                    assert!(matches!(
+                        vm.heap.get(*result_id),
+                        HeapData::SpecializedList(SpecializedList::Generic(_))
+                    ));
+                    result.drop_with(&mut vm);
+                }
+            });
+            Value::Ref(id).drop_with(&mut heap);
+        }
+    }
+
+    #[test]
+    fn numeric_storage_has_eight_byte_slots_and_promotes_without_coercion() {
+        let mut ints = SpecializedList::new((0..128).map(Value::Int).collect());
+        assert_eq!(ints.element_size(), 8);
+        assert_eq!(ints.capacity(), 128);
+        ints.push(Value::Bool(true));
+        assert!(matches!(ints, SpecializedList::Generic(_)));
+        assert!(matches!(*ints.get(0).unwrap(), Value::Int(0)));
+        assert!(matches!(*ints.get(128).unwrap(), Value::Bool(true)));
+        ints.remove(128);
+        assert!(matches!(ints, SpecializedList::Generic(_)));
+        ints.drop_with(&mut Heap::new(16, ResourceTracker::default()));
+    }
+
+    #[test]
+    fn snapshots_preserve_list_variants() {
+        for list in [
+            SpecializedList::Empty,
+            SpecializedList::Int(vec![i64::MIN, 0, i64::MAX]),
+            SpecializedList::Int(Vec::new()),
+            SpecializedList::Float(vec![-0.0, f64::INFINITY, f64::NAN]),
+            SpecializedList::Float(Vec::new()),
+            SpecializedList::Generic(List {
+                items: vec![Value::None, Value::Bool(true)],
+                contains_refs: false,
+            }),
+        ] {
+            let encoded = minicbor_serde::to_vec(&list).unwrap();
+            let restored: SpecializedList = minicbor_serde::from_slice(&encoded).unwrap();
+            assert_eq!(mem::discriminant(&list), mem::discriminant(&restored));
+            assert_eq!(encoded, minicbor_serde::to_vec(&restored).unwrap());
+            let mut heap = Heap::new(16, ResourceTracker::default());
+            list.drop_with(&mut heap);
+            restored.drop_with(&mut heap);
+        }
     }
 }

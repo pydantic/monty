@@ -32,8 +32,8 @@ use crate::{
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
     types::{
-        LazyHeapSet, List, Path, PyTrait, Type, allocate_tuple,
-        list::ListIterator,
+        LazyHeapSet, Path, PyTrait, SpecializedList, Type, allocate_tuple,
+        list::{ListIterator, ListStorage},
         str::{allocate_string, string_repr_fmt},
     },
     value::{EitherStr, Value},
@@ -478,6 +478,29 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
     }
 }
 
+/// Copies and preflights the names in either list representation.
+fn walk_dirnames<T: ListStorage>(list: &T, relative: &str, spelled: &str, vm: &VM<'_>) -> RunResult<Vec<String>> {
+    // Each name is copied, then joined onto the directory and spelled for its
+    // step; charged first, since a list can repeat one long name many times.
+    let mut total = 0_usize;
+    for item in list.iter() {
+        let Some(name) = value_as_path_str(&item, vm.heap, vm.interns) else {
+            return Err(ExcType::type_error(format!(
+                "join() argument must be str, bytes, or os.PathLike object, not '{}'",
+                item.py_type_name_heap(vm.heap, vm.interns)
+            )));
+        };
+        let step = name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>();
+        total = total.saturating_add(step);
+    }
+    vm.heap.tracker.check_allocation(total)?;
+    let names: Vec<String> = list
+        .iter()
+        .filter_map(|item| value_as_path_str(&item, vm.heap, vm.interns).map(str::to_owned))
+        .collect();
+    Ok(names)
+}
+
 /// Queues the subdirectories still named in a top-down walk's yielded `dirnames`.
 ///
 /// Names may be `str` or path-like, as `os.path.join` takes them. Like CPython,
@@ -500,29 +523,11 @@ fn descend_into_dirnames<'h>(
     let Value::Ref(list_id) = dirnames else {
         unreachable!("constructed as a Ref above")
     };
-    let HeapData::List(list) = vm.heap.get(*list_id) else {
-        unreachable!("a walk's dirnames is always a list")
+    let names = match vm.heap.get(*list_id) {
+        HeapData::List(list) => walk_dirnames(list, &relative, &spelled, vm)?,
+        HeapData::SpecializedList(list) => walk_dirnames(list, &relative, &spelled, vm)?,
+        _ => unreachable!("a walk's dirnames is always a list"),
     };
-    // Each name is copied, then joined onto the directory and spelled for its
-    // step; charged first, since a list can repeat one long name many times.
-    let mut total = 0_usize;
-    for item in list.as_slice() {
-        let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
-            return Err(ExcType::type_error(format!(
-                "join() argument must be str, bytes, or os.PathLike object, not '{}'",
-                item.py_type_name_heap(vm.heap, vm.interns)
-            )));
-        };
-        let step = name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>();
-        total = total.saturating_add(step);
-    }
-    vm.heap.tracker.check_allocation(total)?;
-    let names: Vec<String> = list
-        .as_slice()
-        .iter()
-        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns))
-        .map(str::to_owned)
-        .collect();
     let walk = walk_mut(this, vm);
     for name in names.iter().rev() {
         let child = normalized_child(&relative, name);
@@ -566,7 +571,7 @@ fn walk_mut<'a, 'h>(this: &'a mut HeapObjectRead<'h, DirScan>, vm: &'a mut VM<'h
 /// Allocates a list of `str`.
 fn string_list(items: Vec<String>, vm: &VM<'_>) -> Value {
     let items = items.into_iter().map(|item| allocate_string(item, vm.heap)).collect();
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))
+    Value::Ref(vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(items))))
 }
 
 /// What [`WalkIterator::step`] decided, carried out once its borrow ends.
@@ -859,7 +864,7 @@ impl ScanEffect {
                     .into_iter()
                     .map(|path| Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(path)))))
                     .collect();
-                let list = vm.heap.allocate(HeapData::List(List::new(paths)));
+                let list = vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(paths)));
                 Ok(Value::Ref(
                     vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list))),
                 ))

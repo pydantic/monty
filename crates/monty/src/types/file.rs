@@ -84,7 +84,7 @@ use std::{
 use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs};
 
 use super::{
-    LazyHeapSet, List, PyTrait, Type,
+    LazyHeapSet, PyTrait, Type,
     bytes::{Bytes, bytes_repr_fmt},
     str::{allocate_string, allocate_string_no_interning},
 };
@@ -96,7 +96,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
-    types::str::StringRepr,
+    types::{SpecializedList, str::StringRepr},
     value::{EitherStr, Value},
     virtual_path::posix_join,
 };
@@ -1296,7 +1296,7 @@ fn compute_slice_text<'h>(
                     items.push(allocate_string(line.to_owned(), vm.heap));
                     start += end;
                 }
-                let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
+                let list_id = vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(items)));
                 // Past-EOF preservation: matches `ReadSpec::All`.
                 (Value::Ref(list_id), position.max(buffer_total), buffer.len(), true)
             }
@@ -1392,7 +1392,7 @@ fn compute_slice_binary<'h>(
                     items.push(Value::Ref(id));
                     start += end;
                 }
-                let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
+                let list_id = vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(items)));
                 // Past-EOF preservation: matches `ReadSpec::All`.
                 (Value::Ref(list_id), position.max(buffer_total), true)
             }
