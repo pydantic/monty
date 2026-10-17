@@ -400,14 +400,16 @@ assert classify(frozenset({1})) == ('frozenset', frozenset({1}))
 assert classify(None) == 'other'
 assert classify(1j) == 'other'
 # `dict` subclasses inherit self-matching
-match Counter(a=1):
+counter = Counter(a=1)
+match counter:
     case Counter(c):
         pass
-assert c == Counter(a=1)
-match defaultdict(list, k=[1]):
+assert c is counter
+default_dict = defaultdict(list, k=[1])
+match default_dict:
     case defaultdict(dd):
         pass
-assert dd == {'k': [1]}
+assert dd is default_dict
 
 
 # bare class patterns and or-combinations
