@@ -662,7 +662,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         self.read_with_effect(vm, spec, |file_id| PostConversionEffect::BufferStore { file_id })
     }
 
-    /// `json.load`'s and `tomllib.load`'s `fp.read()`: the rest of the buffer when it is loaded,
+    /// `json.load`'s `fp.read()`: the rest of the buffer when it is loaded,
     /// otherwise the host load with `effect` armed to consume the content
     /// (it must store the buffer via `apply_buffer_store`, which takes the
     /// `pending_read` recorded here).
@@ -704,6 +704,16 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         self.get_mut(vm.heap).pending_read = Some(spec);
         let effect = effect(self.id());
         Ok(self.buffer_load_call(vm, effect))
+    }
+
+    /// `tomllib.load(fp)`'s `fp.read()`: the whole remaining content as one
+    /// value. The caller loads an unread file first (see [`Self::needs_buffer_load`]).
+    pub(crate) fn read_all(&mut self, vm: &mut VM<'h>) -> RunResult<Value> {
+        if self.get(vm.heap).buffer.is_some() {
+            compute_slice(self, ReadSpec::All, vm)
+        } else {
+            Err(RunError::internal("read_all: file buffer is not loaded"))
+        }
     }
 
     /// Raises what a read on this file would: `ValueError` once closed, then

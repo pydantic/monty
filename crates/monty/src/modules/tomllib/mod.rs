@@ -30,7 +30,7 @@ use crate::{
     heap::{HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
-    types::{Module, file::apply_buffer_store},
+    types::Module,
     value::Value,
 };
 
@@ -119,10 +119,10 @@ struct TomlLoadArgs {
 
 /// Implements `tomllib.load(fp)` for file objects returned by `open()`.
 ///
-/// CPython calls `fp.read()` and decodes the bytes; here the file's own read
-/// path serves that, suspending with a [`PostConversionEffect::TomlLoad`] when
-/// the host has not supplied the content yet. Anything that is not a file
-/// object raises the `AttributeError` CPython's `fp.read()` would.
+/// CPython calls `fp.read()` and decodes the bytes. An unread file is loaded
+/// with a [`PostConversionEffect::LoadThenCall`] that replays this call, which
+/// then finds the buffer in place. Anything that is not a file object raises
+/// the `AttributeError` CPython's `fp.read()` would.
 fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let TomlLoadArgs { fp } = TomlLoadArgs::from_args(args, vm)?;
     defer_drop!(fp, vm);
@@ -136,23 +136,17 @@ fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     if !file.is_binary(vm) {
         return Err(ExcType::toml_load_text_mode_error());
     }
-    match file.read_all_with(vm, |file_id| PostConversionEffect::TomlLoad { file_id })? {
-        CallResult::Value(content) => parse_file_content(content, vm).map(CallResult::Value),
-        suspended => Ok(suspended),
+    if file.needs_buffer_load(vm) {
+        let effect = PostConversionEffect::LoadThenCall {
+            file_id: *file_id,
+            callable: Value::ModuleFunction(ModuleFunctions::Tomllib(TomllibFunctions::Load)),
+            args: ArgValues::One(fp.clone_with_heap(vm.heap)),
+        };
+        Ok(file.buffer_load_call(vm, effect))
+    } else {
+        let content = file.read_all(vm)?;
+        parse_file_content(content, vm).map(CallResult::Value)
     }
-}
-
-/// `TomlLoad` resume: installs the host's bytes as the file buffer, then
-/// parses them. Consumes the pin on `file_id` via [`apply_buffer_store`].
-pub(crate) fn apply_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let content = apply_buffer_store(file_id, result, vm)?;
-    // `resume` applies effects before `run_external` restarts the execution
-    // clock, so the parse is charged to it here; the parser's time polls need
-    // the clock running too.
-    vm.heap.tracker.on_execution_start();
-    let parsed = parse_file_content(content, vm);
-    vm.heap.tracker.on_execution_stop();
-    parsed
 }
 
 /// Decodes the `bytes` a binary `read()` produced as UTF-8 (CPython's

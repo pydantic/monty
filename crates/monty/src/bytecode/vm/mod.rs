@@ -46,7 +46,6 @@ use crate::{
         random::apply_seed_random,
         re::RePatternCache,
         time::apply_clock_reading,
-        tomllib,
     },
     name_map::NameMap,
     object_bridge::MontyObjectExt,
@@ -2218,9 +2217,6 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::FileNext { file_id, default })) => {
                 apply_file_next(file_id, default, value, self).map(Some)
             }
-            Some(PendingEffect::Post(PostConversionEffect::TomlLoad { file_id })) => {
-                tomllib::apply_load(file_id, value, self).map(Some)
-            }
             Some(PendingEffect::Post(PostConversionEffect::WritePosition {
                 file_id,
                 text_length,
@@ -2337,9 +2333,7 @@ impl<'h> VM<'h> {
                     return self.run_external();
                 }
                 PendingEffect::Post(
-                    PostConversionEffect::BufferStore { file_id }
-                    | PostConversionEffect::JsonLoad { file_id }
-                    | PostConversionEffect::TomlLoad { file_id },
+                    PostConversionEffect::BufferStore { file_id } | PostConversionEffect::JsonLoad { file_id },
                 ) => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap).clear_pending_read();
