@@ -25,7 +25,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, is_path_os_method, value_as_path_str},
     types::{
-        LazyHeapSet, List, PyTrait, Type, allocate_tuple,
+        LazyHeapSet, PyTrait, SpecializedList, Type, allocate_tuple,
         dir_scan::{glob_call, walk_call},
         str::allocate_string,
     },
@@ -511,7 +511,7 @@ impl Path {
                 for suffix in suffixes {
                     items.push(allocate_string(suffix, heap));
                 }
-                Value::Ref(heap.allocate(HeapData::List(List::new(items))))
+                Value::Ref(heap.allocate(HeapData::SpecializedList(SpecializedList::new(items))))
             }
             StaticStrings::Parts => {
                 let parts = self.parts();

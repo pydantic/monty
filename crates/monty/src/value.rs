@@ -19,7 +19,7 @@ use crate::{
     expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, hash_f64, hash_named, hash_one, identity_hash},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     heap_data::heap_subscript,
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
@@ -434,6 +434,9 @@ impl<'h> PyTrait<'h> for Value {
                     cmp_item_seqs(a, b, vm)
                 }
                 (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::List(a), HeapReadOutput::SpecializedList(b)) => HeapRead::py_cmp(&a, &b, vm),
+                (HeapReadOutput::SpecializedList(a), HeapReadOutput::List(b)) => HeapRead::py_cmp(&a, &b, vm),
+                (HeapReadOutput::SpecializedList(a), HeapReadOutput::SpecializedList(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
                     Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
@@ -535,6 +538,7 @@ impl<'h> PyTrait<'h> for Value {
                     // Cycle detected - write type-specific placeholder following Python semantics
                     match vm.heap.get(*id) {
                         HeapData::List(_) => Ok(f.write_str("[...]")?),
+                        HeapData::SpecializedList(_) => Ok(f.write_str("[...]")?),
                         HeapData::Tuple(_) => Ok(f.write_str("(...)")?),
                         HeapData::Dict(_) => Ok(f.write_str("{...}")?),
                         // A deque prints its items inside list-shaped brackets

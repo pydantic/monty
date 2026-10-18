@@ -65,7 +65,7 @@ pub(crate) use host_class::{HostClass, HostClassType, host_class_type};
 pub(crate) use instance::{BoundMethod, Instance, instance_call_copy_hook};
 pub(crate) use iter::{collect_iterable, collect_iterable_bounded};
 pub(crate) use itertools::ItertoolsIter;
-pub(crate) use list::List;
+pub(crate) use list::{List, SpecializedList};
 pub(crate) use long_int::LongInt;
 pub(crate) use module::Module;
 pub(crate) use namedtuple::{NamedTuple, NamedTupleClass};

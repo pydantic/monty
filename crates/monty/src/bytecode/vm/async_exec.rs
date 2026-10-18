@@ -27,7 +27,7 @@ use crate::{
     intern::FunctionId,
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
-    types::List,
+    types::SpecializedList,
     value::Value,
 };
 
@@ -304,7 +304,9 @@ impl<'h> VM<'h> {
                 .into_iter()
                 .map(|r| r.expect("all results filled for synchronous gather completion"))
                 .collect();
-            let list_id = self.heap.allocate(HeapData::List(List::new(results)));
+            let list_id = self
+                .heap
+                .allocate(HeapData::SpecializedList(SpecializedList::new(results)));
             gather.cache_result(self.heap, list_id);
             frame.awaiter.drop_with(self.heap);
             Poll::Ready(Value::Ref(list_id))
@@ -1122,7 +1124,9 @@ impl<'h> HeapRead<'h, GatherFuture> {
             .into_iter()
             .map(|r| r.expect("all results filled when gather is complete"))
             .collect();
-        let list_id = vm.heap.allocate(HeapData::List(List::new(results)));
+        let list_id = vm
+            .heap
+            .allocate(HeapData::SpecializedList(SpecializedList::new(results)));
         self.cache_result(vm.heap, list_id);
         Some(GatherSuccess { list_id, awaiter })
     }

@@ -5,7 +5,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
-    types::{List, iter::collect_owned_iterable},
+    types::{SpecializedList, iter::collect_owned_iterable},
     value::Value,
 };
 
@@ -42,7 +42,7 @@ pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Reverse in place
     items.reverse();
 
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
+    let heap_id = vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(items)));
     Ok(Value::Ref(heap_id))
 }
 
@@ -59,6 +59,7 @@ fn is_reversible(value: &Value, vm: &VM<'_>) -> bool {
         Value::Ref(id) => matches!(
             vm.heap.get(*id),
             HeapData::List(_)
+                | HeapData::SpecializedList(_)
                 | HeapData::Tuple(_)
                 | HeapData::NamedTuple(_)
                 | HeapData::Deque(_)

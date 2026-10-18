@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
+    types::{Dict, Module, SpecializedList, hash_table::TableCursor, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -108,7 +108,15 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         Copyability::Rebuilt => match vm.heap.read(id) {
             HeapReadOutput::List(list) => {
                 let items = clone_items(list.get(vm.heap).len(), vm, |index, vm| list.clone_item(index, vm))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
+                Ok(Value::Ref(
+                    vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(items))),
+                ))
+            }
+            HeapReadOutput::SpecializedList(list) => {
+                let items = clone_items(list.get(vm.heap).len(), vm, |index, vm| list.clone_item(index, vm))?;
+                Ok(Value::Ref(
+                    vm.heap.allocate(HeapData::SpecializedList(SpecializedList::new(items))),
+                ))
             }
             HeapReadOutput::Dict(dict) => {
                 let pairs = dict.clone_all_pairs(vm)?;
@@ -221,6 +229,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
         // the ones `copy` shares.
         Copyability::Rebuilt | Copyability::ImmutableContainer => match vm.heap.read(id) {
             HeapReadOutput::List(list) => list.py_deep_copy(source, memo, vm),
+            HeapReadOutput::SpecializedList(list) => list.py_deep_copy(source, memo, vm),
             HeapReadOutput::Dict(dict) => dict.py_deep_copy(source, memo, vm),
             HeapReadOutput::Deque(deque) => deque.py_deep_copy(source, memo, vm),
             HeapReadOutput::Set(set) => set.py_deep_copy(source, memo, vm),
@@ -275,6 +284,7 @@ enum Copyability {
 fn classify(output: &HeapReadOutput<'_>) -> Copyability {
     match output {
         HeapReadOutput::List(_)
+        | HeapReadOutput::SpecializedList(_)
         | HeapReadOutput::Dict(_)
         | HeapReadOutput::Set(_)
         | HeapReadOutput::Deque(_)

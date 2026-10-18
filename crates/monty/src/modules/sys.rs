@@ -27,7 +27,7 @@ use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
+    types::{Module, NamedTuple, SpecializedList, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
 };
 
@@ -224,7 +224,10 @@ fn version_info(vm: &VM<'_>) -> Value {
 /// `limitations/modules.md`).
 fn argv(vm: &VM<'_>) -> Value {
     let script = allocate_string(vm.env.script_basename(), vm.heap);
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(vec![script]))))
+    Value::Ref(
+        vm.heap
+            .allocate(HeapData::SpecializedList(SpecializedList::new(vec![script]))),
+    )
 }
 
 /// Builds `sys.float_info` from Rust's `f64` constants.

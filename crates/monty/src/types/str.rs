@@ -25,7 +25,7 @@ use crate::{
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, SpecializedList, Type,
         long_int::repeat_count,
         slice::{optional_sequence_bound, slice_collect_iterator},
     },
@@ -1207,8 +1207,8 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
         list_items.push(allocate_string(part, vm.heap));
     }
 
-    let list = super::List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
+    let list = SpecializedList::new(list_items);
+    let heap_id = vm.heap.allocate(HeapData::SpecializedList(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1256,8 +1256,8 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
         list_items.push(allocate_string(part, vm.heap));
     }
 
-    let list = super::List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
+    let list = SpecializedList::new(list_items);
+    let heap_id = vm.heap.allocate(HeapData::SpecializedList(list));
     Ok(Value::Ref(heap_id))
 }
 
@@ -1397,8 +1397,8 @@ fn str_splitlines<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
         start = end;
     }
 
-    let list = super::List::new(lines);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
+    let list = SpecializedList::new(lines);
+    let heap_id = vm.heap.allocate(HeapData::SpecializedList(list));
     Ok(Value::Ref(heap_id))
 }
 

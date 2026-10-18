@@ -46,6 +46,8 @@ macro_rules! heap_payloads {
             Bytes(inline $crate::types::Bytes),
             #[serde(rename = "L")]
             List(inline $crate::types::List),
+            #[serde(rename = "V")]
+            SpecializedList(inline $crate::types::SpecializedList),
             /// `collections.deque` — a double-ended queue with an optional `maxlen`.
             #[serde(rename = "Q")]
             Deque(inline $crate::types::Deque),
@@ -225,6 +227,7 @@ impl HeapData {
             Self::Itertools(iter) => iter.is_gc_tracked(),
             Self::DirScan(scan) => scan.is_gc_tracked(),
             Self::List(_)
+            | Self::SpecializedList(_)
             | Self::Deque(_)
             | Self::Tuple(_)
             | Self::NamedTuple(_)
@@ -320,6 +323,7 @@ impl HeapData {
             Self::Str(_) => Type::Str,
             Self::Bytes(_) => Type::Bytes,
             Self::List(_) => Type::List,
+            Self::SpecializedList(_) => Type::List,
             Self::Deque(_) => Type::Deque,
             Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
             Self::NamedTupleClass(_) => Type::Type,
@@ -652,6 +656,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Str($value) => $body,
             Self::Bytes($value) => $body,
             Self::List($value) => $body,
+            Self::SpecializedList($value) => $body,
             Self::Deque($value) => $body,
             Self::ListIterator($value) => $body,
             Self::DequeIterator($value) => $body,
@@ -1130,6 +1135,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Str(value) => value.py_iter(vm),
             Self::Bytes(value) => value.py_iter(vm),
             Self::List(value) => value.py_iter(vm),
+            Self::SpecializedList(value) => value.py_iter(vm),
             Self::Deque(value) => value.py_iter(vm),
             Self::ListIterator(value) => value.py_iter(vm),
             Self::DequeIterator(value) => value.py_iter(vm),
@@ -1196,6 +1202,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Str(value) => value.py_next(vm),
             Self::Bytes(value) => value.py_next(vm),
             Self::List(value) => value.py_next(vm),
+            Self::SpecializedList(value) => value.py_next(vm),
             Self::ListIterator(value) => value.py_next(vm),
             Self::DequeIterator(value) => value.py_next(vm),
             Self::TupleIterator(value) => value.py_next(vm),

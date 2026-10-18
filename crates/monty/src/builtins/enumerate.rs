@@ -8,7 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData},
-    types::{List, allocate_tuple},
+    types::{SpecializedList, allocate_tuple},
     value::Value,
 };
 
@@ -52,7 +52,9 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 
     let (result, vm) = result_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
+    let heap_id = vm
+        .heap
+        .allocate(HeapData::SpecializedList(SpecializedList::new(result)));
     Ok(Value::Ref(heap_id))
 }
 

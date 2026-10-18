@@ -17,8 +17,8 @@ use crate::{
         itertools::ItertoolsFunctions,
     },
     types::{
-        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
-        Str, TimeZone, Tuple,
+        Bytes, Deque, Dict, FrozenSet, GenericAlias, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
+        SpecializedList, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -766,7 +766,7 @@ impl Type {
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         match self {
             // Container types - delegate to init methods
-            Self::List => List::init(vm, args),
+            Self::List => SpecializedList::init(vm, args),
             Self::Deque => Deque::init(vm, args),
             Self::Tuple => Tuple::init(vm, args),
             Self::Dict => Dict::init(vm, args),

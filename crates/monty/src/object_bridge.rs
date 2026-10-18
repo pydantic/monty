@@ -24,13 +24,12 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
-        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
-        allocate_tuple,
+        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, SpecializedList,
+        TimeZone, Type, allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type,
         dict::Dict,
         instance::class_name,
-        list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
         time as time_type, timedelta as timedelta_type,
@@ -211,7 +210,7 @@ impl GraphExporter {
             let placeholder = match vm.heap.get(id) {
                 // A deque exports as a list, so it takes a list's placeholder
                 // (as its repr does too).
-                HeapData::List(_) | HeapData::Deque(_) => "[...]",
+                HeapData::List(_) | HeapData::SpecializedList(_) | HeapData::Deque(_) => "[...]",
                 HeapData::Tuple(_) | HeapData::NamedTuple(_) => "(...)",
                 HeapData::Dict(_) => "{...}",
                 _ => "...",
@@ -258,7 +257,16 @@ impl GraphExporter {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
                 let children: Vec<Value> = list
                     .get(vm.heap)
-                    .as_slice()
+                    .iter()
+                    .map(|item| item.clone_with_heap(vm.heap))
+                    .collect();
+                defer_drop!(children, vm);
+                MontyNode::List(self.push_all(children, vm))
+            }
+            HeapReadOutput::SpecializedList(list) => {
+                // Snapshot before recursing: a nested `__repr__` may mutate this list.
+                let children: Vec<Value> = list
+                    .get(vm.heap)
                     .iter()
                     .map(|item| item.clone_with_heap(vm.heap))
                     .collect();
@@ -840,7 +848,10 @@ fn import_node(
         MontyNode::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b))))),
         MontyNode::List(ids) => {
             let values = clone_children(&ids, built, vm);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))))
+            Ok(Value::Ref(
+                vm.heap
+                    .allocate(HeapData::SpecializedList(SpecializedList::new(values))),
+            ))
         }
         MontyNode::Tuple(ids) => {
             let values = clone_children(&ids, built, vm);
