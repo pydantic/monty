@@ -8,7 +8,7 @@
 use std::{
     fmt::Write,
     iter::once,
-    mem::{replace, take},
+    mem::{replace, size_of, take},
 };
 
 use ahash::AHashMap;
@@ -96,7 +96,7 @@ impl Partial {
         partial.flatten(vm)?;
         // Bound keywords are merged the same way a call's are, so a flattened
         // inner keyword is replaced rather than duplicated.
-        merge_keywords(&mut partial.keywords, keywords.drain(..), vm);
+        merge_keywords(&mut partial.keywords, keywords.drain(..), vm)?;
 
         let (partial, vm) = guard.into_parts();
         Ok(Value::Ref(vm.heap.allocate(HeapData::Partial(Box::new(partial)))))
@@ -190,19 +190,23 @@ pub(crate) fn partial_call_args(
     bound_keywords: Vec<(Value, Value)>,
     args: ArgValues,
     vm: &mut VM<'_>,
-) -> ArgValues {
+) -> RunResult<ArgValues> {
     let (positional, keywords) = args.into_parts();
     let mut args = bound_args;
     args.extend(positional);
 
     let mut merged = bound_keywords;
-    merge_keywords(&mut merged, keywords.into_iter(), vm);
+    if let Err(err) = merge_keywords(&mut merged, keywords.into_iter(), vm) {
+        args.drop_with(vm);
+        merged.drop_with(vm);
+        return Err(err);
+    }
     let kwargs = if merged.is_empty() {
         KwargsValues::Empty
     } else {
         KwargsValues::Pairs(merged)
     };
-    ArgValues::from_parts(args, kwargs)
+    Ok(ArgValues::from_parts(args, kwargs))
 }
 
 /// Bound-keyword count above which merging switches from rescanning to a name
@@ -220,13 +224,23 @@ const KEYWORD_INDEX_THRESHOLD: usize = 8;
 /// controlled (`partial(f, **thousands)`) and nothing here reaches an execution
 /// checkpoint. Past [`KEYWORD_INDEX_THRESHOLD`] it therefore builds a name
 /// index and keeps it current, which the pushes below rely on.
-fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item = (Value, Value)>, vm: &mut VM<'_>) {
+fn merge_keywords(
+    bound: &mut Vec<(Value, Value)>,
+    mut keywords: impl Iterator<Item = (Value, Value)>,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
     // Built lazily rather than up front because `bound` usually starts empty
     // and grows past the threshold during this very loop.
     let mut index: Option<AHashMap<String, usize>> = None;
-    for (name, value) in keywords {
+    while let Some((name, value)) = keywords.next() {
         if index.is_none() && bound.len() > KEYWORD_INDEX_THRESHOLD {
-            index = Some(keyword_index_map(bound, vm));
+            match keyword_index_map(bound, vm) {
+                Ok(map) => index = Some(map),
+                Err(err) => {
+                    drop_unmerged_keywords((name, value), keywords, vm);
+                    return Err(err);
+                }
+            }
         }
         let position = match &index {
             Some(index) => name
@@ -241,12 +255,41 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
             old_value.drop_with(vm);
         } else {
             if let Some(index) = &mut index
-                && let Ok(name) = name.to_str_heap(vm.heap, vm.interns)
+                && let Ok(name_str) = name.to_str_heap(vm.heap, vm.interns)
             {
-                index.insert(name.to_owned(), bound.len());
+                // A new name may also grow the index table, leaving its old
+                // allocation live until the rehash completes.
+                let table_growth = if index.len() == index.capacity() {
+                    index
+                        .capacity()
+                        .max(4)
+                        .saturating_mul(4)
+                        .saturating_mul(size_of::<(String, usize)>())
+                } else {
+                    0
+                };
+                if let Err(err) = vm
+                    .heap
+                    .tracker
+                    .check_allocation(name_str.len().saturating_add(table_growth))
+                {
+                    drop_unmerged_keywords((name, value), keywords, vm);
+                    return Err(err.into());
+                }
+                index.insert(name_str.to_owned(), bound.len());
             }
             bound.push((name, value));
         }
+    }
+    Ok(())
+}
+
+/// Releases incoming pairs not yet transferred into `bound` after a failed
+/// allocation preflight. Dropping `Value` alone would leak its heap reference.
+fn drop_unmerged_keywords(current: (Value, Value), remaining: impl Iterator<Item = (Value, Value)>, vm: &mut VM<'_>) {
+    current.drop_with(vm);
+    for pair in remaining {
+        pair.drop_with(vm);
     }
 }
 
@@ -266,12 +309,32 @@ fn keyword_index(bound: &[(Value, Value)], name: &Value, vm: &VM<'_>) -> Option<
 /// Skips non-`str` names for the same reason [`keyword_index`] never matches
 /// them. Names are owned copies so the map outlives the heap borrow that read
 /// them, leaving the merge loop free to drop displaced values.
-fn keyword_index_map(bound: &[(Value, Value)], vm: &VM<'_>) -> AHashMap<String, usize> {
-    bound
-        .iter()
-        .enumerate()
-        .filter_map(|(position, (name, _))| Some((name.to_str_heap(vm.heap, vm.interns).ok()?.to_owned(), position)))
-        .collect()
+fn keyword_index_map(bound: &[(Value, Value)], vm: &VM<'_>) -> RunResult<AHashMap<String, usize>> {
+    let mut count = 0usize;
+    let mut name_bytes = 0usize;
+    for (name, _) in bound {
+        if let Ok(name) = name.to_str_heap(vm.heap, vm.interns) {
+            count = count.saturating_add(1);
+            name_bytes = name_bytes.saturating_add(name.len());
+        }
+    }
+    // Include spare buckets, power-of-two rounding and control bytes, as
+    // well as all owned name copies, before making the first allocation.
+    let table_bytes = count
+        .max(4)
+        .saturating_mul(4)
+        .saturating_mul(size_of::<(String, usize)>());
+    vm.heap
+        .tracker
+        .check_allocation(name_bytes.saturating_add(table_bytes))?;
+
+    let mut index = AHashMap::with_capacity(count);
+    for (position, (name, _)) in bound.iter().enumerate() {
+        if let Ok(name) = name.to_str_heap(vm.heap, vm.interns) {
+            index.insert(name.to_owned(), position);
+        }
+    }
+    Ok(index)
 }
 
 /// Releases the refs a partial owns, for one abandoned before it reaches the
@@ -328,7 +391,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
         let mut guard = RunReentryGuard::new(vm);
         let vm = &mut *guard;
         defer_drop!(func, vm);
-        let args = partial_call_args(bound_args, bound_keywords, args, vm);
+        let args = partial_call_args(bound_args, bound_keywords, args, vm)?;
         vm.call_function(func, args)
     }
 
