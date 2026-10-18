@@ -13,7 +13,7 @@
 //! resource tracker and every array, table and flags map preflights its
 //! doubling, turning a huge document into a graceful `MemoryError`.
 
-use std::{collections::HashMap, mem};
+use std::{borrow::Cow, collections::HashMap, mem};
 
 use chrono::NaiveDate;
 use indexmap::IndexMap;
@@ -633,7 +633,12 @@ fn parse_hex_char(src: &str, pos: usize, hex_len: usize) -> ParseResult<(usize, 
 /// The number token matched by [`match_number`], as `float()` or `int(s, 0)`
 /// would convert it (both accept the `_` separators).
 fn parse_number(text: &str, is_float: bool, pos: usize) -> ParseResult<TomlValue> {
-    let digits: String = text.chars().filter(|&c| c != '_').collect();
+    // Allocates only when there are `_` separators to strip.
+    let digits = if text.contains('_') {
+        Cow::Owned(text.replace('_', ""))
+    } else {
+        Cow::Borrowed(text)
+    };
     if is_float {
         return match digits.parse::<f64>() {
             Ok(value) => Ok(TomlValue::Float(value)),
@@ -655,12 +660,18 @@ fn parse_number(text: &str, is_float: bool, pos: usize) -> ParseResult<TomlValue
         // `int()` refuses decimal literals past `sys.int_info.str_digits_check_threshold`.
         check_decimal_digit_count(body.len()).map_err(|error| TomlError::Run(Box::new(error)))?;
     }
-    let magnitude = BigInt::parse_bytes(body.as_bytes(), radix).expect("match_number validated the digits");
-    let value = if negative { -magnitude } else { magnitude };
-    Ok(TomlValue::Int(match i64::try_from(&value) {
-        Ok(small) => TomlInt::Small(small),
-        Err(_) => TomlInt::Big(value),
-    }))
+    // Most literals fit `i64`; the rest (and `i64::MIN`'s magnitude) go through `BigInt`.
+    let int = if let Ok(magnitude) = i64::from_str_radix(body, radix) {
+        TomlInt::Small(if negative { -magnitude } else { magnitude })
+    } else {
+        let magnitude = BigInt::parse_bytes(body.as_bytes(), radix).expect("match_number validated the digits");
+        let value = if negative { -magnitude } else { magnitude };
+        match i64::try_from(&value) {
+            Ok(small) => TomlInt::Small(small),
+            Err(_) => TomlInt::Big(value),
+        }
+    };
+    Ok(TomlValue::Int(int))
 }
 
 /// A `RE_DATETIME` match: its end, the date, and the time with its UTC offset

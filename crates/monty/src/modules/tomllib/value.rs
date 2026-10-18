@@ -16,16 +16,17 @@ use indexmap::map;
 use super::parser::{TomlDate, TomlInt, TomlTable, TomlTime, TomlValue};
 use crate::{
     bytecode::VM,
+    defer_drop_mut,
     exception_private::RunResult,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropWithContext, HeapData},
     types::{Dict, List, LongInt, TimeZone, date, datetime, str::allocate_string, time},
     value::{VALUE_SIZE, Value},
 };
 
 /// Converts the document's root table into the dict `tomllib.loads()` returns.
 pub(super) fn table_into_value(table: TomlTable, vm: &mut VM<'_>) -> RunResult<Value> {
-    let mut stack_guard = DropGuard::new(Vec::new(), vm);
-    let (stack, vm) = stack_guard.as_parts_mut();
+    let stack: Vec<Frame> = Vec::new();
+    defer_drop_mut!(stack, vm);
     let mut next = Step::Convert(TomlValue::Table(table));
     loop {
         let value = match next {

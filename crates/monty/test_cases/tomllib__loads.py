@@ -69,6 +69,10 @@ assert tomllib.loads('x = 9223372036854775807')['x'] == 9223372036854775807
 assert tomllib.loads('x = 9223372036854775808')['x'] == 9223372036854775808
 assert tomllib.loads('x = -9223372036854775808')['x'] == -9223372036854775808
 assert tomllib.loads('x = -9223372036854775809')['x'] == -9223372036854775809
+assert tomllib.loads('x = 0x7fff_ffff_ffff_ffff')['x'] == 9223372036854775807
+assert tomllib.loads('x = 0xffff_ffff_ffff_ffff')['x'] == 18446744073709551615
+assert tomllib.loads('x = 9_223_372_036_854_775_808')['x'] == 9223372036854775808
+assert tomllib.loads('x = -0')['x'] == 0
 assert tomllib.loads('x = 0xffffffffffffffffffff')['x'] == 1208925819614629174706175
 assert tomllib.loads('x = 123456789012345678901234567890')['x'] == 123456789012345678901234567890
 
