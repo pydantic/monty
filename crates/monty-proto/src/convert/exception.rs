@@ -81,8 +81,8 @@ impl From<&JsonErrorData> for pb::JsonErrorData {
 
 /// Validates an untrusted wire `JsonErrorData`, returning `None` when any
 /// field is out of range. As with [`sanitize_unicode_data`], size caps stop a
-/// compromised child pinning large amounts of parent memory: `msg` prefixes
-/// the exception's `message`, so it may be no longer (a TOML key can make
+/// compromised child pinning large amounts of parent memory: `msg` normally
+/// prefixes the exception's `message`, so it may be no longer (a TOML key can make
 /// both long), or [`JsonErrorData::MAX_DOC_LEN`] without a message; legitimate
 /// senders drop `doc` above that cap.
 fn sanitize_json_data(data: pb::JsonErrorData, message: Option<&str>) -> Option<Box<JsonErrorData>> {
