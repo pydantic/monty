@@ -1858,6 +1858,8 @@ fn tomllib_table_growth_is_refused_before_the_hard_limit() {
         (16, "'\\n'.join(f'k{i} = 1' for i in range(100_000))"),
         (16, "'x = {' + ', '.join(f'k{i} = 1' for i in range(100_000)) + '}'"),
         (24, "'\\n'.join(f'[t{i}]' for i in range(100_000))"),
+        // Refused deep into a wide table, whose cleanup must not allocate in proportion to it.
+        (64, "'\\n'.join(f'k{i} = 1' for i in range(400_000))"),
     ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(mib * 1024 * 1024));

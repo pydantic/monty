@@ -519,25 +519,27 @@ fn json_error_payload_round_trips() {
     assert_eq!(back, exc);
 
     // A payload without a document (dropped for oversized inputs) also survives.
-    let exc = MontyException::new(ExcType::JsonDecodeError, Some("boom".to_owned())).with_data(ExcData::Json(
-        Box::new(JsonErrorData {
+    let message = "Expecting value: line 5 column 2 (char 100000)".to_owned();
+    let exc = MontyException::new(ExcType::JsonDecodeError, Some(message)).with_data(ExcData::Json(Box::new(
+        JsonErrorData {
             msg: "Expecting value".to_owned(),
             doc: None,
             pos: 100_000,
             lineno: 5,
             colno: 2,
-        }),
-    ));
+        },
+    )));
     let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
     assert_eq!(back, exc);
 }
 
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
 /// child controls, for probing the receive-side sanitizer.
+/// The message is `msg` with a location suffix, as both decode errors format it.
 fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno: u64) -> pb::RaisedException {
     pb::RaisedException {
         exc_type: "json.JSONDecodeError".to_owned(),
-        message: Some("boom".to_owned()),
+        message: Some(format!("{msg}: line {lineno} column {colno} (char {pos})")),
         traceback: vec![].into(),
         data: Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData {
@@ -555,9 +557,12 @@ fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno
 fn bogus_json_payloads_are_dropped_not_trusted() {
     let oversized = "x".repeat(JsonErrorData::MAX_DOC_LEN + 1);
     // As with unicode payloads, rejected data must not block conversion.
+    // `msg` longer than the message it should prefix
+    let mut longer_msg = json_exception("Expecting value".to_owned(), None, 0, 1, 1);
+    longer_msg.message = Some("boom".to_owned());
     let bogus = [
-        json_exception(oversized.clone(), None, 0, 1, 1),
-        json_exception("msg".to_owned(), Some(oversized), 0, 1, 1),
+        longer_msg,
+        json_exception("msg".to_owned(), Some(oversized.clone()), 0, 1, 1),
         // 0 is not a valid 1-based line/column
         json_exception("msg".to_owned(), None, 0, 0, 1),
         json_exception("msg".to_owned(), None, 0, 1, 0),
@@ -591,6 +596,11 @@ fn bogus_json_payloads_are_dropped_not_trusted() {
     ))
     .unwrap();
     assert!(matches!(back.data(), ExcData::Json(data) if data.pos == 7));
+
+    // A `msg` past the document cap survives while its message carries it
+    // (a `tomllib` error naming a very long key).
+    let back = MontyException::try_from(json_exception(oversized, None, 0, 1, 1)).unwrap();
+    assert!(matches!(back.data(), ExcData::Json(data) if data.msg.len() == JsonErrorData::MAX_DOC_LEN + 1));
 }
 
 #[test]

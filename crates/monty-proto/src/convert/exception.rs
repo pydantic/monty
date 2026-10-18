@@ -42,7 +42,9 @@ impl TryFrom<pb::RaisedException> for MontyException {
             Some(pb::exc_data::Kind::Unicode(unicode)) => {
                 sanitize_unicode_data(unicode).map_or(ExcData::None, ExcData::Unicode)
             }
-            Some(pb::exc_data::Kind::Json(json)) => sanitize_json_data(json).map_or(ExcData::None, ExcData::Json),
+            Some(pb::exc_data::Kind::Json(json)) => {
+                sanitize_json_data(json, err.message.as_deref()).map_or(ExcData::None, ExcData::Json)
+            }
             None => ExcData::None,
         };
         Ok(Self::with_traceback(exc_type, err.message, traceback).with_data(data))
@@ -79,11 +81,11 @@ impl From<&JsonErrorData> for pb::JsonErrorData {
 
 /// Validates an untrusted wire `JsonErrorData`, returning `None` when any
 /// field is out of range. As with [`sanitize_unicode_data`], size caps stop a
-/// compromised child pinning large amounts of parent memory: legitimate `msg`
-/// values are short static phrases, and legitimate senders drop `doc` above
-/// [`JsonErrorData::MAX_DOC_LEN`].
-fn sanitize_json_data(data: pb::JsonErrorData) -> Option<Box<JsonErrorData>> {
-    if data.msg.len() > JsonErrorData::MAX_DOC_LEN {
+/// compromised child pinning large amounts of parent memory: `msg` prefixes
+/// the exception's `message`, so it may be no longer (a TOML key can make
+/// both long), and legitimate senders drop `doc` above [`JsonErrorData::MAX_DOC_LEN`].
+fn sanitize_json_data(data: pb::JsonErrorData, message: Option<&str>) -> Option<Box<JsonErrorData>> {
+    if data.msg.len() > message.map_or(0, str::len) {
         return None;
     }
     if data

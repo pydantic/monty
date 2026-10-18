@@ -13,10 +13,10 @@
 //! resource tracker and every array, table and flags map preflights its
 //! doubling, turning a huge document into a graceful `MemoryError`.
 
-use std::{borrow::Cow, collections::HashMap, mem};
+use std::{borrow::Cow, collections::HashMap, mem, vec};
 
 use chrono::NaiveDate;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, map};
 use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 
@@ -119,14 +119,41 @@ impl TomlTable {
 impl Drop for TomlTable {
     /// Drops the subtree iteratively: `[a.b.c…]` headers nest tables up to
     /// [`MAX_KEY_PARTS`] deep, beyond what recursive drop glue can rely on.
+    /// The stack holds one iterator per level, so cleanup after a
+    /// `MemoryError` allocates in proportion to depth, never width.
     fn drop(&mut self) {
-        let mut pending: Vec<TomlValue> = self.0.drain(..).map(|(_, value)| value).collect();
-        while let Some(value) = pending.pop() {
-            match value {
-                TomlValue::Array(items) => pending.extend(items),
-                TomlValue::Table(mut table) => pending.extend(table.0.drain(..).map(|(_, value)| value)),
-                _ => {}
+        if self.0.is_empty() {
+            return;
+        }
+        let mut stack = vec![Children::Table(mem::take(&mut self.0).into_values())];
+        while let Some(children) = stack.last_mut() {
+            match children.next() {
+                Some(TomlValue::Array(items)) => stack.push(Children::Array(items.into_iter())),
+                Some(TomlValue::Table(mut table)) => {
+                    stack.push(Children::Table(mem::take(&mut table.0).into_values()));
+                }
+                Some(_) => {}
+                None => {
+                    stack.pop();
+                }
             }
+        }
+    }
+}
+
+/// The not-yet-dropped children of one container, for [`TomlTable`]'s drop.
+enum Children {
+    Array(vec::IntoIter<TomlValue>),
+    Table(map::IntoValues<String, TomlValue>),
+}
+
+impl Iterator for Children {
+    type Item = TomlValue;
+
+    fn next(&mut self) -> Option<TomlValue> {
+        match self {
+            Self::Array(items) => items.next(),
+            Self::Table(values) => values.next(),
         }
     }
 }
@@ -577,9 +604,11 @@ fn parse_basic_str(src: &str, pos: usize, multiline: bool) -> ParseResult<(usize
 /// backslash, which contributes nothing.
 fn parse_basic_str_escape(src: &str, pos: usize, multiline: bool) -> ParseResult<(usize, Option<char>)> {
     let bytes = src.as_bytes();
-    let escape = &bytes[pos..(pos + 2).min(bytes.len())];
-    // Past the end for a lone trailing backslash, exactly as CPython's `pos += 2`.
-    let mut pos = pos + 2;
+    // CPython's `pos += 2` steps over two characters: past the end for a lone
+    // trailing backslash, and never into the middle of a multibyte one.
+    let escaped_len = src[pos + 1..].chars().next().map_or(1, char::len_utf8);
+    let escape = &bytes[pos..(pos + 1 + escaped_len).min(bytes.len())];
+    let mut pos = pos + 1 + escaped_len;
     if multiline && matches!(escape, b"\\ " | b"\\\t" | b"\\\n") {
         // Skip whitespace until the next non-whitespace character or the end
         // of the document; anything but a newline before that is an error.

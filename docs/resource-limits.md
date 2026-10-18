@@ -220,6 +220,8 @@ caps the dump's, so a worker cannot report a looser one.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to [`DEFAULT_MEMORY_USAGE_LIMIT`](api/rust/monty-fs.md#default_memory_usage_limit), shared between
     retained overlay data and transient results.
 - **`json.loads` nesting**, capped at 200 levels independently of the recursion limit.
+- **`tomllib` nesting**, capped at 100 levels of inline arrays and tables, and at 1,000 parts per dotted key,
+    both independently of `max_recursion_depth` (see [tomllib.md](limitations/tomllib.md)).
 - **Host entropy.** Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
     `max_urandom_bytes`, 1 MiB by default (`OSAccess(max_urandom_bytes=...)`).
     A custom entropy callback allocates in the host process, so it must apply its own cap.

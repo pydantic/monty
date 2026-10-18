@@ -151,6 +151,18 @@ def test_toml_decode_error_at_end_of_document(monty_run: RunMonty):
     assert (inner.lineno, inner.colno, inner.pos) == snapshot((1, 7, 6))
 
 
+@pytest.mark.skipif(sys.version_info < (3, 11), reason='tomllib is new in Python 3.11')
+def test_toml_decode_error_long_key(monty_run: RunMonty):
+    # The key repr makes `msg` longer than the 64 KiB document cap; the payload must survive.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import tomllib\nk = 'k' * 70_000\ntomllib.loads(f'[{k}]\\n[{k}]')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, tomllib.TOMLDecodeError)
+    assert inner.msg == f'Cannot declare ({"k" * 70_000!r},) twice'
+    assert inner.doc == ''
+    assert (inner.lineno, inner.colno, inner.pos) == snapshot((2, 70002, 140004))
+
+
 def test_binascii_error(monty_run: RunMonty):
     # A sandbox `base64` failure surfaces as the real stdlib class, not a bare `ValueError`.
     with pytest.raises(MontyRuntimeError) as exc_info:

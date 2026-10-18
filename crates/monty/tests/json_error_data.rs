@@ -110,4 +110,10 @@ fn toml_decode_error_at_end_of_document() {
     let data = exc.json_data().unwrap();
     assert_eq!(data.doc.as_deref(), Some("a = \"\\"));
     assert_eq!((data.pos, data.lineno, data.colno), (7, 1, 8));
+
+    // The escape steps over a whole multibyte character, as CPython's two-character `pos += 2`.
+    let exc = run_exc("import tomllib\ntomllib.loads('a = \"\\\\é')");
+    assert_eq!(exc.message(), Some("Unescaped '\\' in a string (at end of document)"));
+    let data = exc.json_data().unwrap();
+    assert_eq!((data.pos, data.lineno, data.colno), (7, 1, 8));
 }
