@@ -30,6 +30,14 @@ assert repr(2.5) == '2.5'
 assert repr(100.0) == '100.0'
 assert repr(-3.14) == '-3.14'
 assert repr(0.1) == '0.1'
+# a float exactly halfway between two shortest reprs takes the one ending in an even digit
+assert repr(1646715702483725.2) == '1646715702483725.2'
+assert repr(-145360241606786.12) == '-145360241606786.12'
+assert repr(2.0**-25) == '2.9802322387695312e-08'
+assert str(1752696462709189.2) == '1752696462709189.2'
+assert f'{1752696462709189.2}' == '1752696462709189.2'
+assert repr([1646715702483725.2]) == '[1646715702483725.2]'
+assert repr(complex(1646715702483725.2, 1)) == '(1646715702483725.2+1j)'
 
 # === repr of strings (Value::InternString / HeapData::Str) ===
 assert repr('') == "''"
