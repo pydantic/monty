@@ -140,18 +140,32 @@ struct JsonLoadArgs {
 /// `jiter` are copied into Monty's heap immediately before any further parser
 /// movement so borrowed tape-backed data never escapes.
 fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let bytes: Cow<'_, [u8]> = match value {
-        Value::InternString(string_id) => Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()),
-        Value::InternBytes(bytes_id) => Cow::Borrowed(vm.interns.get_bytes(*bytes_id)),
+    let (bytes, is_str): (Cow<'_, [u8]>, bool) = match value {
+        Value::InternString(string_id) => (Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()), true),
+        Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.interns.get_bytes(*bytes_id)), false),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => Cow::Owned(s.as_str().as_bytes().to_vec()),
-            HeapData::Bytes(b) => Cow::Owned(b.as_slice().to_vec()),
+            HeapData::Str(s) => (Cow::Owned(s.as_str().as_bytes().to_vec()), true),
+            HeapData::Bytes(b) => (Cow::Owned(b.as_slice().to_vec()), false),
             _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
         },
         _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
     };
-    parse_json_bytes(bytes.as_ref(), vm)
+    match bytes.strip_prefix(UTF8_BOM) {
+        // CPython rejects a BOM in `str` input, and decodes `bytes` input as `utf-8-sig`.
+        Some(_) if is_str => Err(ExcType::json_decode_error(
+            "Unexpected UTF-8 BOM (decode using utf-8-sig)",
+            &bytes,
+            1,
+            1,
+            0,
+        )),
+        Some(rest) => parse_json_bytes(rest, vm),
+        None => parse_json_bytes(&bytes, vm),
+    }
 }
+
+/// The UTF-8 encoding of U+FEFF, the byte order mark.
+const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 /// Parses raw JSON bytes using `jiter` and converts the result to a Monty value.
 ///

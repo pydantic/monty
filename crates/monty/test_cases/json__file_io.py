@@ -47,6 +47,17 @@ with open(path) as f:
 with open(path, 'rb') as f:
     assert json.load(f) == [1, 2, 3]
 
+# a binary file may start with a BOM; its text does too, which `load` rejects
+path.write_bytes(b'\xef\xbb\xbf{"bom": 1}')
+with open(path, 'rb') as f:
+    assert json.load(f) == {'bom': 1}
+with open(path, encoding='utf-8') as f:
+    try:
+        json.load(f)
+        assert False, 'expected a BOM in text to fail'
+    except json.JSONDecodeError as exc:
+        assert str(exc) == 'Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)'
+
 # === load through iteration state ===
 path.write_text('{"k": "v"}\n')
 with open(path) as f:
@@ -250,6 +261,11 @@ class Writer:
         self.chunks.append(chunk)
         return 'ignored'
 
+
+# a `str` document never reaches the pure-Python encoder's separators
+writer = Writer()
+json.dump('x', writer, separators=[1, 2])
+assert writer.chunks == ['"x"']
 
 writer = Writer()
 assert json.dump({'a': [1, 2], 'b': 'x'}, writer) is None

@@ -16,8 +16,7 @@ use crate::{
     bytecode::{CallResult, ContainsVM, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
-    resource_checks::check_repeat_size,
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -86,19 +85,21 @@ impl JsonDumpsConfig {
     /// The `FromArgs` structs already bound the arguments and rejected unknown
     /// keywords. This translates the raw values into encoder options, raising in
     /// CPython's order: `separators` is unpacked by `JSONEncoder.__init__`, then
-    /// `' ' * indent` and the separator types are checked as the encoder is built.
-    /// `json.dumps` of a `str` never builds one (`skip_encoder_checks`).
-    fn from_kwargs(kwargs: &EncoderKwargs, skip_encoder_checks: bool, vm: &mut VM<'_>) -> RunResult<Self> {
+    /// `' ' * indent` and the separator types are checked as the encoder is built;
+    /// `checks` says how much of that a call reaches.
+    fn from_kwargs(kwargs: &EncoderKwargs, checks: EncoderChecks, vm: &mut VM<'_>) -> RunResult<Self> {
         let mut config = Self::default();
 
         let separators_were_set = check_separators_shape(&kwargs.separators, vm)?;
-        if !skip_encoder_checks {
+        if checks != EncoderChecks::Unpack {
             config.indent = parse_indent_value(&kwargs.indent, vm)?;
-            // `separators=None` means the indent-aware defaults below.
-            if let Some((item, key)) = parse_separators_value(&kwargs.separators, vm)? {
-                config.item_separator = item;
-                config.key_separator = key;
-            }
+        }
+        // `separators=None` means the indent-aware defaults below.
+        if checks == EncoderChecks::All
+            && let Some((item, key)) = parse_separators_value(&kwargs.separators, vm)?
+        {
+            config.item_separator = item;
+            config.key_separator = key;
         }
 
         config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, &kwargs.sort_keys, vm)?;
@@ -112,6 +113,30 @@ impl JsonDumpsConfig {
         }
 
         Ok(config)
+    }
+}
+
+/// How far a call gets through CPython's encoder setup before encoding, which
+/// decides the keyword errors it can raise.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EncoderChecks {
+    /// `json.dumps` of a `str` returns before building an encoder.
+    Unpack,
+    /// `json.dump` of a `str`: the pure-Python encoder builds `' ' * indent`
+    /// but never uses the separators.
+    Indent,
+    /// Every other call: the separators must be `str`.
+    All,
+}
+
+impl EncoderChecks {
+    /// The checks `json.dumps` (`dump = false`) or `json.dump` makes for `obj`.
+    fn for_call(obj: &Value, dump: bool, vm: &VM<'_>) -> Self {
+        match (obj.is_str(vm.heap), dump) {
+            (false, _) => Self::All,
+            (true, false) => Self::Unpack,
+            (true, true) => Self::Indent,
+        }
     }
 }
 
@@ -167,7 +192,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         skipkeys,
     };
     defer_drop!(kwargs, vm);
-    let config = JsonDumpsConfig::from_kwargs(kwargs, obj.is_str(vm.heap), vm)?;
+    let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, false, vm), vm)?;
     let output = encode(obj, &config, vm)?;
     Ok(allocate_string(output, vm.heap))
 }
@@ -203,21 +228,17 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
         skipkeys,
     };
     defer_drop!(kwargs, vm);
-    // `dump` always builds the encoder, even for a `str` document.
-    let config = JsonDumpsConfig::from_kwargs(kwargs, false, vm)?;
+    let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, true, vm), vm)?;
 
     let early_target = if is_container(obj, vm) {
         Some(FileTarget::writer(fp, vm)?)
     } else {
         None
     };
-    let output = match encode(obj, &config, vm) {
-        Ok(output) => output,
-        Err(err) => {
-            early_target.drop_with(vm);
-            return Err(err);
-        }
-    };
+    // Released if encoding fails, otherwise taken back to write to.
+    let mut early_target = DropGuard::new(early_target, vm);
+    let output = encode(obj, &config, early_target.ctx())?;
+    let (early_target, vm) = early_target.into_parts();
     let target = match early_target {
         Some(target) => target,
         None => FileTarget::writer(fp, vm)?,
@@ -320,14 +341,14 @@ fn apply_bool_flag(flags: u8, bit: u8, value: &Value, vm: &mut VM<'_>) -> RunRes
 fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
     match value {
         Value::None => Ok(None),
-        Value::Bool(flag) => spaces_from_indent_count(i64::from(*flag), vm),
-        Value::Int(count) => spaces_from_indent_count(*count, vm),
+        Value::Bool(flag) => spaces_from_indent_count(i64::from(*flag)),
+        Value::Int(count) => spaces_from_indent_count(*count),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
             HeapReadOutput::LongInt(long_int) => {
                 let count = long_int.get(vm.heap).to_i64();
-                spaces_from_indent_count(count.ok_or_else(ExcType::overflow_index_sized_int)?, vm)
+                spaces_from_indent_count(count.ok_or_else(ExcType::overflow_index_sized_int)?)
             }
             _ => Err(ExcType::type_error_multiply_sequence(&value.py_type_name(vm))),
         },
@@ -335,16 +356,14 @@ fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String
     }
 }
 
-/// Builds the `' ' * count` indent string, preflighting its size: an
-/// attacker-chosen count would otherwise allocate past the memory limit.
-fn spaces_from_indent_count(count: i64, vm: &VM<'_>) -> RunResult<Option<String>> {
+/// Builds the `' ' * count` indent string.
+fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
     // CPython repeats a negative count to the empty string.
     let count = if count < 0 {
         0
     } else {
         usize::try_from(count).map_err(|_| ExcType::overflow_index_sized_int())?
     };
-    check_repeat_size(1, count, &vm.heap.tracker)?;
     Ok(Some(" ".repeat(count)))
 }
 
@@ -474,7 +493,7 @@ impl<'h> Encoder<'_, 'h> {
     /// Handles immediate primitives directly and delegates to type-specific
     /// helpers for strings, long integers, lists, tuples, and dicts.
     fn serialize_value(&mut self, value: &Value, depth: usize) -> RunResult<()> {
-        self.reserve(json_len_bound(value, self.config.ensure_ascii(), self.vm))?;
+        self.check_output_growth(str_len(value, self.vm))?;
         match value {
             Value::None => {
                 self.out.push_str("null");
@@ -579,7 +598,6 @@ impl<'h> Encoder<'_, 'h> {
         depth: usize,
         mut write_next: impl FnMut(&mut Self, usize) -> RunResult<bool>,
     ) -> RunResult<()> {
-        self.reserve(1)?;
         self.out.push('[');
         let pretty = self.config.indent.is_some();
         let mut wrote_any = false;
@@ -587,7 +605,6 @@ impl<'h> Encoder<'_, 'h> {
             // Write the separator + indent BEFORE we know whether the next
             // item exists; if `write_next` reports exhaustion we roll the
             // cursor back.
-            self.reserve(self.item_prefix_len(depth + 1))?;
             let prefix_start = self.out.len();
             if wrote_any {
                 self.out.push_str(&self.config.item_separator);
@@ -607,7 +624,6 @@ impl<'h> Encoder<'_, 'h> {
             );
             wrote_any = true;
         }
-        self.reserve(self.item_prefix_len(depth))?;
         if pretty && wrote_any {
             self.out.push('\n');
             write_indent(self.out, self.config, depth);
@@ -645,17 +661,10 @@ impl<'h> Encoder<'_, 'h> {
             sort_dict_entries(entries, self.vm)?;
         }
 
-        self.reserve(1)?;
         self.out.push('{');
 
         let pretty = self.config.indent.is_some();
         for (index, (key, value)) in entries.iter().enumerate() {
-            // A non-`str` key is written in quotes.
-            let key_len = json_len_bound(key, self.config.ensure_ascii(), self.vm).saturating_add(2);
-            let prefix_len = self
-                .item_prefix_len(depth + 1)
-                .saturating_add(self.config.key_separator.len());
-            self.reserve(prefix_len.saturating_add(key_len))?;
             if index != 0 {
                 self.out.push_str(&self.config.item_separator);
             }
@@ -667,7 +676,6 @@ impl<'h> Encoder<'_, 'h> {
             self.out.push_str(&self.config.key_separator);
             self.serialize_value(value, depth + 1)?;
         }
-        self.reserve(self.item_prefix_len(depth))?;
         if pretty && !entries.is_empty() {
             self.out.push('\n');
             write_indent(self.out, self.config, depth);
@@ -676,34 +684,21 @@ impl<'h> Encoder<'_, 'h> {
         Ok(())
     }
 
-    /// Preflights the output growth that writing `additional` more bytes causes,
-    /// then reserves it: `String` doubles its buffer, so one push could otherwise
-    /// jump past the memory limit's headroom with no checkpoint in between.
-    fn reserve(&mut self, additional: usize) -> RunResult<()> {
+    /// Preflights the output buffer's next doubling before writing a value of
+    /// about `value_len` bytes, so serializing a large document raises
+    /// `MemoryError` instead of reallocating past the limit's headroom.
+    /// Escaping that outgrows the margin is left to the allocator's hard limit.
+    fn check_output_growth(&mut self, value_len: usize) -> RunResult<()> {
+        const MARGIN: usize = 64;
         let (len, capacity) = (self.out.len(), self.out.capacity());
-        let needed = len.saturating_add(additional);
+        let needed = len.saturating_add(value_len).saturating_add(MARGIN);
         if needed > capacity {
-            // `String::reserve` grows to at least double, and to at least 8 bytes.
-            let target = needed.max(capacity.saturating_mul(2)).max(8);
+            // `String::reserve` grows to at least double the capacity.
+            let target = needed.max(capacity.saturating_mul(2));
             self.vm.heap.tracker.check_allocation(target - capacity)?;
-            self.out.reserve(additional);
+            self.out.reserve(needed - len);
         }
         Ok(())
-    }
-
-    /// Upper bound on what precedes an item at `depth`, or follows the last one:
-    /// the item separator, then a newline and indent when pretty printing.
-    fn item_prefix_len(&self, depth: usize) -> usize {
-        let indent = self
-            .config
-            .indent
-            .as_ref()
-            .map_or(0, |indent| indent.len().saturating_mul(depth).saturating_add(1));
-        self.config
-            .item_separator
-            .len()
-            .saturating_add(indent)
-            .saturating_add(1)
     }
 
     /// Runs `f` while `heap_id` is marked active for cycle detection.
@@ -930,58 +925,15 @@ fn write_indent(out: &mut String, config: &JsonDumpsConfig, depth: usize) {
     }
 }
 
-/// Upper bound on the JSON text of a scalar `value`, for [`Encoder::reserve`].
-///
-/// Strings are measured exactly; containers return 0 since they reserve their
-/// own brackets and separators as they go.
-fn json_len_bound(value: &Value, ensure_ascii: bool, vm: &VM<'_>) -> usize {
+/// The UTF-8 length of `value` if it is a `str`, else 0.
+fn str_len(value: &Value, vm: &VM<'_>) -> usize {
     match value {
-        Value::None | Value::Bool(_) => 5,
-        Value::Int(_) => 20,
-        // Covers `repr(float)` and `-Infinity`.
-        Value::Float(_) => 32,
-        Value::InternString(string_id) => json_string_len(vm.interns.get_str(*string_id), ensure_ascii),
-        Value::InternLongInt(long_int_id) => decimal_len_bound(vm.interns.get_long_int(*long_int_id).bits()),
+        Value::InternString(string_id) => vm.interns.get_str(*string_id).len(),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(string) => json_string_len(string.as_str(), ensure_ascii),
-            HeapData::LongInt(long_int) => decimal_len_bound(long_int.bits()),
+            HeapData::Str(string) => string.as_str().len(),
             _ => 0,
         },
         _ => 0,
-    }
-}
-
-/// Upper bound on the decimal digits, plus sign, of an integer of `bits` bits.
-fn decimal_len_bound(bits: u64) -> usize {
-    // log10(2) < 1/3
-    usize::try_from(bits / 3).unwrap_or(usize::MAX).saturating_add(2)
-}
-
-/// The exact length [`write_json_string`] writes for `value`, quotes included.
-fn json_string_len(value: &str, ensure_ascii: bool) -> usize {
-    let escaped: usize = if ensure_ascii {
-        value
-            .chars()
-            .map(|ch| match u8::try_from(ch) {
-                // DEL and every BMP character become `\uXXXX`, the rest a surrogate pair.
-                Ok(0x7F..) => 6,
-                Ok(byte) => ascii_escape_len(byte),
-                Err(_) if ch <= '\u{FFFF}' => 6,
-                Err(_) => 12,
-            })
-            .sum()
-    } else {
-        value.bytes().map(ascii_escape_len).sum()
-    };
-    escaped.saturating_add(2)
-}
-
-/// Bytes [`write_json_string`] writes for `byte` outside the `ensure_ascii` path.
-fn ascii_escape_len(byte: u8) -> usize {
-    match ESCAPE_TABLE[byte as usize] {
-        0 => 1,
-        b'u' => 6,
-        _ => 2,
     }
 }
 

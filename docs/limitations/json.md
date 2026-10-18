@@ -12,6 +12,8 @@ keyword is rejected.
 ## `json.loads(s, **kwargs)`
 
 - Accepts `str` or `bytes` as input.
+    `bytes` are always decoded as UTF-8 (a leading BOM is skipped, as CPython's `utf-8-sig` does):
+    CPython also detects UTF-16 and UTF-32 input, which Monty rejects with `json.JSONDecodeError`.
 - **No keyword arguments are accepted.** Passing any of `cls`,
     `object_hook`, `parse_float`, `parse_int`, `parse_constant`, or
     `object_pairs_hook` raises
@@ -59,6 +61,11 @@ what is observable when something fails:
     `ValueError` for `nan` in CPython and the closed-file error in Monty).
 - A duck-typed writer sees one `write(text)` call with the whole document
     rather than one per chunk.
+- A non-`str` separator raises
+    `TypeError: make_encoder() argument 6 must be str, not int` (`5` for the key separator), as in `dumps`.
+    CPython's `dump` uses its pure-Python encoder, which fails with a different `TypeError`
+    (`unsupported operand type(s) for +: 'int' and 'str'`) or hands the separator to `write()` as it is.
+    Both accept any separators for a `str` document, which never uses them.
 
 A file from `open()` or `Path.open()` takes a single host write, with the same
 checks as `fp.write(str)`: `TypeError: a bytes-like object is required, not 'str'` in binary mode, `ValueError` on a closed file,
