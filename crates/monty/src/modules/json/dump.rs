@@ -493,7 +493,10 @@ impl<'h> Encoder<'_, 'h> {
     /// Handles immediate primitives directly and delegates to type-specific
     /// helpers for strings, long integers, lists, tuples, and dicts.
     fn serialize_value(&mut self, value: &Value, depth: usize) -> RunResult<()> {
-        self.check_output_growth(0)?;
+        // Strings size their own check, and containers check per item.
+        if !matches!(value, Value::InternString(_) | Value::Ref(_)) {
+            self.check_output_growth(0)?;
+        }
         match value {
             Value::None => {
                 self.out.push_str("null");
@@ -532,6 +535,7 @@ impl<'h> Encoder<'_, 'h> {
                 }
                 HeapReadOutput::LongInt(long_int) => {
                     long_int.get(self.vm.heap).check_str_digits_limit()?;
+                    self.check_output_growth(0)?;
                     write!(self.out, "{}", long_int.get(self.vm.heap).inner()).expect("writing to String cannot fail");
                     Ok(())
                 }
