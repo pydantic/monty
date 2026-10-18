@@ -493,7 +493,7 @@ impl<'h> Encoder<'_, 'h> {
     /// Handles immediate primitives directly and delegates to type-specific
     /// helpers for strings, long integers, lists, tuples, and dicts.
     fn serialize_value(&mut self, value: &Value, depth: usize) -> RunResult<()> {
-        self.check_output_growth(str_len(value, self.vm))?;
+        self.check_output_growth(0)?;
         match value {
             Value::None => {
                 self.out.push_str("null");
@@ -513,11 +513,9 @@ impl<'h> Encoder<'_, 'h> {
             }
             Value::Float(value) => serialize_float(*value, self.out, self.config),
             Value::InternString(string_id) => {
-                write_json_string(
-                    self.vm.interns.get_str(*string_id),
-                    self.out,
-                    self.config.ensure_ascii(),
-                );
+                let string = self.vm.interns.get_str(*string_id);
+                self.check_output_growth(string.len())?;
+                write_json_string(string, self.out, self.config.ensure_ascii());
                 Ok(())
             }
             Value::InternLongInt(long_int_id) => {
@@ -528,6 +526,7 @@ impl<'h> Encoder<'_, 'h> {
             }
             Value::Ref(heap_id) => match self.vm.heap.read(*heap_id) {
                 HeapReadOutput::Str(string) => {
+                    self.check_output_growth(string.get(self.vm.heap).as_str().len())?;
                     write_json_string(string.get(self.vm.heap).as_str(), self.out, self.config.ensure_ascii());
                     Ok(())
                 }
@@ -922,18 +921,6 @@ fn write_indent(out: &mut String, config: &JsonDumpsConfig, depth: usize) {
         for _ in 0..depth {
             out.push_str(indent);
         }
-    }
-}
-
-/// The UTF-8 length of `value` if it is a `str`, else 0.
-fn str_len(value: &Value, vm: &VM<'_>) -> usize {
-    match value {
-        Value::InternString(string_id) => vm.interns.get_str(*string_id).len(),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(string) => string.as_str().len(),
-            _ => 0,
-        },
-        _ => 0,
     }
 }
 
