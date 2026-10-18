@@ -290,7 +290,7 @@ fn key_value_rule(src: &str, pos: usize, out: &mut Output<'_>, header: &[String]
         }
         // ...and the containers on its path can't be opened with the table
         // syntax or dotted key/value syntax in following table sections.
-        flags.add_pending(cont_key, EXPLICIT_NEST);
+        flags.add_pending(cont_key, EXPLICIT_NEST, tracker)?;
     }
 
     if flags.is(&abs_key_parent, FROZEN) {
@@ -1107,8 +1107,12 @@ impl Drop for FlagNode {
 }
 
 impl Flags {
-    fn add_pending(&mut self, key: Key, flag: u8) {
+    /// Queues a flag for [`Self::finalize_pending`], preflighting the queue's
+    /// doubling: a section of many dotted keys grows it by one entry per part.
+    fn add_pending(&mut self, key: Key, flag: u8, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+        tracker.check_growth(self.pending.len(), self.pending.capacity(), mem::size_of::<(Key, u8)>())?;
         self.pending.push((key, flag));
+        Ok(())
     }
 
     fn finalize_pending(&mut self, tracker: &ResourceTracker) -> Result<(), ResourceError> {

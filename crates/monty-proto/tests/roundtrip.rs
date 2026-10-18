@@ -599,8 +599,17 @@ fn bogus_json_payloads_are_dropped_not_trusted() {
 
     // A `msg` past the document cap survives while its message carries it
     // (a `tomllib` error naming a very long key).
-    let back = MontyException::try_from(json_exception(oversized, None, 0, 1, 1)).unwrap();
+    let back = MontyException::try_from(json_exception(oversized.clone(), None, 0, 1, 1)).unwrap();
     assert!(matches!(back.data(), ExcData::Json(data) if data.msg.len() == JsonErrorData::MAX_DOC_LEN + 1));
+
+    // Without a message, `msg` falls back to the document cap.
+    let mut no_message = json_exception("Expecting value".to_owned(), None, 0, 1, 1);
+    no_message.message = None;
+    let back = MontyException::try_from(no_message).unwrap();
+    assert!(matches!(back.data(), ExcData::Json(data) if data.msg == "Expecting value"));
+    let mut no_message = json_exception(oversized, None, 0, 1, 1);
+    no_message.message = None;
+    assert_eq!(MontyException::try_from(no_message).unwrap().data(), &ExcData::None);
 }
 
 #[test]

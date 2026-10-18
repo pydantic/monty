@@ -83,9 +83,10 @@ impl From<&JsonErrorData> for pb::JsonErrorData {
 /// field is out of range. As with [`sanitize_unicode_data`], size caps stop a
 /// compromised child pinning large amounts of parent memory: `msg` prefixes
 /// the exception's `message`, so it may be no longer (a TOML key can make
-/// both long), and legitimate senders drop `doc` above [`JsonErrorData::MAX_DOC_LEN`].
+/// both long), or [`JsonErrorData::MAX_DOC_LEN`] without a message; legitimate
+/// senders drop `doc` above that cap.
 fn sanitize_json_data(data: pb::JsonErrorData, message: Option<&str>) -> Option<Box<JsonErrorData>> {
-    if data.msg.len() > message.map_or(0, str::len) {
+    if data.msg.len() > message.map_or(JsonErrorData::MAX_DOC_LEN, str::len) {
         return None;
     }
     if data
