@@ -10,13 +10,14 @@
 //!
 //! The tree is allocator-visible but costs far more per element than the
 //! source text (`1,` becomes a [`TomlValue`]), so the element loops poll the
-//! resource tracker to turn a huge document into a graceful `MemoryError`.
+//! resource tracker and every array, table and flags map preflights its
+//! doubling, turning a huge document into a graceful `MemoryError`.
 
 use std::{collections::HashMap, mem};
 
 use chrono::NaiveDate;
 use indexmap::IndexMap;
-use monty_types::ResourceTracker;
+use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 
 use crate::{
@@ -42,6 +43,15 @@ const FROZEN: u8 = 1;
 /// `Flags::EXPLICIT_NEST`: a table created explicitly, which `[table]` syntax
 /// may not open again.
 const EXPLICIT_NEST: u8 = 2;
+
+/// Bytes per entry a full [`Flags`] map allocates when it grows: hashbrown
+/// rehashes into twice the slots, each a `(String, FlagNode)` and a control byte.
+const FLAG_ENTRY_GROWTH: usize = 2 * (mem::size_of::<(String, FlagNode)>() + 1);
+
+/// Bytes per entry a full [`TomlTable`] allocates when it grows: the
+/// `(hash, key, value)` bucket plus two index slots, since the rehashed
+/// index table (a `usize` and a control byte per slot) doubles too.
+const TABLE_ENTRY_GROWTH: usize = mem::size_of::<(usize, String, TomlValue)>() + 2 * (mem::size_of::<usize>() + 1);
 
 /// A dotted key, one `String` per part.
 pub(super) type Key = Vec<String>;
@@ -132,6 +142,12 @@ pub(super) enum TomlError {
     Run(Box<RunError>),
 }
 
+impl From<ResourceError> for TomlError {
+    fn from(error: ResourceError) -> Self {
+        Self::Run(Box::new(RunError::from(error)))
+    }
+}
+
 type ParseResult<T> = Result<T, TomlError>;
 
 /// Shorthand for raising a `TOMLDecodeError` at `pos`.
@@ -164,7 +180,7 @@ pub(super) fn parse(src: &str, tracker: &ResourceTracker) -> ParseResult<TomlTab
             pos = key_value_rule(src, pos, &mut out, &header)?;
             pos = skip_chars(bytes, pos, is_ws);
         } else if first == b'[' {
-            out.flags.finalize_pending();
+            out.flags.finalize_pending(out.tracker)?;
             (pos, header) = if bytes.get(pos + 1) == Some(&b'[') {
                 create_list_rule(src, pos, &mut out)?
             } else {
@@ -201,8 +217,8 @@ fn create_dict_rule(src: &str, pos: usize, out: &mut Output<'_>) -> ParseResult<
     if out.flags.is(&key, EXPLICIT_NEST) || out.flags.is(&key, FROZEN) {
         return decode_error(format!("Cannot declare {} twice", format_key(&key)), pos);
     }
-    out.flags.set(&key, EXPLICIT_NEST, false);
-    if out.data.get_or_create_nest(&key, true).is_err() {
+    out.flags.set(&key, EXPLICIT_NEST, false, out.tracker)?;
+    if out.data.get_or_create_nest(&key, true, out.tracker)?.is_err() {
         return decode_error("Cannot overwrite a value", pos);
     }
     if bytes.get(pos) != Some(&b']') {
@@ -222,8 +238,8 @@ fn create_list_rule(src: &str, pos: usize, out: &mut Output<'_>) -> ParseResult<
     // Free the namespace now that it points to another empty list item,
     // but this key precisely is still prohibited from table declaration.
     out.flags.unset_all(&key);
-    out.flags.set(&key, EXPLICIT_NEST, false);
-    if out.data.append_nest_to_list(&key).is_err() {
+    out.flags.set(&key, EXPLICIT_NEST, false, out.tracker)?;
+    if out.data.append_nest_to_list(&key, out.tracker)?.is_err() {
         return decode_error("Cannot overwrite a value", pos);
     }
     if !bytes[pos..].starts_with(b"]]") {
@@ -237,7 +253,7 @@ fn key_value_rule(src: &str, pos: usize, out: &mut Output<'_>, header: &[String]
     let (pos, key, value) = parse_key_value_pair(src, pos, 0, out.tracker)?;
     let (key_stem, key_parent) = key.split_last().expect("parse_key yields at least one part");
     let abs_key_parent: Key = header.iter().chain(key_parent).cloned().collect();
-    let Output { data, flags, .. } = out;
+    let Output { data, flags, tracker } = out;
 
     for i in 1..key.len() {
         let cont_key: Key = header.iter().chain(&key[..i]).cloned().collect();
@@ -256,7 +272,7 @@ fn key_value_rule(src: &str, pos: usize, out: &mut Output<'_>, header: &[String]
             pos,
         );
     }
-    let Ok(nest) = data.get_or_create_nest(&abs_key_parent, true) else {
+    let Ok(nest) = data.get_or_create_nest(&abs_key_parent, true, tracker)? else {
         return decode_error("Cannot overwrite a value", pos);
     };
     if nest.0.contains_key(key_stem) {
@@ -265,9 +281,9 @@ fn key_value_rule(src: &str, pos: usize, out: &mut Output<'_>, header: &[String]
     // Inline table and array namespaces become recursively immutable.
     if value.is_container() {
         let full_key: Key = header.iter().chain(&key).cloned().collect();
-        flags.set(&full_key, FROZEN, true);
+        flags.set(&full_key, FROZEN, true, tracker)?;
     }
-    nest.0.insert(key_stem.clone(), value);
+    nest.insert(key_stem.clone(), value, tracker)?;
     Ok(pos)
 }
 
@@ -394,9 +410,7 @@ fn parse_value(src: &str, pos: usize, depth: usize, tracker: &ResourceTracker) -
 
 /// [`ResourceTracker::check_memory_time_every`] as a parse error.
 fn check_memory_time_every(tracker: &ResourceTracker, i: usize) -> ParseResult<()> {
-    tracker
-        .check_memory_time_every(i)
-        .map_err(|error| TomlError::Run(Box::new(RunError::from(error))))
+    Ok(tracker.check_memory_time_every(i)?)
 }
 
 /// The depth for a container opened at `depth`, or `RecursionError` at the limit.
@@ -421,9 +435,7 @@ fn parse_array(src: &str, pos: usize, depth: usize, tracker: &ResourceTracker) -
         let (next, value) = parse_value(src, pos, depth, tracker)?;
         // The poll above sees only what is allocated; a doubling of a long
         // array is preflighted so it cannot jump straight past the limit.
-        tracker
-            .check_growth(array.len(), array.capacity(), mem::size_of::<TomlValue>())
-            .map_err(|error| TomlError::Run(Box::new(RunError::from(error))))?;
+        tracker.check_growth(array.len(), array.capacity(), mem::size_of::<TomlValue>())?;
         array.push(value);
         pos = skip_comments_and_array_ws(bytes, next)?;
         match bytes.get(pos) {
@@ -464,14 +476,14 @@ fn parse_inline_table(
         if flags.is(&key, FROZEN) {
             return decode_error(format!("Cannot mutate immutable namespace {}", format_key(&key)), pos);
         }
-        let Ok(nest) = table.get_or_create_nest(key_parent, false) else {
+        let Ok(nest) = table.get_or_create_nest(key_parent, false, tracker)? else {
             return decode_error("Cannot overwrite a value", pos);
         };
         if nest.0.contains_key(key_stem) {
             return decode_error(format!("Duplicate inline table key {}", repr_str(key_stem)), pos);
         }
         let is_container = value.is_container();
-        nest.0.insert(key_stem.clone(), value);
+        nest.insert(key_stem.clone(), value, tracker)?;
         pos = skip_chars(bytes, pos, is_ws);
         match bytes.get(pos) {
             Some(b'}') => return Ok((pos + 1, TomlValue::Table(table))),
@@ -479,7 +491,7 @@ fn parse_inline_table(
             _ => return decode_error("Unclosed inline table", pos),
         }
         if is_container {
-            flags.set(&key, FROZEN, true);
+            flags.set(&key, FROZEN, true, tracker)?;
         }
         pos = skip_chars(bytes, pos + 1, is_ws);
     }
@@ -969,36 +981,56 @@ struct NestError;
 impl TomlTable {
     /// The table at `key`, creating empty tables on the way. With
     /// `access_lists`, an array of tables on the path stands for its last table.
-    fn get_or_create_nest(&mut self, key: &[String], access_lists: bool) -> Result<&mut Self, NestError> {
+    /// The outer error is a `MemoryError` from growing a table.
+    fn get_or_create_nest(
+        &mut self,
+        key: &[String],
+        access_lists: bool,
+        tracker: &ResourceTracker,
+    ) -> ParseResult<Result<&mut Self, NestError>> {
         let mut cont = self;
         for part in key {
             if !cont.0.contains_key(part) {
-                cont.0.insert(part.clone(), TomlValue::Table(Self::default()));
+                cont.insert(part.clone(), TomlValue::Table(Self::default()), tracker)?;
             }
             cont = match cont.0.get_mut(part).expect("inserted above") {
                 TomlValue::Table(table) => table,
                 TomlValue::Array(items) if access_lists => match items.last_mut() {
                     Some(TomlValue::Table(table)) => table,
-                    _ => return Err(NestError),
+                    _ => return Ok(Err(NestError)),
                 },
-                _ => return Err(NestError),
+                _ => return Ok(Err(NestError)),
             };
         }
-        Ok(cont)
+        Ok(Ok(cont))
     }
 
     /// Appends an empty table to the array at `key`, creating the array when absent.
-    fn append_nest_to_list(&mut self, key: &[String]) -> Result<(), NestError> {
+    fn append_nest_to_list(&mut self, key: &[String], tracker: &ResourceTracker) -> ParseResult<Result<(), NestError>> {
         let (last, parents) = key.split_last().expect("parse_key yields at least one part");
-        let cont = self.get_or_create_nest(parents, true)?;
-        match cont.0.get_mut(last) {
-            Some(TomlValue::Array(items)) => items.push(TomlValue::Table(Self::default())),
-            Some(_) => return Err(NestError),
-            None => {
-                cont.0
-                    .insert(last.clone(), TomlValue::Array(vec![TomlValue::Table(Self::default())]));
+        let Ok(cont) = self.get_or_create_nest(parents, true, tracker)? else {
+            return Ok(Err(NestError));
+        };
+        Ok(match cont.0.get_mut(last) {
+            Some(TomlValue::Array(items)) => {
+                tracker.check_growth(items.len(), items.capacity(), mem::size_of::<TomlValue>())?;
+                items.push(TomlValue::Table(Self::default()));
+                Ok(())
             }
-        }
+            Some(_) => Err(NestError),
+            None => {
+                let items = vec![TomlValue::Table(Self::default())];
+                cont.insert(last.clone(), TomlValue::Array(items), tracker)?;
+                Ok(())
+            }
+        })
+    }
+
+    /// Inserts a new key, preflighting the doubling of a full table: the poll
+    /// in the element loops sees only what is already allocated.
+    fn insert(&mut self, key: String, value: TomlValue, tracker: &ResourceTracker) -> ParseResult<()> {
+        tracker.check_growth(self.0.len(), self.0.capacity(), TABLE_ENTRY_GROWTH)?;
+        self.0.insert(key, value);
         Ok(())
     }
 }
@@ -1039,10 +1071,11 @@ impl Flags {
         self.pending.push((key, flag));
     }
 
-    fn finalize_pending(&mut self) {
+    fn finalize_pending(&mut self, tracker: &ResourceTracker) -> Result<(), ResourceError> {
         for (key, flag) in mem::take(&mut self.pending) {
-            self.set(&key, flag, false);
+            self.set(&key, flag, false, tracker)?;
         }
+        Ok(())
     }
 
     /// Drops every flag at and beneath `key`.
@@ -1060,20 +1093,27 @@ impl Flags {
         cont.remove(stem);
     }
 
-    fn set(&mut self, key: &[String], flag: u8, recursive: bool) {
+    fn set(
+        &mut self,
+        key: &[String],
+        flag: u8,
+        recursive: bool,
+        tracker: &ResourceTracker,
+    ) -> Result<(), ResourceError> {
         let Some((stem, parents)) = key.split_last() else {
-            return;
+            return Ok(());
         };
         let mut cont = &mut self.root;
         for part in parents {
-            cont = &mut cont.entry(part.clone()).or_default().nested;
+            cont = &mut flag_node(cont, part, tracker)?.nested;
         }
-        let node = cont.entry(stem.clone()).or_default();
+        let node = flag_node(cont, stem, tracker)?;
         if recursive {
             node.recursive_flags |= flag;
         } else {
             node.flags |= flag;
         }
+        Ok(())
     }
 
     /// Whether `key` carries `flag`, directly or inherited from an ancestor's
@@ -1093,4 +1133,15 @@ impl Flags {
         cont.get(stem)
             .is_some_and(|node| (node.flags | node.recursive_flags) & flag != 0)
     }
+}
+
+/// The node for `part`, created if absent after preflighting the rehash a
+/// full map would do; a document of many tables grows one map by thousands.
+fn flag_node<'m>(
+    map: &'m mut HashMap<String, FlagNode>,
+    part: &str,
+    tracker: &ResourceTracker,
+) -> Result<&'m mut FlagNode, ResourceError> {
+    tracker.check_growth(map.len(), map.capacity(), FLAG_ENTRY_GROWTH)?;
+    Ok(map.entry(part.to_owned()).or_default())
 }

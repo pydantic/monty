@@ -1849,6 +1849,31 @@ fn tomllib_documents_are_refused_before_the_hard_limit() {
     }
 }
 
+/// A document of many keys or tables fits under these soft limits until one
+/// insertion doubles a table's (or its namespace flags') buffers by more than
+/// the 4 MiB headroom, which only a growth preflight can refuse softly.
+#[test]
+fn tomllib_table_growth_is_refused_before_the_hard_limit() {
+    for (mib, source) in [
+        (16, "'\\n'.join(f'k{i} = 1' for i in range(100_000))"),
+        (16, "'x = {' + ', '.join(f'k{i} = 1' for i in range(100_000)) + '}'"),
+        (24, "'\\n'.join(f'[t{i}]' for i in range(100_000))"),
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(mib * 1024 * 1024));
+        // Built in its own feed so a `MemoryError` can only come from parsing.
+        let (_, event) = child.feed(&format!("import tomllib\ns = {source}\nNone"));
+        assert!(
+            matches!(event, pb::child_event::Kind::Complete(_)),
+            "{source}: {event:?}"
+        );
+        let (_, event) = child.feed("tomllib.loads(s)");
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{source}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{source}");
+        child.shutdown();
+    }
+}
+
 /// A small `n` caps a batch however long the source, so batching a huge
 /// exact-hint iterable must not trip the `batched` preflight — the memory
 /// really is bounded by `n`, not by the source.
