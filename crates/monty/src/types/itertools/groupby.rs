@@ -262,7 +262,7 @@ fn step<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResul
 }
 
 /// The `GroupBy` behind an iterator already dispatched as one.
-fn groupby_ref<'r, 'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &'r VM<'h>) -> &'r GroupBy {
+fn groupby_ref<'r, 'h>(iter: &'r HeapRead<'h, ItertoolsIter>, vm: &'r VM<'h>) -> &'r GroupBy {
     let ItertoolsIter::GroupBy(groupby) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::GroupBy")
     };
@@ -270,7 +270,7 @@ fn groupby_ref<'r, 'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &'r VM<'h>) -> &'
 }
 
 /// Mutable counterpart of [`groupby_ref`].
-fn groupby_mut<'r, 'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &'r mut VM<'h>) -> &'r mut GroupBy {
+fn groupby_mut<'r, 'h>(iter: &'r mut HeapRead<'h, ItertoolsIter>, vm: &'r mut VM<'h>) -> &'r mut GroupBy {
     let ItertoolsIter::GroupBy(groupby) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::GroupBy")
     };

@@ -642,7 +642,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        repr_sequence_fmt('[', ']', |heap, i| self.get(heap).as_slice().get(i), f, vm, heap_ids)
+        repr_sequence_fmt(
+            '[',
+            ']',
+            |heap, i| self.get(heap).as_slice().get(i).map(|item| item.clone_with_heap(heap)),
+            f,
+            vm,
+            heap_ids,
+        )
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1046,17 +1053,16 @@ fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<
 /// # Arguments
 /// * `start` - The opening character (e.g., '[' for lists, '(' for tuples)
 /// * `end` - The closing character (e.g., ']' for lists, ')' for tuples)
-/// * `get_item` - Returns the i-th value via brief immutable heap access, or
-///   `None` once `i` is out of range. The `for<'r>` bound means only
-///   heap-derived borrows fit — containers whose repr snapshots up front
-///   (deque, set, dict) own their clones already and use [`repr_items_fmt`].
+/// * `get_item` - Returns an owned clone of the i-th value via brief heap access,
+///   or `None` once `i` is out of range. The clone keeps the item alive across
+///   user `__repr__` calls that may remove it from the container.
 /// * `f` - The formatter to write to
 /// * `vm` - The VM for resolving value references and looking up interned strings
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
 pub(crate) fn repr_sequence_fmt<'h>(
     start: char,
     end: char,
-    get_item: impl for<'r> Fn(&'r HeapReader<'h>, usize) -> Option<&'r Value>,
+    get_item: impl Fn(&HeapReader<'h>, usize) -> Option<Value>,
     f: &mut impl Write,
     vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
@@ -1073,11 +1079,6 @@ pub(crate) fn repr_sequence_fmt<'h>(
     // reprs that keep growing the sequence from inside a user `__repr__`.
     for i in 0.. {
         let Some(item) = get_item(vm.heap, i) else { break };
-        // The clone (a refcount bump, not a deep copy) is load-bearing: the
-        // recursion below runs user `__repr__` code that may drop the
-        // container's reference to this very item — CPython incref's the same
-        // way. It also releases the heap borrow the getter's reference holds.
-        let item = item.clone_with_heap(vm.heap);
         defer_drop!(item, vm);
         if i > 0 {
             if repr_check_time(i, vm) {

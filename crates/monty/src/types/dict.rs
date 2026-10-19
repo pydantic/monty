@@ -811,7 +811,7 @@ pub(crate) fn eq_is_native(value: &Value, heap: &Heap) -> bool {
 impl<'h> TableSource<'h> for HeapRead<'h, Dict> {
     type Entry = DictEntry;
 
-    fn table<'r>(&self, vm: &'r VM<'h>) -> &'r PyHashTable<DictEntry> {
+    fn table<'r>(&'r self, vm: &'r VM<'h>) -> &'r PyHashTable<DictEntry> {
         &self.get(vm.heap).table
     }
 }

@@ -264,7 +264,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 impl<'h> TableSource<'h> for HeapRead<'h, SetStorage> {
     type Entry = SetEntry;
 
-    fn table<'r>(&self, vm: &'r VM<'h>) -> &'r PyHashTable<SetEntry> {
+    fn table<'r>(&'r self, vm: &'r VM<'h>) -> &'r PyHashTable<SetEntry> {
         &self.get(vm.heap).table
     }
 }

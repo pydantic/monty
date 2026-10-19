@@ -481,7 +481,7 @@ pub(crate) trait TableSource<'h> {
     type Entry: TableEntry;
 
     /// Re-reads the live table out of the heap.
-    fn table<'r>(&self, vm: &'r VM<'h>) -> &'r PyHashTable<Self::Entry>;
+    fn table<'r>(&'r self, vm: &'r VM<'h>) -> &'r PyHashTable<Self::Entry>;
 }
 
 /// The guarded probe, for every [`TableSource`].
@@ -721,9 +721,12 @@ impl<'a, 'h, S: TableSource<'h>> TableWalk<'a, 'h, S> {
     ///
     /// Polls the limits (amortized) and re-checks the live length first, so a
     /// mutation from guest code between steps raises the container's
-    /// `RuntimeError` here. The entry borrows `vm`, so it cannot be held
-    /// across anything that runs guest code.
-    pub(crate) fn next<'v>(&mut self, vm: &'v VM<'h>) -> RunResult<Option<&'v S::Entry>> {
+    /// `RuntimeError` here. The entry borrows both the source and `vm`, so it
+    /// cannot outlive the source or cross anything that runs guest code.
+    pub(crate) fn next<'v>(&mut self, vm: &'v VM<'h>) -> RunResult<Option<&'v S::Entry>>
+    where
+        'a: 'v,
+    {
         // Keyed on entries yielded, not the slot: tombstones make the slot
         // skip values, and a walk over odd slots alone would never poll.
         vm.heap.tracker.check_time_every(self.cursor.yielded())?;

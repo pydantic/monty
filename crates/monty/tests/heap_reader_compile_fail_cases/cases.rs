@@ -8,6 +8,20 @@
 //! These tests are never compiled during normal builds — only when the
 //! `heap_reader_compile_fail_tests` cfg (plus a per-test cfg) is set.
 
+#[cfg(any(
+    heap_reader_compile_fail_test_protected_get_escape,
+    heap_reader_compile_fail_test_protected_mut_get_escape,
+    heap_reader_compile_fail_test_protected_get_mut_escape,
+    heap_reader_compile_fail_test_protected_get_alias,
+    heap_reader_compile_fail_test_protected_mut_get_alias,
+    heap_reader_compile_fail_test_protected_get_mut_alias,
+    heap_reader_compile_fail_test_projected_get_escape,
+    heap_reader_compile_fail_test_slice_get_escape,
+    heap_reader_compile_fail_test_box_get_escape,
+))]
+#[path = "borrowed.rs"]
+mod borrowed;
+
 use super::*;
 #[cfg(heap_reader_compile_fail_test_smuggle_vm)]
 use crate::bytecode::VM;
@@ -121,23 +135,6 @@ fn mutation_in_map_closure(list_id: HeapId, other_id: HeapId, heap: &mut Heap) {
             })
             .collect();
         let _ = result;
-    });
-}
-
-/// Must not compile: calling `read()` (which takes `&mut self`) while holding a live
-/// reference from `get()` (which borrows `self` as `&`).
-///
-/// Expected: E0502 (cannot borrow `*heap` as mutable because it is also borrowed as immutable)
-#[cfg(heap_reader_compile_fail_test_read_while_ref_alive)]
-fn read_while_ref_alive(id_a: HeapId, id_b: HeapId, heap: &mut Heap) {
-    HeapReader::with(heap, &mut (), |heap, ()| {
-        let a = match heap.read(id_a) {
-            HeapReadOutput::List(list) => list,
-            _ => unreachable!(),
-        };
-        let a_ref = a.get(heap);
-        let _b = heap.read(id_b);
-        let _ = a_ref.as_slice();
     });
 }
 

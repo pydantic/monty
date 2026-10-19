@@ -423,8 +423,10 @@ impl<T: ?Sized> Drop for HeapRead<'_, T> {
 }
 
 impl<'a, T: ?Sized> HeapRead<'a, T> {
-    /// Accesses the value contained in this reference.
-    pub fn get<'r>(&self, _: &'r HeapReader<'a>) -> &'r T {
+    /// Borrows the value while both this handle and the reader remain borrowed.
+    ///
+    /// Borrowing the handle also keeps protected external data and projection sources alive.
+    pub fn get<'r>(&'r self, _: &'r HeapReader<'a>) -> &'r T {
         // SAFETY: (DH)
         //  - The HeapReader has an invariant lifetime 'a which guarantees that this HeapRead
         //    came from the heap borrowed by this HeapReader.
@@ -437,20 +439,22 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         //    the entry to Black instead of condemning it as White.
         //  - The type of the `HeapValue` can never change once allocated. This is
         //    guaranteed by never exposing `&mut HeapData` outside of this module.
+        //  - For protected external data and projections, borrowing this handle keeps the source
+        //    borrow alive instead; their wrappers do not own a reader count.
         //  - The borrow on `HeapReader` guarantees that there are no mutable borrows on any heap
         //    data while the return value of this function is alive.
         unsafe { self.value.as_ref() }
     }
 
-    /// Mutably accesses the value contained in this reference.
-    pub fn get_mut<'r>(&mut self, _: &'r mut HeapReader<'a>) -> &'r mut T {
+    /// Exclusively borrows the value for the joint borrow of this handle and the reader.
+    pub fn get_mut<'r>(&'r mut self, _: &'r mut HeapReader<'a>) -> &'r mut T {
         // SAFETY: see same constraints as in get() above.
         unsafe { self.value.as_mut() }
     }
 
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
     ///
-    /// Transfers ownership of the reader count from `self` to the returned `HeapRead`.
+    /// Borrows `self` to keep the source alive; the projection owns no reader count.
     ///
     /// # Safety
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
@@ -471,7 +475,7 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
 
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
     ///
-    /// Transfers ownership of the reader count from `self` to the returned `HeapRead`.
+    /// Exclusively borrows `self`; the projection owns no reader count.
     ///
     /// # Safety
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
@@ -2252,10 +2256,15 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
 /// Compile-fail soundness tests for [`HeapReader`].
 ///
 /// Gated behind `--cfg heap_reader_compile_fail_tests` so they are only compiled
-/// when the integration test harness runs `cargo check` with the appropriate flags.
+/// when the integration test harness runs `cargo rustc` with the appropriate flags.
 #[cfg(heap_reader_compile_fail_tests)]
 #[path = "../../tests/heap_reader_compile_fail_cases/cases.rs"]
 mod heap_reader_compile_fail_cases;
+
+/// Valid borrowed-handle usage, kept here to exercise the private production API under Miri.
+#[cfg(test)]
+#[path = "../../tests/heap_reader/borrowed.rs"]
+mod borrowed_tests;
 
 /// Cycle-collector unit tests.
 ///

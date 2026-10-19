@@ -272,7 +272,7 @@ fn finish<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) {
 /// `next` re-borrows the heap around every step that can run user code, so the
 /// same match-or-`unreachable!` appeared at each one; naming it once keeps those
 /// steps readable.
-fn chain_mut<'r, 'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &'r mut VM<'h>) -> &'r mut Chain {
+fn chain_mut<'r, 'h>(iter: &'r mut HeapRead<'h, ItertoolsIter>, vm: &'r mut VM<'h>) -> &'r mut Chain {
     let ItertoolsIter::Chain(chain) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Chain")
     };
