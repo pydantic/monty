@@ -993,22 +993,47 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - run: pip install typing_extensions
+      - run: pip install typing_extensions opentelemetry-sdk
       - run: pip install pydantic-monty-client --no-index --no-deps --find-links dist --force-reinstall
       - run: python -c "import pydantic_monty; print(pydantic_monty.__version__)"
 
       # the cli wheel built for this platform must serve the worker pools
       - run: pip install pydantic-monty-runtime --no-index --no-deps --find-links dist --force-reinstall
-      - name: smoke test worker pools
+      - name: smoke test worker pools and telemetry
+        # Sampling and level filters must not make this smoke test probabilistic.
+        env:
+          OTEL_TRACES_SAMPLER: always_on
+          RUST_LOG: info
         shell: bash
         run: |
           python - <<'EOF'
           import asyncio
-          from pydantic_monty import AsyncMonty, Monty
+          from opentelemetry.sdk.trace import TracerProvider
+          from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+          from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+          from pydantic_monty import AsyncMonty, Monty, instrument_telemetry
+
+          provider = TracerProvider()
+          exporter = InMemorySpanExporter()
+          provider.add_span_processor(SimpleSpanProcessor(exporter))
+          instrument_telemetry(tracer=provider.get_tracer('wheel-smoke-test'))
+
+          def check_spans():
+              spans = {span.name: span for span in exporter.get_finished_spans()}
+              assert sorted(spans) == ['run code', 'session {script_name}'], spans
+              assert len(exporter.get_finished_spans()) == 2
+              session = spans['session {script_name}']
+              run = spans['run code']
+              assert session.parent is None
+              assert run.parent.span_id == session.context.span_id
+              assert run.context.trace_id == session.context.trace_id
+              exporter.clear()
 
           with Monty() as pool:
               with pool.checkout() as session:
                   assert session.feed_run('1 + 2') == 3
+
+          check_spans()
 
           async def main():
               async with AsyncMonty() as pool:
@@ -1016,7 +1041,8 @@ jobs:
                       assert await session.feed_run('1 + 2') == 3
 
           asyncio.run(main())
-          print('worker pools OK')
+          check_spans()
+          print('worker pools and telemetry OK')
           EOF
 
   # Inspect built artifacts
