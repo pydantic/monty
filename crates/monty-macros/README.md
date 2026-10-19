@@ -139,10 +139,10 @@ pub(crate) struct PyListImpl;
 
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyListImpl {
-    type Receiver = HeapRead<'heap, List>;
+    type Receiver = HeapReadMut<'heap, List>;
 
     #[pymethod]
-    fn sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         todo!()
     }
 }
@@ -150,9 +150,11 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
 
 `#[pymethod]` registers `AttrDef::Method`; it takes a native receiver, `ArgValues`, and `&mut VM`, returning
 `RunResult<Value>`.
-`Receiver` names the native view: `HeapRead<'heap, T>`, `HeapObjectRead<'heap, T>`, `PyStr<'heap>`, or an
+`Receiver` names the native view: `HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`, `PyStr<'heap>`, or an
 immediate `f64`, `i64`, or `bool`.
-Heap-view methods declare `&` or `&mut` in their first parameter; immediate receivers are passed by value.
+Capability receivers take shared references: `&HeapRead` for reads and `&HeapReadMut` for mutation.
+Object guards can also supply Python identity through `&HeapObjectRead`.
+Immediate receivers are passed by value.
 String methods take `&PyStr`, covering interned and heap strings without projecting their storage.
 
 `#[pyclassmethod]` registers `AttrDef::ClassMethod` with the existing signature

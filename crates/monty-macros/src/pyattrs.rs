@@ -44,7 +44,7 @@ fn receiver(ty: &Type) -> syn::Result<(Mode, Type, syn::Ident)> {
             }
             Ok((Mode::StrView, ty.clone(), view.ident.clone()))
         }
-        "HeapRead" | "HeapObjectRead" => {
+        "HeapRead" | "HeapReadMut" | "HeapObjectRead" => {
             let PathArguments::AngleBracketed(args) = &view.arguments else {
                 return Err(syn::Error::new_spanned(
                     ty,
@@ -65,7 +65,7 @@ fn receiver(ty: &Type) -> syn::Result<(Mode, Type, syn::Ident)> {
         }
         _ => Err(syn::Error::new_spanned(
             ty,
-            "Receiver must be HeapRead<'h, T>, HeapObjectRead<'h, T>, PyStr<'h>, f64, i64, or bool",
+            "Receiver must be HeapRead<'h, T>, HeapReadMut<'h, T>, HeapObjectRead<'h, T>, PyStr<'h>, f64, i64, or bool",
         )),
     }
 }
@@ -170,7 +170,7 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
                 if reference.mutability.is_none() && reference.elem.as_ref() == native),
             Mode::HeapHandle => matches!(first, Type::Reference(reference)
             if type_path(&reference.elem).is_ok_and(|segment| {
-                (segment.ident == "HeapRead" || segment.ident == "HeapObjectRead")
+                (segment.ident == "HeapRead" || segment.ident == "HeapReadMut" || segment.ident == "HeapObjectRead")
                     && matches!(&segment.arguments, PathArguments::AngleBracketed(arguments)
                         if arguments.args.len() == 2
                             && matches!(arguments.args.first(), Some(GenericArgument::Lifetime(_)))
@@ -453,11 +453,11 @@ mod tests {
     fn preserves_native_method_and_generates_table_and_lookup() {
         let input: ItemImpl = parse_quote! {
             impl<'h> PyAttrs<'h> for PyListImpl {
-                type Receiver = HeapRead<'h, List>;
+                type Receiver = HeapReadMut<'h, List>;
 
                 /// Sorting can call Python code.
                 #[pymethod]
-                pub(crate) fn sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+                pub(crate) fn sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
                     native_sort(list, args, vm)
                 }
             }
@@ -479,7 +479,7 @@ mod tests {
         assert!(output.contains("StaticStrings :: Sort"));
         assert!(output.contains("const ATTRS"));
         assert!(output.contains("const fn lookup_attr"));
-        assert!(output.contains("HeapReadOutput :: List (mut value)"));
+        assert!(output.contains("HeapReadOutput :: List (value)"));
         assert!(output.contains("< PyListImpl > :: sort"));
         assert!(!output.contains("pymethod"));
     }

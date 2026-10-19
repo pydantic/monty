@@ -3,10 +3,14 @@
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::RunResult,
+    defer_drop,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    heap::{DropGuard, DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Type, complex, date, list, re_match, re_pattern, str, time, timedelta, timezone, tuple},
-    value::Value,
+    types::{
+        PyTrait, Type, complex, date, datetime, list, re_match, re_pattern, str, time, timedelta, timezone, tuple,
+    },
+    value::{EitherStr, Value},
 };
 
 pub(crate) type BuiltinCall = for<'h> fn(Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
@@ -40,6 +44,101 @@ pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
         Type::RePattern => <re_pattern::PyRePatternImpl as PyAttrs<'static>>::ATTRS,
         Type::ReMatch => <re_match::PyReMatchImpl as PyAttrs<'static>>::ATTRS,
         _ => &[],
+    }
+}
+
+pub(crate) fn invoke_unbound(
+    owner: Type,
+    attr: &EitherStr,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let (receiver, args) = match args {
+        ArgValues::One(receiver) => (receiver, ArgValues::Empty),
+        ArgValues::Two(receiver, arg) => (receiver, ArgValues::One(arg)),
+        ArgValues::ArgsKargs { mut args, kwargs } if !args.is_empty() => {
+            let receiver = args.remove(0);
+            (receiver, ArgValues::from_parts(args, kwargs))
+        }
+        args => {
+            args.drop_with(vm);
+            return Err(ExcType::type_error(format!(
+                "unbound method {}.{}() needs an argument",
+                owner.dunder_name(vm.heap, vm.interns),
+                attr.as_str(vm.interns)
+            )));
+        }
+    };
+    let mut pending = DropGuard::new((receiver, args), vm);
+    let ((receiver, _), vm) = pending.as_parts_mut();
+    let receiver_type = receiver.py_type(vm);
+    if !receiver_type.is_instance_of(owner) {
+        return Err(ExcType::type_error(format!(
+            "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
+            attr.as_str(vm.interns),
+            owner.dunder_name(vm.heap, vm.interns),
+            receiver.py_type_name(vm),
+        )));
+    }
+    let ((receiver, args), vm) = pending.into_parts();
+    defer_drop!(receiver, vm);
+    if receiver_type == owner {
+        call(receiver, args, vm).map(CallResult::Value)
+    } else {
+        call_subtype(owner, attr, call, receiver, args, vm)
+    }
+}
+
+fn call_subtype(
+    owner: Type,
+    attr: &EitherStr,
+    call: MethodCall,
+    receiver: &Value,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let Value::Ref(id) = receiver else {
+        unreachable!("native subclasses are heap objects")
+    };
+    if owner == Type::Tuple || attr.as_str(vm.interns) == "strftime" {
+        // Named tuples use their tuple operations; date.strftime(datetime) reads
+        // the datetime's time and timezone, unlike the other date descriptors.
+        return receiver.py_value(vm).py_call_attr(vm, attr, args);
+    }
+    let HeapData::DateTime(datetime) = vm.heap.get(*id) else {
+        unreachable!("date's native subclass is datetime")
+    };
+    let (year, month, day, ..) = datetime::to_components(datetime).expect("datetime has valid civil components");
+    // Date descriptors read only the date portion, even when datetime overrides
+    // the same method name. Project it rather than passing a mismatched heap handle.
+    let date = date::from_ymd(year, i32::from(month), i32::from(day)).expect("datetime date is valid");
+    let date_receiver = Value::Ref(vm.heap.allocate(HeapData::Date(date)));
+    defer_drop!(date_receiver, vm);
+    let result = call(date_receiver, args, vm)?;
+    if attr.as_str(vm.interns) == "replace" {
+        defer_drop!(result, vm);
+        let Value::Ref(id) = result else {
+            unreachable!("date.replace returns a date")
+        };
+        let HeapData::Date(date) = vm.heap.get(*id) else {
+            unreachable!("date.replace returns a date")
+        };
+        let (year, month, day) = date::to_ymd(*date);
+        // CPython's date.replace constructs the receiver's type using only the
+        // date components, so a datetime result is naive and starts at midnight.
+        Ok(CallResult::Value(datetime::allocate_naive(
+            year,
+            i32::try_from(month).expect("month is in 1..=12"),
+            i32::try_from(day).expect("day is in 1..=31"),
+            0,
+            0,
+            0,
+            0,
+            vm.heap,
+        )))
+    } else {
+        Ok(CallResult::Value(result))
     }
 }
 
