@@ -28,7 +28,12 @@ use crate::{
     hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData, HeapObjectRead, HeapRead},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
-    types::{LazyHeapSet, PyTrait, Type, str::allocate_string, tuple::allocate_tuple},
+    types::{
+        LazyHeapSet, PyTrait, Type,
+        numeric::{round_bigint, round_digits},
+        str::allocate_string,
+        tuple::allocate_tuple,
+    },
     value::{Value, eq_bigint, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
 
@@ -458,6 +463,42 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // `+` is commutative here, and the id is unused by the direct form.
         self.py_add_impl(other, vm)
+    }
+
+    fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(Some(self.get(vm.heap).abs().into_value(vm.heap)))
+    }
+
+    fn py_invert_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(Some(LongInt::new(!self.get(vm.heap).inner()).into_value(vm.heap)))
+    }
+
+    fn py_round_impl(&self, ndigits: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let digits = round_digits(ndigits, vm)?;
+        Ok(Some(match digits {
+            Some(d) if d < 0 => round_bigint(self.get(vm.heap).inner(), d.unsigned_abs(), vm.heap),
+            _ => self.clone_value(vm.heap),
+        }))
+    }
+
+    fn py_int_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(Some(self.clone_value(vm.heap)))
+    }
+
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
+        self.get(vm.heap).to_f64_checked().map(Some)
+    }
+
+    fn py_floor_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_int_impl(vm)
+    }
+
+    fn py_ceil_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_int_impl(vm)
+    }
+
+    fn py_trunc_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_int_impl(vm)
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

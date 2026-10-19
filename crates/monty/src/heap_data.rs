@@ -1046,6 +1046,38 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_index_impl(vm), else Ok(None))
     }
 
+    fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_abs_impl(vm), else Ok(None))
+    }
+
+    fn py_invert_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_invert_impl(vm), else Ok(None))
+    }
+
+    fn py_round_impl(&self, ndigits: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_round_impl(ndigits, vm), else Ok(None))
+    }
+
+    fn py_int_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_int_impl(vm), else Ok(None))
+    }
+
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_float_impl(vm), else Ok(None))
+    }
+
+    fn py_floor_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_floor_impl(vm), else Ok(None))
+    }
+
+    fn py_ceil_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_ceil_impl(vm), else Ok(None))
+    }
+
+    fn py_trunc_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_trunc_impl(vm), else Ok(None))
+    }
+
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_neg_impl(vm), else Ok(None))
     }

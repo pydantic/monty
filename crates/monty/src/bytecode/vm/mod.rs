@@ -1474,32 +1474,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::UnaryNeg => try_catch!(self, self.unary_neg()),
                 Opcode::UnaryPos => try_catch!(self, self.unary_pos()),
-                Opcode::UnaryInvert => {
-                    // Bitwise NOT
-                    let value = self.pop();
-                    match value {
-                        Value::Int(n) => self.push(Value::Int(!n)),
-                        Value::Bool(b) => self.push(Value::Int(!i64::from(b))),
-                        Value::Ref(id) => {
-                            if let HeapData::LongInt(li) = self.heap.get(id) {
-                                // LongInt bitwise NOT: ~x = -(x + 1)
-                                let inverted = -(li.inner() + 1i32);
-                                value.drop_with(self);
-                                let inverted_value = LongInt::new(inverted).into_value(self.heap);
-                                self.push(inverted_value);
-                            } else {
-                                let value_type = value.py_type_name(self);
-                                value.drop_with(self);
-                                catch!(self, ExcType::unary_type_error("~", &value_type));
-                            }
-                        }
-                        _ => {
-                            let value_type = value.py_type_name(self);
-                            value.drop_with(self);
-                            catch!(self, ExcType::unary_type_error("~", &value_type));
-                        }
-                    }
-                }
+                Opcode::UnaryInvert => try_catch!(self, self.unary_invert()),
                 // In-place Operations - route through exception handling.
                 // `+=`/`-=`/`&=`/`|=` first try a true in-place `Counter` op
                 // (mutating the left operand); everything else — and the

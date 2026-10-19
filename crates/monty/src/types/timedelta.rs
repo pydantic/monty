@@ -414,9 +414,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         Ok(allocate_string(s, vm.heap))
     }
 
-    /// `-delta` — `from_total_microseconds` is fallible, though no in-range
-    /// value can overflow it here: the bounds are `±999999999` days, so every
-    /// negation lands back inside them.
+    fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let delta = from_total_microseconds(total_microseconds(self.get(vm.heap)).abs())?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta)))))
+    }
+
+    /// Negation can overflow because the upper bound includes a partial day
+    /// beyond `999999999` days, while the lower bound is exactly `-999999999` days.
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let negated = from_total_microseconds(-total_microseconds(self.get(vm.heap)))?;
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(negated)))))

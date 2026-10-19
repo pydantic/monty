@@ -29,6 +29,7 @@ pub mod list;
 pub mod long_int;
 pub mod module;
 pub mod namedtuple;
+pub(crate) mod numeric;
 pub mod partial;
 pub mod path;
 pub mod property;

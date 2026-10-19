@@ -285,11 +285,54 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// (`list indices must be integers`, `cannot be interpreted as an integer`,
     /// `slice indices must be...`), which is why it is not raised here.
     ///
-    /// The returned value is always a real `int` (`Int`/`Bool`/`LongInt`), so a
-    /// caller may narrow it — or recurse once through its own int arms — without
+    /// The returned value is always a real `int` (`Int`/`InternLongInt`/heap `LongInt`),
+    /// with `bool` normalized to `Int`, so a caller may narrow it without
     /// re-entering the protocol. Out-of-range policy stays with the caller,
     /// since `as_int` and `as_index` disagree on it.
     fn py_index_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Python absolute value (`__abs__`); `None` means the operation is absent.
+    fn py_abs_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Python bitwise inversion (`__invert__`); `None` means the operation is absent.
+    fn py_invert_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Python rounding (`__round__`), receiving the uncoerced precision argument.
+    /// `None` means no precision was supplied; `Ok(None)` means no rounding hook.
+    fn py_round_impl(&self, _ndigits: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Integer conversion (`__int__`), returning a real integer or no hook.
+    /// The caller supplies the `__index__` fallback and string parsing.
+    fn py_int_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Float conversion (`__float__`), validating the result before unwrapping it.
+    /// The caller supplies the `__index__` fallback and string parsing.
+    fn py_float_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<f64>> {
+        Ok(None)
+    }
+
+    /// Python floor (`__floor__`); user hooks may return any Python value.
+    fn py_floor_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Python ceiling (`__ceil__`); user hooks may return any Python value.
+    fn py_ceil_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Python truncation (`__trunc__`); user hooks may return any Python value.
+    fn py_trunc_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 

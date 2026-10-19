@@ -154,6 +154,52 @@ macro_rules! instance_binary_slots {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
+    fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        instance_call_dunder_sync(self.id(), "__abs__", None, vm)
+    }
+
+    fn py_invert_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        instance_call_dunder_sync(self.id(), "__invert__", None, vm)
+    }
+
+    fn py_round_impl(&self, ndigits: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let arg = ndigits.map(|value| value.clone_with_heap(vm.heap));
+        instance_call_dunder_sync(self.id(), "__round__", arg, vm)
+    }
+
+    fn py_int_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        call_int_dunder(self.id(), "__int__", vm)
+    }
+
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
+        if let Some(result) = instance_call_dunder_sync(self.id(), "__float__", None, vm)? {
+            defer_drop!(result, vm);
+            if let Value::Float(value) = result {
+                Ok(Some(*value))
+            } else {
+                Err(ExcType::type_error(format!(
+                    "{}.__float__ returned non-float (type {})",
+                    self.py_type_name(vm),
+                    result.py_type_name(vm),
+                )))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn py_floor_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        instance_call_dunder_sync(self.id(), "__floor__", None, vm)
+    }
+
+    fn py_ceil_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        instance_call_dunder_sync(self.id(), "__ceil__", None, vm)
+    }
+
+    fn py_trunc_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        instance_call_dunder_sync(self.id(), "__trunc__", None, vm)
+    }
+
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         instance_call_dunder_sync(self.id(), "__neg__", None, vm)
     }
@@ -270,18 +316,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     /// Runs synchronously like the other dunders here, so an `__index__` that
     /// calls an external/OS function raises rather than suspending.
     fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(result) = instance_call_dunder_sync(self.id(), "__index__", None, vm)? else {
-            return Ok(None);
-        };
-        if matches!(result, Value::Int(_) | Value::Bool(_) | Value::InternLongInt(_))
-            || matches!(&result, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)))
-        {
-            Ok(Some(result))
-        } else {
-            let exc = ExcType::type_error(format!("__index__ returned non-int (type {})", result.py_type_name(vm)));
-            result.drop_with(vm);
-            Err(exc)
-        }
+        call_int_dunder(self.id(), "__index__", vm)
     }
 
     fn py_type(&self, vm: &VM<'h>) -> Type {
@@ -709,6 +744,24 @@ pub(crate) fn instance_call_dunder_sync(
 ) -> RunResult<Option<Value>> {
     let args = arg.map_or(ArgValues::Empty, ArgValues::One);
     call_dunder_args_sync(self_id, dunder, args, vm)
+}
+
+/// Validates integer conversion results, normalizing the permitted bool subclass.
+fn call_int_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    match instance_call_dunder_sync(self_id, dunder, None, vm)? {
+        None => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(Value::Int(i64::from(b)))),
+        Some(result) => {
+            if matches!(result, Value::Int(_) | Value::InternLongInt(_))
+                || matches!(&result, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)))
+            {
+                Ok(Some(result))
+            } else {
+                defer_drop!(result, vm);
+                Err(ExcType::type_error_non_int_return(dunder, &result.py_type_name(vm)))
+            }
+        }
+    }
 }
 
 /// Calls a synchronous special method, consuming its arguments even when absent.
