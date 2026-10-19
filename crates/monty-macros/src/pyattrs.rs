@@ -187,7 +187,14 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
     Ok(())
 }
 
-fn definition(owner: &Type, method: &ImplItemFn, kind: Kind, mode: Mode, variant: &syn::Ident) -> TokenStream {
+fn definition(
+    owner: &Type,
+    method: &ImplItemFn,
+    kind: Kind,
+    mode: Mode,
+    variant: &syn::Ident,
+    attr_name: &syn::Ident,
+) -> TokenStream {
     let name = &method.sig.ident;
     // Callable adapters must work for every VM lifetime, independently of the table's lifetime.
     let mut owner = owner.clone();
@@ -198,7 +205,14 @@ fn definition(owner: &Type, method: &ImplItemFn, kind: Kind, mode: Mode, variant
     let mutable = matches!(method.sig.inputs.first(), Some(FnArg::Typed(arg))
         if matches!(arg.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_some()));
     match kind {
-        Kind::ClassMethod => quote!(crate::types::builtin_attr::AttrDef::ClassMethod(#handler)),
+        Kind::ClassMethod => quote! {
+            crate::types::builtin_attr::AttrDef::ClassMethod({
+                fn call(owner: crate::types::Type, receiver: crate::value::Value, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
+                    #handler(crate::intern::StaticStrings::#attr_name, owner, receiver, args, vm)
+                }
+                call
+            })
+        },
         Kind::Value => quote!(crate::types::builtin_attr::AttrDef::Value(#handler)),
         Kind::Method => {
             let body = match mode {
@@ -366,7 +380,7 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         syn::Error::new_spanned(name, "method name must map to a StaticStrings variant")
                     })?;
                     static_name.set_span(name.span());
-                    let def = definition(&input.self_ty, method, kind, mode, &variant);
+                    let def = definition(&input.self_ty, method, kind, mode, &variant, &static_name);
                     entries.push((static_name, def));
                 }
                 methods.push(method.clone());
@@ -495,7 +509,13 @@ mod tests {
         }).unwrap().to_string();
         assert!(immediate.contains("Value :: Float (value)"));
         assert!(immediate.contains("StaticStrings :: IsInteger"));
-        assert!(immediate.contains("AttrDef :: ClassMethod (< PyFloatImpl > :: from_number)"));
+        assert!(immediate.contains("AttrDef :: ClassMethod"));
+        assert!(
+            immediate.split_whitespace().collect::<String>().contains(
+                "<PyFloatImpl>::from_number(crate::intern::StaticStrings::FromNumber,owner,receiver,args,vm)"
+            ),
+            "{immediate}"
+        );
         assert!(immediate.contains("AttrDef :: Value (< PyFloatImpl > :: min)"));
     }
 
