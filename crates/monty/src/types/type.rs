@@ -20,7 +20,7 @@ use crate::{
     types::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
         Str, TimeZone, Tuple,
-        builtin_attr::AttrDef,
+        builtin_attr::{self, AttrDef},
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime,
         dict::{DictKind, dict_fromkeys},
@@ -641,8 +641,12 @@ impl Type {
         vm: &mut VM<'_>,
     ) -> RunResult<CallResult> {
         let attr = EitherStr::Interned(method_id);
-        if let Some(AttrDef::ClassMethod(call)) = self.get_attr(&attr, vm.interns) {
-            return call(self, Value::Builtin(Builtins::Type(self)), args, vm);
+        match self.get_attr(&attr, vm.interns) {
+            Some(AttrDef::ClassMethod(call)) => {
+                return call(self, Value::Builtin(Builtins::Type(self)), args, vm);
+            }
+            Some(AttrDef::Method(call)) => return builtin_attr::invoke_unbound(self, &attr, call, args, vm),
+            _ => {}
         }
 
         match (self, attr.static_string(vm.interns)) {
