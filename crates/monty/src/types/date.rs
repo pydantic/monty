@@ -267,7 +267,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyDateImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = Type::Date.get_attr(attr, vm.interns) else {
             return Err(ExcType::attribute_error_method(Type::Date, attr, args, vm));
         };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));

@@ -211,7 +211,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyStr::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = Type::Str.get_attr(attr, vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
@@ -440,7 +440,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyStr::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = Type::Str.get_attr(attr, vm.interns) else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };

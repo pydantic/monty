@@ -522,7 +522,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyRePatternImpl::lookup_attr) else {
+        let Some(AttrDef::Method(call)) = Type::RePattern.get_attr(attr, vm.interns) else {
             return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
         };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));

@@ -9,7 +9,7 @@ use crate::{
     value::Value,
 };
 
-pub(crate) type BuiltinCall = for<'h> fn(StaticStrings, Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+pub(crate) type BuiltinCall = for<'h> fn(Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 /// Heap receivers stay protected by their read handle; temporary Values borrow their references.
 pub(crate) type MethodCall = for<'h> fn(&Value, ArgValues, &mut VM<'h>) -> RunResult<Value>;
 
@@ -43,22 +43,6 @@ pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     }
 }
 
-pub(crate) const fn lookup_attr(owner: Type, name: StaticStrings) -> Option<AttrDef> {
-    match owner {
-        Type::Str => str::PyStr::lookup_attr(name),
-        Type::List => list::PyListImpl::lookup_attr(name),
-        Type::Tuple => tuple::PyTupleImpl::lookup_attr(name),
-        Type::Complex => complex::PyComplexImpl::lookup_attr(name),
-        Type::Date => date::PyDateImpl::lookup_attr(name),
-        Type::Time => time::PyTimeImpl::lookup_attr(name),
-        Type::TimeDelta => timedelta::PyTimeDeltaImpl::lookup_attr(name),
-        Type::TimeZone => timezone::PyTimeZoneImpl::lookup_attr(name),
-        Type::RePattern => re_pattern::PyRePatternImpl::lookup_attr(name),
-        Type::ReMatch => re_match::PyReMatchImpl::lookup_attr(name),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::mem::discriminant;
@@ -69,6 +53,7 @@ mod tests {
     use super::*;
     use crate::{
         heap::{Heap as ObjectHeap, HeapData, HeapReadOutput, HeapReader},
+        intern::Interns,
         run::{Program, SessionTables},
         types::{List, PyTrait},
         value::EitherStr,
@@ -138,6 +123,7 @@ mod tests {
 
     #[test]
     fn tables_and_lookups_agree() {
+        let interns = Interns::new("");
         for owner in [
             Type::Str,
             Type::List,
@@ -150,14 +136,16 @@ mod tests {
             Type::RePattern,
             Type::ReMatch,
         ] {
-            assert!(lookup_attr(owner, StaticStrings::Fromkeys).is_none());
+            assert!(owner.get_attr(&EitherStr::Heap("fromkeys".into()), &interns).is_none());
             for &(name, definition) in attrs(owner) {
-                let found = lookup_attr(owner, name).expect("table entry has a lookup arm");
+                let spelling: &str = name.into();
+                let attr = EitherStr::Heap(spelling.to_owned());
+                let found = owner.get_attr(&attr, &interns).expect("table entry has a lookup arm");
                 assert_eq!(discriminant(&definition), discriminant(&found));
             }
         }
         assert!(attrs(Type::Int).is_empty());
-        assert!(lookup_attr(Type::Int, StaticStrings::Upper).is_none());
+        assert!(Type::Int.get_attr(&EitherStr::Heap("upper".into()), &interns).is_none());
         assert!(PyFloatImpl::lookup_attr(StaticStrings::Upper).is_none());
     }
 

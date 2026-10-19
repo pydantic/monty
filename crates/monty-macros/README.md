@@ -157,6 +157,7 @@ String methods take `&PyStr`, covering interned and heap strings without project
 
 `#[pyclassmethod]` registers `AttrDef::ClassMethod` with the existing signature
 `(StaticStrings, Type, Value, ArgValues, &mut VM) -> RunResult<CallResult>`.
+Its generated adapter supplies the registered static name, so callers only pass the owner, receiver, arguments, and VM.
 `#[pyvalue]` registers `AttrDef::Value` with `(&mut VM) -> Value`.
 Names map from Rust snake case to `StaticStrings` variants: `sort` becomes `Sort`, `total_seconds` becomes
 `TotalSeconds`, and `r#match` becomes `Match`.
