@@ -707,7 +707,7 @@ impl<'a> HeapPtr<'a> {
     /// `UnsafeCell::get` produces a `*mut HeapData` with `SharedReadWrite` permission,
     /// so the returned `&HeapData` is sound even though the underlying `HeapPtr` was
     /// minted via `&self`-derived `entry_ptr`. Mutation of the payload still requires
-    /// `&mut HeapReader` via the [`HeapRead`] machinery.
+    /// `&mut HeapReader` via the [`HeapReadMut`] machinery.
     pub fn data<'r>(self, reader: &'r HeapReader<'a>) -> &'r HeapData {
         let entry = self.entry(reader);
         // SAFETY: `UnsafeCell::get` yields a `SharedReadWrite` pointer; the `&HeapReader`
@@ -717,15 +717,13 @@ impl<'a> HeapPtr<'a> {
     }
 
     /// Returns the typed [`HeapReadOutput`] for this entry, incrementing the
-    /// reader count so the wrapped [`HeapRead<T>`] participates in the
-    /// reader-count GC safety net (it is decremented on `Drop`).
+    /// reader count owned by the wrapped [`HeapObjectRead<T>`] until its `Drop`.
     ///
-    /// All `HeapRead<T>` handle pointers are derived through the `UnsafeHeapData`
-    /// `UnsafeCell`, so they retain `SharedReadWrite` permission and remain valid
-    /// for both read and mutable access (the latter via `HeapRead::get_mut`,
-    /// which requires `&mut HeapReader`).
+    /// The guard's capability pointers are derived through the `UnsafeHeapData`
+    /// `UnsafeCell`, retaining `SharedReadWrite` permission for both read access
+    /// and mutation via [`HeapReadMut::get_mut`], which requires `&mut HeapReader`.
     fn read(self, id: HeapId, reader: &HeapReader<'a>) -> HeapReadOutput<'a> {
-        /// Computes a `HeapRead` from the raw `UnsafeCell` pointer and a shared reference
+        /// Computes a `HeapObjectRead` from the raw `UnsafeCell` pointer and a shared reference
         /// to the variant field. The `&T` is only used to compute the field's byte offset
         /// within the `HeapData` enum; the returned `NonNull` is derived from the original
         /// `*mut HeapData` pointer so it inherits the `SharedReadWrite` permission from
@@ -761,7 +759,7 @@ impl<'a> HeapPtr<'a> {
         /// inner pointer is *loaded out of* that field rather than derived by
         /// dereferencing the box. Dereferencing (`boxed.as_ref()`) would create a
         /// shared `&T` whose `SharedReadOnly` provenance makes later
-        /// `HeapRead::get_mut` writes UB; the loaded pointer instead carries the
+        /// `HeapReadMut::get_mut` writes UB; the loaded pointer instead carries the
         /// box's own stored (writeable) provenance.
         #[expect(
             clippy::borrowed_box,
