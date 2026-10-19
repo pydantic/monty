@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt::Write, ops, str};
+use std::{cell::Cell, fmt::Write, mem::ManuallyDrop, ops, str};
 
 use monty_macros::pyattrs;
 use monty_types::{ResourceError, ResourceTracker};
@@ -291,11 +291,12 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyStr::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::Str, attr, args, vm));
         };
-        match self {
-            Self::Interned(id) => call(&Value::InternString(*id), args, vm).map(CallResult::Value),
-            Self::Inline(text) => call(&Value::InlineString(*text), args, vm).map(CallResult::Value),
-            Self::Heap(value) => super::builtin_attr::call_method(value, call, args, vm),
-        }
+        let receiver = ManuallyDrop::new(match self {
+            Self::Interned(id) => Value::InternString(*id),
+            Self::Inline(text) => Value::InlineString(*text),
+            Self::Heap(value) => Value::Ref(value.id()),
+        });
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 }
 
@@ -528,7 +529,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyStr::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::Str, attr, args, vm));
         };
-        super::builtin_attr::call_method(self, call, args, vm)
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 }
 

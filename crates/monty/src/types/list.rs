@@ -1,4 +1,8 @@
-use std::{cmp::Ordering, fmt::Write, mem};
+use std::{
+    cmp::Ordering,
+    fmt::Write,
+    mem::{self, ManuallyDrop},
+};
 
 use monty_types::ResourceError;
 use monty_macros::pyattrs;
@@ -788,7 +792,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
 
-        super::builtin_attr::call_method(self, call, args, vm)
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
