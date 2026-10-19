@@ -7,7 +7,7 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    builtin_attr::{AttrDef, MutHeap, PyAttrs},
+    builtin_attr::{AttrDef, PyAttrs},
     iter::{collect_owned_iterable, collect_python_iterator},
 };
 use crate::{
@@ -1022,8 +1022,8 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
 pub(crate) struct PyListImpl;
 
 #[pyattrs]
-impl PyAttrs for PyListImpl {
-    type Receiver = MutHeap<List>;
+impl<'heap> PyAttrs<'heap> for PyListImpl {
+    type Receiver = HeapRead<'heap, List>;
 
     #[pymethod]
     fn append<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -1065,7 +1065,7 @@ impl PyAttrs for PyListImpl {
     #[pymethod]
     fn pop<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
-    
+
         // Validate index type FIRST (if provided), matching Python's validation order.
         // Python raises TypeError for bad index type even on empty list.
         let index_i64 = if let Some(v) = index_arg {
@@ -1075,22 +1075,22 @@ impl PyAttrs for PyListImpl {
         } else {
             -1
         };
-    
+
         // THEN check empty list
         if list.get(vm.heap).items.is_empty() {
             return Err(ExcType::index_error_pop_empty_list());
         }
-    
+
         // Normalize index
         let len = list.get(vm.heap).items.len();
         let len_i64 = i64::try_from(len).expect("list length exceeds i64::MAX");
         let normalized = if index_i64 < 0 { index_i64 + len_i64 } else { index_i64 };
-    
+
         // Bounds check
         if normalized < 0 || normalized >= len_i64 {
             return Err(ExcType::index_error_pop_out_of_range());
         }
-    
+
         // Remove and return the item
         let idx = usize::try_from(normalized).expect("index validated non-negative");
         Ok(list.get_mut(vm.heap).items.remove(idx))
@@ -1103,7 +1103,7 @@ impl PyAttrs for PyListImpl {
     fn remove<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let value = args.get_one_arg("list.remove", vm.heap)?;
         defer_drop!(value, vm);
-    
+
         let mut found_idx = None;
         {
             let iter = list.iter(vm)?;
@@ -1115,7 +1115,7 @@ impl PyAttrs for PyListImpl {
                 }
             }
         }
-    
+
         match found_idx {
             Some(idx) => {
                 // A matching user `__eq__` may itself have shrunk the list, leaving
@@ -1166,13 +1166,13 @@ impl PyAttrs for PyListImpl {
     fn extend<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let iterable = args.get_one_arg("list.extend", vm.heap)?;
         let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
-    
+
         let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
         if has_refs {
             list.get_mut(vm.heap).set_contains_refs();
         }
         list.get_mut(vm.heap).as_vec_mut().extend(items);
-    
+
         Ok(Value::None)
     }
 
@@ -1184,7 +1184,7 @@ impl PyAttrs for PyListImpl {
     fn index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let pos_args = args.into_pos_only("list.index", vm.heap)?;
         defer_drop!(pos_args, vm);
-    
+
         // Bounds are coerced before the length is read: the coercion may dispatch a
         // user `__index__` that mutates this list, and CPython normalizes against the
         // length *after* argument parsing. Reading it first would resolve a negative
@@ -1200,11 +1200,11 @@ impl PyAttrs for PyListImpl {
             ),
             other => return Err(ExcType::type_error_at_most("list.index", 3, other.len())),
         };
-    
+
         let len = list.get(vm.heap).items.len();
         let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
         let end = end_arg.map_or(len, |i| normalize_sequence_index(i, len)).max(start);
-    
+
         // Search for the value in the specified range
         let iter = list.iter(vm)?;
         defer_drop_mut!(iter, vm);
@@ -1228,7 +1228,7 @@ impl PyAttrs for PyListImpl {
     fn count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let value = args.get_one_arg("list.count", vm.heap)?;
         defer_drop!(value, vm);
-    
+
         let mut count: usize = 0;
         let iter = list.iter(vm)?;
         defer_drop_mut!(iter, vm);
@@ -1237,7 +1237,7 @@ impl PyAttrs for PyListImpl {
                 count += 1;
             }
         }
-    
+
         let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
         Ok(Value::Int(count_i64))
     }
@@ -1268,16 +1268,16 @@ impl PyAttrs for PyListImpl {
         // arbitrary code.
         let items = mem::take(&mut list.get_mut(vm.heap).items);
         defer_drop_mut!(items, vm);
-    
+
         let sort_result = parse_and_sort(items, args, vm);
-    
+
         // Swap our (sorted) buffer back into the list. Whatever the user placed
         // on the live empty list during the sort ends up in `items`; if
         // it's not empty, the user mutated the list. The `contains_refs` flag
         // survives `mem::take`, so it still describes the buffer being swapped
         // back.
         mem::swap(list.get_mut(vm.heap).as_vec_mut(), items);
-    
+
         // Surface any sort error first; otherwise the modification error (if any).
         sort_result?;
         if items.is_empty() {
