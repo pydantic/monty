@@ -7,7 +7,7 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    builtin_attr::{AttrDef, MutHeap, PyAttrs},
+    builtin_attr::{AttrDef, PyAttrs},
     iter::{collect_owned_iterable, collect_python_iterator},
 };
 use crate::{
@@ -1029,8 +1029,8 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
 pub(crate) struct PyListImpl;
 
 #[pyattrs]
-impl PyAttrs for PyListImpl {
-    type Receiver = MutHeap<List>;
+impl<'heap> PyAttrs<'heap> for PyListImpl {
+    type Receiver = HeapRead<'heap, List>;
 
     #[pymethod]
     fn append<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

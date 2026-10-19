@@ -138,8 +138,8 @@ use monty_macros::pyattrs;
 pub(crate) struct PyListImpl;
 
 #[pyattrs]
-impl PyAttrs for PyListImpl {
-    type Receiver = MutHeap<List>;
+impl<'heap> PyAttrs<'heap> for PyListImpl {
+    type Receiver = HeapRead<'heap, List>;
 
     #[pymethod]
     fn sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -150,10 +150,10 @@ impl PyAttrs for PyListImpl {
 
 `#[pymethod]` registers `AttrDef::Method`; it takes a native receiver, `ArgValues`, and `&mut VM`, returning
 `RunResult<Value>`.
-`MutHeap<T>` lends a mutable heap handle, which also accepts methods taking a shared handle.
-`Heap<T>` lends only a shared handle.
-`Immediate<T>` passes an `f64`, `i64`, or `bool` value from the corresponding `Value` variant.
-Both `HeapRead<'h, T>` and `HeapObjectRead<'h, T>` signatures are supported.
+`Receiver` names the native view: `HeapRead<'heap, T>`, `HeapObjectRead<'heap, T>`, `PyStr<'heap>`, or an
+immediate `f64`, `i64`, or `bool`.
+Heap-view methods declare `&` or `&mut` in their first parameter; immediate receivers are passed by value.
+String methods take `&PyStr`, covering interned and heap strings without projecting their storage.
 
 `#[pyclassmethod]` registers `AttrDef::ClassMethod` with the existing signature
 `(StaticStrings, Type, Value, ArgValues, &mut VM) -> RunResult<CallResult>`.
@@ -166,7 +166,11 @@ Functions keep their visibility, lifetime parameters, documentation, and bodies.
 Unannotated helper functions are preserved without registration.
 Annotations take no arguments; conditional attributes, `self` parameters, async functions, and type or const
 parameters on registered functions are rejected.
-Implementation namespaces must be concrete types, and Rust rejects multiple `PyAttrs` implementations for one type.
+Implementation types may have lifetime parameters; Rust rejects overlapping `PyAttrs` implementations.
+
+String methods are defined directly in `impl<'h> PyAttrs<'h> for PyStr<'h>` with `type Receiver = PyStr<'h>`.
+The generated callable converts its `Value` receiver to a borrowed `PyStr` view before invoking the method.
+Mutable string receivers are rejected.
 
 ## Not a standalone crate
 
