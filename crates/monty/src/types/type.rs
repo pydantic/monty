@@ -20,7 +20,7 @@ use crate::{
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
         Set, Slice, Str, TimeZone, Tuple,
-        builtin_attr::AttrDef,
+        builtin_attr::{self, AttrDef},
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -658,8 +658,12 @@ impl Type {
     /// call plumbing. Any other name is looked up as a plain attribute and the
     /// result called, so `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        if let Some(AttrDef::ClassMethod(call)) = self.get_attr(attr, vm.interns) {
-            return call(self, Value::Builtin(Builtins::Type(super::BuiltinType::try_from(self).expect("registered builtin type"))), args, vm);
+        match self.get_attr(attr, vm.interns) {
+            Some(AttrDef::ClassMethod(call)) => {
+                return call(self, Value::Builtin(Builtins::Type(super::BuiltinType::try_from(self).expect("registered builtin type"))), args, vm);
+            }
+            Some(AttrDef::Method(call)) => return builtin_attr::invoke_unbound(self, attr, call, args, vm),
+            _ => {}
         }
         match (self, attr.static_string(vm.interns)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
