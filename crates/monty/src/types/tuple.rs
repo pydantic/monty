@@ -4,7 +4,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem,
+    mem::{self, ManuallyDrop},
 };
 
 use monty_macros::pyattrs;
@@ -476,7 +476,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)));
         };
-        super::builtin_attr::call_method(self, call, args, vm)
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

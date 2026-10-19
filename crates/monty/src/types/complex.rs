@@ -7,7 +7,7 @@
 //! which a real operand only touches the part it combines with (`1j * inf` is `nan+infj`
 //! but `(1+1j) * inf` is `inf+infj`).
 
-use std::fmt::Write;
+use std::{fmt::Write, mem::ManuallyDrop};
 
 use monty_macros::pyattrs;
 use monty_types::FormatComplex;
@@ -732,7 +732,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyComplexImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm));
         };
-        super::builtin_attr::call_method(self, call, args, vm)
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

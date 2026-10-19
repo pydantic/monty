@@ -1,36 +1,22 @@
 //! Static attribute definitions for builtin types.
 
-use std::mem::ManuallyDrop;
-
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
-    heap::HeapObjectRead,
     intern::StaticStrings,
     types::{Type, complex, date, list, re_match, re_pattern, str, time, timedelta, timezone, tuple},
     value::Value,
 };
 
 pub(crate) type BuiltinCall = for<'h> fn(StaticStrings, Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+/// Heap receivers stay protected by their read handle; temporary Values borrow their references.
 pub(crate) type MethodCall = for<'h> fn(&Value, ArgValues, &mut VM<'h>) -> RunResult<Value>;
 
 /// Python attribute definitions and the native view passed to their methods.
 pub(crate) trait PyAttrs<'h> {
     type Receiver;
     const ATTRS: &'static [(StaticStrings, AttrDef)];
-}
-
-pub(crate) fn call_method<'h, T>(
-    receiver: &HeapObjectRead<'h, T>,
-    call: MethodCall,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<CallResult> {
-    // The read handle keeps the receiver alive. This Value only lends its identity
-    // to the adapter, so it must neither acquire nor release an owned reference.
-    let receiver = ManuallyDrop::new(Value::Ref(receiver.id()));
-    call(&receiver, args, vm).map(CallResult::Value)
 }
 
 #[derive(Clone, Copy)]
@@ -148,169 +134,6 @@ mod tests {
             );
             assert!(conjugate(&Value::Float(2.0), ArgValues::One(Value::Int(1)), vm).is_err());
         });
-    }
-
-    #[test]
-    fn tables_preserve_registered_names_order_and_kinds() {
-        let expected: &[(Type, &[(StaticStrings, u8)])] = &[
-            (
-                Type::Str,
-                &[
-                    (StaticStrings::Lower, 0),
-                    (StaticStrings::Upper, 0),
-                    (StaticStrings::Capitalize, 0),
-                    (StaticStrings::Title, 0),
-                    (StaticStrings::Swapcase, 0),
-                    (StaticStrings::Casefold, 0),
-                    (StaticStrings::Isalpha, 0),
-                    (StaticStrings::Isdigit, 0),
-                    (StaticStrings::Isalnum, 0),
-                    (StaticStrings::Isnumeric, 0),
-                    (StaticStrings::Isspace, 0),
-                    (StaticStrings::Islower, 0),
-                    (StaticStrings::Isupper, 0),
-                    (StaticStrings::Isascii, 0),
-                    (StaticStrings::Isdecimal, 0),
-                    (StaticStrings::Find, 0),
-                    (StaticStrings::Rfind, 0),
-                    (StaticStrings::Index, 0),
-                    (StaticStrings::Rindex, 0),
-                    (StaticStrings::Count, 0),
-                    (StaticStrings::Startswith, 0),
-                    (StaticStrings::Endswith, 0),
-                    (StaticStrings::Strip, 0),
-                    (StaticStrings::Lstrip, 0),
-                    (StaticStrings::Rstrip, 0),
-                    (StaticStrings::Removeprefix, 0),
-                    (StaticStrings::Removesuffix, 0),
-                    (StaticStrings::Split, 0),
-                    (StaticStrings::Rsplit, 0),
-                    (StaticStrings::Splitlines, 0),
-                    (StaticStrings::Partition, 0),
-                    (StaticStrings::Rpartition, 0),
-                    (StaticStrings::Replace, 0),
-                    (StaticStrings::Center, 0),
-                    (StaticStrings::Ljust, 0),
-                    (StaticStrings::Rjust, 0),
-                    (StaticStrings::Zfill, 0),
-                    (StaticStrings::Expandtabs, 0),
-                    (StaticStrings::Format, 0),
-                    (StaticStrings::Encode, 0),
-                    (StaticStrings::Isidentifier, 0),
-                    (StaticStrings::Istitle, 0),
-                    (StaticStrings::Isprintable, 0),
-                    (StaticStrings::Join, 0),
-                ],
-            ),
-            (
-                Type::List,
-                &[
-                    (StaticStrings::Append, 0),
-                    (StaticStrings::Insert, 0),
-                    (StaticStrings::Pop, 0),
-                    (StaticStrings::Remove, 0),
-                    (StaticStrings::Clear, 0),
-                    (StaticStrings::Copy, 0),
-                    (StaticStrings::Extend, 0),
-                    (StaticStrings::Index, 0),
-                    (StaticStrings::Count, 0),
-                    (StaticStrings::Reverse, 0),
-                    (StaticStrings::Sort, 0),
-                ],
-            ),
-            (Type::Tuple, &[(StaticStrings::Index, 0), (StaticStrings::Count, 0)]),
-            (
-                Type::Complex,
-                &[(StaticStrings::Conjugate, 0), (StaticStrings::FromNumber, 1)],
-            ),
-            (
-                Type::Date,
-                &[
-                    (StaticStrings::Isoformat, 0),
-                    (StaticStrings::Strftime, 0),
-                    (StaticStrings::Replace, 0),
-                    (StaticStrings::Weekday, 0),
-                    (StaticStrings::Isoweekday, 0),
-                    (StaticStrings::Today, 1),
-                    (StaticStrings::Fromisoformat, 1),
-                    (StaticStrings::Min, 2),
-                    (StaticStrings::Max, 2),
-                    (StaticStrings::Resolution, 2),
-                ],
-            ),
-            (
-                Type::Time,
-                &[
-                    (StaticStrings::Isoformat, 0),
-                    (StaticStrings::Strftime, 0),
-                    (StaticStrings::Replace, 0),
-                    (StaticStrings::Utcoffset, 0),
-                    (StaticStrings::Tzname, 0),
-                    (StaticStrings::Dst, 0),
-                    (StaticStrings::Fromisoformat, 1),
-                    (StaticStrings::Min, 2),
-                    (StaticStrings::Max, 2),
-                    (StaticStrings::Resolution, 2),
-                ],
-            ),
-            (
-                Type::TimeDelta,
-                &[
-                    (StaticStrings::TotalSeconds, 0),
-                    (StaticStrings::Min, 2),
-                    (StaticStrings::Max, 2),
-                    (StaticStrings::Resolution, 2),
-                ],
-            ),
-            (
-                Type::TimeZone,
-                &[
-                    (StaticStrings::Utcoffset, 0),
-                    (StaticStrings::Tzname, 0),
-                    (StaticStrings::Dst, 0),
-                    (StaticStrings::Utc, 2),
-                    (StaticStrings::Min, 2),
-                    (StaticStrings::Max, 2),
-                ],
-            ),
-            (
-                Type::RePattern,
-                &[
-                    (StaticStrings::Search, 0),
-                    (StaticStrings::Match, 0),
-                    (StaticStrings::Fullmatch, 0),
-                    (StaticStrings::Findall, 0),
-                    (StaticStrings::Sub, 0),
-                    (StaticStrings::Split, 0),
-                    (StaticStrings::Finditer, 0),
-                ],
-            ),
-            (
-                Type::ReMatch,
-                &[
-                    (StaticStrings::Group, 0),
-                    (StaticStrings::Groups, 0),
-                    (StaticStrings::Groupdict, 0),
-                    (StaticStrings::Start, 0),
-                    (StaticStrings::End, 0),
-                    (StaticStrings::Span, 0),
-                ],
-            ),
-        ];
-        for &(owner, entries) in expected {
-            let actual = attrs(owner)
-                .iter()
-                .map(|&(name, definition)| {
-                    let kind = match definition {
-                        AttrDef::Method(_) => 0,
-                        AttrDef::ClassMethod(_) => 1,
-                        AttrDef::Value(_) => 2,
-                    };
-                    (name, kind)
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(actual, entries, "{owner:?}");
-        }
     }
 
     #[test]

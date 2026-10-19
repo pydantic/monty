@@ -9,7 +9,15 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
+use std::{
+    borrow::Cow,
+    cell::OnceCell,
+    cmp::Ordering,
+    fmt::Write,
+    iter,
+    mem::{self, ManuallyDrop},
+    str,
+};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
 use monty_macros::pyattrs;
@@ -517,7 +525,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyRePatternImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
         };
-        super::builtin_attr::call_method(self, call, args, vm)
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 }
 

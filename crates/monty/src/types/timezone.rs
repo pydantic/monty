@@ -6,6 +6,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
+    mem::ManuallyDrop,
 };
 
 use monty_macros::pyattrs;
@@ -345,7 +346,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyTimeZoneImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm));
         };
-        super::builtin_attr::call_method(self, call, args, vm)
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 }
 

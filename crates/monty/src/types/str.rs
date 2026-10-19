@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt::Write, ops};
+use std::{cell::Cell, fmt::Write, mem::ManuallyDrop, ops};
 
 use monty_macros::pyattrs;
 use monty_types::{ResourceError, ResourceTracker};
@@ -215,10 +215,11 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
-        match self {
-            Self::Interned(id) => call(&Value::InternString(*id), args, vm).map(CallResult::Value),
-            Self::Heap(value) => super::builtin_attr::call_method(value, call, args, vm),
-        }
+        let receiver = ManuallyDrop::new(match self {
+            Self::Interned(id) => Value::InternString(*id),
+            Self::Heap(value) => Value::Ref(value.id()),
+        });
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 }
 
@@ -443,7 +444,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
-        super::builtin_attr::call_method(self, call, args, vm)
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 }
 

@@ -9,7 +9,7 @@
 //! is held as a single refcounted heap reference shared across every match from
 //! one `finditer`/`findall` call, so `py_dec_ref_ids` releases that reference.
 
-use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
+use std::{cell::OnceCell, cmp::Ordering, fmt::Write, mem::ManuallyDrop};
 
 use monty_macros::pyattrs;
 use smallvec::smallvec;
@@ -354,7 +354,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
         let Some(AttrDef::Method(call)) = attr.static_string(vm.interns).and_then(PyReMatchImpl::lookup_attr) else {
             return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm));
         };
-        super::builtin_attr::call_method(self, call, args, vm)
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
