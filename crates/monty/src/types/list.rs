@@ -1028,7 +1028,7 @@ pub(crate) struct PyListImpl;
 
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyListImpl {
-    type Receiver = HeapRead<'heap, List>;
+    type Receiver = HeapReadMut<'heap, List>;
 
     #[pymethod]
     fn append<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

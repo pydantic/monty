@@ -492,13 +492,13 @@ impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
     }
 
     #[pymethod]
-    fn groups<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn groups<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("re.Match.groups", vm.heap)?;
         Ok(m.get(vm.heap).get_groups(vm.heap))
     }
 
     #[pymethod]
-    fn groupdict<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn groupdict<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
         let default = default.unwrap_or(Value::None);
         let result = m.get_groupdict(&default, vm)?;
@@ -507,19 +507,19 @@ impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
     }
 
     #[pymethod]
-    fn start<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn start<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
         m.get(vm.heap).get_start(n, vm)
     }
 
     #[pymethod]
-    fn end<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn end<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
         m.get(vm.heap).get_end(n, vm)
     }
 
     #[pymethod]
-    fn span<'h>(m: &mut HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn span<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
         m.get(vm.heap).get_span(n, vm)
     }
