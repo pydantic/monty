@@ -8,7 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    heap::{DropGuard, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
@@ -22,6 +22,27 @@ enum ExceptionHandlingResult {
     Unhandled(RunError),
     /// The newly activated task has an exception to handle before running bytecode.
     NextTask(RunError),
+}
+
+/// An active handler's exception object and its original traceback.
+///
+/// The value owns a heap reference, released when the handler exits. Keeping the
+/// traceback alongside it lets bare raises preserve call sites across handlers,
+/// task switches, and snapshots without changing the exception's identity.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HandledException {
+    // Preserve the old Value shape so dumps written before traceback retention
+    // still load. Those values have no saved traceback.
+    #[serde(flatten)]
+    pub(super) value: Value,
+    #[serde(default)]
+    pub(super) error: Option<ExceptionRaise>,
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for HandledException {
+    fn drop_with(self, heap: &mut C) {
+        self.value.drop_with(heap);
+    }
 }
 
 impl VM<'_> {
@@ -331,7 +352,13 @@ impl VM<'_> {
                 // Push exception onto the exception_stack for bare raise.
                 // This allows nested except handlers to restore outer
                 // exception context.
-                this.exception_stack.push(exc_value);
+                let RunError::Exc(error) = error else {
+                    unreachable!("only catchable exceptions enter handlers");
+                };
+                this.exception_stack.push(HandledException {
+                    value: exc_value,
+                    error: Some(error),
+                });
 
                 // Jump to handler
                 this.current_frame_mut().ip = handler_offset;

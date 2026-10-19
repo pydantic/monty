@@ -10,7 +10,7 @@ use std::{collections::VecDeque, mem};
 use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
-use super::FrameNamespace;
+use super::{FrameNamespace, HandledException};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
@@ -48,7 +48,7 @@ pub(crate) struct Task {
     /// Saved operand stack; the current task uses the VM's stack.
     pub stack: Vec<Value>,
     /// Exception stack for nested except blocks.
-    pub exception_stack: Vec<Value>,
+    pub exception_stack: Vec<HandledException>,
     /// VM-level instruction_ip (for exception table lookup).
     pub instruction_ip: usize,
     /// Owned coroutine reference for a spawned task; the main task has none.
