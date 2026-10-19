@@ -6,8 +6,8 @@ use syn::{FnArg, GenericArgument, GenericParam, ImplItem, ImplItemFn, ItemImpl, 
 
 #[derive(Clone, Copy)]
 enum Mode {
-    MutHeap,
-    Heap,
+    HeapHandle,
+    StrView,
     Immediate,
 }
 
@@ -25,43 +25,61 @@ fn type_path(ty: &Type) -> syn::Result<&syn::PathSegment> {
     }
 }
 
-fn receiver(ty: &Type) -> syn::Result<(Mode, &Type, syn::Ident)> {
-    let marker = type_path(ty)?;
-    let mode = match marker.ident.to_string().as_str() {
-        "MutHeap" => Mode::MutHeap,
-        "Heap" => Mode::Heap,
-        "Immediate" => Mode::Immediate,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                ty,
-                "Receiver must be MutHeap<T>, Heap<T>, or Immediate<T>",
-            ));
+fn receiver(ty: &Type) -> syn::Result<(Mode, Type, syn::Ident)> {
+    let view = type_path(ty)?;
+    match view.ident.to_string().as_str() {
+        "f64" | "i64" | "bool" if matches!(view.arguments, PathArguments::None) => {
+            let variant = match view.ident.to_string().as_str() {
+                "f64" => "Float",
+                "i64" => "Int",
+                _ => "Bool",
+            };
+            Ok((Mode::Immediate, ty.clone(), format_ident!("{variant}")))
         }
-    };
-    let PathArguments::AngleBracketed(arguments) = &marker.arguments else {
-        return Err(syn::Error::new_spanned(ty, "receiver marker requires one native type"));
-    };
-    let native = match arguments.args.first() {
-        Some(GenericArgument::Type(native)) if arguments.args.len() == 1 => native,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                arguments,
-                "receiver marker requires one native type",
-            ));
+        "PyStr" => {
+            if !matches!(&view.arguments, PathArguments::AngleBracketed(args)
+                if args.args.len() == 1 && matches!(args.args.first(), Some(GenericArgument::Lifetime(_))))
+            {
+                return Err(syn::Error::new_spanned(ty, "PyStr requires one heap lifetime"));
+            }
+            Ok((Mode::StrView, ty.clone(), view.ident.clone()))
         }
-    };
-    let ident = &type_path(native)?.ident;
-    let variant = if matches!(mode, Mode::Immediate) {
-        match ident.to_string().as_str() {
-            "f64" => format_ident!("Float"),
-            "i64" => format_ident!("Int"),
-            "bool" => format_ident!("Bool"),
-            _ => return Err(syn::Error::new_spanned(native, "Immediate supports f64, i64, or bool")),
+        "HeapRead" | "HeapObjectRead" => {
+            let PathArguments::AngleBracketed(args) = &view.arguments else {
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    "heap view requires a lifetime and native type",
+                ));
+            };
+            if args.args.len() != 2 || !matches!(args.args.first(), Some(GenericArgument::Lifetime(_))) {
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    "heap view requires a lifetime and native type",
+                ));
+            }
+            let Some(GenericArgument::Type(native)) = args.args.last() else {
+                return Err(syn::Error::new_spanned(ty, "heap view requires a native type"));
+            };
+            let variant = type_path(native)?.ident.clone();
+            Ok((Mode::HeapHandle, native.clone(), variant))
         }
-    } else {
-        ident.clone()
-    };
-    Ok((mode, native, variant))
+        _ => Err(syn::Error::new_spanned(
+            ty,
+            "Receiver must be HeapRead<'h, T>, HeapObjectRead<'h, T>, PyStr<'h>, f64, i64, or bool",
+        )),
+    }
+}
+
+fn erase_path_lifetimes(path: &mut syn::Path) {
+    for segment in &mut path.segments {
+        if let PathArguments::AngleBracketed(args) = &mut segment.arguments {
+            for arg in &mut args.args {
+                if let GenericArgument::Lifetime(lifetime) = arg {
+                    *lifetime = syn::Lifetime::new("'_", lifetime.apostrophe);
+                }
+            }
+        }
+    }
 }
 
 fn named(ty: &Type, name: &str) -> bool {
@@ -148,9 +166,10 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
         let first = parameters[0];
         let valid = match mode {
             Mode::Immediate => first == native,
-            Mode::MutHeap | Mode::Heap => matches!(first, Type::Reference(reference)
-            if (matches!(mode, Mode::MutHeap) || reference.mutability.is_none())
-            && type_path(&reference.elem).is_ok_and(|segment| {
+            Mode::StrView => matches!(first, Type::Reference(reference)
+                if reference.mutability.is_none() && reference.elem.as_ref() == native),
+            Mode::HeapHandle => matches!(first, Type::Reference(reference)
+            if type_path(&reference.elem).is_ok_and(|segment| {
                 (segment.ident == "HeapRead" || segment.ident == "HeapObjectRead")
                     && matches!(&segment.arguments, PathArguments::AngleBracketed(arguments)
                         if arguments.args.len() == 2
@@ -161,15 +180,23 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
         if !valid {
             return Err(syn::Error::new_spanned(
                 first,
-                "method receiver does not match Receiver; Heap<T> requires a shared handle, MutHeap<T> allows shared or mutable handles, Immediate<T> takes T by value",
+                "method receiver does not match Receiver; heap views take & or &mut, PyStr takes &, immediate values are passed by value",
             ));
         }
     }
     Ok(())
 }
 
-fn definition(owner: &Type, name: &syn::Ident, kind: Kind, mode: Mode, variant: &syn::Ident) -> TokenStream {
+fn definition(owner: &Type, method: &ImplItemFn, kind: Kind, mode: Mode, variant: &syn::Ident) -> TokenStream {
+    let name = &method.sig.ident;
+    // Callable adapters must work for every VM lifetime, independently of the table's lifetime.
+    let mut owner = owner.clone();
+    if let Type::Path(owner) = &mut owner {
+        erase_path_lifetimes(&mut owner.path);
+    }
     let handler = quote!(<#owner>::#name);
+    let mutable = matches!(method.sig.inputs.first(), Some(FnArg::Typed(arg))
+        if matches!(arg.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_some()));
     match kind {
         Kind::ClassMethod => quote!(crate::types::builtin_attr::AttrDef::ClassMethod(#handler)),
         Kind::Value => quote!(crate::types::builtin_attr::AttrDef::Value(#handler)),
@@ -181,8 +208,14 @@ fn definition(owner: &Type, name: &syn::Ident, kind: Kind, mode: Mode, variant: 
                     };
                     #handler(*value, args, vm)
                 },
-                Mode::Heap | Mode::MutHeap => {
-                    let (binding, argument) = if matches!(mode, Mode::MutHeap) {
+                Mode::StrView => quote! {
+                    let Some(value) = crate::types::str::PyStr::from_value(receiver, vm) else {
+                        unreachable!("builtin method receiver must be a string")
+                    };
+                    #handler(&value, args, vm)
+                },
+                Mode::HeapHandle => {
+                    let (binding, argument) = if mutable {
                         (quote!(mut value), quote!(&mut value))
                     } else {
                         (quote!(value), quote!(&value))
@@ -214,21 +247,27 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
     let Some((negation, trait_path, _)) = &input.trait_ else {
         return Err(syn::Error::new_spanned(
             &input,
-            "#[pyattrs] requires impl PyAttrs for a namespace type",
+            "#[pyattrs] requires impl<'h> PyAttrs<'h> for a namespace type",
         ));
     };
     if negation.is_some()
-        || trait_path
-            .segments
-            .last()
-            .is_none_or(|segment| segment.ident != "PyAttrs" || !matches!(segment.arguments, PathArguments::None))
+        || trait_path.segments.last().is_none_or(|segment| {
+            segment.ident != "PyAttrs"
+                || !matches!(&segment.arguments,
+                PathArguments::AngleBracketed(args) if args.args.len() == 1
+                    && matches!(args.args.first(), Some(GenericArgument::Lifetime(_))))
+        })
         || input.unsafety.is_some()
-        || !input.generics.params.is_empty()
+        || input
+            .generics
+            .params
+            .iter()
+            .any(|param| !matches!(param, GenericParam::Lifetime(_)))
         || input.generics.where_clause.is_some()
     {
         return Err(syn::Error::new_spanned(
             &input,
-            "#[pyattrs] requires a safe, concrete impl PyAttrs",
+            "#[pyattrs] requires a safe impl PyAttrs with one lifetime argument and only lifetime parameters",
         ));
     }
     let receiver_items = input
@@ -244,7 +283,6 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
     }
     let receiver_item = receiver_items[0].clone();
     let (mode, native, variant) = receiver(&receiver_item.ty)?;
-    let native = native.clone();
     let mut methods = Vec::new();
     let mut entries = Vec::new();
     let mut names = HashSet::new();
@@ -328,7 +366,7 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         syn::Error::new_spanned(name, "method name must map to a StaticStrings variant")
                     })?;
                     static_name.set_span(name.span());
-                    let def = definition(&input.self_ty, name, kind, mode, &variant);
+                    let def = definition(&input.self_ty, method, kind, mode, &variant);
                     entries.push((static_name, def));
                 }
                 methods.push(method.clone());
@@ -344,16 +382,24 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
     let owner = &input.self_ty;
     let attrs = &input.attrs;
     let trait_path = &input.trait_.as_ref().unwrap().1;
+    let generics = &input.generics;
+    let inherent_generics = if matches!(type_path(owner)?.arguments, PathArguments::None) {
+        syn::Generics::default()
+    } else {
+        input.generics.clone()
+    };
+    let mut lookup_trait = trait_path.clone();
+    erase_path_lifetimes(&mut lookup_trait);
     let table = entries
         .iter()
         .map(|(name, def)| quote!((crate::intern::StaticStrings::#name, #def)));
     // Lookup and enumeration share the table's function pointers.
     let arms = entries.iter().enumerate().map(|(index, (name, _))| {
-        quote!(crate::intern::StaticStrings::#name => Some(<Self as #trait_path>::ATTRS[#index].1))
+        quote!(crate::intern::StaticStrings::#name => Some(<Self as #lookup_trait>::ATTRS[#index].1))
     });
     Ok(quote! {
         #(#attrs)*
-        impl #owner {
+        impl #inherent_generics #owner {
             #(#methods)*
 
             pub(crate) const fn lookup_attr(name: crate::intern::StaticStrings) -> Option<crate::types::builtin_attr::AttrDef> {
@@ -365,7 +411,7 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
         }
 
         #(#attrs)*
-        impl #trait_path for #owner {
+        impl #generics #trait_path for #owner {
             #receiver_item
             const ATTRS: &'static [(crate::intern::StaticStrings, crate::types::builtin_attr::AttrDef)] = &[
                 #(#table,)*
@@ -392,8 +438,8 @@ mod tests {
     #[test]
     fn preserves_native_method_and_generates_table_and_lookup() {
         let input: ItemImpl = parse_quote! {
-            impl PyAttrs for PyListImpl {
-                type Receiver = MutHeap<List>;
+            impl<'h> PyAttrs<'h> for PyListImpl {
+                type Receiver = HeapRead<'h, List>;
 
                 /// Sorting can call Python code.
                 #[pymethod]
@@ -427,8 +473,8 @@ mod tests {
     #[test]
     fn receiver_modes_and_attribute_kinds() {
         let shared = expand(parse_quote! {
-            impl PyAttrs for PyTupleImpl {
-                type Receiver = Heap<Tuple>;
+            impl<'h> PyAttrs<'h> for PyTupleImpl {
+                type Receiver = HeapRead<'h, Tuple>;
                 #[pymethod]
                 fn count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> { todo!() }
             }
@@ -437,8 +483,8 @@ mod tests {
         assert!(!shared.contains("mut value"));
 
         let immediate = expand(parse_quote! {
-            impl PyAttrs for PyFloatImpl {
-                type Receiver = Immediate<f64>;
+            impl<'h> PyAttrs<'h> for PyFloatImpl {
+                type Receiver = f64;
                 #[pymethod]
                 fn is_integer(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> { todo!() }
                 #[pyclassmethod]
@@ -454,20 +500,48 @@ mod tests {
     }
 
     #[test]
+    fn string_receivers_use_the_logical_view() {
+        let output = expand(parse_quote! {
+            impl<'h> PyAttrs<'h> for PyStr<'h> {
+                type Receiver = PyStr<'h>;
+                #[pymethod]
+                fn upper(text: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> { todo!() }
+            }
+        })
+        .unwrap()
+        .to_string();
+        assert!(output.contains("PyStr :: from_value"));
+        assert!(!output.contains("heap_read_ref_as_field"));
+        assert!(!output.contains("protect"));
+        assert!(
+            error(parse_quote! {
+                impl<'h> PyAttrs<'h> for PyStr<'h> {
+                    type Receiver = PyStr<'h>;
+                    #[pymethod]
+                    fn upper(text: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> { todo!() }
+                }
+            })
+            .contains("receiver does not match Receiver")
+        );
+    }
+
+    #[test]
     fn invalid_receiver_declarations() {
-        assert!(error(parse_quote! { impl PyAttrs for X {} }).contains("exactly one type Receiver"));
-        assert!(error(parse_quote! { impl PyAttrs for X { type Receiver = Box<List>; } }).contains("Receiver must be"));
+        assert!(error(parse_quote! { impl<'h> PyAttrs<'h> for X {} }).contains("exactly one type Receiver"));
         assert!(
-            error(parse_quote! { impl PyAttrs for X { type Receiver = Heap; } }).contains("requires one native type")
+            error(parse_quote! { impl<'h> PyAttrs<'h> for X { type Receiver = Box<List>; } })
+                .contains("Receiver must be")
         );
-        assert!(
-            error(parse_quote! { impl PyAttrs for X { type Receiver = Heap<List, Tuple>; } })
-                .contains("requires one native type")
-        );
-        assert!(
-            error(parse_quote! { impl PyAttrs for X { type Receiver = Immediate<String>; } })
-                .contains("Immediate supports")
-        );
+        for ty in [
+            quote!(HeapRead),
+            quote!(HeapRead<'h>),
+            quote!(HeapRead<List>),
+            quote!(PyStr),
+            quote!(String),
+        ] {
+            let input = syn::parse2(quote! { impl<'h> PyAttrs<'h> for X { type Receiver = #ty; } }).unwrap();
+            assert!(expand(input).is_err());
+        }
     }
 
     #[test]
@@ -476,11 +550,7 @@ mod tests {
             (
                 quote!(
                     #[pymethod]
-                    fn count<'h>(
-                        tuple: &mut HeapRead<'h, Tuple>,
-                        args: ArgValues,
-                        vm: &mut VM<'h>,
-                    ) -> RunResult<Value> {
+                    fn count<'h>(tuple: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
                         todo!()
                     }
                 ),
@@ -561,19 +631,23 @@ mod tests {
             ),
         ];
         for (method, expected) in cases {
-            let input = syn::parse2(quote! { impl PyAttrs for X { type Receiver = Heap<Tuple>; #method } }).unwrap();
+            let input =
+                syn::parse2(quote! { impl<'h> PyAttrs<'h> for X { type Receiver = HeapRead<'h, Tuple>; #method } })
+                    .unwrap();
             assert!(error(input).contains(expected), "expected diagnostic: {expected}");
         }
     }
 
     #[test]
     fn rust_rejects_invalid_receivers_and_duplicate_implementations() {
-        let generated = expand(parse_quote! { impl PyAttrs for Namespace { type Receiver = Heap<Native>; } }).unwrap();
+        let generated =
+            expand(parse_quote! { impl<'h> PyAttrs<'h> for Namespace { type Receiver = HeapRead<'h, Native>; } })
+                .unwrap();
         let support = quote! {
             mod intern { pub enum StaticStrings { Missing } }
             mod types { pub mod builtin_attr { pub enum AttrDef {} } }
-            trait PyAttrs { type Receiver; const ATTRS: &'static [(intern::StaticStrings, types::builtin_attr::AttrDef)]; }
-            struct Heap<T>(std::marker::PhantomData<T>);
+            trait PyAttrs<'h> { type Receiver; const ATTRS: &'static [(intern::StaticStrings, types::builtin_attr::AttrDef)]; }
+            struct HeapRead<'h, T>(std::marker::PhantomData<&'h T>);
             struct Native;
             struct Namespace;
         };
@@ -598,15 +672,13 @@ mod tests {
         assert!(!duplicate.status.success());
         assert!(String::from_utf8_lossy(&duplicate.stderr).contains("E0119"));
         let diagnostic = expand(parse_quote! {
-            impl PyAttrs for Namespace { type Receiver = Box<Native>; }
+            impl<'h> PyAttrs<'h> for Namespace { type Receiver = Box<Native>; }
         })
         .unwrap_err()
         .into_compile_error();
         let invalid = compile(quote!(#support #diagnostic));
         assert!(!invalid.status.success());
-        assert!(
-            String::from_utf8_lossy(&invalid.stderr).contains("Receiver must be MutHeap<T>, Heap<T>, or Immediate<T>")
-        );
+        assert!(String::from_utf8_lossy(&invalid.stderr).contains("Receiver must be HeapRead<'h, T>"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

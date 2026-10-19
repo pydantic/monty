@@ -13,7 +13,7 @@ use monty_macros::pyattrs;
 // here because this is where the sandbox-side constructor enforces them.
 pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
 
-use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -366,8 +366,8 @@ fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -
 pub(crate) struct PyTimeZoneImpl;
 
 #[pyattrs]
-impl PyAttrs for PyTimeZoneImpl {
-    type Receiver = MutHeap<TimeZone>;
+impl<'heap> PyAttrs<'heap> for PyTimeZoneImpl {
+    type Receiver = HeapObjectRead<'heap, TimeZone>;
 
     #[pymethod]
     fn utcoffset<'h>(value: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

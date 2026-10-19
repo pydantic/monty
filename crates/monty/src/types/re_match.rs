@@ -14,7 +14,7 @@ use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 use monty_macros::pyattrs;
 use smallvec::smallvec;
 
-use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -470,8 +470,8 @@ struct GroupdictArgs {
 pub(crate) struct PyReMatchImpl;
 
 #[pyattrs]
-impl PyAttrs for PyReMatchImpl {
-    type Receiver = MutHeap<ReMatch>;
+impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
+    type Receiver = HeapRead<'heap, ReMatch>;
 
     /// Handles `m.group(...)` calls, supporting zero, one, or multiple arguments.
     ///

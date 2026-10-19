@@ -15,7 +15,7 @@ use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
 use monty_macros::pyattrs;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -811,8 +811,8 @@ impl<'de> Deserialize<'de> for RePattern {
 pub(crate) struct PyRePatternImpl;
 
 #[pyattrs]
-impl PyAttrs for PyRePatternImpl {
-    type Receiver = MutHeap<RePattern>;
+impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
+    type Receiver = HeapRead<'heap, RePattern>;
 
     #[pymethod]
     fn search<'h>(value: &mut HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

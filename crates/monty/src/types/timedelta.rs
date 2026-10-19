@@ -15,7 +15,7 @@ use chrono::TimeDelta as ChronoTimeDelta;
 use monty_macros::pyattrs;
 use smallvec::smallvec;
 
-use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
@@ -559,8 +559,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
 pub(crate) struct PyTimeDeltaImpl;
 
 #[pyattrs]
-impl PyAttrs for PyTimeDeltaImpl {
-    type Receiver = MutHeap<TimeDelta>;
+impl<'heap> PyAttrs<'heap> for PyTimeDeltaImpl {
+    type Receiver = HeapObjectRead<'heap, TimeDelta>;
 
     #[pymethod]
     fn total_seconds<'h>(

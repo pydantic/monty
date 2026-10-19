@@ -1,6 +1,6 @@
 //! Static attribute definitions for builtin types.
 
-use std::{marker::PhantomData, mem::ManuallyDrop};
+use std::mem::ManuallyDrop;
 
 use crate::{
     args::ArgValues,
@@ -8,26 +8,18 @@ use crate::{
     exception_private::RunResult,
     heap::HeapObjectRead,
     intern::StaticStrings,
-    types::{Type, complex, date, list, re_match, re_pattern, time, timedelta, timezone, tuple},
+    types::{Type, complex, date, list, re_match, re_pattern, str, time, timedelta, timezone, tuple},
     value::Value,
 };
 
 pub(crate) type BuiltinCall = for<'h> fn(StaticStrings, Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 pub(crate) type MethodCall = for<'h> fn(&Value, ArgValues, &mut VM<'h>) -> RunResult<Value>;
 
-/// A namespace's native receiver strategy and Python attribute definitions.
-pub(crate) trait PyAttrs {
+/// Python attribute definitions and the native view passed to their methods.
+pub(crate) trait PyAttrs<'h> {
     type Receiver;
     const ATTRS: &'static [(StaticStrings, AttrDef)];
 }
-
-pub(crate) struct MutHeap<T>(PhantomData<T>);
-pub(crate) struct Heap<T>(PhantomData<T>);
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "supported for immediate builtin implementations")
-)]
-pub(crate) struct Immediate<T>(PhantomData<T>);
 
 pub(crate) fn call_method<'h, T>(
     receiver: &HeapObjectRead<'h, T>,
@@ -51,21 +43,23 @@ pub(crate) enum AttrDef {
 #[cfg_attr(not(test), expect(dead_code, reason = "retained for builtin attribute enumeration"))]
 pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     match owner {
-        Type::List => <list::PyListImpl as PyAttrs>::ATTRS,
-        Type::Tuple => <tuple::PyTupleImpl as PyAttrs>::ATTRS,
-        Type::Complex => <complex::PyComplexImpl as PyAttrs>::ATTRS,
-        Type::Date => <date::PyDateImpl as PyAttrs>::ATTRS,
-        Type::Time => <time::PyTimeImpl as PyAttrs>::ATTRS,
-        Type::TimeDelta => <timedelta::PyTimeDeltaImpl as PyAttrs>::ATTRS,
-        Type::TimeZone => <timezone::PyTimeZoneImpl as PyAttrs>::ATTRS,
-        Type::RePattern => <re_pattern::PyRePatternImpl as PyAttrs>::ATTRS,
-        Type::ReMatch => <re_match::PyReMatchImpl as PyAttrs>::ATTRS,
+        Type::Str => <str::PyStr<'static> as PyAttrs<'static>>::ATTRS,
+        Type::List => <list::PyListImpl as PyAttrs<'static>>::ATTRS,
+        Type::Tuple => <tuple::PyTupleImpl as PyAttrs<'static>>::ATTRS,
+        Type::Complex => <complex::PyComplexImpl as PyAttrs<'static>>::ATTRS,
+        Type::Date => <date::PyDateImpl as PyAttrs<'static>>::ATTRS,
+        Type::Time => <time::PyTimeImpl as PyAttrs<'static>>::ATTRS,
+        Type::TimeDelta => <timedelta::PyTimeDeltaImpl as PyAttrs<'static>>::ATTRS,
+        Type::TimeZone => <timezone::PyTimeZoneImpl as PyAttrs<'static>>::ATTRS,
+        Type::RePattern => <re_pattern::PyRePatternImpl as PyAttrs<'static>>::ATTRS,
+        Type::ReMatch => <re_match::PyReMatchImpl as PyAttrs<'static>>::ATTRS,
         _ => &[],
     }
 }
 
 pub(crate) const fn lookup_attr(owner: Type, name: StaticStrings) -> Option<AttrDef> {
     match owner {
+        Type::Str => str::PyStr::lookup_attr(name),
         Type::List => list::PyListImpl::lookup_attr(name),
         Type::Tuple => tuple::PyTupleImpl::lookup_attr(name),
         Type::Complex => complex::PyComplexImpl::lookup_attr(name),
@@ -97,8 +91,8 @@ mod tests {
     struct PyFloatImpl;
 
     #[pyattrs]
-    impl PyAttrs for PyFloatImpl {
-        type Receiver = Immediate<f64>;
+    impl<'heap> PyAttrs<'heap> for PyFloatImpl {
+        type Receiver = f64;
 
         #[pymethod]
         fn conjugate(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
@@ -112,7 +106,7 @@ mod tests {
         const SORT: Option<AttrDef> = list::PyListImpl::lookup_attr(StaticStrings::Sort);
         const LIST_TABLE: &[(StaticStrings, AttrDef)] = attrs(Type::List);
         assert!(matches!(SORT, Some(AttrDef::Method(_))));
-        assert_eq!(LIST_TABLE.len(), <list::PyListImpl as PyAttrs>::ATTRS.len());
+        assert_eq!(LIST_TABLE.len(), <list::PyListImpl as PyAttrs<'static>>::ATTRS.len());
 
         let mut heap = ObjectHeap::new(16, ResourceTracker::default());
         let list_id = heap.allocate(HeapData::List(List::new(vec![Value::Int(2), Value::Int(1)])));
@@ -159,6 +153,55 @@ mod tests {
     #[test]
     fn tables_preserve_registered_names_order_and_kinds() {
         let expected: &[(Type, &[(StaticStrings, u8)])] = &[
+            (
+                Type::Str,
+                &[
+                    (StaticStrings::Lower, 0),
+                    (StaticStrings::Upper, 0),
+                    (StaticStrings::Capitalize, 0),
+                    (StaticStrings::Title, 0),
+                    (StaticStrings::Swapcase, 0),
+                    (StaticStrings::Casefold, 0),
+                    (StaticStrings::Isalpha, 0),
+                    (StaticStrings::Isdigit, 0),
+                    (StaticStrings::Isalnum, 0),
+                    (StaticStrings::Isnumeric, 0),
+                    (StaticStrings::Isspace, 0),
+                    (StaticStrings::Islower, 0),
+                    (StaticStrings::Isupper, 0),
+                    (StaticStrings::Isascii, 0),
+                    (StaticStrings::Isdecimal, 0),
+                    (StaticStrings::Find, 0),
+                    (StaticStrings::Rfind, 0),
+                    (StaticStrings::Index, 0),
+                    (StaticStrings::Rindex, 0),
+                    (StaticStrings::Count, 0),
+                    (StaticStrings::Startswith, 0),
+                    (StaticStrings::Endswith, 0),
+                    (StaticStrings::Strip, 0),
+                    (StaticStrings::Lstrip, 0),
+                    (StaticStrings::Rstrip, 0),
+                    (StaticStrings::Removeprefix, 0),
+                    (StaticStrings::Removesuffix, 0),
+                    (StaticStrings::Split, 0),
+                    (StaticStrings::Rsplit, 0),
+                    (StaticStrings::Splitlines, 0),
+                    (StaticStrings::Partition, 0),
+                    (StaticStrings::Rpartition, 0),
+                    (StaticStrings::Replace, 0),
+                    (StaticStrings::Center, 0),
+                    (StaticStrings::Ljust, 0),
+                    (StaticStrings::Rjust, 0),
+                    (StaticStrings::Zfill, 0),
+                    (StaticStrings::Expandtabs, 0),
+                    (StaticStrings::Format, 0),
+                    (StaticStrings::Encode, 0),
+                    (StaticStrings::Isidentifier, 0),
+                    (StaticStrings::Istitle, 0),
+                    (StaticStrings::Isprintable, 0),
+                    (StaticStrings::Join, 0),
+                ],
+            ),
             (
                 Type::List,
                 &[
@@ -273,6 +316,7 @@ mod tests {
     #[test]
     fn tables_and_lookups_agree() {
         for owner in [
+            Type::Str,
             Type::List,
             Type::Tuple,
             Type::Complex,
@@ -283,7 +327,7 @@ mod tests {
             Type::RePattern,
             Type::ReMatch,
         ] {
-            assert!(lookup_attr(owner, StaticStrings::Upper).is_none());
+            assert!(lookup_attr(owner, StaticStrings::Fromkeys).is_none());
             for &(name, definition) in attrs(owner) {
                 let found = lookup_attr(owner, name).expect("table entry has a lookup arm");
                 assert_eq!(discriminant(&definition), discriminant(&found));

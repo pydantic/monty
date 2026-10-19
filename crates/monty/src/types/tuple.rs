@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    builtin_attr::{self, AttrDef, PyAttrs},
+    builtin_attr::{AttrDef, PyAttrs},
     iter::collect_owned_iterable,
 };
 use crate::{
@@ -666,8 +666,8 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Tuple> {
 pub(crate) struct PyTupleImpl;
 
 #[pyattrs]
-impl PyAttrs for PyTupleImpl {
-    type Receiver = builtin_attr::Heap<Tuple>;
+impl<'heap> PyAttrs<'heap> for PyTupleImpl {
+    type Receiver = HeapRead<'heap, Tuple>;
 
     /// Implements Python's `tuple.index(value[, start[, end]])` method.
     ///

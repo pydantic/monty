@@ -14,7 +14,7 @@ use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
 use monty_macros::pyattrs;
 use monty_types::{OsFunctionCall, ResourceTracker};
 
-use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -480,8 +480,8 @@ struct DateReplaceArgs {
 pub(crate) struct PyDateImpl;
 
 #[pyattrs]
-impl PyAttrs for PyDateImpl {
-    type Receiver = MutHeap<Date>;
+impl<'heap> PyAttrs<'heap> for PyDateImpl {
+    type Receiver = HeapObjectRead<'heap, Date>;
 
     #[pymethod]
     fn isoformat<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

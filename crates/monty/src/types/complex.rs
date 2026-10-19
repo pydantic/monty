@@ -12,7 +12,7 @@ use std::fmt::Write;
 use monty_macros::pyattrs;
 use monty_types::FormatComplex;
 
-use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
@@ -758,8 +758,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
 pub(crate) struct PyComplexImpl;
 
 #[pyattrs]
-impl PyAttrs for PyComplexImpl {
-    type Receiver = MutHeap<Complex>;
+impl<'heap> PyAttrs<'heap> for PyComplexImpl {
+    type Receiver = HeapObjectRead<'heap, Complex>;
 
     #[pymethod]
     fn conjugate<'h>(value: &mut HeapObjectRead<'h, Complex>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

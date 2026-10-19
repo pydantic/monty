@@ -22,7 +22,7 @@ use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
 use monty_macros::pyattrs;
 use monty_types::ResourceTracker;
 
-use super::builtin_attr::{AttrDef, MutHeap, PyAttrs};
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -662,8 +662,8 @@ struct TimeReplaceArgs {
 pub(crate) struct PyTimeImpl;
 
 #[pyattrs]
-impl PyAttrs for PyTimeImpl {
-    type Receiver = MutHeap<Time>;
+impl<'heap> PyAttrs<'heap> for PyTimeImpl {
+    type Receiver = HeapObjectRead<'heap, Time>;
 
     #[pymethod]
     fn isoformat<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
