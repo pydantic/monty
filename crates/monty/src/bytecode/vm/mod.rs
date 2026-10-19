@@ -2335,7 +2335,7 @@ impl<'h> VM<'h> {
                 PendingEffect::Post(
                     PostConversionEffect::BufferStore { file_id } | PostConversionEffect::JsonLoad { file_id },
                 ) => {
-                    if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
+                    if let HeapReadOutput::OpenFile(file) = self.heap.read(file_id) {
                         file.get_mut(self.heap).clear_pending_read();
                         drop(file);
                     }
@@ -2347,7 +2347,7 @@ impl<'h> VM<'h> {
                     previous_length,
                     ..
                 }) => {
-                    if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
+                    if let HeapReadOutput::OpenFile(file) = self.heap.read(file_id) {
                         file.get_mut(self.heap)
                             .rollback_write_position(previous_position, previous_length);
                         drop(file);
@@ -2913,7 +2913,7 @@ impl<'h> VM<'h> {
         defer_drop_mut!(value, this);
 
         let cell_id = this.cell_id_from_local(slot);
-        let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
+        let HeapReadOutput::Cell(cell) = this.heap.read(cell_id) else {
             panic!("StoreCell: entry is not a Cell")
         };
         mem::swap(&mut cell.get_mut(this.heap).0, value);
@@ -2931,7 +2931,7 @@ impl<'h> VM<'h> {
         defer_drop_mut!(value, this);
 
         let cell_id = this.cell_id_from_local(slot);
-        let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
+        let HeapReadOutput::Cell(cell) = this.heap.read(cell_id) else {
             panic!("DeleteCell: entry is not a Cell")
         };
         mem::swap(&mut cell.get_mut(this.heap).0, value);

@@ -13,7 +13,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
-        HeapReadOutput, heap_read_ref_as_field_mut,
+        HeapReadMut, HeapReadOutput, heap_read_ref_as_field_mut,
     },
     intern::Interns,
     modules::{
@@ -105,8 +105,11 @@ impl<'h> HeapRead<'h, Instance> {
         vm.heap
             .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))))
     }
+}
 
-    pub(crate) fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+impl<'h> HeapReadMut<'h, Instance> {
+    /// Borrows the inline attribute dictionary without exposing a replaceable handle.
+    pub(crate) fn attrs_mut(&self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
         heap_read_ref_as_field_mut!(self, Instance, attrs)
     }
 
@@ -118,7 +121,7 @@ impl<'h> HeapRead<'h, Instance> {
     /// `@dataclass(frozen=True)` — and is where a class-level `__setattr__`
     /// hook would be dispatched once one is. The write itself is
     /// [`set_attr_unchecked`](Self::set_attr_unchecked).
-    pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let class_id = self.get(vm.heap).class();
         if let Some(exc) = dataclasses::frozen_assignment_error(class_id, &name, vm) {
             [name, value].drop_with(vm);
@@ -136,7 +139,7 @@ impl<'h> HeapRead<'h, Instance> {
     ///
     /// Whatever `set_attr` grows must stay above this line (see
     /// `limitations/classes.md`).
-    pub fn set_attr_unchecked(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
 }
@@ -808,7 +811,7 @@ fn call_dunder_member(
 ///
 /// The distinction is CPython's `tp_iter`-is-non-NULL test, which only the
 /// unpack error message needs (see `unpack_type_error`); everywhere else the
-/// question is [`HeapRead::py_is_iterable`].
+/// question is [`HeapObjectRead::py_is_iterable`].
 pub(crate) fn instance_defines_iter(self_id: HeapId, vm: &VM<'_>) -> bool {
     match vm.heap.get(self_id) {
         HeapData::Instance(inst) => class_defines(inst.class, "__iter__", vm),
@@ -832,7 +835,7 @@ pub(crate) fn class_defines(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool
 /// CPython's `slot_tp_iter` / `slot_sq_contains` reject a `None` member with the
 /// same error as an absent one rather than calling it. This is per-slot, not
 /// general — `__next__ = None` keeps the class an iterator (see
-/// [`HeapRead::py_is_iterator`]), so use [`class_defines`] there.
+/// [`HeapObjectRead::py_is_iterator`]), so use [`class_defines`] there.
 pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
     matches!(class_dunder(class_id, dunder, vm), Some(member) if !matches!(member, Value::None))
 }

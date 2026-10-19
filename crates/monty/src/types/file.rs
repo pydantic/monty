@@ -93,7 +93,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
     types::str::StringRepr,
@@ -984,7 +984,7 @@ pub(crate) fn apply_open_name(
     let parsed = newline.as_deref().map_or(Some(Newline::default()), Newline::parse);
     if let Some(parsed) = parsed
         && let Value::Ref(id) = &value
-        && let HeapReadOutput::OpenFile(mut file) = vm.heap.read(*id)
+        && let HeapReadOutput::OpenFile(file) = vm.heap.read(*id)
     {
         let file = file.get_mut(vm.heap);
         if !file.path.is_empty() && !file.path.starts_with('/') {
@@ -1034,7 +1034,7 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
     let mut result_guard = DropGuard::new(result, vm);
     let (_, vm) = result_guard.as_parts_mut();
 
-    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+    let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         return Err(RunError::internal(
             "apply_buffer_store: file_id does not point to an OpenFile",
         ));
@@ -1044,10 +1044,10 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
     };
 
     let (result, vm) = result_guard.into_parts();
-    install_buffer(&mut file, result, vm)?;
+    install_buffer(&file, result, vm)?;
     // Compute the slice while the pin still keeps the file alive — otherwise
     // `open(p).read(5)` could release its last reference before slicing.
-    compute_slice(&mut file, spec, vm)
+    compute_slice(&file, spec, vm)
 }
 
 /// `BufferLoad` resume: installs the host content so the `ForIter` that
@@ -1056,13 +1056,13 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
 pub(crate) fn apply_buffer_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<()> {
     let pin = Value::Ref(file_id);
     defer_drop!(pin, vm);
-    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+    let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         result.drop_with(vm);
         return Err(RunError::internal(
             "apply_buffer_load: file_id does not point to an OpenFile",
         ));
     };
-    install_buffer(&mut file, result, vm)
+    install_buffer(&file, result, vm)
 }
 
 /// `FileNext` resume: installs the host content, then answers the
@@ -1079,14 +1079,14 @@ pub(crate) fn apply_file_next(
     defer_drop!(pin, vm);
     let mut default_guard = DropGuard::new(default, vm);
     let (_, vm) = default_guard.as_parts_mut();
-    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+    let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         result.drop_with(vm);
         return Err(RunError::internal(
             "apply_file_next: file_id does not point to an OpenFile",
         ));
     };
-    install_buffer(&mut file, result, vm)?;
-    match next_line(&mut file, vm)? {
+    install_buffer(&file, result, vm)?;
+    match next_line(&file, vm)? {
         Some(line) => Ok(line),
         None => default_guard.into_inner().ok_or_else(ExcType::stop_iteration),
     }
@@ -1096,7 +1096,7 @@ pub(crate) fn apply_file_next(
 /// builds the position cache. Interned results are promoted to heap entries
 /// and universal-newline text is translated here, once. A buffer already
 /// present (a snapshot/restore race) is kept and the new content dropped.
-fn install_buffer<'h>(file: &mut HeapRead<'h, OpenFile>, result: Value, vm: &mut VM<'h>) -> RunResult<()> {
+fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut VM<'h>) -> RunResult<()> {
     let mut result_guard = DropGuard::new(result, vm);
     let (result, vm) = result_guard.as_parts_mut();
     let translate = {
@@ -1169,7 +1169,7 @@ fn translate_newlines(text: &str) -> String {
 
 /// The next line of a loaded buffer for the iterator protocol: `None` at EOF
 /// where `readline()` would return an empty string.
-fn next_line<'h>(file: &mut HeapRead<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn next_line<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     ensure_buffer_meta(file, vm)?;
     let at_eof = {
         let f = file.get(vm.heap);
@@ -1232,7 +1232,7 @@ pub(crate) fn apply_write_position(
     }
     let written = u64::try_from(written).map_err(|_| ExcType::overflow_c_ssize_t())?;
 
-    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+    let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         return Err(RunError::internal(
             "apply_write_position: file_id does not point to an OpenFile",
         ));
@@ -1275,7 +1275,7 @@ pub(crate) fn apply_write_position(
 /// that's being returned, and allocates a fresh `Str`/`Bytes`/`List` for the
 /// result. All buffer reads go through the heap so the slice content is fully
 /// snapshot-safe.
-fn compute_slice<'h>(file: &mut HeapRead<'h, OpenFile>, spec: ReadSpec, vm: &mut VM<'h>) -> RunResult<Value> {
+fn compute_slice<'h>(file: &HeapReadMut<'h, OpenFile>, spec: ReadSpec, vm: &mut VM<'h>) -> RunResult<Value> {
     ensure_buffer_meta(file, vm)?;
 
     let (binary, buffer_id, position, byte_position, buffer_total) = {
@@ -1301,7 +1301,7 @@ fn compute_slice<'h>(file: &mut HeapRead<'h, OpenFile>, spec: ReadSpec, vm: &mut
 
 /// Rebuilds the position cache when a loaded buffer has none: `buffer_meta`
 /// is not serialized, so this is every first slice after a snapshot restore.
-fn ensure_buffer_meta<'h>(file: &mut HeapRead<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult<()> {
+fn ensure_buffer_meta<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult<()> {
     let needs_meta = {
         let f = file.get(vm.heap);
         f.buffer.is_some() && f.buffer_meta.is_none()
@@ -1327,7 +1327,7 @@ fn ensure_buffer_meta<'h>(file: &mut HeapRead<'h, OpenFile>, vm: &mut VM<'h>) ->
 /// storage guarantees existing references stay valid across allocations, so
 /// the previous full-buffer `to_owned()` is gone.
 fn compute_slice_text<'h>(
-    file: &mut HeapRead<'h, OpenFile>,
+    file: &HeapReadMut<'h, OpenFile>,
     buffer_id: HeapId,
     position: usize,
     byte_position: usize,
@@ -1422,7 +1422,7 @@ fn compute_slice_text<'h>(
 /// buffer was cloned on every call so the heap borrow could be released
 /// before `update_position_eof`).
 fn compute_slice_binary<'h>(
-    file: &mut HeapRead<'h, OpenFile>,
+    file: &HeapReadMut<'h, OpenFile>,
     buffer_id: HeapId,
     position: usize,
     buffer_total: usize,
@@ -1561,7 +1561,7 @@ fn nth_char_byte_offset(s: &str, nth: usize) -> usize {
 /// to `u64` happens here at the single boundary so the slice code stays free
 /// of `as u64` casts that clippy would flag.
 fn update_file_state<'h>(
-    file: &mut HeapRead<'h, OpenFile>,
+    file: &HeapReadMut<'h, OpenFile>,
     new_position: usize,
     new_byte_position: usize,
     eof: bool,
@@ -1596,7 +1596,7 @@ fn update_file_state<'h>(
 /// values derived from `buffer.len()` and `position`. The walk is O(buffer)
 /// for text but happens exactly once per file (the cache is then maintained
 /// incrementally by [`update_file_state`]).
-fn populate_buffer_meta<'h>(file: &mut HeapRead<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult<()> {
+fn populate_buffer_meta<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult<()> {
     // Pull what we need out of the file under a short scoped borrow
     let (buffer_id, position, binary, already_populated) = {
         let f = file.get(vm.heap);

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bytecode::VM,
     exception_private::RunResult,
-    heap::{HeapId, HeapRead},
+    heap::{HeapId, HeapReadMut},
     predicate::call_predicate,
     types::itertools::{
         ItertoolsIter,
@@ -58,7 +58,7 @@ impl DropWhile {
 
 /// Skips items while the predicate holds; once it has failed, yields straight
 /// through without consulting it again.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let mut steps = 0usize;
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a

@@ -3,40 +3,40 @@ source: crates/monty/tests/heap_reader_compile_fail.rs
 expression: actual
 ---
 error[E0597]: `source` does not live long enough
-   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:104:42
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:106:42
     |
-102 |         let escaped = {
+104 |         let escaped = {
     |             ------- borrow later stored here
-103 |             let source = vec![123_u64];
+105 |             let source = vec![123_u64];
     |                 ------ binding `source` declared here
-104 |             let protected = heap.protect(&source);
+106 |             let protected = heap.protect(&source);
     |                                          ^^^^^^^ borrowed value does not live long enough
 ...
-107 |         };
+109 |         };
     |         - `source` dropped here while still borrowed
 error[E0597]: `protected` does not live long enough
-   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:105:25
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:107:25
     |
-102 |         let escaped = {
+104 |         let escaped = {
     |             ------- borrow later stored here
-103 |             let source = vec![123_u64];
-104 |             let protected = heap.protect(&source);
+105 |             let source = vec![123_u64];
+106 |             let protected = heap.protect(&source);
     |                 --------- binding `protected` declared here
-105 |             let slice = protected.as_slice(heap);
+107 |             let slice = protected.as_slice();
     |                         ^^^^^^^^^ borrowed value does not live long enough
-106 |             slice.get(heap)
-107 |         };
+108 |             slice.get(heap)
+109 |         };
     |         - `protected` dropped here while still borrowed
 error[E0597]: `slice` does not live long enough
-   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:106:13
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:108:13
     |
-102 |         let escaped = {
+104 |         let escaped = {
     |             ------- borrow later stored here
 ...
-105 |             let slice = protected.as_slice(heap);
+107 |             let slice = protected.as_slice();
     |                 ----- binding `slice` declared here
-106 |             slice.get(heap)
+108 |             slice.get(heap)
     |             ^^^^^ borrowed value does not live long enough
-107 |         };
+109 |         };
     |         - `slice` dropped here while still borrowed
 For more information about this error, try `rustc --explain E0597`.

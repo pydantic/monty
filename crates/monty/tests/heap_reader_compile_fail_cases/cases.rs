@@ -18,6 +18,14 @@
     heap_reader_compile_fail_test_projected_get_escape,
     heap_reader_compile_fail_test_slice_get_escape,
     heap_reader_compile_fail_test_box_get_escape,
+    heap_reader_compile_fail_test_mutable_inner_swap,
+    heap_reader_compile_fail_test_shared_inner_swap,
+    heap_reader_compile_fail_test_counted_inner_swap,
+    heap_reader_compile_fail_test_readonly_mutation,
+    heap_reader_compile_fail_test_readonly_mutable_projection,
+    heap_reader_compile_fail_test_aliased_payload_borrows,
+    heap_reader_compile_fail_test_projected_get_mut_escape,
+    heap_reader_compile_fail_test_projection_live_borrow,
 ))]
 #[path = "borrowed.rs"]
 mod borrowed;
@@ -59,11 +67,11 @@ fn heap_mutation_while_reading(list_id: HeapId, heap: &mut Heap) {
 #[cfg(heap_reader_compile_fail_test_double_get_mut)]
 fn double_get_mut(list_id: HeapId, heap: &mut Heap) {
     HeapReader::with(heap, &mut (), |heap, ()| {
-        let mut a = match heap.read(list_id) {
+        let a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
             _ => unreachable!(),
         };
-        let mut b = match heap.read(list_id) {
+        let b = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
             _ => unreachable!(),
         };

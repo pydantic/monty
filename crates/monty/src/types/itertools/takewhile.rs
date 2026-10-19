@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bytecode::VM,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapRead},
+    heap::{DropWithContext, HeapId, HeapReadMut},
     predicate::call_predicate,
     types::itertools::{ItertoolsIter, step::next_tested},
     value::Value,
@@ -56,7 +56,7 @@ impl TakeWhile {
 
 /// Pulls one item and yields it if the predicate holds, latching on the first
 /// rejection so nothing after it is examined.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let ItertoolsIter::TakeWhile(take) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::TakeWhile")
     };
@@ -93,7 +93,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 /// Releasing both here rather than at destruction lets whatever the source
 /// holds (a generator's frame, a file) be reclaimed as soon as the run ends,
 /// matching what `pairwise` and `islice` do when they stop.
-fn finish<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) {
+fn finish<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) {
     let ItertoolsIter::TakeWhile(take) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::TakeWhile")
     };

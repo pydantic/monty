@@ -274,7 +274,7 @@ fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<
     let rest_id = vm.heap.allocate(HeapData::Dict(rest));
     let mut guard = DropGuard::new(Value::Ref(rest_id), vm);
     let (_, vm) = guard.as_parts();
-    let HeapReadOutput::Dict(mut rest) = vm.heap.read(rest_id) else {
+    let HeapReadOutput::Dict(rest) = vm.heap.read(rest_id) else {
         unreachable!("just allocated as a dict")
     };
     let len = keys.get(vm.heap).as_slice().len();

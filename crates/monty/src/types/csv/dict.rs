@@ -10,7 +10,10 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{
+        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
+        HeapReadOutput,
+    },
     string_builder::StringBuilder,
     types::{
         CsvObject, Dict, List, PyTrait, Set,
@@ -136,7 +139,7 @@ impl DictWriter {
 
 /// `DictReader.fieldnames`: reads the header row on first access, then reports the names
 /// (`None` for an empty source). The caller owns the returned reference.
-pub(super) fn reader_fieldnames<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Value> {
+pub(super) fn reader_fieldnames<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Value> {
     let (reader, unset) = {
         let CsvObject::DictReader(dict_reader) = obj.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::DictReader")
@@ -168,7 +171,7 @@ pub(super) fn reader_fieldnames<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut 
 
 /// `DictReader.__next__`: the next non-empty row as a dict, with `restkey` / `restval`
 /// covering a length mismatch against `fieldnames`.
-pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let first = matches!(obj.get(vm.heap), CsvObject::DictReader(dict_reader) if dict_reader.line_num == 0);
     if first {
         // Used only for its side effect of reading the header, as in CPython.
@@ -264,7 +267,7 @@ pub(super) fn reader_next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
 
 /// `DictWriter.writerow(rowdict)`: flattens the dict in `fieldnames` order and writes it.
 pub(super) fn writer_writerow<'h>(
-    obj: &mut HeapRead<'h, CsvObject>,
+    obj: &HeapRead<'h, CsvObject>,
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
@@ -281,7 +284,7 @@ pub(super) fn writer_writerow<'h>(
 /// returning what `write()` did. The dict is what rejects an unhashable name, and a repeated
 /// name collapses in it, so the row goes through it as in CPython.
 pub(super) fn writer_writeheader<'h>(
-    obj: &mut HeapRead<'h, CsvObject>,
+    obj: &HeapRead<'h, CsvObject>,
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
@@ -312,7 +315,7 @@ pub(super) fn writer_writeheader<'h>(
 /// A file target gets every row in one host write, so the dicts are all flattened first;
 /// any other target is written synchronously as each dict arrives.
 pub(super) fn writer_writerows<'h>(
-    obj: &mut HeapRead<'h, CsvObject>,
+    obj: &HeapRead<'h, CsvObject>,
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
@@ -568,7 +571,7 @@ fn dict_keys<'h>(dict: &HeapRead<'h, Dict>, vm: &VM<'h>) -> RunResult<Vec<Value>
 }
 
 /// Formats `items` and writes them through the wrapped `_csv.writer`.
-fn write_items<'h>(obj: &mut HeapRead<'h, CsvObject>, items: &[Value], vm: &mut VM<'h>) -> RunResult<CallResult> {
+fn write_items<'h>(obj: &HeapRead<'h, CsvObject>, items: &[Value], vm: &mut VM<'h>) -> RunResult<CallResult> {
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
     defer_drop!(writer, vm);
     with_writer(writer, vm, |writer_obj, vm| {
@@ -581,7 +584,7 @@ fn write_items<'h>(obj: &mut HeapRead<'h, CsvObject>, items: &[Value], vm: &mut 
 fn with_writer<'h, T>(
     writer: &Value,
     vm: &mut VM<'h>,
-    call: impl FnOnce(&mut HeapRead<'h, CsvObject>, &mut VM<'h>) -> RunResult<T>,
+    call: impl FnOnce(&HeapRead<'h, CsvObject>, &mut VM<'h>) -> RunResult<T>,
 ) -> RunResult<T> {
     let Value::Ref(writer_id) = writer else {
         return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
@@ -625,10 +628,10 @@ fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
     let Value::Ref(reader_id) = reader else {
         return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
     };
-    let HeapReadOutput::Csv(mut reader_obj) = vm.heap.read(*reader_id) else {
+    let HeapReadOutput::Csv(reader_obj) = vm.heap.read(*reader_id) else {
         return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
     };
-    super::reader::next_fields(&mut reader_obj, vm)
+    super::reader::next_fields(&reader_obj, vm)
 }
 
 /// `fieldnames` as owned values: a `list` (what a header read produces) is copied directly,

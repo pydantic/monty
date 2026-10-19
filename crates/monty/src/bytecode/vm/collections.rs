@@ -143,7 +143,7 @@ impl VM<'_> {
 
             // Extend the list
             if let Value::Ref(id) = list_ref {
-                let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
+                let HeapReadOutput::List(list) = this.heap.read(*id) else {
                     panic!("list_extend: expected List on heap");
                 };
                 let list = list.get_mut(this.heap);
@@ -273,7 +273,7 @@ impl VM<'_> {
                     _ => "<unknown>".to_string(),
                 };
 
-                let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+                let HeapReadOutput::Dict(dict) = this.heap.read(dict_id) else {
                     unreachable!("DictMerge: entry is not a Dict")
                 };
 
@@ -339,7 +339,7 @@ impl VM<'_> {
         let copied_items = copied_items.into_iter();
         defer_drop_mut!(copied_items, this);
         for (key, value) in copied_items {
-            let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+            let HeapReadOutput::Dict(dict) = this.heap.read(dict_id) else {
                 unreachable!("DictUpdate: heap entry is always a Dict — compiler invariant")
             };
             let old = dict.set(key, value, this)?;
@@ -388,7 +388,7 @@ impl VM<'_> {
         let copied_items = copied_items.into_iter();
         defer_drop_mut!(copied_items, this);
         for item in copied_items {
-            let HeapReadOutput::Set(mut set) = this.heap.read(set_id) else {
+            let HeapReadOutput::Set(set) = this.heap.read(set_id) else {
                 unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
             };
             set.add(item, this)?;
@@ -417,7 +417,7 @@ impl VM<'_> {
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
 
-        let HeapReadOutput::List(mut list) = self.heap.read(list_id) else {
+        let HeapReadOutput::List(list) = self.heap.read(list_id) else {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
@@ -440,7 +440,7 @@ impl VM<'_> {
             return Err(RunError::internal("SetAdd: expected set ref on stack"));
         };
 
-        let HeapReadOutput::Set(mut set) = self.heap.read(set_id) else {
+        let HeapReadOutput::Set(set) = self.heap.read(set_id) else {
             value.drop_with(self);
             return Err(RunError::internal("SetAdd: expected set on heap"));
         };
@@ -467,7 +467,7 @@ impl VM<'_> {
             return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
         };
 
-        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
+        let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             key.drop_with(self);
             value.drop_with(self);
             return Err(RunError::internal("DictSetItem: expected dict on heap"));

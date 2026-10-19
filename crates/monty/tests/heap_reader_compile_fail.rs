@@ -209,3 +209,51 @@ fn slice_get_escape() {
 fn box_get_escape() {
     check_compile_fail("box_get_escape");
 }
+
+/// Mutable capabilities cannot be swapped independently of their owners.
+#[test]
+fn mutable_inner_swap() {
+    check_compile_fail("mutable_inner_swap");
+}
+
+/// Read-only capabilities cannot be swapped independently of their owners.
+#[test]
+fn shared_inner_swap() {
+    check_compile_fail("shared_inner_swap");
+}
+
+/// Counted and uncounted capabilities cannot be exchanged.
+#[test]
+fn counted_inner_swap() {
+    check_compile_fail("counted_inner_swap");
+}
+
+/// Shared source borrows expose no mutable capability.
+#[test]
+fn readonly_mutation() {
+    check_compile_fail("readonly_mutation");
+}
+
+/// Field projection cannot upgrade a read-only capability.
+#[test]
+fn readonly_mutable_projection() {
+    check_compile_fail("readonly_mutable_projection");
+}
+
+/// Capability aliases cannot overlap their payload borrows.
+#[test]
+fn aliased_payload_borrows() {
+    check_compile_fail("aliased_payload_borrows");
+}
+
+/// Mutable field projections preserve their source lifetime.
+#[test]
+fn projected_get_mut_escape() {
+    check_compile_fail("projected_get_mut_escape");
+}
+
+/// A live projected reference excludes parent mutation.
+#[test]
+fn projection_live_borrow() {
+    check_compile_fail("projection_live_borrow");
+}

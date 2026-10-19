@@ -3,9 +3,9 @@ source: crates/monty/tests/heap_reader_compile_fail.rs
 expression: actual
 ---
 error: lifetime may not live long enough
-   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:158:35
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:166:35
     |
-158 |         |reader, (tables, print)| VM::new(Vec::new(), tables, program, reader, print.reborrow()),
+166 |         |reader, (tables, print)| VM::new(Vec::new(), tables, program, reader, print.reborrow()),
     |          ------                 - ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
     |          |                      |
     |          |                      return type of closure is VM<'2>

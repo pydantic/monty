@@ -11,7 +11,6 @@ use std::{
     fmt,
     iter::once,
     marker::PhantomData,
-    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
     sync::Arc,
@@ -191,26 +190,28 @@ impl<'a> HeapReader<'a> {
         }
     }
 
+    /// Brands a shared external borrow without granting mutable access to its source.
     #[expect(clippy::unused_self, reason = "'a lifetime is used to create the safety guarantees")]
     pub fn protect<'t, U: ?Sized>(&mut self, value: &'t U) -> BorrowedHeapRead<'t, 'a, U> {
         BorrowedHeapRead {
-            inner: ManuallyDrop::new(HeapRead {
+            inner: HeapRead {
                 value: NonNull::from(value),
-                readers: NonNull::dangling(),
                 borrow: PhantomData,
-            }),
+            },
             original: PhantomData,
         }
     }
 
+    /// Brands an exclusive external borrow; payload access is serialized by this reader.
     #[expect(clippy::unused_self, reason = "'a lifetime is used to create the safety guarantees")]
     pub fn protect_mut<'t, U: ?Sized>(&mut self, value: &'t mut U) -> BorrowedHeapReadMut<'t, 'a, U> {
         BorrowedHeapReadMut {
-            inner: ManuallyDrop::new(HeapRead {
-                value: NonNull::from(value),
-                readers: NonNull::dangling(),
-                borrow: PhantomData,
-            }),
+            inner: HeapReadMut {
+                read: HeapRead {
+                    value: NonNull::from(value),
+                    borrow: PhantomData,
+                },
+            },
             original: PhantomData,
         }
     }
@@ -363,8 +364,10 @@ impl<C: ContainsHeap, T> DropWithContext<C> for HeapAllocation<'_, T> {
 pub struct HeapObjectRead<'a, T: ?Sized> {
     /// Identity of the complete Python object exposed by `read`.
     id: HeapId,
-    /// Typed access guard that keeps the entry alive.
-    read: HeapRead<'a, T>,
+    /// Mutable capability; never exposed by value or mutable reference.
+    read: HeapReadMut<'a, T>,
+    /// Owned reader count, keeping this entry alive until the guard is dropped.
+    readers: NonNull<Cell<usize>>,
 }
 
 impl<'a, T: ?Sized> HeapObjectRead<'a, T> {
@@ -381,16 +384,19 @@ impl<'a, T: ?Sized> HeapObjectRead<'a, T> {
 }
 
 impl<'a, T: ?Sized> Deref for HeapObjectRead<'a, T> {
-    type Target = HeapRead<'a, T>;
+    type Target = HeapReadMut<'a, T>;
 
     fn deref(&self) -> &Self::Target {
         &self.read
     }
 }
 
-impl<T: ?Sized> DerefMut for HeapObjectRead<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.read
+impl<T: ?Sized> Drop for HeapObjectRead<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: the paged storage keeps the counter's address stable, and this
+        // owned reader count prevents the entry from being freed before the guard.
+        let cell = unsafe { self.readers.as_ref() };
+        cell.set(cell.get() - 1);
     }
 }
 
@@ -400,11 +406,6 @@ impl<T: ?Sized> DerefMut for HeapObjectRead<'_, T> {
 /// handle also supports projected fields and data protected by `protect`.
 pub struct HeapRead<'a, T: ?Sized> {
     value: NonNull<T>,
-    /// Pointer to the `readers` counter in the owning `HeapValue`.
-    ///
-    /// Incremented on creation, decremented on drop. This ensures `dec_ref`
-    /// cannot free the entry while any `HeapRead` pointing into it exists.
-    readers: NonNull<Cell<usize>>,
     /// Makes the lifetime `'a` invariant. In combination with the invariant lifetime
     /// on `HeapReader` and the `HeapReader::with` API, this guarantees that this
     /// `HeapRead` originated from that matching `HeapReader` (there is no way to
@@ -412,13 +413,20 @@ pub struct HeapRead<'a, T: ?Sized> {
     borrow: PhantomData<fn(&'a T) -> &'a T>,
 }
 
-impl<T: ?Sized> Drop for HeapRead<'_, T> {
-    fn drop(&mut self) {
-        // SAFETY: (DH) the readers pointer is valid for the lifetime of the HeapValue,
-        // which is guaranteed by the paged storage (addresses never move) and the
-        // reader count itself (dec_ref cannot free an entry with active readers).
-        let cell = unsafe { self.readers.as_ref() };
-        cell.set(cell.get() - 1);
+/// Aliasable mutable-access capability, used only through shared references.
+///
+/// The matching reader serializes payload access. Owners expose no `DerefMut`,
+/// extraction or cloning API: replacing this capability could detach its pointer
+/// from the source lifetime or reader count held by its owner.
+pub struct HeapReadMut<'a, T: ?Sized> {
+    read: HeapRead<'a, T>,
+}
+
+impl<'a, T: ?Sized> Deref for HeapReadMut<'a, T> {
+    type Target = HeapRead<'a, T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.read
     }
 }
 
@@ -432,9 +440,9 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         //    came from the heap borrowed by this HeapReader.
         //  - The address of the `HeapValue` never changes because entries are stored in
         //    paged storage (`HeapEntries`) where each page is never reallocated or moved.
-        //  - The HeapRead holds a strong reader reference (via the `readers` counter in
-        //    `HeapValue`) which guarantees the entry will never be freed by `dec_ref`
-        //    or `collect_cycles` while this `HeapRead` exists. The cycle collector's
+        //  - The owning HeapObjectRead holds a reader count which guarantees the entry
+        //    will never be freed by `dec_ref` or `collect_cycles` while the owner is
+        //    borrowed through this HeapRead. The cycle collector's
         //    `Scan` phase treats `readers > 0` as an external reference and resurrects
         //    the entry to Black instead of condemning it as White.
         //  - The type of the `HeapValue` can never change once allocated. This is
@@ -446,12 +454,6 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         unsafe { self.value.as_ref() }
     }
 
-    /// Exclusively borrows the value for the joint borrow of this handle and the reader.
-    pub fn get_mut<'r>(&'r mut self, _: &'r mut HeapReader<'a>) -> &'r mut T {
-        // SAFETY: see same constraints as in get() above.
-        unsafe { self.value.as_mut() }
-    }
-
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
     ///
     /// Borrows `self` to keep the source alive; the projection owns no reader count.
@@ -460,75 +462,102 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
     unsafe fn cast_as_member_ref<U>(&self, offset: usize) -> BorrowedHeapRead<'_, 'a, U> {
         BorrowedHeapRead {
-            // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
-            inner: ManuallyDrop::new(HeapRead {
+            inner: HeapRead {
                 // SAFETY: caller guarantees offset points to a valid field of type U within T
                 value: unsafe { self.value.byte_add(offset) }.cast(),
-                // dangling is fine because this heapread will never be dropped, and it is
-                // also not `Clone` so there's no risk of this value ever being used
-                readers: NonNull::dangling(),
                 borrow: PhantomData,
-            }),
+            },
             original: PhantomData,
         }
+    }
+}
+
+impl<'a, T: ?Sized> HeapReadMut<'a, T> {
+    /// Exclusively borrows the payload, not the capability; aliases share the reader lock.
+    pub fn get_mut<'r>(&'r self, _: &'r mut HeapReader<'a>) -> &'r mut T {
+        let mut value = self.read.value;
+        // SAFETY: the owner guarantees a writable, live pointee. The mutable reader
+        // borrow excludes all other payload access until this reference expires.
+        unsafe { value.as_mut() }
     }
 
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
     ///
-    /// Exclusively borrows `self`; the projection owns no reader count.
+    /// Borrows the capability's owner; payload exclusivity still comes from the reader.
     ///
     /// # Safety
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
-    unsafe fn cast_as_member_ref_mut<U>(&mut self, offset: usize) -> BorrowedHeapReadMut<'_, 'a, U> {
+    unsafe fn cast_as_member_ref_mut<U>(&self, offset: usize) -> BorrowedHeapReadMut<'_, 'a, U> {
         BorrowedHeapReadMut {
-            // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
-            inner: ManuallyDrop::new(HeapRead {
-                // SAFETY: caller guarantees offset points to a valid field of type U within T
-                value: unsafe { self.value.byte_add(offset) }.cast(),
-                // dangling is fine because this heapread will never be dropped, and it is
-                // also not `Clone` so there's no risk of this value ever being used
-                readers: NonNull::dangling(),
-                borrow: PhantomData,
-            }),
+            inner: HeapReadMut {
+                read: HeapRead {
+                    // SAFETY: caller guarantees offset points to a valid field of type U within T
+                    value: unsafe { self.read.value.byte_add(offset) }.cast(),
+                    borrow: PhantomData,
+                },
+            },
             original: PhantomData,
         }
+    }
+}
+
+/// Read-only payload access, including projections that must re-resolve their storage.
+///
+/// A vector or box may be replaced between accesses through another capability;
+/// its projection must borrow the current allocation rather than cache a pointer.
+pub(crate) trait HeapView<'a, T: ?Sized> {
+    /// Borrows the current payload for the joint lifetime of the view and reader.
+    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r T;
+}
+
+impl<'a, T: ?Sized> HeapView<'a, T> for HeapRead<'a, T> {
+    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r T {
+        self.get(reader)
     }
 }
 
 impl<'a, T> HeapRead<'a, Vec<T>> {
-    pub fn as_slice(&self, reader: &HeapReader<'a>) -> BorrowedHeapRead<'_, 'a, [T]> {
-        BorrowedHeapRead {
-            inner: ManuallyDrop::new(HeapRead {
-                value: NonNull::from(self.get(reader).as_slice()),
-                readers: NonNull::dangling(),
-                borrow: PhantomData,
-            }),
-            original: PhantomData,
-        }
+    /// Projects the current vector buffer without retaining its allocation address.
+    pub fn as_slice(&self) -> HeapSliceRead<'_, 'a, T> {
+        HeapSliceRead { source: self }
+    }
+}
+
+/// A vector projection that observes buffer replacement between reader borrows.
+pub struct HeapSliceRead<'source, 'a, T> {
+    source: &'source HeapRead<'a, Vec<T>>,
+}
+
+impl<'a, T> HeapView<'a, [T]> for HeapSliceRead<'_, 'a, T> {
+    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r [T] {
+        self.source.get(reader).as_slice()
     }
 }
 
 impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
-    pub fn as_box_value(&self, reader: &HeapReader<'a>) -> BorrowedHeapRead<'_, 'a, T> {
-        BorrowedHeapRead {
-            inner: ManuallyDrop::new(HeapRead {
-                value: NonNull::from(self.get(reader).as_ref()),
-                readers: NonNull::dangling(),
-                borrow: PhantomData,
-            }),
-            original: PhantomData,
-        }
+    /// Projects the current box allocation without retaining its address.
+    pub fn as_box_value(&self) -> HeapBoxRead<'_, 'a, T> {
+        HeapBoxRead { source: self }
     }
 }
 
-/// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
+/// A box projection that observes replacement between reader borrows.
+pub struct HeapBoxRead<'source, 'a, T: ?Sized> {
+    source: &'source HeapRead<'a, Box<T>>,
+}
+
+impl<'a, T: ?Sized> HeapView<'a, T> for HeapBoxRead<'_, 'a, T> {
+    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r T {
+        self.source.get(reader).as_ref()
+    }
+}
+
+/// Shared capability whose source borrow stays alive through every payload access.
 pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
-    // inner is a projected HeapRead which will never be dropped
-    inner: ManuallyDrop<HeapRead<'a, U>>,
+    inner: HeapRead<'a, U>,
     original: PhantomData<&'original U>,
 }
 
-// NB no DerefMut - would need to have a `BorrowedHeapReadMut`
 impl<'a, U: ?Sized> Deref for BorrowedHeapRead<'_, 'a, U> {
     type Target = HeapRead<'a, U>;
 
@@ -537,7 +566,7 @@ impl<'a, U: ?Sized> Deref for BorrowedHeapRead<'_, 'a, U> {
     }
 }
 
-/// Unsafe helper for `heap_read_as_field`, do not use. Same safety invariants as `HeapRead::cast_as_member`.
+/// Helper for `heap_read_ref_as_field`; callers must uphold `HeapRead::cast_as_member_ref`'s contract.
 pub(crate) unsafe fn cast_as_member_ref_type_hinted<'r, 'a, T, U>(
     heap_read: &'r HeapRead<'a, T>,
     offset: usize,
@@ -564,30 +593,23 @@ macro_rules! heap_read_ref_as_field {
 
 pub(crate) use heap_read_ref_as_field;
 
-/// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
+/// Mutable capability backed by a source borrow, never exposing its inner handle mutably.
 pub struct BorrowedHeapReadMut<'original, 'a, U: ?Sized> {
-    // inner is a projected HeapRead which will never be dropped
-    inner: ManuallyDrop<HeapRead<'a, U>>,
+    inner: HeapReadMut<'a, U>,
     original: PhantomData<&'original mut U>,
 }
 
 impl<'a, U: ?Sized> Deref for BorrowedHeapReadMut<'_, 'a, U> {
-    type Target = HeapRead<'a, U>;
+    type Target = HeapReadMut<'a, U>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<U: ?Sized> DerefMut for BorrowedHeapReadMut<'_, '_, U> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
-
-/// Unsafe helper for `heap_read_as_field`, do not use. Same safety invariants as `HeapRead::cast_as_member`.
+/// Helper for `heap_read_ref_as_field_mut`; callers must uphold `HeapReadMut::cast_as_member_ref_mut`'s contract.
 pub(crate) unsafe fn cast_as_member_ref_mut_type_hinted<'r, 'a, T, U>(
-    heap_read: &'r mut HeapRead<'a, T>,
+    heap_read: &'r HeapReadMut<'a, T>,
     offset: usize,
     _type_hint: impl for<'s> Fn(&'s HeapRead<'a, T>) -> *const U,
 ) -> BorrowedHeapReadMut<'r, 'a, U> {
@@ -720,13 +742,15 @@ impl<'a> HeapPtr<'a> {
             let offset = field_addr - base_addr;
             HeapObjectRead {
                 id,
-                read: HeapRead {
-                    // SAFETY: The pointer is derived from the UnsafeCell's `*mut` via byte
-                    // offset, preserving the `SharedReadWrite` permission. No reference retag
-                    // occurs — we only use the `&T` for its address, not to derive the pointer.
-                    value: unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<T>()) },
-                    readers,
-                    borrow: PhantomData,
+                readers,
+                read: HeapReadMut {
+                    read: HeapRead {
+                        // SAFETY: The pointer is derived from the UnsafeCell's `*mut` via byte
+                        // offset, preserving the `SharedReadWrite` permission. No reference retag
+                        // occurs — we only use the `&T` for its address, not to derive the pointer.
+                        value: unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<T>()) },
+                        borrow: PhantomData,
+                    },
                 },
             }
         }
@@ -761,10 +785,12 @@ impl<'a> HeapPtr<'a> {
             let value = unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<*mut T>().read()) };
             HeapObjectRead {
                 id,
-                read: HeapRead {
-                    value,
-                    readers,
-                    borrow: PhantomData,
+                readers,
+                read: HeapReadMut {
+                    read: HeapRead {
+                        value,
+                        borrow: PhantomData,
+                    },
                 },
             }
         }
@@ -780,7 +806,7 @@ impl<'a> HeapPtr<'a> {
 
         let entry = self.entry(reader);
         // Increment the reader count for this entry. The corresponding decrement
-        // happens in `HeapRead::drop`.
+        // happens in `HeapObjectRead::drop`.
         entry.readers.set(entry.readers.get() + 1);
         let readers = NonNull::from(&entry.readers);
         // Get the raw pointer from the UnsafeCell — this has SharedReadWrite permission.
@@ -2658,7 +2684,7 @@ mod tests {
         // Close the cycle: the callable list references the iterator back.
         heap.inc_ref(iter);
         HeapReader::with(&mut heap, &mut (), |reader, ()| {
-            let HeapReadOutput::List(mut l) = reader.read(list) else {
+            let HeapReadOutput::List(l) = reader.read(list) else {
                 unreachable!("just allocated a list")
             };
             let l = l.get_mut(reader);

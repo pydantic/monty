@@ -210,7 +210,7 @@ impl RandomTarget {
         match self {
             Self::Global => vm.random.module = random,
             Self::Instance(id) => match vm.heap.read(id) {
-                HeapReadOutput::Random(mut handle) => *handle.get_mut(vm.heap) = random,
+                HeapReadOutput::Random(handle) => *handle.get_mut(vm.heap) = random,
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
             },
         }
@@ -221,7 +221,7 @@ impl RandomTarget {
         match self {
             Self::Global => mem::take(&mut vm.random.module),
             Self::Instance(id) => match vm.heap.read(id) {
-                HeapReadOutput::Random(mut handle) => mem::take(handle.get_mut(vm.heap)),
+                HeapReadOutput::Random(handle) => mem::take(handle.get_mut(vm.heap)),
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
             },
         }
