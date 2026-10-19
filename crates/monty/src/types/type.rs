@@ -20,7 +20,7 @@ use crate::{
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
         Set, Slice, Str, TimeZone, Tuple,
-        builtin_attr::{self, AttrDef},
+        builtin_attr::AttrDef,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -635,16 +635,31 @@ impl Type {
         }
     }
 
+    pub(crate) fn get_attr(self, attr: &EitherStr, interns: &Interns) -> Option<AttrDef> {
+        let name = attr.static_string(interns)?;
+        match self {
+            Self::Str => super::str::PyStr::lookup_attr(name),
+            Self::List => super::list::PyListImpl::lookup_attr(name),
+            Self::Tuple => super::tuple::PyTupleImpl::lookup_attr(name),
+            Self::Complex => super::complex::PyComplexImpl::lookup_attr(name),
+            Self::Date => super::date::PyDateImpl::lookup_attr(name),
+            Self::Time => super::time::PyTimeImpl::lookup_attr(name),
+            Self::TimeDelta => super::timedelta::PyTimeDeltaImpl::lookup_attr(name),
+            Self::TimeZone => super::timezone::PyTimeZoneImpl::lookup_attr(name),
+            Self::RePattern => super::re_pattern::PyRePatternImpl::lookup_attr(name),
+            Self::ReMatch => super::re_match::PyReMatchImpl::lookup_attr(name),
+            _ => None,
+        }
+    }
+
     /// Dispatches classmethod calls on builtin type objects (e.g. `dict.fromkeys`).
     ///
     /// Keeps classmethod behavior centralized with type semantics instead of VM
     /// call plumbing. Any other name is looked up as a plain attribute and the
     /// result called, so `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        if let Some(name) = attr.static_string(vm.interns)
-            && let Some(AttrDef::ClassMethod(call)) = builtin_attr::lookup_attr(self, name)
-        {
-            return call(name, self, Value::Builtin(Builtins::Type(super::BuiltinType::try_from(self).expect("registered builtin type"))), args, vm);
+        if let Some(AttrDef::ClassMethod(call)) = self.get_attr(attr, vm.interns) {
+            return call(self, Value::Builtin(Builtins::Type(super::BuiltinType::try_from(self).expect("registered builtin type"))), args, vm);
         }
         match (self, attr.static_string(vm.interns)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
@@ -762,12 +777,11 @@ impl Type {
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        let name = attr.static_string(vm.interns)?;
-        if let Some(AttrDef::Value(get)) = builtin_attr::lookup_attr(self, name) {
+        if let Some(AttrDef::Value(get)) = self.get_attr(attr, vm.interns) {
             return Some(get(vm));
         }
 
-        Some(match (self, name) {
+        Some(match (self, attr.static_string(vm.interns)?) {
             (Self::DateTime, StaticStrings::Min) => datetime::allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
             (Self::DateTime, StaticStrings::Max) => {
                 datetime::allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap)
