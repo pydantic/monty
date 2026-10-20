@@ -271,6 +271,52 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
+/// A session restored from the fixture keeps rendering tracebacks through the
+/// inputs fed before it was dumped. The fixture's build kept each input's
+/// source in `MontyRepl`'s own `sources` map under an interned
+/// `<python-input-N>` filename; later builds record new inputs in the interns'
+/// snippet table instead, so both must resolve in one traceback.
+#[test]
+fn fixture_tracebacks_resolve_inputs_from_before_the_dump() {
+    let loaded = Dump::load(&fs::read(fixture_path()).unwrap()).unwrap();
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("fixture was dumped suspended on a host call");
+    };
+    let call = progress.into_function_call().expect("suspended on host_call");
+    let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+    let (mut repl, _) = progress.into_complete().expect("host_call resumed to completion");
+
+    // `with_default` was defined by the fixture's first input, <python-input-0>.
+    repl.feed_run(
+        "def call_it():\n    return with_default(None)",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let error = repl.feed_run("call_it()", vec![], PrintWriter::Stdout).unwrap_err();
+    let frames: Vec<_> = error
+        .traceback()
+        .iter()
+        .map(|frame| (frame.filename.as_str(), frame.preview_line.as_deref()))
+        .collect();
+    assert_eq!(
+        frames,
+        [
+            ("<python-input-3>", Some("call_it()")),
+            ("<python-input-2>", Some("    return with_default(None)")),
+            ("<python-input-0>", Some("    return x + len(y)")),
+        ]
+    );
+    let defining_line = FIXTURE_STATE
+        .lines()
+        .position(|line| line == "    return x + len(y)")
+        .unwrap();
+    assert_eq!(
+        usize::try_from(error.traceback()[2].start.line).unwrap(),
+        defining_line + 1
+    );
+}
+
 /// Dict and set entries persist their hash, so the hash of every kind of key
 /// without a heap identity is part of the dump contract: a change here needs a
 /// `DUMP_VERSION` bump.
