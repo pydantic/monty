@@ -23,7 +23,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, HeapData, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -79,7 +79,7 @@ const HASHLIB_FUNCTIONS: &[(StaticStrings, HashlibFunctions)] = &[
 ];
 
 /// Creates the `hashlib` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Hashlib, vm.interns);
     for (name, func) in HASHLIB_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Hashlib(*func)), vm);
@@ -102,7 +102,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 }
 
 /// A fresh `set` of every algorithm name.
-fn algorithm_names(vm: &mut VM<'_>) -> Value {
+fn algorithm_names<H: RuntimeRef>(vm: &mut VM<'_, H>) -> Value<H> {
     let mut names = Set::with_capacity(HashAlgorithm::ALL.len());
     for algorithm in HashAlgorithm::ALL {
         let name = allocate_string(algorithm.name(), vm.heap);
@@ -116,7 +116,11 @@ fn algorithm_names(vm: &mut VM<'_>) -> Value {
 }
 
 /// Dispatches a call to a `hashlib` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: HashlibFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: HashlibFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         HashlibFunctions::Md5 => construct(HashAlgorithm::Md5, Md5Args::from_args(args, vm)?.into(), vm),
         HashlibFunctions::Sha1 => construct(HashAlgorithm::Sha1, Sha1Args::from_args(args, vm)?.into(), vm),
@@ -143,13 +147,13 @@ pub(super) fn call(vm: &mut VM<'_>, function: HashlibFunctions, args: ArgValues)
 /// OpenSSL-backed constructor shares once its name is in the error messages.
 ///
 /// `usedforsecurity` is accepted and ignored: there is no FIPS mode to honour.
-struct ConstructorArgs {
-    data: Option<Value>,
-    usedforsecurity: Value,
-    string: Option<Value>,
+struct ConstructorArgs<H: Reference> {
+    data: Option<Value<H>>,
+    usedforsecurity: Value<H>,
+    string: Option<Value<H>>,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for ConstructorArgs {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for ConstructorArgs<H> {
     fn drop_with(self, ctx: &mut C) {
         self.data.drop_with(ctx);
         self.usedforsecurity.drop_with(ctx);
@@ -163,17 +167,17 @@ macro_rules! openssl_constructor_args {
     ($($args:ident => $name:literal),* $(,)?) => {$(
         #[derive(FromArgs)]
         #[from_args(name = $name, style = c_named, at_most_total)]
-        struct $args {
+        struct $args<H: Reference> {
             #[from_args(default)]
-            data: Option<Value>,
+            data: Option<Value<H>>,
             #[from_args(kw_only, default = Value::Bool(true))]
-            usedforsecurity: Value,
+            usedforsecurity: Value<H>,
             #[from_args(kw_only, default, static_string = "StringAttr")]
-            string: Option<Value>,
+            string: Option<Value<H>>,
         }
 
-        impl From<$args> for ConstructorArgs {
-            fn from(args: $args) -> Self {
+        impl<H: Reference> From<$args<H>> for ConstructorArgs<H> {
+            fn from(args: $args<H>) -> Self {
                 let $args {
                     data,
                     usedforsecurity,
@@ -205,7 +209,11 @@ openssl_constructor_args!(
 );
 
 /// Builds a hash of `algorithm` over the constructor's initial data.
-fn construct(algorithm: HashAlgorithm, args: ConstructorArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn construct<H: RuntimeRef>(
+    algorithm: HashAlgorithm,
+    args: ConstructorArgs<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     defer_drop!(args, vm);
     let mut hash = HashObject::new(algorithm);
     if let Some(input) = initial_data(args.data.as_ref(), args.string.as_ref())? {
@@ -219,7 +227,10 @@ fn construct(algorithm: HashAlgorithm, args: ConstructorArgs, vm: &mut VM<'_>) -
 ///
 /// Passing either explicitly counts, even as `None`, which then fails the
 /// buffer check.
-fn initial_data<'a>(data: Option<&'a Value>, string: Option<&'a Value>) -> RunResult<Option<&'a Value>> {
+fn initial_data<'a, H: RuntimeRef>(
+    data: Option<&'a Value<H>>,
+    string: Option<&'a Value<H>>,
+) -> RunResult<Option<&'a Value<H>>> {
     match (data, string) {
         (Some(_), Some(_)) => Err(ExcType::type_error(
             "'data' and 'string' are mutually exclusive and support for 'string' keyword parameter is slated for \
@@ -234,31 +245,31 @@ fn initial_data<'a>(data: Option<&'a Value>, string: Option<&'a Value>) -> RunRe
 /// BLAKE2 names to the `_blake2` types and everything else to `_hashlib.new`.
 #[derive(FromArgs)]
 #[from_args(name = "__hash_new", style = def)]
-struct HashNewArgs {
-    name: Value,
+struct HashNewArgs<H: Reference> {
+    name: Value<H>,
     #[from_args(varargs)]
-    args: Vec<Value>,
+    args: Vec<Value<H>>,
     #[from_args(varkwargs)]
-    kwargs: KwargsValues,
+    kwargs: KwargsValues<H>,
 }
 
 /// `_hashlib.new(name, data=b'', *, usedforsecurity=True, string=None)`.
 #[derive(FromArgs)]
 #[from_args(name = "new", style = c_named, bad_arg_named, at_most_total)]
-struct OpensslNewArgs {
-    name: StrArg,
+struct OpensslNewArgs<H: Reference> {
+    name: StrArg<H>,
     #[from_args(default)]
-    data: Option<Value>,
+    data: Option<Value<H>>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    usedforsecurity: Value,
+    usedforsecurity: Value<H>,
     #[from_args(kw_only, default, static_string = "StringAttr")]
-    string: Option<Value>,
+    string: Option<Value<H>>,
 }
 
 /// `hashlib.new()`: the name is checked for a BLAKE2 constructor first, so
 /// `new('blake2b', digest_size=16)` reaches `blake2b()`'s own parser; an
 /// OpenSSL alias such as `'blake2b512'` takes the plain path, as in CPython.
-fn call_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_new<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let HashNewArgs { name, args, kwargs } = HashNewArgs::from_args(args, vm)?;
     let blake2 = name.to_str(vm).ok().and_then(Blake2Kind::from_name);
     if let Some(kind) = blake2 {
@@ -352,24 +363,24 @@ impl Blake2Kind {
 /// The constructor arguments before conversion. Every parameter stays a raw
 /// `Value` so the body can convert them in signature order, reproducing
 /// which error CPython's parser reports first.
-struct Blake2RawArgs {
-    data: Option<Value>,
-    digest_size: Option<Value>,
-    key: Option<Value>,
-    salt: Option<Value>,
-    person: Option<Value>,
-    fanout: Option<Value>,
-    depth: Option<Value>,
-    leaf_size: Option<Value>,
-    node_offset: Option<Value>,
-    node_depth: Option<Value>,
-    inner_size: Option<Value>,
+struct Blake2RawArgs<H: Reference> {
+    data: Option<Value<H>>,
+    digest_size: Option<Value<H>>,
+    key: Option<Value<H>>,
+    salt: Option<Value<H>>,
+    person: Option<Value<H>>,
+    fanout: Option<Value<H>>,
+    depth: Option<Value<H>>,
+    leaf_size: Option<Value<H>>,
+    node_offset: Option<Value<H>>,
+    node_depth: Option<Value<H>>,
+    inner_size: Option<Value<H>>,
     last_node: bool,
-    usedforsecurity: Value,
-    string: Option<Value>,
+    usedforsecurity: Value<H>,
+    string: Option<Value<H>>,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Blake2RawArgs {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Blake2RawArgs<H> {
     fn drop_with(self, ctx: &mut C) {
         self.usedforsecurity.drop_with(ctx);
         for value in [
@@ -397,39 +408,39 @@ macro_rules! blake2_constructor_args {
     ($($args:ident => $name:literal),* $(,)?) => {$(
         #[derive(FromArgs)]
         #[from_args(name = $name, style = c_named, at_most_total)]
-        struct $args {
+        struct $args<H: Reference> {
             #[from_args(default)]
-            data: Option<Value>,
+            data: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            digest_size: Option<Value>,
+            digest_size: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            key: Option<Value>,
+            key: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            salt: Option<Value>,
+            salt: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            person: Option<Value>,
+            person: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            fanout: Option<Value>,
+            fanout: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            depth: Option<Value>,
+            depth: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            leaf_size: Option<Value>,
+            leaf_size: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            node_offset: Option<Value>,
+            node_offset: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            node_depth: Option<Value>,
+            node_depth: Option<Value<H>>,
             #[from_args(kw_only, default)]
-            inner_size: Option<Value>,
+            inner_size: Option<Value<H>>,
             #[from_args(kw_only, default = LaxBool::new(false))]
             last_node: LaxBool,
             #[from_args(kw_only, default = Value::Bool(true))]
-            usedforsecurity: Value,
+            usedforsecurity: Value<H>,
             #[from_args(kw_only, default, static_string = "StringAttr")]
-            string: Option<Value>,
+            string: Option<Value<H>>,
         }
 
-        impl From<$args> for Blake2RawArgs {
-            fn from(args: $args) -> Self {
+        impl<H: Reference> From<$args<H>> for Blake2RawArgs<H> {
+            fn from(args: $args<H>) -> Self {
                 let $args {
                     data,
                     digest_size,
@@ -473,8 +484,12 @@ blake2_constructor_args!(Blake2bArgs => "blake2b", Blake2sArgs => "blake2s");
 ///
 /// Conversions run in signature order, then the parameter checks in the
 /// order `_blake2` makes them, and the data last.
-pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args: Blake2RawArgs = match kind {
+pub(crate) fn blake2_init<H: RuntimeRef>(
+    kind: Blake2Kind,
+    vm: &mut VM<'_, H>,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
+    let args: Blake2RawArgs<H> = match kind {
         Blake2Kind::Blake2b => Blake2bArgs::from_args(args, vm)?.into(),
         Blake2Kind::Blake2s => Blake2sArgs::from_args(args, vm)?.into(),
     };
@@ -568,7 +583,7 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
 
 /// Borrows a `bytes` argument with the `Py_buffer` converter's message, which
 /// differs from the data argument's (see [`hash_input`]).
-fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+fn buffer<'a, H: RuntimeRef>(value: &'a Value<H>, vm: &'a VM<'_, H>) -> RunResult<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
         Value::Ref(id) => match vm.heap.get(*id) {
@@ -580,7 +595,7 @@ fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
 }
 
 /// `TypeError: a bytes-like object is required, not 'X'`.
-fn not_bytes_like(value: &Value, vm: &VM<'_>) -> RunError {
+fn not_bytes_like<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunError {
     ExcType::type_error(format!(
         "a bytes-like object is required, not '{}'",
         value.py_type_name(vm)
@@ -589,7 +604,7 @@ fn not_bytes_like(value: &Value, vm: &VM<'_>) -> RunError {
 
 /// Argument Clinic's `int` converter: a C `int`, overflowing with
 /// `PyLong_AsInt`'s message.
-fn c_int(value: &Value, vm: &VM<'_>) -> RunResult<i32> {
+fn c_int<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<i32> {
     match value {
         Value::Bool(b) => Ok(i32::from(*b)),
         Value::Int(i) => i32::try_from(*i).map_err(|_| overflow_error("Python int too large to convert to C int")),
@@ -600,7 +615,7 @@ fn c_int(value: &Value, vm: &VM<'_>) -> RunResult<i32> {
 
 /// Argument Clinic's `long` converter: a C `long`, overflowing with
 /// `PyLong_AsLong`'s message.
-fn c_long(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
+fn c_long<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<i64> {
     match value {
         Value::Bool(b) => Ok(i64::from(*b)),
         Value::Int(i) => Ok(*i),
@@ -611,7 +626,7 @@ fn c_long(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
 
 /// Argument Clinic's `unsigned_long` / `unsigned_long_long` converters,
 /// which reject a negative int before checking the width named by `c_type`.
-fn c_unsigned(value: &Value, c_type: &str, vm: &VM<'_>) -> RunResult<u64> {
+fn c_unsigned<H: RuntimeRef>(value: &Value<H>, c_type: &str, vm: &VM<'_, H>) -> RunResult<u64> {
     match value {
         Value::Bool(b) => Ok(u64::from(*b)),
         Value::Int(i) => u64::try_from(*i).map_err(|_| ExcType::value_error_negative_int()),
@@ -639,19 +654,19 @@ fn overflow_error(msg: impl Display) -> RunError {
 /// their errors come out in signature order.
 #[derive(FromArgs)]
 #[from_args(name = "pbkdf2_hmac", style = c_named, bad_arg_named, at_most_total)]
-struct Pbkdf2HmacArgs {
-    hash_name: StrArg,
-    password: Value,
-    salt: Value,
-    iterations: Value,
+struct Pbkdf2HmacArgs<H: Reference> {
+    hash_name: StrArg<H>,
+    password: Value<H>,
+    salt: Value<H>,
+    iterations: Value<H>,
     #[from_args(default = Value::None)]
-    dklen: Value,
+    dklen: Value<H>,
 }
 
 /// `hashlib.pbkdf2_hmac()`: PBKDF2 (RFC 8018) over HMAC of the named
 /// algorithm, checked in CPython's order — the algorithm, then `iterations`,
 /// then `dklen`.
-fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_pbkdf2_hmac<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let Pbkdf2HmacArgs {
         hash_name,
         password,

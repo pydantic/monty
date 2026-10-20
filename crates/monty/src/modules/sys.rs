@@ -25,7 +25,7 @@ use crate::{
 };
 use crate::{
     bytecode::VM,
-    heap::{HeapData, HeapId},
+    heap::{HeapData, RuntimeRef},
     intern::StaticStrings,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
@@ -92,7 +92,7 @@ pub(crate) enum SysFunctions {
 }
 
 /// Creates the `sys` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Sys, vm.interns);
 
     // Interpreter identity. `platform` is "monty" rather than the host OS, which
@@ -193,7 +193,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 }
 
 /// Builds `sys.version_info`: `(major=3, minor=14, micro=0, releaselevel='final', serial=0)`.
-fn version_info(vm: &VM<'_>) -> Value {
+fn version_info<H: RuntimeRef>(vm: &VM<'_, H>) -> Value<H> {
     let named_tuple = NamedTuple::new(
         EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysVersionInfo)),
         vec![
@@ -222,7 +222,7 @@ fn version_info(vm: &VM<'_>) -> Value {
 /// the sandbox. Like CPython's, the list is mutable — but Monty builds a fresh
 /// module per `import`, so edits do not survive one (see
 /// `limitations/modules.md`).
-fn argv(vm: &VM<'_>) -> Value {
+fn argv<H: RuntimeRef>(vm: &VM<'_, H>) -> Value<H> {
     let script = allocate_string(vm.env.script_basename(), vm.heap);
     Value::Ref(vm.heap.allocate(HeapData::List(List::new(vec![script]))))
 }
@@ -233,7 +233,7 @@ fn argv(vm: &VM<'_>) -> Value {
 /// binary64 property CPython reports for its own C `double`. `rounds` is `1`,
 /// the `FLT_ROUNDS` code for round-to-nearest, which is the only mode Monty
 /// can be in — nothing in the sandbox can change the rounding direction.
-fn float_info(vm: &VM<'_>) -> Value {
+fn float_info<H: RuntimeRef>(vm: &VM<'_, H>) -> Value<H> {
     let named_tuple = NamedTuple::new(
         EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysFloatInfo)),
         vec![
@@ -274,7 +274,7 @@ fn float_info(vm: &VM<'_>) -> Value {
 /// `0` because Monty seeds no hashes. `int_max_str_digits` reports the limit
 /// Monty actually enforces, though it has no `sys.set_int_max_str_digits` to
 /// change it.
-fn flags(vm: &VM<'_>) -> Value {
+fn flags<H: RuntimeRef>(vm: &VM<'_, H>) -> Value<H> {
     let named_tuple = NamedTuple::new(
         EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysFlags)),
         vec![
@@ -322,12 +322,12 @@ fn flags(vm: &VM<'_>) -> Value {
 }
 
 /// `sys.flags.int_max_str_digits`, widened from the limit the runtime enforces.
-fn int_max_str_digits() -> Value {
+fn int_max_str_digits<H: RuntimeRef>() -> Value<H> {
     i64::try_from(INT_MAX_STR_DIGITS).map_or(Value::Int(i64::MAX), Value::Int)
 }
 
 /// Builds the `sys.builtin_module_names` tuple from [`BUILTIN_MODULE_NAMES`].
-fn builtin_module_names(vm: &VM<'_>) -> Value {
+fn builtin_module_names<H: RuntimeRef>(vm: &VM<'_, H>) -> Value<H> {
     let names: SmallVec<_> = BUILTIN_MODULE_NAMES
         .iter()
         .map(|name| Value::InternString(vm.interns.intern_static(*name)))
@@ -341,7 +341,11 @@ fn builtin_module_names(vm: &VM<'_>) -> Value {
 /// no callables on the `sys` module, so this dispatcher would have nothing
 /// to do.
 #[cfg(feature = "test-hooks")]
-pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: SysFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         SysFunctions::Setrecursionlimit => setrecursionlimit(vm, args),
     }
@@ -356,7 +360,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> 
 /// dump, etc.). Attempts to raise raise `ValueError` with a message
 /// pointing at the current cap.
 #[cfg(feature = "test-hooks")]
-fn setrecursionlimit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn setrecursionlimit<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let arg = args.get_one_arg("sys.setrecursionlimit", vm.heap)?;
     let Value::Int(limit) = arg else {
         arg.drop_with(vm);

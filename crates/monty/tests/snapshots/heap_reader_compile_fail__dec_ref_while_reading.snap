@@ -11,4 +11,3 @@ error[E0502]: cannot borrow `*heap` as mutable because it is also borrowed as im
    |         ^^^^^^^^^^^^^^^ mutable borrow occurs here
 99 |         let _ = list_ref.as_slice().len();
    |                 -------- immutable borrow later used here
-For more information about this error, try `rustc --explain E0502`.

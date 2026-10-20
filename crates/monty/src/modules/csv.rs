@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -51,7 +51,7 @@ pub(crate) enum CsvFunctions {
 }
 
 /// Allocates the `csv` module and returns its `HeapId`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Csv, vm.interns);
 
     for (name, function) in [
@@ -98,7 +98,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 }
 
 /// Dispatches a call to a `csv` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: CsvFunctions, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: CsvFunctions,
+    args: ArgValues<H>,
+) -> RunResult<CallResult<H>> {
     match function {
         CsvFunctions::Reader => call_reader(vm, args),
         CsvFunctions::Writer => call_writer(vm, args).map(CallResult::Value),
@@ -109,7 +113,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: CsvFunctions, args: ArgValues) -> 
 }
 
 /// `csv.reader(csvfile, dialect='excel', **fmtparams)`, loading an unread file first.
-fn call_reader(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn call_reader<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let callable = Value::ModuleFunction(ModuleFunctions::Csv(CsvFunctions::Reader));
     match load_then_call(callable, args, None, vm) {
         Ok(load) => Ok(load),
@@ -118,7 +122,7 @@ fn call_reader(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 }
 
 /// `csv.DictReader(f, ...)` as called from Python, loading an unread file first.
-pub(crate) fn dict_reader_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub(crate) fn dict_reader_call<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let callable = Value::Builtin(Builtins::Type(Type::CsvDictReader));
     match load_then_call(callable, args, Some("f"), vm) {
         Ok(load) => Ok(load),
@@ -129,12 +133,12 @@ pub(crate) fn dict_reader_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Ca
 /// When the file argument (the first positional, or the keyword `file_keyword` names) is a
 /// readable file nobody has read, the host read that loads it, with `callable(args)`
 /// replayed on resume. Otherwise hands `args` back.
-fn load_then_call(
-    callable: Value,
-    args: ArgValues,
+fn load_then_call<H: RuntimeRef>(
+    callable: Value<H>,
+    args: ArgValues<H>,
     file_keyword: Option<&str>,
-    vm: &mut VM<'_>,
-) -> Result<CallResult, ArgValues> {
+    vm: &mut VM<'_, H>,
+) -> Result<CallResult<H>, ArgValues<H>> {
     let file = args
         .first_positional()
         .or_else(|| file_keyword.and_then(|name| args.keyword(name, vm.heap, vm.interns)));
@@ -161,7 +165,11 @@ fn load_then_call(
 /// The positional shape of `reader()` / `writer()`: CPython unpacks them with
 /// `PyArg_UnpackTuple(args, "", 1, 2)` before the dialect kwargs are parsed.
 /// Hands `args` back on success and releases them on failure.
-fn check_positional_shape(name: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<ArgValues> {
+fn check_positional_shape<H: RuntimeRef>(
+    name: &str,
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<ArgValues<H>> {
     let error = match args.count() {
         0 => ExcType::type_error_at_least(name, 1, 0),
         n if n > 2 => ExcType::type_error_at_most(name, 2, n),
@@ -176,32 +184,32 @@ fn check_positional_shape(name: &str, args: ArgValues, vm: &mut VM<'_>) -> RunRe
 /// format parameters by `Dialect`'s anonymous `PyArg_ParseTupleAndKeywords`.
 #[derive(FromArgs)]
 #[from_args(name = "reader", style = c)]
-struct FmtParamArgs {
+struct FmtParamArgs<H: Reference> {
     #[from_args(pos_only)]
-    f: Value,
+    f: Value<H>,
     #[from_args(default = None)]
-    dialect: Option<Value>,
+    dialect: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    delimiter: Option<Value>,
+    delimiter: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    doublequote: Option<Value>,
+    doublequote: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    escapechar: Option<Value>,
+    escapechar: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    lineterminator: Option<Value>,
+    lineterminator: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    quotechar: Option<Value>,
+    quotechar: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    quoting: Option<Value>,
+    quoting: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    skipinitialspace: Option<Value>,
+    skipinitialspace: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    strict: Option<Value>,
+    strict: Option<Value<H>>,
 }
 
-impl FmtParamArgs {
+impl<H: RuntimeRef> FmtParamArgs<H> {
     /// Splits the parse into the source, the `dialect` argument and the format parameters.
-    fn into_parts(self) -> (Value, Option<Value>, FmtParams) {
+    fn into_parts(self) -> (Value<H>, Option<Value<H>>, FmtParams<H>) {
         let params = FmtParams {
             delimiter: self.delimiter,
             doublequote: self.doublequote,
@@ -217,7 +225,7 @@ impl FmtParamArgs {
 }
 
 /// Builds a `_csv.reader` from already-loaded (or non-file) input.
-fn reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn reader_init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let args = check_positional_shape("reader", args, vm)?;
     let (csvfile, dialect, params) = FmtParamArgs::from_args(args, vm)?.into_parts();
     defer_drop!(csvfile, vm);
@@ -228,7 +236,7 @@ fn reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `csv.writer(csvfile, dialect='excel', **fmtparams)`.
-fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_writer<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let args = check_positional_shape("writer", args, vm)?;
     let (target, dialect, params) = FmtParamArgs::from_args(args, vm)?.into_parts();
     defer_drop!(dialect, vm);
@@ -243,7 +251,7 @@ fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `csv.get_dialect(name)`: one of the built-in dialects.
-fn call_get_dialect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_get_dialect<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let GetDialectArgs { name } = GetDialectArgs::from_args(args, vm)?;
     defer_drop!(name, vm);
     let dialect = if name.is_str(vm.heap) {
@@ -257,7 +265,7 @@ fn call_get_dialect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `csv.list_dialects()`: the built-in dialect names.
-fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_list_dialects<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     args.check_zero_args("list_dialects", vm.heap)?;
     let names = DIALECT_NAMES
         .iter()
@@ -269,12 +277,12 @@ fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `get_dialect(name)`: Argument Clinic, so `name` may be a keyword.
 #[derive(FromArgs)]
 #[from_args(name = "get_dialect", style = c_named, at_most_total)]
-struct GetDialectArgs {
-    name: Value,
+struct GetDialectArgs<H: Reference> {
+    name: Value<H>,
 }
 
 /// `csv.field_size_limit([new_limit])`: reports CPython's default; the limit cannot change.
-fn call_field_size_limit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_field_size_limit<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let FieldSizeLimitArgs { new_limit: limit } = FieldSizeLimitArgs::from_args(args, vm)?;
     defer_drop!(limit, vm);
     match limit {
@@ -291,13 +299,13 @@ fn call_field_size_limit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `field_size_limit(new_limit=<unrepresentable>)`: Argument Clinic, so the keyword form works.
 #[derive(FromArgs)]
 #[from_args(name = "field_size_limit", style = c_named, at_most_total)]
-struct FieldSizeLimitArgs {
+struct FieldSizeLimitArgs<H: Reference> {
     #[from_args(default)]
-    new_limit: Option<Value>,
+    new_limit: Option<Value<H>>,
 }
 
 /// `_csv.Dialect(dialect=None, **fmtparams)`: a resolved dialect object.
-pub(crate) fn dialect_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn dialect_init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DialectArgs {
         dialect,
         delimiter,
@@ -327,48 +335,48 @@ pub(crate) fn dialect_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 /// `Dialect(dialect=None, delimiter=..., ...)`: every parameter optional, `dialect` positional too.
 #[derive(FromArgs)]
 #[from_args(name = "Dialect", style = c)]
-struct DialectArgs {
+struct DialectArgs<H: Reference> {
     #[from_args(default = None)]
-    dialect: Option<Value>,
+    dialect: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    delimiter: Option<Value>,
+    delimiter: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    doublequote: Option<Value>,
+    doublequote: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    escapechar: Option<Value>,
+    escapechar: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    lineterminator: Option<Value>,
+    lineterminator: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    quotechar: Option<Value>,
+    quotechar: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    quoting: Option<Value>,
+    quoting: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    skipinitialspace: Option<Value>,
+    skipinitialspace: Option<Value<H>>,
     #[from_args(kw_only, default = None)]
-    strict: Option<Value>,
+    strict: Option<Value<H>>,
 }
 
 /// `DictReader(f, fieldnames=None, restkey=None, restval=None, dialect='excel', *args, **kwds)`.
 #[derive(FromArgs)]
 #[from_args(name = "DictReader.__init__", style = def)]
-struct DictReaderArgs {
-    f: Value,
+struct DictReaderArgs<H: Reference> {
+    f: Value<H>,
     #[from_args(default = Value::None)]
-    fieldnames: Value,
+    fieldnames: Value<H>,
     #[from_args(default = Value::None)]
-    restkey: Value,
+    restkey: Value<H>,
     #[from_args(default = Value::None)]
-    restval: Value,
+    restval: Value<H>,
     #[from_args(default = None)]
-    dialect: Option<Value>,
+    dialect: Option<Value<H>>,
     #[from_args(varargs)]
-    args: Vec<Value>,
+    args: Vec<Value<H>>,
     #[from_args(varkwargs)]
-    kwds: KwargsValues,
+    kwds: KwargsValues<H>,
 }
 
 /// Builds a `csv.DictReader`; the wrapped `_csv.reader` gets `f`, `dialect` and the extras.
-pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn dict_reader_init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DictReaderArgs {
         f,
         fieldnames,
@@ -403,7 +411,12 @@ pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 }
 
 /// The arguments the wrapped `reader()` / `writer()` receives: `f`, `dialect`, then `*args` and `**kwds`.
-fn forwarded_args(f: Value, dialect: Value, args: Vec<Value>, kwds: KwargsValues) -> ArgValues {
+fn forwarded_args<H: RuntimeRef>(
+    f: Value<H>,
+    dialect: Value<H>,
+    args: Vec<Value<H>>,
+    kwds: KwargsValues<H>,
+) -> ArgValues<H> {
     let positional = [f, dialect].into_iter().chain(args).collect();
     ArgValues::from_parts(positional, kwds)
 }
@@ -411,23 +424,23 @@ fn forwarded_args(f: Value, dialect: Value, args: Vec<Value>, kwds: KwargsValues
 /// `DictWriter(f, fieldnames, restval='', extrasaction='raise', dialect='excel', *args, **kwds)`.
 #[derive(FromArgs)]
 #[from_args(name = "DictWriter.__init__", style = def)]
-struct DictWriterArgs {
-    f: Value,
-    fieldnames: Value,
+struct DictWriterArgs<H: Reference> {
+    f: Value<H>,
+    fieldnames: Value<H>,
     #[from_args(default = None)]
-    restval: Option<Value>,
+    restval: Option<Value<H>>,
     #[from_args(default = None)]
-    extrasaction: Option<Value>,
+    extrasaction: Option<Value<H>>,
     #[from_args(default = None)]
-    dialect: Option<Value>,
+    dialect: Option<Value<H>>,
     #[from_args(varargs)]
-    args: Vec<Value>,
+    args: Vec<Value<H>>,
     #[from_args(varkwargs)]
-    kwds: KwargsValues,
+    kwds: KwargsValues<H>,
 }
 
 /// Builds a `csv.DictWriter`; the wrapped `_csv.writer` gets `f`, `dialect` and the extras.
-pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn dict_writer_init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DictWriterArgs {
         f,
         fieldnames,
@@ -441,11 +454,10 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     let extrasaction = extrasaction.unwrap_or_else(|| static_str(StaticStrings::Raise, vm));
     let dialect = dialect.unwrap_or_else(|| excel_name(vm));
     // Everything is guarded before the first fallible step, so any rejection releases it all.
-    let dialect_arg = dialect.clone_with_heap(vm.heap);
     let mut owned = DropGuard::new(
         (
             [fieldnames, restval, extrasaction],
-            forwarded_args(f, dialect_arg, args, kwds),
+            forwarded_args(f, dialect, args, kwds),
         ),
         vm,
     );
@@ -464,7 +476,7 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 /// `if fieldnames is not None and iter(fieldnames) is fieldnames: fieldnames = list(fieldnames)`,
 /// as both constructors open: an iterator is read once into a list, and a `fieldnames`
 /// that is not iterable at all is rejected here rather than at the first row.
-fn materialize_fieldnames(fieldnames: &mut Value, vm: &mut VM<'_>) -> RunResult<()> {
+fn materialize_fieldnames<H: RuntimeRef>(fieldnames: &mut Value<H>, vm: &mut VM<'_, H>) -> RunResult<()> {
     if matches!(fieldnames, Value::None) {
         return Ok(());
     }
@@ -479,7 +491,7 @@ fn materialize_fieldnames(fieldnames: &mut Value, vm: &mut VM<'_>) -> RunResult<
 }
 
 /// `extrasaction.lower()`, which must be `'raise'` or `'ignore'` and is what gets stored.
-fn check_extrasaction(extrasaction: &Value, vm: &VM<'_>) -> RunResult<Value> {
+fn check_extrasaction<H: RuntimeRef>(extrasaction: &Value<H>, vm: &VM<'_, H>) -> RunResult<Value<H>> {
     if !extrasaction.is_str(vm.heap) {
         return Err(ExcType::attribute_error(extrasaction.py_type_name(vm), "lower"));
     }
@@ -495,11 +507,11 @@ fn check_extrasaction(extrasaction: &Value, vm: &VM<'_>) -> RunResult<Value> {
 }
 
 /// The default `dialect` argument, the string `'excel'`.
-fn excel_name(vm: &VM<'_>) -> Value {
+fn excel_name<H: RuntimeRef>(vm: &VM<'_, H>) -> Value<H> {
     static_str(StaticStrings::Excel, vm)
 }
 
 /// An interned static string as a value.
-fn static_str(name: StaticStrings, vm: &VM<'_>) -> Value {
+fn static_str<H: RuntimeRef>(name: StaticStrings, vm: &VM<'_, H>) -> Value<H> {
     Value::InternString(vm.interns.intern_static(name))
 }

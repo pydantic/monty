@@ -1,0 +1,27 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error[E0277]: the trait bound `Heap<HeapObjectPtr<'de>>: serde::Deserialize<'de>` is not satisfied
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:116:36
+    |
+116 |     let _heap: Heap<HeapId<'de>> = Deserialize::deserialize(decoder).unwrap();
+    |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `heap::_::_serde::Deserialize<'_>` is not implemented for `Heap<HeapObjectPtr<'de>>`
+   --> crates/monty/src/heap/mod.rs:936:1
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `Heap<HeapObjectPtr<'de>>` type
+    = note: for types from other crates check whether the crate offers a `serde` feature flag
+    = help: the following other types implement trait `heap::_::_serde::Deserialize<'de>`:
+              &'a ByteArray<N>
+              &'a [u8]
+              &'a serde_bytes::Bytes
+              &'a std::path::Path
+              &'a str
+              ()
+              (T,)
+              (T0, T1)
+            and 487 others

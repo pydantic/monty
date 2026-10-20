@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, HeapData, HeapId},
+    heap::{DropGuard, HeapData, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{Module, Type},
@@ -31,7 +31,7 @@ pub(crate) enum FunctoolsFunctions {
 }
 
 /// Creates the `functools` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Functools, vm.interns);
 
     module.set_attr(
@@ -49,7 +49,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 }
 
 /// Dispatches a call to a `functools` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: FunctoolsFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         FunctoolsFunctions::Reduce => call_reduce(vm, args),
     }
@@ -63,13 +67,13 @@ pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValue
 /// initial=1)` reports four arguments.
 #[derive(FromArgs)]
 #[from_args(name = "reduce", at_most_total)]
-struct ReduceArgs {
+struct ReduceArgs<H: Reference> {
     #[from_args(pos_only)]
-    function: Value,
+    function: Value<H>,
     #[from_args(pos_only)]
-    iterable: Value,
+    iterable: Value<H>,
     #[from_args(default)]
-    initial: Option<Value>,
+    initial: Option<Value<H>>,
 }
 
 /// `functools.reduce(function, iterable, /[, initial])` — fold `function` over
@@ -78,7 +82,7 @@ struct ReduceArgs {
 /// `function` is called through [`VM::evaluate_function`], which cannot suspend
 /// to the host, so an external function or `os` callback used here raises
 /// `NotImplementedError` as it does under `map()`.
-fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_reduce<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let ReduceArgs {
         function,
         iterable,

@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap, HeapData, HeapId},
+    heap::{DropWithContext, Heap, HeapData, Reference, RuntimeRef},
     intern::{Interns, StaticStrings, StringId},
     modules::{
         ModuleFunctions, collections, csv,
@@ -33,6 +33,7 @@ use crate::{
     value::{EitherStr, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// Represents the Python type of a value.
 ///
 /// This enum is used both for type checking and as a callable constructor.
@@ -57,7 +58,7 @@ use crate::{
     clippy::enum_variant_names,
     reason = "`Type` and `NoneType` mirror the Python type names"
 )]
-pub enum Type {
+pub(crate) enum Type<R> {
     Ellipsis,
     #[strum(serialize = "NotImplementedType")]
     NotImplementedType,
@@ -125,7 +126,7 @@ pub enum Type {
     /// converted to `MontyType`, which has no class variant (a sandbox class
     /// crosses the boundary as its own `ClassType` arena node).
     #[strum(disabled)]
-    Instance(HeapId),
+    Instance(R),
     /// Exception types render/parse via `ExcType`'s own strum name
     /// (`"ValueError"`, `"json.JSONDecodeError"`, ...), so this variant is
     /// `#[strum(disabled)]`: every strum consumer (`Display`, [`Type::name`],
@@ -331,14 +332,9 @@ pub enum Type {
 /// `Exception` delegates to `ExcType`'s own strum name.
 ///
 /// # Panics
-/// On `Instance`, which has no static name — callers with heap access must
-/// resolve the real class name via [`Type::name`]. Well-formed data never
-/// puts an `Instance` where no heap exists (`Builtins::Type`, `MontyObject`,
-/// the wire protocol), so this is a programmer-error tripwire. A crafted
-/// snapshot payload *can* smuggle one in, but snapshot bytes are not a
-/// panic-free boundary anyway — any bogus `HeapId` in them panics on first
-/// heap access.
-impl fmt::Display for Type {
+/// On `Instance`, which has no static name. Use [`Type::name`] with its owning heap;
+/// compiler-owned types cannot contain instances.
+impl<H: Reference> fmt::Display for Type<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match *self {
             Self::Exception(exc_type) => exc_type.into(),
@@ -348,7 +344,116 @@ impl fmt::Display for Type {
     }
 }
 
-impl Type {
+impl<R> Type<R> {
+    /// Copies static type descriptions without retaining a class's heap identity.
+    pub(crate) fn copy_without_refs<Other>(&self) -> Option<Type<Other>> {
+        match self {
+            Self::Instance(_) => None,
+            Self::Exception(value) => Some(Type::Exception(*value)),
+            Self::Ellipsis => Some(Type::Ellipsis),
+            Self::NotImplementedType => Some(Type::NotImplementedType),
+            Self::Type => Some(Type::Type),
+            Self::NoneType => Some(Type::NoneType),
+            Self::Bool => Some(Type::Bool),
+            Self::Int => Some(Type::Int),
+            Self::Float => Some(Type::Float),
+            Self::Complex => Some(Type::Complex),
+            Self::Range => Some(Type::Range),
+            Self::Slice => Some(Type::Slice),
+            Self::Date => Some(Type::Date),
+            Self::DateTime => Some(Type::DateTime),
+            Self::TimeDelta => Some(Type::TimeDelta),
+            Self::TimeZone => Some(Type::TimeZone),
+            Self::Str => Some(Type::Str),
+            Self::Bytes => Some(Type::Bytes),
+            Self::List => Some(Type::List),
+            Self::Tuple => Some(Type::Tuple),
+            Self::NamedTuple => Some(Type::NamedTuple),
+            Self::Dict => Some(Type::Dict),
+            Self::DefaultDict => Some(Type::DefaultDict),
+            Self::Counter => Some(Type::Counter),
+            Self::DictKeys => Some(Type::DictKeys),
+            Self::DictItems => Some(Type::DictItems),
+            Self::DictValues => Some(Type::DictValues),
+            Self::Set => Some(Type::Set),
+            Self::FrozenSet => Some(Type::FrozenSet),
+            Self::HostClass => Some(Type::HostClass),
+            Self::Function => Some(Type::Function),
+            Self::BuiltinFunction => Some(Type::BuiltinFunction),
+            Self::Cell => Some(Type::Cell),
+            Self::Iterator => Some(Type::Iterator),
+            Self::ListIterator => Some(Type::ListIterator),
+            Self::CallableIterator => Some(Type::CallableIterator),
+            Self::Coroutine => Some(Type::Coroutine),
+            Self::Module => Some(Type::Module),
+            Self::TextIOWrapper => Some(Type::TextIOWrapper),
+            Self::BufferedReader => Some(Type::BufferedReader),
+            Self::BufferedWriter => Some(Type::BufferedWriter),
+            Self::BufferedRandom => Some(Type::BufferedRandom),
+            Self::SpecialForm => Some(Type::SpecialForm),
+            Self::Path => Some(Type::Path),
+            Self::Property => Some(Type::Property),
+            Self::RePattern => Some(Type::RePattern),
+            Self::ReMatch => Some(Type::ReMatch),
+            Self::DirEntry => Some(Type::DirEntry),
+            Self::ScandirIterator => Some(Type::ScandirIterator),
+            Self::WalkGenerator => Some(Type::WalkGenerator),
+            Self::TupleIterator => Some(Type::TupleIterator),
+            Self::StrAsciiIterator => Some(Type::StrAsciiIterator),
+            Self::StrIterator => Some(Type::StrIterator),
+            Self::BytesIterator => Some(Type::BytesIterator),
+            Self::RangeIterator => Some(Type::RangeIterator),
+            Self::DictKeyIterator => Some(Type::DictKeyIterator),
+            Self::DictItemIterator => Some(Type::DictItemIterator),
+            Self::DictValueIterator => Some(Type::DictValueIterator),
+            Self::SetIterator => Some(Type::SetIterator),
+            Self::ItertoolsCount => Some(Type::ItertoolsCount),
+            Self::ItertoolsRepeat => Some(Type::ItertoolsRepeat),
+            Self::DataclassField => Some(Type::DataclassField),
+            Self::Deque => Some(Type::Deque),
+            Self::DequeIterator => Some(Type::DequeIterator),
+            Self::ItertoolsPairwise => Some(Type::ItertoolsPairwise),
+            Self::ItertoolsCompress => Some(Type::ItertoolsCompress),
+            Self::ItertoolsIslice => Some(Type::ItertoolsIslice),
+            Self::ItertoolsChain => Some(Type::ItertoolsChain),
+            Self::ItertoolsCycle => Some(Type::ItertoolsCycle),
+            Self::DataclassParams => Some(Type::DataclassParams),
+            Self::MissingType => Some(Type::MissingType),
+            Self::ItertoolsTakeWhile => Some(Type::ItertoolsTakeWhile),
+            Self::ItertoolsDropWhile => Some(Type::ItertoolsDropWhile),
+            Self::ItertoolsFilterFalse => Some(Type::ItertoolsFilterFalse),
+            Self::ItertoolsStarMap => Some(Type::ItertoolsStarMap),
+            Self::Object => Some(Type::Object),
+            Self::Time => Some(Type::Time),
+            Self::Partial => Some(Type::Partial),
+            Self::ItertoolsAccumulate => Some(Type::ItertoolsAccumulate),
+            Self::ItertoolsBatched => Some(Type::ItertoolsBatched),
+            Self::ItertoolsZipLongest => Some(Type::ItertoolsZipLongest),
+            Self::GenericAlias => Some(Type::GenericAlias),
+            Self::Union => Some(Type::Union),
+            Self::ItertoolsCombinations => Some(Type::ItertoolsCombinations),
+            Self::ItertoolsCombinationsWithReplacement => Some(Type::ItertoolsCombinationsWithReplacement),
+            Self::ItertoolsPermutations => Some(Type::ItertoolsPermutations),
+            Self::ItertoolsProduct => Some(Type::ItertoolsProduct),
+            Self::ItertoolsGroupBy => Some(Type::ItertoolsGroupBy),
+            Self::ItertoolsGrouper => Some(Type::ItertoolsGrouper),
+            Self::ItertoolsTee => Some(Type::ItertoolsTee),
+            Self::ItertoolsTeeDataObject => Some(Type::ItertoolsTeeDataObject),
+            Self::Random => Some(Type::Random),
+            Self::HashlibHash => Some(Type::HashlibHash),
+            Self::HashlibHashXof => Some(Type::HashlibHashXof),
+            Self::Blake2b => Some(Type::Blake2b),
+            Self::Blake2s => Some(Type::Blake2s),
+            Self::CsvReader => Some(Type::CsvReader),
+            Self::CsvWriter => Some(Type::CsvWriter),
+            Self::CsvDictReader => Some(Type::CsvDictReader),
+            Self::CsvDictWriter => Some(Type::CsvDictWriter),
+            Self::CsvDialect => Some(Type::CsvDialect),
+        }
+    }
+}
+
+impl<H: RuntimeRef> Type<H> {
     /// The Python-visible name of this type: the real class name for
     /// [`Instance`](Self::Instance), the static `Display` name otherwise —
     /// the primary way to render a `Type` in error messages and reprs. The
@@ -356,7 +461,7 @@ impl Type {
     /// class names are cloned into `Cow::Owned`), so it can be captured
     /// before heap-mutating cleanup (`drop_with`) at error sites and
     /// formatted after.
-    pub(crate) fn name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+    pub(crate) fn name<'i>(self, heap: &Heap<H>, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::Instance(class_id) => class_name(class_id, heap, interns),
             Self::Exception(exc_type) => Cow::Borrowed(exc_type.into()),
@@ -370,7 +475,7 @@ impl Type {
     /// reprs and error messages qualify where `__name__` does not. Sandbox
     /// class names ([`Instance`](Self::Instance)) are identifiers, so
     /// stripping is a no-op for them.
-    pub(crate) fn dunder_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+    pub(crate) fn dunder_name<'i>(self, heap: &Heap<H>, interns: &'i Interns) -> Cow<'i, str> {
         match self.name(heap, interns) {
             Cow::Borrowed(name) => Cow::Borrowed(name.rsplit_once('.').map_or(name, |(_, bare)| bare)),
             owned @ Cow::Owned(_) => owned,
@@ -383,13 +488,15 @@ impl Type {
     /// `arg == Py_None ? "None" : Py_TYPE(arg)->tp_name`, and since `NoneType`
     /// is a singleton, branching on the type is equivalent to branching on the
     /// value. Use for the "not Y" half of arg-type error messages only.
-    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap<H>, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::NoneType => Cow::Borrowed("None"),
             other => other.name(heap, interns),
         }
     }
+}
 
+impl<H: Reference> Type<H> {
     /// Returns the Python source-level name for builtin types that can be called directly.
     ///
     /// This differs from `Display` for internal representation-only names such as
@@ -602,7 +709,9 @@ impl Type {
             _ => None,
         }
     }
+}
 
+impl<H: RuntimeRef> Type<H> {
     /// Dispatches classmethod calls on builtin type objects (e.g. `dict.fromkeys`).
     ///
     /// Keeps classmethod behavior centralized with type semantics instead of VM
@@ -611,9 +720,9 @@ impl Type {
     pub(crate) fn call_class_method(
         self,
         method_id: StringId,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+        args: ArgValues<H>,
+        vm: &mut VM<'_, H>,
+    ) -> RunResult<CallResult<H>> {
         match (self, vm.interns.static_string(method_id)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, Some(StaticStrings::Fromkeys)) => {
@@ -684,7 +793,7 @@ impl Type {
     /// Resolves an attribute read on a builtin type object itself — `list.__name__`,
     /// `date.max`, `chain.from_iterable` — returning `None` when there is no such
     /// member so the caller raises [`Self::attribute_error`].
-    pub(crate) fn class_getattr(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    pub(crate) fn class_getattr(self, attr: &EitherStr, vm: &mut VM<'_, H>) -> Option<Value<H>> {
         let is_dunder_name = attr.static_string(vm.interns).map_or_else(
             || attr.as_str(vm.interns) == "__name__",
             |ss| ss == StaticStrings::DunderName,
@@ -714,7 +823,7 @@ impl Type {
     ///
     /// CPython names the class rather than the metaclass here:
     /// `type object 'list' has no attribute 'nonexistent'`.
-    pub(crate) fn attribute_error(self, attr: &EitherStr, vm: &VM<'_>) -> RunError {
+    pub(crate) fn attribute_error(self, attr: &EitherStr, vm: &VM<'_, H>) -> RunError {
         ExcType::attribute_error_type(&self.name(vm.heap, vm.interns), attr.as_str(vm.interns))
     }
 
@@ -724,7 +833,7 @@ impl Type {
     ///
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
-    pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_, H>) -> Option<Value<H>> {
         // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which
         // normalizes to CPython's `timedelta(days=999999999, seconds=86399,
         // microseconds=999999)`.
@@ -763,7 +872,7 @@ impl Type {
     ///
     /// Dispatches to the appropriate type's init method for container types,
     /// or handles primitive type conversions inline.
-    pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    pub(crate) fn call(self, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         match self {
             // Container types - delegate to init methods
             Self::List => List::init(vm, args),
@@ -930,16 +1039,16 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
 /// `vectorcall` + `at_most_total` model `long_vectorcall`'s dual arity wording.
 #[derive(FromArgs)]
 #[from_args(name = "int", at_most_total, vectorcall)]
-struct IntArgs {
+struct IntArgs<H: Reference> {
     #[from_args(pos_only, default)]
-    x: Option<Value>,
+    x: Option<Value<H>>,
     #[from_args(default)]
-    base: Option<Value>,
+    base: Option<Value<H>>,
 }
 
 /// Implements the `int()` constructor: numeric coercion, and str/bytes
 /// parsing with an optional base (auto-detected when `base=0`).
-fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn int_init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let IntArgs { x, base } = IntArgs::from_args(args, vm)?;
     let Some(x) = x else {
         // `int()` → 0; `int(base=N)` complains about the missing value even
@@ -973,7 +1082,7 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `int(x)` with no base: numeric coercion plus base-10 str/bytes parsing.
-fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn int_convert<H: RuntimeRef>(x: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     if let Some(value) = x.py_int_impl(vm)? {
         Ok(value)
     } else if let Some(value) = x.py_index_impl(vm)? {
@@ -999,7 +1108,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// which *clamps* out-of-i64 ints instead of raising — so a `LongInt` base
 /// lands in the range error, not `OverflowError`; non-integers raise
 /// `TypeError` before the range is checked.
-fn int_base(base: Value, vm: &mut VM<'_>) -> RunResult<u32> {
+fn int_base<H: RuntimeRef>(base: Value<H>, vm: &mut VM<'_, H>) -> RunResult<u32> {
     defer_drop!(base, vm);
     let n = base.saturating_index(vm)?;
     match u32::try_from(n) {
@@ -1014,7 +1123,7 @@ fn int_base(base: Value, vm: &mut VM<'_>) -> RunResult<u32> {
 /// `base` is `0` (auto-detect from a `0x`/`0o`/`0b` prefix) or `2..=36`.
 /// Returns `Value::Int` if the value fits in i64, otherwise allocates a
 /// `LongInt` on the heap. Returns `ValueError` on failure.
-fn parse_int_from_str(value: &str, base: u32, heap: &Heap) -> RunResult<Value> {
+fn parse_int_from_str<H: RuntimeRef>(value: &str, base: u32, heap: &Heap<H>) -> RunResult<Value<H>> {
     // Fast path: plain base-10 literals parse directly (no whitespace,
     // underscores or prefix handling needed).
     if base == 10
@@ -1040,7 +1149,7 @@ fn parse_int_from_str(value: &str, base: u32, heap: &Heap) -> RunResult<Value> {
 ///
 /// Unlike `str`, bytes must not treat UTF-8 encodings of Unicode whitespace as
 /// separators. Failures repr the input as a bytes literal, matching CPython.
-fn parse_int_from_bytes(bytes: &[u8], base: u32, heap: &Heap) -> RunResult<Value> {
+fn parse_int_from_bytes<H: RuntimeRef>(bytes: &[u8], base: u32, heap: &Heap<H>) -> RunResult<Value<H>> {
     let invalid = || ExcType::value_error_invalid_literal_for_int(base, bytes_repr(bytes));
     match str::from_utf8(bytes.trim_ascii()) {
         Ok(s) => parse_int_digits(s, base, &invalid, heap),
@@ -1060,7 +1169,12 @@ enum IntScanState {
 
 /// Parses a whitespace-trimmed str/bytes int literal: sign, base prefix,
 /// underscore placement, digit limits, and BigInt promotion.
-fn parse_int_digits(value: &str, base: u32, invalid: &impl Fn() -> RunError, heap: &Heap) -> RunResult<Value> {
+fn parse_int_digits<H: RuntimeRef>(
+    value: &str,
+    base: u32,
+    invalid: &impl Fn() -> RunError,
+    heap: &Heap<H>,
+) -> RunResult<Value<H>> {
     let (negative, body) = match value.strip_prefix(['+', '-']) {
         Some(rest) => (value.starts_with('-'), rest),
         None => (false, value),

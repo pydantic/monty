@@ -17,7 +17,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, Reference, RuntimeRef},
     heap_traits::DropGuard,
     intern::StaticStrings,
     modules::{
@@ -42,7 +42,7 @@ pub(crate) enum AsyncioFunctions {
 ///
 /// The module contains only the `run`, `gather` and `sleep` functions. Other asyncio
 /// functions are not implemented as they would require additional VM/scheduler features.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
     module.set_attr(
@@ -63,7 +63,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
-pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    functions: AsyncioFunctions,
+    args: ArgValues<H>,
+) -> RunResult<CallResult<H>> {
     match functions {
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
@@ -75,7 +79,7 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 /// Unlike CPython, waiting starts at the call. The host answers with a future
 /// or inline; [`host_sleep`] determines the destination and delay.
 /// `Zero` and zero-length system sleeps settle immediately. See `limitations/asyncio.md`.
-fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn sleep<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
     // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
     let mut result_guard = DropGuard::new(result, vm);
@@ -105,11 +109,11 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// both parameters bind by keyword and neither is type-checked while binding.
 #[derive(FromArgs)]
 #[from_args(name = "sleep", style = def)]
-struct SleepArgs {
+struct SleepArgs<H: Reference> {
     #[from_args(static_string = "Delay")]
-    delay: Value,
+    delay: Value<H>,
     #[from_args(static_string = "ResultArg", default = Value::None)]
-    result: Value,
+    result: Value<H>,
 }
 
 /// Reads `delay` as float seconds.
@@ -118,7 +122,7 @@ struct SleepArgs {
 /// left to the loop, so only real numbers work — an `__index__`-able class is
 /// rejected here although `time.sleep()` accepts it — and a non-number fails as
 /// an unsupported comparison rather than as a bad argument.
-fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
+fn delay_seconds<H: RuntimeRef>(delay: &Value<H>, vm: &VM<'_, H>) -> RunResult<f64> {
     match delay {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
@@ -137,7 +141,7 @@ fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
 ///
 /// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
 /// the value, which handles validation that it's actually a coroutine/awaitable.
-fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
+fn run<H: RuntimeRef>(heap: &mut Heap<H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let coroutine = args.get_one_arg("asyncio.run", heap)?;
     Ok(CallResult::AwaitValue(coroutine))
 }
@@ -162,7 +166,7 @@ fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
 ///
 /// # Errors
 /// Returns `TypeError` if any argument is not awaitable.
-pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn gather<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     // TODO: support keyword arguments (e.g. return_exceptions); for now any
     // kwarg is rejected up front by the macro's `kwargs_not_supported_yet`
     // flag with a `NotImplementedError: gather() does not yet support keyword
@@ -205,7 +209,7 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// regular `kw_only` slot and the flag goes away.
 #[derive(FromArgs)]
 #[from_args(name = "gather", kwargs_not_supported_yet)]
-struct GatherArgs {
+struct GatherArgs<H: Reference> {
     #[from_args(varargs)]
-    awaitables: Vec<Value>,
+    awaitables: Vec<Value<H>>,
 }

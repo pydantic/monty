@@ -17,6 +17,7 @@
 //! build a `dict` and tag it via `Dict::make_defaultdict` / `make_counter`
 //! rather than introducing a new heap type.
 
+use crate::heap::{Reference, RuntimeRef};
 pub(crate) mod counter;
 pub(crate) mod defaultdict;
 
@@ -31,7 +32,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
@@ -43,7 +44,7 @@ use crate::{
 
 /// Creates the `collections` module and allocates it on the heap.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
     module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
@@ -76,7 +77,11 @@ pub(crate) enum CollectionsFunctions {
 }
 
 /// Dispatches a `collections` module function call.
-pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: CollectionsFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         CollectionsFunctions::Namedtuple => namedtuple(vm, args),
     }
@@ -88,7 +93,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgVal
 ///
 /// Reached via [`Type::call`](crate::types::Type::call) — `collections.Counter`
 /// is exposed as the type object, so `type(c) is Counter` holds.
-pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn counter_init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let (mut pos, kwargs) = args.into_parts();
     let total = pos.len();
     let source = (total > 0).then(|| pos.next().expect("len checked"));
@@ -133,7 +138,7 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 ///
 /// Reached via [`Type::call`](crate::types::Type::call) — `collections.defaultdict`
 /// is exposed as the type object, so `type(d) is defaultdict` holds.
-pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn defaultdict_init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let (mut pos, kwargs) = args.into_parts();
     let factory_arg = (pos.len() > 0).then(|| pos.next().expect("len checked"));
 
@@ -150,7 +155,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 
     // Everything after the factory initialises the dict via the normal `dict`
     // constructor, so `defaultdict`'s init errors match `dict`'s.
-    let rest: Vec<Value> = pos.collect();
+    let rest: Vec<Value<H>> = pos.collect();
     let rest_args = if rest.is_empty() && kwargs.is_empty() {
         ArgValues::Empty
     } else {
@@ -182,17 +187,17 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 /// (`def` binding never type-checks) and coercion happens in the body.
 #[derive(FromArgs)]
 #[from_args(name = "namedtuple", style = def)]
-struct NamedtupleArgs {
+struct NamedtupleArgs<H: Reference> {
     #[from_args(static_string = "Typename")]
-    typename: Value,
+    typename: Value<H>,
     #[from_args(static_string = "FieldNames")]
-    field_names: Value,
+    field_names: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false), static_string = "Rename")]
-    rename: Value,
+    rename: Value<H>,
     #[from_args(kw_only, default = Value::None, static_string = "Defaults")]
-    defaults: Value,
+    defaults: Value<H>,
     #[from_args(kw_only, default = Value::None, static_string = "ModuleKwarg")]
-    module: Value,
+    module: Value<H>,
 }
 
 /// The `collections.namedtuple(typename, field_names, *, rename, defaults,
@@ -201,7 +206,7 @@ struct NamedtupleArgs {
 ///
 /// Divergence from CPython: non-string `typename`/`field_names` elements are not
 /// `str()`-coerced beyond what the checks below require.
-fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn namedtuple<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let NamedtupleArgs {
         typename,
         field_names,
@@ -259,7 +264,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// A single string is split on commas and whitespace (`'x y'`, `'x,y'`,
 /// `'x, y'` all yield `['x', 'y']`); any other value is iterated and each
 /// element is `str()`-converted, matching CPython's `list(map(str, ...))`.
-fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<String>> {
+fn parse_field_names<H: RuntimeRef>(field_names: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Vec<String>> {
     if let Some(text) = field_names.as_either_str(vm.heap) {
         Ok(text
             .as_str(vm.interns)
@@ -268,7 +273,7 @@ fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Stri
             .map(str::to_owned)
             .collect())
     } else {
-        let items = collect_owned_iterable::<Vec<Value>>(field_names.clone_with_heap(vm.heap), vm)?;
+        let items = collect_owned_iterable::<_, Vec<Value<H>>>(field_names.clone_with_heap(vm.heap), vm)?;
         let mut names = Vec::with_capacity(items.len());
         // A failing `str()` (a field's `__str__` raising) must release the
         // current item *and* the un-iterated remainder; the guards cover both.
@@ -285,11 +290,11 @@ fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Stri
 }
 
 /// Collects the `defaults` argument (an iterable, or `None`) into values.
-fn collect_defaults(defaults: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+fn collect_defaults<H: RuntimeRef>(defaults: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Vec<Value<H>>> {
     if matches!(defaults, Value::None) {
         Ok(Vec::new())
     } else {
-        collect_owned_iterable::<Vec<Value>>(defaults.clone_with_heap(vm.heap), vm)
+        collect_owned_iterable::<_, Vec<Value<H>>>(defaults.clone_with_heap(vm.heap), vm)
     }
 }
 

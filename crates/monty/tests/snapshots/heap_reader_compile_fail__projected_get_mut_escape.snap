@@ -1,6 +1,6 @@
 ---
 source: crates/monty/tests/heap_reader_compile_fail.rs
-expression: actual
+expression: diagnostics
 ---
 error[E0597]: `source` does not live long enough
    --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:215:46
@@ -14,6 +14,7 @@ error[E0597]: `source` does not live long enough
     |             ------------------- borrow later used here
 219 |         };
     |         - `source` dropped here while still borrowed
+
 error[E0597]: `protected` does not live long enough
    --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:216:50
     |
@@ -26,6 +27,7 @@ error[E0597]: `protected` does not live long enough
     |             ------------------- borrow later used here
 219 |         };
     |         - `protected` dropped here while still borrowed
+
 error[E0597]: `field` does not live long enough
    --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:218:13
     |
@@ -35,4 +37,3 @@ error[E0597]: `field` does not live long enough
     |             ^^^^^ borrowed value does not live long enough
 219 |         };
     |         - `field` dropped here while still borrowed
-For more information about this error, try `rustc --explain E0597`.

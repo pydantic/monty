@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, HeapData, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropGuard, HeapData, HeapReadOutput, HeapReader, Reference, RuntimeRef},
     os_dispatch::PostConversionEffect,
     types::{
         Dict, List, LongInt,
@@ -66,7 +66,7 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// CPython kwargs `cls`, `object_hook`, `parse_float`, `parse_int`,
 /// `parse_constant`, and `object_pairs_hook` are intentionally unsupported
 /// and will raise `TypeError` if passed.
-pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call_loads<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm)?;
     defer_drop_mut!(s, vm);
     parse_json_input(s, vm)
@@ -82,8 +82,8 @@ pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `JSONDecoder.__init__` as CPython does for a keyword the decoder rejects.
 #[derive(FromArgs)]
 #[from_args(name = "loads", style = def, kwarg_error_name = "JSONDecoder.__init__")]
-struct JsonLoadsArgs {
-    s: Value,
+struct JsonLoadsArgs<H: Reference> {
+    s: Value<H>,
 }
 
 /// Implements `json.load(fp)`: `fp.read()`, then [`call_loads`] on the result.
@@ -92,7 +92,7 @@ struct JsonLoadsArgs {
 /// [`PostConversionEffect::JsonLoad`] armed, so the parse runs on resume; a
 /// loaded one parses the rest of its buffer at once. Any other object has
 /// its `read` attribute called synchronously.
-pub(super) fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call_load<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let JsonLoadArgs { fp } = JsonLoadArgs::from_args(args, vm)?;
     defer_drop!(fp, vm);
     match FileTarget::reader(fp, vm)? {
@@ -115,13 +115,13 @@ pub(super) fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
 
 /// `JsonLoad` resume: installs the host's content as the file buffer, exactly
 /// as `fp.read()` would, then parses it.
-pub(crate) fn apply_json_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn apply_json_load<H: RuntimeRef>(file_id: H, result: Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let text = apply_buffer_store(file_id, result, vm)?;
     parse_owned(text, vm)
 }
 
 /// Parses what `fp.read()` returned, releasing it afterwards.
-fn parse_owned(text: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn parse_owned<H: RuntimeRef>(text: Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     defer_drop!(text, vm);
     parse_json_input(text, vm)
 }
@@ -130,8 +130,8 @@ fn parse_owned(text: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// with the same keyword policy.
 #[derive(FromArgs)]
 #[from_args(name = "load", style = def, kwarg_error_name = "JSONDecoder.__init__")]
-struct JsonLoadArgs {
-    fp: Value,
+struct JsonLoadArgs<H: Reference> {
+    fp: Value<H>,
 }
 
 /// Parses a `json.loads()` input value and converts it into a Monty value.
@@ -139,7 +139,7 @@ struct JsonLoadArgs {
 /// The parser works directly on the underlying byte slice. Decoded strings from
 /// `jiter` are copied into Monty's heap immediately before any further parser
 /// movement so borrowed tape-backed data never escapes.
-fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn parse_json_input<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let (bytes, is_str): (Cow<'_, [u8]>, bool) = match value {
         Value::InternString(string_id) => (Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()), true),
         Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.interns.get_bytes(*bytes_id)), false),
@@ -175,7 +175,7 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 ///
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
-fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_>) -> RunResult<Value> {
+fn parse_json_bytes<H: RuntimeRef>(bytes: &[u8], vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
     // Take the cache out of the VM so we can pass it alongside &mut VM
     // without conflicting borrows. `mem::take` leaves `Default` in its place.
@@ -201,12 +201,12 @@ fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_>) -> RunResult<Value> {
 ///
 /// Strings are allocated immediately because `jiter` may reuse its internal
 /// tape buffer on the next parser step.
-fn parse_json_value(
+fn parse_json_value<H: RuntimeRef>(
     jiter: &mut Jiter<'_>,
     depth: usize,
-    cache: &mut JsonStringCache,
-    vm: &mut VM<'_>,
-) -> ParseResult<Value> {
+    cache: &mut JsonStringCache<H>,
+    vm: &mut VM<'_, H>,
+) -> ParseResult<Value<H>> {
     let peek = jiter.peek()?;
     parse_json_value_from_peek(peek, jiter, depth, cache, vm)
 }
@@ -215,13 +215,13 @@ fn parse_json_value(
 ///
 /// The caller provides the `Peek` so container iteration can avoid reparsing
 /// the next token after `array_step()`.
-fn parse_json_value_from_peek(
+fn parse_json_value_from_peek<H: RuntimeRef>(
     peek: Peek,
     jiter: &mut Jiter<'_>,
     depth: usize,
-    cache: &mut JsonStringCache,
-    vm: &mut VM<'_>,
-) -> ParseResult<Value> {
+    cache: &mut JsonStringCache<H>,
+    vm: &mut VM<'_, H>,
+) -> ParseResult<Value<H>> {
     match peek {
         Peek::Null => {
             jiter.known_null()?;
@@ -242,7 +242,11 @@ fn parse_json_value_from_peek(
 /// Allocates a string using the cache when eligible, falling back to direct
 /// allocation for empty/single-char strings (already interned by
 /// `allocate_string`).
-fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> Value {
+fn allocate_cached_string<H: RuntimeRef>(
+    s: String,
+    cache: &mut JsonStringCache<H>,
+    heap: &HeapReader<'_, H>,
+) -> Value<H> {
     if s.len() < 2 {
         // Empty and single-char strings are interned by allocate_string.
         allocate_string(s, heap.heap())
@@ -254,7 +258,7 @@ fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapRea
 /// Parses a JSON number into the corresponding Monty numeric value.
 ///
 /// Oversized integers that exceed Monty's digit limit are rejected with a `ValueError`
-fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_>) -> ParseResult<Value> {
+fn parse_json_number<H: RuntimeRef>(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_, H>) -> ParseResult<Value<H>> {
     let start = jiter.current_index();
     // Parse to bytes so that we can check the digit count before any BigInt allocation occurs.
     let token = jiter.known_number_bytes(peek)?;
@@ -283,12 +287,12 @@ fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_>) -> Pars
 ///
 /// Elements are converted one by one as the iterator advances, avoiding any
 /// intermediate `JsonValue` tree.
-fn parse_json_array(
+fn parse_json_array<H: RuntimeRef>(
     jiter: &mut Jiter<'_>,
     depth: usize,
-    cache: &mut JsonStringCache,
-    vm: &mut VM<'_>,
-) -> ParseResult<Value> {
+    cache: &mut JsonStringCache<H>,
+    vm: &mut VM<'_, H>,
+) -> ParseResult<Value<H>> {
     check_json_recursion_limit(jiter, depth)?;
 
     let Some(mut next) = jiter.known_array()? else {
@@ -342,12 +346,12 @@ fn parse_json_string(jiter: &mut Jiter<'_>) -> ParseResult<String> {
 ///
 /// Keys are allocated before parsing their values because `jiter` may reuse its
 /// temporary string storage on the next parser step.
-fn parse_json_object(
+fn parse_json_object<H: RuntimeRef>(
     jiter: &mut Jiter<'_>,
     depth: usize,
-    cache: &mut JsonStringCache,
-    vm: &mut VM<'_>,
-) -> ParseResult<Value> {
+    cache: &mut JsonStringCache<H>,
+    vm: &mut VM<'_, H>,
+) -> ParseResult<Value<H>> {
     check_json_recursion_limit(jiter, depth)?;
 
     let Some(mut key) = parse_first_object_key(jiter)? else {

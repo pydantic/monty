@@ -17,12 +17,12 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::ExprLoc,
-    heap::HeapData,
+    heap::{HeapData, Reference, RuntimeRef},
     intern::StringId,
     resource_checks::check_repeat_size,
     string_builder::StringBuilder,
     types::{Complex, LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
-    value::Value,
+    value::{NoHeapRef, Value},
 };
 
 // ============================================================================
@@ -602,7 +602,11 @@ impl fmt::Display for FormatError {
 /// - Strings: `format_string`
 ///
 /// Returns a `ValueError` if the format type character is incompatible with the value type.
-pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>) -> Result<String, RunError> {
+pub fn format_with_spec<H: RuntimeRef>(
+    value: &Value<H>,
+    spec: &ParsedFormatSpec,
+    vm: &mut VM<'_, H>,
+) -> Result<String, RunError> {
     let value_type = value.py_type(vm);
 
     // Bool is an `int` subclass: every integer/float presentation applies to it
@@ -869,7 +873,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
 /// 5. `=` (sign-aware) alignment
 pub fn validate_string_spec(spec: &ParsedFormatSpec) -> Result<(), RunError> {
     if let Some(grouping) = spec.grouping {
-        validate_grouping(grouping, spec.type_char, Type::Str)?;
+        validate_grouping(grouping, spec.type_char, Type::<NoHeapRef>::Str)?;
     }
     if let Some(c) = spec.type_char
         && c != TypeChar::S
@@ -895,7 +899,7 @@ pub fn validate_string_spec(spec: &ParsedFormatSpec) -> Result<(), RunError> {
         .into());
     }
     if spec.alternate {
-        validate_alternate(spec.type_char, Type::Str)?;
+        validate_alternate(spec.type_char, Type::<NoHeapRef>::Str)?;
     }
     if spec.align == Some(Align::SignAware) {
         return Err(SimpleException::new_msg(
@@ -914,7 +918,11 @@ pub fn validate_string_spec(spec: &ParsedFormatSpec) -> Result<(), RunError> {
 /// allows the binary/octal/hex integer presentations (grouped in fours). For
 /// a type-less spec the presentation is taken from the value: numeric values
 /// permit grouping, everything else is string-formatted and reported as `s`.
-fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type: Type) -> Result<(), RunError> {
+fn validate_grouping<H: Reference>(
+    grouping: Grouping,
+    type_char: Option<TypeChar>,
+    value_type: Type<H>,
+) -> Result<(), RunError> {
     let allowed = match type_char {
         None => matches!(value_type, Type::Int | Type::Bool | Type::Float | Type::Complex),
         Some(TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper) => grouping == Grouping::Underscore,
@@ -946,7 +954,7 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
 /// (`e`/`E`/`f`/`F`/`g`/`G`/`%`) and `n` accept any real number (an `int` is
 /// widened to a float), and all but `%` a `complex` too; `s` needs a `str`; a
 /// type-less spec (`None`) is valid for every value (it falls back to `str()`).
-fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
+fn type_valid_for_value<H: RuntimeRef>(type_char: Option<TypeChar>, value_type: Type<H>) -> bool {
     let is_int = matches!(value_type, Type::Int | Type::Bool);
     let is_real = is_int || value_type == Type::Float;
     let is_num = is_real || value_type == Type::Complex;
@@ -976,7 +984,7 @@ fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
 /// but typed `int`) are included. A float or string with one of those codes is
 /// *not* an integer presentation — it's a type error handled at dispatch — so
 /// this returns false there, letting the "Unknown format code" message win.
-fn formats_as_integer(type_char: Option<TypeChar>, value_type: Type) -> bool {
+fn formats_as_integer<H: RuntimeRef>(type_char: Option<TypeChar>, value_type: Type<H>) -> bool {
     let int_value = matches!(value_type, Type::Int | Type::Bool);
     match type_char {
         // `n` selects the integer formatter for an int value (so precision is
@@ -996,7 +1004,7 @@ fn formats_as_integer(type_char: Option<TypeChar>, value_type: Type) -> bool {
 /// (an `int` is widened); `n` and a type-less spec do so only for an actual
 /// float or complex value. Used to gate the `z` (negative-zero coercion) flag,
 /// which is legal only for float presentations, and the `MAX_FLOAT_PRECISION` cap.
-fn formats_as_float(type_char: Option<TypeChar>, value_type: Type) -> bool {
+fn formats_as_float<H: RuntimeRef>(type_char: Option<TypeChar>, value_type: Type<H>) -> bool {
     match type_char {
         Some(
             TypeChar::E
@@ -1039,7 +1047,7 @@ fn spec_has_directives(spec: &ParsedFormatSpec) -> bool {
 /// integers and all float presentations, but is rejected for the character
 /// (`c`) and string (`s`) presentations — the latter also covers a type-less
 /// spec applied to a non-numeric value (which is string-formatted).
-fn validate_alternate(type_char: Option<TypeChar>, value_type: Type) -> Result<(), RunError> {
+fn validate_alternate<H: Reference>(type_char: Option<TypeChar>, value_type: Type<H>) -> Result<(), RunError> {
     let message = match type_char {
         Some(TypeChar::C) => Some("Alternate form (#) not allowed with integer format specifier 'c'"),
         Some(TypeChar::S) => Some("Alternate form (#) not allowed in string format specifier"),

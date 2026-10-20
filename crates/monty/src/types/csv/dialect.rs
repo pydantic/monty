@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, Reference, RuntimeRef},
     intern::StaticStrings,
     types::{CsvObject, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Value},
@@ -69,19 +69,34 @@ pub(crate) struct Dialect {
 
 /// The format parameters a call supplied explicitly; `None` means "not given", which is
 /// distinct from an explicit Python `None` (`quotechar=None` turns quoting off).
-#[derive(Debug, Default)]
-pub(crate) struct FmtParams {
-    pub(crate) delimiter: Option<Value>,
-    pub(crate) doublequote: Option<Value>,
-    pub(crate) escapechar: Option<Value>,
-    pub(crate) lineterminator: Option<Value>,
-    pub(crate) quotechar: Option<Value>,
-    pub(crate) quoting: Option<Value>,
-    pub(crate) skipinitialspace: Option<Value>,
-    pub(crate) strict: Option<Value>,
+#[derive(Debug)]
+pub(crate) struct FmtParams<H: Reference> {
+    pub(crate) delimiter: Option<Value<H>>,
+    pub(crate) doublequote: Option<Value<H>>,
+    pub(crate) escapechar: Option<Value<H>>,
+    pub(crate) lineterminator: Option<Value<H>>,
+    pub(crate) quotechar: Option<Value<H>>,
+    pub(crate) quoting: Option<Value<H>>,
+    pub(crate) skipinitialspace: Option<Value<H>>,
+    pub(crate) strict: Option<Value<H>>,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for FmtParams {
+impl<H: Reference> Default for FmtParams<H> {
+    fn default() -> Self {
+        Self {
+            delimiter: None,
+            doublequote: None,
+            escapechar: None,
+            lineterminator: None,
+            quotechar: None,
+            quoting: None,
+            skipinitialspace: None,
+            strict: None,
+        }
+    }
+}
+
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for FmtParams<H> {
     fn drop_with(self, ctx: &mut C) {
         self.delimiter.drop_with(ctx);
         self.doublequote.drop_with(ctx);
@@ -143,7 +158,11 @@ impl Dialect {
     ///
     /// `base` is the `dialect` argument: a registered name, a `_csv.Dialect`, or any other object
     /// whose attributes supply the parameters `params` leaves unset. Consumes `params` on every path.
-    pub(crate) fn resolve(base: Option<&Value>, params: FmtParams, vm: &mut VM<'_>) -> RunResult<Self> {
+    pub(crate) fn resolve<H: RuntimeRef>(
+        base: Option<&Value<H>>,
+        params: FmtParams<H>,
+        vm: &mut VM<'_, H>,
+    ) -> RunResult<Self> {
         let mut params_guard = DropGuard::new(params, vm);
         let (params, vm) = params_guard.as_parts_mut();
         let base = match base {
@@ -242,7 +261,7 @@ impl Dialect {
     }
 
     /// The value of a `_csv.Dialect` attribute, or `None` for a name that is not one.
-    pub(crate) fn attr(&self, attr: StaticStrings, vm: &VM<'_>) -> Option<Value> {
+    pub(crate) fn attr<H: RuntimeRef>(&self, attr: StaticStrings, vm: &VM<'_, H>) -> Option<Value<H>> {
         Some(match attr {
             StaticStrings::Delimiter => char_value(self.delimiter, vm),
             StaticStrings::Quotechar => self.quotechar.map_or(Value::None, |c| char_value(c, vm)),
@@ -258,22 +277,22 @@ impl Dialect {
 }
 
 /// A single-character `str` value.
-fn char_value(c: char, vm: &VM<'_>) -> Value {
+fn char_value<H: RuntimeRef>(c: char, vm: &VM<'_, H>) -> Value<H> {
     allocate_string(c.to_string(), vm.heap)
 }
 
 /// Where unset parameters come from: the defaults, a resolved dialect, or an
 /// arbitrary object's attributes (a user class with `delimiter = ';'`).
-enum Base<'a> {
+enum Base<'a, H: Reference> {
     Defaults,
     Dialect(Dialect),
-    Object(&'a Value),
+    Object(&'a Value<H>),
 }
 
-impl Base<'_> {
+impl<H: RuntimeRef> Base<'_, H> {
     /// The parameter to convert: `explicit` when given, else this base's value, else `None`
     /// for the default. The result is owned; the caller releases it.
-    fn take(&self, explicit: Option<Value>, attr: StaticStrings, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    fn take(&self, explicit: Option<Value<H>>, attr: StaticStrings, vm: &mut VM<'_, H>) -> RunResult<Option<Value<H>>> {
         if explicit.is_some() {
             return Ok(explicit);
         }
@@ -307,7 +326,7 @@ fn attr_name(attr: StaticStrings) -> &'static str {
 }
 
 /// `_set_char`: a one-character `str`.
-fn set_char(name: &str, value: Option<Value>, default: char, vm: &mut VM<'_>) -> RunResult<char> {
+fn set_char<H: RuntimeRef>(name: &str, value: Option<Value<H>>, default: char, vm: &mut VM<'_, H>) -> RunResult<char> {
     let Some(value) = value else {
         return Ok(default);
     };
@@ -317,11 +336,11 @@ fn set_char(name: &str, value: Option<Value>, default: char, vm: &mut VM<'_>) ->
 }
 
 /// `_set_char_or_none`: a one-character `str`, or `None` to unset.
-fn set_char_or_none(
+fn set_char_or_none<H: RuntimeRef>(
     name: &str,
-    value: Option<Value>,
+    value: Option<Value<H>>,
     default: Option<char>,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<Option<char>> {
     let Some(value) = value else {
         return Ok(default);
@@ -337,7 +356,7 @@ fn set_char_or_none(
 
 /// The character of a one-character `str`, with CPython's two wordings for a wrong
 /// type and a wrong length.
-fn single_char(name: &str, value: &Value, expected: &str, vm: &VM<'_>) -> RunResult<char> {
+fn single_char<H: RuntimeRef>(name: &str, value: &Value<H>, expected: &str, vm: &VM<'_, H>) -> RunResult<char> {
     if value.is_str(vm.heap) {
         let text = value.to_str(vm)?;
         let mut chars = text.chars();
@@ -357,7 +376,7 @@ fn single_char(name: &str, value: &Value, expected: &str, vm: &VM<'_>) -> RunRes
 }
 
 /// `_set_bool`: any value, through `bool()`.
-fn set_bool(value: Option<Value>, default: bool, vm: &mut VM<'_>) -> RunResult<bool> {
+fn set_bool<H: RuntimeRef>(value: Option<Value<H>>, default: bool, vm: &mut VM<'_, H>) -> RunResult<bool> {
     let Some(value) = value else {
         return Ok(default);
     };
@@ -367,7 +386,7 @@ fn set_bool(value: Option<Value>, default: bool, vm: &mut VM<'_>) -> RunResult<b
 }
 
 /// `_set_str`: any `str`.
-fn set_str(name: &str, value: Option<Value>, default: &str, vm: &mut VM<'_>) -> RunResult<String> {
+fn set_str<H: RuntimeRef>(name: &str, value: Option<Value<H>>, default: &str, vm: &mut VM<'_, H>) -> RunResult<String> {
     let Some(value) = value else {
         return Ok(default.to_owned());
     };
@@ -385,7 +404,7 @@ fn set_str(name: &str, value: Option<Value>, default: &str, vm: &mut VM<'_>) -> 
 
 /// `_set_int` plus `dialect_check_quoting`: an exact `int` naming a `QUOTE_*` constant.
 /// The conversion goes through a C `int`, so a value beyond it is an `OverflowError`.
-fn set_quoting(value: Option<Value>, vm: &mut VM<'_>) -> RunResult<Quoting> {
+fn set_quoting<H: RuntimeRef>(value: Option<Value<H>>, vm: &mut VM<'_, H>) -> RunResult<Quoting> {
     let Some(value) = value else {
         return Ok(Quoting::Minimal);
     };

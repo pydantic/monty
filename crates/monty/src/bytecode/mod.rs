@@ -15,6 +15,7 @@
 mod builder;
 mod code;
 mod compiler;
+mod constant;
 mod op;
 mod pattern;
 mod vm;

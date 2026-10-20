@@ -15,17 +15,17 @@ use crate::{
     bytecode::op::{MATCH_SHAPE_MAPPING, MATCH_SHAPE_MIN_LEN},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput, RuntimeRef},
     types::{
         Dict, PyTrait, Type, instance::class_name, set::set_element_hash, str::allocate_string, tuple::allocate_tuple,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, NoHeapRef, Value},
 };
 
 /// Builtin types whose class pattern with one positional sub-pattern matches
 /// the subject itself (`case int(x)`), CPython's `_Py_TPFLAGS_MATCH_SELF`.
 /// Subclasses inherit the flag, hence `defaultdict` and `Counter`.
-const SELF_MATCHING_TYPES: [Type; 12] = [
+const SELF_MATCHING_TYPES: [Type<NoHeapRef>; 12] = [
     Type::Bool,
     Type::Bytes,
     Type::Counter,
@@ -49,7 +49,7 @@ enum MatchArgs {
     Names(Vec<EitherStr>),
 }
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// `MatchShape`: pushes whether the subject on top of the stack is a
     /// sequence or mapping (per `flags`) of an acceptable length.
     ///
@@ -149,7 +149,7 @@ impl VM<'_> {
     /// A name already read by an earlier index is CPython's
     /// `TypeError: Cls() got multiple sub-patterns for attribute 'x'`, raised
     /// here rather than up front so a missing earlier attribute still wins.
-    pub(super) fn match_attr(&mut self, index: usize) -> Result<CallResult, RunError> {
+    pub(super) fn match_attr(&mut self, index: usize) -> Result<CallResult<H>, RunError> {
         let this = self;
         let len = this.stack.len();
         let subject = this.stack[len - 3].clone_with_heap(this.heap);
@@ -227,7 +227,11 @@ impl VM<'_> {
 /// `seen` set: a key equal to an earlier one is a `ValueError`, unless an
 /// earlier key was already found missing. Only keys with equal hashes are
 /// compared, so large distinct keys never cost a full `==` each.
-fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
+fn lookup_pattern_keys<H: RuntimeRef>(
+    subject: &Value<H>,
+    keys: &Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Option<Vec<Value<H>>>> {
     let (Value::Ref(subject_id), Value::Ref(keys_id)) = (subject, keys) else {
         return Ok(None);
     };
@@ -261,7 +265,7 @@ fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunRes
 
 /// Builds the `**rest` dict: a plain `dict` copy of `subject` with every key
 /// in the `keys` tuple removed.
-fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn build_rest_dict<H: RuntimeRef>(subject: &Value<H>, keys: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let (Value::Ref(subject_id), Value::Ref(keys_id)) = (subject, keys) else {
         unreachable!("MatchKeys rest mode runs after a successful mapping MatchShape")
     };
@@ -290,13 +294,13 @@ fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<
 
 /// The attribute names a class pattern reads, as `str` values (`None` for the
 /// subject itself), or `None` when the subject is not an instance of `cls`.
-fn class_pattern_names(
-    subject: &Value,
-    cls: &Value,
-    kwd_names: &Value,
+fn class_pattern_names<H: RuntimeRef>(
+    subject: &Value<H>,
+    cls: &Value<H>,
+    kwd_names: &Value<H>,
     nargs: usize,
-    vm: &mut VM<'_>,
-) -> RunResult<Option<Vec<Value>>> {
+    vm: &mut VM<'_, H>,
+) -> RunResult<Option<Vec<Value<H>>>> {
     if !is_class_object(cls, vm) {
         return Err(ExcType::type_error("called match pattern must be a class"));
     }
@@ -327,7 +331,7 @@ fn class_pattern_names(
 }
 
 /// Whether `value` is something `isinstance` accepts as a single class.
-fn is_class_object(value: &Value, vm: &VM<'_>) -> bool {
+fn is_class_object<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     match value {
         Value::Builtin(Builtins::Type(_) | Builtins::ExcType(_)) => true,
         Value::Ref(id) => matches!(
@@ -345,8 +349,8 @@ fn is_class_object(value: &Value, vm: &VM<'_>) -> bool {
 /// user or host class's come from its namespace and must be a tuple of strings
 /// (checked only as far as `nargs`, like CPython). Too many positional
 /// sub-patterns is reported before a bad element, as CPython does.
-fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<MatchArgs> {
-    let check_count = |allowed: usize, vm: &VM<'_>| {
+fn class_match_args<H: RuntimeRef>(cls: &Value<H>, nargs: usize, vm: &mut VM<'_, H>) -> RunResult<MatchArgs> {
+    let check_count = |allowed: usize, vm: &VM<'_, H>| {
         if allowed < nargs {
             Err(positional_count_error(cls, allowed, nargs, vm))
         } else {
@@ -355,7 +359,9 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
     };
     let Value::Ref(cls_id) = cls else {
         return match cls {
-            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(t) => {
+            Value::Builtin(Builtins::Type(t))
+                if t.copy_without_refs().is_some_and(|t| SELF_MATCHING_TYPES.contains(&t)) =>
+            {
                 check_count(1, vm).map(|()| MatchArgs::SelfMatch)
             }
             _ => check_count(0, vm).map(|()| MatchArgs::Names(Vec::new())),
@@ -406,7 +412,7 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
 }
 
 /// An attribute name as a `str` value for the `MatchClass` names tuple.
-fn either_str_value(name: &EitherStr, heap: &Heap) -> Value {
+fn either_str_value<H: RuntimeRef>(name: &EitherStr, heap: &Heap<H>) -> Value<H> {
     match name {
         EitherStr::Interned(id) => Value::InternString(*id),
         EitherStr::Heap(text) => allocate_string(text.clone(), heap),
@@ -414,14 +420,14 @@ fn either_str_value(name: &EitherStr, heap: &Heap) -> Value {
 }
 
 /// `TypeError: Foo.__match_args__ must be a tuple (got list)`.
-fn match_args_type_error(cls: &Value, match_args: &Value, vm: &VM<'_>) -> RunError {
+fn match_args_type_error<H: RuntimeRef>(cls: &Value<H>, match_args: &Value<H>, vm: &VM<'_, H>) -> RunError {
     let class = class_pattern_name(cls, vm);
     let type_name = match_args.py_type_name(vm);
     ExcType::type_error(format!("{class}.__match_args__ must be a tuple (got {type_name})"))
 }
 
 /// `TypeError: Foo() accepts 2 positional sub-patterns (3 given)`.
-fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>) -> RunError {
+fn positional_count_error<H: RuntimeRef>(cls: &Value<H>, allowed: usize, given: usize, vm: &VM<'_, H>) -> RunError {
     let class = class_pattern_name(cls, vm);
     let plural = if allowed == 1 { "" } else { "s" };
     ExcType::type_error(format!(
@@ -430,7 +436,7 @@ fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>
 }
 
 /// The class's `__name__`, as CPython's class pattern errors spell it.
-fn class_pattern_name(cls: &Value, vm: &VM<'_>) -> String {
+fn class_pattern_name<H: RuntimeRef>(cls: &Value<H>, vm: &VM<'_, H>) -> String {
     match cls {
         Value::Builtin(Builtins::Type(t)) => t.dunder_name(vm.heap, vm.interns).into_owned(),
         Value::Builtin(Builtins::ExcType(exc_type)) => {

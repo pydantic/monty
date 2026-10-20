@@ -5,12 +5,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bytecode::VM,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapReadMut},
+    heap::{DropWithContext, HeapReadMut, Reference, RuntimeRef},
     predicate::call_predicate,
     types::itertools::{ItertoolsIter, step::next_tested},
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields items from `source` until `predicate` first returns false.
 ///
 /// Both fields go `None` together at that point, which latches the adaptor as
@@ -19,14 +20,14 @@ use crate::{
 /// is the last thing either value ever sees. A source that merely runs out is
 /// not a rejection and does not latch, so both stay `Some`.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct TakeWhile {
-    predicate: Option<Value>,
-    source: Option<Value>,
+pub(crate) struct TakeWhile<H: Reference> {
+    predicate: Option<Value<H>>,
+    source: Option<Value<H>>,
 }
 
-impl TakeWhile {
+impl<H: RuntimeRef> TakeWhile<H> {
     /// Takes ownership of both, with `source` already resolved by `py_iter`.
-    pub(crate) fn new(predicate: Value, source: Value) -> Self {
+    pub(crate) fn new(predicate: Value<H>, source: Value<H>) -> Self {
         Self {
             predicate: Some(predicate),
             source: Some(source),
@@ -34,7 +35,7 @@ impl TakeWhile {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Some(Value::Ref(id)) = &self.predicate {
             on_child(*id);
         }
@@ -44,7 +45,7 @@ impl TakeWhile {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if let Some(predicate) = &mut self.predicate {
             predicate.py_dec_ref_ids(stack);
         }
@@ -56,7 +57,10 @@ impl TakeWhile {
 
 /// Pulls one item and yields it if the predicate holds, latching on the first
 /// rejection so nothing after it is examined.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let ItertoolsIter::TakeWhile(take) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::TakeWhile")
     };
@@ -93,7 +97,7 @@ pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
 /// Releasing both here rather than at destruction lets whatever the source
 /// holds (a generator's frame, a file) be reclaimed as soon as the run ends,
 /// matching what `pairwise` and `islice` do when they stop.
-fn finish<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) {
+fn finish<'h, H: RuntimeRef>(iter: &HeapReadMut<'h, ItertoolsIter<H>>, vm: &mut VM<'h, H>) {
     let ItertoolsIter::TakeWhile(take) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::TakeWhile")
     };

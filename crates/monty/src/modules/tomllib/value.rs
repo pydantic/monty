@@ -18,14 +18,14 @@ use crate::{
     bytecode::VM,
     defer_drop_mut,
     exception_private::RunResult,
-    heap::{ContainsHeap, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropWithContext, HeapData, Reference, RuntimeRef},
     types::{Dict, List, LongInt, TimeZone, date, datetime, str::allocate_string, time},
     value::{VALUE_SIZE, Value},
 };
 
 /// Converts the document's root table into the dict `tomllib.loads()` returns.
-pub(super) fn table_into_value(table: TomlTable, vm: &mut VM<'_>) -> RunResult<Value> {
-    let stack: Vec<Frame> = Vec::new();
+pub(super) fn table_into_value<H: RuntimeRef>(table: TomlTable, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
+    let stack: Vec<Frame<H>> = Vec::new();
     defer_drop_mut!(stack, vm);
     let mut next = Step::Convert(TomlValue::Table(table));
     loop {
@@ -80,22 +80,22 @@ enum Step {
 }
 
 /// A container whose children are still being converted.
-enum Frame {
+enum Frame<H: Reference> {
     List {
         items: vec::IntoIter<TomlValue>,
-        values: Vec<Value>,
+        values: Vec<Value<H>>,
     },
     Dict {
         entries: map::IntoIter<String, TomlValue>,
-        dict: Dict,
+        dict: Dict<H>,
         /// The key allocated for the child currently being converted.
-        pending_key: Option<Value>,
+        pending_key: Option<Value<H>>,
     },
 }
 
-impl Frame {
+impl<H: RuntimeRef> Frame<H> {
     /// Opens a frame for a container node, or converts a scalar in place.
-    fn open(node: TomlValue, vm: &mut VM<'_>) -> RunResult<Result<Self, Value>> {
+    fn open(node: TomlValue, vm: &mut VM<'_, H>) -> RunResult<Result<Self, Value<H>>> {
         let scalar = match node {
             TomlValue::Array(items) => {
                 vm.heap.tracker.check_allocation(items.len() * VALUE_SIZE)?;
@@ -135,7 +135,7 @@ impl Frame {
     }
 
     /// Stores a converted child. Table keys are unique, so no entry is replaced.
-    fn store(&mut self, value: Value, vm: &mut VM<'_>) -> RunResult<()> {
+    fn store(&mut self, value: Value<H>, vm: &mut VM<'_, H>) -> RunResult<()> {
         match self {
             Self::List { values, .. } => values.push(value),
             Self::Dict { dict, pending_key, .. } => {
@@ -151,7 +151,7 @@ impl Frame {
     }
 
     /// Allocates the heap object for a frame whose children are all stored.
-    fn finish(frame: Option<Self>, vm: &mut VM<'_>) -> Value {
+    fn finish(frame: Option<Self>, vm: &mut VM<'_, H>) -> Value<H> {
         match frame.expect("Descend follows a push") {
             Self::List { values, .. } => Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))),
             Self::Dict { dict, .. } => Value::Ref(vm.heap.allocate(HeapData::Dict(dict))),
@@ -159,7 +159,7 @@ impl Frame {
     }
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Frame {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Frame<H> {
     fn drop_with(self, ctx: &mut C) {
         match self {
             Self::List { values, .. } => values.drop_with(ctx),
@@ -172,7 +172,12 @@ impl<C: ContainsHeap> DropWithContext<C> for Frame {
 }
 
 /// A `datetime`, aware when the document gave an offset (`Z` is UTC).
-fn allocate_datetime(date: TomlDate, time: TomlTime, offset_seconds: Option<i32>, vm: &mut VM<'_>) -> RunResult<Value> {
+fn allocate_datetime<H: RuntimeRef>(
+    date: TomlDate,
+    time: TomlTime,
+    offset_seconds: Option<i32>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     // The regex bounds offsets to ±23:59, inside `timezone()`'s open ±24h range.
     let tzinfo = offset_seconds.map(|seconds| TimeZone::new(seconds, None)).transpose()?;
     let datetime = datetime::from_components(

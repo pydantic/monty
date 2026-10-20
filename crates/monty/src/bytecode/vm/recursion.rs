@@ -21,9 +21,9 @@ use std::ops::{Deref, DerefMut};
 use monty_types::ResourceError;
 
 use super::VM;
-use crate::heap::{ContainsHeap, DropWithContext};
+use crate::heap::{ContainsHeap, DropWithContext, RuntimeRef};
 
-impl<'h> VM<'h> {
+impl<'h, H: RuntimeRef> VM<'h, H> {
     /// Enters a lexically-scoped recursive operation, returning a guard that
     /// releases the depth level when dropped.
     ///
@@ -36,7 +36,7 @@ impl<'h> VM<'h> {
     /// ```
     ///
     /// Returns `Err(ResourceError::Recursion)` if the limit would be exceeded.
-    pub(crate) fn recursion_guard(&mut self) -> Result<RecursionGuard<'_, 'h>, ResourceError> {
+    pub(crate) fn recursion_guard(&mut self) -> Result<RecursionGuard<'_, 'h, H>, ResourceError> {
         self.incr_recursion()?;
         Ok(RecursionGuard { vm: self })
     }
@@ -74,24 +74,24 @@ impl<'h> VM<'h> {
 ///
 /// Derefs to the [`VM`] so recursive operations run through the guard; the
 /// reserved level is released when the guard is dropped on any code path.
-pub(crate) struct RecursionGuard<'a, 'h> {
-    vm: &'a mut VM<'h>,
+pub(crate) struct RecursionGuard<'a, 'h, H: RuntimeRef> {
+    vm: &'a mut VM<'h, H>,
 }
 
-impl<'h> Deref for RecursionGuard<'_, 'h> {
-    type Target = VM<'h>;
+impl<'h, H: RuntimeRef> Deref for RecursionGuard<'_, 'h, H> {
+    type Target = VM<'h, H>;
     fn deref(&self) -> &Self::Target {
         self.vm
     }
 }
 
-impl DerefMut for RecursionGuard<'_, '_> {
+impl<H: RuntimeRef> DerefMut for RecursionGuard<'_, '_, H> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.vm
     }
 }
 
-impl Drop for RecursionGuard<'_, '_> {
+impl<H: RuntimeRef> Drop for RecursionGuard<'_, '_, H> {
     fn drop(&mut self) {
         self.vm.decr_recursion();
     }
@@ -113,7 +113,7 @@ impl Drop for RecursionGuard<'_, '_> {
 // TODO set this value to custom values per-OS/arch
 pub(crate) const MAX_RUN_REENTRY_DEPTH: u8 = 12;
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// Charges one native re-entry level, counting the remaining budget down
     /// from [`MAX_RUN_REENTRY_DEPTH`]; errors when it's exhausted. Pair with
     /// [`RunReentryGuard::new`] to release the level on every exit path.
@@ -160,35 +160,35 @@ impl VM<'_> {
 /// Dropping it also restores `instruction_ip`: the nested run leaves it on the
 /// next instruction, and a suspension the outer instruction makes afterwards
 /// must report the outer instruction's position.
-pub(crate) struct RunReentryGuard<'a, 'h> {
-    vm: &'a mut VM<'h>,
+pub(crate) struct RunReentryGuard<'a, 'h, H: RuntimeRef> {
+    vm: &'a mut VM<'h, H>,
     /// The outer instruction's `instruction_ip`, restored on drop.
     instruction_ip: usize,
 }
 
-impl<'a, 'h> RunReentryGuard<'a, 'h> {
+impl<'a, 'h, H: RuntimeRef> RunReentryGuard<'a, 'h, H> {
     /// Wraps a re-entry level already charged by a prior
     /// [`VM::enter_run_reentry`] call.
-    pub(crate) fn new(vm: &'a mut VM<'h>) -> Self {
+    pub(crate) fn new(vm: &'a mut VM<'h, H>) -> Self {
         let instruction_ip = vm.instruction_ip;
         Self { vm, instruction_ip }
     }
 }
 
-impl<'h> Deref for RunReentryGuard<'_, 'h> {
-    type Target = VM<'h>;
+impl<'h, H: RuntimeRef> Deref for RunReentryGuard<'_, 'h, H> {
+    type Target = VM<'h, H>;
     fn deref(&self) -> &Self::Target {
         self.vm
     }
 }
 
-impl DerefMut for RunReentryGuard<'_, '_> {
+impl<H: RuntimeRef> DerefMut for RunReentryGuard<'_, '_, H> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.vm
     }
 }
 
-impl Drop for RunReentryGuard<'_, '_> {
+impl<H: RuntimeRef> Drop for RunReentryGuard<'_, '_, H> {
     fn drop(&mut self) {
         self.vm.instruction_ip = self.instruction_ip;
         self.vm.release_run_reentry();
@@ -211,11 +211,11 @@ pub(crate) struct RecursionToken(());
 /// counter — e.g. dropping a [`RecursionToken`] — while a wrapper like the encoder
 /// stays borrowable through the same handle. Because `ContainsVM: ContainsHeap`,
 /// such a context can still drop plain heap fields via `drop_with(ctx)`.
-pub(crate) trait ContainsVM<'h>: ContainsHeap {
-    fn vm(&mut self) -> &mut VM<'h>;
+pub(crate) trait ContainsVM<'h>: ContainsHeap<Ref: 'h> {
+    fn vm(&mut self) -> &mut VM<'h, Self::Ref>;
 }
 
-impl<'h> ContainsVM<'h> for VM<'h> {
+impl<'h, H: RuntimeRef> ContainsVM<'h> for VM<'h, H> {
     fn vm(&mut self) -> &mut Self {
         self
     }

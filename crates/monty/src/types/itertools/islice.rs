@@ -6,20 +6,21 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapReadMut},
+    heap::{DropWithContext, HeapReadMut, Reference, RuntimeRef},
     types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields the items of `source` at positions `start, start+step, …` below `stop`.
 ///
 /// Mirrors CPython's `isliceobject`: skipped items are discarded as they are
 /// pulled rather than buffered.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Islice {
+pub(crate) struct Islice<H: Reference> {
     /// The iterator being sliced; `None` once the source or `stop` is reached,
     /// which both latches the adaptor as spent and releases the source.
-    source: Option<Value>,
+    source: Option<Value<H>>,
     /// How many items have been pulled from `source` so far.
     consumed: usize,
     /// Position, in source order, of the item to yield next.
@@ -30,10 +31,10 @@ pub(crate) struct Islice {
     step: usize,
 }
 
-impl Islice {
+impl<H: RuntimeRef> Islice<H> {
     /// `start` seeds `next_index` so leading items are skipped on the first
     /// step: CPython does not touch the iterator until the first `next()`.
-    pub(crate) fn new(source: Value, start: usize, stop: Option<usize>, step: usize) -> Self {
+    pub(crate) fn new(source: Value<H>, start: usize, stop: Option<usize>, step: usize) -> Self {
         Self {
             source: Some(source),
             consumed: 0,
@@ -44,14 +45,14 @@ impl Islice {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Some(Value::Ref(id)) = &self.source {
             on_child(*id);
         }
     }
 
     /// Releases the ref this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if let Some(source) = &mut self.source {
             source.py_dec_ref_ids(stack);
         }
@@ -60,7 +61,10 @@ impl Islice {
 
 /// Discards items up to `next_index`, yields the one there, then advances by
 /// `step` — the shape of CPython's `islice_next`.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let mut steps = 0usize;
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a
@@ -116,7 +120,7 @@ pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
 /// source holds be reclaimed now rather than at destruction.
 ///
 /// Idempotent, so the two exits in `next` can share it.
-fn finish<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) {
+fn finish<'h, H: RuntimeRef>(iter: &HeapReadMut<'h, ItertoolsIter<H>>, vm: &mut VM<'h, H>) {
     let ItertoolsIter::Islice(islice) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Islice")
     };

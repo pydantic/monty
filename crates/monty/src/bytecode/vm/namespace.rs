@@ -13,23 +13,25 @@ use super::{CallFrame, VM};
 use crate::{
     bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput, Reference, RuntimeRef},
     intern::{CompileInterns, FunctionId, StringId},
     prepare::SnippetNames,
     types::Dict,
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Where a frame's global names live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum FrameGlobals {
+pub(crate) enum FrameGlobals<H: Reference> {
     /// The module's dense `VM::globals` array, addressed by slot.
     Slots,
     /// An explicit `exec()` / `eval()` globals dict, addressed by name. The
     /// frame owns a reference to it.
-    Dict(HeapId),
+    Dict(H),
 }
 
+#[derive(monty_macros::Relocate)]
 /// The namespaces a frame resolves names through, for the frames that need
 /// any: an ordinary frame (locals in stack slots, globals in `VM::globals`)
 /// carries `None`, so the common case costs one null pointer.
@@ -38,27 +40,27 @@ pub(crate) enum FrameGlobals {
 /// `VM::cleanup_frame_state`, or handed to a serialized frame by
 /// `CallFrame::serialize`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum FrameNamespace {
+pub(crate) enum FrameNamespace<H: Reference> {
     /// A function or class body defined under an explicit globals dict: locals
     /// in stack slots, globals looked up by name in `globals`.
     Function {
         /// The `exec()` / `eval()` globals dict the function was defined under.
-        globals: HeapId,
+        globals: H,
     },
     /// The top-level frame of an `eval()` / `exec()` snippet: names are looked
     /// up at runtime through `locals` (when present) and then `globals`.
     Snippet {
         /// Where the snippet's globals live.
-        globals: FrameGlobals,
+        globals: FrameGlobals<H>,
         /// The snippet's locals dict, if it runs with one distinct from its globals.
-        locals: Option<HeapId>,
+        locals: Option<H>,
     },
 }
 
-impl FrameNamespace {
+impl<H: RuntimeRef> FrameNamespace<H> {
     /// The globals dict a function created in this frame must carry, so its
     /// own frames resolve globals the same way; `None` for slot globals.
-    pub(crate) fn dict_globals(&self) -> Option<HeapId> {
+    pub(crate) fn dict_globals(&self) -> Option<H> {
         match self {
             Self::Snippet {
                 globals: FrameGlobals::Slots,
@@ -76,14 +78,17 @@ impl FrameNamespace {
 /// The namespace for a frame of a function that carries `globals`: an owned
 /// reference to the dict (inc_ref'd here), or `None` for slot globals.
 #[inline]
-pub(crate) fn function_namespace(globals: Option<HeapId>, heap: &impl ContainsHeap) -> Option<Box<FrameNamespace>> {
+pub(crate) fn function_namespace<H: RuntimeRef>(
+    globals: Option<H>,
+    heap: &impl ContainsHeap<Ref = H>,
+) -> Option<Box<FrameNamespace<H>>> {
     globals.map(|globals| {
         heap.heap().inc_ref(globals);
         Box::new(FrameNamespace::Function { globals })
     })
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H, Ref = H>> DropWithContext<C> for Box<FrameNamespace<H>> {
     fn drop_with(self, ctx: &mut C) {
         match *self {
             FrameNamespace::Function { globals } => ctx.heap_mut().dec_ref(globals),
@@ -99,7 +104,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
     }
 }
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// The namespace an `eval()` / `exec()` snippet runs in, from the call's
     /// `globals` / `locals` dicts (owned references, or `None`), and the mode
     /// its top level compiles in.
@@ -111,9 +116,9 @@ impl VM<'_> {
     /// (PEP 667), a module frame nothing.
     pub(crate) fn snippet_namespace(
         &mut self,
-        globals: Option<HeapId>,
-        locals: Option<HeapId>,
-    ) -> RunResult<(SnippetNames, Box<FrameNamespace>)> {
+        globals: Option<H>,
+        locals: Option<H>,
+    ) -> RunResult<(SnippetNames, Box<FrameNamespace<H>>)> {
         let (globals, locals) = match globals {
             Some(dict) => (FrameGlobals::Dict(dict), locals),
             None => match self.current_frame.namespace.as_deref() {
@@ -168,7 +173,7 @@ impl VM<'_> {
         &mut self,
         func_id: FunctionId,
         overlay: CompileInterns<'_>,
-        namespace: Box<FrameNamespace>,
+        namespace: Box<FrameNamespace<H>>,
     ) -> RunResult<()> {
         let mut namespace_guard = DropGuard::new(namespace, self);
         let (_, vm) = namespace_guard.as_parts_mut();
@@ -197,7 +202,7 @@ impl VM<'_> {
     /// A snippet with a locals dict returns that dict itself; one that runs
     /// straight in a globals dict returns the dict. Every other frame gets a
     /// snapshot: named stack slots for a function, bound slots for a module.
-    pub(crate) fn locals_dict(&mut self) -> RunResult<Value> {
+    pub(crate) fn locals_dict(&mut self) -> RunResult<Value<H>> {
         let dict_id = match self.current_frame.namespace.as_deref() {
             Some(
                 FrameNamespace::Snippet { locals: Some(dict), .. }
@@ -222,7 +227,7 @@ impl VM<'_> {
     }
 
     /// A fresh dict of the bound module globals, for `locals()` at module scope.
-    fn snapshot_globals(&mut self) -> RunResult<HeapId> {
+    fn snapshot_globals(&mut self) -> RunResult<H> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         // Owned by the guard until every entry is in, so a failed insert frees it.
         let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
@@ -245,7 +250,7 @@ impl VM<'_> {
     /// dunders and the host `NameLookup` suspension behave exactly as for
     /// compiled code. Dict globals see the dict and builtins only: CPython
     /// resolves nothing else for `exec(src, {})`.
-    pub(super) fn load_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<Option<FrameExit>> {
+    pub(super) fn load_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<Option<FrameExit<H>>> {
         let (globals, locals) = self.frame_namespace();
         if flags & NAME_GLOBAL_ONLY == 0
             && let Some(locals) = locals
@@ -307,7 +312,7 @@ impl VM<'_> {
     /// (PEP 667 semantics — writes to the dict never reach the frame).
     ///
     /// Returns an owned reference to the new dict.
-    pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
+    pub(crate) fn snapshot_locals(&mut self) -> RunResult<H> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         // Owned by the guard until every entry is in, so a failed insert frees it.
         let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
@@ -352,7 +357,7 @@ impl VM<'_> {
     }
 
     /// Stores one `locals()` entry, skipping unbound slots.
-    fn snapshot_entry(&mut self, dict_id: HeapId, name_id: StringId, value: Value) -> RunResult<()> {
+    fn snapshot_entry(&mut self, dict_id: H, name_id: StringId, value: Value<H>) -> RunResult<()> {
         if matches!(value, Value::Undefined) {
             Ok(())
         } else {
@@ -363,7 +368,7 @@ impl VM<'_> {
     /// The globals and locals the current frame resolves names through.
     ///
     /// A frame with no namespace resolves like compiled module code.
-    fn frame_namespace(&self) -> (FrameGlobals, Option<HeapId>) {
+    fn frame_namespace(&self) -> (FrameGlobals<H>, Option<H>) {
         match self.current_frame.namespace.as_deref() {
             None => (FrameGlobals::Slots, None),
             Some(FrameNamespace::Function { globals }) => (FrameGlobals::Dict(*globals), None),
@@ -372,7 +377,7 @@ impl VM<'_> {
     }
 
     /// Looks `name_id` up in a namespace dict, returning an owned value.
-    fn namespace_get(&mut self, dict_id: HeapId, name_id: StringId) -> RunResult<Option<Value>> {
+    fn namespace_get(&mut self, dict_id: H, name_id: StringId) -> RunResult<Option<Value<H>>> {
         let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             return Err(RunError::internal("namespace is not a dict"));
         };
@@ -380,7 +385,7 @@ impl VM<'_> {
     }
 
     /// Binds `name_id` to `value` in a namespace dict, releasing any old value.
-    fn namespace_set(&mut self, dict_id: HeapId, name_id: StringId, value: Value) -> RunResult<()> {
+    fn namespace_set(&mut self, dict_id: H, name_id: StringId, value: Value<H>) -> RunResult<()> {
         let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             value.drop_with(self);
             return Err(RunError::internal("namespace is not a dict"));
@@ -391,7 +396,7 @@ impl VM<'_> {
     }
 
     /// Removes `name_id` from a namespace dict; `false` if it was not bound.
-    fn namespace_pop(&mut self, dict_id: HeapId, name_id: StringId) -> RunResult<bool> {
+    fn namespace_pop(&mut self, dict_id: H, name_id: StringId) -> RunResult<bool> {
         let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             return Err(RunError::internal("namespace is not a dict"));
         };

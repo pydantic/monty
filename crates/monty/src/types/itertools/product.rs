@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bytecode::VM,
-    heap::{HeapId, HeapReadMut},
+    heap::{HeapReadMut, Reference, RuntimeRef},
     types::{
         TupleVec, allocate_tuple,
         itertools::{
@@ -15,6 +15,7 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields one tuple per element of the product, rightmost slot fastest.
 ///
 /// `repeat` is applied by indexing rather than by copying the pools: result
@@ -22,22 +23,22 @@ use crate::{
 /// costs its index vector and nothing more up front. CPython shares the pool
 /// tuples between slots for the same reason.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Product {
+pub(crate) struct Product<H: Reference> {
     /// The argument iterables, each collected up front.
-    pools: Vec<Vec<Value>>,
+    pools: Vec<Vec<Value<H>>>,
     /// One position per result slot — `pools.len() * repeat` of them; empty
     /// once `Done` from the start.
     indices: Vec<usize>,
     phase: Phase,
 }
 
-impl Product {
+impl<H: RuntimeRef> Product<H> {
     /// Takes the collected pools and the result width `call_product` checked.
     ///
     /// `slots` is `pools.len() * repeat`, passed in rather than recomputed
     /// here: the caller is where that product is proved to be in range, and a
     /// second multiplication would be a second chance to overflow.
-    pub(crate) fn new(pools: Vec<Vec<Value>>, slots: usize) -> Self {
+    pub(crate) fn new(pools: Vec<Vec<Value<H>>>, slots: usize) -> Self {
         debug_assert!(
             slots == 0 || slots >= pools.len(),
             "slots must be a whole number of rounds"
@@ -53,14 +54,14 @@ impl Product {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for pool in &self.pools {
             pool_child_ids(pool, &mut on_child);
         }
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         for pool in &mut self.pools {
             pool_dec_ref_ids(pool, stack);
         }
@@ -96,7 +97,10 @@ impl Product {
 }
 
 /// Steps the indices and gathers one item per slot from its pool.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> Option<Value> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> Option<Value<H>> {
     let ItertoolsIter::Product(product) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Product")
     };
@@ -107,7 +111,7 @@ pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
         unreachable!("dispatched on Kind::Product")
     };
     let width = product.pools.len();
-    let items: TupleVec = product
+    let items: TupleVec<H> = product
         .indices
         .iter()
         .enumerate()

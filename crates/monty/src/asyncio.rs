@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 
 use crate::{
     exception_private::RunError,
-    heap::{ContainsHeap, DropWithContext, HeapId},
+    heap::{ContainsHeap, DropWithContext, Reference, RuntimeRef},
     intern::FunctionId,
     value::Value,
 };
@@ -72,6 +72,7 @@ pub(crate) enum CoroutineState {
     Completed,
 }
 
+#[derive(monty_macros::Relocate)]
 /// A coroutine object representing an async function call result.
 ///
 /// Created when an `async def` function is called. Argument binding happens at call time;
@@ -91,26 +92,26 @@ pub(crate) enum CoroutineState {
 /// When the coroutine is awaited, these values are pushed onto the VM's stack
 /// as inline locals, and a new frame is pushed to execute the async function body.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Coroutine {
+pub(crate) struct Coroutine<H: Reference> {
     /// The async function to execute.
     pub func_id: FunctionId,
     /// Pre-bound namespace values (sized to function namespace).
     /// Contains bound parameters, captured cells, and uninitialized locals.
-    pub namespace: Vec<Value>,
+    pub namespace: Vec<Value<H>>,
     /// Current execution state.
     pub state: CoroutineState,
     /// Owned reference to the `exec()` / `eval()` globals dict the async
     /// function was defined under; `None` when its globals are module slots.
-    pub globals: Option<HeapId>,
+    pub globals: Option<H>,
 }
-impl Coroutine {
+impl<H: RuntimeRef> Coroutine<H> {
     /// Creates a new coroutine for an async function call.
     ///
     /// # Arguments
     /// * `func_id` - The async function to execute
     /// * `namespace` - Pre-bound namespace with parameters and captured variables
     /// * `globals` - The function's globals dict, already inc_ref'd for this coroutine
-    pub fn new(func_id: FunctionId, namespace: Vec<Value>, globals: Option<HeapId>) -> Self {
+    pub fn new(func_id: FunctionId, namespace: Vec<Value<H>>, globals: Option<H>) -> Self {
         Self {
             func_id,
             namespace,
@@ -120,6 +121,7 @@ impl Coroutine {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// An external future driven by the host.
 ///
 /// Created when the host returns `ExtFunctionResult::Future(call_id)` in
@@ -137,34 +139,35 @@ impl Coroutine {
 /// multi-awaiter on `Pending` is a planned follow-up that needs the same
 /// wake/raise plumbing as multi-waiter gathers.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ExternalFuture {
+pub(crate) struct ExternalFuture<H: Reference> {
     /// Host-side identifier. Used by the scheduler's `CallId -> HeapId`
     /// index so host resolutions can find the heap entry.
     pub call_id: CallId,
     /// Current state.
-    pub state: ExternalFutureState,
+    pub state: ExternalFutureState<H>,
     /// `asyncio.sleep(delay, result)`: the value to resolve with in place of
     /// the host's, which is only the wake-up signal. Owned; taken on
     /// resolution and released on failure or when the entry is freed.
-    pub sleep_result: Option<Value>,
+    pub sleep_result: Option<Value<H>>,
 }
 
+#[derive(monty_macros::Relocate)]
 /// State machine for [`ExternalFuture`].
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum ExternalFutureState {
+pub(crate) enum ExternalFutureState<H: Reference> {
     /// Awaiting host resolution. `awaiter` is the downstream that should be
     /// notified on resolution; `None` until someone awaits, `Some(...)` for
     /// the lifetime of the await.
-    Pending { awaiter: Option<Awaiter> },
+    Pending { awaiter: Option<Awaiter<H>> },
     /// Resolved with a value. Re-awaits clone this Value.
-    Resolved(Value),
+    Resolved(Value<H>),
     /// Rejected with an error. Re-awaits replay (clone) this error.
     Failed(RunError),
 }
 
-impl ExternalFuture {
+impl<H: RuntimeRef> ExternalFuture<H> {
     /// Creates a new `ExternalFuture` in the `Pending` state with no awaiter.
-    pub fn new_pending(call_id: CallId, sleep_result: Option<Value>) -> Self {
+    pub fn new_pending(call_id: CallId, sleep_result: Option<Value<H>>) -> Self {
         Self {
             call_id,
             state: ExternalFutureState::Pending { awaiter: None },
@@ -173,6 +176,7 @@ impl ExternalFuture {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// Where the result/error of a completing awaitable should be routed.
 ///
 /// Stored as the "downstream" of an awaitable.
@@ -198,12 +202,12 @@ impl ExternalFuture {
 /// duplication to go through `clone_with_heap` and every discard to go
 /// through `drop_with`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Awaiter {
+pub(crate) enum Awaiter<H: Reference> {
     Task(TaskId),
-    GatherSlot { gather: HeapId, source: HeapId },
+    GatherSlot { gather: H, source: H },
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Awaiter<H> {
     fn drop_with(self, heap: &mut C) {
         if let Self::GatherSlot { gather, .. } = self {
             heap.heap_mut().dec_ref(gather);
@@ -211,6 +215,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// A gather() result tracking multiple coroutines/tasks and external futures.
 ///
 /// Created by `asyncio.gather(*awaitables)`. Does NOT spawn tasks immediately -
@@ -246,7 +251,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
 /// driving it to completion) is currently rejected; supporting that would
 /// require a list of waiters and is left as future work.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct GatherFuture {
+pub(crate) struct GatherFuture<H: Reference> {
     /// Heap ids of items to gather. Each id points to an awaitable
     /// `HeapData` entry (currently `Coroutine` or `ExternalFuture`); the
     /// kind is recovered with `heap.read(id)` at gather-await time.
@@ -254,23 +259,24 @@ pub(crate) struct GatherFuture {
     /// Set once at construction and never mutated. The gather inc_refs each
     /// id and is the owner until drop, so GC must always walk this vector
     /// regardless of `state`.
-    pub items: Vec<HeapId>,
+    pub items: Vec<H>,
     /// Phase of the gather lifecycle. See [`GatherState`].
-    pub state: GatherState,
+    pub state: GatherState<H>,
 }
 
+#[derive(monty_macros::Relocate)]
 /// Lifecycle phase of a [`GatherFuture`].
 ///
 /// See the `GatherFuture` docs for the transition rules.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum GatherState {
+pub(crate) enum GatherState<H: Reference> {
     /// Created but never awaited. No spawned tasks, no results, no waiter.
     Pending,
     /// Currently being awaited. `AwaitedGather` carries every per-await field.
-    Awaited(AwaitedGather),
+    Awaited(AwaitedGather<H>),
     /// All children completed successfully. Re-awaiting the gather inc_refs this
     /// value and returns it.
-    Completed(Value),
+    Completed(Value<H>),
     /// A child task failed (or an external future was rejected). The error
     /// is cached so subsequent awaits re-raise it. `RunError` implements
     /// `Clone`; clone the error when transitioning into this state.
@@ -283,8 +289,9 @@ pub(crate) enum GatherState {
 /// Keyed by the child's own `HeapId` (coroutine, external future or nested
 /// gather), which is how every resolution site addresses its parent's slots.
 /// Duplicates from `gather(c, c)` share one entry with several indices.
-pub(crate) type PendingChildren = AHashMap<HeapId, SmallVec<[usize; 1]>>;
+pub(crate) type PendingChildren<H> = AHashMap<H, SmallVec<[usize; 1]>>;
 
+#[derive(monty_macros::Relocate)]
 /// Per-await bookkeeping for a [`GatherFuture`] in the `Awaited` phase.
 ///
 /// All fields are populated when the gather is first awaited (in
@@ -295,30 +302,30 @@ pub(crate) type PendingChildren = AHashMap<HeapId, SmallVec<[usize; 1]>>;
 /// entry is removed as the corresponding child resolves, and the gather is
 /// done when both maps are empty.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct AwaitedGather {
+pub(crate) struct AwaitedGather<H: Reference> {
     /// Downstream the gather should notify on completion. `Awaiter::Task(t)`
     /// is the user-level `await gather` case (waker is the task that ran
     /// the `await`); `Awaiter::GatherSlot { .. }` is the nested-gather case
     /// (this gather is an item of an outer gather, and its result list
     /// fans into the outer's slot). Single-waiter for now; the multi-waiter
     /// form is a planned follow-up.
-    pub awaiter: Awaiter,
+    pub awaiter: Awaiter<H>,
     /// Children → slots they fill in `results`, see [`PendingChildren`].
     ///
     /// Entries are removed as the corresponding child resolves. The gather
     /// is done when this map is empty.
-    pub pending_children: PendingChildren,
+    pub pending_children: PendingChildren<H>,
     /// Results from each gather item, in order. Indices align with
     /// `GatherFuture::items`. Filled as tasks complete and externals resolve.
-    pub results: Vec<Option<Value>>,
+    pub results: Vec<Option<Value<H>>>,
 }
 
-impl GatherFuture {
+impl<H: RuntimeRef> GatherFuture<H> {
     /// Creates a new GatherFuture with the given item heap ids.
     ///
     /// # Arguments
     /// * `items` - Heap ids of awaitables (coroutines or external futures)
-    pub fn new(items: Vec<HeapId>) -> Self {
+    pub fn new(items: Vec<H>) -> Self {
         Self {
             items,
             state: GatherState::Pending,
@@ -335,7 +342,7 @@ impl GatherFuture {
     /// phase. Convenience for read-only inspection sites that don't need to
     /// distinguish the other phases from one another.
     #[inline]
-    pub fn as_awaited(&self) -> Option<&AwaitedGather> {
+    pub fn as_awaited(&self) -> Option<&AwaitedGather<H>> {
         match &self.state {
             GatherState::Awaited(awaited) => Some(awaited),
             GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => None,
@@ -344,7 +351,7 @@ impl GatherFuture {
 
     /// Mutable counterpart to [`Self::as_awaited`].
     #[inline]
-    pub fn as_awaited_mut(&mut self) -> Option<&mut AwaitedGather> {
+    pub fn as_awaited_mut(&mut self) -> Option<&mut AwaitedGather<H>> {
         match &mut self.state {
             GatherState::Awaited(awaited) => Some(awaited),
             GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => None,

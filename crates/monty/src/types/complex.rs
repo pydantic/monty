@@ -17,14 +17,14 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_f64},
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{Heap, HeapData, HeapItem, HeapObjectRead, RuntimeRef},
     intern::StaticStrings,
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},
         r#type::strip_underscores,
     },
-    value::{EitherStr, Value, eq_f64},
+    value::{EitherStr, NoHeapRef, Value, eq_f64},
 };
 
 /// A Python `complex`: real and imaginary IEEE doubles.
@@ -56,7 +56,7 @@ impl Complex {
     }
 
     /// Allocates this complex on the heap, handing back the owning value.
-    pub(crate) fn into_value(self, heap: &Heap) -> Value {
+    pub(crate) fn into_value<H: RuntimeRef>(self, heap: &Heap<H>) -> Value<H> {
         Value::Ref(heap.allocate(HeapData::Complex(self)))
     }
 
@@ -318,7 +318,7 @@ enum Operand {
 /// Classifies an operand, widening ints (an oversized big int raises
 /// `OverflowError`); `None` for a non-number so the operation reports
 /// `NotImplemented` and the reflected form gets its turn.
-fn operand(value: &Value, vm: &VM<'_>) -> RunResult<Option<Operand>> {
+fn operand<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<Option<Operand>> {
     Ok(match value {
         Value::Float(f) => Some(Operand::Real(*f)),
         Value::Int(i) => Some(Operand::Real(*i as f64)),
@@ -345,7 +345,7 @@ fn widen(operand: Operand) -> Complex {
 /// A lone positional argument may be a string to parse, a number, or a
 /// complex (returned as is); otherwise `real` and `imag` are each a number or
 /// a complex, combined as `real + imag*1j`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     if let ArgValues::One(value) = args {
         return init_single(value, vm);
     }
@@ -374,7 +374,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `complex(x)`: the one form that also accepts a string.
-fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn init_single<H: RuntimeRef>(value: Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     if let Value::Ref(id) = &value
         && matches!(vm.heap.get(*id), HeapData::Complex(_))
     {
@@ -422,10 +422,10 @@ impl Part {
     }
 }
 
-impl FromValue for Part {
+impl<H: RuntimeRef> FromValue<H> for Part {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("a real number");
 
-    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+    fn from_value(value: Value<H>, vm: &mut VM<'_, H>) -> Result<Self, FromValueFail> {
         let result = match operand(&value, vm) {
             Ok(Some(Operand::Real(r))) => Ok(Self::Real(r)),
             Ok(Some(Operand::Complex(c))) => Ok(Self::Complex(c)),
@@ -438,7 +438,7 @@ impl FromValue for Part {
 }
 
 /// `complex.from_number(x)`: a number or complex, never a string.
-pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn class_from_number<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let value = args.get_one_arg("complex.from_number", vm.heap)?;
     if let Value::Ref(id) = &value
         && matches!(vm.heap.get(*id), HeapData::Complex(_))
@@ -558,22 +558,22 @@ fn float_prefix(s: &str) -> Option<(f64, usize)> {
     s[..i].parse().ok().map(|value| (value, i))
 }
 
-impl HeapItem for Complex {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
+impl<H: RuntimeRef> HeapItem<H> for Complex {
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<H>) {}
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Complex> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::Complex
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
     /// Equal to another complex part-wise, and to a real number when the
     /// imaginary part is zero and the real part matches it exactly.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let c = *self.get(vm.heap);
         Ok(match other {
             Value::Ref(id) if let HeapData::Complex(o) = vm.heap.get(*id) => Some(c.eq(*o)),
@@ -583,7 +583,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
 
     /// Combines the part hashes as CPython does, so a complex with a zero
     /// imaginary part hashes like its real part (and so like an equal int).
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         let c = *self.get(vm.heap);
         let combined = hash_f64(c.real)
             .raw()
@@ -591,11 +591,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(HashValue::new(combined)))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(!self.get(vm.heap).is_zero())
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let c = self.get(vm.heap);
         Ok(write!(
             f,
@@ -607,7 +607,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         )?)
     }
 
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let c = self.get(vm.heap);
         let text = FormatComplex {
             real: c.real,
@@ -617,19 +617,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(allocate_string(text, vm.heap))
     }
 
-    fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_abs_impl(&self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(Some(Value::Float(self.get(vm.heap).abs()?)))
     }
 
-    fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_neg_impl(&self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(Some(self.get(vm.heap).neg().into_value(vm.heap)))
     }
 
-    fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_pos_impl(&self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let c = *self.get(vm.heap);
         let result = match operand(other, vm)? {
             Some(Operand::Real(r)) => Complex::new(c.real + r, c.imag),
@@ -639,12 +639,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(result.into_value(vm.heap)))
     }
 
-    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_radd_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         // Addition is symmetric part-wise, so the reflected form is the direct one.
         self.py_add_impl(other, vm)
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let c = *self.get(vm.heap);
         let result = match operand(other, vm)? {
             Some(Operand::Real(r)) => Complex::new(c.real - r, c.imag),
@@ -654,7 +654,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(result.into_value(vm.heap)))
     }
 
-    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rsub_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let c = *self.get(vm.heap);
         let result = match operand(other, vm)? {
             Some(Operand::Real(r)) => Complex::new(r - c.real, -c.imag),
@@ -664,7 +664,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(result.into_value(vm.heap)))
     }
 
-    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_mul_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let c = *self.get(vm.heap);
         let result = match operand(other, vm)? {
             Some(Operand::Real(r)) => Complex::new(c.real * r, c.imag * r),
@@ -674,12 +674,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(result.into_value(vm.heap)))
     }
 
-    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rmul_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         // Scaling by a real is symmetric part-wise, so the reflected form is the direct one.
         self.py_mul_impl(other, vm)
     }
 
-    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_truediv_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let c = *self.get(vm.heap);
         let result = match operand(other, vm)? {
             Some(Operand::Real(r)) => {
@@ -698,7 +698,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
             .map(Some)
     }
 
-    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rtruediv_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let c = *self.get(vm.heap);
         let quotient = match operand(other, vm)? {
             Some(Operand::Real(r)) => Complex::div_into(r, c),
@@ -711,7 +711,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
             .map(Some)
     }
 
-    fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_pow_impl(
+        &self,
+        other: &Value<H>,
+        modulus: Option<&Value<H>>,
+        vm: &mut VM<'h, H>,
+    ) -> RunResult<Option<Value<H>>> {
         let c = *self.get(vm.heap);
         let Some(exp) = operand(other, vm)? else {
             return Ok(None);
@@ -722,7 +727,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(c.pow(widen(exp))?.into_value(vm.heap)))
     }
 
-    fn py_rpow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rpow_impl(
+        &self,
+        other: &Value<H>,
+        modulus: Option<&Value<H>>,
+        vm: &mut VM<'h, H>,
+    ) -> RunResult<Option<Value<H>>> {
         let c = *self.get(vm.heap);
         let Some(base) = operand(other, vm)? else {
             return Ok(None);
@@ -733,16 +743,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(widen(base).pow(c)?.into_value(vm.heap)))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         if attr.static_string(vm.interns) == Some(StaticStrings::Conjugate) {
             let c = *self.get(vm.heap);
             args.check_zero_args("complex.conjugate", vm.heap)?;
             return Ok(CallResult::Value(c.conjugate().into_value(vm.heap)));
         }
-        Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm))
+        Err(ExcType::attribute_error_method(
+            Type::<NoHeapRef>::Complex,
+            attr,
+            args,
+            vm,
+        ))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let c = *self.get(vm.heap);
         Ok(match attr.static_string(vm.interns) {
             Some(StaticStrings::Real) => Some(CallResult::Value(Value::Float(c.real))),
@@ -753,7 +768,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
 
     /// `real` and `imag` exist but are read-only, which CPython words differently
     /// from a missing attribute.
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         value.drop_with(vm);
         Err(match name.static_string(vm.interns) {
             Some(StaticStrings::Real | StaticStrings::Imag) => ExcType::attribute_error_readonly(),

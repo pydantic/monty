@@ -6,7 +6,7 @@ use crate::types::List;
 
 /// A shared reference cannot escape an externally owned allocation.
 #[cfg(heap_reader_compile_fail_test_protected_get_escape)]
-fn protected_get_escape(heap: &mut Heap) {
+fn protected_get_escape<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let escaped = {
             let source = Box::new(123_u64);
@@ -20,7 +20,7 @@ fn protected_get_escape(heap: &mut Heap) {
 
 /// Shared access through an exclusive handle still borrows its source.
 #[cfg(heap_reader_compile_fail_test_protected_mut_get_escape)]
-fn protected_mut_get_escape(heap: &mut Heap) {
+fn protected_mut_get_escape<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let escaped = {
             let mut source = Box::new(123_u64);
@@ -34,7 +34,7 @@ fn protected_mut_get_escape(heap: &mut Heap) {
 
 /// An exclusive reference cannot escape an externally owned allocation.
 #[cfg(heap_reader_compile_fail_test_protected_get_mut_escape)]
-fn protected_get_mut_escape(heap: &mut Heap) {
+fn protected_get_mut_escape<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let escaped = {
             let mut source = Box::new(123_u64);
@@ -48,7 +48,7 @@ fn protected_get_mut_escape(heap: &mut Heap) {
 
 /// A shared protected reference excludes mutation through the original owner.
 #[cfg(heap_reader_compile_fail_test_protected_get_alias)]
-fn protected_get_alias(heap: &mut Heap) {
+fn protected_get_alias<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let mut source = Box::new(123_u64);
         let protected = heap.protect(&*source);
@@ -60,7 +60,7 @@ fn protected_get_alias(heap: &mut Heap) {
 
 /// Shared access through an exclusive handle also excludes source mutation.
 #[cfg(heap_reader_compile_fail_test_protected_mut_get_alias)]
-fn protected_mut_get_alias(heap: &mut Heap) {
+fn protected_mut_get_alias<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let mut source = Box::new(123_u64);
         let protected = heap.protect_mut(&mut *source);
@@ -72,7 +72,7 @@ fn protected_mut_get_alias(heap: &mut Heap) {
 
 /// An exclusive protected reference excludes reads through the original owner.
 #[cfg(heap_reader_compile_fail_test_protected_get_mut_alias)]
-fn protected_get_mut_alias(heap: &mut Heap) {
+fn protected_get_mut_alias<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let mut source = Box::new(123_u64);
         let protected = heap.protect_mut(&mut *source);
@@ -84,7 +84,7 @@ fn protected_get_mut_alias(heap: &mut Heap) {
 
 /// A field projection must preserve the protected source's lifetime.
 #[cfg(heap_reader_compile_fail_test_projected_get_escape)]
-fn projected_get_escape(heap: &mut Heap) {
+fn projected_get_escape<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let escaped = {
             let source = Box::new((123_u64,));
@@ -99,7 +99,7 @@ fn projected_get_escape(heap: &mut Heap) {
 
 /// A slice projection cannot outlive its vector's allocation.
 #[cfg(heap_reader_compile_fail_test_slice_get_escape)]
-fn slice_get_escape(heap: &mut Heap) {
+fn slice_get_escape<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let escaped = {
             let source = vec![123_u64];
@@ -113,7 +113,7 @@ fn slice_get_escape(heap: &mut Heap) {
 
 /// A box projection cannot outlive its box's allocation.
 #[cfg(heap_reader_compile_fail_test_box_get_escape)]
-fn box_get_escape(heap: &mut Heap) {
+fn box_get_escape<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let escaped = {
             let source = Box::new(123_u64);
@@ -128,7 +128,7 @@ fn box_get_escape(heap: &mut Heap) {
 /// Mutable capabilities cannot be exchanged independently of their source borrows.
 #[cfg(heap_reader_compile_fail_test_mutable_inner_swap)]
 #[expect(unused_mut, reason = "the rejected DerefMut operations would require mutable owners")]
-fn mutable_inner_swap(heap: &mut Heap) {
+fn mutable_inner_swap<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let mut source = 123_u64;
         let mut outer = heap.protect_mut(&mut source);
@@ -144,7 +144,7 @@ fn mutable_inner_swap(heap: &mut Heap) {
 /// Read-only capabilities also cannot be detached from their source borrows.
 #[cfg(heap_reader_compile_fail_test_shared_inner_swap)]
 #[expect(unused_mut, reason = "the rejected DerefMut operations would require mutable owners")]
-fn shared_inner_swap(heap: &mut Heap) {
+fn shared_inner_swap<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let source = 123_u64;
         let mut outer = heap.protect(&source);
@@ -160,7 +160,7 @@ fn shared_inner_swap(heap: &mut Heap) {
 /// An object's capability cannot be exchanged with an uncounted borrowed capability.
 #[cfg(heap_reader_compile_fail_test_counted_inner_swap)]
 #[expect(unused_mut, reason = "the rejected DerefMut operations would require mutable owners")]
-fn counted_inner_swap(list_id: HeapId, heap: &mut Heap) {
+fn counted_inner_swap<H: RuntimeRef>(list_id: H, heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let HeapReadOutput::List(mut object) = heap.read(list_id) else {
             unreachable!()
@@ -173,7 +173,7 @@ fn counted_inner_swap(list_id: HeapId, heap: &mut Heap) {
 
 /// A shared source borrow never authorizes payload mutation.
 #[cfg(heap_reader_compile_fail_test_readonly_mutation)]
-fn readonly_mutation(heap: &mut Heap) {
+fn readonly_mutation<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let source = 123_u64;
         let protected = heap.protect(&source);
@@ -183,7 +183,7 @@ fn readonly_mutation(heap: &mut Heap) {
 
 /// A read-only capability cannot be upgraded by projecting a mutable field.
 #[cfg(heap_reader_compile_fail_test_readonly_mutable_projection)]
-fn readonly_mutable_projection(heap: &mut Heap) {
+fn readonly_mutable_projection<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let source = (123_u64,);
         let protected = heap.protect(&source);
@@ -195,7 +195,7 @@ fn readonly_mutable_projection(heap: &mut Heap) {
 
 /// Aliased capabilities still cannot create overlapping mutable and shared payload borrows.
 #[cfg(heap_reader_compile_fail_test_aliased_payload_borrows)]
-fn aliased_payload_borrows(heap: &mut Heap) {
+fn aliased_payload_borrows<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let mut source = 123_u64;
         let protected = heap.protect_mut(&mut source);
@@ -208,7 +208,7 @@ fn aliased_payload_borrows(heap: &mut Heap) {
 
 /// Mutable field references retain the source borrow through the projection.
 #[cfg(heap_reader_compile_fail_test_projected_get_mut_escape)]
-fn projected_get_mut_escape(heap: &mut Heap) {
+fn projected_get_mut_escape<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let escaped = {
             let mut source = (123_u64,);
@@ -223,7 +223,7 @@ fn projected_get_mut_escape(heap: &mut Heap) {
 
 /// Replacing a vector is blocked while a projected slice reference is live.
 #[cfg(heap_reader_compile_fail_test_projection_live_borrow)]
-fn projection_live_borrow(heap: &mut Heap) {
+fn projection_live_borrow<H: RuntimeRef>(heap: &mut Heap<H>) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let mut source = vec![123_u64];
         let protected = heap.protect_mut(&mut source);

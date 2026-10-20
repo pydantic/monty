@@ -10,6 +10,7 @@
 //! (dotted keys, `[table]` redefinition, frozen inline containers) free of heap
 //! borrows; the conversion then allocates each value exactly once.
 
+use crate::heap::{Reference, RuntimeRef};
 mod parser;
 mod value;
 
@@ -27,7 +28,7 @@ use crate::{
     codecs::Codec,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::{HeapData, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
     types::Module,
@@ -51,7 +52,7 @@ pub(crate) enum TomllibFunctions {
 ///
 /// The module exposes everything CPython's does: `loads`, `load` and
 /// `TOMLDecodeError`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Tomllib, vm.interns);
     module.set_attr(
         StaticStrings::Loads,
@@ -75,7 +76,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 ///
 /// `load()` may suspend for the host to read the file, so the dispatcher
 /// returns a `CallResult`.
-pub(super) fn call(vm: &mut VM<'_>, function: TomllibFunctions, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: TomllibFunctions,
+    args: ArgValues<H>,
+) -> RunResult<CallResult<H>> {
     match function {
         TomllibFunctions::Loads => call_loads(vm, args).map(CallResult::Value),
         TomllibFunctions::Load => call_load(vm, args),
@@ -89,16 +94,16 @@ pub(super) fn call(vm: &mut VM<'_>, function: TomllibFunctions, args: ArgValues)
 /// struct makes the macro reject it as an unexpected keyword.
 #[derive(FromArgs)]
 #[from_args(name = "loads", style = def)]
-struct TomlLoadsArgs {
+struct TomlLoadsArgs<H: Reference> {
     #[from_args(pos_only)]
-    s: Value,
+    s: Value<H>,
 }
 
 /// Implements `tomllib.loads(s)`.
 ///
 /// Only `str` input is accepted; anything else raises CPython's
 /// `Expected str object, not '{type}'` `TypeError`.
-fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_loads<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let TomlLoadsArgs { s } = TomlLoadsArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
     let table = match s.to_str(vm) {
@@ -112,9 +117,9 @@ fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// [`TomlLoadsArgs`] for why `parse_float` is absent.
 #[derive(FromArgs)]
 #[from_args(name = "load", style = def)]
-struct TomlLoadArgs {
+struct TomlLoadArgs<H: Reference> {
     #[from_args(pos_only)]
-    fp: Value,
+    fp: Value<H>,
 }
 
 /// Implements `tomllib.load(fp)` for file objects returned by `open()`.
@@ -123,7 +128,7 @@ struct TomlLoadArgs {
 /// with a [`PostConversionEffect::LoadThenCall`] that replays this call, which
 /// then finds the buffer in place. Anything that is not a file object raises
 /// the `AttributeError` CPython's `fp.read()` would.
-fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn call_load<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let TomlLoadArgs { fp } = TomlLoadArgs::from_args(args, vm)?;
     defer_drop!(fp, vm);
     let Value::Ref(file_id) = fp else {
@@ -151,7 +156,7 @@ fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Decodes the `bytes` a binary `read()` produced as UTF-8 (CPython's
 /// `b.decode()`) and parses the text.
-fn parse_file_content(content: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn parse_file_content<H: RuntimeRef>(content: Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     defer_drop!(content, vm);
     let bytes = match content {
         Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),

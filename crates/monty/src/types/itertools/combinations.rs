@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bytecode::VM,
-    heap::{HeapId, HeapReadMut},
+    heap::{HeapReadMut, Reference, RuntimeRef},
     types::{
         Type,
         itertools::{
@@ -17,6 +17,7 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields the `r`-combinations of a pool, with or without replacement.
 ///
 /// One struct serves both callables: they differ only in whether an index may
@@ -24,9 +25,9 @@ use crate::{
 /// and how the slots after a stepped one are refilled. `py_type` keeps them
 /// distinct Python types.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Combinations {
+pub(crate) struct Combinations<H: Reference> {
     /// Every item of the source, collected up front as CPython's `pool` tuple.
-    pool: Vec<Value>,
+    pool: Vec<Value<H>>,
     /// One position into `pool` per slot of the next result; empty once `Done`
     /// from the start, so `combinations([], 10**9)` allocates nothing.
     indices: Vec<usize>,
@@ -35,10 +36,10 @@ pub(crate) struct Combinations {
     phase: Phase,
 }
 
-impl Combinations {
+impl<H: RuntimeRef> Combinations<H> {
     /// Takes the collected pool; `r` has been range-checked and, for the
     /// replacement flavour, preflighted by the constructor.
-    pub(crate) fn new(pool: Vec<Value>, r: usize, replacement: bool) -> Self {
+    pub(crate) fn new(pool: Vec<Value<H>>, r: usize, replacement: bool) -> Self {
         let n = pool.len();
         // CPython's `stopped`: without replacement there is no `r`-subsequence
         // of fewer than `r` items; with it, only an empty pool has none (and
@@ -60,7 +61,7 @@ impl Combinations {
     }
 
     /// The Python type — one per callable, though the state is shared.
-    pub(crate) fn py_type(&self) -> Type {
+    pub(crate) fn py_type(&self) -> Type<H> {
         if self.replacement {
             Type::ItertoolsCombinationsWithReplacement
         } else {
@@ -69,12 +70,12 @@ impl Combinations {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         pool_child_ids(&self.pool, &mut on_child);
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         pool_dec_ref_ids(&mut self.pool, stack);
     }
 
@@ -116,7 +117,10 @@ impl Combinations {
 }
 
 /// Steps the indices and gathers the pool items they select.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> Option<Value> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> Option<Value<H>> {
     let ItertoolsIter::Combinations(combinations) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Combinations")
     };

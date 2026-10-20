@@ -7,7 +7,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{HeapId, HeapItem, HeapObjectRead},
+    heap::{HeapItem, HeapObjectRead, RuntimeRef},
     types::{LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
@@ -64,29 +64,29 @@ impl DataclassParams {
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, DataclassParams> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::DataclassParams
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         // `_DataclassParams` defines no `__eq__`, so it compares by identity,
         // which `Value::py_eq_impl` resolves before ever reaching here.
         Ok(None)
     }
 
-    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
 
     /// CPython's `_DataclassParams.__repr__`, flag for flag. The eight
     /// unimplemented options print as constants, which cannot misreport a class
     /// because any other value is refused at decoration.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let options = self.get(vm.heap).options;
         Ok(write!(
             f,
@@ -99,7 +99,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
 
     /// Every flag CPython exposes; the unimplemented ones read as the defaults
     /// the decorator insists on.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let attr_str = attr.as_str(vm.interns);
         let options = self.get(vm.heap).options;
         let value = match attr_str {
@@ -118,8 +118,8 @@ fn python_bool(value: bool) -> &'static str {
     if value { "True" } else { "False" }
 }
 
-impl HeapItem for DataclassParams {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for DataclassParams {
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<H>) {
         // Two bools, no heap references.
     }
 }

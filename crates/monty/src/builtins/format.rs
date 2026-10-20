@@ -5,6 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
+    heap::{Reference, RuntimeRef},
     types::str::allocate_string,
     value::Value,
 };
@@ -17,11 +18,11 @@ use crate::{
 /// `format() argument 2 must be str, not int`.
 #[derive(FromArgs)]
 #[from_args(name = "format", style = unpack, bad_arg)]
-struct FormatArgs {
+struct FormatArgs<H: Reference> {
     #[from_args(pos_only)]
-    value: Value,
+    value: Value<H>,
     #[from_args(pos_only, default)]
-    format_spec: Option<StrArg>,
+    format_spec: Option<StrArg<H>>,
 }
 
 /// Implementation of the format() builtin function.
@@ -29,7 +30,7 @@ struct FormatArgs {
 /// Applies a format-spec mini-language string to a value, sharing the runtime
 /// path f-strings and `str.format()` use, so every spec and error behaves the
 /// same across all three entry points.
-pub fn builtin_format(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_format<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let FormatArgs { value, format_spec } = FormatArgs::from_args(args, vm)?;
     defer_drop!(value, vm);
     defer_drop!(format_spec, vm);

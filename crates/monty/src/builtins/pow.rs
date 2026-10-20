@@ -5,6 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
+    heap::{Reference, RuntimeRef},
     value::Value,
 };
 
@@ -12,7 +13,7 @@ use crate::{
 ///
 /// Dispatches `__pow__` / `__rpow__`, passing an optional modulus unchanged.
 /// Builtin numeric types accept a modulus only for integer operands.
-pub fn builtin_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_pow<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let PowArgs { base, exp, modulus } = PowArgs::from_args(args, vm)?;
     defer_drop!(base, vm);
     defer_drop!(exp, vm);
@@ -34,9 +35,9 @@ pub fn builtin_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// implemented.
 #[derive(FromArgs)]
 #[from_args(name = "pow", style = c_named, at_most_total, kwargs_not_supported_yet)]
-struct PowArgs {
-    base: Value,
-    exp: Value,
+struct PowArgs<H: Reference> {
+    base: Value<H>,
+    exp: Value<H>,
     #[from_args(default = Value::None)]
-    modulus: Value,
+    modulus: Value<H>,
 }

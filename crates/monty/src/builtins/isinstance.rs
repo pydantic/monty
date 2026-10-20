@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{HeapData, HeapRead, HeapReadOutput, RuntimeRef},
     types::{PyTrait, Tuple, Type},
     value::Value,
 };
@@ -14,7 +14,7 @@ use crate::{
 /// Implementation of the isinstance() builtin function.
 ///
 /// Checks if an object is an instance of a class or a tuple of classes.
-pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_isinstance<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let (obj, classinfo) = args.get_two_args("isinstance", vm.heap)?;
     defer_drop!(obj, vm);
     defer_drop!(classinfo, vm);
@@ -32,7 +32,11 @@ pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 /// - Host classes: `isinstance(obj, Point)` for a `HostClassType` (exact class
 ///   id; the host sends no bases)
 /// - Tuples (possibly nested) of the above
-pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
+pub(crate) fn isinstance_check<H: RuntimeRef>(
+    obj: &Value<H>,
+    classinfo: &Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<bool> {
     match classinfo {
         Value::Builtin(Builtins::Type(t)) => Ok(obj.py_type(vm).is_instance_of(*t)),
         Value::Builtin(Builtins::ExcType(handler_type)) => {
@@ -68,12 +72,12 @@ pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) 
 
 /// Whether `obj` is a host instance whose class entry is `class_id` (exact
 /// class only: the host never sends bases, so subclasses are unknown).
-fn instance_of_host_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
+fn instance_of_host_class<H: RuntimeRef>(obj: &Value<H>, class_id: H, vm: &VM<'_, H>) -> bool {
     matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::HostClass(hc) if hc.class_id() == class_id))
 }
 
 /// Whether `obj` is an instance whose class object is `class_id`.
-fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
+fn instance_of_class<H: RuntimeRef>(obj: &Value<H>, class_id: H, vm: &VM<'_, H>) -> bool {
     matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::Instance(inst) if inst.class() == class_id))
 }
 
@@ -81,12 +85,16 @@ fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
 ///
 /// Instances created by Monty internally (`sys.version_info`, host imports)
 /// carry no `class_id`, so they never match a factory class.
-fn instance_of_namedtuple_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
+fn instance_of_namedtuple_class<H: RuntimeRef>(obj: &Value<H>, class_id: H, vm: &VM<'_, H>) -> bool {
     matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::NamedTuple(nt) if nt.class_id() == Some(class_id)))
 }
 
 /// Recursively walks a tuple of classinfo entries.
-fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut VM<'h>) -> RunResult<bool> {
+fn isinstance_check_tuple<'h, H: RuntimeRef>(
+    obj: &Value<H>,
+    tuple: &HeapRead<'h, Tuple<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<bool> {
     let len = tuple.get(vm.heap).as_slice().len();
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;

@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    heap::{Heap, HeapId},
+    heap::{Heap, RuntimeRef},
     types::{TupleVec, allocate_tuple},
     value::Value,
 };
@@ -26,13 +26,13 @@ pub(super) enum Phase {
 }
 
 /// Builds the result tuple from the pool items at `indices`.
-pub(super) fn gather(pool: &[Value], indices: &[usize], heap: &Heap) -> Value {
-    let items: TupleVec = indices.iter().map(|&i| pool[i].clone_with_heap(heap)).collect();
+pub(super) fn gather<H: RuntimeRef>(pool: &[Value<H>], indices: &[usize], heap: &Heap<H>) -> Value<H> {
+    let items: TupleVec<H> = indices.iter().map(|&i| pool[i].clone_with_heap(heap)).collect();
     allocate_tuple(items, heap)
 }
 
 /// Invokes `on_child` for each heap id the pool owns (GC trace hook).
-pub(super) fn pool_child_ids(pool: &[Value], on_child: &mut impl FnMut(HeapId)) {
+pub(super) fn pool_child_ids<H: RuntimeRef>(pool: &[Value<H>], on_child: &mut impl FnMut(H)) {
     for item in pool {
         if let Value::Ref(id) = item {
             on_child(*id);
@@ -41,7 +41,7 @@ pub(super) fn pool_child_ids(pool: &[Value], on_child: &mut impl FnMut(HeapId)) 
 }
 
 /// Releases the refs the pool owns (mirrors [`pool_child_ids`]).
-pub(super) fn pool_dec_ref_ids(pool: &mut [Value], stack: &mut Vec<HeapId>) {
+pub(super) fn pool_dec_ref_ids<H: RuntimeRef>(pool: &mut [Value<H>], stack: &mut Vec<H>) {
     for item in pool {
         item.py_dec_ref_ids(stack);
     }

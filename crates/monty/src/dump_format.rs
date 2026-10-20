@@ -324,13 +324,14 @@ impl Error for DumpEncodeError {
 mod tests {
     use std::str::FromStr;
 
-    use monty_types::{BuiltinsFunctions, ExcType, MontyType, TypeCheckingFormat};
+    use monty_types::{BuiltinsFunctions, ExcType, MontyType, ResourceTracker, TypeCheckingFormat};
     use serde::Serialize;
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
     use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, heap::HeapId, types::Type,
+        bytecode::opcode_fingerprint, defer_drop, expressions::comparison_operators_fingerprint, heap::Heap,
+        types::Type, value::NoHeapRef,
     };
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
@@ -356,37 +357,42 @@ mod tests {
         // drops, so the counts below cover every serialized variant once the
         // disabled ones are supplied by hand. Asserted rather than assumed, so a
         // strum upgrade that changed it says so instead of quietly narrowing the guard.
-        assert!(Type::VARIANTS.contains(&"instance"));
+        assert!(Type::<NoHeapRef>::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
-        let type_names = serde_variant_names(
-            Type::VARIANTS,
-            &[
-                Type::Instance(HeapId::from_index(0)),
-                Type::Exception(ExcType::ValueError),
-            ],
-        );
-        assert_eq!(
-            variant_name_fingerprint(&type_names),
-            0xd1f9_8ab5_eb65_e86d,
-            "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(variant_name_fingerprint(&type_names))
-        );
-        let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
-        assert_eq!(
-            variant_name_fingerprint(&monty_type_names),
-            0x628c_e5c5_6b25_e2c2,
-            "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(variant_name_fingerprint(&monty_type_names))
-        );
-        // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
-        // is append-only: a new builtin goes after the last variant.
-        assert_eq!(
-            variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0xcdd8_09b1_2adc_3852,
-            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
-        );
+        Heap::with_test(0, ResourceTracker::default(), |heap| {
+            let empty_tuple = heap.get_empty_tuple();
+            defer_drop!(empty_tuple, heap);
+            let type_names = serde_variant_names(
+                Type::<NoHeapRef>::VARIANTS,
+                &[
+                    Type::Instance(empty_tuple.ref_id().unwrap()),
+                    Type::Exception(ExcType::ValueError),
+                ],
+            );
+            assert_eq!(
+                variant_name_fingerprint(&type_names),
+                0xd1f9_8ab5_eb65_e86d,
+                "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
+                grouped_hex(variant_name_fingerprint(&type_names))
+            );
+            let monty_type_names =
+                serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
+            assert_eq!(
+                variant_name_fingerprint(&monty_type_names),
+                0x628c_e5c5_6b25_e2c2,
+                "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
+                grouped_hex(variant_name_fingerprint(&monty_type_names))
+            );
+            // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
+            // is append-only: a new builtin goes after the last variant.
+            assert_eq!(
+                variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
+                0xcdd8_09b1_2adc_3852,
+                "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
+                grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
+            );
+        });
     }
 
     /// Formats an integer as hex with underscores between four-digit groups.

@@ -4,7 +4,7 @@ use std::ops::Index;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::heap::{HeapId, StableHeap};
+use crate::heap::{HeapIndex as HeapId, StableHeap};
 
 /// Keeps committed entries borrowed across subsequent compilation and insertion.
 /// Removal is deliberately unavailable: rejected compilations own separate vectors.

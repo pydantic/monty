@@ -4,6 +4,7 @@ use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracke
 use crate::{
     bytecode::VM,
     exception_private::{RunError, RunResult, SimpleException},
+    heap::RuntimeRef,
     value::{VALUE_SIZE, Value},
 };
 
@@ -113,7 +114,12 @@ pub fn check_replace_size(
 /// ceiling in one allocation, killing the worker instead of raising `MemoryError`.
 /// Buffers of other element types call [`ResourceTracker::check_growth`] directly.
 #[cold]
-pub(crate) fn check_value_buffer_growth(vm: &mut VM<'_>, len: usize, capacity: usize, item: Value) -> RunResult<Value> {
+pub(crate) fn check_value_buffer_growth<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    len: usize,
+    capacity: usize,
+    item: Value<H>,
+) -> RunResult<Value<H>> {
     match vm.heap.tracker.check_growth(len, capacity, VALUE_SIZE) {
         Ok(()) => Ok(item),
         Err(err) => {

@@ -1,0 +1,6 @@
+---
+source: crates/monty/tests/binary_serde.rs
+expression: "errors.join(\"\\n\")"
+---
+heap reference in compiled constants
+heap reference in compiled constants

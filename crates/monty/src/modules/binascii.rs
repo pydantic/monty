@@ -26,7 +26,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{DropWithContext, HeapData, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -88,7 +88,7 @@ const BINASCII_FUNCTIONS: &[(StaticStrings, BinasciiFunctions)] = &[
 ];
 
 /// Creates the `binascii` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Binascii, vm.interns);
 
     module.set_attr(
@@ -111,7 +111,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 /// Dispatches a call to a `binascii` module function.
 ///
 /// All functions are pure computations and return `Value` directly.
-pub(super) fn call(vm: &mut VM<'_>, function: BinasciiFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: BinasciiFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         BinasciiFunctions::Hexlify => call_hexlify(vm, args, "hexlify"),
         BinasciiFunctions::B2aHex => call_hexlify(vm, args, "b2a_hex"),
@@ -130,7 +134,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: BinasciiFunctions, args: ArgValues
 
 /// `binascii.hexlify(data, sep, bytes_per_sep=1)` and its `b2a_hex` alias,
 /// which differ only in the name their signature errors carry.
-fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value> {
+fn call_hexlify<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>, name: &str) -> RunResult<Value<H>> {
     let (data, sep, bytes_per_sep) = if name == "hexlify" {
         let HexlifyArgs {
             data,
@@ -162,7 +166,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
 /// `binascii.unhexlify(hexstr)` and its `a2b_hex` alias — `METH_O`, so
 /// keywords are rejected wholesale before the arity is even counted, both
 /// under the module-qualified `name`.
-fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value> {
+fn call_unhexlify<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>, name: &str) -> RunResult<Value<H>> {
     let mut positional = args.into_pos_only(name, vm.heap)?;
     let count = positional.len();
     let Some(hexstr) = positional.next().filter(|_| count == 1) else {
@@ -177,7 +181,7 @@ fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Val
 
 /// `binascii.b2a_base64(data, *, newline=True)` — base64 with the trailing
 /// newline `encodebytes` relies on.
-fn call_b2a_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b2a_base64<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B2aBase64Args { data, newline } = B2aBase64Args::from_args(args, vm)?;
     defer_drop!(data, vm);
     defer_drop!(newline, vm);
@@ -194,7 +198,7 @@ fn call_b2a_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `binascii.a2b_base64(data, *, strict_mode=False)` — the decoder every
 /// `base64` decode path funnels into.
-fn call_a2b_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_a2b_base64<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let A2bBase64Args { data, strict_mode } = A2bBase64Args::from_args(args, vm)?;
     defer_drop!(data, vm);
     defer_drop!(strict_mode, vm);
@@ -209,7 +213,7 @@ fn call_a2b_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `binascii.crc32(data, crc=0)` — CRC-32 as used by zip and png, resumable
 /// by feeding the previous result back in as `crc`.
-fn call_crc32(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_crc32<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let Crc32Args { data, crc } = Crc32Args::from_args(args, vm)?;
     defer_drop!(data, vm);
     defer_drop!(crc, vm);
@@ -226,7 +230,7 @@ fn call_crc32(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `binascii.crc_hqx(data, crc)` — the CRC-16 the classic BinHex format used,
 /// resumable through `crc` exactly as `crc32` is.
-fn call_crc_hqx(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_crc_hqx<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CrcHqxArgs { data, crc } = CrcHqxArgs::from_args(args, vm)?;
     defer_drop!(data, vm);
     defer_drop!(crc, vm);
@@ -240,7 +244,7 @@ fn call_crc_hqx(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `binascii.b2a_uu(data, *, backtick=False)` — one uuencoded line, newline
 /// included, for at most the 45 bytes the line-length byte can describe.
-fn call_b2a_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b2a_uu<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B2aUuArgs { data, backtick } = B2aUuArgs::from_args(args, vm)?;
     defer_drop!(data, vm);
     defer_drop!(backtick, vm);
@@ -252,7 +256,7 @@ fn call_b2a_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `binascii.a2b_uu(data)` — the inverse, tolerant of either padding
 /// convention and of a line truncated before its length byte promised.
-fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_a2b_uu<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let mut positional = args.into_pos_only("binascii.a2b_uu", vm.heap)?;
     let count = positional.len();
     let Some(data) = positional.next().filter(|_| count == 1) else {
@@ -267,7 +271,7 @@ fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `binascii.b2a_qp(data, quotetabs=False, istext=True, header=False)` —
 /// quoted-printable encoding, soft-wrapped to 76 columns.
-fn call_b2a_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_b2a_qp<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let B2aQpArgs {
         data,
         quotetabs,
@@ -290,7 +294,7 @@ fn call_b2a_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `binascii.a2b_qp(data, header=False)` — quoted-printable decoding, which
 /// never fails: anything malformed is copied through verbatim.
-fn call_a2b_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn call_a2b_qp<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let A2bQpArgs { data, header } = A2bQpArgs::from_args(args, vm)?;
     defer_drop!(data, vm);
     defer_drop!(header, vm);
@@ -309,10 +313,10 @@ fn call_a2b_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// reports `takes at most 3 arguments` rather than an unexpected keyword.
 #[derive(FromArgs)]
 #[from_args(name = "hexlify", style = c_named, at_most_total)]
-struct HexlifyArgs {
-    data: Value,
+struct HexlifyArgs<H: Reference> {
+    data: Value<H>,
     #[from_args(default)]
-    sep: Option<Value>,
+    sep: Option<Value<H>>,
     #[from_args(default = 1)]
     bytes_per_sep: i32,
 }
@@ -320,10 +324,10 @@ struct HexlifyArgs {
 /// The same shape under the `b2a_hex` name, which its signature errors report.
 #[derive(FromArgs)]
 #[from_args(name = "b2a_hex", style = c_named, at_most_total)]
-struct B2aHexArgs {
-    data: Value,
+struct B2aHexArgs<H: Reference> {
+    data: Value<H>,
     #[from_args(default)]
-    sep: Option<Value>,
+    sep: Option<Value<H>>,
     #[from_args(default = 1)]
     bytes_per_sep: i32,
 }
@@ -331,84 +335,84 @@ struct B2aHexArgs {
 /// Argument shape for `b2a_base64(data, *, newline=True)`.
 #[derive(FromArgs)]
 #[from_args(name = "b2a_base64", style = c_named)]
-struct B2aBase64Args {
+struct B2aBase64Args<H: Reference> {
     #[from_args(pos_only)]
-    data: Value,
+    data: Value<H>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    newline: Value,
+    newline: Value<H>,
 }
 
 /// Argument shape for `a2b_base64(data, *, strict_mode=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "a2b_base64", style = c_named)]
-struct A2bBase64Args {
+struct A2bBase64Args<H: Reference> {
     #[from_args(pos_only)]
-    data: Value,
+    data: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    strict_mode: Value,
+    strict_mode: Value<H>,
 }
 
 /// Argument shape for `crc32(data, crc=0)` — positional-only, so keywords are
 /// rejected outright with the module-qualified name.
 #[derive(FromArgs)]
 #[from_args(name = "crc32", style = unpack, kwarg_error_name = "binascii.crc32")]
-struct Crc32Args {
+struct Crc32Args<H: Reference> {
     #[from_args(pos_only)]
-    data: Value,
+    data: Value<H>,
     // Absent rather than `None`: CPython's `crc` defaults to unset, so an
     // explicit `None` reaches the integer conversion and is rejected there.
     #[from_args(pos_only, default)]
-    crc: Option<Value>,
+    crc: Option<Value<H>>,
 }
 
 /// Argument shape for `crc_hqx(data, crc)` — like `crc32`, but with `crc`
 /// required rather than defaulted.
 #[derive(FromArgs)]
 #[from_args(name = "crc_hqx", style = unpack, kwarg_error_name = "binascii.crc_hqx")]
-struct CrcHqxArgs {
+struct CrcHqxArgs<H: Reference> {
     #[from_args(pos_only)]
-    data: Value,
+    data: Value<H>,
     #[from_args(pos_only)]
-    crc: Value,
+    crc: Value<H>,
 }
 
 /// Argument shape for `b2a_uu(data, *, backtick=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "b2a_uu", style = c_named)]
-struct B2aUuArgs {
+struct B2aUuArgs<H: Reference> {
     #[from_args(pos_only)]
-    data: Value,
+    data: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    backtick: Value,
+    backtick: Value<H>,
 }
 
 /// Argument shape for `b2a_qp(data, quotetabs=False, istext=True, header=False)`,
 /// whose three flags are all positional-or-keyword.
 #[derive(FromArgs)]
 #[from_args(name = "b2a_qp", style = c_named, at_most_total)]
-struct B2aQpArgs {
-    data: Value,
+struct B2aQpArgs<H: Reference> {
+    data: Value<H>,
     #[from_args(default = Value::Bool(false))]
-    quotetabs: Value,
+    quotetabs: Value<H>,
     #[from_args(default = Value::Bool(true))]
-    istext: Value,
+    istext: Value<H>,
     #[from_args(default = Value::Bool(false))]
-    header: Value,
+    header: Value<H>,
 }
 
 /// Argument shape for `a2b_qp(data, header=False)`.
 #[derive(FromArgs)]
 #[from_args(name = "a2b_qp", style = c_named, at_most_total)]
-struct A2bQpArgs {
-    data: Value,
+struct A2bQpArgs<H: Reference> {
+    data: Value<H>,
     #[from_args(default = Value::Bool(false))]
-    header: Value,
+    header: Value<H>,
 }
 
 /// Reduces an `int` to the `unsigned int` CPython's `I` format takes, which
 /// wraps modulo 2**32 rather than rejecting a value out of range — so a
 /// negative or huge `crc` seed is accepted, as CPython accepts it.
-fn wrapping_u32(value: &Value, vm: &VM<'_>) -> RunResult<u32> {
+fn wrapping_u32<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<u32> {
     const MODULUS: i64 = 1 << 32;
 
     match value {
@@ -502,7 +506,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
 /// `ValueError` — "sep must be str or bytes." only applies to a sized object
 /// of length one. `None` is not "no separator": omitting `sep` leaves it
 /// unset, so an explicit `None` fails the length check as any other object.
-fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
+fn hex_separator<H: RuntimeRef>(sep: Option<&Value<H>>, vm: &VM<'_, H>) -> RunResult<Option<u8>> {
     let Some(sep) = sep else {
         return Ok(None);
     };
@@ -527,7 +531,7 @@ fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
 
 /// Whether a value is `bytes`, which is all `hexlify` accepts as a separator
 /// besides `str` — a buffer that `encode_input` would take is still rejected.
-fn is_bytes(value: &Value, vm: &VM<'_>) -> bool {
+fn is_bytes<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     match value {
         Value::InternBytes(_) => true,
         Value::Ref(heap_id) => matches!(vm.heap.get(*heap_id), HeapData::Bytes(_)),

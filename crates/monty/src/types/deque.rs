@@ -7,8 +7,8 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{
-        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
-        HeapReadOutput,
+        DropGuard, DropWithContext, Heap, HeapData, HeapItem, HeapObjectRead, HeapRead, HeapReadMut, HeapReadOutput,
+        Reference, RuntimeRef,
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
@@ -19,58 +19,59 @@ use crate::{
         long_int::repeat_count,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{EitherStr, NoHeapRef, VALUE_SIZE, Value},
 };
 
 /// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
 /// See [`Deque::init`] for why the over-arity case is pre-checked instead.
 #[derive(FromArgs)]
 #[from_args(name = "deque")]
-struct DequeArgs {
+struct DequeArgs<H: Reference> {
     // `Option` rather than a `Value::None` default: an explicit `None` iterable is
     // a `TypeError` in CPython (`'NoneType' object is not iterable`), so "omitted"
     // has to be distinguishable from a real `None`.
     #[from_args(static_string = "IterableArg", default)]
-    iterable: Option<Value>,
+    iterable: Option<Value<H>>,
     #[from_args(default = Value::None)]
-    maxlen: Value,
+    maxlen: Value<H>,
 }
 
 /// `deque.rotate([n])` — `PyArg_UnpackTuple`, so the arity error is
 /// `rotate expected at most 1 argument, got 2` (no type name).
 #[derive(FromArgs)]
 #[from_args(name = "rotate", style = unpack)]
-struct RotateArgs {
+struct RotateArgs<H: Reference> {
     #[from_args(pos_only, default = Value::Int(1))]
-    n: Value,
+    n: Value<H>,
 }
 
 /// `deque.insert(i, x)` — `PyArg_UnpackTuple` with a fixed arity, so the error is
 /// `insert expected 2 arguments, got 1`.
 #[derive(FromArgs)]
 #[from_args(name = "insert", style = unpack)]
-struct InsertArgs {
+struct InsertArgs<H: Reference> {
     #[from_args(pos_only)]
-    index: Value,
+    index: Value<H>,
     #[from_args(pos_only)]
-    item: Value,
+    item: Value<H>,
 }
 
 /// `deque.index(x[, start[, stop]])` — `PyArg_UnpackTuple` with `min < max`, so a
 /// missing `x` reports `index expected at least 1 argument, got 0`.
 #[derive(FromArgs)]
 #[from_args(name = "index", style = unpack)]
-struct IndexArgs {
+struct IndexArgs<H: Reference> {
     #[from_args(pos_only)]
-    value: Value,
+    value: Value<H>,
     // `Option` rather than a `Value::None` default: an explicit `None` bound is an
     // error in CPython, so "omitted" has to be distinguishable from a real `None`.
     #[from_args(pos_only, default)]
-    start: Option<Value>,
+    start: Option<Value<H>>,
     #[from_args(pos_only, default)]
-    stop: Option<Value>,
+    stop: Option<Value<H>>,
 }
 
+#[derive(monty_macros::Relocate)]
 /// Python's `collections.deque`: a double-ended queue backed by a [`VecDeque`].
 ///
 /// The distinguishing feature over [`List`](super::List) is `maxlen`: a bounded
@@ -79,9 +80,9 @@ struct IndexArgs {
 ///
 /// Items are owned `Value`s: callers transfer an already-inc-ref'd reference in,
 /// and anything evicted by `maxlen` is dropped here, so eviction must not leak.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Deque {
-    items: VecDeque<Value>,
+#[derive(Debug, serde :: Serialize, serde :: Deserialize)]
+pub(crate) struct Deque<H: Reference> {
+    items: VecDeque<Value<H>>,
     /// Maximum length; `None` means unbounded. Read-only from Python.
     maxlen: Option<usize>,
     /// True if any item is a `Value::Ref` — lets the GC skip iteration.
@@ -92,14 +93,25 @@ pub(crate) struct Deque {
     state: u64,
 }
 
-impl Deque {
+impl<H: Reference> Default for Deque<H> {
+    fn default() -> Self {
+        Self {
+            items: VecDeque::new(),
+            maxlen: None,
+            contains_refs: false,
+            state: 0,
+        }
+    }
+}
+
+impl<H: RuntimeRef> Deque<H> {
     /// Creates a deque from a vector, truncating to `maxlen` from the *left*
     /// (CPython keeps the rightmost items: `deque([1, 2, 3], 2) == deque([2, 3])`).
     ///
     /// Note: does NOT adjust refcounts — the caller owns the values passed in.
     /// Any item dropped by truncation is returned so the caller can release it.
     #[must_use]
-    pub fn new(items: Vec<Value>, maxlen: Option<usize>) -> (Self, Vec<Value>) {
+    pub fn new(items: Vec<Value<H>>, maxlen: Option<usize>) -> (Self, Vec<Value<H>>) {
         let mut items = VecDeque::from(items);
         let mut evicted = Vec::new();
         if let Some(max) = maxlen {
@@ -160,24 +172,24 @@ impl Deque {
 
     /// Borrows the item at `index`, which must be in range.
     #[must_use]
-    pub fn get(&self, index: usize) -> Option<&Value> {
+    pub fn get(&self, index: usize) -> Option<&Value<H>> {
         self.items.get(index)
     }
 
     /// Iterates the items in order, for the GC child walk.
-    pub fn iter(&self) -> impl Iterator<Item = &Value> {
+    pub fn iter(&self) -> impl Iterator<Item = &Value<H>> {
         self.items.iter()
     }
 }
 
-impl Deque {
+impl<H: RuntimeRef> Deque<H> {
     /// Constructs a deque from the `collections.deque(...)` call.
     ///
     /// `deque([iterable[, maxlen]])` — both arguments are positional-or-keyword.
     /// The over-arity case is pre-checked because CPython's wording here
     /// (`deque() takes at most 2 arguments (N given)`) omits the word
     /// "positional" that every `FromArgs` style emits.
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         if let ArgValues::ArgsKargs { args: positional, .. } = &args
             && positional.len() > 2
         {
@@ -243,7 +255,7 @@ fn check_maxlen(n: i64) -> RunResult<usize> {
 /// big int overflowed `i64` — CPython's `PyNumber_AsSsize_t` failure, whose
 /// exception kind the caller supplies (`OverflowError` for maxlen/rotate/insert,
 /// `IndexError` for subscript).
-fn read_ssize(value: &Value, vm: &VM<'_>, overflow: fn() -> RunError) -> Option<RunResult<i64>> {
+fn read_ssize<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>, overflow: fn() -> RunError) -> Option<RunResult<i64>> {
     match value {
         Value::Int(i) => Some(Ok(*i)),
         Value::Bool(b) => Some(Ok(i64::from(*b))),
@@ -252,25 +264,25 @@ fn read_ssize(value: &Value, vm: &VM<'_>, overflow: fn() -> RunError) -> Option<
     }
 }
 
-impl<'h> HeapRead<'h, Deque> {
+impl<'h, H: RuntimeRef> HeapRead<'h, Deque<H>> {
     /// Allocates a deque holding `items` with this one's `maxlen`, releasing
     /// anything `maxlen` evicts. Ownership of `items` transfers to it.
     ///
     /// `items` may be empty, for a shell to be appended to later.
-    pub(crate) fn allocate_like(&self, items: Vec<Value>, vm: &mut VM<'h>) -> Value {
+    pub(crate) fn allocate_like(&self, items: Vec<Value<H>>, vm: &mut VM<'h, H>) -> Value<H> {
         let (deque, evicted) = Deque::new(items, self.get(vm.heap).maxlen());
         evicted.drop_with(vm);
         Value::Ref(vm.heap.allocate(HeapData::Deque(deque)))
     }
 }
 
-impl<'h> HeapReadMut<'h, Deque> {
+impl<'h, H: RuntimeRef> HeapReadMut<'h, Deque<H>> {
     /// Appends to the right, evicting from the left if `maxlen` is reached.
     ///
     /// Ownership of `item` transfers to the deque (refcount already handled by
     /// the caller); any evicted item is released here. A push that would grow the
     /// ring past the memory limit fails with `MemoryError`, dropping `item`.
-    pub fn append(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+    pub fn append(&self, vm: &mut VM<'h, H>, item: Value<H>) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
@@ -286,7 +298,7 @@ impl<'h> HeapReadMut<'h, Deque> {
     }
 
     /// Appends to the left, evicting from the right if `maxlen` is reached.
-    pub fn appendleft(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+    pub fn appendleft(&self, vm: &mut VM<'h, H>, item: Value<H>) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
@@ -306,7 +318,7 @@ impl<'h> HeapReadMut<'h, Deque> {
     ///
     /// `maxlen` is no exemption: `append` and `appendleft` push before they
     /// evict, so a bounded deque whose ring is full still reallocates.
-    fn check_push(&self, vm: &mut VM<'h>, item: Value) -> RunResult<Value> {
+    fn check_push(&self, vm: &mut VM<'h, H>, item: Value<H>) -> RunResult<Value<H>> {
         let this = self.get(vm.heap);
         let (len, capacity) = (this.items.len(), this.items.capacity());
         if len < capacity {
@@ -317,9 +329,9 @@ impl<'h> HeapReadMut<'h, Deque> {
     }
 }
 
-impl<'h> HeapRead<'h, Deque> {
+impl<'h, H: RuntimeRef> HeapRead<'h, Deque<H>> {
     /// Clones every item, incrementing refcounts — used by `copy`, `+` and `*`.
-    fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
+    fn clone_all_items(&self, vm: &mut VM<'h, H>) -> RunResult<Vec<Value<H>>> {
         let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
         let mut out = Vec::with_capacity(len);
@@ -331,7 +343,7 @@ impl<'h> HeapRead<'h, Deque> {
     }
 
     /// Resolves a Python index (negative counts from the right) to a real one.
-    fn resolve_index(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<usize> {
+    fn resolve_index(&self, key: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<usize> {
         // A slice is rejected with CPython's sequence wording (names the type).
         if let Value::Ref(id) = key
             && matches!(vm.heap.get(*id), HeapData::Slice(_))
@@ -358,7 +370,7 @@ impl<'h> HeapRead<'h, Deque> {
 ///
 /// Returns the evicted value so the caller can release its refcount — eviction
 /// happens on the hot `append` path, so this must never leak.
-fn evict_front_if_full(deque: &mut Deque) -> Option<Value> {
+fn evict_front_if_full<H: RuntimeRef>(deque: &mut Deque<H>) -> Option<Value<H>> {
     match deque.maxlen {
         Some(max) if deque.items.len() > max => deque.items.pop_front(),
         _ => None,
@@ -366,20 +378,20 @@ fn evict_front_if_full(deque: &mut Deque) -> Option<Value> {
 }
 
 /// Drops the rightmost item if the deque now exceeds `maxlen`.
-fn evict_back_if_full(deque: &mut Deque) -> Option<Value> {
+fn evict_back_if_full<H: RuntimeRef>(deque: &mut Deque<H>) -> Option<Value<H>> {
     match deque.maxlen {
         Some(max) if deque.items.len() > max => deque.items.pop_back(),
         _ => None,
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
-    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Deque<H>> {
+    fn py_is_iterable(&self, _vm: &VM<'h, H>) -> bool {
         true
     }
 
     /// `in` walks the deque comparing each item by `==`, like `list`.
-    fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, item: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let this = self.get(vm.heap);
         let (len, start_state) = (this.len(), this.state());
         for i in 0..len {
@@ -402,11 +414,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(Some(false))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::Deque
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         value.drop_with(vm);
         let type_name = self.py_type(vm).name(vm.heap, vm.interns);
         if name.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
@@ -416,7 +428,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         }
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let deque_id = self.id();
         let iterator = vm
             .heap
@@ -425,20 +437,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(Value::Ref(iterator))
     }
 
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h, H>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(self.get(vm.heap).len() > 0)
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let idx = self.resolve_index(key, vm)?;
         Ok(self.get(vm.heap).items[idx].clone_with_heap(vm))
     }
 
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_setitem(&mut self, key: Value<H>, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         defer_drop!(key, vm);
         defer_drop_mut!(value, vm);
 
@@ -451,7 +463,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         // A deque only ever equals another deque — unlike NamedTuple/tuple, there
         // is no cross-type equality with list. `maxlen` is not part of equality.
         let Some(HeapReadOutput::Deque(other)) = other.read_heap(vm) else {
@@ -491,7 +503,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     /// types with "'<' not supported between instances of ...". Charges a
     /// recursion level for the same reason [`py_eq_impl`](Self::py_eq_impl)
     /// does — nested deques recurse through here.
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, H>) -> RunResult<CmpOrder> {
         let self_len = self.get(vm.heap).len();
         let other_len = other.get(vm.heap).len();
         let start_states = states(self, other, vm);
@@ -527,7 +539,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(CmpOrder::Ordered(self_len.cmp(&other_len)))
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         f.write_str("deque(")?;
         if let Ok(mut guard) = vm.recursion_guard() {
             let vm = &mut *guard;
@@ -555,7 +567,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     /// `deque + deque` — concatenation, keeping the LEFT operand's `maxlen`
     /// (so the result can truncate). Any non-deque right operand returns `None`,
     /// yielding CPython's "can only concatenate deque" `TypeError`.
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let Some(HeapReadOutput::Deque(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -573,7 +585,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     /// iterator protocol's `TypeError` rather than falling back to `+`'s
     /// concatenation error. The deque keeps its identity, so aliases see the
     /// update.
-    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_iadd_impl(&mut self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<bool> {
         // `deque_extend` consumes the iterable, so hand it an owned clone.
         let iterable = other.clone_with_heap(vm.heap);
         deque_extend(self, iterable, ExtendEnd::Right, vm)?;
@@ -582,7 +594,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
 
     /// `deque * int` — repetition that keeps the deque's `maxlen`, so a bounded
     /// deque builds only its surviving suffix rather than the full product.
-    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_mul_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let Some(count) = repeat_count(other, vm)? else {
             return Ok(None);
         };
@@ -591,7 +603,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         // so skip cloning the items. Otherwise snapshot the source items so the
         // build holds no heap borrow — a timeout mid-build can then release the
         // clones with `&mut vm`.
-        let source: Vec<Value> = if count == 0 {
+        let source: Vec<Value<H>> = if count == 0 {
             Vec::new()
         } else {
             self.get(vm.heap).iter().map(|v| v.clone_with_heap(vm.heap)).collect()
@@ -600,11 +612,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(Some(result))
     }
 
-    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rmul_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         // `maxlen` is the deque's only data attribute (read-only in CPython).
         if attr.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
             let value = match self.get(vm.heap).maxlen() {
@@ -616,21 +628,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(None)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Deque, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                Type::<NoHeapRef>::Deque,
+                attr.as_str(vm.interns),
+            ));
         };
         call_deque_method(self, method, args, vm).map(CallResult::Value)
     }
 }
 
-impl HeapItem for Deque {
+impl<H: RuntimeRef> HeapItem<H> for Deque<H> {
     /// Releases every heap reference the deque owns.
     ///
     /// MUST report exactly the same ids as `for_each_child_id` in `heap.rs` —
     /// too few decrements leaks, too many is a use-after-free.
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if !self.contains_refs {
             return;
         }
@@ -648,10 +663,15 @@ impl HeapItem for Deque {
 ///
 /// The deque comparisons walk `self` and `other` by index, so a user `__eq__`
 /// resizing *either* one invalidates the walk; both counters must be watched.
-fn states<'h>(a: &HeapObjectRead<'h, Deque>, b: &HeapObjectRead<'h, Deque>, vm: &VM<'h>) -> (u64, u64) {
+fn states<'h, H: RuntimeRef>(
+    a: &HeapObjectRead<'h, H, Deque<H>>,
+    b: &HeapObjectRead<'h, H, Deque<H>>,
+    vm: &VM<'h, H>,
+) -> (u64, u64) {
     (a.get(vm.heap).state(), b.get(vm.heap).state())
 }
 
+#[derive(monty_macros::Relocate)]
 /// Iterates over a deque, raising if it is structurally mutated mid-iteration.
 ///
 /// Mirrors [`ListIterator`](super::list::ListIterator) but honors the deque's
@@ -660,9 +680,9 @@ fn states<'h>(a: &HeapObjectRead<'h, Deque>, b: &HeapObjectRead<'h, Deque>, vm: 
 /// iterator, so the captured `state` is the correct sentinel (see
 /// [`Deque::state`]).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DequeIterator {
+pub(crate) struct DequeIterator<H: Reference> {
     /// Owned reference to the deque under iteration.
-    deque: HeapId,
+    deque: H,
     /// Index of the next item to yield.
     index: usize,
     /// The deque's mutation counter captured at creation; any change means the
@@ -670,10 +690,10 @@ pub(crate) struct DequeIterator {
     state: u64,
 }
 
-impl DequeIterator {
+impl<H: RuntimeRef> DequeIterator<H> {
     /// Creates an iterator which takes ownership of one reference to `deque`,
     /// capturing the deque's current mutation counter.
-    pub(crate) fn new(deque: HeapId, vm: &VM<'_>) -> Self {
+    pub(crate) fn new(deque: H, vm: &VM<'_, H>) -> Self {
         let HeapData::Deque(d) = vm.heap.get(deque) else {
             unreachable!("deque iterator must reference a deque")
         };
@@ -685,12 +705,12 @@ impl DequeIterator {
     }
 
     /// Returns the deque kept alive by this iterator.
-    pub(crate) fn deque_id(&self) -> HeapId {
+    pub(crate) fn deque_id(&self) -> H {
         self.deque
     }
 
     /// Returns the number of items remaining in the deque's current contents.
-    pub(crate) fn size_hint(&self, heap: &Heap) -> usize {
+    pub(crate) fn size_hint(&self, heap: &Heap<H>) -> usize {
         let HeapData::Deque(deque) = heap.get(self.deque) else {
             unreachable!("deque iterator must reference a deque")
         };
@@ -698,38 +718,38 @@ impl DequeIterator {
     }
 }
 
-impl HeapItem for DequeIterator {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for DequeIterator<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         stack.push(self.deque);
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
-    fn py_is_iterator(&self, _: &VM<'h>) -> bool {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, DequeIterator<H>> {
+    fn py_is_iterator(&self, _: &VM<'h, H>) -> bool {
         true
     }
 
-    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+    fn py_is_iterable(&self, _vm: &VM<'h, H>) -> bool {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
+    fn py_type(&self, _: &VM<'h, H>) -> Type<H> {
         Type::DequeIterator
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value<H>, _: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         Ok(self.clone_value(vm.heap))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let (deque_id, index, state) = {
             let iterator = self.get(vm.heap);
             (iterator.deque, iterator.index, iterator.state)
@@ -759,12 +779,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
 /// implementation does: `append`/`count`/`copy` use `METH_O`/`METH_NOARGS` (which
 /// name the type), while `index`/`insert`/`rotate` use `PyArg_UnpackTuple` (which
 /// does not). The messages are reproduced verbatim.
-fn call_deque_method<'h>(
-    deque: &mut HeapObjectRead<'h, Deque>,
+fn call_deque_method<'h, H: RuntimeRef>(
+    deque: &mut HeapObjectRead<'h, H, Deque<H>>,
     method: StaticStrings,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     match method {
         StaticStrings::Append => {
             let item = args.get_one_arg("deque.append", vm.heap)?;
@@ -805,7 +825,7 @@ fn call_deque_method<'h>(
                 return Ok(Value::None);
             }
             this.bump_state();
-            let items: Vec<Value> = this.items.drain(..).collect();
+            let items: Vec<Value<H>> = this.items.drain(..).collect();
             items.drop_with(vm);
             Ok(Value::None)
         }
@@ -841,13 +861,17 @@ fn call_deque_method<'h>(
         StaticStrings::Count => count(deque, args, vm),
         _ => {
             args.drop_with(vm);
-            Err(ExcType::attribute_error(Type::Deque, method.into()))
+            Err(ExcType::attribute_error(Type::<NoHeapRef>::Deque, method.into()))
         }
     }
 }
 
 /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
-fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn rotate<'h, H: RuntimeRef>(
+    deque: &HeapReadMut<'h, Deque<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
     defer_drop!(n, vm);
     // A big int is a valid rotation count; only one out of `i64` range is an
@@ -873,7 +897,11 @@ fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
 }
 
 /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
-fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn insert<'h, H: RuntimeRef>(
+    deque: &HeapReadMut<'h, Deque<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let InsertArgs {
         index: index_value,
         item,
@@ -916,7 +944,11 @@ fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
 }
 
 /// `deque.remove(x)` — removes the first item equal to `x`.
-fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn remove<'h, H: RuntimeRef>(
+    deque: &HeapReadMut<'h, Deque<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let target = args.get_one_arg("deque.remove", vm.heap)?;
     defer_drop!(target, vm);
 
@@ -947,7 +979,11 @@ fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
 }
 
 /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
-fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn index<'h, H: RuntimeRef>(
+    deque: &HeapRead<'h, Deque<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let IndexArgs {
         value: target,
         start,
@@ -985,7 +1021,11 @@ fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> R
 }
 
 /// `deque.count(x)` — number of items equal to `x`.
-fn count<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn count<'h, H: RuntimeRef>(
+    deque: &HeapRead<'h, Deque<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let target = args.get_one_arg("deque.count", vm.heap)?;
     defer_drop!(target, vm);
 
@@ -1014,7 +1054,7 @@ fn count<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> R
 /// `None` means "not supplied"; an explicit `Value::None` is a *bad argument*, matching
 /// CPython (`index()` bounds go through `_PyEval_SliceIndexNotNone`, unlike real slicing
 /// which accepts `None`). Normalization is deliberately not done here — see [`index`].
-fn coerce_bound(value: Option<&Value>, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
+fn coerce_bound<H: RuntimeRef>(value: Option<&Value<H>>, vm: &mut VM<'_, H>) -> RunResult<Option<i64>> {
     match value {
         Some(value) => Ok(Some(value_to_i64_bound(value, vm)?)),
         None => Ok(None),
@@ -1040,11 +1080,11 @@ pub(crate) enum ExtendEnd {
 /// Extending a deque *by itself* is the one case that cannot append while it
 /// iterates, or it would chase its own tail; it snapshots the original items
 /// first, as CPython does.
-pub(crate) fn deque_extend<'h>(
-    deque: &mut HeapObjectRead<'h, Deque>,
-    iterable: Value,
+pub(crate) fn deque_extend<'h, H: RuntimeRef>(
+    deque: &mut HeapObjectRead<'h, H, Deque<H>>,
+    iterable: Value<H>,
     end: ExtendEnd,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'h, H>,
 ) -> RunResult<()> {
     if iterable.ref_id() == Some(deque.id()) {
         let items = deque
@@ -1080,7 +1120,12 @@ pub(crate) fn deque_extend<'h>(
 }
 
 /// Appends one item to whichever end the extension targets.
-fn deque_push<'h>(deque: &HeapReadMut<'h, Deque>, item: Value, end: ExtendEnd, vm: &mut VM<'h>) -> RunResult<()> {
+fn deque_push<'h, H: RuntimeRef>(
+    deque: &HeapReadMut<'h, Deque<H>>,
+    item: Value<H>,
+    end: ExtendEnd,
+    vm: &mut VM<'h, H>,
+) -> RunResult<()> {
     match end {
         ExtendEnd::Right => deque.append(vm, item),
         ExtendEnd::Left => deque.appendleft(vm, item),
@@ -1096,7 +1141,12 @@ fn deque_push<'h>(deque: &HeapReadMut<'h, Deque>, item: Value, end: ExtendEnd, v
 /// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque has no
 /// shortcut and materializes the full product (may hit resource limits, like
 /// CPython's `MemoryError`).
-fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+fn repeat_deque<H: RuntimeRef>(
+    source: Vec<Value<H>>,
+    maxlen: Option<usize>,
+    count: usize,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     let len = source.len();
     // `source` is an owned copy of the deque's items; release it on every exit.
     defer_drop!(source, vm);
@@ -1105,7 +1155,7 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
         // `Value` slots against the tracker and poll the time limit while building
         // — else the suffix could allocate/spin before the final `allocate` checks.
         let kept = len.saturating_mul(count).min(max);
-        check_repeat_size(mem::size_of::<Value>(), kept, &vm.heap.tracker)?;
+        check_repeat_size(mem::size_of::<Value<H>>(), kept, &vm.heap.tracker)?;
         // `Vec::new()` (not `with_capacity(kept)`): the check above is the real
         // guard, and reserving an attacker-sized capacity would itself abort.
         // The guard releases the clones built so far if the time poll trips.
@@ -1120,7 +1170,7 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
         }
         result.into_inner()
     } else {
-        check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, &vm.heap.tracker)?;
+        check_repeat_size(len.saturating_mul(mem::size_of::<Value<H>>()), count, &vm.heap.tracker)?;
         let mut result = DropGuard::new(Vec::with_capacity(len * count), vm);
         for rep in 0..count {
             let (items, vm) = result.as_parts_mut();
@@ -1136,10 +1186,10 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
     Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))))
 }
 
-impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {
+impl<'h, H: RuntimeRef> PyDeepCopy<'h, H> for HeapRead<'h, Deque<H>> {
     /// Copies a deque, keeping its `maxlen`.
     #[inline(never)]
-    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_deep_copy(&self, source: &Value<H>, memo: &mut Memo<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let copy = self.allocate_like(Vec::new(), vm);
         let copy_id = copy.ref_id().expect("deque is heap allocated");
         let mut guard = DropGuard::new(copy, vm);

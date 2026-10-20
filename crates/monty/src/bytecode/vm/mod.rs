@@ -3,6 +3,7 @@
 //! The VM uses a stack-based execution model with an operand stack for computation
 //! and a call stack for function frames. Each frame owns its instruction pointer (IP).
 
+use crate::heap::{Reference, RuntimeRef};
 mod async_exec;
 mod attr;
 mod binary;
@@ -37,7 +38,7 @@ use crate::{
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{
@@ -70,9 +71,9 @@ use crate::{
 /// - `ValueReady`: the awaited value resolved immediately, push it
 /// - `FramePushed`: a new frame was pushed for coroutine execution
 /// - `Yield`: all tasks blocked, yield to caller with pending futures
-enum AwaitResult {
+enum AwaitResult<H: Reference> {
     /// The awaited value resolved immediately (e.g., resolved ExternalFuture).
-    ValueReady(Value),
+    ValueReady(Value<H>),
     /// A new frame was pushed to execute a coroutine.
     FramePushed,
     /// All tasks are blocked - yield to caller with pending futures.
@@ -165,9 +166,9 @@ macro_rules! handle_call_result {
 }
 
 /// Result of VM execution.
-pub enum FrameExit {
+pub enum FrameExit<H: Reference> {
     /// Execution completed successfully with a return value.
-    Return(Value),
+    Return(Value<H>),
 
     /// Execution paused for an external function call.
     ///
@@ -178,7 +179,7 @@ pub enum FrameExit {
         /// Name of the external function to call (interned or heap-owned).
         function_name: EitherStr,
         /// Arguments for the external function (includes both positional and keyword args).
-        args: ArgValues,
+        args: ArgValues<H>,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
         /// Optional bytecode IP of the load instruction that produced this `ExtFunction`.
@@ -205,7 +206,7 @@ pub enum FrameExit {
         /// Post-processing for this call's result, armed on
         /// [`VM::pending_effect`] only once the call reaches the host
         /// (`convert_frame_exit`); dropping the exit releases it instead.
-        effect: Option<PendingEffect>,
+        effect: Option<PendingEffect<H>>,
     },
 
     /// Execution paused for a host-routed call: a method call on a host
@@ -219,7 +220,7 @@ pub enum FrameExit {
         /// Method name (e.g. "distance", or "__call__" for construction).
         method_name: EitherStr,
         /// Arguments for the call (the receiver is not among them).
-        args: ArgValues,
+        args: ArgValues<H>,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
         /// Uuid of the routed receiver (instance or class type).
@@ -245,7 +246,7 @@ pub enum FrameExit {
         type_object: bool,
         /// How `getattr()` / `hasattr()` consume the answer; `None` for
         /// `obj.attr`. The only heap reference this exit can carry.
-        effect: Option<PendingLookupEffect>,
+        effect: Option<PendingLookupEffect<H>>,
     },
 
     /// All tasks are blocked waiting for external futures to resolve.
@@ -274,7 +275,7 @@ pub enum FrameExit {
     },
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H, Ref = H>> DropWithContext<C> for FrameExit<H> {
     fn drop_with(self, heap: &mut C) {
         match self {
             Self::Return(value) => value.drop_with(heap),
@@ -299,7 +300,7 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
 /// Each frame represents one level in the call stack and owns its own
 /// instruction pointer. This design avoids sync bugs on call/return.
 #[derive(Debug)]
-pub struct CallFrame<'code> {
+pub struct CallFrame<'code, H: Reference> {
     /// Compiled body, stable even when runtime compilation publishes more functions.
     code: &'code Code,
 
@@ -345,7 +346,7 @@ pub struct CallFrame<'code> {
     /// Where names that are not stack slots resolve; `None` for every
     /// ordinary frame. Owns its dict references: released by
     /// `cleanup_frame_state`, or taken by `serialize` for a snapshot.
-    namespace: Option<Box<FrameNamespace>>,
+    namespace: Option<Box<FrameNamespace<H>>>,
 
     /// Whether this frame is a class `__init__` running for `Foo(...)`.
     ///
@@ -381,7 +382,7 @@ pub(super) fn frame_code<'code>(
     function_id.map_or(module_code, |id| &interns.get_function(id).code)
 }
 
-impl<'code> CallFrame<'code> {
+impl<'code, H: RuntimeRef> CallFrame<'code, H> {
     /// Creates a new call frame for module-level code.
     ///
     /// Module frames have `locals_count = 0` because module-level variables
@@ -442,7 +443,7 @@ impl<'code> CallFrame<'code> {
         exception_stack_base: usize,
         function_id: FunctionId,
         call_offset: Option<u32>,
-        namespace: Option<Box<FrameNamespace>>,
+        namespace: Option<Box<FrameNamespace<H>>>,
     ) -> Self {
         Self {
             code,
@@ -462,7 +463,7 @@ impl<'code> CallFrame<'code> {
     }
 }
 
-impl CallFrame<'_> {
+impl<H: RuntimeRef> CallFrame<'_, H> {
     /// Fetches `N` operand bytes with a single bounds check and advances the frame IP.
     #[inline]
     fn fetch_array<const N: usize>(&mut self) -> [u8; N] {
@@ -559,12 +560,13 @@ impl CallFrame<'_> {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// Serializable representation of a call frame.
 ///
 /// Cannot store `&Code` (a reference) — instead stores `FunctionId` to look up
 /// the pre-compiled Code object on resume. Module-level code uses `None`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct SerializedFrame {
+pub struct SerializedFrame<H: Reference> {
     /// Which function's code this frame executes (None = module-level).
     #[serde(rename = "F")]
     function_id: Option<FunctionId>,
@@ -603,17 +605,17 @@ pub struct SerializedFrame {
     /// Frame namespace, with ownership of its dict references (see
     /// `CallFrame.namespace`).
     #[serde(rename = "N")]
-    namespace: Option<Box<FrameNamespace>>,
+    namespace: Option<Box<FrameNamespace<H>>>,
 
     /// The `from ... import` in progress, if the frame suspended inside one.
     #[serde(default, rename = "M")]
     import_from_module: Option<StringId>,
 }
 
-impl CallFrame<'_> {
+impl<H: RuntimeRef> CallFrame<'_, H> {
     /// Converts this frame to a serializable representation, moving the
     /// namespace's owned references across so the live frame releases nothing.
-    fn serialize(&mut self) -> SerializedFrame {
+    fn serialize(&mut self) -> SerializedFrame<H> {
         assert!(!self.is_parked, "cannot serialize a parked frame");
         assert!(
             !self.should_return,
@@ -633,6 +635,7 @@ impl CallFrame<'_> {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// VM state for pause/resume at external function calls.
 ///
 /// **Ownership:** This struct OWNS the values (refcounts were already incremented).
@@ -645,25 +648,25 @@ impl CallFrame<'_> {
 /// Note: This struct does not implement `Clone` because `Value` uses manual
 /// reference counting. Snapshots transfer ownership - they are not copied.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct VMSnapshot {
+pub struct VMSnapshot<H: Reference> {
     /// Operand stack — locals and operands interleaved per frame.
     ///
     /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
     /// with operands pushed above.
-    pub(crate) stack: Vec<Value>,
+    pub(crate) stack: Vec<Value<H>>,
 
     /// Module-level (global) variable storage.
-    pub(crate) globals: Vec<Value>,
+    pub(crate) globals: Vec<Value<H>>,
 
     /// Call frames (serializable form — stores FunctionId, not &Code).
-    frames: Vec<SerializedFrame>,
+    frames: Vec<SerializedFrame<H>>,
 
     /// Stack of exceptions being handled for nested except blocks.
     ///
     /// When entering an except handler, the exception is pushed onto this stack.
     /// When exiting via `ClearException`, the top is popped. This allows nested
     /// except handlers to restore the outer exception context.
-    exception_stack: Vec<Value>,
+    exception_stack: Vec<Value<H>>,
 
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
@@ -671,14 +674,14 @@ pub struct VMSnapshot {
     /// Scheduler state (always present).
     ///
     /// Contains call ID counter, task state, pending calls, and resolved futures.
-    scheduler: Scheduler,
+    scheduler: Scheduler<H>,
 
     /// In-flight resume effect for the paused OS call, if any. See
     /// [`VM::pending_effect`].
-    pending_effect: Option<PendingEffect>,
+    pending_effect: Option<PendingEffect<H>>,
     /// In-flight resume effect for the paused lazy attribute lookup, if any.
     /// See [`VM::pending_lookup_effect`].
-    pending_lookup_effect: Option<PendingLookupEffect>,
+    pending_lookup_effect: Option<PendingLookupEffect<H>>,
 
     /// Working directory at the pause, including any `os.chdir` so far.
     cwd: String,
@@ -686,14 +689,14 @@ pub struct VMSnapshot {
     random: SessionRandom,
 }
 
-impl VMSnapshot {
+impl<H: RuntimeRef> VMSnapshot<H> {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
     /// stacks, scheduler tasks, pending resume effects), and returns the
     /// globals, working directory and `random` generator so an abandoned REPL
     /// snippet keeps its namespace, any `os.chdir` it made and any seed it
     /// set. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom) {
+    pub(crate) fn abandon(self, heap: &mut Heap<H>) -> (Vec<Value<H>>, String, SessionRandom) {
         let Self {
             stack,
             globals,
@@ -738,29 +741,29 @@ impl VMSnapshot {
 /// Executes compiled bytecode using a stack-based execution model.
 /// The instruction pointer (IP) lives in each `CallFrame`, not here,
 /// to avoid sync bugs on call/return.
-pub struct VM<'h> {
+pub struct VM<'h, H: RuntimeRef> {
     /// Operand stack — locals and operands interleaved per frame.
     ///
     /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
     /// with operands pushed above. Module-level frames have `locals_count = 0`
     /// because globals are stored separately.
-    pub(crate) stack: Vec<Value>,
+    pub(crate) stack: Vec<Value<H>>,
 
     /// Module-level (global) variable storage.
     ///
     /// Indexed by slot number from `LoadGlobal`/`StoreGlobal` opcodes.
     /// Separated from the stack because globals persist across function calls
     /// and are accessed via dedicated opcodes.
-    pub(crate) globals: Vec<Value>,
+    pub(crate) globals: Vec<Value<H>>,
 
     /// Frame currently executing, or a placeholder while no task is active.
-    current_frame: CallFrame<'h>,
+    current_frame: CallFrame<'h, H>,
 
     /// Caller frames suspended below `current_frame`.
-    suspended_frames: Vec<CallFrame<'h>>,
+    suspended_frames: Vec<CallFrame<'h, H>>,
 
     /// Heap for reference-counted objects.
-    pub(crate) heap: &'h mut HeapReader<'h>,
+    pub(crate) heap: &'h mut HeapReader<'h, H>,
 
     /// Stable committed entries, which remain borrowable across runtime compilation.
     pub(crate) interns: &'h Interns,
@@ -778,7 +781,7 @@ pub struct VM<'h> {
     /// When entering an except handler, the exception is pushed onto this stack.
     /// When exiting via `ClearException`, the top is popped. This allows nested
     /// except handlers to restore the outer exception context.
-    exception_stack: Vec<Value>,
+    exception_stack: Vec<Value<H>>,
 
     /// IP of the instruction being executed (for exception table lookup).
     ///
@@ -791,7 +794,7 @@ pub struct VM<'h> {
     /// Always present — owns `next_call_id` (used by both sync and async paths)
     /// plus async task state. Internal collections don't allocate until first use,
     /// so sync-only code pays only for the main task entry.
-    scheduler: Scheduler,
+    scheduler: Scheduler<H>,
 
     /// Module-level code (for restoring main task frames).
     ///
@@ -812,7 +815,7 @@ pub struct VM<'h> {
     /// Deduplicates heap allocations for repeated strings (especially dict keys)
     /// across multiple `json.loads()` calls within a single execution. Lazily
     /// initialized on first use, cleaned up when the VM is dropped.
-    pub(crate) json_string_cache: JsonStringCache,
+    pub(crate) json_string_cache: JsonStringCache<H>,
 
     /// File state update to apply when the next OS-call result resumes.
     ///
@@ -825,13 +828,13 @@ pub struct VM<'h> {
     /// VM is single-threaded and OS calls are strictly request/response — so a
     /// single `Option` is sufficient even with async tasks (which interleave
     /// between OS calls, not within one).
-    pub(crate) pending_effect: Option<PendingEffect>,
+    pub(crate) pending_effect: Option<PendingEffect<H>>,
 
     /// How the paused lazy attribute lookup's answer is consumed on `resume`
     /// (`hasattr()` / `getattr()` default), armed like
     /// [`pending_effect`](Self::pending_effect) once the lookup reaches
     /// the host; `None` for `obj.attr` and when nothing is in flight.
-    pub(crate) pending_lookup_effect: Option<PendingLookupEffect>,
+    pub(crate) pending_lookup_effect: Option<PendingLookupEffect<H>>,
 
     /// Current recursion depth — charged by function-call frames and by nested
     /// data-structure traversals (`repr`/`eq`/`cmp`/`hash`, json, ...).
@@ -844,7 +847,7 @@ pub struct VM<'h> {
     /// Reusable scratch buffer for building a sync call's locals, avoiding a
     /// `malloc`/`free` per call. Only held transiently within
     /// `call_sync_function`, so one shared buffer is safe under recursion.
-    namespace_scratch: Vec<Value>,
+    namespace_scratch: Vec<Value<H>>,
     /// Remaining native stack budget for `evaluate_function`, partials and callable-instance dispatch.
     /// Not serialized: nested runs cannot suspend, and callable wrappers release their
     /// charge before returning a suspending `CallResult`. Checked by [`Self::snapshot`].
@@ -865,16 +868,16 @@ pub struct VM<'h> {
     pub(crate) env: VmEnv<'h>,
 }
 
-impl<'h> VM<'h> {
+impl<'h, H: RuntimeRef> VM<'h, H> {
     /// Creates a new VM ready to run `program`'s module code.
     ///
     /// The global-name map is borrowed mutably; committed intern entries and
     /// `program` remain shared while runtime compilation appends new entries.
     pub fn new(
-        globals: Vec<Value>,
+        globals: Vec<Value<H>>,
         tables: &'h mut SessionTables,
         program: &'h Program,
-        heap: &'h mut HeapReader<'h>,
+        heap: &'h mut HeapReader<'h, H>,
         print_writer: PrintWriter<'h>,
     ) -> Self {
         let SessionTables { global_names, interns } = tables;
@@ -911,15 +914,15 @@ impl<'h> VM<'h> {
     /// `program.module_code` serves frames with `function_id = None`. The
     /// snapshot's working directory overrides the program's.
     pub fn restore(
-        snapshot: VMSnapshot,
+        snapshot: VMSnapshot<H>,
         tables: &'h mut SessionTables,
         program: &'h Program,
-        heap: &'h mut HeapReader<'h>,
+        heap: &'h mut HeapReader<'h, H>,
         print_writer: PrintWriter<'h>,
     ) -> Self {
         let SessionTables { global_names, interns } = tables;
         // Reconstruct call frames from serialized form
-        let frames: Vec<CallFrame<'_>> = snapshot
+        let frames: Vec<CallFrame<'_, H>> = snapshot
             .frames
             .into_iter()
             .map(|sf| {
@@ -989,7 +992,7 @@ impl<'h> VM<'h> {
     ///
     /// This is NOT a clone - it's a transfer. After calling this, the original VM
     /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
-    pub fn snapshot(mut self) -> VMSnapshot {
+    pub fn snapshot(mut self) -> VMSnapshot<H> {
         // Always fully released (== MAX) here — see the field doc. Asserted to
         // catch a future `run()` call site that can suspend mid-re-entry.
         debug_assert_eq!(
@@ -1045,7 +1048,7 @@ impl<'h> VM<'h> {
     /// Used by the REPL to reclaim globals after VM execution completes.
     /// Must be called before the VM is dropped, since `Drop` will clean up
     /// any remaining globals with `drop_with`.
-    pub fn take_globals(&mut self) -> Vec<Value> {
+    pub fn take_globals(&mut self) -> Vec<Value<H>> {
         mem::take(&mut self.globals)
     }
 
@@ -1064,8 +1067,8 @@ impl<'h> VM<'h> {
     fn prepare_os_call(
         &mut self,
         mut call: OsFunctionCall,
-        effect: Option<PendingEffect>,
-    ) -> RunResult<Option<FrameExit>> {
+        effect: Option<PendingEffect<H>>,
+    ) -> RunResult<Option<FrameExit<H>>> {
         resolve_call_paths(&mut call, &self.env.cwd);
         if let Err(message) = call.check_path_null_bytes() {
             release_pending_effect(effect, self.heap);
@@ -1108,7 +1111,7 @@ impl<'h> VM<'h> {
     /// `run_external` call, and it must NEVER nest: VM-internal re-entry
     /// (task switches, `evaluate_function`) uses the raw private [`Self::run`]
     /// instead, whose time is already inside the enclosing window.
-    pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
+    pub(crate) fn run_external(&mut self) -> Result<FrameExit<H>, RunError> {
         self.heap.tracker.on_execution_start();
         let result = self.run();
         self.heap.tracker.on_execution_stop();
@@ -1158,7 +1161,7 @@ impl<'h> VM<'h> {
     /// `CallResult` into the `FrameExit` that yields to the host, or awaits an
     /// `AwaitValue`. `Ok(None)` means execution continues in the current frame.
     #[inline(never)]
-    fn suspend_call_result(&mut self, result: CallResult) -> Result<Option<FrameExit>, RunError> {
+    fn suspend_call_result(&mut self, result: CallResult<H>) -> Result<Option<FrameExit<H>>, RunError> {
         let exit = match result {
             CallResult::Value(value) => {
                 self.push(value);
@@ -1243,7 +1246,7 @@ impl<'h> VM<'h> {
     ///
     /// The current frame is stored separately from its suspended callers, so
     /// dispatch updates its authoritative instruction pointer directly.
-    fn run(&mut self) -> Result<FrameExit, RunError> {
+    fn run(&mut self) -> Result<FrameExit<H>, RunError> {
         /// How often (in instructions) the dispatch loop runs its periodic
         /// work: the full `check_memory_time` and the GC-scheduling probe.
         /// The checkpoint reads the clock when limits are armed, so this sets
@@ -1327,11 +1330,11 @@ impl<'h> VM<'h> {
                     let value = self.current_frame.code.constant(idx);
                     // Handle InternLongInt specially - convert to heap-allocated LongInt
                     if let Value::InternLongInt(long_int_id) = value {
-                        let bi = self.interns.get_long_int(*long_int_id).clone();
+                        let bi = self.interns.get_long_int(long_int_id).clone();
                         let long_value = LongInt::new(bi).into_value(self.heap);
                         self.push(long_value);
                     } else {
-                        self.push(value.clone_with_heap(self));
+                        self.push(value);
                     }
                 }
                 Opcode::LoadNone => self.push(Value::None),
@@ -2093,7 +2096,7 @@ impl<'h> VM<'h> {
     /// Loads a top-level built-in or suspends with [`OsFunctionCall::Import`].
     /// The host's value becomes the module; `NotFound` raises `ModuleNotFoundError`.
     /// `LoadSubmodule` resolves the remaining dotted components.
-    fn load_module(&mut self, module_id: u16) -> CallResult {
+    fn load_module(&mut self, module_id: u16) -> CallResult<H> {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
             Some(module) => CallResult::Value(Value::Ref(module.create(self))),
@@ -2108,7 +2111,7 @@ impl<'h> VM<'h> {
     /// If the paused OS call has a pending effect, the result is routed
     /// through the corresponding helper (file-state update or `os.listdir`
     /// name reduction) before it is pushed back to Python.
-    pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
+    pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit<H>, RunError> {
         // Pre-conversion effects reshape the raw host object; a post-conversion
         // effect waits in the slot until the value exists to apply it to.
         let obj = match self.pending_effect.take() {
@@ -2236,11 +2239,11 @@ impl<'h> VM<'h> {
     /// next, since the replay may itself suspend (a second unread file).
     fn resume_load_then_call(
         &mut self,
-        file_id: HeapId,
-        callable: Value,
-        args: ArgValues,
-        value: Value,
-    ) -> Result<FrameExit, RunError> {
+        file_id: H,
+        callable: Value<H>,
+        args: ArgValues<H>,
+        value: Value<H>,
+    ) -> Result<FrameExit<H>, RunError> {
         if let Err(err) = apply_buffer_load(file_id, value, self) {
             callable.drop_with(self);
             args.drop_with(self);
@@ -2274,7 +2277,11 @@ impl<'h> VM<'h> {
     /// still suspended at the same instruction, so the host sees another
     /// `OsCall` and the eventual value is pushed where the first would have been.
     /// A call answered locally (a NUL byte in a predicate) resumes Python at once.
-    fn suspend_again(&mut self, call: OsFunctionCall, effect: Option<PendingEffect>) -> Result<FrameExit, RunError> {
+    fn suspend_again(
+        &mut self,
+        call: OsFunctionCall,
+        effect: Option<PendingEffect<H>>,
+    ) -> Result<FrameExit<H>, RunError> {
         match self.prepare_os_call(call, effect) {
             Ok(Some(exit)) => Ok(exit),
             Ok(None) => self.run_external(),
@@ -2298,7 +2305,7 @@ impl<'h> VM<'h> {
     ///
     /// Also clears any pending file effect so user code that catches a
     /// host-side OS exception can retry without stale in-flight state.
-    pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
+    pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit<H>, RunError> {
         if let Some(effect) = self.pending_effect.take() {
             match effect {
                 // Resume on attempting to unlink missing file with unlink(missing_ok=True)
@@ -2377,24 +2384,24 @@ impl<'h> VM<'h> {
 
     /// Pushes a value onto the operand stack.
     #[inline]
-    pub(crate) fn push(&mut self, value: Value) {
+    pub(crate) fn push(&mut self, value: Value<H>) {
         self.stack.push(value);
     }
 
     /// Pops a value from the operand stack.
     #[inline]
-    pub(super) fn pop(&mut self) -> Value {
+    pub(super) fn pop(&mut self) -> Value<H> {
         self.stack.pop().expect("stack underflow")
     }
 
     /// Peeks at the top of the operand stack without removing it.
     #[inline]
-    pub(super) fn peek(&self) -> &Value {
+    pub(super) fn peek(&self) -> &Value<H> {
         self.stack.last().expect("stack underflow")
     }
 
     /// Pops n values from the stack in reverse order (first popped is last in vec).
-    pub(super) fn pop_n(&mut self, n: usize) -> Vec<Value> {
+    pub(super) fn pop_n(&mut self, n: usize) -> Vec<Value<H>> {
         let start = self.stack.len() - n;
         self.stack.drain(start..).collect()
     }
@@ -2405,18 +2412,18 @@ impl<'h> VM<'h> {
 
     /// Returns the frame currently executing, or the parked placeholder.
     #[inline]
-    pub(crate) fn current_frame(&self) -> &CallFrame<'h> {
+    pub(crate) fn current_frame(&self) -> &CallFrame<'h, H> {
         &self.current_frame
     }
 
     /// Returns mutable access to the current frame.
     #[inline]
-    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame<'h> {
+    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame<'h, H> {
         &mut self.current_frame
     }
 
     /// Pushes a frame, releasing its state if the recursion limit rejects it.
-    pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
+    pub(super) fn push_frame(&mut self, frame: CallFrame<'h, H>) -> RunResult<()> {
         if !self.current_frame.is_parked
             && let Err(e) = self.incr_recursion()
         {
@@ -2428,7 +2435,7 @@ impl<'h> VM<'h> {
     }
 
     /// Installs a frame whose recursion level has already been reserved.
-    fn push_admitted_frame(&mut self, frame: CallFrame<'h>) {
+    fn push_admitted_frame(&mut self, frame: CallFrame<'h, H>) {
         let caller = mem::replace(&mut self.current_frame, frame);
         self.suspended_frames.push(caller);
     }
@@ -2456,7 +2463,7 @@ impl<'h> VM<'h> {
 
     /// Releases what a finished frame owns: its stack region and namespace.
     #[inline]
-    fn cleanup_frame_state(&mut self, frame: CallFrame<'_>) {
+    fn cleanup_frame_state(&mut self, frame: CallFrame<'_, H>) {
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).
@@ -2521,7 +2528,7 @@ impl<'h> VM<'h> {
     /// or [`yield_if_parked`] detects that dispatch has no runnable frame.
     /// With no pending calls, report the stall now: resuming cannot progress
     /// and would obscure the discarded task that caused it.
-    pub(super) fn pending_futures_exit(&self) -> Result<FrameExit, RunError> {
+    pub(super) fn pending_futures_exit(&self) -> Result<FrameExit<H>, RunError> {
         let pending_call_ids = self.scheduler.pending_call_ids();
         if pending_call_ids.is_empty() {
             Err(RunError::internal(
@@ -2686,7 +2693,7 @@ impl<'h> VM<'h> {
     /// The first call hits `globals[sum_slot] = Undefined` and falls back here to
     /// the builtin; once `def sum` runs, the slot holds the user function and the
     /// fallback isn't taken anymore.
-    fn builtin_for_name(&self, name_id: StringId) -> Option<Value> {
+    fn builtin_for_name(&self, name_id: StringId) -> Option<Value<H>> {
         Builtins::value_from_name(self.interns.get_str(name_id))
     }
 
@@ -2703,7 +2710,7 @@ impl<'h> VM<'h> {
     /// *not* exposed: CPython only ever puts a loader object there (never
     /// `None`), so rather than diverge on the type we let it raise `NameError`
     /// like other unexposed dunders (`__cached__`, …).
-    fn module_dunder(&self, name_id: StringId) -> Option<Value> {
+    fn module_dunder(&self, name_id: StringId) -> Option<Value<H>> {
         let value = match self.interns.get_str(name_id) {
             "__name__" => Value::InternString(self.interns.intern_static(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
@@ -2745,7 +2752,7 @@ impl<'h> VM<'h> {
     /// [`builtin_for_name`]) before yielding `NameLookup` so the host can supply
     /// an external binding.
     #[inline]
-    fn load_global(&mut self, slot: u16) -> Result<Option<FrameExit>, RunError> {
+    fn load_global(&mut self, slot: u16) -> Result<Option<FrameExit<H>>, RunError> {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
         // Check for undefined value — raise appropriate error or yield to host
@@ -2795,7 +2802,7 @@ impl<'h> VM<'h> {
     }
 
     /// Binds `value` at a global slot, releasing what the slot held.
-    fn set_global_slot(&mut self, slot: u16, value: Value) {
+    fn set_global_slot(&mut self, slot: u16, value: Value<H>) {
         let old_value = mem::replace(&mut self.globals[slot as usize], value);
         old_value.drop_with(self);
     }
@@ -2848,7 +2855,7 @@ impl<'h> VM<'h> {
     /// Extracts the cell `HeapId` from a local variable slot on the stack.
     ///
     /// Cell variables are stored as `Value::Ref(cell_id)` in the frame's locals region.
-    fn cell_id_from_local(&self, slot: u16) -> HeapId {
+    fn cell_id_from_local(&self, slot: u16) -> H {
         match &self.stack[self.current_frame.stack_base() + slot as usize] {
             Value::Ref(cell_id) => *cell_id,
             other => panic!("LoadCell/StoreCell: expected cell reference in local slot {slot}, found {other:?}"),
@@ -2914,11 +2921,13 @@ impl<'h> VM<'h> {
 }
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
-impl ContainsHeap for VM<'_> {
-    fn heap(&self) -> &Heap {
+impl<H: RuntimeRef> ContainsHeap for VM<'_, H> {
+    type Ref = H;
+
+    fn heap(&self) -> &Heap<H> {
         self.heap
     }
-    fn heap_mut(&mut self) -> &mut Heap {
+    fn heap_mut(&mut self) -> &mut Heap<H> {
         self.heap
     }
 }
@@ -2929,7 +2938,7 @@ impl ContainsHeap for VM<'_> {
 /// string cache — all of which may hold heap references that need their
 /// ref-counts decremented. Fields that were already emptied (e.g. by
 /// `take_globals`) are harmlessly drained as empty.
-impl Drop for VM<'_> {
+impl<H: RuntimeRef> Drop for VM<'_, H> {
     fn drop(&mut self) {
         release_pending_effect(self.pending_effect.take(), self.heap);
         self.pending_lookup_effect.take().drop_with(self.heap);

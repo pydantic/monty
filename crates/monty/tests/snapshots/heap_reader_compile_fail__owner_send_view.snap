@@ -1,0 +1,40 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error[E0277]: `NonNull<HeapEntry<HeapObjectPtr<'_>>>` cannot be sent between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:141:25
+    |
+141 |             scope.spawn(move || state.heap.collect_cycles());
+    |                   ----- -------^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |                   |     |
+    |                   |     `NonNull<HeapEntry<HeapObjectPtr<'_>>>` cannot be sent between threads safely
+    |                   |     within this `{closure@crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:141:25: 141:32}`
+    |                   required by a bound introduced by this call
+    |
+    = help: within `{closure@crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:141:25: 141:32}`, the trait `Send` is not implemented for `NonNull<HeapEntry<HeapObjectPtr<'_>>>`
+note: required because it appears within the type `HeapObjectPtr<'_>`
+   --> crates/monty/src/heap/object_ptr.rs:24:12
+    |
+ 24 | pub struct HeapObjectPtr<'heap> {
+    |            ^^^^^^^^^^^^^
+note: required because it appears within the type `std::option::Option<HeapObjectPtr<'_>>`
+   --> /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/option.rs:598:9
+note: required because it appears within the type `Heap<HeapObjectPtr<'_>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'_>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+    = note: required because it appears within the type `&mut OwnedState<HeapObjectPtr<'_>>`
+note: required because it's used within this closure
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:141:25
+    |
+141 |             scope.spawn(move || state.heap.collect_cycles());
+    |                         ^^^^^^^
+note: required by a bound in `Scope::<'scope, 'env>::spawn`
+   --> /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/thread/scoped.rs:201:4

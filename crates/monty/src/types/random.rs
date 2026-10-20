@@ -20,7 +20,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes, hash_python_str, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::{
         copy::{Memo, PyDeepCopy},
@@ -55,7 +55,11 @@ impl SessionRandom {
     /// Initializes the module generator as `random.seed(s)` under `Seed(s)`;
     /// other targets use [`Self::fresh_state`]. `None` requests host entropy.
     /// Errors only if OS entropy fails.
-    pub(crate) fn first_state(&mut self, target: RandomTarget, start: &RandomStart) -> RunResult<Option<Mt19937>> {
+    pub(crate) fn first_state<H: RuntimeRef>(
+        &mut self,
+        target: RandomTarget<H>,
+        start: &RandomStart,
+    ) -> RunResult<Option<Mt19937>> {
         match (start, target) {
             (RandomStart::Seed(seed), RandomTarget::Global) => Ok(Some(Mt19937::from_key(&seed_key_from_seed(seed)))),
             _ => self.fresh_state(start),
@@ -139,7 +143,7 @@ impl Random {
 
     /// `random.Random(x=None)`: `x` seeds like `seed(x)`; `None` (the default)
     /// leaves the instance unseeded until its first draw.
-    pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    pub(crate) fn init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         let RandomInitArgs { x } = RandomInitArgs::from_args(args, vm)?;
         defer_drop!(x, vm);
         let random = if matches!(x, Value::None) {
@@ -154,14 +158,15 @@ impl Random {
 /// `Random(x=None)` — `random.Random.__init__` is a plain Python `def`.
 #[derive(FromArgs)]
 #[from_args(name = "Random", style = def)]
-struct RandomInitArgs {
+struct RandomInitArgs<H: Reference> {
     #[from_args(default = Value::None)]
-    x: Value,
+    x: Value<H>,
 }
 
 /// The `version` `seed()` uses when none is given.
 pub(crate) const SEED_VERSION_DEFAULT: i64 = 2;
 
+#[derive(monty_macros::Relocate)]
 /// Which generator a `random` operation acts on: the module-level one on the
 /// VM, or a `random.Random` instance on the heap.
 ///
@@ -169,15 +174,15 @@ pub(crate) const SEED_VERSION_DEFAULT: i64 = 2;
 /// the resume can seed the right generator; the instance form holds no
 /// reference of its own — the effect pins the object across the yield.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum RandomTarget {
+pub(crate) enum RandomTarget<H: Reference> {
     /// The module-level generator behind `random.random()` and friends.
     Global,
     /// A `random.Random` instance.
-    Instance(HeapId),
+    Instance(H),
 }
 
-impl RandomTarget {
-    pub(crate) fn is_seeded(self, vm: &VM<'_>) -> bool {
+impl<H: RuntimeRef> RandomTarget<H> {
+    pub(crate) fn is_seeded(self, vm: &VM<'_, H>) -> bool {
         match self {
             Self::Global => vm.random.module.is_seeded(),
             Self::Instance(id) => match vm.heap.get(id) {
@@ -193,7 +198,11 @@ impl RandomTarget {
     /// A nested call reaching the *same* generator inside `f` sees it as
     /// unseeded, so draw first and only then run anything that may re-enter
     /// Python (`__getitem__`, comparisons).
-    pub(crate) fn with_generator<'h, T>(self, vm: &mut VM<'h>, f: impl FnOnce(&mut Random, &mut VM<'h>) -> T) -> T {
+    pub(crate) fn with_generator<'h, T>(
+        self,
+        vm: &mut VM<'h, H>,
+        f: impl FnOnce(&mut Random, &mut VM<'h, H>) -> T,
+    ) -> T {
         let mut random = self.take(vm);
         let result = f(&mut random, vm);
         self.restore(vm, random);
@@ -201,12 +210,12 @@ impl RandomTarget {
     }
 
     /// Installs `rng` as the target's core state, as `seed()` does.
-    pub(crate) fn reseed(self, vm: &mut VM<'_>, rng: Mt19937) {
+    pub(crate) fn reseed(self, vm: &mut VM<'_, H>, rng: Mt19937) {
         self.with_generator(vm, |random, _| random.reseed(rng));
     }
 
     /// Replaces the target's generator with `random`.
-    fn restore(self, vm: &mut VM<'_>, random: Random) {
+    fn restore(self, vm: &mut VM<'_, H>, random: Random) {
         match self {
             Self::Global => vm.random.module = random,
             Self::Instance(id) => match vm.heap.read(id) {
@@ -217,7 +226,7 @@ impl RandomTarget {
     }
 
     /// Lifts the generator out, leaving an unseeded placeholder behind.
-    fn take(self, vm: &mut VM<'_>) -> Random {
+    fn take(self, vm: &mut VM<'_, H>) -> Random {
         match self {
             Self::Global => mem::take(&mut vm.random.module),
             Self::Instance(id) => match vm.heap.read(id) {
@@ -239,7 +248,11 @@ impl RandomTarget {
 /// Ints use their absolute value; floats CPython's `hash()`; `str`/`bytes` are
 /// SHA-512 extended (version 2) or folded by the version 1 loop. Any other type
 /// is rejected with `random.py`'s message.
-pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> RunResult<Vec<u32>> {
+pub(crate) fn seed_key_from_value<H: RuntimeRef>(
+    value: &Value<H>,
+    version: i64,
+    vm: &VM<'_, H>,
+) -> RunResult<Vec<u32>> {
     let key = match value {
         Value::Bool(b) => vec![u32::from(*b)],
         Value::Int(i) => key_from_u64(i.unsigned_abs()),
@@ -597,31 +610,31 @@ impl Mt19937 {
 // Heap object glue
 // ============================================================================
 
-impl HeapItem for Random {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for Random {
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<H>) {
         // A generator owns no heap references.
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
-    fn py_type(&self, _: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Random> {
+    fn py_type(&self, _: &VM<'h, H>) -> Type<H> {
         Type::Random
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value<H>, _: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
     /// Generators hash by identity, as any class without `__eq__` does.
-    fn py_hash(&self, _: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         Ok(write!(
             f,
             "<random.Random object at 0x{:x}>",
@@ -630,12 +643,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
     }
 
     /// `VERSION`, the state-format number `getstate()` reports.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         Ok((attr.static_string(vm.interns) == Some(StaticStrings::RandomVersion))
             .then_some(CallResult::Value(Value::Int(3))))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         if let Some(function) = attr
             .static_string(vm.interns)
             .and_then(RandomFunctions::from_static_string)
@@ -656,7 +669,7 @@ impl<'h> HeapRead<'h, Random> {
     /// unseeded generator copies as unseeded, and the two then take *separate*
     /// entropy from the host — CPython seeds at construction, so its copies
     /// agree (see `limitations/copy.md`).
-    pub(crate) fn allocate_like(&self, vm: &mut VM<'h>) -> Value {
+    pub(crate) fn allocate_like<H: RuntimeRef>(&self, vm: &mut VM<'h, H>) -> Value<H> {
         let source = self.get(vm.heap);
         let copy = Random {
             rng: source.rng.clone(),
@@ -666,10 +679,10 @@ impl<'h> HeapRead<'h, Random> {
     }
 }
 
-impl<'h> PyDeepCopy<'h> for HeapRead<'h, Random> {
+impl<'h, H: RuntimeRef> PyDeepCopy<'h, H> for HeapRead<'h, Random> {
     /// A generator holds no Python values, so its deep copy is the shallow one.
     #[inline(never)]
-    fn py_deep_copy(&self, _source: &Value, _memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_deep_copy(&self, _source: &Value<H>, _memo: &mut Memo<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         Ok(self.allocate_like(vm))
     }
 }

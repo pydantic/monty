@@ -1,12 +1,15 @@
 //! Implementation of the any() builtin function.
 
-use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, types::PyTrait, value::Value};
+use crate::{
+    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, heap::RuntimeRef, types::PyTrait,
+    value::Value,
+};
 
 /// Implementation of the any() builtin function.
 ///
 /// Returns True if any element of the iterable is true.
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
-pub fn builtin_any(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_any<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let iterable = args.get_one_arg("any", vm.heap)?;
     let iter = iterable.into_py_iter(vm)?;
     defer_drop!(iter, vm);

@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
+    heap::{HeapData, Reference, RuntimeRef},
     intern::StaticStrings,
     types::PyTrait,
     value::{Marker, Value},
@@ -22,7 +22,7 @@ use crate::{
 ///   `TypeError`, since Monty has no file objects to write into
 /// - `flush`: whether to flush the stream (accepted but ignored — Monty
 ///   doesn't buffer stdout)
-pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_print<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let PrintArgs {
         objects,
         sep,
@@ -72,7 +72,7 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `sys.stdout` and `sys.stderr` are opaque markers rather than file objects
 /// (see `limitations/sys.md`), so they are matched by identity. Any other
 /// value, including a class defining `write()`, has nothing to write into.
-fn print_stream(file: &Value, vm: &VM<'_>) -> RunResult<PrintStream> {
+fn print_stream<H: RuntimeRef>(file: &Value<H>, vm: &VM<'_, H>) -> RunResult<PrintStream> {
     match file {
         Value::None | Value::Marker(Marker(StaticStrings::Stdout)) => Ok(PrintStream::Stdout),
         Value::Marker(Marker(StaticStrings::Stderr)) => Ok(PrintStream::Stderr),
@@ -94,27 +94,27 @@ fn print_stream(file: &Value, vm: &VM<'_>) -> RunResult<PrintStream> {
 /// without forcing a type check. `file` is resolved by `print_stream`.
 #[derive(FromArgs)]
 #[from_args(name = "print")]
-struct PrintArgs {
+struct PrintArgs<H: Reference> {
     #[from_args(varargs)]
-    objects: Vec<Value>,
+    objects: Vec<Value<H>>,
     #[from_args(default = Value::None)]
-    sep: Value,
+    sep: Value<H>,
     #[from_args(default = Value::None)]
-    end: Value,
+    end: Value<H>,
     #[from_args(default = Value::None)]
-    file: Value,
+    file: Value<H>,
     /// Accepted from Python for CPython compatibility but never consumed:
     /// Monty doesn't buffer stdout, so there is nothing to flush.
     #[expect(dead_code, reason = "accepted but ignored — Monty doesn't buffer stdout")]
     #[from_args(default = Value::None)]
-    flush: Value,
+    flush: Value<H>,
 }
 
 /// Extracts a string value from a print() kwarg.
 ///
 /// The kwarg can be None (returns None) or a string (returns Some).
 /// Raises TypeError for other types.
-fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<Option<String>> {
+fn extract_string_kwarg<H: RuntimeRef>(value: &Value<H>, name: &str, vm: &VM<'_, H>) -> RunResult<Option<String>> {
     match value {
         Value::None => Ok(None),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),

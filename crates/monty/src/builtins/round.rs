@@ -5,6 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    heap::{Reference, RuntimeRef},
     types::PyTrait,
     value::Value,
 };
@@ -12,14 +13,14 @@ use crate::{
 /// CPython's keyword-capable `round(number, ndigits=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "round", style = c_named, at_most_total)]
-struct RoundArgs {
-    number: Value,
+struct RoundArgs<H: Reference> {
+    number: Value<H>,
     #[from_args(default = Value::None)]
-    ndigits: Value,
+    ndigits: Value<H>,
 }
 
 /// Rounds through `__round__`, leaving precision coercion to the receiving type.
-pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_round<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let RoundArgs { number, ndigits } = RoundArgs::from_args(args, vm)?;
     defer_drop!(number, vm);
     defer_drop!(ndigits, vm);

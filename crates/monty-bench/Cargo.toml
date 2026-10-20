@@ -12,6 +12,8 @@ publish = false
 # Runs the `main` bench under the worker's global allocator (`monty-alloc`)
 # instead of `System`, to price the hard memory ceiling on real workloads.
 worker-alloc = ["dep:monty-alloc"]
+# Measures retained and peak allocator-requested bytes, separately from timing benchmarks.
+heap-memory = ["dep:dhat"]
 # Set by the CodSpeed workflow: report through `codspeed-criterion-compat` and
 # leave out the CPython comparisons. A feature rather than `cfg(codspeed)`,
 # which `cargo codspeed` sets only for simulation builds, not walltime ones.
@@ -31,6 +33,7 @@ pyo3 = { workspace = true, features = ["auto-initialize"] }
 tempfile = { workspace = true }
 codspeed-criterion-compat = { version = "5.0.1", features = ["async_tokio"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
+dhat = { version = "0.3.3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
@@ -49,6 +52,15 @@ harness = false
 [[bench]]
 name = "decode"
 harness = false
+
+[[bench]]
+name = "heap_ptrs"
+harness = false
+
+[[bin]]
+name = "heap_memory"
+path = "src/bin/heap_memory.rs"
+required-features = ["heap-memory"]
 
 [lints]
 workspace = true

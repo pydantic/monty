@@ -4,7 +4,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::HeapData,
+    heap::{HeapData, Reference, RuntimeRef},
     types::{List, iter::collect_owned_iterable},
     value::Value,
 };
@@ -15,16 +15,16 @@ use crate::{
 /// `reversed() takes no keyword arguments` rejection.
 #[derive(FromArgs)]
 #[from_args(name = "reversed", style = unpack)]
-struct ReversedArgs {
+struct ReversedArgs<H: Reference> {
     #[from_args(pos_only)]
-    sequence: Value,
+    sequence: Value<H>,
 }
 
 /// Implementation of the reversed() builtin function.
 ///
 /// Returns a list with elements in reverse order.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_reversed<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let ReversedArgs { sequence } = ReversedArgs::from_args(args, vm)?;
 
     // Being iterable is not enough: CPython needs `__reversed__`, or
@@ -53,7 +53,7 @@ pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// rather than becoming reversible by accident. Sets and iterators are excluded
 /// (no ordering / one-shot), as are user instances — `__reversed__` is not
 /// dispatched, see `limitations/classes.md`.
-fn is_reversible(value: &Value, vm: &VM<'_>) -> bool {
+fn is_reversible<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     match value {
         Value::InternString(_) | Value::InternBytes(_) => true,
         Value::Ref(id) => matches!(

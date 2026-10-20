@@ -4,7 +4,7 @@ use std::{
     mem::MaybeUninit,
 };
 
-use crate::heap::{HeapId, free_list::FreeList, stable_heap::iter::HeapEntriesIter};
+use crate::heap::{HeapIndex as HeapId, free_list::FreeList, stable_heap::iter::HeapEntriesIter};
 
 /// Number of entries per page. Chosen to balance between wasted memory (from
 /// partially-filled last pages) and the frequency of page allocations.
@@ -108,7 +108,7 @@ impl<T> StableHeap<T> {
     /// Returns a mutable reference to the entry at `index`. Entries can also be
     /// freed via the returned `StableHeapEntry`'s `free` method.
     ///
-    /// Does *not* go through [`Self::entry_ptr`]: that path derives its pointer via
+    /// Does *not* go through [`Self::slot_at`]: that path derives its pointer via
     /// `&self` so it only carries Shared / SharedReadOnly provenance under SB/TB,
     /// and dereferencing it as `&mut` is UB. Instead this method takes the safe
     /// `&mut self` → `pages.get_mut()` route, producing a `&mut Option<T>` with
@@ -118,6 +118,7 @@ impl<T> StableHeap<T> {
     /// Panics if `index >= len`.
     #[inline]
     #[track_caller]
+    #[cfg(test)]
     pub fn entry(&mut self, id: HeapId) -> Option<StableHeapEntry<'_, T>> {
         assert!(id.index() < self.len.get(), "StableHeap::entry - {id:?} out of bounds");
         let (page_idx, slot_idx) = Self::page_slot_indices(id);
@@ -179,15 +180,6 @@ impl<T> StableHeap<T> {
         (id, slot)
     }
 
-    /// Iterates the live values
-    #[cfg(any(feature = "ref-count-return", test))]
-    pub fn iter(&self) -> impl Iterator<Item = (HeapId, &T)> {
-        // SAFETY: [DH] - iterating only the live entries ensures that caller
-        // can never observe `None` entries which could be invalidated by
-        // calls to `allocate()`. Entries can only be freed by `&mut self` methods.
-        unsafe { HeapEntriesIter::new(self) }.filter_map(|(idx, slot)| slot.map(|s| (HeapId::from_index(idx), s)))
-    }
-
     /// Accesses the slot at `id` with an immutable borrow on self. Returns `None` if the slot
     /// is out of bounds.
     ///
@@ -225,10 +217,11 @@ fn create_page<T>() -> Box<[Slot<T>; PAGE_SIZE]> {
 }
 
 /// Submodule for `StableHeapEntry` to help enforce a safety boundary around the `new` constructor.
+#[cfg(test)]
 mod stable_heap_entry {
     use std::ops::{Deref, DerefMut};
 
-    use crate::heap::{HeapId, free_list::FreeList};
+    use crate::heap::{HeapIndex as HeapId, free_list::FreeList};
 
     pub struct StableHeapEntry<'a, T> {
         id: HeapId,
@@ -277,11 +270,11 @@ mod stable_heap_entry {
     }
 }
 
+#[cfg(test)]
 use stable_heap_entry::StableHeapEntry;
 
-/// Serializes as a struct with two fields: `entries` (flat vec of all initialized
-/// slots) and `free_list` (vec of freed slot IDs). This avoids exposing the
-/// internal paged layout in the wire format.
+/// Serializes initialized slots as a flat sequence, preserving holes without
+/// exposing the page layout. Deserialization rebuilds the free list from holes.
 impl<T> serde::Serialize for StableHeap<T>
 where
     T: serde::Serialize,
@@ -338,7 +331,7 @@ impl<T> Drop for StableHeap<T> {
 /// Place iterator inside a submodule to create a safety boundary on `new` constructor
 mod iter {
     use super::StableHeap;
-    use crate::heap::HeapId;
+    use crate::heap::HeapIndex as HeapId;
 
     pub(super) struct HeapEntriesIter<'a, T> {
         entries: &'a StableHeap<T>,

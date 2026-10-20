@@ -11,8 +11,8 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{
-        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
-        HeapReadOutput,
+        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapRead, HeapReadMut, HeapReadOutput,
+        Reference, RuntimeRef,
     },
     string_builder::StringBuilder,
     types::{
@@ -27,18 +27,18 @@ use crate::{
 };
 
 /// A `csv.DictReader`: a `_csv.reader` plus the header handling around it.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct DictReader {
+#[derive(Debug, Serialize, Deserialize, monty_macros::Relocate)]
+pub(crate) struct DictReader<H: Reference> {
     /// The underlying `_csv.reader`. Owned.
-    pub(crate) reader: Value,
+    pub(crate) reader: Value<H>,
     /// `None` until the header row is read (or `fieldnames` is assigned). Owned.
-    pub(crate) fieldnames: Option<Value>,
+    pub(crate) fieldnames: Option<Value<H>>,
     /// Key for the surplus fields of a long row. Owned.
-    pub(crate) restkey: Value,
+    pub(crate) restkey: Value<H>,
     /// Value for the missing fields of a short row. Owned.
-    pub(crate) restval: Value,
+    pub(crate) restval: Value<H>,
     /// The `dialect` argument as passed, which is what `.dialect` reports. Owned.
-    pub(crate) dialect: Value,
+    pub(crate) dialect: Value<H>,
     pub(crate) line_num: u64,
     /// Keys in the last row's dict: the capacity the next one starts at. Below the header
     /// width when a name repeats, since the repeat overwrites its slot; zero before any row.
@@ -46,13 +46,13 @@ pub(crate) struct DictReader {
     dict_hint: usize,
 }
 
-impl DictReader {
+impl<H: RuntimeRef> DictReader<H> {
     pub(crate) fn new(
-        reader: Value,
-        fieldnames: Option<Value>,
-        restkey: Value,
-        restval: Value,
-        dialect: Value,
+        reader: Value<H>,
+        fieldnames: Option<Value<H>>,
+        restkey: Value<H>,
+        restval: Value<H>,
+        dialect: Value<H>,
     ) -> Self {
         Self {
             reader,
@@ -66,7 +66,7 @@ impl DictReader {
     }
 
     /// Invokes `on_child` for each heap id this reader owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for value in [
             Some(&self.reader),
             self.fieldnames.as_ref(),
@@ -84,7 +84,7 @@ impl DictReader {
     }
 
     /// Releases every owned reference (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.reader.py_dec_ref_ids(stack);
         if let Some(fieldnames) = &mut self.fieldnames {
             fieldnames.py_dec_ref_ids(stack);
@@ -96,21 +96,21 @@ impl DictReader {
 }
 
 /// A `csv.DictWriter`: a `_csv.writer` plus the field order a row dict is flattened in.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct DictWriter {
+#[derive(Debug, Serialize, Deserialize, monty_macros::Relocate)]
+pub(crate) struct DictWriter<H: Reference> {
     /// The underlying `_csv.writer`. Owned.
-    pub(crate) writer: Value,
+    pub(crate) writer: Value<H>,
     /// Any iterable of keys, as passed. Owned.
-    pub(crate) fieldnames: Value,
+    pub(crate) fieldnames: Value<H>,
     /// Value written for a key the row dict lacks. Owned.
-    pub(crate) restval: Value,
+    pub(crate) restval: Value<H>,
     /// The `extrasaction` argument, lower-cased at construction; a key outside `fieldnames`
     /// raises when it is `'raise'` at the time of the write. Owned.
-    pub(crate) extrasaction: Value,
+    pub(crate) extrasaction: Value<H>,
 }
 
-impl DictWriter {
-    pub(crate) fn new(writer: Value, fieldnames: Value, restval: Value, extrasaction: Value) -> Self {
+impl<H: RuntimeRef> DictWriter<H> {
+    pub(crate) fn new(writer: Value<H>, fieldnames: Value<H>, restval: Value<H>, extrasaction: Value<H>) -> Self {
         Self {
             writer,
             fieldnames,
@@ -120,7 +120,7 @@ impl DictWriter {
     }
 
     /// Invokes `on_child` for each heap id this writer owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for value in [&self.writer, &self.fieldnames, &self.restval, &self.extrasaction] {
             if let Value::Ref(id) = value {
                 on_child(*id);
@@ -129,7 +129,7 @@ impl DictWriter {
     }
 
     /// Releases every owned reference (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.writer.py_dec_ref_ids(stack);
         self.fieldnames.py_dec_ref_ids(stack);
         self.restval.py_dec_ref_ids(stack);
@@ -139,7 +139,10 @@ impl DictWriter {
 
 /// `DictReader.fieldnames`: reads the header row on first access, then reports the names
 /// (`None` for an empty source). The caller owns the returned reference.
-pub(super) fn reader_fieldnames<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Value> {
+pub(super) fn reader_fieldnames<'h, H: RuntimeRef>(
+    obj: &HeapReadMut<'h, CsvObject<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let (reader, unset) = {
         let CsvObject::DictReader(dict_reader) = obj.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::DictReader")
@@ -171,7 +174,10 @@ pub(super) fn reader_fieldnames<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut V
 
 /// `DictReader.__next__`: the next non-empty row as a dict, with `restkey` / `restval`
 /// covering a length mismatch against `fieldnames`.
-pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn reader_next<'h, H: RuntimeRef>(
+    obj: &HeapReadMut<'h, CsvObject<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let first = matches!(obj.get(vm.heap), CsvObject::DictReader(dict_reader) if dict_reader.line_num == 0);
     if first {
         // Used only for its side effect of reading the header, as in CPython.
@@ -266,14 +272,14 @@ pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
 }
 
 /// `DictWriter.writerow(rowdict)`: flattens the dict in `fieldnames` order and writes it.
-pub(super) fn writer_writerow<'h>(
-    obj: &HeapRead<'h, CsvObject>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<CallResult> {
+pub(super) fn writer_writerow<'h, H: RuntimeRef>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<CallResult<H>> {
     let rowdict = args.get_one_arg("DictWriter.writerow", vm.heap)?;
     defer_drop!(rowdict, vm);
-    let spec: Option<RowSpec> = None;
+    let spec: Option<RowSpec<H>> = None;
     defer_drop_mut!(spec, vm);
     let items = dict_to_list(obj, spec, rowdict, vm)?;
     defer_drop!(items, vm);
@@ -283,11 +289,11 @@ pub(super) fn writer_writerow<'h>(
 /// `DictWriter.writeheader()`: `self.writerow(dict(zip(self.fieldnames, self.fieldnames)))`,
 /// returning what `write()` did. The dict is what rejects an unhashable name, and a repeated
 /// name collapses in it, so the row goes through it as in CPython.
-pub(super) fn writer_writeheader<'h>(
-    obj: &HeapRead<'h, CsvObject>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<CallResult> {
+pub(super) fn writer_writeheader<'h, H: RuntimeRef>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<CallResult<H>> {
     args.check_zero_args("DictWriter.writeheader", vm.heap)?;
     let fieldnames = dict_writer_part(obj, vm, |writer| writer.fieldnames.clone_with_heap(vm.heap));
     defer_drop!(fieldnames, vm);
@@ -303,7 +309,7 @@ pub(super) fn writer_writeheader<'h>(
     let (header, vm) = header_guard.into_parts();
     let header = Value::Ref(vm.heap.allocate(HeapData::Dict(header)));
     defer_drop!(header, vm);
-    let spec: Option<RowSpec> = None;
+    let spec: Option<RowSpec<H>> = None;
     defer_drop_mut!(spec, vm);
     let items = dict_to_list(obj, spec, header, vm)?;
     defer_drop!(items, vm);
@@ -314,11 +320,11 @@ pub(super) fn writer_writeheader<'h>(
 ///
 /// A file target gets every row in one host write, so the dicts are all flattened first;
 /// any other target is written synchronously as each dict arrives.
-pub(super) fn writer_writerows<'h>(
-    obj: &HeapRead<'h, CsvObject>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<CallResult> {
+pub(super) fn writer_writerows<'h, H: RuntimeRef>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<CallResult<H>> {
     let rowdicts = args.get_one_arg("DictWriter.writerows", vm.heap)?;
     defer_drop!(rowdicts, vm);
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
@@ -328,7 +334,7 @@ pub(super) fn writer_writerows<'h>(
     };
     defer_drop!(write, vm);
     // Filled by the first row and refreshed whenever an attribute changes between rows.
-    let spec: Option<RowSpec> = None;
+    let spec: Option<RowSpec<H>> = None;
     defer_drop_mut!(spec, vm);
     if targets_file {
         let rows = collect_iterable(rowdicts, vm)?;
@@ -368,16 +374,16 @@ pub(super) fn writer_writerows<'h>(
 ///
 /// CPython reads the attributes for every row, so a `writerows` call keeps one of these
 /// and rebuilds it when [`RowSpec::is_current`] sees an attribute change between rows.
-struct RowSpec {
+struct RowSpec<H: Reference> {
     /// The attribute objects the spec was read from, kept to detect reassignment.
-    fieldnames: Value,
-    restval: Value,
-    extrasaction: Value,
-    names: Vec<Value>,
-    known: Option<Value>,
+    fieldnames: Value<H>,
+    restval: Value<H>,
+    extrasaction: Value<H>,
+    names: Vec<Value<H>>,
+    known: Option<Value<H>>,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for RowSpec {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H, Ref = H>> DropWithContext<C> for RowSpec<H> {
     fn drop_with(self, ctx: &mut C) {
         self.fieldnames.drop_with(ctx);
         self.restval.drop_with(ctx);
@@ -387,11 +393,11 @@ impl<C: ContainsHeap> DropWithContext<C> for RowSpec {
     }
 }
 
-impl RowSpec {
+impl<H: RuntimeRef> RowSpec<H> {
     /// Reads the spec off the writer for `rowdict`. Under `'raise'` CPython reaches
     /// `rowdict.keys()` before it hashes the names, so a row that is not a dict fails here
     /// first; under `'ignore'` it iterates `fieldnames` before `rowdict.get()`.
-    fn read<'h>(obj: &HeapRead<'h, CsvObject>, rowdict: &Value, vm: &mut VM<'h>) -> RunResult<Self> {
+    fn read<'h>(obj: &HeapRead<'h, CsvObject<H>>, rowdict: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Self> {
         let (fieldnames, restval, extrasaction) = dict_writer_part(obj, vm, |writer| {
             (
                 writer.fieldnames.clone_with_heap(vm.heap),
@@ -426,7 +432,7 @@ impl RowSpec {
     /// Whether the attributes still describe this spec: the same three objects, and for a
     /// `fieldnames` list the same items, since the list can be mutated in place between
     /// rows. A mutable iterable of any other kind (a set, a dict view) is reread per row.
-    fn is_current(&self, fieldnames: &Value, restval: &Value, extrasaction: &Value, vm: &VM<'_>) -> bool {
+    fn is_current(&self, fieldnames: &Value<H>, restval: &Value<H>, extrasaction: &Value<H>, vm: &VM<'_, H>) -> bool {
         self.fieldnames.is(fieldnames)
             && self.restval.is(restval)
             && self.extrasaction.is(extrasaction)
@@ -450,7 +456,7 @@ impl RowSpec {
 
 /// `set(fieldnames)`, which the `extrasaction='raise'` check subtracts the row's keys
 /// through as CPython does, so the names must be hashable.
-fn known_names(names: &[Value], vm: &mut VM<'_>) -> RunResult<Value> {
+fn known_names<H: RuntimeRef>(names: &[Value<H>], vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let mut known_guard = DropGuard::new(Set::new(), vm);
     let (known, vm) = known_guard.as_parts_mut();
     for name in names {
@@ -465,12 +471,12 @@ fn known_names(names: &[Value], vm: &mut VM<'_>) -> RunResult<Value> {
 ///
 /// `spec` is the caller's cache across rows, filled or refreshed here when the
 /// attributes it was read from changed; the attributes are untouched until a row arrives.
-fn dict_to_list<'h>(
-    obj: &HeapRead<'h, CsvObject>,
-    spec: &mut Option<RowSpec>,
-    rowdict: &Value,
-    vm: &mut VM<'h>,
-) -> RunResult<Vec<Value>> {
+fn dict_to_list<'h, H: RuntimeRef>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    spec: &mut Option<RowSpec<H>>,
+    rowdict: &Value<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Vec<Value<H>>> {
     let current = dict_writer_part(obj, vm, |writer| {
         spec.as_ref()
             .is_some_and(|spec| spec.is_current(&writer.fieldnames, &writer.restval, &writer.extrasaction, vm))
@@ -505,7 +511,7 @@ fn dict_to_list<'h>(
 }
 
 /// The row as a dict, or `None` when it is anything else (see [`dict_method_missing`]).
-fn row_dict<'h>(rowdict: &Value, vm: &VM<'h>) -> Option<HeapObjectRead<'h, Dict>> {
+fn row_dict<'h, H: RuntimeRef>(rowdict: &Value<H>, vm: &VM<'h, H>) -> Option<HeapObjectRead<'h, H, Dict<H>>> {
     match rowdict {
         Value::Ref(id) => match vm.heap.read(*id) {
             HeapReadOutput::Dict(dict) => Some(dict),
@@ -517,14 +523,18 @@ fn row_dict<'h>(rowdict: &Value, vm: &VM<'h>) -> Option<HeapObjectRead<'h, Dict>
 
 /// The `AttributeError` CPython raises for a row that is not a mapping: `.keys()` is
 /// what the `raise` check touches first, `.get()` otherwise.
-fn dict_method_missing(rowdict: &Value, raise_on_extra: bool, vm: &VM<'_>) -> RunError {
+fn dict_method_missing<H: RuntimeRef>(rowdict: &Value<H>, raise_on_extra: bool, vm: &VM<'_, H>) -> RunError {
     let method = if raise_on_extra { "keys" } else { "get" };
     ExcType::attribute_error(rowdict.py_type_name(vm), method)
 }
 
 /// `rowdict.keys() - self.fieldnames`: the `ValueError` for keys outside `known`, the set
 /// [`known_names`] built.
-fn check_extra_keys<'h>(dict: &HeapRead<'h, Dict>, known: &Value, vm: &mut VM<'h>) -> RunResult<()> {
+fn check_extra_keys<'h, H: RuntimeRef>(
+    dict: &HeapRead<'h, Dict<H>>,
+    known: &Value<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<()> {
     let Value::Ref(known_id) = known else {
         unreachable!("known_names allocates a set")
     };
@@ -562,7 +572,7 @@ fn check_extra_keys<'h>(dict: &HeapRead<'h, Dict>, known: &Value, vm: &mut VM<'h
 }
 
 /// Owned clones of a dict's keys, in insertion order: a bulk copy, preflighted as one.
-fn dict_keys<'h>(dict: &HeapRead<'h, Dict>, vm: &VM<'h>) -> RunResult<Vec<Value>> {
+fn dict_keys<'h, H: RuntimeRef>(dict: &HeapRead<'h, Dict<H>>, vm: &VM<'h, H>) -> RunResult<Vec<Value<H>>> {
     let dict = dict.get(vm.heap);
     vm.heap
         .tracker
@@ -571,7 +581,11 @@ fn dict_keys<'h>(dict: &HeapRead<'h, Dict>, vm: &VM<'h>) -> RunResult<Vec<Value>
 }
 
 /// Formats `items` and writes them through the wrapped `_csv.writer`.
-fn write_items<'h>(obj: &HeapRead<'h, CsvObject>, items: &[Value], vm: &mut VM<'h>) -> RunResult<CallResult> {
+fn write_items<'h, H: RuntimeRef>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    items: &[Value<H>],
+    vm: &mut VM<'h, H>,
+) -> RunResult<CallResult<H>> {
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
     defer_drop!(writer, vm);
     with_writer(writer, vm, |writer_obj, vm| {
@@ -581,10 +595,10 @@ fn write_items<'h>(obj: &HeapRead<'h, CsvObject>, items: &[Value], vm: &mut VM<'
 
 /// Runs `call` on the wrapped `_csv.writer`, an internal error if `writer` is not one (the
 /// constructor always stores one).
-fn with_writer<'h, T>(
-    writer: &Value,
-    vm: &mut VM<'h>,
-    call: impl FnOnce(&HeapRead<'h, CsvObject>, &mut VM<'h>) -> RunResult<T>,
+fn with_writer<'h, H: RuntimeRef, T>(
+    writer: &Value<H>,
+    vm: &mut VM<'h, H>,
+    call: impl FnOnce(&HeapRead<'h, CsvObject<H>>, &mut VM<'h, H>) -> RunResult<T>,
 ) -> RunResult<T> {
     let Value::Ref(writer_id) = writer else {
         return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
@@ -597,7 +611,7 @@ fn with_writer<'h, T>(
 
 /// Whether the wrapped `_csv.writer` targets a file, with its bound `write` and dialect;
 /// `None` if `writer` is not one.
-fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Arc<Dialect>)> {
+fn writer_parts<H: RuntimeRef>(writer: &Value<H>, vm: &VM<'_, H>) -> Option<(bool, Value<H>, Arc<Dialect>)> {
     match writer {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Csv(csv) => match &**csv {
@@ -615,7 +629,11 @@ fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Arc<Dialect
 }
 
 /// Reads one field of the `DictWriter` under a short borrow.
-fn dict_writer_part<'h, T>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>, part: impl FnOnce(&DictWriter) -> T) -> T {
+fn dict_writer_part<'h, H: RuntimeRef, T>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    vm: &VM<'h, H>,
+    part: impl FnOnce(&DictWriter<H>) -> T,
+) -> T {
     let CsvObject::DictWriter(writer) = obj.get(vm.heap) else {
         unreachable!("dispatched on CsvObject::DictWriter")
     };
@@ -624,7 +642,7 @@ fn dict_writer_part<'h, T>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>, part: imp
 
 /// The next record's fields from the wrapped `_csv.reader`, taken as a vector rather than
 /// through `next()` so no list is built and discarded per row.
-fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
+fn next_row<H: RuntimeRef>(reader: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<Vec<Value<H>>>> {
     let Value::Ref(reader_id) = reader else {
         return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
     };
@@ -636,7 +654,7 @@ fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
 
 /// `fieldnames` as owned values: a `list` (what a header read produces) is copied directly,
 /// preflighted as a bulk copy; any other iterable is iterated as `zip` or `list()` would.
-fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+fn fieldnames_items<H: RuntimeRef>(fieldnames: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Vec<Value<H>>> {
     match fieldnames {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::List(list) => {
@@ -653,7 +671,7 @@ fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>
 }
 
 /// The wrapped reader's `line_num`.
-fn reader_line_num(reader: &Value, vm: &VM<'_>) -> u64 {
+fn reader_line_num<H: RuntimeRef>(reader: &Value<H>, vm: &VM<'_, H>) -> u64 {
     match reader {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Csv(csv) => match &**csv {

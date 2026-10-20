@@ -5,14 +5,14 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
+    heap::{HeapData, RuntimeRef},
     value::Value,
 };
 
 /// Implementation of the ord() builtin function.
 ///
 /// Returns the Unicode code point of a one-character string.
-pub fn builtin_ord(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_ord<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let value = args.get_one_arg("ord", vm.heap)?;
     defer_drop!(value, vm);
 

@@ -21,7 +21,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput, Reference, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -86,7 +86,7 @@ const FUNCTIONS: [(StaticStrings, TimeFunctions); 18] = [
 ];
 
 /// Creates the `time` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Time, vm.interns);
     for (name, function) in FUNCTIONS {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Time(function)), vm);
@@ -100,14 +100,14 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 /// the values CPython reads from libc for 1 January and 1 July of the current
 /// year. A named zone needs that year from the session clock, so the four are
 /// unset when the clock is `CallHost`: module creation cannot suspend.
-fn set_zone_constants(module: &mut Module, vm: &mut VM<'_>) {
+fn set_zone_constants<H: RuntimeRef>(module: &mut Module<H>, vm: &mut VM<'_, H>) {
     let year = vm.env.os_policy.datetime.read().map(|utc| utc.year());
     let Some(constants) = vm.env.os_policy.timezone.constants(year) else {
         return;
     };
     // `time.timezone` is seconds *west* of UTC, the opposite sign to `utcoffset()`.
     let west = |zone: &MontyTimeZone| Value::Int(-i64::from(zone.offset_seconds));
-    let name = |zone: &MontyTimeZone, vm: &VM<'_>| {
+    let name = |zone: &MontyTimeZone, vm: &VM<'_, H>| {
         allocate_string(tzname_string(zone.offset_seconds, zone.name.as_deref()), vm.heap)
     };
     module.set_attr(StaticStrings::Timezone, west(&constants.standard), vm);
@@ -121,7 +121,11 @@ fn set_zone_constants(module: &mut Module, vm: &mut VM<'_>) {
 }
 
 /// Dispatches a call to a `time` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: TimeFunctions, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: TimeFunctions,
+    args: ArgValues<H>,
+) -> RunResult<CallResult<H>> {
     match function {
         TimeFunctions::Time => clock(vm, args, TimeCaller::Time, None),
         TimeFunctions::Sleep => sleep(vm, args),
@@ -146,7 +150,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: TimeFunctions, args: ArgValues) ->
 /// `reading` is `None` for the plain-seconds clocks (`time`, `monotonic`,
 /// `perf_counter`), which need no work on resume. All share the `time.time` OS
 /// call; `caller` tells the host which one asked.
-fn clock(vm: &mut VM<'_>, args: ArgValues, caller: TimeCaller, reading: Option<ClockReading>) -> RunResult<CallResult> {
+fn clock<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    args: ArgValues<H>,
+    caller: TimeCaller,
+    reading: Option<ClockReading>,
+) -> RunResult<CallResult<H>> {
     args.check_zero_args(caller.as_str(), vm.heap)?;
     let Some(utc) = sandbox_instant(vm)? else {
         return Ok(suspend_for_clock(caller, reading));
@@ -159,7 +168,12 @@ fn clock(vm: &mut VM<'_>, args: ArgValues, caller: TimeCaller, reading: Option<C
 
 /// `gmtime`/`localtime`/`ctime`, which take an optional `secs` and fall back to
 /// the session clock — the one path where a conversion function can suspend.
-fn convert_clock(vm: &mut VM<'_>, args: ArgValues, caller: TimeCaller, reading: ClockReading) -> RunResult<CallResult> {
+fn convert_clock<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    args: ArgValues<H>,
+    caller: TimeCaller,
+    reading: ClockReading,
+) -> RunResult<CallResult<H>> {
     // One struct per function because `FromArgs` bakes the name into the
     // binding errors, and CPython reports each function's own.
     let seconds = match caller {
@@ -179,30 +193,30 @@ fn convert_clock(vm: &mut VM<'_>, args: ArgValues, caller: TimeCaller, reading: 
 /// [`LocaltimeArgs`] and [`CtimeArgs`] are the same shape under their own names.
 #[derive(FromArgs)]
 #[from_args(name = "gmtime", style = parse_tuple)]
-struct GmtimeArgs {
+struct GmtimeArgs<H: Reference> {
     #[from_args(pos_only, default = Value::None)]
-    seconds: Value,
+    seconds: Value<H>,
 }
 
 /// `time.localtime(secs=None)`; see [`GmtimeArgs`].
 #[derive(FromArgs)]
 #[from_args(name = "localtime", style = parse_tuple)]
-struct LocaltimeArgs {
+struct LocaltimeArgs<H: Reference> {
     #[from_args(pos_only, default = Value::None)]
-    seconds: Value,
+    seconds: Value<H>,
 }
 
 /// `time.ctime(secs=None)`; see [`GmtimeArgs`].
 #[derive(FromArgs)]
 #[from_args(name = "ctime", style = parse_tuple)]
-struct CtimeArgs {
+struct CtimeArgs<H: Reference> {
     #[from_args(pos_only, default = Value::None)]
-    seconds: Value,
+    seconds: Value<H>,
 }
 
 /// Suspends with the shared `time.time` call, carrying the work still to do on
 /// the host's answer.
-fn suspend_for_clock(caller: TimeCaller, reading: Option<ClockReading>) -> CallResult {
+fn suspend_for_clock<H: RuntimeRef>(caller: TimeCaller, reading: Option<ClockReading>) -> CallResult<H> {
     let call = OsFunctionCall::Time(caller);
     match reading {
         None => CallResult::OsCall(call),
@@ -233,7 +247,7 @@ pub(crate) enum ClockReading {
 
 impl ClockReading {
     /// Turns the instant into the value the `time` function returns.
-    fn apply(self, utc: NaiveDateTime, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn apply<H: RuntimeRef>(self, utc: NaiveDateTime, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
         match self {
             Self::Nanoseconds => epoch_nanoseconds(utc).map(Value::Int),
             Self::Gmtime => Ok(gmtime_value(utc, vm)),
@@ -253,7 +267,11 @@ impl ClockReading {
 
 /// Resume half of [`suspend_for_clock`]: turns the host's `time.time` answer
 /// (epoch seconds) into the value the suspended function returns.
-pub(crate) fn apply_clock_reading(reading: ClockReading, reply: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn apply_clock_reading<H: RuntimeRef>(
+    reading: ClockReading,
+    reply: Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     let seconds = match reply {
         Value::Float(seconds) => Ok(seconds),
         Value::Int(seconds) => Ok(seconds as f64),
@@ -273,7 +291,12 @@ pub(crate) fn apply_clock_reading(reading: ClockReading, reply: Value, vm: &mut 
 /// These exclude sleeps, so they read the session's `process_time` policy rather
 /// than its clock, and never suspend. Monty has no threads, so the thread clock
 /// is the process clock.
-fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanoseconds: bool) -> RunResult<CallResult> {
+fn process_time<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    args: ArgValues<H>,
+    function: TimeFunctions,
+    nanoseconds: bool,
+) -> RunResult<CallResult<H>> {
     args.check_zero_args(&format!("time.{function}"), vm.heap)?;
     let elapsed = match vm.env.os_policy.process_time {
         ProcessTime::Zero => Duration::ZERO,
@@ -291,7 +314,7 @@ fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanos
 /// Validates the delay in every mode, then applies [`host_sleep`].
 /// [`PostConversionEffect::DiscardResult`] makes the call return `None`
 /// regardless of the host's answer; `Zero` skips the wait.
-fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn sleep<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
     let seconds = args
         .reject_kwargs("time.sleep", vm.heap)?
@@ -326,7 +349,7 @@ pub(crate) enum HostSleep {
 
 /// Applies the sleep policy, returning `None` for `SleepMode::Zero`.
 /// The call kind tells the host who waits without needing the session policy.
-pub(crate) fn host_sleep(vm: &VM<'_>, delay: Duration) -> Option<HostSleep> {
+pub(crate) fn host_sleep<H: RuntimeRef>(vm: &VM<'_, H>, delay: Duration) -> Option<HostSleep> {
     match vm.env.os_policy.sleep {
         SleepMode::System(max) => Some(HostSleep::System(delay.min(max))),
         SleepMode::CallHost => Some(HostSleep::CallHost(delay)),
@@ -336,7 +359,7 @@ pub(crate) fn host_sleep(vm: &VM<'_>, delay: Duration) -> Option<HostSleep> {
 
 /// The float seconds an already-`__index__`ed value denotes; an integer too
 /// large for `f64` becomes infinity for the caller's range check to reject.
-fn index_seconds(index: &Value, vm: &VM<'_>) -> f64 {
+fn index_seconds<H: RuntimeRef>(index: &Value<H>, vm: &VM<'_, H>) -> f64 {
     match index {
         Value::Int(n) => *n as f64,
         Value::Bool(b) => f64::from(*b),
@@ -353,7 +376,7 @@ fn index_seconds(index: &Value, vm: &VM<'_>) -> f64 {
 ///
 /// An integer too large for `f64` becomes infinity, which the caller's range
 /// check turns into the same `OverflowError` CPython raises for it.
-fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
+fn sleep_seconds<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<f64> {
     match value {
         Value::Float(f) => Ok(*f),
         _ => match value.py_index_impl(vm)? {
@@ -369,7 +392,7 @@ fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 
 /// `time.mktime(t)`: the inverse of `localtime`, reading `t` as wall time in the
 /// session zone. `METH_O` in CPython, hence the module-qualified arity message.
-fn mktime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn mktime<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let value = args
         .reject_kwargs("time.mktime", vm.heap)?
         .get_one_arg("time.mktime", vm.heap)?;
@@ -388,7 +411,7 @@ fn mktime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `time.asctime(t=None)`: the fixed 24-character form, from `t` or the clock.
 /// `PyArg_UnpackTuple` in CPython, unlike its `gmtime` neighbours.
-fn asctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn asctime<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let Some(value) = args
         .reject_kwargs("asctime", vm.heap)?
         .get_zero_one_arg("asctime", vm.heap)?
@@ -401,7 +424,7 @@ fn asctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 }
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
-fn strftime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn strftime<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let StrftimeArgs { format, t } = StrftimeArgs::from_args(args, vm)?;
     let result = strftime_result(&format, &t, vm);
     (format, t).drop_with(vm.heap);
@@ -411,15 +434,15 @@ fn strftime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `time.strftime(format, t=None)`; `PyArg_ParseTuple` in CPython.
 #[derive(FromArgs)]
 #[from_args(name = "strftime", style = parse_tuple)]
-struct StrftimeArgs {
+struct StrftimeArgs<H: Reference> {
     #[from_args(pos_only)]
-    format: Value,
+    format: Value<H>,
     #[from_args(pos_only, default = Value::None)]
-    t: Value,
+    t: Value<H>,
 }
 
 /// [`strftime`] without the argument cleanup, so every exit releases both.
-fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
+fn strftime_result<H: RuntimeRef>(format: &Value<H>, t: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<CallResult<H>> {
     let format = string_arg(format, "strftime", 1, vm)?;
     if matches!(t, Value::None) {
         suspend_or_apply(vm, TimeCaller::Strftime, ClockReading::Strftime(format.into()))
@@ -433,7 +456,7 @@ fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<Call
 ///
 /// CPython's is the pure-Python `_strptime_time`, which is why the binding
 /// errors name that function rather than `strptime`.
-fn strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn strptime<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let StrptimeArgs { data_string, format } = StrptimeArgs::from_args(args, vm)?;
     let result = strptime_result(&data_string, &format, vm);
     (data_string, format).drop_with(vm.heap);
@@ -443,14 +466,18 @@ fn strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `time.strptime(data_string, format)` — the pure-Python `_strptime_time`.
 #[derive(FromArgs)]
 #[from_args(name = "_strptime_time", style = def)]
-struct StrptimeArgs {
-    data_string: Value,
+struct StrptimeArgs<H: Reference> {
+    data_string: Value<H>,
     #[from_args(default = Value::None)]
-    format: Value,
+    format: Value<H>,
 }
 
 /// [`strptime`] without the argument cleanup.
-fn strptime_result(data_string: &Value, format: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn strptime_result<H: RuntimeRef>(
+    data_string: &Value<H>,
+    format: &Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     let text = string_arg(data_string, "strptime", 1, vm)?;
     let format = match format {
         Value::None => DEFAULT_STRPTIME_FORMAT.to_owned(),
@@ -467,7 +494,11 @@ const DEFAULT_STRPTIME_FORMAT: &str = "%a %b %d %H:%M:%S %Y";
 
 /// Reads the clock for a conversion that had no explicit time, suspending to the
 /// host when it owns the clock.
-fn suspend_or_apply(vm: &mut VM<'_>, caller: TimeCaller, reading: ClockReading) -> RunResult<CallResult> {
+fn suspend_or_apply<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    caller: TimeCaller,
+    reading: ClockReading,
+) -> RunResult<CallResult<H>> {
     match sandbox_instant(vm)? {
         Some(utc) => reading.apply(utc, vm).map(CallResult::Value),
         None => Ok(suspend_for_clock(caller, Some(reading))),
@@ -476,7 +507,7 @@ fn suspend_or_apply(vm: &mut VM<'_>, caller: TimeCaller, reading: ClockReading) 
 
 /// The `str` at position `position` of a `time` function's arguments,
 /// with `_PyArg_BadArgument`'s positional wording.
-fn string_arg(value: &Value, name: &str, position: usize, vm: &VM<'_>) -> RunResult<String> {
+fn string_arg<H: RuntimeRef>(value: &Value<H>, name: &str, position: usize, vm: &VM<'_, H>) -> RunResult<String> {
     match value.to_str(vm) {
         Ok(text) => Ok(text.to_owned()),
         Err(_) => Err(ExcType::type_error(format!(
@@ -554,7 +585,7 @@ impl TimeFields {
     /// (as `datetime.strftime` does) and the day directives from the stored fields.
     /// `%f` renders zeros via the shared rewrite; CPython's `time.strftime` has no
     /// microsecond field at all (see `limitations/time.md`).
-    fn strftime(&self, format: &str, vm: &mut VM<'_>) -> RunResult<String> {
+    fn strftime<H: RuntimeRef>(&self, format: &str, vm: &mut VM<'_, H>) -> RunResult<String> {
         let (offset, name) = match &self.zone {
             Some(zone) => (Some(zone.offset_seconds), zone.name.clone()),
             None => (None, None),
@@ -634,7 +665,7 @@ impl TimeFields {
 }
 
 /// `time.gmtime(secs)`: the instant broken down in UTC.
-fn gmtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> Value {
+fn gmtime_value<H: RuntimeRef>(utc: NaiveDateTime, vm: &mut VM<'_, H>) -> Value<H> {
     let zone = MontyTimeZone {
         offset_seconds: 0,
         name: Some("UTC".to_owned()),
@@ -643,14 +674,14 @@ fn gmtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> Value {
 }
 
 /// `time.localtime(secs)`: the instant broken down in the session zone.
-fn localtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> RunResult<Value> {
+fn localtime_value<H: RuntimeRef>(utc: NaiveDateTime, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
     let fields = local_fields(utc, vm)?;
     Ok(struct_time_value(&fields, vm))
 }
 
 /// The session zone's reading of `utc`, with `tm_isdst` set from whether the
 /// zone is on its daylight half at that instant.
-fn local_fields(utc: NaiveDateTime, vm: &VM<'_>) -> RunResult<TimeFields> {
+fn local_fields<H: RuntimeRef>(utc: NaiveDateTime, vm: &VM<'_, H>) -> RunResult<TimeFields> {
     let zone = vm.env.os_policy.timezone.at(utc);
     let isdst = i64::from(is_daylight(&vm.env.os_policy.timezone, utc, &zone));
     let wall = sandbox_local_wall_clock(vm, utc)?;
@@ -670,7 +701,7 @@ fn is_daylight(sandbox_zone: &SandboxTimeZone, utc: NaiveDateTime, at: &MontyTim
 /// A structseq in CPython: no class object, so `_fields`/`_replace` are absent
 /// here too. Unlike CPython's, the two zone fields are part of the tuple, so
 /// `len()` is 11 (see `limitations/time.md`).
-fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
+fn struct_time_value<H: RuntimeRef>(fields: &TimeFields, vm: &mut VM<'_, H>) -> Value<H> {
     const NAMES: [StaticStrings; 11] = [
         StaticStrings::TmYear,
         StaticStrings::TmMon,
@@ -721,7 +752,7 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
 /// CPython requires exactly 9 items; Monty's own `struct_time` carries 11, so
 /// both lengths are taken. A bare tuple has no zone of its own, so `tm_isdst`
 /// selects the session zone's standard or daylight half, as CPython does.
-fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFields> {
+fn time_fields<H: RuntimeRef>(value: &Value<H>, name: &str, vm: &mut VM<'_, H>) -> RunResult<TimeFields> {
     let (items, own_zone) = time_tuple_parts(value, name, vm)?;
     let wall = naive_from_time_tuple(&items)?;
     // CPython's `checktm`, which `mktime` skips: a weekday below -1 goes
@@ -747,7 +778,11 @@ fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFiel
 
 /// The nine core integers of a time tuple, plus the zone an 11-field
 /// `struct_time` carries. Rejects anything else with CPython's wording.
-fn time_tuple_parts(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<([i64; 9], Option<MontyTimeZone>)> {
+fn time_tuple_parts<H: RuntimeRef>(
+    value: &Value<H>,
+    name: &str,
+    vm: &VM<'_, H>,
+) -> RunResult<([i64; 9], Option<MontyTimeZone>)> {
     let read = value.read_heap(vm);
     let items = match &read {
         Some(HeapReadOutput::Tuple(tuple)) => tuple.get(vm.heap).as_slice(),
@@ -817,7 +852,7 @@ fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<NaiveDateTime> {
 
 /// The zone a bare 9-element tuple denotes: the session zone's standard half,
 /// or its daylight half when `tm_isdst` is 1.
-fn tuple_zone(year: i32, isdst: i64, vm: &VM<'_>) -> Option<MontyTimeZone> {
+fn tuple_zone<H: RuntimeRef>(year: i32, isdst: i64, vm: &VM<'_, H>) -> Option<MontyTimeZone> {
     let constants = vm.env.os_policy.timezone.constants(Some(year))?;
     Some(if isdst == 1 {
         constants.daylight_zone
@@ -828,7 +863,7 @@ fn tuple_zone(year: i32, isdst: i64, vm: &VM<'_>) -> Option<MontyTimeZone> {
 
 /// The instant an optional `secs` argument denotes; `None` means the caller
 /// passed nothing and the clock must be read instead.
-fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<NaiveDateTime>> {
+fn optional_instant<H: RuntimeRef>(seconds: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<NaiveDateTime>> {
     match seconds {
         Value::None => sandbox_instant(vm),
         value => {
@@ -843,7 +878,7 @@ fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<NaiveD
 /// Like [`sleep_seconds`] a float passes through and anything else goes through
 /// `__index__`, but CPython's `_PyTime_ObjectToTime_t` reports a rejection as a
 /// plain non-integer rather than naming floats as acceptable.
-fn clock_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
+fn clock_seconds<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<f64> {
     match value {
         Value::Float(f) => Ok(*f),
         _ => match value.py_index_impl(vm)? {

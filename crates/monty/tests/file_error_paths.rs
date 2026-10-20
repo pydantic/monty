@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use monty::{Dump, MontyRun, Session, SessionRef, dump};
+use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter,
     ResourceLimits, ResourceTracker,
@@ -415,6 +415,7 @@ result
 // in for the load.
 // ---------------------------------------------------------------------------
 
+/// A suspended CSV load relocates its file pin and retry arguments before handling a host failure.
 #[test]
 fn csv_reader_load_host_error_then_retry() {
     let code = r"
@@ -437,6 +438,9 @@ except OSError as exc:
             PrintWriter::Stdout,
         )
         .unwrap();
+    let bytes = minicbor_serde::to_vec(&progress).unwrap();
+    drop(progress);
+    let progress: RunProgress = minicbor_serde::from_slice(&bytes).unwrap();
     let read_call = progress
         .into_os_call()
         .expect("expected ReadText OsCall from csv.reader()");

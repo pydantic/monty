@@ -38,6 +38,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{RunError, RunResult},
+    heap::{Reference, RuntimeRef},
     identity::Identity,
     resource_checks::check_entry_table_growth,
     types::dict::{eq_is_native, probe_native_eq},
@@ -56,8 +57,11 @@ const COMPACT_MIN_SLOTS: usize = 8;
 /// probe by one `Value` and cache its hash — that pair is all the shared probe
 /// needs to see.
 pub(crate) trait TableEntry {
+    /// Runtime pointers and wire indexes share the same table representation.
+    type Ref: Reference;
+
     /// The value this entry is found by: a dict's key, a set's element.
-    fn probe_key(&self) -> &Value;
+    fn probe_key(&self) -> &Value<Self::Ref>;
 
     /// The cached hash of [`probe_key`](Self::probe_key).
     ///
@@ -117,6 +121,16 @@ pub(crate) struct PyHashTable<E> {
     /// Live entries are counted by `indices.len()`, not a field of their own:
     /// `Dict` embeds this inline, so another word would widen every heap slot.
     entries: Vec<E>,
+}
+
+impl<E> PyHashTable<E> {
+    /// Relocates entries without changing their stored hashes or tombstone positions.
+    pub(crate) fn map_entries<T>(self, map: impl FnMut(E) -> T) -> PyHashTable<T> {
+        PyHashTable {
+            indices: self.indices,
+            entries: self.entries.into_iter().map(map).collect(),
+        }
+    }
 }
 
 impl<E> Default for PyHashTable<E> {
@@ -477,11 +491,14 @@ enum ProbeOutcome {
 /// slot it eventually returns meaningful. An implementation must therefore
 /// read through the heap each time rather than cache anything.
 pub(crate) trait TableSource<'h> {
+    /// Identifies the arena containing this source and its entries.
+    type Ref: RuntimeRef;
+
     /// The entry type of the table this source exposes.
-    type Entry: TableEntry;
+    type Entry: TableEntry<Ref = Self::Ref>;
 
     /// Re-reads the live table out of the heap.
-    fn table<'r>(&'r self, vm: &'r VM<'h>) -> &'r PyHashTable<Self::Entry>;
+    fn table<'r>(&'r self, vm: &'r VM<'h, Self::Ref>) -> &'r PyHashTable<Self::Entry>;
 }
 
 /// The guarded probe, for every [`TableSource`].
@@ -503,11 +520,16 @@ pub(crate) trait TableProbe<'h>: TableSource<'h> {
     /// each callback restarts the VM's dispatch countdown.
     ///
     /// The returned slot is valid only until the next call into the VM.
-    fn find_index(&self, key: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<Slot>>;
+    fn find_index<H: RuntimeRef>(&self, key: &Value<H>, hash: u64, vm: &mut VM<'h, H>) -> RunResult<Option<Slot>>
+    where
+        Self: TableSource<'h, Ref = H>;
 }
 
 impl<'h, S: TableSource<'h>> TableProbe<'h> for S {
-    fn find_index(&self, key: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<Slot>> {
+    fn find_index<H: RuntimeRef>(&self, key: &Value<H>, hash: u64, vm: &mut VM<'h, H>) -> RunResult<Option<Slot>>
+    where
+        Self: TableSource<'h, Ref = H>,
+    {
         // False for anything whose `__eq__` could mutate the container; when
         // true, revalidation and the miss continuation are skipped (the
         // str/int path).
@@ -518,7 +540,7 @@ impl<'h, S: TableSource<'h>> TableProbe<'h> for S {
             // lookup runs this, and moving the buffers out of a call shows up
             // in the dict benchmarks.
             let mut candidate_indices: SmallVec<[usize; 2]> = SmallVec::new();
-            let mut candidate_keys: SmallVec<[Value; 2]> = SmallVec::new();
+            let mut candidate_keys: SmallVec<[Value<H>; 2]> = SmallVec::new();
             let mut all_native = key_native;
             let table = self.table(vm);
             // The predicate doubles as the probe walk: native pairs are
@@ -593,21 +615,21 @@ impl<'h, S: TableSource<'h>> TableProbe<'h> for S {
 /// chain does. Inline-compared native pairs are deliberately left out of
 /// the seen set: repeating one is side-effect-free, and tracking them would
 /// put clone and identity bookkeeping on the pure-native fast path.
-fn probe_after_compare<'h>(
-    source: &impl TableSource<'h>,
+fn probe_after_compare<'h, H: RuntimeRef>(
+    source: &impl TableSource<'h, Ref = H>,
     hash: u64,
-    key: &Value,
-    already_compared: &[Value],
-    vm: &mut VM<'h>,
+    key: &Value<H>,
+    already_compared: &[Value<H>],
+    vm: &mut VM<'h, H>,
 ) -> RunResult<ProbeOutcome> {
     // The clones keep every compared key alive so its heap slot cannot be
     // recycled into a new key that would then be skipped by identity.
-    let compared: SmallVec<[Value; 2]> = already_compared.iter().map(|k| k.clone_with_heap(vm.heap)).collect();
+    let compared: SmallVec<[Value<H>; 2]> = already_compared.iter().map(|k| k.clone_with_heap(vm.heap)).collect();
     defer_drop_mut!(compared, vm);
     // Identity set for O(1) seen-checks — a linear scan is quadratic over
     // a fully colliding container, all skips, before the poll below is
     // reached.
-    let mut compared_ids: AHashSet<Identity> = compared.iter().map(Value::id).collect();
+    let mut compared_ids: AHashSet<Identity<H>> = compared.iter().map(Value::id).collect();
 
     loop {
         // Polled up front so every entry checks the limits at least once:
@@ -653,13 +675,13 @@ fn probe_after_compare<'h>(
 /// caller owns the returned keys and must drop them. Only the
 /// mutation-aware continuation calls this — [`find_index`](TableProbe::find_index)
 /// inlines the same collection.
-fn probe_candidates<'h>(
-    source: &impl TableSource<'h>,
+fn probe_candidates<'h, H: RuntimeRef>(
+    source: &impl TableSource<'h, Ref = H>,
     hash: u64,
-    vm: &VM<'h>,
-) -> (SmallVec<[usize; 2]>, SmallVec<[Value; 2]>) {
+    vm: &VM<'h, H>,
+) -> (SmallVec<[usize; 2]>, SmallVec<[Value<H>; 2]>) {
     let mut indices: SmallVec<[usize; 2]> = SmallVec::new();
-    let mut keys: SmallVec<[Value; 2]> = SmallVec::new();
+    let mut keys: SmallVec<[Value<H>; 2]> = SmallVec::new();
     let table = source.table(vm);
     table.probe(hash, |index, entry| {
         if entry.hash() == hash {
@@ -675,7 +697,13 @@ fn probe_candidates<'h>(
 ///
 /// The caller checks before and after `py_eq`; a mismatch restarts the probe.
 #[inline]
-fn probe_valid<'h>(source: &impl TableSource<'h>, index: usize, hash: u64, key: &Value, vm: &VM<'h>) -> bool {
+fn probe_valid<'h, H: RuntimeRef>(
+    source: &impl TableSource<'h, Ref = H>,
+    index: usize,
+    hash: u64,
+    key: &Value<H>,
+    vm: &VM<'h, H>,
+) -> bool {
     source
         .table(vm)
         .get_live(index)
@@ -709,7 +737,7 @@ pub(crate) struct TableWalk<'a, 'h, S: TableSource<'h>> {
 
 impl<'a, 'h, S: TableSource<'h>> TableWalk<'a, 'h, S> {
     /// Starts a walk over `source`, pinning the length it must keep.
-    pub(crate) fn new(source: &'a S, vm: &VM<'h>) -> Self {
+    pub(crate) fn new(source: &'a S, vm: &VM<'h, S::Ref>) -> Self {
         Self {
             source,
             cursor: TableCursor::new(source.table(vm).len()),
@@ -723,7 +751,7 @@ impl<'a, 'h, S: TableSource<'h>> TableWalk<'a, 'h, S> {
     /// mutation from guest code between steps raises the container's
     /// `RuntimeError` here. The entry borrows both the source and `vm`, so it
     /// cannot outlive the source or cross anything that runs guest code.
-    pub(crate) fn next<'v>(&mut self, vm: &'v VM<'h>) -> RunResult<Option<&'v S::Entry>>
+    pub(crate) fn next<'v>(&mut self, vm: &'v VM<'h, S::Ref>) -> RunResult<Option<&'v S::Entry>>
     where
         'a: 'v,
     {

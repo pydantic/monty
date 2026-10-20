@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapItem, HeapObjectRead, HeapReadOutput, Reference, RuntimeRef},
     intern::{Interns, StaticStrings},
     types::{
         LazyHeapSet, PyTrait, Type,
@@ -26,7 +26,7 @@ use crate::{
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, NoHeapRef, Value},
 };
 
 /// Magnitude of the `timezone.min` / `timezone.max` class constants: 23:59.
@@ -70,7 +70,7 @@ impl TimeZone {
     }
 
     /// Parses timezone constructor arguments.
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    pub fn init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         let TimezoneInitArgs { offset, name } = TimezoneInitArgs::from_args(args, vm)?;
         // Keep `offset` and `name` alive across the validation helpers — they
         // own the heap refs (TimeDelta / Str) we're reading from. `name` is
@@ -107,13 +107,13 @@ impl TimeZone {
 /// `str`). The macro only handles arg-count/keyword dispatch.
 #[derive(FromArgs)]
 #[from_args(name = "timezone", style = c_named, at_most_total)]
-struct TimezoneInitArgs {
-    offset: Value,
+struct TimezoneInitArgs<H: Reference> {
+    offset: Value<H>,
     // `Option<Value>` (with `default`) preserves the distinction between
     // omitted (`None`) and explicitly passed `None` (`Some(Value::None)`),
     // which `extract_name` needs to reject the latter.
     #[from_args(default)]
-    name: Option<Value>,
+    name: Option<Value<H>>,
 }
 
 impl PartialEq for TimeZone {
@@ -131,7 +131,7 @@ impl Hash for TimeZone {
     }
 }
 
-fn extract_offset_seconds(offset_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<i32> {
+fn extract_offset_seconds<H: RuntimeRef>(offset_arg: &Value<H>, heap: &Heap<H>, interns: &Interns) -> RunResult<i32> {
     let bad_type = || {
         ExcType::type_error(format!(
             "timezone() argument 1 must be datetime.timedelta, not {}",
@@ -222,7 +222,7 @@ pub(crate) fn tzname_string(offset_seconds: i32, name: Option<&str>) -> String {
 
 /// Builds the value `utcoffset()` returns: a `timedelta` for a fixed offset,
 /// `None` for a naive value. Shared by `timezone`, `datetime` and `time`.
-pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value {
+pub(crate) fn utcoffset_value<H: RuntimeRef>(offset_seconds: Option<i32>, heap: &Heap<H>) -> Value<H> {
     match offset_seconds {
         None => Value::None,
         Some(offset_seconds) => timedelta::allocate_micros(i128::from(offset_seconds) * MICROSECONDS_PER_SECOND, heap),
@@ -233,7 +233,7 @@ pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value
 ///
 /// For the `timezone.min` / `timezone.max` class constants; anything derived
 /// from user input must go through [`TimeZone::new`] so the bounds are checked.
-pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
+pub(crate) fn allocate_offset<H: RuntimeRef>(offset_seconds: i32, heap: &Heap<H>) -> Value<H> {
     let tz = TimeZone::new(offset_seconds, None).expect("caller guarantees an in-range offset");
     Value::Ref(heap.allocate(HeapData::TimeZone(tz)))
 }
@@ -244,7 +244,7 @@ pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
 /// it to be a `datetime` or `None`, and so does this. It names the method
 /// without a class prefix in the message:
 /// `utcoffset(dt) argument must be a datetime instance or None, not int`.
-fn check_tzinfo_dt_arg(method: &str, dt: &Value, heap: &Heap, interns: &Interns) -> RunResult<()> {
+fn check_tzinfo_dt_arg<H: RuntimeRef>(method: &str, dt: &Value<H>, heap: &Heap<H>, interns: &Interns) -> RunResult<()> {
     match dt {
         Value::None => Ok(()),
         Value::Ref(id) if matches!(heap.get(*id), HeapData::DateTime(_)) => Ok(()),
@@ -263,7 +263,7 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
     timedelta::format_repr(&delta)
 }
 
-fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
+fn extract_name<H: RuntimeRef>(name_arg: &Value<H>, heap: &Heap<H>, interns: &Interns) -> RunResult<Option<String>> {
     match name_arg {
         Value::InternString(id) => Ok(Some(interns.get_str(*id).to_owned())),
         Value::Ref(id) => match heap.get(*id) {
@@ -276,29 +276,29 @@ fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<O
 
 /// Builds the `timezone() argument 2 must be str, not <type>` error CPython
 /// raises for any non-`str` `name` argument (including explicit `None`).
-fn bad_name_arg(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunError {
+fn bad_name_arg<H: RuntimeRef>(name_arg: &Value<H>, heap: &Heap<H>, interns: &Interns) -> RunError {
     ExcType::type_error(format!(
         "timezone() argument 2 must be str, not {}",
         name_arg.py_type_heap(heap).cpython_arg_name(heap, interns)
     ))
 }
 
-impl HeapItem for TimeZone {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {}
+impl<H: RuntimeRef> HeapItem<H> for TimeZone {
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<H>) {}
 }
 
 /// `HeapRead`-based dispatch for `TimeZone`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timezone objects.
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, TimeZone> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::TimeZone
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -307,17 +307,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         ))
     }
 
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(true)
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let tz = self.get(vm.heap);
         if tz.offset_seconds == 0 && tz.name.is_none() {
             f.write_str("datetime.timezone.utc")?;
@@ -333,13 +333,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let tz = self.get(vm.heap);
         let s = tzname_string(tz.offset_seconds, tz.name.as_deref());
         Ok(allocate_string(s, vm.heap))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         // Each method takes the `dt` it would need to resolve a DST rule. A fixed
         // offset has no such rule, so `take_dt_arg` validates and discards it.
         match attr.static_string(vm.interns) {
@@ -359,7 +359,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
                 // A fixed offset never observes daylight saving.
                 Ok(CallResult::Value(Value::None))
             }
-            _ => Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm)),
+            _ => Err(ExcType::attribute_error_method(
+                Type::<NoHeapRef>::TimeZone,
+                attr,
+                args,
+                vm,
+            )),
         }
     }
 }
@@ -369,7 +374,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
 /// CPython qualifies the arity error (`timezone.dst() takes exactly one
 /// argument`) but names the bare method in the type error, so the qualified
 /// name is split apart here rather than passed as two literals per call site.
-fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
+fn take_dt_arg<H: RuntimeRef>(qualified_name: &'static str, args: ArgValues<H>, vm: &mut VM<'_, H>) -> RunResult<()> {
     let dt = args.get_one_arg(qualified_name, vm.heap)?;
     defer_drop!(dt, vm);
     let (_, method) = qualified_name

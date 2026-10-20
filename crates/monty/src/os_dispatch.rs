@@ -33,7 +33,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, Reference, RuntimeRef},
     intern::{Interns, StaticStrings},
     modules::{
         os::{PathArgError, check_mode},
@@ -57,6 +57,7 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// Work the VM must perform on the result of a paused OS call when it
 /// resumes, instead of pushing the raw host value onto the operand stack.
 ///
@@ -69,17 +70,17 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
 /// the host, where a `resume` becomes guaranteed; anything discarding the
 /// suspension calls [`release_pending_effect`] instead.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PendingEffect {
+pub(crate) enum PendingEffect<H: Reference> {
     /// Reshapes the host's reply before it is converted to a heap value.
     Pre(PreConversionEffect),
     /// Applies the converted value to VM state, possibly pinning a file.
-    Post(PostConversionEffect),
+    Post(PostConversionEffect<H>),
     /// Builds a walk, scandir or glob result from a `Path.scan` reply — or
     /// from the `OSError` it answered with (see [`ScanEffect::absorbs`]).
-    Scan(ScanEffect),
+    Scan(ScanEffect<H>),
 }
 
-impl PendingEffect {
+impl<H: RuntimeRef> PendingEffect<H> {
     /// Operations whose result `VM::resume` must postprocess before execution
     /// continues, named for the `RuntimeError` a host gets for answering them
     /// with a future (which bypasses `resume`).
@@ -114,7 +115,7 @@ impl PendingEffect {
 
     /// Discards an effect that will never be applied, releasing whatever it
     /// held across the host yield (see [`PostConversionEffect::release`]).
-    pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
+    pub(crate) fn release(self, heap: &mut impl ContainsHeap<Ref = H, Ref = H>) {
         match self {
             Self::Pre(_) => {}
             Self::Post(effect) => effect.release(heap),
@@ -123,20 +124,20 @@ impl PendingEffect {
     }
 }
 
-impl From<PreConversionEffect> for PendingEffect {
+impl<H: RuntimeRef> From<PreConversionEffect> for PendingEffect<H> {
     fn from(effect: PreConversionEffect) -> Self {
         Self::Pre(effect)
     }
 }
 
-impl From<PostConversionEffect> for PendingEffect {
-    fn from(effect: PostConversionEffect) -> Self {
+impl<H: RuntimeRef> From<PostConversionEffect<H>> for PendingEffect<H> {
+    fn from(effect: PostConversionEffect<H>) -> Self {
         Self::Post(effect)
     }
 }
 
-impl From<ScanEffect> for PendingEffect {
-    fn from(effect: ScanEffect) -> Self {
+impl<H: RuntimeRef> From<ScanEffect<H>> for PendingEffect<H> {
+    fn from(effect: ScanEffect<H>) -> Self {
         Self::Scan(effect)
     }
 }
@@ -217,7 +218,11 @@ impl PreConversionEffect {
     /// Applies the effect to the host's reply, yielding the value the VM
     /// imports and pushes, or the next call of a multi-step operation;
     /// `Chdir` adopts the directory as a side effect.
-    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<Reshaped, RunError> {
+    pub(crate) fn reshape<H: RuntimeRef>(
+        self,
+        value: MontyObject,
+        vm: &mut VM<'_, H>,
+    ) -> Result<Reshaped<H>, RunError> {
         let reply = match self {
             Self::ListdirNames => listdir_names(value),
             Self::RenamePath { target } | Self::ReplacePath { target } => Ok(MontyObject::path(target)),
@@ -269,13 +274,13 @@ impl PreConversionEffect {
 /// VM pushes, or the next call of an operation that needs several (the
 /// VM suspends again instead of resuming Python, as if the function had
 /// yielded it itself).
-pub(crate) enum Reshaped {
+pub(crate) enum Reshaped<H: Reference> {
     /// The operation is complete; push this.
     Value(MontyObject),
     /// Suspend again with this call, `effect` armed for its reply.
     Call {
         call: OsFunctionCall,
-        effect: Option<PendingEffect>,
+        effect: Option<PendingEffect<H>>,
     },
 }
 
@@ -315,30 +320,31 @@ pub(crate) fn invalid_reply(operation: &str, expected: &str, value: &MontyObject
     .into()
 }
 
+#[derive(monty_macros::Relocate)]
 /// Applies the converted host value to VM state. The file variants and
 /// `SeedRandom`'s instance target own a reference to their heap object across
 /// the host yield (see `inc_ref_for_pending_oscall`) and `SleepResult` owns its
 /// value; each is released exactly once — on apply, or via [`Self::release`]
 /// when the effect is discarded.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PostConversionEffect {
+pub(crate) enum PostConversionEffect<H: Reference> {
     /// Store a full-file read result into the file buffer, then compute the
     /// pending read/seek slice (see `types/file.rs`).
-    BufferStore { file_id: HeapId },
+    BufferStore { file_id: H },
     /// [`BufferStore`](Self::BufferStore), then parse the rest of the file as
     /// JSON: `json.load(fp)` on a file whose buffer is not loaded yet.
-    JsonLoad { file_id: HeapId },
+    JsonLoad { file_id: H },
     /// Store a full-file read result into the file buffer and push nothing:
     /// the `ForIter` that found the file unloaded re-dispatches against it.
-    BufferLoad { file_id: HeapId },
+    BufferLoad { file_id: H },
     /// Store a full-file read result into the file buffer, then answer
     /// `next(file, default)`: the first line, `default` at EOF, or
     /// `StopIteration`. Owns `default`'s reference across the yield.
-    FileNext { file_id: HeapId, default: Option<Value> },
+    FileNext { file_id: H, default: Option<Value<H>> },
     /// Advance the file's logical position by the successful write result.
     WritePosition {
         /// File whose position is updated.
-        file_id: HeapId,
+        file_id: H,
         /// Position before the write was dispatched, used to restore state if
         /// the host raises before returning a count.
         previous_position: u64,
@@ -357,9 +363,9 @@ pub(crate) enum PostConversionEffect {
     /// argument the file is (`csv.reader(f)`, `tomllib.load(f)`): the consumer
     /// never sees an unloaded file. Owns the callable and the arguments across the yield.
     LoadThenCall {
-        file_id: HeapId,
-        callable: Value,
-        args: ArgValues,
+        file_id: H,
+        callable: Value<H>,
+        args: ArgValues<H>,
     },
     /// Preserve `open()`'s filename while the returned handle supplies the I/O target,
     /// and apply the `newline` argument, whose value CPython validates after the open.
@@ -372,8 +378,8 @@ pub(crate) enum PostConversionEffect {
     /// answer `None` (`seed()`) or re-run the draw that found it unseeded
     /// (`retry`, which owns the call's arguments across the yield).
     SeedRandom {
-        target: RandomTarget,
-        retry: Option<RandomRetry>,
+        target: RandomTarget<H>,
+        retry: Option<RandomRetry<H>>,
     },
     /// Drop the host's answer and evaluate to `None` (`time.sleep`, whose
     /// CPython return value is always `None`).
@@ -387,14 +393,14 @@ pub(crate) enum PostConversionEffect {
     /// immediately (a settled awaitable) or with a future (the pending
     /// awaitable takes `result` over; see `ExternalFuture::sleep_result`).
     /// Owns `result`'s reference; released by [`release_pending_effect`].
-    SleepResult { result: Value },
+    SleepResult { result: Value<H> },
 }
 
-impl PostConversionEffect {
+impl<H: RuntimeRef> PostConversionEffect<H> {
     /// Releases what the effect held across the yield: the pinned heap object
     /// (a file handle, or a `random.Random` instance), any stashed arguments
     /// and a sleep's result. The single place that knows which variants carry a refcount.
-    pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
+    pub(crate) fn release(self, heap: &mut impl ContainsHeap<Ref = H, Ref = H>) {
         match self {
             Self::BufferStore { file_id }
             | Self::JsonLoad { file_id }
@@ -432,7 +438,10 @@ impl PostConversionEffect {
 ///
 /// Reached via the owner's `drop_with`, or `Drop for VM` once the effect is
 /// armed and no owning value remains.
-pub(crate) fn release_pending_effect(effect: Option<PendingEffect>, heap: &mut impl ContainsHeap) {
+pub(crate) fn release_pending_effect<H: RuntimeRef>(
+    effect: Option<PendingEffect<H>>,
+    heap: &mut impl ContainsHeap<Ref = H>,
+) {
     if let Some(effect) = effect {
         effect.release(heap);
     }
@@ -604,12 +613,12 @@ pub(crate) fn is_path_os_method(method: StaticStrings) -> bool {
 
 /// Builds a host request and its resume action for a `pathlib.Path` OS method.
 /// Owns `args` and cleans up its references on every error path.
-pub(crate) fn build_path_os_call(
+pub(crate) fn build_path_os_call<H: RuntimeRef>(
     method: StaticStrings,
     path: MontyPath,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     // Simple "no extra args" path operations are bundled into one arm to avoid
     // 12 near-identical case lines.
     macro_rules! path_only {
@@ -688,11 +697,11 @@ pub(crate) fn build_path_os_call(
 
 /// Extracts the `data` arg for `write_text` / `append_text`. Error wording
 /// matches the legacy `fs/` dispatcher so existing tests stay green.
-fn extract_str_data(
+fn extract_str_data<H: RuntimeRef>(
     method: &'static str,
     path: MontyPath,
-    args: ArgValues,
-    heap: &mut Heap,
+    args: ArgValues<H>,
+    heap: &mut Heap<H>,
     interns: &Interns,
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
@@ -716,11 +725,11 @@ fn extract_str_data(
 
 /// Extracts the `data` arg for `write_bytes` / `append_bytes` — binary
 /// companion to [`extract_str_data`].
-fn extract_bytes_data(
+fn extract_bytes_data<H: RuntimeRef>(
     method: &'static str,
     path: MontyPath,
-    args: ArgValues,
-    heap: &mut Heap,
+    args: ArgValues<H>,
+    heap: &mut Heap<H>,
     interns: &Interns,
 ) -> RunResult<PathBytesDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
@@ -740,11 +749,11 @@ fn extract_bytes_data(
 /// Path.mkdir binds a receiver slot so arity errors include self.
 #[derive(FromArgs)]
 #[from_args(name = "Path.mkdir", style = def)]
-struct PathMkdirArgs {
+struct PathMkdirArgs<H: Reference> {
     #[from_args(pos_only)]
-    receiver: Value,
+    receiver: Value<H>,
     #[from_args(default = Value::Int(0o777))]
-    mode: Value,
+    mode: Value<H>,
     #[from_args(default = LaxBool::new(false))]
     parents: LaxBool,
     #[from_args(default = LaxBool::new(false))]
@@ -753,7 +762,11 @@ struct PathMkdirArgs {
 
 /// Extracts `mode`/`parents`/`exist_ok` for `mkdir`, rejecting unknown or
 /// excessive arguments before the host sees the OS call.
-fn extract_mkdir_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<MkdirCallArgs> {
+fn extract_mkdir_args<H: RuntimeRef>(
+    path: MontyPath,
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<MkdirCallArgs> {
     let PathMkdirArgs {
         receiver,
         mode,
@@ -773,30 +786,35 @@ fn extract_mkdir_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunR
 /// Keyword-only options shared with os.stat.
 #[derive(FromArgs)]
 #[from_args(name = "Path.stat", style = def)]
-struct PathStatArgs {
+struct PathStatArgs<H: Reference> {
     #[from_args(pos_only)]
-    receiver: Value,
+    receiver: Value<H>,
     #[from_args(kw_only, default = LaxBool::new(true))]
     follow_symlinks: LaxBool,
 }
 
 #[derive(FromArgs)]
 #[from_args(name = "Path.rename", style = def)]
-struct PathRenameArgs {
+struct PathRenameArgs<H: Reference> {
     #[from_args(pos_only)]
-    receiver: Value,
-    target: Value,
+    receiver: Value<H>,
+    target: Value<H>,
 }
 
 #[derive(FromArgs)]
 #[from_args(name = "Path.replace", style = def)]
-struct PathReplaceArgs {
+struct PathReplaceArgs<H: Reference> {
     #[from_args(pos_only)]
-    receiver: Value,
-    target: Value,
+    receiver: Value<H>,
+    target: Value<H>,
 }
 
-fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut VM<'_>) -> RunResult<RenameCallArgs> {
+fn extract_rename_args<H: RuntimeRef>(
+    src: MontyPath,
+    args: ArgValues<H>,
+    replace: bool,
+    vm: &mut VM<'_, H>,
+) -> RunResult<RenameCallArgs> {
     let (receiver, target) = if replace {
         let PathReplaceArgs { receiver, target } = PathReplaceArgs::from_args(args.prepend(Value::None), vm)?;
         (receiver, target)
@@ -829,14 +847,18 @@ fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut 
 
 #[derive(FromArgs)]
 #[from_args(name = "Path.unlink", style = def)]
-struct PathUnlinkArgs {
+struct PathUnlinkArgs<H: Reference> {
     #[from_args(pos_only)]
-    receiver: Value,
+    receiver: Value<H>,
     #[from_args(default = LaxBool::new(false))]
     missing_ok: LaxBool,
 }
 
-fn build_path_unlink(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+fn build_path_unlink<H: RuntimeRef>(
+    path: MontyPath,
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     let PathUnlinkArgs { receiver, missing_ok } = PathUnlinkArgs::from_args(args.prepend(Value::None), vm)?;
     receiver.drop_with(vm);
     Ok(CallResult::OsCallWithEffect {
@@ -850,7 +872,11 @@ fn build_path_unlink(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunRe
 
 /// Pulls the single `data` arg out of `args`, raising the CPython-style
 /// `missing 1 required positional argument: 'data'` error when absent.
-fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -> RunResult<Value> {
+fn arg_or_missing_data<H: RuntimeRef>(
+    method: &'static str,
+    args: ArgValues<H>,
+    heap: &mut Heap<H>,
+) -> RunResult<Value<H>> {
     if matches!(args, ArgValues::Empty) {
         return Err(ExcType::type_error(format!(
             "Path.{method}() missing 1 required positional argument: 'data'"
@@ -862,13 +888,21 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
 /// Owned `String` if `value` is a `str`, `Path` or `DirEntry`, else `None`. Caller drops
 /// the source value afterwards. Also used by the `os` module's path-taking
 /// functions (`modules/os.rs`).
-pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
+pub(crate) fn value_to_owned_string<H: RuntimeRef>(
+    value: &Value<H>,
+    heap: &Heap<H>,
+    interns: &Interns,
+) -> Option<String> {
     value_as_path_str(value, heap, interns).map(str::to_owned)
 }
 
 /// The text of a `str`, `Path` or `DirEntry` `value`, borrowed, else `None`:
 /// what [`value_to_owned_string`] copies, for sizing the copy first.
-pub(crate) fn value_as_path_str<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
+pub(crate) fn value_as_path_str<'a, H: RuntimeRef>(
+    value: &Value<H>,
+    heap: &'a Heap<H>,
+    interns: &'a Interns,
+) -> Option<&'a str> {
     match value {
         Value::InternString(id) => Some(interns.get_str(*id)),
         Value::Ref(id) => match heap.get(*id) {
@@ -882,7 +916,11 @@ pub(crate) fn value_as_path_str<'a>(value: &Value, heap: &'a Heap, interns: &'a 
 }
 
 /// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
+pub(crate) fn value_to_owned_bytes<H: RuntimeRef>(
+    value: &Value<H>,
+    heap: &Heap<H>,
+    interns: &Interns,
+) -> Option<Vec<u8>> {
     match value {
         Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
         Value::Ref(id) => match heap.get(*id) {

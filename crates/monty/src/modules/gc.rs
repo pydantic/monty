@@ -17,7 +17,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::RunResult,
-    heap::{HeapData, HeapId},
+    heap::{HeapData, RuntimeRef},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::Module,
@@ -42,7 +42,7 @@ pub(crate) enum GcFunctions {
 }
 
 /// Creates the `gc` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Gc, vm.interns);
     for (name, function) in [
         (StaticStrings::Collect, GcFunctions::Collect),
@@ -58,7 +58,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 ///
 /// Returns `Value` directly because none of the exposed functions need host
 /// involvement — they all run synchronously inside the VM.
-pub(super) fn call(vm: &mut VM<'_>, function: GcFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: GcFunctions,
+    args: ArgValues<H>,
+) -> RunResult<Value<H>> {
     match function {
         GcFunctions::Collect => collect(vm, args),
         GcFunctions::Disable => disable(vm, args),
@@ -77,7 +81,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: GcFunctions, args: ArgValues) -> R
 /// Counts are clamped to `i64::MAX` if they ever exceed it; in practice a single
 /// heap can't hold that many entries, but the conversion is fallible so we
 /// saturate rather than panic.
-fn collect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn collect<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     args.check_zero_args("gc.collect", vm.heap)?;
     let freed = vm.__force_gc_for_tests();
     Ok(Value::Int(i64::try_from(freed).unwrap_or(i64::MAX)))
@@ -88,7 +92,7 @@ fn collect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Returns `None` to match CPython. Explicit [`collect`] calls still run while
 /// auto-GC is disabled, so a script can build a known amount of garbage and then
 /// time exactly one collection pass.
-fn disable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn disable<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     args.check_zero_args("gc.disable", vm.heap)?;
     vm.heap.disable_gc();
     Ok(Value::None)
@@ -97,7 +101,7 @@ fn disable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `gc.enable()` — re-enables automatic GC after a prior [`disable`].
 ///
 /// Returns `None` to match CPython. Calling on an already-enabled heap is a no-op.
-fn enable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+fn enable<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     args.check_zero_args("gc.enable", vm.heap)?;
     vm.heap.enable_gc();
     Ok(Value::None)

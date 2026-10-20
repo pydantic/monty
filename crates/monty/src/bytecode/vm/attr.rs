@@ -5,11 +5,12 @@ use crate::{
     bytecode::{Opcode, vm::CallResult},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, Reference, RuntimeRef},
     intern::{Interns, StringId},
     value::{EitherStr, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// What a suspended lazy attribute lookup does with the host's answer when it
 /// resumes, instead of pushing the value (or raising `AttributeError` on
 /// `Undefined`) the way `obj.attr` does.
@@ -20,13 +21,13 @@ use crate::{
 /// survives a dump/restore of the suspended session. A lookup that never
 /// reaches a host (no host, or a synchronous nested call) is `Undefined`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PendingLookupEffect {
+pub(crate) enum PendingLookupEffect<H: Reference> {
     /// `hasattr()`: push `True` for a served value (which is dropped),
     /// `False` for `Undefined`.
     HasAttr,
     /// `getattr(obj, name, default)`: push `default` for `Undefined`. Owns
     /// the heap reference until the resume consumes it.
-    Default(Value),
+    Default(Value<H>),
     /// A class-pattern attribute read (`MatchAttr`): pushes the served value
     /// (or `None` for `Undefined`) itself and yields the match flag, so the
     /// resumed instruction lands the same `[value, bool]` pair it pushes
@@ -34,10 +35,10 @@ pub(crate) enum PendingLookupEffect {
     MatchAttr,
 }
 
-impl PendingLookupEffect {
+impl<H: RuntimeRef> PendingLookupEffect<H> {
     /// The value to push for the host's answer: `Some(value)` for a served
     /// attribute, `None` for `Undefined`.
-    pub(crate) fn apply(self, answer: Option<Value>, vm: &mut VM<'_>) -> Value {
+    pub(crate) fn apply(self, answer: Option<Value<H>>, vm: &mut VM<'_, H>) -> Value<H> {
         match (self, answer) {
             (Self::HasAttr, Some(value)) => {
                 value.drop_with(vm);
@@ -61,7 +62,7 @@ impl PendingLookupEffect {
     }
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for PendingLookupEffect {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H, Ref = H>> DropWithContext<C> for PendingLookupEffect<H> {
     fn drop_with(self, heap: &mut C) {
         if let Self::Default(value) = self {
             value.drop_with(heap);
@@ -69,11 +70,11 @@ impl<C: ContainsHeap> DropWithContext<C> for PendingLookupEffect {
     }
 }
 
-impl VM<'_> {
+impl<H: RuntimeRef> VM<'_, H> {
     /// Loads an attribute from an object and pushes it onto the stack.
     ///
     /// Returns an AttributeError if the attribute doesn't exist.
-    pub(super) fn load_attr(&mut self, name_id: StringId) -> Result<CallResult, RunError> {
+    pub(super) fn load_attr(&mut self, name_id: StringId) -> Result<CallResult<H>, RunError> {
         let this = self;
 
         let obj = this.pop();
@@ -85,7 +86,11 @@ impl VM<'_> {
 
     /// Loads a `from ... import` attribute, raising `ImportError` if missing.
     /// `module_id` supplies the error's module name because host values need not be `Module`s.
-    pub(super) fn load_attr_import(&mut self, name_id: StringId, module_id: StringId) -> Result<CallResult, RunError> {
+    pub(super) fn load_attr_import(
+        &mut self,
+        name_id: StringId,
+        module_id: StringId,
+    ) -> Result<CallResult<H>, RunError> {
         let this = self;
 
         let obj = this.pop();
@@ -106,7 +111,7 @@ impl VM<'_> {
     /// Missing attributes raise `ModuleNotFoundError` naming `path_id`. Modules also
     /// reject non-module attributes (`math.pi`, the host-served `os.environ`); bundled
     /// ones add "is not a package" to errors, host modules being packages.
-    pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
+    pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult<H>, RunError> {
         let this = self;
 
         let obj = this.pop();
@@ -177,7 +182,7 @@ impl VM<'_> {
 
 /// `Some(is_package)` when `value` is a module: a host module is a package
 /// (its submodules are module attributes), a bundled one is not.
-fn module_package(value: &Value, heap: &Heap) -> Option<bool> {
+fn module_package<H: RuntimeRef>(value: &Value<H>, heap: &Heap<H>) -> Option<bool> {
     match value {
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Module(module) => Some(module.id().is_some()),

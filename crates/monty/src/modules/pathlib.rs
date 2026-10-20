@@ -9,7 +9,7 @@
 use crate::{
     builtins::Builtins,
     bytecode::VM,
-    heap::{HeapData, HeapId},
+    heap::{HeapData, RuntimeRef},
     intern::StaticStrings,
     types::{Module, Type},
     value::Value,
@@ -17,7 +17,7 @@ use crate::{
 
 /// Creates the `pathlib` module and allocates it on the heap.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Pathlib, vm.interns);
 
     // pathlib.Path - the Path class (callable to create Path instances)

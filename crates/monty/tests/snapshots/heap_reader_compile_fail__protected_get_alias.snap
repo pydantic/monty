@@ -1,6 +1,6 @@
 ---
 source: crates/monty/tests/heap_reader_compile_fail.rs
-expression: actual
+expression: diagnostics
 ---
 error[E0506]: cannot assign to `*source` because it is borrowed
   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:56:9
@@ -12,4 +12,3 @@ error[E0506]: cannot assign to `*source` because it is borrowed
    |         ^^^^^^^^^^^^^ `*source` is assigned to here but it was already borrowed
 57 |         assert_eq!(*borrowed, 123);
    |         -------------------------- borrow later used here
-For more information about this error, try `rustc --explain E0506`.

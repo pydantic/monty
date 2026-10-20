@@ -1,6 +1,6 @@
 ---
 source: crates/monty/tests/heap_reader_compile_fail.rs
-expression: actual
+expression: diagnostics
 ---
 error[E0599]: no method named `get_mut` found for struct `BorrowedHeapRead<'_, '_, u64>` in the current scope
    --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:180:20
@@ -8,9 +8,9 @@ error[E0599]: no method named `get_mut` found for struct `BorrowedHeapRead<'_, '
 180 |         *protected.get_mut(heap) = 456;
     |                    ^^^^^^^ method not found in `BorrowedHeapRead<'_, '_, u64>`
     |
-   ::: crates/monty/src/heap/mod.rs:556:1
+   ::: crates/monty/src/heap/mod.rs:559:1
     |
-556 | pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
+559 | pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
     | ----------------------------------------------------- method `get_mut` not found for this struct
     |
     = help: items from traits can only be used if the trait is implemented and in scope
@@ -18,4 +18,3 @@ error[E0599]: no method named `get_mut` found for struct `BorrowedHeapRead<'_, '
             candidate #1: `SliceIndex`
             candidate #2: `bitvec::slice::api::BitSliceIndex`
             candidate #3: `radium::Radium`
-For more information about this error, try `rustc --explain E0599`.

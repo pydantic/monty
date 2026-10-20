@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapId, HeapReadMut},
+    heap::{DropGuard, DropWithContext, HeapReadMut, Reference, RuntimeRef},
     resource_checks::check_estimated_size,
     types::{
         TupleVec, allocate_tuple,
@@ -15,24 +15,25 @@ use crate::{
     value::{VALUE_SIZE, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields tuples of up to `n` consecutive items from `source`.
 ///
 /// A SHORT batch does not latch — CPython only clears its source when a batch
 /// comes back empty, or when `strict` rejects a short one — so a source that
 /// stutters to a stop and yields again is batched from where it left off.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Batched {
+pub(crate) struct Batched<H: Reference> {
     /// `None` once the source is spent, which latches the adaptor.
-    source: Option<Value>,
+    source: Option<Value<H>>,
     n: usize,
     /// Whether a short final batch raises instead of being yielded.
     strict: bool,
 }
 
-impl Batched {
+impl<H: RuntimeRef> Batched<H> {
     /// Takes ownership of `source`, already resolved by `py_iter`; `n` is
     /// validated as at least one by the constructor.
-    pub(crate) fn new(source: Value, n: usize, strict: bool) -> Self {
+    pub(crate) fn new(source: Value<H>, n: usize, strict: bool) -> Self {
         Self {
             source: Some(source),
             n,
@@ -41,14 +42,14 @@ impl Batched {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Some(Value::Ref(id)) = &self.source {
             on_child(*id);
         }
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if let Some(source) = &mut self.source {
             source.py_dec_ref_ids(stack);
         }
@@ -56,7 +57,10 @@ impl Batched {
 }
 
 /// Fills one batch, latching only when it comes back empty or `strict` rejects it.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let ItertoolsIter::Batched(batched) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Batched")
     };
@@ -114,7 +118,7 @@ pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
 }
 
 /// Latches the adaptor, releasing the source as soon as it stops being reachable.
-fn finish<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) {
+fn finish<'h, H: RuntimeRef>(iter: &HeapReadMut<'h, ItertoolsIter<H>>, vm: &mut VM<'h, H>) {
     let ItertoolsIter::Batched(batched) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Batched")
     };

@@ -27,7 +27,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap::{Heap, HeapData, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader, Reference, RuntimeRef},
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
@@ -36,16 +36,17 @@ use crate::{
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timezone,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, NoHeapRef, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// `datetime.time` storage.
 ///
 /// `tzinfo` is `Some` exactly when the time is aware, so an aware time without an
 /// attached timezone object cannot be represented. Repr, `py_getattr` and GC
 /// traversal therefore have no such case to handle.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Time {
+pub(crate) struct Time<H: Reference> {
     /// Hour in `0..=23`.
     hour: u8,
     /// Minute in `0..=59`.
@@ -65,16 +66,16 @@ pub(crate) struct Time {
     /// two cannot drift apart; read it with [`attached_timezone`] or
     /// [`attached_offset`]. It also gives `t.tzinfo is input_tz`. Released and
     /// traced through [`Time::tzinfo_ref`].
-    tzinfo: Option<HeapId>,
+    tzinfo: Option<H>,
 }
 
-impl Time {
+impl<H: RuntimeRef> Time<H> {
     /// Returns the retained `tzinfo` heap reference for aware times.
     ///
     /// `for_each_child_id` and `py_dec_ref_ids_for_data` MUST both report this id:
     /// omitting it from the cascade leaks the timezone, omitting it from traversal
     /// frees it early.
-    pub(crate) fn tzinfo_ref(&self) -> Option<HeapId> {
+    pub(crate) fn tzinfo_ref(&self) -> Option<H> {
         self.tzinfo
     }
 
@@ -105,7 +106,7 @@ impl Time {
 ///
 /// The heap identity is *not* included; pair this with [`Time::tzinfo_ref`] when
 /// the caller needs to keep `is` identity.
-pub(crate) fn attached_timezone(time: &Time, heap: &HeapReader<'_>) -> Option<TimeZone> {
+pub(crate) fn attached_timezone<H: RuntimeRef>(time: &Time<H>, heap: &HeapReader<'_, H>) -> Option<TimeZone> {
     let tz_id = time.tzinfo?;
     match heap.read(tz_id) {
         HeapReadOutput::TimeZone(tz) => Some(tz.get(heap).clone()),
@@ -118,7 +119,7 @@ pub(crate) fn attached_timezone(time: &Time, heap: &HeapReader<'_>) -> Option<Ti
 ///
 /// [`attached_timezone`] without the name's `String` clone, for the comparison
 /// and formatting paths that only need the offset.
-fn attached_offset(time: &Time, heap: &HeapReader<'_>) -> Option<i32> {
+fn attached_offset<H: RuntimeRef>(time: &Time<H>, heap: &HeapReader<'_, H>) -> Option<i32> {
     let tz_id = time.tzinfo?;
     match heap.read(tz_id) {
         HeapReadOutput::TimeZone(tz) => Some(tz.get(heap).offset_seconds),
@@ -126,7 +127,7 @@ fn attached_offset(time: &Time, heap: &HeapReader<'_>) -> Option<i32> {
     }
 }
 
-impl Time {
+impl<H: RuntimeRef> Time<H> {
     /// Microsecond of day, minus the UTC offset for aware times.
     ///
     /// The one key used for both ordering and equality: subtracting the offset makes
@@ -149,7 +150,7 @@ impl Time {
 }
 
 /// Constructor for `time(hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let TimeInitArgs {
         hour,
         minute,
@@ -171,15 +172,15 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `tzinfo` is borrowed: the caller keeps its own reference, and this takes another
 /// if it attaches one. Shared with `datetime.time()` / `datetime.timetz()`, so a
 /// time built from a datetime is validated exactly like the constructor's.
-pub(crate) fn allocate(
-    vm: &mut VM<'_>,
+pub(crate) fn allocate<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
     hour: i32,
     minute: i32,
     second: i32,
     microsecond: i32,
     fold: i32,
-    tzinfo: &Value,
-) -> RunResult<Value> {
+    tzinfo: &Value<H>,
+) -> RunResult<Value<H>> {
     // CPython's `check_time_args` validates every numeric field, `fold` included,
     // before `check_tzinfo_subclass` runs, so `time(25, tzinfo='x')` reports the
     // hour rather than the tzinfo.
@@ -197,7 +198,7 @@ pub(crate) fn allocate(
 /// `replace()`, which carries the existing zone over without a `Value` to
 /// re-resolve (and must not fabricate a borrowed `Value::Ref`, which the
 /// reference-counting checks reject).
-fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> Value {
+fn allocate_with_tz<H: RuntimeRef>(vm: &mut VM<'_, H>, mut time: Time<H>, tz_ref: Option<H>) -> Value<H> {
     if let Some(tz_ref) = tz_ref {
         vm.heap.inc_ref(tz_ref);
         time.tzinfo = Some(tz_ref);
@@ -210,7 +211,7 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
 /// Parsing is delegated to `speedate`, the same parser `date`/`datetime` use,
 /// so the accepted grammar (and the rejection message) stays consistent across
 /// the three classes.
-pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn class_fromisoformat<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let value = args.get_one_arg("time.fromisoformat", vm.heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", vm.heap, vm.interns);
     value.drop_with(vm.heap);
@@ -242,7 +243,13 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult
 /// For Rust-side construction where the values are known good (the `time.min` /
 /// `time.max` class constants); anything derived from user input must go
 /// through [`allocate`] so the components are validated.
-pub(crate) fn allocate_naive(hour: i32, minute: i32, second: i32, microsecond: i32, heap: &Heap) -> Value {
+pub(crate) fn allocate_naive<H: RuntimeRef>(
+    hour: i32,
+    minute: i32,
+    second: i32,
+    microsecond: i32,
+    heap: &Heap<H>,
+) -> Value<H> {
     let time =
         from_components(hour, minute, second, microsecond, 0).expect("caller guarantees in-range time components");
     Value::Ref(heap.allocate(HeapData::Time(time)))
@@ -257,7 +264,7 @@ pub(crate) fn allocate_naive(hour: i32, minute: i32, second: i32, microsecond: i
 /// None-or-timezone check runs in the body with CPython's wording.
 #[derive(FromArgs)]
 #[from_args(name = "function", style = c)]
-struct TimeInitArgs {
+struct TimeInitArgs<H: Reference> {
     #[from_args(default = 0)]
     hour: i32,
     #[from_args(default = 0)]
@@ -267,7 +274,7 @@ struct TimeInitArgs {
     #[from_args(default = 0)]
     microsecond: i32,
     #[from_args(default = Value::None)]
-    tzinfo: Value,
+    tzinfo: Value<H>,
     #[from_args(kw_only, default = 0)]
     fold: i32,
 }
@@ -276,7 +283,13 @@ struct TimeInitArgs {
 ///
 /// Field order matches CPython's `check_time_args`, so the first out-of-range
 /// component is the one reported.
-fn from_components(hour: i32, minute: i32, second: i32, microsecond: i32, fold: i32) -> RunResult<Time> {
+fn from_components<H: RuntimeRef>(
+    hour: i32,
+    minute: i32,
+    second: i32,
+    microsecond: i32,
+    fold: i32,
+) -> RunResult<Time<H>> {
     if !(0..=23).contains(&hour) {
         return Err(SimpleException::new_msg(ExcType::ValueError, format!("hour must be in 0..23, not {hour}")).into());
     }
@@ -318,15 +331,15 @@ fn from_components(hour: i32, minute: i32, second: i32, microsecond: i32, fold: 
 /// The boundary counterpart of [`allocate`]: the host has no heap object to
 /// borrow, so an aware time gets a freshly allocated `timezone` (or the
 /// `timezone.utc` singleton) rather than a reference to an existing one.
-pub(crate) fn from_boundary_components(
+pub(crate) fn from_boundary_components<H: RuntimeRef>(
     hour: i32,
     minute: i32,
     second: i32,
     microsecond: i32,
     fold: i32,
     tzinfo: Option<TimeZone>,
-    heap: &mut Heap,
-) -> RunResult<Time> {
+    heap: &mut Heap<H>,
+) -> RunResult<Time<H>> {
     let mut time = from_components(hour, minute, second, microsecond, fold)?;
     if let Some(tz) = tzinfo {
         time.tzinfo = Some(allocate_tzinfo_ref(tz.offset_seconds, tz.name, heap));
@@ -336,7 +349,7 @@ pub(crate) fn from_boundary_components(
 
 /// Formats a `Time` as `HH[:MM[:SS[.fff[fff]]]][±HH:MM[:SS]]` for `isoformat()`
 /// and `str()`, at the precision `spec` asks for.
-fn format_isoformat(time: &Time, offset_seconds: Option<i32>, spec: TimeSpec) -> String {
+fn format_isoformat<H: RuntimeRef>(time: &Time<H>, offset_seconds: Option<i32>, spec: TimeSpec) -> String {
     let mut s = String::new();
     spec.write_clock(
         &mut s,
@@ -351,8 +364,8 @@ fn format_isoformat(time: &Time, offset_seconds: Option<i32>, spec: TimeSpec) ->
     s
 }
 
-impl HeapItem for Time {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for Time<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if let Some(tzinfo_ref) = self.tzinfo_ref() {
             stack.push(tzinfo_ref);
         }
@@ -426,9 +439,9 @@ impl TimeSpec {
 /// `isoformat() argument 1 must be str, not int`.
 #[derive(FromArgs)]
 #[from_args(name = "isoformat", style = c_named, at_most_total, bad_arg)]
-struct IsoformatArgs {
+struct IsoformatArgs<H: Reference> {
     #[from_args(default)]
-    timespec: Option<StrArg>,
+    timespec: Option<StrArg<H>>,
 }
 
 /// Formats a `Time` with a `strftime` directive string, shared by
@@ -438,8 +451,8 @@ struct IsoformatArgs {
 /// same anchor CPython's C implementation uses: `time(12, 30).strftime('%Y')`
 /// yields `'1900'` on both. `tz` is the attached zone, read before the call
 /// because the caller may hold the heap; it fills `%z` and `%Z`.
-pub(crate) fn format_time_strftime(
-    time: &Time,
+pub(crate) fn format_time_strftime<H: RuntimeRef>(
+    time: &Time<H>,
     tz: Option<&TimeZone>,
     format: &str,
     tracker: &ResourceTracker,
@@ -459,7 +472,7 @@ pub(crate) fn format_time_strftime(
 }
 
 /// The validated wall-clock components as a `chrono::NaiveTime`.
-fn naive_time(time: &Time) -> NaiveTime {
+fn naive_time<H: RuntimeRef>(time: &Time<H>) -> NaiveTime {
     NaiveTime::from_hms_micro_opt(
         u32::from(time.hour),
         u32::from(time.minute),
@@ -471,16 +484,16 @@ fn naive_time(time: &Time) -> NaiveTime {
 
 /// `HeapRead`-based dispatch for `Time`, letting `HeapReadOutput` delegate
 /// `PyTrait` calls to heap-resident times.
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Time<H>> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::Time
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Time(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -492,7 +505,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         ))
     }
 
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         let time = self.get(vm.heap);
         let mut hasher = DefaultHasher::new();
         // Must agree with `py_eq_impl`: awareness participates so an aware and a
@@ -502,7 +515,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, H>) -> RunResult<CmpOrder> {
         let (a, b) = (self.get(vm.heap), other.get(vm.heap));
         if a.tzinfo.is_some() != b.tzinfo.is_some() {
             // CPython raises `TypeError` rather than ordering aware against naive.
@@ -515,12 +528,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         Ok(CmpOrder::Ordered(a_micros.cmp(&b_micros)))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         // Every `time` is truthy, midnight included; only `timedelta(0)` is falsy.
         Ok(true)
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let t = self.get(vm.heap);
         // CPython drops trailing zero `second`/`microsecond`, but always prints
         // `minute`, so the shortest form is `datetime.time(0, 0)`.
@@ -550,13 +563,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let time = self.get(vm.heap);
         let s = format_isoformat(time, attached_offset(time, vm.heap), TimeSpec::Auto);
         Ok(allocate_string_no_interning(s, vm.heap))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Isoformat) => {
                 let IsoformatArgs { timespec } = IsoformatArgs::from_args(args, vm)?;
@@ -597,11 +610,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 // Only fixed-offset zones exist, and none of them observes DST.
                 Ok(CallResult::Value(Value::None))
             }
-            _ => Err(ExcType::attribute_error_method(Type::Time, attr, args, vm)),
+            _ => Err(ExcType::attribute_error_method(Type::<NoHeapRef>::Time, attr, args, vm)),
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         // Read only the field being asked for: cloning the whole `Time` would
         // copy the timezone name's `String` on every `t.hour`.
         let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
@@ -626,13 +639,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
 
 /// Time behaviour that needs both the object and the VM, so it cannot be
 /// expressed as a plain function over [`Time`].
-impl<'h> HeapObjectRead<'h, Time> {
+impl<'h, H: RuntimeRef> HeapObjectRead<'h, H, Time<H>> {
     /// `time.replace(...)` — a copy of `time` with the named components substituted.
     ///
     /// Every field the caller omits is carried over, `fold` and the `tzinfo` object
     /// identity included. Components are validated by [`from_components`], exactly
     /// as the constructor validates them.
-    fn replace(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
+    fn replace(&self, vm: &mut VM<'h, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         // Components are `Copy` and the zone is taken by value, so the heap borrow
         // ends before `from_args` needs `&mut VM`. The carried-over `tzinfo_ref` is
         // borrowed, kept valid by this read handle until `allocate_with_tz` has
@@ -680,7 +693,7 @@ impl<'h> HeapObjectRead<'h, Time> {
 /// (make the time naive).
 #[derive(FromArgs)]
 #[from_args(name = "replace")]
-struct TimeReplaceArgs {
+struct TimeReplaceArgs<H: Reference> {
     #[from_args(kw_only, default)]
     hour: Option<i32>,
     #[from_args(kw_only, default)]
@@ -690,7 +703,7 @@ struct TimeReplaceArgs {
     #[from_args(kw_only, default)]
     microsecond: Option<i32>,
     #[from_args(kw_only, default)]
-    tzinfo: Option<Value>,
+    tzinfo: Option<Value<H>>,
     #[from_args(kw_only, default)]
     fold: Option<i32>,
 }

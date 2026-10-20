@@ -11,7 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{DropWithContext, HeapData, HeapRead},
+    heap::{DropWithContext, HeapData, HeapRead, Reference, RuntimeRef},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     source_map::{SourceMap, StackFrameExt},
@@ -37,7 +37,7 @@ pub use monty_types::{ExcType, unicode_decode_error_msg};
 pub(crate) trait ExcTypeExt: Sized {
     /// Creates an exception instance from an exception type and arguments,
     /// handling constructor calls like `ValueError('message')`.
-    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>;
+    fn call<H: RuntimeRef>(self, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>>;
 
     /// Creates an AttributeError for when an attribute is not found (GET operation).
     ///
@@ -64,7 +64,12 @@ pub(crate) trait ExcTypeExt: Sized {
     /// a `py_call_attr` fall-through leaks a reference per call — something
     /// sandboxed code can repeat in a loop.
     #[must_use]
-    fn attribute_error_method(type_name: impl Display, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunError {
+    fn attribute_error_method<H: RuntimeRef>(
+        type_name: impl Display,
+        attr: &EitherStr,
+        args: ArgValues<H>,
+        vm: &mut VM<'_, H>,
+    ) -> RunError {
         args.drop_with(vm);
         Self::attribute_error(type_name, attr.as_str(vm.interns))
     }
@@ -260,7 +265,7 @@ pub(crate) trait ExcTypeExt: Sized {
     /// If the key's string conversion fails (e.g. huge LongInt exceeding
     /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
     /// `KeyError` is always raised rather than a spurious `ValueError`.
-    fn key_error(key: &Value, vm: &mut VM<'_>) -> RunError {
+    fn key_error<H: RuntimeRef>(key: &Value<H>, vm: &mut VM<'_, H>) -> RunError {
         let key_str = match key.py_str(vm) {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
@@ -1039,7 +1044,7 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `ValueError: mapping pattern checks duplicate key (<repr>)`: two keys of
     /// one mapping pattern compared equal at run time (`case {A: x, B: y}` with
     /// `A == B`), as CPython's `MATCH_KEYS` reports it.
-    fn value_error_duplicate_mapping_key(key: &Value, vm: &mut VM<'_>) -> RunError {
+    fn value_error_duplicate_mapping_key<H: RuntimeRef>(key: &Value<H>, vm: &mut VM<'_, H>) -> RunError {
         let repr = match key.py_repr(vm) {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
@@ -1565,7 +1570,7 @@ pub(crate) trait ExcTypeExt: Sized {
     /// for `list`, `tuple` and `range`, the same with `byte` for `bytes`, and
     /// `string indices must be integers, not 'str'` for `str`.
     #[must_use]
-    fn type_error_indices(container: Type, index_type: &str) -> RunError {
+    fn type_error_indices<H: Reference>(container: Type<H>, index_type: &str) -> RunError {
         let message = match container {
             Type::Str => format!("string indices must be integers, not '{index_type}'"),
             Type::Bytes => format!("byte indices must be integers or slices, not {index_type}"),
@@ -1841,7 +1846,12 @@ pub(crate) trait ExcTypeExt: Sized {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
+    fn binary_type_error<H: RuntimeRef>(
+        op: &str,
+        lhs_type: Type<H>,
+        lhs_name: impl Display,
+        rhs_name: impl Display,
+    ) -> RunError {
         let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Deque) {
             // CPython hardcodes the bare "deque" here even though tp_name is the
             // qualified "collections.deque", so this can't share the branch below.
@@ -2528,7 +2538,7 @@ impl ExcTypeExt for ExcType {
     ///
     /// The `interns` parameter provides access to interned string content.
     /// Returns a heap-allocated exception value.
-    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    fn call<H: RuntimeRef>(self, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
@@ -2649,7 +2659,7 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
+    pub(crate) fn py_type<H: RuntimeRef>(&self, vm: &VM<'h, H>) -> Type<H> {
         Type::Exception(self.get(vm.heap).exc_type)
     }
 }
@@ -2695,7 +2705,7 @@ impl<'h> HeapRead<'h, SimpleException> {
     ///
     /// Handles the `.args` attribute by allocating a tuple containing the message.
     /// Returns `None` for all other attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
+    pub fn py_getattr<H: RuntimeRef>(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> Option<CallResult<H>> {
         // Fast path: interned strings can be matched by ID
         let is_args = attr
             .static_string(vm.interns)

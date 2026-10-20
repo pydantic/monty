@@ -10,23 +10,23 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropWithContext, HeapReadOutput, Reference, RuntimeRef},
     intern::StaticStrings,
     types::str::allocate_string,
     value::{EitherStr, Value},
 };
 
 /// Where `json.load` reads from or `json.dump` writes to.
-pub(super) enum FileTarget {
+pub(super) enum FileTarget<H: Reference> {
     /// An `open()` handle; the id is borrowed from the caller's `fp` value.
-    OpenFile(HeapId),
+    OpenFile(H),
     /// `fp.read` / `fp.write` of any other object, owned until called.
-    Method(Value),
+    Method(Value<H>),
 }
 
-impl FileTarget {
+impl<H: RuntimeRef> FileTarget<H> {
     /// Resolves `fp` for `json.load`.
-    pub(super) fn reader(fp: &Value, vm: &mut VM<'_>) -> RunResult<Self> {
+    pub(super) fn reader(fp: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Self> {
         Self::resolve(fp, StaticStrings::Read, vm)
     }
 
@@ -34,7 +34,7 @@ impl FileTarget {
     /// before reaching the host (text mode, open, writable; a callable `write`
     /// otherwise) so they are raised before the document is encoded, as
     /// CPython's first chunk would.
-    pub(super) fn writer(fp: &Value, vm: &mut VM<'_>) -> RunResult<Self> {
+    pub(super) fn writer(fp: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Self> {
         match Self::resolve(fp, StaticStrings::Write, vm)? {
             Self::OpenFile(file_id) => {
                 if let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) {
@@ -52,7 +52,7 @@ impl FileTarget {
 
     /// `fp.write(text)` for `json.dump`: the host write for an `open()` handle
     /// (answering `None`), or a synchronous call of the `write` method.
-    pub(super) fn write(self, text: String, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    pub(super) fn write(self, text: String, vm: &mut VM<'_, H>) -> RunResult<CallResult<H>> {
         match self {
             Self::OpenFile(file_id) => {
                 let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
@@ -72,7 +72,7 @@ impl FileTarget {
 
     /// `fp` as an `open()` handle, else its `method` attribute: CPython's
     /// `AttributeError` names the type when it is missing.
-    fn resolve(fp: &Value, method: StaticStrings, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn resolve(fp: &Value<H>, method: StaticStrings, vm: &mut VM<'_, H>) -> RunResult<Self> {
         if let Value::Ref(id) = fp
             && matches!(vm.heap.read(*id), HeapReadOutput::OpenFile(_))
         {
@@ -96,7 +96,7 @@ impl FileTarget {
     }
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for FileTarget {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for FileTarget<H> {
     fn drop_with(self, heap: &mut C) {
         if let Self::Method(callable) = self {
             callable.drop_with(heap);

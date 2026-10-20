@@ -15,6 +15,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{Reference, RuntimeRef},
     types::{CmpOrder, PyTrait},
     value::Value,
 };
@@ -27,9 +28,9 @@ use crate::{
 /// truth test (so `reverse=[]` is `False`, not a `TypeError`).
 #[derive(FromArgs)]
 #[from_args(name = "sort")]
-struct ListSortArgs {
+struct ListSortArgs<H: Reference> {
     #[from_args(kw_only, default)]
-    key: Option<Value>,
+    key: Option<Value<H>>,
     #[from_args(kw_only, default = LaxBool::new(false))]
     reverse: LaxBool,
 }
@@ -41,11 +42,11 @@ struct ListSortArgs {
 /// CPython, whose `sorted` delegates to `list.sort` internally).
 ///
 /// `key_context` names the calling builtin in rejected-suspension errors.
-pub fn parse_and_sort(
+pub fn parse_and_sort<H: RuntimeRef>(
     key_context: &'static str,
-    items: &mut [Value],
-    args: ArgValues,
-    vm: &mut VM<'_>,
+    items: &mut [Value<H>],
+    args: ArgValues<H>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<()> {
     let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
     let key_fn = match key {
@@ -61,18 +62,18 @@ pub fn parse_and_sort(
 
 /// Sorts a vector of values, with optional key function.
 /// `key_context` names the calling builtin — see [`parse_and_sort`].
-pub fn sort_values(
+pub fn sort_values<H: RuntimeRef>(
     key_context: &'static str,
-    values: &mut [Value],
-    key_fn: Option<&Value>,
+    values: &mut [Value<H>],
+    key_fn: Option<&Value<H>>,
     reverse: bool,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<()> {
     if let Some(f) = key_fn {
         // Sort by key function: compute all the keys, sort an index buffer, then
         // rearrange the original values in-place according to the sorted indices.
         let mut indices = (0..values.len()).collect::<Vec<_>>();
-        let keys: Vec<Value> = Vec::with_capacity(values.len());
+        let keys: Vec<Value<H>> = Vec::with_capacity(values.len());
         defer_drop_mut!(keys, vm);
 
         // Each key call re-enters `run()` with a fresh dispatch countdown, so a
@@ -110,7 +111,12 @@ pub fn sort_values(
 ///
 /// The `values` slice is typically either the items themselves (no key function)
 /// or the pre-computed key values.
-pub fn sort_indices(indices: &mut [usize], values: &[Value], reverse: bool, vm: &mut VM<'_>) -> Result<(), RunError> {
+pub fn sort_indices<H: RuntimeRef>(
+    indices: &mut [usize],
+    values: &[Value<H>],
+    reverse: bool,
+    vm: &mut VM<'_, H>,
+) -> Result<(), RunError> {
     let mut sort_result: RunResult<()> = Ok(());
     let mut n = 0usize;
     indices.sort_by(|&a, &b| {
@@ -151,13 +157,13 @@ pub fn apply_permutation<T>(items: &mut [T], indices: &mut [usize]) {
 
 /// Helper for the sort functions which compares two values, handling any exceptions and timeouts.
 /// `n` is the caller's running comparison count, keying the amortized time check.
-fn compare_values(
+fn compare_values<H: RuntimeRef>(
     n: usize,
-    a: &Value,
-    b: &Value,
+    a: &Value<H>,
+    b: &Value<H>,
     reverse: bool,
     sort_result: &mut RunResult<()>,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> Ordering {
     if sort_result.is_err() {
         // short-circuit if we've already encountered an error in a previous comparison

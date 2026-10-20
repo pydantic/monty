@@ -20,7 +20,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::HashValue,
-    heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, HeapObjectRead, HeapReadOutput, Reference, RuntimeRef},
     identity::Identity,
     value::{EitherStr, Value},
 };
@@ -86,25 +86,25 @@ impl CmpOrder {
 /// Complete heap reads carry their arena identity directly, while `Value` also
 /// covers immediate identities. Keeping this as a supertrait lets default Python
 /// operations use identity without adding it to each method's arguments.
-pub(crate) trait PyObjectIdentity {
+pub(crate) trait PyObjectIdentity<H: RuntimeRef> {
     /// Returns the structural key exposed by Python's `is` and `id()` operations.
-    fn py_identity(&self) -> Identity;
+    fn py_identity(&self) -> Identity<H>;
 }
 
-impl<T: ?Sized> PyObjectIdentity for HeapObjectRead<'_, T> {
-    fn py_identity(&self) -> Identity {
+impl<H: RuntimeRef, T: ?Sized> PyObjectIdentity<H> for HeapObjectRead<'_, H, T> {
+    fn py_identity(&self) -> Identity<H> {
         Identity::from_heap_id(self.id())
     }
 }
 
-impl PyObjectIdentity for HeapReadOutput<'_> {
-    fn py_identity(&self) -> Identity {
+impl<H: RuntimeRef> PyObjectIdentity<H> for HeapReadOutput<'_, H> {
+    fn py_identity(&self) -> Identity<H> {
         Identity::from_heap_id(self.id())
     }
 }
 
-impl PyObjectIdentity for Value {
-    fn py_identity(&self) -> Identity {
+impl<H: RuntimeRef> PyObjectIdentity<H> for Value<H> {
+    fn py_identity(&self) -> Identity<H> {
         Identity::new(self)
     }
 }
@@ -119,12 +119,12 @@ impl PyObjectIdentity for Value {
 /// tracker enforcing time/memory/recursion limits. The lifetime `'h` connects
 /// [`HeapObjectRead`] implementations to the VM's heap reference; immediate
 /// [`Value`] implementations use it only through the VM argument.
-pub(crate) trait PyTrait<'h>: PyObjectIdentity {
+pub(crate) trait PyTrait<'h, H: RuntimeRef>: PyObjectIdentity<H> {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
     /// Used for error messages and the `type()` builtin.
     /// Takes heap reference for cases where nested Value lookups are needed.
-    fn py_type(&self, vm: &VM<'h>) -> Type;
+    fn py_type(&self, vm: &VM<'h, H>) -> Type<H>;
 
     /// The type name used in error messages (`'list'`, `'MutablePoint'`).
     ///
@@ -132,7 +132,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// carries no class identity (host class instances, named tuples)
     /// override it to name their real class rather than a placeholder.
     /// Borrows only `vm.interns`, so it survives heap cleanup.
-    fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
+    fn py_type_name(&self, vm: &VM<'h, H>) -> Cow<'h, str> {
         self.py_type(vm).name(vm.heap, vm.interns)
     }
 
@@ -140,7 +140,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// For interns, returns the number of Unicode codepoints (characters), matching Python.
     /// Returns `None` if the type doesn't support `len()`.
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize>;
+    fn py_len(&self, vm: &VM<'h, H>) -> Option<usize>;
 
     /// Computes the hash for this Python value, used for dict and set keys.
     ///
@@ -153,7 +153,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// recurse through `Value::py_hash` for nested values.
     ///
     /// The default implementation returns `Ok(None)` (unhashable).
-    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(None)
     }
 
@@ -161,7 +161,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// `Ok(None)` means the type has no containment logic of its own, so
     /// [`Value::py_contains`] falls back to iteration and then `TypeError`.
-    fn py_contains_impl(&self, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_contains_impl(&self, _item: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -181,7 +181,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
@@ -197,7 +197,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// `TypeError`) — see [`CmpOrder`] for why the distinction matters. The
     /// default is [`CmpOrder::Incomparable`] (the type has no ordering).
     /// Returns `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h, H>) -> RunResult<CmpOrder> {
         Ok(CmpOrder::Incomparable)
     }
 
@@ -211,7 +211,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Only the four ordering operators reach here. `Ok(None)` — the default —
     /// defers to `py_cmp`.
-    fn py_cmp_op(&self, _other: &Value, _op: CmpOperator, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_cmp_op(&self, _other: &Value<H>, _op: CmpOperator, _vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
@@ -219,7 +219,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Container types should typically report `false` when empty. Truth
     /// testing may raise, notably for Python 3.14's `NotImplemented` singleton.
-    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(self.py_len(vm) != Some(0))
     }
 
@@ -227,7 +227,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Custom `repr` implementations that apply only to some values can call
     /// this for their remaining variants.
-    fn py_default_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_default_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>) -> RunResult<()> {
         let type_name = self.py_type_name(vm);
         Ok(write!(
             f,
@@ -248,7 +248,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// * `f` - The formatter to write to
     /// * `vm` - The VM for resolving value references and looking up interned strings
     /// * `heap_ids` - Set of heap IDs currently being repr'd (for cycle detection)
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         self.py_default_repr_fmt(f, vm)
     }
 
@@ -266,7 +266,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// builder is alive. Today's per-type protections (`INT_MAX_STR_DIGITS`,
     /// `check_repeat_size`, etc.) blunt the worst amplifications but don't
     /// fully cover container `repr()`.
-    fn py_repr(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_repr(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let mut s = String::new();
         let mut heap_ids = LazyHeapSet::default();
         self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
@@ -274,7 +274,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     }
 
     /// Returns the Python `str()` string for this value.
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         self.py_repr(vm)
     }
 
@@ -289,50 +289,50 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// with `bool` normalized to `Int`, so a caller may narrow it without
     /// re-entering the protocol. Out-of-range policy stays with the caller,
     /// since `as_int` and `as_index` disagree on it.
-    fn py_index_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_index_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Python absolute value (`__abs__`); `None` means the operation is absent.
-    fn py_abs_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_abs_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Python bitwise inversion (`__invert__`); `None` means the operation is absent.
-    fn py_invert_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_invert_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Python rounding (`__round__`), receiving the uncoerced precision argument.
     /// `None` means no precision was supplied; `Ok(None)` means no rounding hook.
-    fn py_round_impl(&self, _ndigits: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_round_impl(&self, _ndigits: Option<&Value<H>>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Integer conversion (`__int__`), returning a real integer or no hook.
     /// The caller supplies the `__index__` fallback and string parsing.
-    fn py_int_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_int_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Float conversion (`__float__`), validating the result before unwrapping it.
     /// The caller supplies the `__index__` fallback and string parsing.
-    fn py_float_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<f64>> {
+    fn py_float_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<f64>> {
         Ok(None)
     }
 
     /// Python floor (`__floor__`); user hooks may return any Python value.
-    fn py_floor_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_floor_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Python ceiling (`__ceil__`); user hooks may return any Python value.
-    fn py_ceil_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ceil_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Python truncation (`__trunc__`); user hooks may return any Python value.
-    fn py_trunc_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_trunc_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
@@ -340,7 +340,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// `Ok(None)` — the default — means the type has no negation, so the VM
     /// raises `TypeError`.
-    fn py_neg_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_neg_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
@@ -348,148 +348,158 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Rarely a no-op: `+True` is `1`, and `+Counter(a=-1)` strips the
     /// non-positive counts, so implementations return a value rather than `self`.
-    fn py_pos_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_pos_impl(&self, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python addition (`__add__`).
     ///
-    fn py_add_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python addition (`__radd__`).
-    fn py_radd_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_radd_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python subtraction (`__sub__`).
-    fn py_sub_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python subtraction (`__rsub__`).
-    fn py_rsub_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rsub_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python multiplication (`__mul__`).
-    fn py_mul_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_mul_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python multiplication (`__rmul__`).
-    fn py_rmul_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rmul_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python matrix multiplication (`__matmul__`).
-    fn py_matmul_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_matmul_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python matrix multiplication (`__rmatmul__`).
-    fn py_rmatmul_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rmatmul_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python true division (`__truediv__`).
-    fn py_truediv_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_truediv_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python true division (`__rtruediv__`).
-    fn py_rtruediv_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rtruediv_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python floor division (`__floordiv__`).
-    fn py_floordiv_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_floordiv_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python floor division (`__rfloordiv__`).
-    fn py_rfloordiv_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rfloordiv_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python modulus (`__mod__`).
-    fn py_mod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_mod_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python modulus (`__rmod__`).
-    fn py_rmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rmod_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python `divmod()` (`__divmod__`).
-    fn py_divmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_divmod_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python `divmod()` (`__rdivmod__`).
-    fn py_rdivmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rdivmod_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python power (`__pow__`).
-    fn py_pow_impl(&self, _other: &Value, _modulus: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_pow_impl(
+        &self,
+        _other: &Value<H>,
+        _modulus: Option<&Value<H>>,
+        _vm: &mut VM<'h, H>,
+    ) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python power (`__rpow__`).
-    fn py_rpow_impl(&self, _other: &Value, _modulus: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rpow_impl(
+        &self,
+        _other: &Value<H>,
+        _modulus: Option<&Value<H>>,
+        _vm: &mut VM<'h, H>,
+    ) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python bitwise AND (`__and__`).
-    fn py_and_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python bitwise AND (`__rand__`).
-    fn py_rand_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rand_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python bitwise OR (`__or__`).
-    fn py_or_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python bitwise OR (`__ror__`).
-    fn py_ror_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python bitwise XOR (`__xor__`).
-    fn py_xor_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python bitwise XOR (`__rxor__`).
-    fn py_rxor_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rxor_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python left shift (`__lshift__`).
-    fn py_lshift_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_lshift_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python left shift (`__rlshift__`).
-    fn py_rlshift_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rlshift_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// One-sided implementation of Python right shift (`__rshift__`).
-    fn py_rshift_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rshift_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
     /// Reflected implementation of Python right shift (`__rrshift__`).
-    fn py_rrshift_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_rrshift_impl(&self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Ok(None)
     }
 
@@ -501,23 +511,23 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// (the VM then falls back to `py_add`), or `Err` if the operation raised — including
     /// types whose `+=` is `extend` (e.g. `deque`), which raise `TypeError` from the
     /// iterator protocol rather than a `ResourceError`.
-    fn py_iadd_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_iadd_impl(&mut self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(false)
     }
 
     /// Python in-place subtraction (`__isub__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s
     /// contract: `Ok(true)` mutated `self` in place, `Ok(false)` falls back to binary `-`.
-    fn py_isub_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_isub_impl(&mut self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(false)
     }
 
     /// Python in-place bitwise AND (`__iand__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
-    fn py_iand_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_iand_impl(&mut self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(false)
     }
 
     /// Python in-place bitwise OR (`__ior__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
-    fn py_ior_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_ior_impl(&mut self, _other: &Value<H>, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(false)
     }
 
@@ -541,7 +551,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// so it cannot be freed underneath. Such a callable must still not hold a
     /// `get`/`get_mut` borrow across the dispatch, since the callee can reach
     /// this same object again.
-    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_call(&mut self, args: ArgValues<H>, vm: &mut VM<'h, H>) -> RunResult<CallResult<H>> {
         // As in `py_call_attr`, the arguments are owned by this call and must
         // be released before reporting that the value cannot take them.
         args.drop_with(vm);
@@ -567,7 +577,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// - `Ok(CallResult::External(name, args))` - Method needs external function call
     /// - `Ok(CallResult::MethodCall { .. })` - Host-class method call; VM yields to host
     /// - `Err(e)` - Method call failed with error
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         // `py_call_attr` takes ownership of the argument bundle. Implementations that
         // do not recognize the attribute still need to release those values before
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
@@ -598,7 +608,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// [`py_enter`]: PyTrait::py_enter
     /// [`py_exit`]: PyTrait::py_exit
-    fn py_is_context_manager(&self, _vm: &VM<'h>) -> bool {
+    fn py_is_context_manager(&self, _vm: &VM<'h, H>) -> bool {
         false
     }
 
@@ -618,7 +628,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// because [`py_is_context_manager`] gates the invocation.
     ///
     /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
-    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, vm: &mut VM<'h, H>) -> RunResult<CallResult<H>> {
         Err(ExcType::attribute_error(self.py_type_name(vm), "__enter__"))
     }
 
@@ -641,7 +651,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// is reached only by direct invocation via `obj.__exit__(...)`.
     ///
     /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
-    fn py_exit(&mut self, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
+    fn py_exit(&mut self, vm: &mut VM<'h, H>, _exc: Option<H>) -> RunResult<CallResult<H>> {
         Err(ExcType::attribute_error(self.py_type_name(vm), "__exit__"))
     }
 
@@ -654,7 +664,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// and access to interned string content.
     ///
     /// Default implementation returns TypeError.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&self, _key: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         Err(ExcType::type_error_not_sub(&self.py_type_name(vm)))
     }
 
@@ -664,7 +674,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// or the type doesn't support subscript assignment.
     ///
     /// Default implementation returns TypeError.
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_setitem(&mut self, key: Value<H>, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         key.drop_with(vm);
         value.drop_with(vm);
         Err(SimpleException::new_msg(
@@ -678,7 +688,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// The default rejects assignment. Mutable attribute-bearing types override
     /// this method and are responsible for releasing any replaced value.
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         value.drop_with(vm);
         let type_name = self.py_type_name(vm);
         Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
@@ -700,7 +710,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Default implementation returns `Ok(None)`, indicating the type doesn't support
     /// attribute access and a generic `AttributeError` should be raised by the caller.
-    fn py_getattr(&self, _attr: &EitherStr, _vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, _attr: &EitherStr, _vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         Ok(None)
     }
 
@@ -717,7 +727,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Mirrors [`py_is_context_manager`](PyTrait::py_is_context_manager): a type
     /// that can be iterated MUST return `true` here, or it will be reported as
     /// non-iterable by those sites while `list()` and `for` still accept it.
-    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+    fn py_is_iterable(&self, _vm: &VM<'h, H>) -> bool {
         false
     }
 
@@ -728,24 +738,24 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// `__iter__` returning a non-iterator — the one caller here, in
     /// `Instance::py_iter`. A type overriding `py_next` MUST return `true`, or
     /// a user `__iter__` returning it is wrongly rejected.
-    fn py_is_iterator(&self, _vm: &VM<'h>) -> bool {
+    fn py_is_iterator(&self, _vm: &VM<'h, H>) -> bool {
         false
     }
 
     /// Returns a Python iterator for this object (`__iter__`).
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
     }
 
     /// Advances this object using Python's iterator protocol (`__next__`).
     ///
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
     }
 }
 
 /// Converts an attribute name into an owned dict key, preserving interned names.
-pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> Value {
+pub(crate) fn attribute_name_value<H: RuntimeRef>(name: &EitherStr, vm: &VM<'_, H>) -> Value<H> {
     match name {
         EitherStr::Interned(string_id) => Value::InternString(*string_id),
         EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap),
@@ -753,11 +763,18 @@ pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> Value {
 }
 
 /// Lazy wrapper around [`AHashSet`] that only allocates the set when needed.
-#[derive(Default, Debug, Clone)]
-pub(crate) struct LazyHeapSet(Option<AHashSet<HeapId>>);
+#[derive(Debug, Clone)]
+pub(crate) struct LazyHeapSet<H: Reference>(Option<AHashSet<H>>);
 
-impl LazyHeapSet {
-    pub fn insert(&mut self, heap_id: HeapId) {
+impl<H: Reference> Default for LazyHeapSet<H> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<H: RuntimeRef> LazyHeapSet<H> {
+    /// Records an identity for recursive traversal, allocating only when needed.
+    pub fn insert(&mut self, heap_id: H) {
         if let Some(s) = self.0.as_mut() {
             s.insert(heap_id);
         } else {
@@ -767,13 +784,13 @@ impl LazyHeapSet {
         }
     }
 
-    #[expect(clippy::trivially_copy_pass_by_ref, reason = "Match AHashSet method")]
-    pub fn contains(&self, heap_id: &HeapId) -> bool {
+    /// Reports whether traversal has already visited this identity.
+    pub fn contains(&self, heap_id: &H) -> bool {
         self.0.as_ref().is_some_and(|s| s.contains(heap_id))
     }
 
-    #[expect(clippy::trivially_copy_pass_by_ref, reason = "Match AHashSet method")]
-    pub fn remove(&mut self, heap_id: &HeapId) {
+    /// Leaves an object so later independent traversals can visit it again.
+    pub fn remove(&mut self, heap_id: &H) {
         if let Some(s) = self.0.as_mut() {
             s.remove(heap_id);
         }

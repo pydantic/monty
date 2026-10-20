@@ -6,26 +6,27 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapReadMut},
+    heap::{DropWithContext, HeapReadMut, Reference, RuntimeRef},
     types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields the source's items, then replays the saved copy indefinitely.
 ///
 /// Buffering is unavoidable — a spent iterator cannot be rewound — so a `cycle`
 /// over a long source holds every item for as long as it lives.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Cycle {
+pub(crate) struct Cycle<H: Reference> {
     /// The iterator being drained on the first pass; `None` once spent.
-    source: Option<Value>,
+    source: Option<Value<H>>,
     /// Every item seen so far, replayed once `source` runs out.
-    saved: Vec<Value>,
+    saved: Vec<Value<H>>,
     index: usize,
 }
 
-impl Cycle {
-    pub(crate) fn new(source: Value) -> Self {
+impl<H: RuntimeRef> Cycle<H> {
+    pub(crate) fn new(source: Value<H>) -> Self {
         Self {
             source: Some(source),
             saved: Vec::new(),
@@ -34,7 +35,7 @@ impl Cycle {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Some(Value::Ref(id)) = &self.source {
             on_child(*id);
         }
@@ -46,7 +47,7 @@ impl Cycle {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if let Some(source) = &mut self.source {
             source.py_dec_ref_ids(stack);
         }
@@ -60,7 +61,10 @@ impl Cycle {
 ///
 /// Returns `None` only for an empty source: `cycle([])` is empty rather than an
 /// infinite loop, matching CPython.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let ItertoolsIter::Cycle(cycle) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Cycle")
     };

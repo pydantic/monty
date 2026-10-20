@@ -26,7 +26,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{HeapData, HeapId},
+    heap::{HeapData, Reference, RuntimeRef},
     intern::{StaticStrings, StringId},
     modules::{ModuleFunctions, os_path},
     object_bridge::MontyObjectExt,
@@ -69,9 +69,9 @@ pub(crate) enum OsFunctions {
 /// Functions yield to the host via `OsFunction` callbacks (except the pure
 /// `fspath`); constants are fixed POSIX values since the sandbox path model
 /// is always POSIX.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     /// Shorthand for the function-attribute entries in the table below.
-    fn function(f: OsFunctions) -> Value {
+    fn function<H: RuntimeRef>(f: OsFunctions) -> Value<H> {
         Value::ModuleFunction(ModuleFunctions::Os(f))
     }
 
@@ -137,7 +137,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 ///
 /// Returns `CallResult::OsCall` for functions that need host involvement,
 /// or `CallResult::Value` for functions that can be computed immediately.
-pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    functions: OsFunctions,
+    args: ArgValues<H>,
+) -> RunResult<CallResult<H>> {
     match functions {
         OsFunctions::Getenv => getenv(vm, args),
         OsFunctions::Listdir => listdir(vm, args),
@@ -163,14 +167,14 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
 /// `at_most_total` pre-count, like `os.listdir`.
 #[derive(FromArgs)]
 #[from_args(name = "scandir", at_most_total)]
-struct ScandirArgs {
+struct ScandirArgs<H: Reference> {
     #[from_args(default = Value::None)]
-    path: Value,
+    path: Value<H>,
 }
 
 /// Implementation of `os.scandir(path=None)`: one depth-one host scan,
 /// answered with a `ScandirIterator` whose entries need no further host calls.
-fn scandir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn scandir<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let ScandirArgs { path } = ScandirArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let path = if matches!(path, Value::None) {
@@ -190,12 +194,12 @@ fn scandir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// shape — a pure-Python generator in CPython, hence `style = def`.
 #[derive(FromArgs)]
 #[from_args(name = "walk", style = def)]
-struct WalkArgs {
-    top: Value,
+struct WalkArgs<H: Reference> {
+    top: Value<H>,
     #[from_args(default = LaxBool::new(true))]
     topdown: LaxBool,
     #[from_args(default = Value::None)]
-    onerror: Value,
+    onerror: Value<H>,
     #[from_args(default = LaxBool::new(false))]
     followlinks: LaxBool,
 }
@@ -206,7 +210,7 @@ struct WalkArgs {
 /// honouring `dirnames` pruning and calling `onerror` as CPython's generator
 /// does. `top` is converted eagerly, so a bad type raises here rather than at
 /// the first `next()`.
-fn walk(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn walk<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let WalkArgs {
         top,
         topdown,
@@ -234,9 +238,9 @@ fn walk(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.urandom(size, /)` argument shape: clinic-parsed, positional-only.
 #[derive(FromArgs)]
 #[from_args(name = "urandom")]
-struct UrandomFnArgs {
+struct UrandomFnArgs<H: Reference> {
     #[from_args(pos_only)]
-    size: Value,
+    size: Value<H>,
 }
 
 /// Implementation of `os.urandom(size)`: asks the host for `size` bytes of
@@ -245,7 +249,7 @@ struct UrandomFnArgs {
 /// oversized request never leaves the sandbox when a limit is set (hosts
 /// still cap it themselves). The reply must be exactly `size` bytes,
 /// enforced by [`PreConversionEffect::UrandomLength`] before it is converted.
-fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn urandom<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let UrandomFnArgs { size } = UrandomFnArgs::from_args(args, vm)?;
     defer_drop!(size, vm);
     let size = size.as_int_with_overflow(vm, ExcType::overflow_c_ssize_t)?;
@@ -263,7 +267,7 @@ fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Implementation of `os.getcwd()` — the sandbox's virtual working
 /// directory, held by the VM so no host round-trip is needed.
-fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn getcwd<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     args.check_zero_args("getcwd", vm.heap)?;
     Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
 }
@@ -272,7 +276,7 @@ fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 ///
 /// Virtual paths are always UTF-8, so this is `os.getcwd().encode()` with no
 /// filesystem encoding involved.
-fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn getcwdb<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     args.check_zero_args("getcwdb", vm.heap)?;
     let bytes = Bytes::new(vm.env.cwd.as_bytes().to_vec());
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
@@ -281,8 +285,8 @@ fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.chdir(path)` accepts a positional or keyword path, with CPython's total-count check.
 #[derive(FromArgs)]
 #[from_args(name = "chdir", style = c_named, at_most_total)]
-struct ChdirArgs {
-    path: Value,
+struct ChdirArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.chdir(path)`.
@@ -292,7 +296,7 @@ struct ChdirArgs {
 /// with a [`PreConversionEffect::Chdir`] that adopts it on a directory reply.
 /// `FileNotFoundError` therefore comes from the host, `NotADirectoryError`
 /// from the resume side.
-fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn chdir<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let ChdirArgs { path } = ChdirArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let spelled = extract_os_path(path, "chdir", "path", PathAccepts::Fd, vm)?;
@@ -324,7 +328,7 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `TypeError("str expected, not <type>")`. That wording is bespoke to
 /// `os._Environ` in the CPython stdlib, so it lives inline here rather
 /// than as a shared helper.
-fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn getenv<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let (key_value, default_value) = args.get_one_two_args("os.getenv", vm.heap)?;
     if let Some(key) = key_value.as_either_str(vm.heap) {
         key_value.drop_with(vm.heap);
@@ -347,9 +351,9 @@ fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `at_most_total` pre-count (`listdir() takes at most 1 argument (2 given)`).
 #[derive(FromArgs)]
 #[from_args(name = "listdir", at_most_total)]
-struct ListdirArgs {
+struct ListdirArgs<H: Reference> {
     #[from_args(default = Value::None)]
-    path: Value,
+    path: Value<H>,
 }
 
 /// Implementation of `os.listdir(path=None)`.
@@ -358,7 +362,7 @@ struct ListdirArgs {
 /// [`PreConversionEffect::ListdirNames`] — armed at dispatch, not here — so the
 /// resume reduces them to bare entry names. `None` maps to `'.'` like
 /// CPython, which the VM resolves to the working directory on its way out.
-fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn listdir<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let ListdirArgs { path } = ListdirArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let path = if matches!(path, Value::None) {
@@ -377,17 +381,17 @@ fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// is accepted.
 #[derive(FromArgs)]
 #[from_args(name = "stat", style = c_named)]
-struct StatArgs {
-    path: Value,
+struct StatArgs<H: Reference> {
+    path: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    dir_fd: Value,
+    dir_fd: Value<H>,
     #[from_args(kw_only, default = LaxBool::new(true))]
     follow_symlinks: LaxBool,
 }
 
 /// Implementation of `os.stat(path)` — yields the same `Stat` OS call as
 /// `Path.stat()`. `follow_symlinks=False` (lstat) is not supported.
-fn stat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn stat<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let StatArgs {
         path,
         dir_fd,
@@ -407,18 +411,18 @@ fn stat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.mkdir(path, mode=0o777, *, dir_fd=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "mkdir", style = c_named)]
-struct MkdirArgs {
-    path: Value,
+struct MkdirArgs<H: Reference> {
+    path: Value<H>,
     #[from_args(default = Value::Int(0o777))]
-    mode: Value,
+    mode: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    dir_fd: Value,
+    dir_fd: Value<H>,
 }
 
 /// Implementation of `os.mkdir(path, mode=0o777)` — single level, no
 /// exist-tolerance. `mode` is validated but ignored: Monty's filesystem
 /// backends do not model POSIX permission bits.
-fn mkdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn mkdir<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let MkdirArgs { path, mode, dir_fd } = MkdirArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     defer_drop!(mode, vm);
@@ -438,17 +442,17 @@ fn mkdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// (truth-tested, never type-checked) like the sibling `PathMkdirArgs`.
 #[derive(FromArgs)]
 #[from_args(name = "makedirs", style = def)]
-struct MakedirsArgs {
-    name: Value,
+struct MakedirsArgs<H: Reference> {
+    name: Value<H>,
     #[from_args(default = Value::Int(0o777))]
-    mode: Value,
+    mode: Value<H>,
     #[from_args(default = LaxBool::new(false))]
     exist_ok: LaxBool,
 }
 
 /// Implementation of `os.makedirs(name, mode=0o777, exist_ok=False)` —
 /// recursive `mkdir` via the `parents=True` flag on the `Mkdir` OS call.
-fn makedirs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn makedirs<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let MakedirsArgs { name, mode, exist_ok } = MakedirsArgs::from_args(args, vm)?;
     defer_drop!(name, vm);
     defer_drop!(mode, vm);
@@ -466,15 +470,15 @@ fn makedirs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.remove(path, *, dir_fd=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "remove", style = c_named)]
-struct RemoveArgs {
-    path: Value,
+struct RemoveArgs<H: Reference> {
+    path: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    dir_fd: Value,
+    dir_fd: Value<H>,
 }
 
 /// Implementation of `os.remove(path)` — yields the same `Unlink` OS call as
 /// `Path.unlink()`.
-fn remove(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn remove<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let RemoveArgs { path, dir_fd } = RemoveArgs::from_args(args, vm)?;
     single_path_call(path, dir_fd, "remove", OsFunctionCall::Unlink, vm)
 }
@@ -482,28 +486,28 @@ fn remove(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.unlink(path, *, dir_fd=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "unlink", style = c_named)]
-struct UnlinkArgs {
-    path: Value,
+struct UnlinkArgs<H: Reference> {
+    path: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    dir_fd: Value,
+    dir_fd: Value<H>,
 }
 
 /// Implementation of `os.unlink(path)` — alias of [`remove`] with its own
 /// name in error messages.
-fn unlink(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn unlink<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let UnlinkArgs { path, dir_fd } = UnlinkArgs::from_args(args, vm)?;
     single_path_call(path, dir_fd, "unlink", OsFunctionCall::Unlink, vm)
 }
 
 /// Shared body of [`remove`] / [`unlink`] / [`rmdir`]: validate the path and
 /// `dir_fd`, then build the OS call via `make_call`.
-fn single_path_call(
-    path: Value,
-    dir_fd: Value,
+fn single_path_call<H: RuntimeRef>(
+    path: Value<H>,
+    dir_fd: Value<H>,
     func: &'static str,
     make_call: impl FnOnce(MontyPath) -> OsFunctionCall,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     defer_drop!(path, vm);
     defer_drop!(dir_fd, vm);
     let path = extract_os_path(path, func, "path", PathAccepts::NoFd, vm)?;
@@ -514,15 +518,15 @@ fn single_path_call(
 /// `os.rmdir(path, *, dir_fd=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "rmdir", style = c_named)]
-struct RmdirArgs {
-    path: Value,
+struct RmdirArgs<H: Reference> {
+    path: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    dir_fd: Value,
+    dir_fd: Value<H>,
 }
 
 /// Implementation of `os.rmdir(path)` — yields the same `Rmdir` OS call as
 /// `Path.rmdir()`.
-fn rmdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn rmdir<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let RmdirArgs { path, dir_fd } = RmdirArgs::from_args(args, vm)?;
     single_path_call(path, dir_fd, "rmdir", OsFunctionCall::Rmdir, vm)
 }
@@ -530,17 +534,17 @@ fn rmdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "rename", style = c_named)]
-struct RenameArgs {
-    src: Value,
-    dst: Value,
+struct RenameArgs<H: Reference> {
+    src: Value<H>,
+    dst: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    src_dir_fd: Value,
+    src_dir_fd: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    dst_dir_fd: Value,
+    dst_dir_fd: Value<H>,
 }
 
 /// Implementation of `os.rename(src, dst)`.
-fn rename(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn rename<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let RenameArgs {
         src,
         dst,
@@ -553,18 +557,18 @@ fn rename(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `os.replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "replace", style = c_named)]
-struct ReplaceArgs {
-    src: Value,
-    dst: Value,
+struct ReplaceArgs<H: Reference> {
+    src: Value<H>,
+    dst: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    src_dir_fd: Value,
+    src_dir_fd: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    dst_dir_fd: Value,
+    dst_dir_fd: Value<H>,
 }
 
 /// Implementation of `os.replace(src, dst)` — same `Rename` OS call as
 /// [`rename`]; overwrite behavior is whatever the host backend does.
-fn replace(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn replace<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let ReplaceArgs {
         src,
         dst,
@@ -577,14 +581,14 @@ fn replace(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// Shared body of [`rename`] / [`replace`]: validate both endpoints and the
 /// fd keywords (type errors per-fd first, then the combined
 /// `NotImplementedError`, matching CPython's `internal_rename` ordering).
-fn rename_like(
-    src: Value,
-    dst: Value,
-    src_dir_fd: Value,
-    dst_dir_fd: Value,
+fn rename_like<H: RuntimeRef>(
+    src: Value<H>,
+    dst: Value<H>,
+    src_dir_fd: Value<H>,
+    dst_dir_fd: Value<H>,
     replace: bool,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     let func = if replace { "replace" } else { "rename" };
     defer_drop!(src, vm);
     defer_drop!(dst, vm);
@@ -605,13 +609,13 @@ fn rename_like(
 /// pre-count (`fspath() takes at most 1 argument (2 given)`).
 #[derive(FromArgs)]
 #[from_args(name = "fspath", style = c_named, at_most_total)]
-struct FspathArgs {
-    path: Value,
+struct FspathArgs<H: Reference> {
+    path: Value<H>,
 }
 
 /// Implementation of `os.fspath(path)` — pure, no host involvement: `str` and
 /// `bytes` pass through unchanged, `Path` and `DirEntry` yield their string form.
-fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn fspath<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let FspathArgs { path } = FspathArgs::from_args(args, vm)?;
     match path.py_type_heap(vm.heap) {
         Type::Str | Type::Bytes => Ok(CallResult::Value(path)),
@@ -631,12 +635,12 @@ fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `str`/`Path` → [`MontyPath`] for an `os` function's path argument,
 /// raising the `path_t` converter's errors with `func`/`arg` naming the
 /// callsite (see [`PathArgError`]).
-pub(super) fn extract_os_path(
-    value: &Value,
+pub(super) fn extract_os_path<H: RuntimeRef>(
+    value: &Value<H>,
     func: &'static str,
     arg: &'static str,
     accepts: PathAccepts,
-    vm: &VM<'_>,
+    vm: &VM<'_, H>,
 ) -> RunResult<MontyPath> {
     extract_accepted_path(value, accepts, vm).map_err(|err| err.into_error(func, arg))
 }
@@ -644,10 +648,10 @@ pub(super) fn extract_os_path(
 /// [`extract_os_path`] with the failure kept as data, for the predicates
 /// (a closed fd answers `False`) and `samefile` (the second path's error is
 /// raised only after the first stat, as CPython orders them).
-pub(super) fn extract_accepted_path(
-    value: &Value,
+pub(super) fn extract_accepted_path<H: RuntimeRef>(
+    value: &Value<H>,
     accepts: PathAccepts,
-    vm: &VM<'_>,
+    vm: &VM<'_, H>,
 ) -> Result<MontyPath, PathArgError> {
     match fd_argument(value, vm) {
         // `listdir` reaches its fd through `fdopendir`, whose error names no file
@@ -692,7 +696,7 @@ impl PathArgError {
 /// CPython's `_fd_converter` applied to an int or bool (which it fd-converts
 /// with only a `RuntimeWarning`): a C-int value is a closed fd, the rest
 /// overflow. `None` for any other type.
-fn fd_argument(value: &Value, vm: &VM<'_>) -> Option<PathArgError> {
+fn fd_argument<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> Option<PathArgError> {
     match value {
         Value::Bool(fd) => Some(PathArgError::BadFd {
             fd: Some(if *fd { "True" } else { "False" }.to_owned()),
@@ -744,7 +748,7 @@ impl PathAccepts {
     }
 
     /// The accepted-types phrase for a value this converter is rejecting.
-    pub(super) fn phrase_for(self, value: &Value, vm: &VM<'_>) -> &'static str {
+    pub(super) fn phrase_for<H: RuntimeRef>(self, value: &Value<H>, vm: &VM<'_, H>) -> &'static str {
         // `bytes` paths are the one kind CPython takes and Monty never will;
         // everything else keeps CPython's wording exactly.
         let refused = value.py_type_heap(vm.heap) == Type::Bytes;
@@ -761,7 +765,11 @@ impl PathAccepts {
 
 /// Core `str`/`Path` → [`MontyPath`] extraction; `type_error` supplies the
 /// per-callsite wording (the `path_t` converter's or `os.fspath`'s).
-fn extract_path(value: &Value, vm: &VM<'_>, type_error: impl FnOnce(&str) -> RunError) -> RunResult<MontyPath> {
+fn extract_path<H: RuntimeRef>(
+    value: &Value<H>,
+    vm: &VM<'_, H>,
+    type_error: impl FnOnce(&str) -> RunError,
+) -> RunResult<MontyPath> {
     value_to_owned_string(value, vm.heap, vm.interns).map_or_else(
         || Err(type_error(&value.py_type_name_heap(vm.heap, vm.interns))),
         |path| Ok(MontyPath::new(path)),
@@ -771,7 +779,7 @@ fn extract_path(value: &Value, vm: &VM<'_>, type_error: impl FnOnce(&str) -> Run
 /// Validates a `dir_fd` keyword for the single-fd functions: `None` passes,
 /// anything specified is rejected — ints with CPython's platform
 /// `NotImplementedError`, other types with the converter TypeError.
-fn check_dir_fd(value: &Value, vm: &VM<'_>) -> RunResult<()> {
+fn check_dir_fd<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<()> {
     if dir_fd_specified(value, vm)? {
         Err(ExcType::not_implemented_os_arg(None, "dir_fd"))
     } else {
@@ -783,7 +791,7 @@ fn check_dir_fd(value: &Value, vm: &VM<'_>) -> RunResult<()> {
 /// (`argument should be integer or None, not {type}`; out-of-C-int-range ints
 /// raise the fd `OverflowError`), returning whether a (necessarily
 /// unsupported) fd was actually supplied.
-fn dir_fd_specified(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
+fn dir_fd_specified<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<bool> {
     match (value, fd_argument(value, vm)) {
         (Value::None, _) => Ok(false),
         (_, Some(PathArgError::FdOverflow { above })) => Err(fd_overflow_error(above)),
@@ -798,7 +806,7 @@ fn dir_fd_specified(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
 /// `'{type}' object cannot be interpreted as an integer` / the C-int
 /// `OverflowError`. The value itself is ignored — Monty does not model POSIX
 /// permission bits.
-pub(crate) fn check_mode(value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+pub(crate) fn check_mode<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<()> {
     match value {
         Value::Bool(_) => Ok(()),
         Value::Int(mode) => i32::try_from(*mode).map(|_| ()).map_err(|_| ExcType::overflow_c_int()),

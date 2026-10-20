@@ -6,7 +6,13 @@
 //! they do with the item differs, so the guards that keep a raising test from
 //! leaking it live here rather than in three copies.
 
-use crate::{bytecode::VM, defer_drop, exception_private::RunResult, heap::DropGuard, value::Value};
+use crate::{
+    bytecode::VM,
+    defer_drop,
+    exception_private::RunResult,
+    heap::{DropGuard, RuntimeRef},
+    value::Value,
+};
 
 /// Pulls one item from a wrapped `source`, charging one recursion level.
 ///
@@ -15,7 +21,7 @@ use crate::{bytecode::VM, defer_drop, exception_private::RunResult, heap::DropGu
 /// raises `RecursionError` instead of overflowing, while an adaptor answering
 /// from its own state — a spent source, a latched predicate, an `accumulate`
 /// still holding its `initial` — pays nothing and so cannot fail a level early.
-pub(super) fn next_source(source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+pub(super) fn next_source<H: RuntimeRef>(source: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<Value<H>>> {
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
     let mut read = source.read(vm);
@@ -26,7 +32,7 @@ pub(super) fn next_source(source: &Value, vm: &mut VM<'_>) -> RunResult<Option<V
 ///
 /// `source` is taken by value because it must be a clone: `py_next` re-enters
 /// the VM, and the adaptor's own reference is unreachable behind that borrow.
-pub(super) fn next_item(source: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+pub(super) fn next_item<H: RuntimeRef>(source: Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<Value<H>>> {
     defer_drop!(source, vm);
     next_source(source, vm)
 }
@@ -38,12 +44,12 @@ pub(super) fn next_item(source: Value, vm: &mut VM<'_>) -> RunResult<Option<Valu
 /// instead of leaking, and `predicate` is released on every path. Callers get
 /// the item back owned and decide whether to yield it — which is the only part
 /// that differs between the adaptors.
-pub(super) fn next_tested<'h>(
-    predicate: Value,
-    source: Value,
-    vm: &mut VM<'h>,
-    test: impl FnOnce(&Value, &Value, &mut VM<'h>) -> RunResult<bool>,
-) -> RunResult<Option<(Value, bool)>> {
+pub(super) fn next_tested<'h, H: RuntimeRef>(
+    predicate: Value<H>,
+    source: Value<H>,
+    vm: &mut VM<'h, H>,
+    test: impl FnOnce(&Value<H>, &Value<H>, &mut VM<'h, H>) -> RunResult<bool>,
+) -> RunResult<Option<(Value<H>, bool)>> {
     defer_drop!(predicate, vm);
     let Some(item) = next_item(source, vm)? else {
         return Ok(None);

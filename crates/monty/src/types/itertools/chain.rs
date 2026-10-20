@@ -9,26 +9,28 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{ContainsHeap, DropWithContext, HeapId, HeapReadMut},
+    heap::{ContainsHeap, DropWithContext, HeapReadMut, Reference, RuntimeRef},
     types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields every item of each source in turn.
 ///
 /// Sources are held UNRESOLVED: CPython calls `iter()` on each only as it
 /// reaches it, so `chain([1], 5)` constructs cleanly and raises `TypeError`
 /// part-way through consumption.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Chain {
+pub(crate) struct Chain<H: Reference> {
     /// Where the sources come from; emptied by `finish` once the chain can
     /// reach no more of them.
-    sources: ChainSources,
+    sources: ChainSources<H>,
     /// The resolved iterator currently being drained.
-    current: Option<Value>,
+    current: Option<Value<H>>,
     done: bool,
 }
 
+#[derive(monty_macros::Relocate)]
 /// The two ways a chain is given its sources.
 ///
 /// One enum rather than two adaptors because everything after the source is
@@ -36,16 +38,16 @@ pub(crate) struct Chain {
 /// same, and CPython too models `from_iterable` as a `chain` over a different
 /// `source` iterator.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum ChainSources {
+pub(crate) enum ChainSources<H: Reference> {
     /// `chain(*iterables)`: the arguments, still as passed. Each is moved out
     /// as it is reached, leaving `None` in its slot.
-    Args { iterables: Vec<Value>, next: usize },
+    Args { iterables: Vec<Value<H>>, next: usize },
     /// `chain.from_iterable(iterable)`: the outer iterator, resolved by the
     /// constructor, whose items are the sources.
-    Outer(Value),
+    Outer(Value<H>),
 }
 
-impl ChainSources {
+impl<H: RuntimeRef> ChainSources<H> {
     /// Takes everything these sources still hold, leaving them empty.
     ///
     /// The empty state is an exhausted `Args`, since only a unit variant could
@@ -62,7 +64,7 @@ impl ChainSources {
 
     /// Moves the next argument out, or `None` once all are taken or the
     /// sources are an outer iterator (which `next` drives separately).
-    fn take_next_arg(&mut self) -> Option<Value> {
+    fn take_next_arg(&mut self) -> Option<Value<H>> {
         match self {
             Self::Args { iterables, next } => {
                 let raw = iterables.get_mut(*next).map(|slot| mem::replace(slot, Value::None));
@@ -74,7 +76,7 @@ impl ChainSources {
     }
 
     /// Invokes `on_child` for each heap id these sources own (GC trace hook).
-    fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         match self {
             Self::Args { iterables, .. } => {
                 for source in iterables {
@@ -89,7 +91,7 @@ impl ChainSources {
     }
 
     /// Releases the refs these sources own (mirrors `for_each_child_id`).
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         match self {
             Self::Args { iterables, .. } => {
                 for source in iterables {
@@ -101,7 +103,7 @@ impl ChainSources {
     }
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for ChainSources {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H, Ref = H>> DropWithContext<C> for ChainSources<H> {
     fn drop_with(self, ctx: &mut C) {
         match self {
             Self::Args { iterables, .. } => iterables.drop_with(ctx),
@@ -110,20 +112,20 @@ impl<C: ContainsHeap> DropWithContext<C> for ChainSources {
     }
 }
 
-impl Chain {
+impl<H: RuntimeRef> Chain<H> {
     /// Takes the arguments unresolved — see the type docs for why.
-    pub(crate) fn new(iterables: Vec<Value>) -> Self {
+    pub(crate) fn new(iterables: Vec<Value<H>>) -> Self {
         Self::with_sources(ChainSources::Args { iterables, next: 0 })
     }
 
     /// Takes the outer iterator of `chain.from_iterable`, already resolved:
     /// CPython resolves that one up front, so `chain.from_iterable(5)` raises
     /// at construction while its items are still resolved lazily.
-    pub(crate) fn from_iterable(outer: Value) -> Self {
+    pub(crate) fn from_iterable(outer: Value<H>) -> Self {
         Self::with_sources(ChainSources::Outer(outer))
     }
 
-    fn with_sources(sources: ChainSources) -> Self {
+    fn with_sources(sources: ChainSources<H>) -> Self {
         Self {
             sources,
             current: None,
@@ -132,7 +134,7 @@ impl Chain {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         self.sources.for_each_child_id(&mut on_child);
         if let Some(Value::Ref(id)) = &self.current {
             on_child(*id);
@@ -140,7 +142,7 @@ impl Chain {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.sources.py_dec_ref_ids(stack);
         if let Some(current) = &mut self.current {
             current.py_dec_ref_ids(stack);
@@ -149,7 +151,10 @@ impl Chain {
 }
 
 /// Drains the current source, then resolves the next one, until all are spent.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let mut steps = 0usize;
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a
@@ -207,7 +212,10 @@ pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
 ///
 /// An outer iterator that raises ends the chain as well as propagating, as
 /// CPython clears its `source` on any failed `PyIter_Next`.
-fn next_raw_source<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn next_raw_source<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let ItertoolsIter::Chain(chain) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Chain")
     };
@@ -237,7 +245,11 @@ fn next_raw_source<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
 /// later `next()` is a plain `StopIteration`. Note the asymmetry — an error
 /// raised by a resolved source's `__next__` leaves the chain live, since
 /// CPython keeps that iterator in place.
-fn into_py_iter_tracking<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, raw: Value, vm: &mut VM<'h>) -> RunResult<Value> {
+fn into_py_iter_tracking<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    raw: Value<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     match raw.into_py_iter(vm) {
         Ok(resolved) => Ok(resolved),
         Err(err) => {
@@ -256,7 +268,7 @@ fn into_py_iter_tracking<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, raw: Value, 
 /// `current` is already `None` at every callsite — the chain only ends while
 /// taking the next source — but clearing it keeps this correct for any future
 /// path that ends a chain mid-source.
-fn finish<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) {
+fn finish<'h, H: RuntimeRef>(iter: &HeapReadMut<'h, ItertoolsIter<H>>, vm: &mut VM<'h, H>) {
     let chain = chain_mut(iter, vm);
     chain.done = true;
     let sources = chain.sources.take();
@@ -272,7 +284,10 @@ fn finish<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) {
 /// `next` re-borrows the heap around every step that can run user code, so the
 /// same match-or-`unreachable!` appeared at each one; naming it once keeps those
 /// steps readable.
-fn chain_mut<'r, 'h>(iter: &'r HeapReadMut<'h, ItertoolsIter>, vm: &'r mut VM<'h>) -> &'r mut Chain {
+fn chain_mut<'r, 'h, H: RuntimeRef>(
+    iter: &'r HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &'r mut VM<'h, H>,
+) -> &'r mut Chain<H> {
     let ItertoolsIter::Chain(chain) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Chain")
     };

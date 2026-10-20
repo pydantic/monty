@@ -16,7 +16,7 @@ use crate::{
     bytecode::{CallResult, ContainsVM, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapRead, HeapReadOutput, Reference, RuntimeRef},
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -87,7 +87,11 @@ impl JsonDumpsConfig {
     /// CPython's order: `separators` is unpacked by `JSONEncoder.__init__`, then
     /// `' ' * indent` and the separator types are checked as the encoder is built;
     /// `checks` says how much of that a call reaches.
-    fn from_kwargs(kwargs: &EncoderKwargs, checks: EncoderChecks, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn from_kwargs<H: RuntimeRef>(
+        kwargs: &EncoderKwargs<H>,
+        checks: EncoderChecks,
+        vm: &mut VM<'_, H>,
+    ) -> RunResult<Self> {
         let mut config = Self::default();
 
         let separators_were_set = check_separators_shape(&kwargs.separators, vm)?;
@@ -131,7 +135,7 @@ enum EncoderChecks {
 
 impl EncoderChecks {
     /// The checks `json.dumps` (`dump = false`) or `json.dump` makes for `obj`.
-    fn for_call(obj: &Value, dump: bool, vm: &VM<'_>) -> Self {
+    fn for_call<H: RuntimeRef>(obj: &Value<H>, dump: bool, vm: &VM<'_, H>) -> Self {
         match (obj.is_str(vm.heap), dump) {
             (false, _) => Self::All,
             (true, false) => Self::Unpack,
@@ -143,16 +147,16 @@ impl EncoderChecks {
 /// The encoder keyword arguments as bound by [`JsonDumpsArgs`] / [`JsonDumpArgs`],
 /// before [`JsonDumpsConfig::from_kwargs`] coerces them. Callers hold it under
 /// `defer_drop!` so a coercion error part-way through releases every field.
-struct EncoderKwargs {
-    indent: Value,
-    sort_keys: Value,
-    ensure_ascii: Value,
-    allow_nan: Value,
-    separators: Value,
-    skipkeys: Value,
+struct EncoderKwargs<H: Reference> {
+    indent: Value<H>,
+    sort_keys: Value<H>,
+    ensure_ascii: Value<H>,
+    allow_nan: Value<H>,
+    separators: Value<H>,
+    skipkeys: Value<H>,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for EncoderKwargs {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for EncoderKwargs<H> {
     fn drop_with(self, ctx: &mut C) {
         self.indent.drop_with(ctx);
         self.sort_keys.drop_with(ctx);
@@ -171,7 +175,7 @@ impl<C: ContainsHeap> DropWithContext<C> for EncoderKwargs {
 ///
 /// CPython kwargs `cls`, `default`, and `check_circular` are intentionally
 /// unsupported and will raise `TypeError` if passed.
-pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call_dumps<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let JsonDumpsArgs {
         obj,
         indent,
@@ -206,7 +210,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// synchronously. CPython streams chunks instead, so it reaches `fp.write`
 /// before a bad element deep in a container raises, but after a scalar that
 /// cannot be encoded; the file object is checked first or last to match.
-pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call_dump<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let JsonDumpArgs {
         obj,
         fp,
@@ -247,7 +251,7 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
 }
 
 /// Serializes `obj` to JSON text under `config`.
-fn encode(obj: &Value, config: &JsonDumpsConfig, vm: &mut VM<'_>) -> RunResult<String> {
+fn encode<H: RuntimeRef>(obj: &Value<H>, config: &JsonDumpsConfig, vm: &mut VM<'_, H>) -> RunResult<String> {
     let mut output = String::new();
     let mut active_containers = Vec::new();
     let mut encoder = Encoder {
@@ -262,7 +266,7 @@ fn encode(obj: &Value, config: &JsonDumpsConfig, vm: &mut VM<'_>) -> RunResult<S
 
 /// Whether CPython's encoder would yield a chunk of `value` (its opening
 /// bracket) before any of its elements could fail to encode.
-fn is_container(value: &Value, vm: &VM<'_>) -> bool {
+fn is_container<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     match value {
         Value::Ref(heap_id) => matches!(
             vm.heap.get(*heap_id),
@@ -286,46 +290,46 @@ fn is_container(value: &Value, vm: &VM<'_>) -> bool {
 /// `parse_separators_value`) on the way through.
 #[derive(FromArgs)]
 #[from_args(name = "dumps", style = def, kwarg_error_name = "JSONEncoder.__init__")]
-struct JsonDumpsArgs {
-    obj: Value,
+struct JsonDumpsArgs<H: Reference> {
+    obj: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    indent: Value,
+    indent: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    sort_keys: Value,
+    sort_keys: Value<H>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    ensure_ascii: Value,
+    ensure_ascii: Value<H>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    allow_nan: Value,
+    allow_nan: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    separators: Value,
+    separators: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    skipkeys: Value,
+    skipkeys: Value<H>,
 }
 
 /// Argument shape for `json.dump(obj, fp, *, …)`: [`JsonDumpsArgs`] with the
 /// file object as second positional, under the `dump()` descriptor.
 #[derive(FromArgs)]
 #[from_args(name = "dump", style = def, kwarg_error_name = "JSONEncoder.__init__")]
-struct JsonDumpArgs {
-    obj: Value,
-    fp: Value,
+struct JsonDumpArgs<H: Reference> {
+    obj: Value<H>,
+    fp: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    indent: Value,
+    indent: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    sort_keys: Value,
+    sort_keys: Value<H>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    ensure_ascii: Value,
+    ensure_ascii: Value<H>,
     #[from_args(kw_only, default = Value::Bool(true))]
-    allow_nan: Value,
+    allow_nan: Value<H>,
     #[from_args(kw_only, default = Value::None)]
-    separators: Value,
+    separators: Value<H>,
     #[from_args(kw_only, default = Value::Bool(false))]
-    skipkeys: Value,
+    skipkeys: Value<H>,
 }
 
 /// Sets `bit` in `flags` when `value` is truthy, clearing it otherwise. Used by the json.dumps kwarg pipeline so each
 /// boolean-style flag is handled with a single line.
-fn apply_bool_flag(flags: u8, bit: u8, value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
+fn apply_bool_flag<H: RuntimeRef>(flags: u8, bit: u8, value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<u8> {
     if value.py_bool(vm)? {
         Ok(flags | bit)
     } else {
@@ -338,7 +342,7 @@ fn apply_bool_flag(flags: u8, bit: u8, value: &Value, vm: &mut VM<'_>) -> RunRes
 /// `None` keeps compact mode, a string is repeated once per depth level, and
 /// any other value becomes CPython's `' ' * indent`: integers give that many
 /// spaces (none when zero or negative) and other types raise its `TypeError`.
-fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
+fn parse_indent_value<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<String>> {
     match value {
         Value::None => Ok(None),
         Value::Bool(flag) => spaces_from_indent_count(i64::from(*flag)),
@@ -369,7 +373,7 @@ fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
 
 /// Raises the unpacking errors `JSONEncoder.__init__` gives `separators`,
 /// returning whether a pair was passed.
-fn check_separators_shape(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
+fn check_separators_shape<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<bool> {
     let len = match value {
         Value::None => return Ok(false),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
@@ -384,13 +388,13 @@ fn check_separators_shape(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
 }
 
 /// CPython's error unpacking a non-iterable `separators` value.
-fn separators_not_iterable(value: &Value, vm: &VM<'_>) -> RunError {
+fn separators_not_iterable<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunError {
     ExcType::type_error(format!("cannot unpack non-iterable {} object", value.py_type_name(vm)))
 }
 
 /// Converts the `separators=` pair for the encoder, after
 /// [`check_separators_shape`] has accepted it; `None` keeps the defaults.
-fn parse_separators_value(value: &Value, vm: &VM<'_>) -> RunResult<Option<(String, String)>> {
+fn parse_separators_value<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> RunResult<Option<(String, String)>> {
     let Value::Ref(heap_id) = value else {
         return Ok(None);
     };
@@ -427,7 +431,7 @@ fn check_separators_length(len: usize) -> RunResult<()> {
 /// their positional argument index in `make_encoder()`. The `role` parameter
 /// selects the matching CPython argument number (6 for `item_separator`,
 /// 5 for `key_separator`) so the error message matches CPython exactly.
-fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult<String> {
+fn json_separator_to_string<H: RuntimeRef>(value: &Value<H>, role: &str, vm: &VM<'_, H>) -> RunResult<String> {
     let arg_num = if role == "item_separator" { 6 } else { 5 };
     match value {
         Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned()),
@@ -457,23 +461,25 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult
 /// `depth` is intentionally **not** a field of this struct: every recursive
 /// call needs to bump it by one for the descent and restore it on return,
 /// which is exactly what a stack-passed parameter does for free.
-struct Encoder<'a, 'h> {
+struct Encoder<'a, 'h, H: RuntimeRef> {
     out: &'a mut String,
     config: &'a JsonDumpsConfig,
-    active_containers: &'a mut Vec<HeapId>,
-    vm: &'a mut VM<'h>,
+    active_containers: &'a mut Vec<H>,
+    vm: &'a mut VM<'h, H>,
 }
 
 /// Lets the encoder participate in the `DropGuard` / [`defer_drop_mut!`]
 /// pattern: passing the encoder as the "heap" argument re-borrows the whole
 /// encoder (including its `vm`) into the guard, which is exactly what we need
 /// so the rebound iter and the rebound encoder share a lifetime.
-impl ContainsHeap for Encoder<'_, '_> {
-    fn heap(&self) -> &Heap {
+impl<H: RuntimeRef> ContainsHeap for Encoder<'_, '_, H> {
+    type Ref = H;
+
+    fn heap(&self) -> &Heap<H> {
         self.vm.heap()
     }
 
-    fn heap_mut(&mut self) -> &mut Heap {
+    fn heap_mut(&mut self) -> &mut Heap<H> {
         self.vm.heap_mut()
     }
 }
@@ -481,18 +487,18 @@ impl ContainsHeap for Encoder<'_, '_> {
 /// Lets a [`RecursionToken`](crate::bytecode::RecursionToken) (and the container
 /// iterators that hold one) be released through the encoder via `defer_drop!`,
 /// reaching the VM-side recursion counter while the encoder itself stays borrowable.
-impl<'h> ContainsVM<'h> for Encoder<'_, 'h> {
-    fn vm(&mut self) -> &mut VM<'h> {
+impl<'h, H: RuntimeRef> ContainsVM<'h> for Encoder<'_, 'h, H> {
+    fn vm(&mut self) -> &mut VM<'h, H> {
         self.vm
     }
 }
 
-impl<'h> Encoder<'_, 'h> {
+impl<'h, H: RuntimeRef> Encoder<'_, 'h, H> {
     /// Serializes a Monty value into JSON text.
     ///
     /// Handles immediate primitives directly and delegates to type-specific
     /// helpers for strings, long integers, lists, tuples, and dicts.
-    fn serialize_value(&mut self, value: &Value, depth: usize) -> RunResult<()> {
+    fn serialize_value(&mut self, value: &Value<H>, depth: usize) -> RunResult<()> {
         // Strings size their own check, and containers check per item.
         if !matches!(value, Value::InternString(_) | Value::Ref(_)) {
             self.check_output_growth(0)?;
@@ -640,7 +646,7 @@ impl<'h> Encoder<'_, 'h> {
     /// (`skipkeys`, `sort_keys`) can mutate the buffer in place. The
     /// `DictIter`'s recursion token is acquired and released during the
     /// copy, bounding the depth of the *enclosing* `serialize_value` call.
-    fn collect_dict_entries(&mut self, dict: &HeapRead<'h, Dict>) -> Vec<(Value, Value)> {
+    fn collect_dict_entries(&mut self, dict: &HeapRead<'h, Dict<H>>) -> Vec<(Value<H>, Value<H>)> {
         dict.get(self.vm.heap)
             .iter()
             .map(|(k, v)| (k.clone_with_heap(self.vm.heap), v.clone_with_heap(self.vm.heap)))
@@ -653,7 +659,7 @@ impl<'h> Encoder<'_, 'h> {
     /// When `sort_keys=True`, entries are sorted using Python comparison
     /// semantics on the original keys so mixed incomparable key types raise
     /// the same style of `TypeError` as CPython.
-    fn serialize_dict(&mut self, entries: &mut Vec<(Value, Value)>, depth: usize) -> RunResult<()> {
+    fn serialize_dict(&mut self, entries: &mut Vec<(Value<H>, Value<H>)>, depth: usize) -> RunResult<()> {
         if self.config.skipkeys() {
             skip_disallowed_dict_keys(entries, self.vm);
         } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, self.vm)) {
@@ -709,11 +715,7 @@ impl<'h> Encoder<'_, 'h> {
     /// Centralizes the push/pop bookkeeping so every serialization path pops
     /// the container again regardless of whether recursive serialization
     /// succeeds or returns early with an error.
-    fn with_entered_container<T>(
-        &mut self,
-        heap_id: HeapId,
-        f: impl FnOnce(&mut Self) -> RunResult<T>,
-    ) -> RunResult<T> {
+    fn with_entered_container<T>(&mut self, heap_id: H, f: impl FnOnce(&mut Self) -> RunResult<T>) -> RunResult<T> {
         if self.active_containers.contains(&heap_id) {
             return Err(ExcType::json_circular_reference_error());
         }
@@ -731,9 +733,9 @@ impl<'h> Encoder<'_, 'h> {
 /// The implementation mirrors the error style used by `sorted()` and
 /// `list.sort()`: when two keys are not orderable, it raises
 /// `TypeError: '<' not supported between instances of ...`.
-fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunResult<()> {
+fn sort_dict_entries<H: RuntimeRef>(entries: &mut Vec<(Value<H>, Value<H>)>, vm: &mut VM<'_, H>) -> RunResult<()> {
     let mut indices: Vec<usize> = (0..entries.len()).collect();
-    let compare_values: Vec<Value> = entries.iter().map(|(key, _)| key.clone_with_heap(vm)).collect();
+    let compare_values: Vec<Value<H>> = entries.iter().map(|(key, _)| key.clone_with_heap(vm)).collect();
     defer_drop!(compare_values, vm);
     sort_indices(&mut indices, compare_values.as_slice(), false, vm)?;
     apply_permutation(entries.as_mut_slice(), &mut indices);
@@ -741,7 +743,7 @@ fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunR
 }
 
 /// Removes dict entries whose keys are not JSON-serializable, preserving order.
-fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>) {
+fn skip_disallowed_dict_keys<H: RuntimeRef>(entries: &mut Vec<(Value<H>, Value<H>)>, vm: &mut VM<'_, H>) {
     // Use two pointers to preserve relative order
     let mut write = 0;
     for read in 0..entries.len() {
@@ -761,7 +763,7 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>)
 ///
 /// CPython accepts strings, integers, floats, booleans, and `None`, then
 /// coerces the non-string cases to JSON strings during output.
-fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
+fn is_json_key_allowed<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     matches!(
         value,
         Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::InternString(_)
@@ -772,7 +774,12 @@ fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
 ///
 /// Non-string supported key types are rendered to their JSON string form first,
 /// then escaped as a JSON string token.
-fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &VM<'_>) -> RunResult<()> {
+fn write_json_key<H: RuntimeRef>(
+    key: &Value<H>,
+    out: &mut String,
+    config: &JsonDumpsConfig,
+    vm: &VM<'_, H>,
+) -> RunResult<()> {
     let ensure_ascii = config.ensure_ascii();
     match key {
         Value::None => write_json_ascii_key("null", out),

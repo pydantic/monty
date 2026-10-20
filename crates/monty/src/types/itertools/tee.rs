@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap::{HeapData, HeapObjectRead, HeapReadOutput, HeapReader, Reference, RuntimeRef},
     types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
@@ -23,50 +23,52 @@ use crate::{
 /// header fills a memory page.
 const BLOCK: usize = 57;
 
+#[derive(monty_macros::Relocate)]
 /// One consumer of a `tee()` group.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Tee {
+pub(crate) struct Tee<H: Reference> {
     /// The block being read — owned, so everything behind it can be freed as
     /// this consumer moves on, and so dropping this consumer releases it.
-    block: Value,
+    block: Value<H>,
     /// How far into that block this consumer has read.
     index: usize,
 }
 
-impl Tee {
+impl<H: RuntimeRef> Tee<H> {
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = &self.block {
             on_child(*id);
         }
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.block.py_dec_ref_ids(stack);
     }
 }
 
+#[derive(monty_macros::Relocate)]
 /// One link of the read-ahead chain, CPython's `_tee_dataobject`.
 ///
 /// Boxed inside [`ItertoolsIter`]: the source, the items and the link to the
 /// next block put it past the family's size budget.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct TeeBlock {
+pub(crate) struct TeeBlock<H: Reference> {
     /// The iterator every block of this chain reads from.
-    source: Value,
+    source: Value<H>,
     /// What has been read into this block, at most [`BLOCK`] items.
-    items: Vec<Value>,
+    items: Vec<Value<H>>,
     /// The block that follows, built when this one fills.
-    next: Option<Value>,
+    next: Option<Value<H>>,
     /// Whether the source is being read right now, so a consumer stepped from
     /// inside that read is refused rather than driving it again.
     running: bool,
 }
 
-impl TeeBlock {
+impl<H: RuntimeRef> TeeBlock<H> {
     /// Opens a chain over `source`.
-    fn new(source: Value) -> Self {
+    fn new(source: Value<H>) -> Self {
         Self {
             source,
             items: Vec::new(),
@@ -76,7 +78,7 @@ impl TeeBlock {
     }
 
     /// Invokes `on_child` for each heap id this block owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for value in [Some(&self.source), self.next.as_ref()].into_iter().flatten() {
             if let Value::Ref(id) = value {
                 on_child(*id);
@@ -90,7 +92,7 @@ impl TeeBlock {
     }
 
     /// Releases the refs this block owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.source.py_dec_ref_ids(stack);
         if let Some(next) = &mut self.next {
             next.py_dec_ref_ids(stack);
@@ -102,7 +104,7 @@ impl TeeBlock {
 }
 
 /// Builds `consumers` iterators over `source`, all starting at one new chain.
-pub(crate) fn new_group(source: Value, consumers: usize, vm: &mut VM<'_>) -> Vec<Value> {
+pub(crate) fn new_group<H: RuntimeRef>(source: Value<H>, consumers: usize, vm: &mut VM<'_, H>) -> Vec<Value<H>> {
     let block = TeeBlock::new(source);
     let block_id = vm
         .heap
@@ -119,7 +121,7 @@ pub(crate) fn new_group(source: Value, consumers: usize, vm: &mut VM<'_>) -> Vec
 /// a copyable argument from one it must drain. CPython copies through
 /// `__copy__` for the same reason: the copies replay from the original's
 /// position rather than draining it.
-pub(crate) fn fork_group(tee: &Value, consumers: usize, vm: &mut VM<'_>) -> Option<Vec<Value>> {
+pub(crate) fn fork_group<H: RuntimeRef>(tee: &Value<H>, consumers: usize, vm: &mut VM<'_, H>) -> Option<Vec<Value<H>>> {
     let Value::Ref(id) = tee else { return None };
     let HeapReadOutput::Itertools(read) = vm.heap.read(*id) else {
         return None;
@@ -137,7 +139,7 @@ pub(crate) fn fork_group(tee: &Value, consumers: usize, vm: &mut VM<'_>) -> Opti
 }
 
 /// Makes `consumers` iterators, each reading `block_id` from `index`.
-fn consumers_at(block_id: HeapId, index: usize, consumers: usize, vm: &mut VM<'_>) -> Vec<Value> {
+fn consumers_at<H: RuntimeRef>(block_id: H, index: usize, consumers: usize, vm: &mut VM<'_, H>) -> Vec<Value<H>> {
     (0..consumers)
         .map(|_| {
             // Each consumer owns its own reference to the block, counted here
@@ -154,7 +156,10 @@ fn consumers_at(block_id: HeapId, index: usize, consumers: usize, vm: &mut VM<'_
 
 /// Yields this consumer's next item, reading one from the source when the
 /// chain has nothing further for it.
-pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &mut HeapObjectRead<'h, H, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     loop {
         // Reading the source runs user code that can step other consumers, so
         // the position is re-read each round rather than carried across one.
@@ -183,12 +188,12 @@ pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM
 
 /// A `_tee_dataobject` is not itself iterable; only the `_tee`s that read one
 /// step it, and Python can never reach a block to call `next()` on it anyway.
-pub(super) fn block_next() -> Option<Value> {
+pub(super) fn block_next<H: RuntimeRef>() -> Option<Value<H>> {
     None
 }
 
 /// Where this consumer is reading.
-fn position<'h>(iter: &HeapObjectRead<'h, ItertoolsIter>, vm: &VM<'h>) -> (HeapId, usize) {
+fn position<'h, H: RuntimeRef>(iter: &HeapObjectRead<'h, H, ItertoolsIter<H>>, vm: &VM<'h, H>) -> (H, usize) {
     let ItertoolsIter::Tee(tee) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Tee")
     };
@@ -200,7 +205,12 @@ fn position<'h>(iter: &HeapObjectRead<'h, ItertoolsIter>, vm: &VM<'h>) -> (HeapI
 
 /// Moves this consumer to `index` of `block_id`, taking a reference to that
 /// block when it is a new one and releasing the one being left.
-fn set_position<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, block_id: HeapId, index: usize, vm: &mut VM<'h>) {
+fn set_position<'h, H: RuntimeRef>(
+    iter: &mut HeapObjectRead<'h, H, ItertoolsIter<H>>,
+    block_id: H,
+    index: usize,
+    vm: &mut VM<'h, H>,
+) {
     let (previous, _) = position(iter, vm);
     if previous == block_id {
         let ItertoolsIter::Tee(tee) = iter.get_mut(vm.heap) else {
@@ -222,7 +232,7 @@ fn set_position<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, block_id: Heap
 
 /// The block after `block_id`, opening one over the same source if this is the
 /// first consumer to reach the end of this one.
-fn jump(block_id: HeapId, vm: &mut VM<'_>) -> HeapId {
+fn jump<H: RuntimeRef>(block_id: H, vm: &mut VM<'_, H>) -> H {
     let existing = read_block(block_id, vm, |block, _| match &block.next {
         Some(Value::Ref(id)) => Some(*id),
         _ => None,
@@ -240,7 +250,7 @@ fn jump(block_id: HeapId, vm: &mut VM<'_>) -> HeapId {
 }
 
 /// Reads one item from the source into `block_id`, reporting whether it got one.
-fn fill(block_id: HeapId, vm: &mut VM<'_>) -> RunResult<bool> {
+fn fill<H: RuntimeRef>(block_id: H, vm: &mut VM<'_, H>) -> RunResult<bool> {
     let source = read_block(block_id, vm, |block, heap| block.source.clone_with_heap(heap));
     defer_drop!(source, vm);
     // A source whose `__next__` steps any consumer of this group would
@@ -265,7 +275,11 @@ fn fill(block_id: HeapId, vm: &mut VM<'_>) -> RunResult<bool> {
 ///
 /// Every access re-reads the block: the loop above re-enters the VM between
 /// rounds, so no borrow of one may be held across a round.
-fn read_block<T>(block_id: HeapId, vm: &VM<'_>, f: impl FnOnce(&TeeBlock, &HeapReader<'_>) -> T) -> T {
+fn read_block<H: RuntimeRef, T>(
+    block_id: H,
+    vm: &VM<'_, H>,
+    f: impl FnOnce(&TeeBlock<H>, &HeapReader<'_, H>) -> T,
+) -> T {
     let HeapReadOutput::Itertools(read) = vm.heap.read(block_id) else {
         unreachable!("a tee's block is always a tee block")
     };
@@ -279,7 +293,7 @@ fn read_block<T>(block_id: HeapId, vm: &VM<'_>, f: impl FnOnce(&TeeBlock, &HeapR
 ///
 /// The heap is exclusively borrowed for the call, so the closure can only work
 /// with values it is handed or already owns.
-fn write_block<T>(block_id: HeapId, vm: &mut VM<'_>, f: impl FnOnce(&mut TeeBlock) -> T) -> T {
+fn write_block<H: RuntimeRef, T>(block_id: H, vm: &mut VM<'_, H>, f: impl FnOnce(&mut TeeBlock<H>) -> T) -> T {
     let HeapReadOutput::Itertools(read) = vm.heap.read(block_id) else {
         unreachable!("a tee's block is always a tee block")
     };

@@ -23,7 +23,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapItem, HeapObjectRead, HeapReadOutput, Reference, RuntimeRef},
     intern::{Interns, StaticStrings},
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
@@ -32,15 +32,16 @@ use crate::{
         time::{self, Time, TimeSpec},
         timedelta, timezone,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, NoHeapRef, Value},
 };
 
 /// Number of microseconds in a single second.
 const DATE_OUT_OF_RANGE: &str = "date value out of range";
 
+#[derive(monty_macros::Relocate)]
 /// `datetime.datetime` storage backed by `chrono::NaiveDateTime` plus optional fixed offset.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DateTime {
+pub(crate) struct DateTime<H: Reference> {
     naive: NaiveDateTime,
     offset_seconds: Option<i32>,
     timezone_name: Option<String>,
@@ -50,23 +51,23 @@ pub(crate) struct DateTime {
     /// and repeated `dt.tzinfo` access returns the same object. We store a retained
     /// heap reference so attribute lookup can return a stable object instead of
     /// allocating a new timezone each time.
-    tzinfo_ref: Option<HeapId>,
+    tzinfo_ref: Option<H>,
 }
 
-impl DateTime {
+impl<H: RuntimeRef> DateTime<H> {
     /// Returns the retained `tzinfo` heap reference, if this datetime is timezone-aware.
     ///
     /// Used by GC traversal (`collect_child_ids`) and ref-count cascade
     /// (`py_dec_ref_ids_for_data`) so that the timezone object stays alive as long
     /// as the datetime references it. Without this, `gc.collect` cannot reach the
     /// tzinfo and may sweep it while the datetime still points at the freed slot.
-    pub(crate) fn tzinfo_ref(&self) -> Option<HeapId> {
+    pub(crate) fn tzinfo_ref(&self) -> Option<H> {
         self.tzinfo_ref
     }
 }
 
-impl Hash for DateTime {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+impl<H: RuntimeRef> Hash for DateTime<H> {
+    fn hash<S: Hasher>(&self, state: &mut S) {
         // Hash must be consistent with equality (py_eq).
         if is_aware(self) {
             // Aware datetimes compare equal if they represent the same UTC instant,
@@ -81,7 +82,7 @@ impl Hash for DateTime {
 
 /// Creates a datetime from civil components and optional fixed offset.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn from_components(
+pub(crate) fn from_components<H: RuntimeRef>(
     year: i32,
     month: i32,
     day: i32,
@@ -90,9 +91,9 @@ pub(crate) fn from_components(
     second: i32,
     microsecond: i32,
     tzinfo: Option<TimeZone>,
-    tzinfo_ref: Option<HeapId>,
-    heap: &mut Heap,
-) -> RunResult<DateTime> {
+    tzinfo_ref: Option<H>,
+    heap: &mut Heap<H>,
+) -> RunResult<DateTime<H>> {
     if !(0..=23).contains(&hour) {
         return Err(SimpleException::new_msg(ExcType::ValueError, format!("hour must be in 0..23, not {hour}")).into());
     }
@@ -146,7 +147,7 @@ pub(crate) fn from_components(
         let Some(utc) = to_utc_naive(&datetime) else {
             return Err(SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into());
         };
-        if from_utc_naive_with_offset(utc, offset_seconds).is_none() {
+        if from_utc_naive_with_offset::<H>(utc, offset_seconds).is_none() {
             return Err(SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into());
         }
     }
@@ -162,7 +163,7 @@ pub(crate) fn from_components(
 /// `&mut Heap`, unlike its siblings, because that shared path may allocate a
 /// timezone.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn allocate_naive(
+pub(crate) fn allocate_naive<H: RuntimeRef>(
     year: i32,
     month: i32,
     day: i32,
@@ -170,8 +171,8 @@ pub(crate) fn allocate_naive(
     minute: i32,
     second: i32,
     microsecond: i32,
-    heap: &mut Heap,
-) -> Value {
+    heap: &mut Heap<H>,
+) -> Value<H> {
     let datetime = from_components(year, month, day, hour, minute, second, microsecond, None, None, heap)
         .expect("caller guarantees in-range datetime components");
     Value::Ref(heap.allocate(HeapData::DateTime(datetime)))
@@ -179,19 +180,19 @@ pub(crate) fn allocate_naive(
 
 /// Returns true when this is an aware datetime.
 #[must_use]
-pub(crate) fn is_aware(datetime: &DateTime) -> bool {
+pub(crate) fn is_aware<H: RuntimeRef>(datetime: &DateTime<H>) -> bool {
     datetime.offset_seconds.is_some()
 }
 
 /// Returns the fixed offset seconds for aware datetimes.
 #[must_use]
-pub(crate) fn offset_seconds(datetime: &DateTime) -> Option<i32> {
+pub(crate) fn offset_seconds<H: RuntimeRef>(datetime: &DateTime<H>) -> Option<i32> {
     datetime.offset_seconds
 }
 
 /// Returns timezone metadata for aware datetimes.
 #[must_use]
-pub(crate) fn timezone_info(datetime: &DateTime) -> Option<TimeZone> {
+pub(crate) fn timezone_info<H: RuntimeRef>(datetime: &DateTime<H>) -> Option<TimeZone> {
     datetime.offset_seconds.map(|offset_seconds| TimeZone {
         offset_seconds,
         name: datetime.timezone_name.clone(),
@@ -200,7 +201,7 @@ pub(crate) fn timezone_info(datetime: &DateTime) -> Option<TimeZone> {
 
 /// Returns civil components in compact integer widths for object conversion.
 #[must_use]
-pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8, u8, u32)> {
+pub(crate) fn to_components<H: RuntimeRef>(datetime: &DateTime<H>) -> Option<(i32, u8, u8, u8, u8, u8, u32)> {
     let year = datetime.naive.date().year();
     if !year_in_python_range(year) {
         return None;
@@ -219,7 +220,7 @@ pub(crate) fn to_components(datetime: &DateTime) -> Option<(i32, u8, u8, u8, u8,
 
 /// The host-value form of a datetime, or `None` when its year is outside 1..=9999.
 #[must_use]
-pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
+pub(crate) fn to_monty_datetime<H: RuntimeRef>(datetime: &DateTime<H>) -> Option<MontyDateTime> {
     let (year, month, day, hour, minute, second, microsecond) = to_components(datetime)?;
     Some(MontyDateTime {
         year,
@@ -235,7 +236,7 @@ pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
 }
 
 /// Constructor for `datetime(...)`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn init<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let DatetimeInitArgs {
         year,
         month,
@@ -278,7 +279,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// on the stored datetime — Monty does not track DST-fold disambiguation.
 #[derive(FromArgs)]
 #[from_args(name = "function", style = c)]
-struct DatetimeInitArgs {
+struct DatetimeInitArgs<H: Reference> {
     year: i32,
     month: i32,
     day: i32,
@@ -291,7 +292,7 @@ struct DatetimeInitArgs {
     #[from_args(default = 0)]
     microsecond: i32,
     #[from_args(default = Value::None)]
-    tzinfo: Value,
+    tzinfo: Value<H>,
     #[from_args(kw_only, default = 0)]
     fold: i32,
 }
@@ -299,7 +300,7 @@ struct DatetimeInitArgs {
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
 /// Naive results use the session zone. A `CallHost` clock yields `DateTimeNow`
 /// with a validated [`Option<MontyTimeZone>`] for the host to answer.
-pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+pub(crate) fn class_now<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
@@ -323,7 +324,7 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
 /// `datetime.astimezone(tz=None)`: the same instant in `tz`, or in the sandbox
 /// zone at that instant when `tz` is `None`. A naive value is read as sandbox-local
 /// wall time, as CPython reads it in the host's zone.
-fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+fn astimezone<H: RuntimeRef>(dt: &DateTime<H>, vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<CallResult<H>> {
     let AstimezoneArgs { tz } = AstimezoneArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
@@ -372,14 +373,14 @@ fn probe_neighbouring_days(date: NaiveDate) -> RunResult<()> {
 /// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
 #[derive(FromArgs)]
 #[from_args(name = "astimezone", at_most_total)]
-struct AstimezoneArgs {
+struct AstimezoneArgs<H: Reference> {
     #[from_args(default = Value::None)]
-    tz: Value,
+    tz: Value<H>,
 }
 
 /// Reads the session clock in UTC; `None` means `CallHost` and requires suspension.
 /// Unrepresentable fixed instants raise `OverflowError` for all three clock calls.
-pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
+pub(crate) fn sandbox_instant<H: RuntimeRef>(vm: &VM<'_, H>) -> RunResult<Option<NaiveDateTime>> {
     match vm.env.os_policy.datetime {
         DateTimeSource::CallHost => Ok(None),
         source => source.read().map(Some).ok_or_else(date_out_of_range),
@@ -388,7 +389,7 @@ pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
 
 /// Converts UTC to the session zone's wall clock for naive `now()` and `today()`;
 /// out-of-range years raise `OverflowError`.
-pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunResult<NaiveDateTime> {
+pub(crate) fn sandbox_local_wall_clock<H: RuntimeRef>(vm: &VM<'_, H>, utc: NaiveDateTime) -> RunResult<NaiveDateTime> {
     let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
     local_wall_clock(utc, offset).ok_or_else(date_out_of_range)
 }
@@ -405,9 +406,9 @@ fn date_out_of_range() -> RunError {
 /// (`now(utc, tz=utc)`) reports "takes at most 1 argument (2 given)".
 #[derive(FromArgs)]
 #[from_args(name = "now", at_most_total)]
-struct NowArgs {
+struct NowArgs<H: Reference> {
     #[from_args(default = Value::None)]
-    tz: Value,
+    tz: Value<H>,
 }
 
 /// Classmethod `datetime.strptime(date_string, format)`.
@@ -415,7 +416,11 @@ struct NowArgs {
 /// Parses a date/time string using the given format. Delegates to chrono's
 /// `NaiveDateTime::parse_from_str`, expanding Python `%f` directives into the
 /// chrono widths needed to accept 1 through 6 fractional digits.
-pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub(crate) fn class_strptime<H: RuntimeRef>(
+    heap: &mut Heap<H>,
+    args: ArgValues<H>,
+    interns: &Interns,
+) -> RunResult<Value<H>> {
     let (date_string_val, format_val) = args.get_two_args("datetime.strptime", heap)?;
 
     let date_string = date::extract_str_arg(&date_string_val, "strptime", heap, interns);
@@ -483,7 +488,11 @@ fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
 /// - `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD HH:MM:SS`
 /// - `YYYY-MM-DDTHH:MM:SS.ffffff`
 /// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
-pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub(crate) fn class_fromisoformat<H: RuntimeRef>(
+    heap: &mut Heap<H>,
+    args: ArgValues<H>,
+    interns: &Interns,
+) -> RunResult<Value<H>> {
     let value = args.get_one_arg("datetime.fromisoformat", heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
@@ -501,7 +510,7 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
 /// `date` subclass), in which case only its date part is used. The result takes
 /// the time's timezone unless a third argument overrides it; passing `None`
 /// explicitly is how CPython drops an aware time's zone.
-pub(crate) fn class_combine(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn class_combine<H: RuntimeRef>(vm: &mut VM<'_, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
     let CombineArgs { date, time, tzinfo } = CombineArgs::from_args(args, vm)?;
     defer_drop!(date, vm);
     defer_drop!(time, vm);
@@ -528,12 +537,12 @@ pub(crate) fn class_combine(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
 }
 
 /// Allocates the `datetime` `combine` returns, given its resolved parts.
-fn combine_allocate(
-    vm: &mut VM<'_>,
+fn combine_allocate<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
     (year, month, day): (i32, i32, i32),
-    time: &Time,
-    (tz, tz_ref): (Option<TimeZone>, Option<HeapId>),
-) -> RunResult<Value> {
+    time: &Time<H>,
+    (tz, tz_ref): (Option<TimeZone>, Option<H>),
+) -> RunResult<Value<H>> {
     let (hour, minute, second, microsecond) = time.components_i32();
     let combined = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(combined))))
@@ -546,17 +555,17 @@ fn combine_allocate(
 /// str`, and the shared `tzinfo argument must be ...` message).
 #[derive(FromArgs)]
 #[from_args(name = "combine", style = c_named, at_most_total)]
-struct CombineArgs {
-    date: Value,
-    time: Value,
+struct CombineArgs<H: Reference> {
+    date: Value<H>,
+    time: Value<H>,
     // `Option<Value>` keeps "omitted" (inherit the time's zone) distinct from an
     // explicit `tzinfo=None` (make the result naive).
     #[from_args(default)]
-    tzinfo: Option<Value>,
+    tzinfo: Option<Value<H>>,
 }
 
 /// Extracts `(year, month, day)` from `combine`'s first argument.
-fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)> {
+fn combine_date_part<H: RuntimeRef>(date: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<(i32, i32, i32)> {
     let naive = match date {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Date(d) => Some(d.0),
@@ -585,7 +594,7 @@ fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)
 /// The clone shares the original's `tzinfo_ref` without taking a reference to
 /// it, so it is only safe while the caller's guard keeps the source `time`
 /// alive — which is exactly how long [`class_combine`] uses it.
-fn combine_time_part(time: &Value, vm: &mut VM<'_>) -> RunResult<Time> {
+fn combine_time_part<H: RuntimeRef>(time: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Time<H>> {
     match time {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Time(t) => Ok(t.clone()),
@@ -596,7 +605,7 @@ fn combine_time_part(time: &Value, vm: &mut VM<'_>) -> RunResult<Time> {
 }
 
 /// The `combine() argument 2 must be datetime.time, not X` error.
-fn combine_bad_time_arg(time: &Value, vm: &VM<'_>) -> RunError {
+fn combine_bad_time_arg<H: RuntimeRef>(time: &Value<H>, vm: &VM<'_, H>) -> RunError {
     ExcType::type_error_bad_arg_pos(
         "combine",
         2,
@@ -610,7 +619,7 @@ fn combine_bad_time_arg(time: &Value, vm: &VM<'_>) -> RunError {
 /// Uses speedate's RFC 3339 parser for Python-compatible ISO 8601 parsing (the
 /// same parser used by pydantic). Falls back to date-only parsing for bare
 /// `YYYY-MM-DD` inputs.
-fn parse_iso_datetime(s: &str, heap: &mut Heap) -> Option<DateTime> {
+fn parse_iso_datetime<H: RuntimeRef>(s: &str, heap: &mut Heap<H>) -> Option<DateTime<H>> {
     let bytes = s.as_bytes();
 
     // Try full datetime first, then fall back to date-only (defaults to midnight)
@@ -883,7 +892,7 @@ fn chrono_strptime_formats(fmt: &str) -> Vec<String> {
 }
 
 /// `datetime + timedelta`
-pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
+pub(crate) fn py_add<H: RuntimeRef>(datetime: &DateTime<H>, delta: &TimeDelta, heap: &mut Heap<H>) -> Option<Value<H>> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
     let next = if let Some(offset) = datetime.offset_seconds {
@@ -901,7 +910,11 @@ pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) ->
 }
 
 /// `datetime - timedelta`
-pub(crate) fn py_sub_timedelta(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
+pub(crate) fn py_sub_timedelta<H: RuntimeRef>(
+    datetime: &DateTime<H>,
+    delta: &TimeDelta,
+    heap: &mut Heap<H>,
+) -> Option<Value<H>> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
     let next = if let Some(offset) = datetime.offset_seconds {
@@ -921,7 +934,7 @@ pub(crate) fn py_sub_timedelta(datetime: &DateTime, delta: &TimeDelta, heap: &mu
 /// `datetime - datetime` returns a timedelta with the difference.
 ///
 /// Both datetimes must be either aware or naive; mixing returns `None`.
-pub(crate) fn py_sub_datetime(a: &DateTime, b: &DateTime, heap: &mut Heap) -> Option<Value> {
+pub(crate) fn py_sub_datetime<H: RuntimeRef>(a: &DateTime<H>, b: &DateTime<H>, heap: &mut Heap<H>) -> Option<Value<H>> {
     if is_aware(a) != is_aware(b) {
         return None;
     }
@@ -947,11 +960,11 @@ pub(crate) fn py_sub_datetime(a: &DateTime, b: &DateTime, heap: &mut Heap) -> Op
 /// constructors accept exactly the same tzinfo surface.
 ///
 /// [`time`]: crate::types::time
-pub(crate) fn tzinfo_from_value(
-    value: &Value,
-    heap: &Heap,
+pub(crate) fn tzinfo_from_value<H: RuntimeRef>(
+    value: &Value<H>,
+    heap: &Heap<H>,
     interns: &Interns,
-) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
+) -> RunResult<(Option<TimeZone>, Option<H>)> {
     match value {
         Value::None => Ok((None, None)),
         Value::Ref(id) => match heap.get(*id) {
@@ -967,7 +980,11 @@ pub(crate) fn tzinfo_from_value(
 /// If `preferred_tzinfo_ref` is provided, it is retained and reused so identity
 /// semantics (`is`) match the input timezone object. Otherwise we allocate (or
 /// canonicalize to the UTC singleton) a timezone object once and reuse it.
-fn attach_or_allocate_tzinfo_ref(datetime: &mut DateTime, preferred_tzinfo_ref: Option<HeapId>, heap: &mut Heap) {
+fn attach_or_allocate_tzinfo_ref<H: RuntimeRef>(
+    datetime: &mut DateTime<H>,
+    preferred_tzinfo_ref: Option<H>,
+    heap: &mut Heap<H>,
+) {
     let Some(offset_seconds) = datetime.offset_seconds else {
         datetime.tzinfo_ref = None;
         return;
@@ -987,7 +1004,11 @@ fn attach_or_allocate_tzinfo_ref(datetime: &mut DateTime, preferred_tzinfo_ref: 
 ///
 /// Returns an *owned* reference, so the caller must hand it to a field that
 /// releases it (`DateTime::tzinfo_ref`, `Time::tzinfo_ref`).
-pub(crate) fn allocate_tzinfo_ref(offset_seconds: i32, timezone_name: Option<String>, heap: &mut Heap) -> HeapId {
+pub(crate) fn allocate_tzinfo_ref<H: RuntimeRef>(
+    offset_seconds: i32,
+    timezone_name: Option<String>,
+    heap: &mut Heap<H>,
+) -> H {
     if offset_seconds == 0 && timezone_name.is_none() {
         let utc = heap.get_timezone_utc();
         defer_drop!(utc, heap);
@@ -1006,7 +1027,7 @@ pub(crate) fn allocate_tzinfo_ref(offset_seconds: i32, timezone_name: Option<Str
 
 /// Returns local wall-clock microseconds since Unix epoch for the datetime.
 #[must_use]
-pub(crate) fn local_micros(datetime: &DateTime) -> Option<i64> {
+pub(crate) fn local_micros<H: RuntimeRef>(datetime: &DateTime<H>) -> Option<i64> {
     if !year_in_python_range(datetime.naive.date().year()) {
         return None;
     }
@@ -1015,7 +1036,7 @@ pub(crate) fn local_micros(datetime: &DateTime) -> Option<i64> {
 
 /// Returns UTC microseconds since Unix epoch for aware datetimes, otherwise local micros.
 #[must_use]
-pub(crate) fn utc_micros(datetime: &DateTime) -> Option<i64> {
+pub(crate) fn utc_micros<H: RuntimeRef>(datetime: &DateTime<H>) -> Option<i64> {
     match datetime.offset_seconds {
         Some(_) => {
             let utc = to_utc_naive(datetime)?;
@@ -1025,7 +1046,7 @@ pub(crate) fn utc_micros(datetime: &DateTime) -> Option<i64> {
     }
 }
 
-fn from_local_naive(naive: NaiveDateTime) -> Option<DateTime> {
+fn from_local_naive<H: RuntimeRef>(naive: NaiveDateTime) -> Option<DateTime<H>> {
     if !year_in_python_range(naive.date().year()) {
         return None;
     }
@@ -1037,15 +1058,15 @@ fn from_local_naive(naive: NaiveDateTime) -> Option<DateTime> {
     })
 }
 
-fn from_utc_naive_with_offset(utc_naive: NaiveDateTime, offset_seconds: i32) -> Option<DateTime> {
+fn from_utc_naive_with_offset<H: RuntimeRef>(utc_naive: NaiveDateTime, offset_seconds: i32) -> Option<DateTime<H>> {
     from_utc_naive_with_timezone_parts(utc_naive, offset_seconds, None)
 }
 
-fn from_utc_naive_with_timezone_parts(
+fn from_utc_naive_with_timezone_parts<H: RuntimeRef>(
     utc_naive: NaiveDateTime,
     offset_seconds: i32,
     timezone_name: Option<String>,
-) -> Option<DateTime> {
+) -> Option<DateTime<H>> {
     FixedOffset::east_opt(offset_seconds)?;
     let offset_delta = ChronoTimeDelta::try_seconds(i64::from(offset_seconds))?;
     let local = utc_naive.checked_add_signed(offset_delta)?;
@@ -1060,7 +1081,7 @@ fn from_utc_naive_with_timezone_parts(
     })
 }
 
-fn to_utc_naive(datetime: &DateTime) -> Option<NaiveDateTime> {
+fn to_utc_naive<H: RuntimeRef>(datetime: &DateTime<H>) -> Option<NaiveDateTime> {
     let offset_seconds = datetime.offset_seconds?;
     let offset_delta = ChronoTimeDelta::try_seconds(i64::from(offset_seconds))?;
     datetime.naive.checked_sub_signed(offset_delta)
@@ -1079,7 +1100,11 @@ fn year_in_python_range(year: i32) -> bool {
 /// passed through verbatim to match glibc/Linux CPython (see
 /// [`date::format_date_strftime`]). The zone directives are substituted from
 /// the offset and name first (`%z` and `%Z` are empty for a naive value).
-pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
+pub(crate) fn format_datetime_strftime<H: RuntimeRef>(
+    dt: &DateTime<H>,
+    format: &str,
+    tracker: &ResourceTracker,
+) -> RunResult<String> {
     let format = date::rewrite_zone_directives(format, dt.offset_seconds, dt.timezone_name.as_deref(), tracker)?;
     let format = date::rewrite_microsecond_directive(&format);
     date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(&format)))
@@ -1090,7 +1115,7 @@ pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str, tracker: &Re
 /// clock precision `spec` asks for.
 ///
 /// Matches CPython's `datetime.isoformat(sep='T', timespec='auto')`.
-fn format_isoformat(dt: &DateTime, sep: char, spec: TimeSpec) -> String {
+fn format_isoformat<H: RuntimeRef>(dt: &DateTime<H>, sep: char, spec: TimeSpec) -> String {
     let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
         return "<out of range>".to_owned();
     };
@@ -1116,11 +1141,11 @@ fn format_isoformat(dt: &DateTime, sep: char, spec: TimeSpec) -> String {
 /// body. `bad_arg` still covers `timespec`.
 #[derive(FromArgs)]
 #[from_args(name = "isoformat", style = c_named, at_most_total, bad_arg)]
-struct IsoformatArgs {
+struct IsoformatArgs<H: Reference> {
     #[from_args(default)]
-    sep: Option<Value>,
+    sep: Option<Value<H>>,
     #[from_args(default)]
-    timespec: Option<StrArg>,
+    timespec: Option<StrArg<H>>,
 }
 
 /// Validates `isoformat`'s `sep` argument: any single character, `'T'` by default.
@@ -1128,7 +1153,7 @@ struct IsoformatArgs {
 /// CPython takes it through the `C` format unit, which accepts one character
 /// (not one byte — `dt.isoformat('日')` is fine) and rejects everything else
 /// with the argument's length rather than its type.
-fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
+fn isoformat_separator<H: RuntimeRef>(sep: Option<&Value<H>>, vm: &VM<'_, H>) -> RunResult<char> {
     let Some(sep) = sep else { return Ok('T') };
     // `to_str_heap`'s own message is the generic `expected string, not X`, so
     // only its success is used and the rejection is reworded here.
@@ -1152,7 +1177,7 @@ fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
 /// `datetime.timestamp()`: seconds since the Unix epoch. An aware value converts
 /// through its own offset; a naive one is read as session-local wall time, as
 /// CPython reads it in the host's zone, at its first occurrence in a DST fold.
-fn compute_timestamp(dt: &DateTime, zone: &SandboxTimeZone) -> RunResult<f64> {
+fn compute_timestamp<H: RuntimeRef>(dt: &DateTime<H>, zone: &SandboxTimeZone) -> RunResult<f64> {
     let offset = if let Some(offset) = dt.offset_seconds {
         offset
     } else {
@@ -1189,8 +1214,8 @@ fn probe_local_offset(naive: NaiveDateTime, zone: &SandboxTimeZone) -> RunResult
     }
 }
 
-impl HeapItem for DateTime {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for DateTime<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         if let Some(tzinfo_ref) = self.tzinfo_ref {
             stack.push(tzinfo_ref);
         }
@@ -1199,16 +1224,16 @@ impl HeapItem for DateTime {
 
 /// `HeapRead`-based dispatch for `DateTime`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident datetimes.
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, DateTime<H>> {
+    fn py_type(&self, _vm: &VM<'h, H>) -> Type<H> {
         Type::DateTime
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::DateTime(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -1223,13 +1248,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         }))
     }
 
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, H>) -> RunResult<CmpOrder> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         if is_aware(a) != is_aware(b) {
@@ -1244,11 +1269,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         Ok(CmpOrder::Ordered(local_micros(a).cmp(&local_micros(b))))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+    fn py_bool(&self, _vm: &mut VM<'h, H>) -> RunResult<bool> {
         Ok(true)
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             f.write_str("datetime.datetime(<out of range>)")?;
@@ -1278,7 +1303,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             return Ok(allocate_string("<out of range>", vm.heap));
@@ -1293,7 +1318,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         Ok(allocate_string(s, vm.heap))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -1302,7 +1327,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         Ok(py_add(&value, &other, vm.heap))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::DateTime(other)) => {
                 let value = self.get(vm.heap).clone();
@@ -1318,7 +1343,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let dt = self.get(vm.heap).clone();
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Isoformat) => {
@@ -1406,11 +1431,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 // Only fixed-offset zones exist, and none of them observes DST.
                 Ok(CallResult::Value(Value::None))
             }
-            _ => Err(ExcType::attribute_error_method(Type::DateTime, attr, args, vm)),
+            _ => Err(ExcType::attribute_error_method(
+                Type::<NoHeapRef>::DateTime,
+                attr,
+                args,
+                vm,
+            )),
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         // Read only the field being asked for: cloning the whole `DateTime` would
         // copy the timezone name's `String` on every `dt.year`.
         let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
@@ -1432,14 +1462,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
 
 /// Datetime behaviour that needs both the object and the VM, so it cannot be
 /// expressed as a plain function over [`DateTime`].
-impl<'h> HeapObjectRead<'h, DateTime> {
+impl<'h, H: RuntimeRef> HeapObjectRead<'h, H, DateTime<H>> {
     /// The `tzinfo` of a datetime as an owned value, or `Value::None` if it is naive.
     ///
     /// Prefers the retained object so `dt.tzinfo is tz` holds and repeated access
     /// returns one object. A datetime that has an offset but no retained reference —
     /// `tzinfo_ref` is absent from dumps written before it existed — rebuilds an equal
     /// `timezone` instead of reporting itself naive.
-    fn tzinfo_value(&self, vm: &mut VM<'h>) -> Value {
+    fn tzinfo_value(&self, vm: &mut VM<'h, H>) -> Value<H> {
         // Read both branches' inputs before the borrow ends: the rebuild path
         // needs `&mut Heap` for `get_timezone_utc` and `allocate`.
         let dt = self.get(vm.heap);
@@ -1463,7 +1493,7 @@ impl<'h> HeapObjectRead<'h, DateTime> {
     /// Every field the caller omits is carried over, the `tzinfo` object identity
     /// included. Components are validated by [`from_components`], exactly as the
     /// constructor validates them.
-    fn replace(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
+    fn replace(&self, vm: &mut VM<'h, H>, args: ArgValues<H>) -> RunResult<Value<H>> {
         // `NaiveDateTime` is `Copy` and the zone is taken by value, so the heap
         // borrow ends before `from_args` needs `&mut VM`. The carried-over
         // `tzinfo_ref` is borrowed, kept valid by this read handle until
@@ -1517,7 +1547,7 @@ impl<'h> HeapObjectRead<'h, DateTime> {
 /// existing) from "tzinfo=None" (clear).
 #[derive(FromArgs)]
 #[from_args(name = "replace")]
-struct DatetimeReplaceArgs {
+struct DatetimeReplaceArgs<H: Reference> {
     #[from_args(kw_only, default)]
     year: Option<i32>,
     #[from_args(kw_only, default)]
@@ -1533,5 +1563,5 @@ struct DatetimeReplaceArgs {
     #[from_args(kw_only, default)]
     microsecond: Option<i32>,
     #[from_args(kw_only, default)]
-    tzinfo: Option<Value>,
+    tzinfo: Option<Value<H>>,
 }

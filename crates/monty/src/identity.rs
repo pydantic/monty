@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::{
     builtins::Builtins,
-    heap::{Heap, HeapId},
+    heap::{Heap, Reference, RuntimeRef},
     modules::ModuleFunctions,
     types::{LongInt, Property},
     value::{Marker, Value},
@@ -25,7 +25,7 @@ const MAX_FIXED_BYTES: usize = 14;
 /// injective and used to expose the same key through `id()`. `Hash` lets
 /// identity sets answer "seen this object?" in O(1) (see the dict/set probes).
 #[derive(PartialEq, Eq, Hash)]
-pub(crate) enum Identity {
+pub(crate) enum Identity<H: Reference> {
     /// Internal uninitialized-value sentinel.
     Undefined,
     /// Python's `Ellipsis` singleton.
@@ -47,7 +47,7 @@ pub(crate) enum Identity {
     /// Identity of an interned long integer literal.
     InternLongInt(usize),
     /// Identity of an interpreter builtin.
-    Builtin(Builtins),
+    Builtin(Builtins<H>),
     /// Identity of a standard-library function.
     ModuleFunction(ModuleFunctions),
     /// Identity of a sandbox-defined function.
@@ -60,9 +60,12 @@ pub(crate) enum Identity {
     Heap(usize),
 }
 
-impl Identity {
+impl<H: Reference + Serialize> Identity<H> {
     /// Builds the structural identity used by both `is` and `id()`.
-    pub(crate) fn new(value: &Value) -> Self {
+    pub(crate) fn new(value: &Value<H>) -> Self
+    where
+        H: RuntimeRef,
+    {
         match value {
             Value::Undefined => Self::Undefined,
             Value::Ellipsis => Self::Ellipsis,
@@ -86,7 +89,10 @@ impl Identity {
     }
 
     /// Builds the identity of an arena-allocated object.
-    pub(crate) fn from_heap_id(id: HeapId) -> Self {
+    pub(crate) fn from_heap_id(id: H) -> Self
+    where
+        H: RuntimeRef,
+    {
         Self::Heap(id.index())
     }
 
@@ -113,7 +119,10 @@ impl Identity {
     /// Encodes this key as a Python integer.
     ///
     /// Returns an immediate integer when possible, otherwise allocating a `LongInt`.
-    pub(crate) fn into_value(self, heap: &Heap) -> Value {
+    pub(crate) fn into_value(self, heap: &Heap<H>) -> Value<H>
+    where
+        H: RuntimeRef,
+    {
         LongInt::value_from_u128(self.encoded(), heap)
     }
 

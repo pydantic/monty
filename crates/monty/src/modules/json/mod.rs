@@ -10,6 +10,7 @@
 //! - [`dump`] handles Monty values -> JSON text
 //! - [`fp`] reaches the file object the `load` / `dump` variants take
 
+use crate::heap::RuntimeRef;
 mod dump;
 mod fp;
 mod load;
@@ -24,7 +25,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
-    heap::{HeapData, HeapId},
+    heap::HeapData,
     intern::StaticStrings,
     types::Module,
     value::Value,
@@ -54,7 +55,7 @@ pub(crate) enum JsonFunctions {
 /// These are the most widely used parts of CPython's `json` module and are
 /// sufficient for common data interchange and round-tripping use cases inside
 /// the sandbox.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module<H: RuntimeRef>(vm: &mut VM<'_, H>) -> H {
     let mut module = Module::new(StaticStrings::Json, vm.interns);
     for (name, function) in [
         (StaticStrings::Loads, JsonFunctions::Loads),
@@ -76,7 +77,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 ///
 /// `loads` and `dumps` are pure computations; `load` and `dump` on an unread
 /// or written `open()` handle suspend to the host like `fp.read()` / `fp.write()`.
-pub(super) fn call(vm: &mut VM<'_>, function: JsonFunctions, args: ArgValues) -> RunResult<CallResult> {
+pub(super) fn call<H: RuntimeRef>(
+    vm: &mut VM<'_, H>,
+    function: JsonFunctions,
+    args: ArgValues<H>,
+) -> RunResult<CallResult<H>> {
     match function {
         JsonFunctions::Loads => load::call_loads(vm, args).map(CallResult::Value),
         JsonFunctions::Dumps => dump::call_dumps(vm, args).map(CallResult::Value),

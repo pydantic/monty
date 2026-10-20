@@ -7,11 +7,12 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapReadMut},
+    heap::{DropWithContext, HeapReadMut, Reference, RuntimeRef},
     types::itertools::{ItertoolsIter, step::next_item},
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Yields the running total of `source`, combined by `func` or by `+`.
 ///
 /// `total` doubles as the `initial` slot: given one it starts there and
@@ -21,19 +22,19 @@ use crate::{
 /// [`ItertoolsIter`]. Exhaustion does not latch: `total` is kept, so a source
 /// that yields again is accumulated onto where it left off.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Accumulate {
-    source: Value,
+pub(crate) struct Accumulate<H: Reference> {
+    source: Value<H>,
     /// `Value::None` selects `+`, as CPython's absent `binop` does.
-    func: Value,
+    func: Value<H>,
     /// The running total; `None` until the first item is taken.
-    total: Option<Value>,
+    total: Option<Value<H>>,
     /// Whether `total` holds an `initial` still to be yielded untouched.
     pending: bool,
 }
 
-impl Accumulate {
+impl<H: RuntimeRef> Accumulate<H> {
     /// Takes ownership of all three, with `source` already resolved by `py_iter`.
-    pub(crate) fn new(source: Value, func: Value, initial: Option<Value>) -> Self {
+    pub(crate) fn new(source: Value<H>, func: Value<H>, initial: Option<Value<H>>) -> Self {
         Self {
             source,
             func,
@@ -43,7 +44,7 @@ impl Accumulate {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = &self.source {
             on_child(*id);
         }
@@ -56,7 +57,7 @@ impl Accumulate {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.source.py_dec_ref_ids(stack);
         self.func.py_dec_ref_ids(stack);
         if let Some(total) = &mut self.total {
@@ -66,7 +67,10 @@ impl Accumulate {
 }
 
 /// Yields the initial if one is waiting, else folds the next item into the total.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let ItertoolsIter::Accumulate(accumulate) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Accumulate")
     };
@@ -125,7 +129,12 @@ pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
 ///
 /// Both are borrowed: `func` gets its own references, and the caller still owns
 /// the item until its guard ends.
-fn combine(total: &Value, item: &Value, func: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn combine<H: RuntimeRef>(
+    total: &Value<H>,
+    item: &Value<H>,
+    func: &Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     if matches!(func, Value::None) {
         total.py_add(item, vm)
     } else {

@@ -1,0 +1,16 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error: lifetime may not live long enough
+  --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:58:43
+   |
+58 |     let _pointer = owner.activate(|state| state.heap.allocate(HeapData::List(List::new(Vec::new()))));
+   |                                    ------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+   |                                    |    |
+   |                                    |    return type of closure is HeapObjectPtr<'2>
+   |                                    has type `&mut OwnedState<HeapObjectPtr<'1>>`
+   |
+   = note: requirement occurs because of the type `HeapObjectPtr<'_>`, which makes the generic argument `'_` invariant
+   = note: the struct `HeapObjectPtr<'heap>` is invariant over the parameter `'heap`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

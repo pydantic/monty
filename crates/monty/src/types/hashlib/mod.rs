@@ -9,6 +9,7 @@
 //! [`HashAlgorithm`] names the algorithm and carries the sizes CPython
 //! reports; [`HashCore`] is the streaming state behind it.
 
+use crate::heap::RuntimeRef;
 mod blake2;
 mod block;
 mod keccak;
@@ -36,7 +37,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    heap::{DropWithContext, Heap, HeapData, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
@@ -215,7 +216,7 @@ impl HashAlgorithm {
     }
 
     /// The Python type of this algorithm's hash objects.
-    pub(crate) fn py_type(self) -> Type {
+    pub(crate) fn py_type<H: RuntimeRef>(self) -> Type<H> {
         match self {
             Self::Blake2b => Type::Blake2b,
             Self::Blake2s => Type::Blake2s,
@@ -363,7 +364,7 @@ impl HashObject {
         }
     }
 
-    pub(crate) fn allocate(self, heap: &Heap) -> Value {
+    pub(crate) fn allocate<H: RuntimeRef>(self, heap: &Heap<H>) -> Value<H> {
         Value::Ref(heap.allocate(HeapData::HashObject(Box::new(self))))
     }
 }
@@ -396,7 +397,7 @@ impl Blake2Params<'static> {
 }
 
 /// A size attribute as a Python int.
-fn size_value(size: usize) -> Value {
+fn size_value<H: RuntimeRef>(size: usize) -> Value<H> {
     Value::Int(i64::try_from(size).expect("hash sizes are small"))
 }
 
@@ -428,37 +429,37 @@ struct XofHexdigestArgs {
 // Heap object glue
 // ============================================================================
 
-impl HeapItem for HashObject {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for HashObject {
+    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<H>) {
         // A hash owns no heap references.
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, HashObject> {
+    fn py_type(&self, vm: &VM<'h, H>) -> Type<H> {
         self.get(vm.heap).algorithm.py_type()
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value<H>, _: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
     /// Hash objects hash by identity, as any class without `__eq__` does.
-    fn py_hash(&self, _: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         Ok(Some(identity_hash(self.id())))
     }
 
     /// `<sha256 _hashlib.HASH object @ 0x…>` for the OpenSSL-backed types and
     /// the default `<_blake2.blake2b object at 0x…>` for BLAKE2.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, _heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let algorithm = self.get(vm.heap).algorithm;
         let address = self.py_identity().encoded();
-        match algorithm.py_type() {
-            Type::Blake2b | Type::Blake2s => write!(f, "<{} object at 0x{address:x}>", algorithm.py_type())?,
+        match algorithm.py_type::<H>() {
+            Type::Blake2b | Type::Blake2s => write!(f, "<{} object at 0x{address:x}>", algorithm.py_type::<H>())?,
             py_type => write!(f, "<{} {py_type} object @ 0x{address:x}>", algorithm.name())?,
         }
         Ok(())
@@ -466,7 +467,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
 
     /// `name`, `digest_size` and `block_size`, plus the size constants a
     /// BLAKE2 instance inherits from its class.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         let Some(name) = attr.static_string(vm.interns) else {
             return Ok(None);
         };
@@ -483,7 +484,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value<H>, vm: &mut VM<'h, H>) -> RunResult<()> {
         let readonly = matches!(
             name.static_string(vm.interns),
             Some(StaticStrings::Name | StaticStrings::DigestSize | StaticStrings::BlockSize)
@@ -502,7 +503,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h, H>, attr: &EitherStr, args: ArgValues<H>) -> RunResult<CallResult<H>> {
         let algorithm = self.get(vm.heap).algorithm;
         let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
         match attr.static_string(vm.interns) {
@@ -557,7 +558,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
 
 impl<'h> HeapRead<'h, HashObject> {
     /// Allocates a hash at the same point in the same stream, as `copy()` does.
-    pub(crate) fn allocate_like(&self, vm: &mut VM<'h>) -> Value {
+    pub(crate) fn allocate_like<H: RuntimeRef>(&self, vm: &mut VM<'h, H>) -> Value<H> {
         self.get(vm.heap).clone().allocate(vm.heap)
     }
 }
@@ -568,7 +569,7 @@ const MAX_XOF_LENGTH: usize = 1 << 29;
 /// Validates a SHAKE `digest()` / `hexdigest()` length with `_sha3`'s wording
 /// and preflights the `bytes_per_output` bytes each output byte costs, so an
 /// oversized request is a graceful `MemoryError` rather than a hard-limit kill.
-fn xof_length(length: u64, bytes_per_output: usize, vm: &VM<'_>) -> RunResult<usize> {
+fn xof_length<H: RuntimeRef>(length: u64, bytes_per_output: usize, vm: &VM<'_, H>) -> RunResult<usize> {
     let length = usize::try_from(length)
         .ok()
         .filter(|&length| length < MAX_XOF_LENGTH)
@@ -579,7 +580,7 @@ fn xof_length(length: u64, bytes_per_output: usize, vm: &VM<'_>) -> RunResult<us
 
 /// Borrows the bytes a hash accepts, with the two messages `_hashlib` uses:
 /// `str` is told to encode first, anything else is not a buffer.
-pub(crate) fn hash_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+pub(crate) fn hash_input<'a, H: RuntimeRef>(value: &'a Value<H>, vm: &'a VM<'_, H>) -> RunResult<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
         Value::Ref(id) => match vm.heap.get(*id) {

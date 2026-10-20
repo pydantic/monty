@@ -36,7 +36,7 @@ use crate::{
     run::CompileOptions,
     source_map::{SourceMap, StackFrameExt},
     types::Type,
-    value::{EitherStr, Value},
+    value::{EitherStr, NoHeapRef, Value},
 };
 
 /// Maximum number of arguments allowed in a function call.
@@ -1470,7 +1470,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                     let idx = self.code.add_const(Value::Float(part))?;
                     self.code.emit_u16(Opcode::LoadConst, idx)?;
                 }
-                let type_id = Type::Complex
+                let type_id = Type::<NoHeapRef>::Complex
                     .callable_to_u8()
                     .expect("complex is a callable builtin type");
                 return self.code.emit_call_builtin_type(type_id, 2);
@@ -2283,7 +2283,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Returning `None` falls back to `<unknown>` in the VM, which is still
     /// correct but less helpful. In practice these names should already be
     /// interned during preparation because builtin names are resolved from source.
-    fn get_builtin_name_id(&self, builtin: Builtins) -> Option<u16> {
+    fn get_builtin_name_id(&self, builtin: Builtins<NoHeapRef>) -> Option<u16> {
         let name_id = match builtin {
             Builtins::Function(function) => {
                 let name: &'static str = function.into();

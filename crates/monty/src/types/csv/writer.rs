@@ -16,7 +16,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     fstring::FormatFloat,
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapRead},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapRead, Reference, RuntimeRef},
     intern::StaticStrings,
     os_dispatch::{PendingEffect, PostConversionEffect},
     string_builder::StringBuilder,
@@ -30,20 +30,20 @@ use crate::{
 };
 
 /// A `_csv.writer`: the target, its `write` callable and the dialect.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Writer {
+#[derive(Debug, Serialize, Deserialize, monty_macros::Relocate)]
+pub(crate) struct Writer<H: Reference> {
     /// The `csvfile` argument. Owned.
-    target: Value,
+    target: Value<H>,
     /// `csvfile.write`, bound at construction as CPython does, so rebinding the attribute
     /// later does not redirect writes. `None` for a file target, whose write is a host call
     /// through `target`. Owned.
-    write: Value,
+    write: Value<H>,
     /// Shared with each record written, so a row costs no copy of the dialect's strings.
     pub(crate) dialect: Arc<Dialect>,
 }
 
-impl Writer {
-    pub(crate) fn new(target: Value, write: Value, dialect: Dialect) -> Self {
+impl<H: RuntimeRef> Writer<H> {
+    pub(crate) fn new(target: Value<H>, write: Value<H>, dialect: Dialect) -> Self {
         Self {
             target,
             write,
@@ -52,17 +52,17 @@ impl Writer {
     }
 
     /// Whether the target is an `open()` file, whose `write()` yields a host call.
-    pub(crate) fn targets_file(&self, vm: &VM<'_>) -> bool {
+    pub(crate) fn targets_file(&self, vm: &VM<'_, H>) -> bool {
         is_file(&self.target, vm)
     }
 
     /// An owned clone of the bound `write` (`None` for a file target).
-    pub(crate) fn write_method(&self, heap: &impl ContainsHeap) -> Value {
+    pub(crate) fn write_method(&self, heap: &impl ContainsHeap<Ref = H, Ref = H>) -> Value<H> {
         self.write.clone_with_heap(heap)
     }
 
     /// Invokes `on_child` for each heap id this writer owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         for value in [&self.target, &self.write] {
             if let Value::Ref(id) = value {
                 on_child(*id);
@@ -71,7 +71,7 @@ impl Writer {
     }
 
     /// Releases the owned references (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.target.py_dec_ref_ids(stack);
         self.write.py_dec_ref_ids(stack);
     }
@@ -80,7 +80,7 @@ impl Writer {
 /// `target.write`, looked up once at construction and required to be callable as CPython
 /// does: `Some(Value::None)` for a file target (its write is a host call), `None` when
 /// `target` cannot back a writer. The caller owns the returned callable.
-pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+pub(crate) fn write_method<H: RuntimeRef>(target: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<Value<H>>> {
     if is_file(target, vm) {
         return Ok(Some(Value::None));
     }
@@ -97,7 +97,11 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
 }
 
 /// `writer.writerow(row)`: formats `row` and returns whatever the target's `write()` returns.
-pub(super) fn writerow<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+pub(super) fn writerow<'h, H: RuntimeRef>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<CallResult<H>> {
     let row = args.get_one_arg("writer.writerow", vm.heap)?;
     defer_drop!(row, vm);
     let items = row_items(row, vm)?;
@@ -107,11 +111,11 @@ pub(super) fn writerow<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &
 
 /// Formats `items` as one record and writes it, returning whatever `write()` returns: the
 /// tail of `writerow`, and of the `DictWriter` methods once they have flattened their dict.
-pub(super) fn write_fields<'h>(
-    obj: &HeapRead<'h, CsvObject>,
-    items: &[Value],
-    vm: &mut VM<'h>,
-) -> RunResult<CallResult> {
+pub(super) fn write_fields<'h, H: RuntimeRef>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    items: &[Value<H>],
+    vm: &mut VM<'h, H>,
+) -> RunResult<CallResult<H>> {
     let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
     defer_drop!(write, vm);
@@ -124,7 +128,11 @@ pub(super) fn write_fields<'h>(
 ///
 /// A file target receives all the lines in one host write, since a Rust loop cannot suspend
 /// once per row; any other target's `write()` is called synchronously as each row arrives.
-pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+pub(super) fn writerows<'h, H: RuntimeRef>(
+    obj: &HeapRead<'h, CsvObject<H>>,
+    args: ArgValues<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<CallResult<H>> {
     let rows = args.get_one_arg("writer.writerows", vm.heap)?;
     defer_drop!(rows, vm);
     let (target, write, dialect) = parts(obj, vm);
@@ -132,7 +140,7 @@ pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: 
     defer_drop!(write, vm);
     let terminator_chars = terminator_chars(&dialect.lineterminator);
     if is_file(target, vm) {
-        let rows: Vec<Value> = collect_owned_iterable(rows.clone_with_heap(vm.heap), vm)?;
+        let rows: Vec<Value<H>> = collect_owned_iterable(rows.clone_with_heap(vm.heap), vm)?;
         defer_drop!(rows, vm);
         let mut lines = String::new();
         for row in rows {
@@ -165,13 +173,13 @@ pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: 
 
 /// Formats `items` through `line` and runs the bound `write` to completion; the per-row step
 /// of `writerows` and `DictWriter.writerows` on a target that is not a file.
-pub(super) fn writerow_now(
-    write: &Value,
+pub(super) fn writerow_now<H: RuntimeRef>(
+    write: &Value<H>,
     dialect: &Dialect,
     terminator_chars: &[char],
-    items: &[Value],
+    items: &[Value<H>],
     line: &mut String,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<()> {
     let line = format_items(dialect, terminator_chars, items, line, vm)?;
     vm.evaluate_function("writer.writerows", write, ArgValues::One(line))?
@@ -191,13 +199,13 @@ pub(super) fn terminator_chars(lineterminator: &str) -> Vec<char> {
 
 /// One record as a `str`, formatted through `line`, which is cleared first and keeps its
 /// capacity for the caller's next record.
-fn format_items(
+fn format_items<H: RuntimeRef>(
     dialect: &Dialect,
     terminator_chars: &[char],
-    items: &[Value],
+    items: &[Value<H>],
     line: &mut String,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+    vm: &mut VM<'_, H>,
+) -> RunResult<Value<H>> {
     line.clear();
     format_row(dialect, terminator_chars, items, line, vm)?;
     // From the slice: one exact-size allocation, bounded by the tracker-grown buffer.
@@ -210,12 +218,12 @@ fn format_items(
 /// fields' `str()` forms (twice for a quote-doubled field) before the next checkpoint. The
 /// builder cannot outlive a field's `str()` call, which re-enters the VM, so it wraps `out`
 /// per step rather than owning it.
-pub(crate) fn format_row(
+pub(crate) fn format_row<H: RuntimeRef>(
     dialect: &Dialect,
     terminator_chars: &[char],
-    items: &[Value],
+    items: &[Value<H>],
     out: &mut String,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'_, H>,
 ) -> RunResult<()> {
     let mut record_len = 0usize;
     let mut field_buffer = String::new();
@@ -382,19 +390,19 @@ fn append_field(
 }
 
 /// `PyNumber_Check`: the numeric types a `QUOTE_NONNUMERIC` writer leaves unquoted.
-fn is_number(value: &Value, vm: &VM<'_>) -> bool {
+fn is_number<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     matches!(value.py_type(vm), Type::Int | Type::Float | Type::Bool | Type::Complex)
 }
 
 /// Whether `value` is an `open()` file, whose `write()` yields a host call.
-fn is_file(value: &Value, vm: &VM<'_>) -> bool {
+fn is_file<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> bool {
     matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::OpenFile(_)))
 }
 
 /// The fields of one row, as `writerow`'s `iter(row)` sees them: a non-iterable row is
 /// `_csv.Error`, unlike `writerows`' plain `TypeError`. A `list` or `tuple`, the usual row,
 /// is copied without an iterator.
-fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+fn row_items<H: RuntimeRef>(row: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Vec<Value<H>>> {
     let direct = match row {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::List(list) => Some(list.as_slice()),
@@ -422,7 +430,12 @@ fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 }
 
 /// `write(line)`: the host call of a file target, otherwise the bound `write`.
-fn write_line(target: &Value, write: &Value, line: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
+fn write_line<H: RuntimeRef>(
+    target: &Value<H>,
+    write: &Value<H>,
+    line: Value<H>,
+    vm: &mut VM<'_, H>,
+) -> RunResult<CallResult<H>> {
     if is_file(target, vm) {
         let name = vm.interns.intern_static(StaticStrings::Write);
         vm.call_attr(target.clone_with_heap(vm.heap), name, ArgValues::One(line))
@@ -432,7 +445,7 @@ fn write_line(target: &Value, write: &Value, line: Value, vm: &mut VM<'_>) -> Ru
 }
 
 /// Marks a file write's pending result as `None`, which `writerows` returns.
-fn discard_write_result(mut result: CallResult) -> CallResult {
+fn discard_write_result<H: RuntimeRef>(mut result: CallResult<H>) -> CallResult<H> {
     if let CallResult::OsCallWithEffect {
         effect: PendingEffect::Post(PostConversionEffect::WritePosition { result_none, .. }),
         ..
@@ -444,7 +457,7 @@ fn discard_write_result(mut result: CallResult) -> CallResult {
 }
 
 /// The owned target, its `write` and the dialect of a writer object, read under a short borrow.
-fn parts<'h>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>) -> (Value, Value, Arc<Dialect>) {
+fn parts<'h, H: RuntimeRef>(obj: &HeapRead<'h, CsvObject<H>>, vm: &VM<'h, H>) -> (Value<H>, Value<H>, Arc<Dialect>) {
     let CsvObject::Writer(writer) = obj.get(vm.heap) else {
         unreachable!("dispatched on CsvObject::Writer")
     };

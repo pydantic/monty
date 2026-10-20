@@ -4,11 +4,17 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::Pow;
 
-use crate::{bytecode::VM, exception_private::RunResult, heap::Heap, types::LongInt, value::Value};
+use crate::{
+    bytecode::VM,
+    exception_private::RunResult,
+    heap::{Heap, RuntimeRef},
+    types::LongInt,
+    value::Value,
+};
 
 /// Resolves numeric rounding precision through `__index__`, clamping huge integers.
 /// User `__round__` methods receive the original argument instead of using this helper.
-pub(crate) fn round_digits(ndigits: Option<&Value>, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
+pub(crate) fn round_digits<H: RuntimeRef>(ndigits: Option<&Value<H>>, vm: &mut VM<'_, H>) -> RunResult<Option<i64>> {
     match ndigits {
         None | Some(Value::None) => Ok(None),
         Some(value) => value.saturating_index(vm).map(Some),
@@ -16,7 +22,7 @@ pub(crate) fn round_digits(ndigits: Option<&Value>, vm: &mut VM<'_>) -> RunResul
 }
 
 /// Rounds a small integer without losing precision, promoting an overflowing result.
-pub(crate) fn round_int(n: i64, digits: Option<i64>, heap: &Heap) -> Value {
+pub(crate) fn round_int<H: RuntimeRef>(n: i64, digits: Option<i64>, heap: &Heap<H>) -> Value<H> {
     if let Some(d) = digits.filter(|d| *d < 0) {
         // Any divisor >= 10**20 rounds an i64 to zero; smaller intermediates fit i128.
         let result = match u32::try_from(d.unsigned_abs()) {
@@ -42,7 +48,7 @@ pub(crate) fn round_int(n: i64, digits: Option<i64>, heap: &Heap) -> Value {
 }
 
 /// Rounds a wide integer to a multiple of `10**k`, with ties to even.
-pub(crate) fn round_bigint(n: &BigInt, k: u64, heap: &Heap) -> Value {
+pub(crate) fn round_bigint<H: RuntimeRef>(n: &BigInt, k: u64, heap: &Heap<H>) -> Value<H> {
     let digit_bound = n.bits().saturating_mul(30_103) / 100_000 + 1;
     if k > digit_bound {
         return Value::Int(0);
@@ -59,7 +65,7 @@ pub(crate) fn round_bigint(n: &BigInt, k: u64, heap: &Heap) -> Value {
 }
 
 /// Rounds a float, returning an integer only when precision is omitted or `None`.
-pub(crate) fn round_float(value: f64, digits: Option<i64>, heap: &Heap) -> RunResult<Value> {
+pub(crate) fn round_float<H: RuntimeRef>(value: f64, digits: Option<i64>, heap: &Heap<H>) -> RunResult<Value<H>> {
     if let Some(digits) = digits {
         Ok(Value::Float(round_float_to_digits(value, digits)))
     } else {

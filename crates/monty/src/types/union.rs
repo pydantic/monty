@@ -19,14 +19,15 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_one},
     heap::{
-        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapPayload,
-        HeapReadOutput,
+        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapItem, HeapObjectRead, HeapPayload, HeapReadOutput,
+        Reference, RuntimeRef,
     },
     intern::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_check_time, tuple::allocate_tuple},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
+#[derive(monty_macros::Relocate)]
 /// A union of two or more members, such as `int | None`.
 ///
 /// `args` is an OWNED ref to the `__args__` tuple, so `py_dec_ref_ids` and
@@ -35,9 +36,9 @@ use crate::{
 /// never nests another union and never has fewer than two members, since
 /// [`Union::from_members`] returns a lone member itself.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Union {
+pub(crate) struct Union<H: Reference> {
     /// The `__args__` tuple, always a `Value::Ref` to a `HeapData::Tuple`.
-    args: Value,
+    args: Value<H>,
 }
 
 /// How a value takes part in `|`: CPython's `type.__or__` accepts types,
@@ -54,13 +55,13 @@ enum Operand {
     NoneValue,
 }
 
-impl Union {
+impl<H: RuntimeRef> Union<H> {
     /// `lhs | rhs` when either side makes it a union; `None` when `|` means
     /// something else for these operands (ints, sets, dict merging, ...).
     ///
     /// Called from both the direct and reflected `|` paths, so `None | int`
     /// and `1 | (int | str)` reach it with the operands in source order.
-    pub(crate) fn try_or(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    pub(crate) fn try_or(lhs: &Value<H>, rhs: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<Value<H>>> {
         let (lhs_kind, rhs_kind) = (operand_kind(lhs, vm), operand_kind(rhs, vm));
         let unionable = match (lhs_kind, rhs_kind) {
             (Some(Operand::Union), _) | (_, Some(Operand::Union)) => true,
@@ -77,7 +78,7 @@ impl Union {
 
     /// `typing.Union[key]`: a tuple key supplies the members, anything else is
     /// the single member. Takes ownership of `key`.
-    pub(crate) fn subscript(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn subscript(key: Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
         // Guarded because the item clone can fail its allocation preflight,
         // and `key` must be released on that path too.
         let mut key_guard = DropGuard::new(key, vm);
@@ -100,7 +101,7 @@ impl Union {
     }
 
     /// `typing.Optional[key]` is `key | None`. Takes ownership of `key`.
-    pub(crate) fn optional(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn optional(key: Value<H>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
         // CPython rejects a tuple as a whole, naming it in the error.
         if matches!(&key, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Tuple(_))) {
             defer_drop!(key, vm);
@@ -119,7 +120,7 @@ impl Union {
     /// Deduplication is a linear scan per member, so a union built from a
     /// huge tuple is quadratic; the loop polls the time limit rather than
     /// running to completion.
-    fn from_members(members: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn from_members(members: Vec<Value<H>>, vm: &mut VM<'_, H>) -> RunResult<Value<H>> {
         defer_drop!(members, vm);
         let mut guard = DropGuard::new(Vec::new(), vm);
         let (flat, vm) = guard.as_parts_mut();
@@ -147,7 +148,7 @@ impl Union {
     }
 
     /// Invokes `on_child` for the heap id this union owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = self.args {
             on_child(id);
         }
@@ -155,17 +156,17 @@ impl Union {
 
     /// An owned ref to the `__args__` tuple, for `isinstance` to test each
     /// member of.
-    pub(crate) fn args(&self, heap: &impl ContainsHeap) -> Value {
+    pub(crate) fn args(&self, heap: &impl ContainsHeap<Ref = H>) -> Value<H> {
         self.args.clone_with_heap(heap)
     }
 
     /// `py_or_impl` for the heap types that take part in unions (classes,
     /// generic aliases, unions): `this | other`.
     pub(crate) fn heap_or<'h>(
-        this: &HeapObjectRead<'h, impl HeapPayload>,
-        other: &Value,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Option<Value>> {
+        this: &HeapObjectRead<'h, H, impl HeapPayload<H>>,
+        other: &Value<H>,
+        vm: &mut VM<'h, H>,
+    ) -> RunResult<Option<Value<H>>> {
         let this = this.clone_value(vm.heap);
         defer_drop!(this, vm);
         Self::try_or(this, other, vm)
@@ -174,10 +175,10 @@ impl Union {
     /// `py_ror_impl` counterpart of [`Union::heap_or`]: `other | this`, reached
     /// when the left operand has no `|` of its own (`None | Foo`, `1 | (int | str)`).
     pub(crate) fn heap_ror<'h>(
-        this: &HeapObjectRead<'h, impl HeapPayload>,
-        other: &Value,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Option<Value>> {
+        this: &HeapObjectRead<'h, H, impl HeapPayload<H>>,
+        other: &Value<H>,
+        vm: &mut VM<'h, H>,
+    ) -> RunResult<Option<Value<H>>> {
         let this = this.clone_value(vm.heap);
         defer_drop!(this, vm);
         Self::try_or(other, this, vm)
@@ -186,7 +187,7 @@ impl Union {
 
 /// Appends `member` to `flat` unless an equal member is already there.
 /// `None` is stored as `NoneType`, which is what `__args__` reports.
-fn push_unique(flat: &mut Vec<Value>, member: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+fn push_unique<H: RuntimeRef>(flat: &mut Vec<Value<H>>, member: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<()> {
     let member = match member {
         Value::None => Value::Builtin(Builtins::Type(Type::NoneType)),
         other => other.clone_with_heap(vm),
@@ -206,14 +207,14 @@ fn push_unique(flat: &mut Vec<Value>, member: &Value, vm: &mut VM<'_>) -> RunRes
 
 /// Classifies `value` for [`Union::try_or`]; `None` for a value `|` never
 /// unions with (an instance, a number, a string, ...).
-fn operand_kind(value: &Value, vm: &VM<'_>) -> Option<Operand> {
+fn operand_kind<H: RuntimeRef>(value: &Value<H>, vm: &VM<'_, H>) -> Option<Operand> {
     match value {
         Value::None => Some(Operand::NoneValue),
         Value::Builtin(Builtins::Type(_) | Builtins::ExcType(_) | Builtins::Function(BuiltinsFunctions::Type)) => {
             Some(Operand::TypeLike)
         }
         // `typing.Any`, `typing.List` and the other forms all define `__or__`.
-        Value::Marker(marker) if marker.py_type() == Type::SpecialForm => Some(Operand::TypeLike),
+        Value::Marker(marker) if marker.py_type::<H>() == Type::SpecialForm => Some(Operand::TypeLike),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Union(_) => Some(Operand::Union),
             HeapData::Class(_)
@@ -229,7 +230,7 @@ fn operand_kind(value: &Value, vm: &VM<'_>) -> Option<Operand> {
 /// Owned clones of a tuple's items, or `None` when `value` is not a plain
 /// tuple (a namedtuple key is one member, as in CPython). Preflights the
 /// clone like `clone_all_pairs`.
-fn tuple_items(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
+fn tuple_items<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<Vec<Value<H>>>> {
     let Value::Ref(id) = value else { return Ok(None) };
     let HeapData::Tuple(tuple) = vm.heap.get(*id) else {
         return Ok(None);
@@ -242,7 +243,7 @@ fn tuple_items(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> 
 }
 
 /// Owned clones of a union's members, or `None` when `value` is not a union.
-fn tuple_items_of_union(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
+fn tuple_items_of_union<H: RuntimeRef>(value: &Value<H>, vm: &mut VM<'_, H>) -> RunResult<Option<Vec<Value<H>>>> {
     let Value::Ref(id) = value else { return Ok(None) };
     let HeapData::Union(union) = vm.heap.get(*id) else {
         return Ok(None);
@@ -254,38 +255,38 @@ fn tuple_items_of_union(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<
 
 /// Releases the args tuple of a union abandoned before it reaches the heap;
 /// a heap-stored union is freed through [`HeapItem::py_dec_ref_ids`].
-impl<C: ContainsHeap> DropWithContext<C> for Union {
+impl<H: RuntimeRef, C: ContainsHeap<Ref = H>> DropWithContext<C> for Union<H> {
     fn drop_with(self, ctx: &mut C) {
         self.args.drop_with(ctx);
     }
 }
 
-impl HeapItem for Union {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+impl<H: RuntimeRef> HeapItem<H> for Union<H> {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.args.py_dec_ref_ids(stack);
     }
 }
 
-impl<'h> HeapObjectRead<'h, Union> {
+impl<'h, H: RuntimeRef> HeapObjectRead<'h, H, Union<H>> {
     /// The union's repr as a plain string, for error messages that name it.
-    fn repr_string(&self, vm: &mut VM<'h>) -> RunResult<String> {
+    fn repr_string(&self, vm: &mut VM<'h, H>) -> RunResult<String> {
         let mut repr = String::new();
         self.py_repr_fmt(&mut repr, vm, &mut LazyHeapSet::default())?;
         Ok(repr)
     }
 }
 
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
-    fn py_type(&self, _: &VM<'h>) -> Type {
+impl<'h, H: RuntimeRef> PyTrait<'h, H> for HeapObjectRead<'h, H, Union<H>> {
+    fn py_type(&self, _: &VM<'h, H>) -> Type<H> {
         Type::Union
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h, H>) -> Option<usize> {
         None
     }
 
     /// Two unions are equal when they have the same members in any order.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Union(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -324,7 +325,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
 
     /// Order-independent, so it agrees with `py_eq_impl`; an unhashable
     /// member (`int | list[[1]]`) makes the union unhashable.
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, vm: &mut VM<'h, H>) -> RunResult<Option<HashValue>> {
         let args = self.get(vm.heap).args(vm.heap);
         defer_drop!(args, vm);
         let Some(members) = tuple_items(args, vm)? else {
@@ -346,7 +347,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     ///
     /// Members render as in a generic alias, except that `NoneType` prints
     /// as `None`.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h, H>, heap_ids: &mut LazyHeapSet<H>) -> RunResult<()> {
         let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
         };
@@ -379,7 +380,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     /// `__args__`, `__origin__` (the `typing.Union` type) and `__parameters__`
     /// (always `()`); nothing is delegated, so any other name is an
     /// `AttributeError` on the union.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, H>) -> RunResult<Option<CallResult<H>>> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.get(vm.heap).args(vm.heap)))),
             Some(StaticStrings::DunderOrigin) => {
@@ -390,17 +391,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         }
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Union::heap_or(self, other, vm)
     }
 
-    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&self, other: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Option<Value<H>>> {
         Union::heap_ror(self, other, vm)
     }
 
     /// A union has no type variables to fill, so `(int | str)[bytes]` fails
     /// as it does for a generic alias.
-    fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_getitem(&self, _key: &Value<H>, vm: &mut VM<'h, H>) -> RunResult<Value<H>> {
         let repr = self.repr_string(vm)?;
         Err(ExcType::type_error_not_generic_class(&repr))
     }

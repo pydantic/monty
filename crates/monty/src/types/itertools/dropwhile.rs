@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bytecode::VM,
     exception_private::RunResult,
-    heap::{HeapId, HeapReadMut},
+    heap::{HeapReadMut, Reference, RuntimeRef},
     predicate::call_predicate,
     types::itertools::{
         ItertoolsIter,
@@ -14,6 +14,7 @@ use crate::{
     value::Value,
 };
 
+#[derive(monty_macros::Relocate)]
 /// Discards items while `predicate` holds, then yields the rest untested.
 ///
 /// `dropping` clears on the first item the predicate rejects, and that item is
@@ -22,16 +23,16 @@ use crate::{
 /// whole life. The source stays owned too: unlike `takewhile` this adaptor
 /// never latches, so every later `next` drives it again.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct DropWhile {
-    predicate: Value,
-    source: Value,
+pub(crate) struct DropWhile<H: Reference> {
+    predicate: Value<H>,
+    source: Value<H>,
     /// Whether the leading run is still being discarded.
     dropping: bool,
 }
 
-impl DropWhile {
+impl<H: RuntimeRef> DropWhile<H> {
     /// Takes ownership of both, with `source` already resolved by `py_iter`.
-    pub(crate) fn new(predicate: Value, source: Value) -> Self {
+    pub(crate) fn new(predicate: Value<H>, source: Value<H>) -> Self {
         Self {
             predicate,
             source,
@@ -40,7 +41,7 @@ impl DropWhile {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+    pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(H)) {
         if let Value::Ref(id) = &self.predicate {
             on_child(*id);
         }
@@ -50,7 +51,7 @@ impl DropWhile {
     }
 
     /// Releases the refs this iterator owns (mirrors `for_each_child_id`).
-    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+    pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<H>) {
         self.predicate.py_dec_ref_ids(stack);
         self.source.py_dec_ref_ids(stack);
     }
@@ -58,7 +59,10 @@ impl DropWhile {
 
 /// Skips items while the predicate holds; once it has failed, yields straight
 /// through without consulting it again.
-pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h, H: RuntimeRef>(
+    iter: &HeapReadMut<'h, ItertoolsIter<H>>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Option<Value<H>>> {
     let mut steps = 0usize;
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a

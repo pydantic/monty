@@ -1,0 +1,274 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: diagnostics
+---
+error[E0277]: `std::cell::Cell<u32>` cannot be shared between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:150:19
+    |
+150 |     assert_sync::<HeapOwner>();
+    |                   ^^^^^^^^^ `std::cell::Cell<u32>` cannot be shared between threads safely
+    |
+    = help: within `HeapOwner`, the trait `Sync` is not implemented for `std::cell::Cell<u32>`
+    = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock` or `std::sync::atomic::AtomicU32` instead
+note: required because it appears within the type `Heap<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+note: required because it appears within the type `HeapOwner`
+   --> crates/monty/src/heap/owner.rs:12:19
+    |
+ 12 | pub(crate) struct HeapOwner {
+    |                   ^^^^^^^^^
+note: required by a bound in `assert_sync`
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:149:23
+    |
+149 |     fn assert_sync<T: Sync>() {}
+    |                       ^^^^ required by this bound in `assert_sync`
+
+error[E0277]: `UnsafeCell<Vec<Box<[object_ptr::Slot<HeapObjectPtr<'static>>; 256]>>>` cannot be shared between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:150:19
+    |
+150 |     assert_sync::<HeapOwner>();
+    |                   ^^^^^^^^^ `UnsafeCell<Vec<Box<[object_ptr::Slot<HeapObjectPtr<'static>>; 256]>>>` cannot be shared between threads safely
+    |
+    = help: within `HeapOwner`, the trait `Sync` is not implemented for `UnsafeCell<Vec<Box<[object_ptr::Slot<HeapObjectPtr<'static>>; 256]>>>`
+note: required because it appears within the type `HeapEntries<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/object_ptr.rs:83:19
+    |
+ 83 | pub(super) struct HeapEntries<H: Reference> {
+    |                   ^^^^^^^^^^^
+note: required because it appears within the type `Heap<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+note: required because it appears within the type `HeapOwner`
+   --> crates/monty/src/heap/owner.rs:12:19
+    |
+ 12 | pub(crate) struct HeapOwner {
+    |                   ^^^^^^^^^
+note: required by a bound in `assert_sync`
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:149:23
+    |
+149 |     fn assert_sync<T: Sync>() {}
+    |                       ^^^^ required by this bound in `assert_sync`
+
+error[E0277]: `std::cell::Cell<usize>` cannot be shared between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:150:19
+    |
+150 |     assert_sync::<HeapOwner>();
+    |                   ^^^^^^^^^ `std::cell::Cell<usize>` cannot be shared between threads safely
+    |
+    = help: within `HeapOwner`, the trait `Sync` is not implemented for `std::cell::Cell<usize>`
+    = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock` or `std::sync::atomic::AtomicUsize` instead
+note: required because it appears within the type `HeapEntries<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/object_ptr.rs:83:19
+    |
+ 83 | pub(super) struct HeapEntries<H: Reference> {
+    |                   ^^^^^^^^^^^
+note: required because it appears within the type `Heap<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+note: required because it appears within the type `HeapOwner`
+   --> crates/monty/src/heap/owner.rs:12:19
+    |
+ 12 | pub(crate) struct HeapOwner {
+    |                   ^^^^^^^^^
+note: required by a bound in `assert_sync`
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:149:23
+    |
+149 |     fn assert_sync<T: Sync>() {}
+    |                       ^^^^ required by this bound in `assert_sync`
+
+error[E0277]: `std::cell::Cell<std::time::Duration>` cannot be shared between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:150:19
+    |
+150 |     assert_sync::<HeapOwner>();
+    |                   ^^^^^^^^^ `std::cell::Cell<std::time::Duration>` cannot be shared between threads safely
+    |
+    = help: within `HeapOwner`, the trait `Sync` is not implemented for `std::cell::Cell<std::time::Duration>`
+    = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock`
+note: required because it appears within the type `ResourceTracker`
+   --> crates/monty-types/src/resource.rs:281:12
+    |
+281 | pub struct ResourceTracker {
+    |            ^^^^^^^^^^^^^^^
+note: required because it appears within the type `Heap<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+note: required because it appears within the type `HeapOwner`
+   --> crates/monty/src/heap/owner.rs:12:19
+    |
+ 12 | pub(crate) struct HeapOwner {
+    |                   ^^^^^^^^^
+note: required by a bound in `assert_sync`
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:149:23
+    |
+149 |     fn assert_sync<T: Sync>() {}
+    |                       ^^^^ required by this bound in `assert_sync`
+
+error[E0277]: `std::cell::Cell<std::option::Option<Instant>>` cannot be shared between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:150:19
+    |
+150 |     assert_sync::<HeapOwner>();
+    |                   ^^^^^^^^^ `std::cell::Cell<std::option::Option<Instant>>` cannot be shared between threads safely
+    |
+    = help: within `HeapOwner`, the trait `Sync` is not implemented for `std::cell::Cell<std::option::Option<Instant>>`
+    = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock`
+note: required because it appears within the type `ResourceTracker`
+   --> crates/monty-types/src/resource.rs:281:12
+    |
+281 | pub struct ResourceTracker {
+    |            ^^^^^^^^^^^^^^^
+note: required because it appears within the type `Heap<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+note: required because it appears within the type `HeapOwner`
+   --> crates/monty/src/heap/owner.rs:12:19
+    |
+ 12 | pub(crate) struct HeapOwner {
+    |                   ^^^^^^^^^
+note: required by a bound in `assert_sync`
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:149:23
+    |
+149 |     fn assert_sync<T: Sync>() {}
+    |                       ^^^^ required by this bound in `assert_sync`
+
+error[E0277]: `std::cell::Cell<std::option::Option<usize>>` cannot be shared between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:150:19
+    |
+150 |     assert_sync::<HeapOwner>();
+    |                   ^^^^^^^^^ `std::cell::Cell<std::option::Option<usize>>` cannot be shared between threads safely
+    |
+    = help: within `HeapOwner`, the trait `Sync` is not implemented for `std::cell::Cell<std::option::Option<usize>>`
+    = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock`
+note: required because it appears within the type `ResourceTracker`
+   --> crates/monty-types/src/resource.rs:281:12
+    |
+281 | pub struct ResourceTracker {
+    |            ^^^^^^^^^^^^^^^
+note: required because it appears within the type `Heap<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+note: required because it appears within the type `HeapOwner`
+   --> crates/monty/src/heap/owner.rs:12:19
+    |
+ 12 | pub(crate) struct HeapOwner {
+    |                   ^^^^^^^^^
+note: required by a bound in `assert_sync`
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:149:23
+    |
+149 |     fn assert_sync<T: Sync>() {}
+    |                       ^^^^ required by this bound in `assert_sync`
+
+error[E0277]: `UnsafeCell<Vec<HeapIndex>>` cannot be shared between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:150:19
+    |
+150 |     assert_sync::<HeapOwner>();
+    |                   ^^^^^^^^^ `UnsafeCell<Vec<HeapIndex>>` cannot be shared between threads safely
+    |
+    = help: within `HeapOwner`, the trait `Sync` is not implemented for `UnsafeCell<Vec<HeapIndex>>`
+note: required because it appears within the type `FreeList`
+   --> crates/monty/src/heap/free_list.rs:6:12
+    |
+  6 | pub struct FreeList {
+    |            ^^^^^^^^
+note: required because it appears within the type `HeapEntries<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/object_ptr.rs:83:19
+    |
+ 83 | pub(super) struct HeapEntries<H: Reference> {
+    |                   ^^^^^^^^^^^
+note: required because it appears within the type `Heap<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+note: required because it appears within the type `HeapOwner`
+   --> crates/monty/src/heap/owner.rs:12:19
+    |
+ 12 | pub(crate) struct HeapOwner {
+    |                   ^^^^^^^^^
+note: required by a bound in `assert_sync`
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:149:23
+    |
+149 |     fn assert_sync<T: Sync>() {}
+    |                       ^^^^ required by this bound in `assert_sync`
+
+error[E0277]: `NonNull<HeapEntry<HeapObjectPtr<'static>>>` cannot be shared between threads safely
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:150:19
+    |
+150 |     assert_sync::<HeapOwner>();
+    |                   ^^^^^^^^^ `NonNull<HeapEntry<HeapObjectPtr<'static>>>` cannot be shared between threads safely
+    |
+    = help: within `HeapOwner`, the trait `Sync` is not implemented for `NonNull<HeapEntry<HeapObjectPtr<'static>>>`
+note: required because it appears within the type `HeapObjectPtr<'static>`
+   --> crates/monty/src/heap/object_ptr.rs:24:12
+    |
+ 24 | pub struct HeapObjectPtr<'heap> {
+    |            ^^^^^^^^^^^^^
+note: required because it appears within the type `std::option::Option<HeapObjectPtr<'static>>`
+   --> /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/option.rs:598:9
+note: required because it appears within the type `Heap<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/mod.rs:936:19
+    |
+936 | pub(crate) struct Heap<H: RuntimeRef> {
+    |                   ^^^^
+note: required because it appears within the type `OwnedState<HeapObjectPtr<'static>>`
+   --> crates/monty/src/heap/owner.rs:18:19
+    |
+ 18 | pub(crate) struct OwnedState<H: RuntimeRef> {
+    |                   ^^^^^^^^^^
+note: required because it appears within the type `HeapOwner`
+   --> crates/monty/src/heap/owner.rs:12:19
+    |
+ 12 | pub(crate) struct HeapOwner {
+    |                   ^^^^^^^^^
+note: required by a bound in `assert_sync`
+   --> crates/monty/src/../tests/heap_owner_compile_fail_cases/cases.rs:149:23
+    |
+149 |     fn assert_sync<T: Sync>() {}
+    |                       ^^^^ required by this bound in `assert_sync`

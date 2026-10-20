@@ -8,7 +8,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::HeapObjectRead,
+    heap::{HeapObjectRead, RuntimeRef},
     types::Dict,
     value::Value,
 };
@@ -20,11 +20,11 @@ use crate::{
 /// Shared by the getitem miss path (`Value::py_getitem`) and the explicit
 /// `__missing__` method. The factory runs via `VM::evaluate_function`, so a
 /// factory that performs external/OS calls is unsupported (documented).
-pub(crate) fn defaultdict_missing<'h>(
-    dict: &mut HeapObjectRead<'h, Dict>,
-    key: &Value,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+pub(crate) fn defaultdict_missing<'h, H: RuntimeRef>(
+    dict: &mut HeapObjectRead<'h, H, Dict<H>>,
+    key: &Value<H>,
+    vm: &mut VM<'h, H>,
+) -> RunResult<Value<H>> {
     let factory = dict.get(vm.heap).default_factory().map(|f| f.clone_with_heap(vm.heap));
     let Some(factory) = factory else {
         return Err(ExcType::key_error(key, vm));
