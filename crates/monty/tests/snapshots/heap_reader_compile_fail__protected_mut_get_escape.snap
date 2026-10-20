@@ -1,0 +1,30 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: actual
+---
+error[E0597]: `*source` does not live long enough
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:27:46
+   |
+25 |         let escaped = {
+   |             ------- borrow later stored here
+26 |             let mut source = Box::new(123_u64);
+   |                 ---------- binding `source` declared here
+27 |             let protected = heap.protect_mut(&mut *source);
+   |                                              ^^^^^^^^^^^^ borrowed value does not live long enough
+...
+30 |         };
+   |         - `*source` dropped here while still borrowed
+error[E0597]: `protected` does not live long enough
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:28:44
+   |
+25 |         let escaped = {
+   |             ------- borrow later stored here
+26 |             let mut source = Box::new(123_u64);
+27 |             let protected = heap.protect_mut(&mut *source);
+   |                 --------- binding `protected` declared here
+28 |             let read: &HeapRead<'_, u64> = &protected;
+   |                                            ^^^^^^^^^^ borrowed value does not live long enough
+29 |             read.get(heap)
+30 |         };
+   |         - `protected` dropped here while still borrowed
+For more information about this error, try `rustc --explain E0597`.

@@ -2,6 +2,7 @@
 
 import binascii
 import json
+import math
 from collections import Counter, deque
 
 # === Setup constants ===
@@ -63,6 +64,13 @@ for n in [literal, computed]:
     assert ~n == -18446744073709551617
     assert abs(n) == computed
     assert int(n) == computed
+    assert float(n) == 18446744073709551616.0
+    assert round(n) == computed
+    assert round(n, 2) == computed
+    assert round(n, -2) == 18446744073709551600
+    assert math.floor(n) == computed
+    assert math.ceil(n) == computed
+    assert math.trunc(n) == computed
     assert complex(n) == complex(float(computed))
     assert n + 1j == complex(float(computed), 1)
     assert 1j + n == complex(float(computed), 1)
@@ -304,8 +312,6 @@ assert d3[big_copy] == 'original'
 # Use 0 - MIN_I64 instead of -MIN_I64 to avoid type checker overflow
 neg_min = 0 - MIN_I64
 assert neg_min == MAX_I64 + 1
-
-# Note: ~bigger (bitwise not) tests skipped - Monty parser doesn't support ~ yet
 
 # === Floor division ===
 fd_result = bigger // 2

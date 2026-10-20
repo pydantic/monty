@@ -30,7 +30,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadMut, HeapReadOutput},
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
@@ -251,7 +251,7 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     let Value::Ref(class_id) = cls else {
         return Err(non_class_error(cls, vm));
     };
-    let HeapReadOutput::Class(mut class) = vm.heap.read(*class_id) else {
+    let HeapReadOutput::Class(class) = vm.heap.read(*class_id) else {
         return Err(non_class_error(cls, vm));
     };
     let fields = build_dataclass_fields(&class, vm)?;
@@ -260,12 +260,12 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     };
     // Fields first, so nothing owns the mapping while the params allocation
     // can still fail; a class left with fields alone acts as a default one.
-    store_dataclass_fields(&mut class, fields, vm)?;
+    store_dataclass_fields(&class, fields, vm)?;
     // Now that the mapping owns them, the `field()` objects the class body left
     // as attributes can be rewritten to what CPython leaves behind.
-    rewrite_field_attributes(&mut class, fields_id, vm)?;
-    store_dataclass_params(&mut class, options, vm)?;
-    store_match_args(&mut class, vm)?;
+    rewrite_field_attributes(&class, fields_id, vm)?;
+    store_dataclass_params(&class, options, vm)?;
+    store_match_args(&class, vm)?;
     Ok(guard.into_inner())
 }
 
@@ -329,7 +329,7 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<Value>) -> RunResult<Value>
 /// Writes `__dataclass_fields__` into the class namespace, taking ownership of
 /// `fields`. Re-decorating replaces the previous mapping, which nothing else
 /// owns once it is out of the namespace.
-fn store_dataclass_fields<'h>(class: &mut HeapRead<'h, Class>, fields: Value, vm: &mut VM<'h>) -> RunResult<()> {
+fn store_dataclass_fields<'h>(class: &HeapReadMut<'h, Class>, fields: Value, vm: &mut VM<'h>) -> RunResult<()> {
     let name = Value::InternString(vm.interns.intern_static(StaticStrings::DataclassFields));
     let replaced = class.set_attr(name, fields, vm)?;
     replaced.drop_with(vm);
@@ -342,7 +342,7 @@ fn store_dataclass_fields<'h>(class: &mut HeapRead<'h, Class>, fields: Value, vm
 /// The synthesized dunders read the options back from here (see
 /// [`dataclass_options`]), so this entry is the class's only copy of them.
 fn store_dataclass_params<'h>(
-    class: &mut HeapRead<'h, Class>,
+    class: &HeapReadMut<'h, Class>,
     options: DataclassOptions,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
@@ -356,7 +356,7 @@ fn store_dataclass_params<'h>(
 /// Writes `__match_args__` into the class namespace: the field names in
 /// definition order, so `case Point(x, y):` binds positionally. A class that
 /// defines its own `__match_args__` keeps it, as in CPython.
-fn store_match_args<'h>(class: &mut HeapRead<'h, Class>, vm: &mut VM<'h>) -> RunResult<()> {
+fn store_match_args<'h>(class: &HeapReadMut<'h, Class>, vm: &mut VM<'h>) -> RunResult<()> {
     let name_id = vm.interns.intern_static(StaticStrings::MatchArgsDunder);
     let namespace = class.get(vm.heap).namespace();
     if namespace.get_by_str("__match_args__", vm.heap, vm.interns).is_some() {
@@ -379,7 +379,7 @@ fn store_match_args<'h>(class: &mut HeapRead<'h, Class>, vm: &mut VM<'h>) -> Run
 /// which has no single value to expose — loses it.
 ///
 /// Runs once the fields are stored, so the mapping is the list of names to fix.
-fn rewrite_field_attributes<'h>(class: &mut HeapRead<'h, Class>, fields_id: HeapId, vm: &mut VM<'h>) -> RunResult<()> {
+fn rewrite_field_attributes<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapId, vm: &mut VM<'h>) -> RunResult<()> {
     for (name, field_id) in adopted_field_ids(fields_id, vm) {
         // Only an attribute that *is* the field object needs rewriting; a plain
         // `x: int = 5` already binds the value CPython would leave behind.
@@ -442,7 +442,7 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) ->
         // takes the name and annotation and the list keeps that reference.
         // Anything else is a plain default, wrapped in a field of its own.
         if let Some(field_id) = adoptable_field(bound.as_ref(), vm) {
-            let HeapReadOutput::DataclassField(mut field) = vm.heap.read(field_id) else {
+            let HeapReadOutput::DataclassField(field) = vm.heap.read(field_id) else {
                 unreachable!("adoptable_field matched the variant")
             };
             let replaced = field.get_mut(vm.heap).adopt(name_id, annotation);
@@ -777,11 +777,11 @@ pub(crate) fn dataclass_init<'h>(
     let Value::Ref(instance_id) = instance else {
         unreachable!("the caller just allocated the instance")
     };
-    let HeapReadOutput::Instance(mut instance) = vm.heap.read(*instance_id) else {
+    let HeapReadOutput::Instance(instance) = vm.heap.read(*instance_id) else {
         unreachable!("the caller just allocated the instance")
     };
     let values = bind_dataclass_fields(vm, class, fields_id, &fields, args)?;
-    store_bound_fields(&mut instance, &fields, values, vm)?;
+    store_bound_fields(&instance, &fields, values, vm)?;
     run_post_init(*instance_id, class, vm)?;
     Ok(CallResult::Value(guard.into_inner()))
 }
@@ -816,7 +816,7 @@ fn run_post_init<'h>(instance_id: HeapId, class: &HeapRead<'h, Class>, vm: &mut 
 /// `values`. A set failure (a resource limit) leaves the untouched tail to the
 /// guard; the caller owns the instance.
 fn store_bound_fields<'h>(
-    instance: &mut HeapRead<'h, Instance>,
+    instance: &HeapReadMut<'h, Instance>,
     fields: &[(StringId, bool)],
     values: Vec<Value>,
     vm: &mut VM<'h>,

@@ -21,6 +21,11 @@ impl VM<'_> {
         self.unary_op(PyTrait::py_pos_impl, "+")
     }
 
+    /// Bitwise inversion (`~x`).
+    pub(super) fn unary_invert(&mut self) -> Result<(), RunError> {
+        self.unary_op(PyTrait::py_invert_impl, "~")
+    }
+
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
         self.binary_op(|lhs, rhs, vm| lhs.py_add(rhs, vm))

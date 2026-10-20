@@ -165,10 +165,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
             }
             (CsvObject::DictReader(_), StaticStrings::Fieldnames) => {
                 // Reading the header mutates the object, which needs its own handle.
-                let HeapReadOutput::Csv(mut this) = vm.heap.read(self.id()) else {
+                let HeapReadOutput::Csv(this) = vm.heap.read(self.id()) else {
                     unreachable!("self is a csv object")
                 };
-                return dict::reader_fieldnames(&mut this, vm).map(|value| Some(CallResult::Value(value)));
+                return dict::reader_fieldnames(&this, vm).map(|value| Some(CallResult::Value(value)));
             }
             (CsvObject::DictReader(reader), StaticStrings::LineNum) => line_num_value(reader.line_num)?,
             (CsvObject::DictReader(reader), StaticStrings::Reader) => reader.reader.clone_with_heap(vm.heap),

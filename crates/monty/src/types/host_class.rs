@@ -16,7 +16,8 @@ use crate::{
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem,
-        HeapObjectRead, HeapRead, HeapReadOutput, HeapReader, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        HeapObjectRead, HeapRead, HeapReadMut, HeapReadOutput, HeapReader, heap_read_ref_as_field,
+        heap_read_ref_as_field_mut,
     },
     intern::Interns,
     types::{Type, Union},
@@ -106,23 +107,27 @@ pub(crate) fn host_class_type(heap: &Heap, class_id: HeapId) -> &HostClassType {
     }
 }
 
-impl<'h> HeapRead<'h, HostClass> {
+impl<'h> HeapReadMut<'h, HostClass> {
     /// Sets an attribute value on the sandbox copy (the host object is
     /// never touched).
     ///
     /// The caller transfers ownership of both `name` and `value`. Returns the
     /// old value if the attribute existed (caller must drop it), or None if this
     /// is a new attribute.
-    pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
 
+    /// Borrows the inline attribute dictionary for reader-gated mutation.
+    pub fn attrs_mut(&self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+        heap_read_ref_as_field_mut!(self, HostClass, attrs)
+    }
+}
+
+impl<'h> HeapRead<'h, HostClass> {
+    /// Borrows the inline attribute dictionary for comparisons and lookups.
     pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {
         heap_read_ref_as_field!(self, HostClass, attrs)
-    }
-
-    pub fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
-        heap_read_ref_as_field_mut!(self, HostClass, attrs)
     }
 }
 
@@ -447,13 +452,13 @@ impl HostClassType {
     }
 }
 
-impl<'h> HeapRead<'h, HostClassType> {
+impl<'h> HeapReadMut<'h, HostClassType> {
     /// Applies a re-sent wire class type: `name` and `is_dataclass` are
     /// overwritten (the host is authoritative), and `attrs`, when `Some`,
     /// replaces the eager class attrs (a snapshot at send time). Returns the
     /// replaced dict, which the caller must drop.
     pub fn update_from_wire(
-        &mut self,
+        &self,
         name: EitherStr,
         is_dataclass: bool,
         attrs: Option<Dict>,

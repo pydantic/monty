@@ -280,9 +280,11 @@ Changes to this module require careful review of the safety invariants documente
 
 #### Core concepts
 
-- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with`, which takes a `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
-- **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
-- **`HeapReadOutput<'a>`** — Enum over all `HeapRead<'a, T>` variants (one per `HeapData` variant). Pattern match to get the typed handle.
+- **`HeapReader<'a>`** — A scoped borrow created exclusively by `HeapReader::with`. Its `for<'a>` closure gives handles an invariant brand that cannot escape the closure.
+- **`HeapObjectRead<'a, T>`** — A typed heap-object guard holding its identity and reader count. `heap.read(id)` returns a `HeapReadOutput<'a>` variant containing one.
+- **`HeapReadMut<'a, T>`** — A mutable-access capability exposed only by shared reference from object guards and `protect_mut` wrappers. Its `get_mut(&self, &mut HeapReader)` serializes payload access through the reader.
+- **`HeapRead<'a, T>`** — A read-only capability exposed by shared dereference from mutable capabilities and `protect` wrappers. Capabilities must never be extracted, cloned or exposed via `DerefMut`: swapping them would detach their pointers from their owners.
+- **`HeapView<'a, T>`** — Shared payload access for generic helpers. Slice and box projections resolve their current storage on each access rather than cache pointers invalidated by parent mutation.
 
 #### Reading and mutating heap data
 
@@ -308,25 +310,27 @@ HeapReader::with(heap, &mut (), |heap, ()| {
 Key borrowing rules:
 
 - `get(&self, &HeapReader)` → `&T` — immutable access, prevents heap mutation while reference lives
-- `get_mut(&mut self, &mut HeapReader)` → `&mut T` — mutable access, exclusive
-- Multiple `HeapRead` handles can coexist, but only one can be accessed via `get_mut` at a time
+- `get_mut(&self, &mut HeapReader)` → `&mut T` — mutable access through `HeapReadMut`, exclusive via the reader
+- Both accessors borrow the capability and reader for the returned reference's lifetime, retaining the owner or protected source
+- Multiple capability aliases can coexist; their payload borrows cannot conflict
 - `dec_ref()` panics if any reader is active — prevents use-after-free
 
 #### Implementing type methods with HeapRead
 
-Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<'h>` trait provides the common interface:
+Read-only helpers live on `HeapRead`; mutation helpers live on `HeapReadMut` and take `&self`.
+`PyTrait` remains implemented once per type on `HeapObjectRead`, which also supplies Python identity:
 
 ```rust
 // Methods on a heap type
-impl<'h> HeapRead<'h, List> {
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+impl<'h> HeapReadMut<'h, List> {
+    pub fn append(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         self.get_mut(vm.heap).items.push(item);
         Ok(())
     }
 }
 
 // PyTrait implementation
-impl<'h> PyTrait<'h> for HeapRead<'h, List> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     fn py_type(&self, vm: &VM<'h>) -> Type { Type::List }
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).items.len())

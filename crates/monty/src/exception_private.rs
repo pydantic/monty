@@ -1326,6 +1326,24 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Reports an absent rounding or truncation hook without coercing the operand.
+    #[must_use]
+    fn type_error_missing_numeric_dunder(type_: &str, dunder: &str) -> RunError {
+        Self::type_error(format!("type {type_} doesn't define {dunder} method"))
+    }
+
+    /// Reports an invalid result from an integer conversion hook.
+    #[must_use]
+    fn type_error_non_int_return(dunder: &str, type_: &str) -> RunError {
+        Self::type_error(format!("{dunder} returned non-int (type {type_})"))
+    }
+
+    /// Reports a non-numeric argument to a real-valued math function.
+    #[must_use]
+    fn type_error_not_real_number(type_: &str) -> RunError {
+        Self::type_error(format!("must be real number, not {type_}"))
+    }
+
     /// Creates a TypeError for float() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: float() argument must be a string or a real number, not '{type}'`

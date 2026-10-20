@@ -760,7 +760,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     defer_drop_mut!(x, vm);
     let len = len_of(x, vm)?;
     if let Value::Ref(id) = x
-        && let HeapReadOutput::List(mut list) = vm.heap.read(*id)
+        && let HeapReadOutput::List(list) = vm.heap.read(*id)
     {
         return target.with_generator(vm, |random, vm| {
             for i in (1..len).rev() {

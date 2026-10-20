@@ -23,9 +23,10 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     types::{
-        GenericAlias, LazyHeapSet, Property, PyTrait, Type, Union, allocate_string,
+        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
         bytes::PyBytes,
         long_int::{PyInt, arithmetic::float_binary},
+        numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
         str::PyStr,
     },
@@ -388,7 +389,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         logical_forward!(self, |value| value.py_index_impl(vm), {
-            Self::Bool(value) => Ok(Some(Value::Bool(*value))),
+            Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
             _ => Ok(None),
         })
     }
@@ -397,6 +398,72 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         logical_forward!(self, |value| value.py_neg_impl(vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_neg_impl(vm),
             Self::Float(value) => Ok(Some(Value::Float(-value))),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        logical_forward!(self, |value| value.py_abs_impl(vm), {
+            Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
+            Self::Float(value) => Ok(Some(Value::Float(value.abs()))),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_invert_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        logical_forward!(self, |value| value.py_invert_impl(vm), {
+            Self::Bool(value) => Ok(Some(Value::Int(!i64::from(*value)))),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_round_impl(&self, ndigits: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        logical_forward!(self, |value| value.py_round_impl(ndigits, vm), {
+            Self::Bool(value) => PyInt::Small(i64::from(*value)).py_round_impl(ndigits, vm),
+            Self::Float(value) => {
+                let digits = round_digits(ndigits, vm)?;
+                round_float(*value, digits, vm.heap).map(Some)
+            }
+            _ => Ok(None),
+        })
+    }
+
+    fn py_int_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        logical_forward!(self, |value| value.py_int_impl(vm), {
+            Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
+            Self::Float(value) => LongInt::value_from_f64(*value, vm.heap).map(Some),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
+        logical_forward!(self, |value| value.py_float_impl(vm), {
+            Self::Bool(value) => Ok(Some(f64::from(*value))),
+            Self::Float(value) => Ok(Some(*value)),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_floor_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        logical_forward!(self, |value| value.py_floor_impl(vm), {
+            Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
+            Self::Float(value) => LongInt::value_from_f64(value.floor(), vm.heap).map(Some),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_ceil_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        logical_forward!(self, |value| value.py_ceil_impl(vm), {
+            Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
+            Self::Float(value) => LongInt::value_from_f64(value.ceil(), vm.heap).map(Some),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_trunc_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        logical_forward!(self, |value| value.py_trunc_impl(vm), {
+            Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
+            Self::Float(value) => LongInt::value_from_f64(*value, vm.heap).map(Some),
             _ => Ok(None),
         })
     }

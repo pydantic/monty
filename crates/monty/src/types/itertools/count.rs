@@ -8,7 +8,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, HeapId, HeapRead},
+    heap::{DropGuard, HeapId, HeapRead, HeapReadMut},
     types::{LazyHeapSet, PyTrait, itertools::ItertoolsIter},
     value::Value,
 };
@@ -55,7 +55,7 @@ impl Count {
 /// Never returns `Ok(None)` — `count` is infinite, so consumption stops only on
 /// a host-configured limit. The addition promotes to `LongInt` on overflow, as
 /// CPython switches off its `ssize_t` fast path.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     // Resolve to owned clones and release the borrow before `py_add`, which
     // allocates on int -> LongInt promotion and so mutates the heap.
     let (item, step) = {

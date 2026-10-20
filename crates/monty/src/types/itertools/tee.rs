@@ -280,7 +280,7 @@ fn read_block<T>(block_id: HeapId, vm: &VM<'_>, f: impl FnOnce(&TeeBlock, &HeapR
 /// The heap is exclusively borrowed for the call, so the closure can only work
 /// with values it is handed or already owns.
 fn write_block<T>(block_id: HeapId, vm: &mut VM<'_>, f: impl FnOnce(&mut TeeBlock) -> T) -> T {
-    let HeapReadOutput::Itertools(mut read) = vm.heap.read(block_id) else {
+    let HeapReadOutput::Itertools(read) = vm.heap.read(block_id) else {
         unreachable!("a tee's block is always a tee block")
     };
     let ItertoolsIter::TeeBlock(block) = read.get_mut(vm.heap) else {

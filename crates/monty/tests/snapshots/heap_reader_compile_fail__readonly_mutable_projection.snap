@@ -1,0 +1,28 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: actual
+---
+error[E0308]: mismatched types
+   --> crates/monty/src/heap/mod.rs:630:62
+    |
+630 |             $crate::heap::cast_as_member_ref_mut_type_hinted($heap_read, offset, type_hint)
+    |             ------------------------------------------------ ^^^^^^^^^^ expected `&HeapReadMut<'_, (u64,)>`, found `&HeapRead<'_, (u64,)>`
+    |             |
+    |             arguments to this function are incorrect
+    |
+   ::: crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:191:21
+    |
+191 |         let field = heap_read_ref_as_field_mut!(read, (u64,), 0);
+    |                     -------------------------------------------- in this macro invocation
+    |
+    = note: expected reference `&HeapReadMut<'_, (u64,)>`
+               found reference `&heap::HeapRead<'_, (u64,)>`
+note: function defined here
+   --> crates/monty/src/heap/mod.rs:611:22
+    |
+611 | pub(crate) unsafe fn cast_as_member_ref_mut_type_hinted<'r, 'a, T, U>(
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+612 |     heap_read: &'r HeapReadMut<'a, T>,
+    |     ---------------------------------
+    = note: this error originates in the macro `heap_read_ref_as_field_mut` (in Nightly builds, run with -Z macro-backtrace for more info)
+For more information about this error, try `rustc --explain E0308`.

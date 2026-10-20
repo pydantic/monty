@@ -152,7 +152,7 @@ impl RePattern {
             return Ok(regex);
         }
         let compiled = compile_regex_limited(
-            &format!("\\A(?:{})", self.pattern),
+            &anchored_source(&self.pattern, ""),
             self.flags,
             self.delegate_size_limit,
         )
@@ -168,7 +168,7 @@ impl RePattern {
             return Ok(regex);
         }
         let compiled = compile_regex_limited(
-            &format!("\\A(?:{})\\z", self.pattern),
+            &anchored_source(&self.pattern, "\\z"),
             self.flags,
             self.delegate_size_limit,
         )
@@ -686,6 +686,16 @@ pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_>) -> RunResult<Op
             )))
         }
     }
+}
+
+/// Returns `\A(?:pattern)` followed by `suffix`: the anchored source for `match()` and `fullmatch()`.
+///
+/// A `(?x)` pattern can end in a `#` comment, which runs to the next line break and would hide the closing `)`.
+/// So the group closes on a new line.
+/// If VERBOSE is off at the end of the pattern, the `(?x)` before the line break makes it whitespace, not a literal.
+/// The group's `)` ends that flag, so it does not apply to `suffix`.
+fn anchored_source(pattern: &str, suffix: &str) -> String {
+    format!("\\A(?:{pattern}(?x)\n){suffix}")
 }
 
 /// Compiles a Python regex pattern string with flags into a Rust `Regex`.

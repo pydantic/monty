@@ -576,6 +576,31 @@ assert m.group(0) == 'bbb'
 assert m.group(1) is None
 assert m.group(2) == 'bbb'
 
+# === match and fullmatch of a pattern that ends in a VERBOSE comment ===
+# match() and fullmatch() wrap the pattern, so a trailing `#` comment must not hide the end of the wrapper
+m = re.match(r'(?x)a # comment', 'ab')
+assert m is not None
+assert m.group() == 'a'
+
+m = re.fullmatch(r'(?x)a # comment', 'a')
+assert m is not None
+assert m.group() == 'a'
+
+assert re.fullmatch(r'(?x)a # comment', 'ab') is None, 'fullmatch still needs the whole string'
+assert re.match('(?x)a#', 'a').group() == 'a', 'empty comment'
+assert re.fullmatch(r'(?x)a|b # either letter', 'b').group() == 'b', 'comment after an alternation'
+assert re.fullmatch(r'(?xi)A # comment', 'a').group() == 'a', 'x combined with another flag'
+assert re.fullmatch(r'(?x)a # (unbalanced', 'a').group() == 'a', 'parenthesis in the comment'
+assert re.fullmatch(r'(?x)\w+$  # the last word', 'abc').group() == 'abc', '$ before the comment'
+assert re.compile(r'(?x)a # comment').fullmatch('a').group() == 'a', 'compiled pattern'
+
+# the line break that ends the comment must not become a literal where VERBOSE is off
+assert re.fullmatch('a # c', 'a # c').group() == 'a # c', '# is a literal without VERBOSE'
+assert re.fullmatch('a', 'a\n') is None, 'no newline added to a pattern without VERBOSE'
+assert re.match(r'(?x:a) # c', 'a') is None, 'VERBOSE ends with its scoped group'
+assert re.fullmatch(r'(?x:a)b # c', 'ab # c').group() == 'ab # c', 'literal comment after a scoped group'
+assert re.fullmatch(r'(?x)(?-x:a )# c', 'a ').group() == 'a ', 'comment after a group that turns VERBOSE off'
+
 # === Literal $ in replacement ===
 result = re.sub(r'\d+', '$', 'a1b2')
 assert result == 'a$b$'

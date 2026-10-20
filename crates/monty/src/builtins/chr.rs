@@ -4,51 +4,19 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     types::str::allocate_char,
     value::Value,
 };
 
-/// Implementation of the chr() builtin function.
-///
-/// Returns a string representing a character whose Unicode code point is the integer.
-/// The valid range for the argument is from 0 through 1,114,111 (0x10FFFF).
+/// Returns the character at an `__index__`-compatible Unicode code point.
 pub fn builtin_chr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("chr", vm.heap)?;
     defer_drop!(value, vm);
-
-    match value {
-        Value::Int(n) => {
-            if *n < 0 || *n > 0x0010_FFFF {
-                Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
-            } else if let Some(c) = char::from_u32(
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "range of n already validated in the first if condition"
-                )]
-                {
-                    *n as u32
-                },
-            ) {
-                Ok(allocate_char(c, vm.heap))
-            } else {
-                // This shouldn't happen for valid Unicode range, but handle it
-                Err(SimpleException::new_msg(ExcType::ValueError, "chr() arg not in range(0x110000)").into())
-            }
-        }
-        Value::Bool(b) => {
-            // bool is subclass of int
-            let c = if *b { '\x01' } else { '\x00' };
-            Ok(allocate_char(c, vm.heap))
-        }
-        _ => {
-            let type_name = value.py_type_name(vm);
-            Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("an integer is required (got type {type_name})"),
-            )
-            .into())
-        }
+    let index = value.saturating_index(vm)?;
+    if let Some(c) = u32::try_from(index).ok().and_then(char::from_u32) {
+        Ok(allocate_char(c, vm.heap))
+    } else {
+        Err(ExcType::value_error("chr() arg not in range(0x110000)"))
     }
 }

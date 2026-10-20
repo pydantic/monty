@@ -23,8 +23,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `def`, `async def`, nested functions, closures, `lambda`
 - Decorators on functions and classes
 - Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
-    `__contains__`, `__index__`, `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, binary arithmetic
-    and reflected operators, class variables
+    `__contains__`, `__index__`, `__int__`/`__float__`, `__abs__`, `__round__`, `__floor__`/`__ceil__`/`__trunc__`,
+    `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`/`~`, binary arithmetic and reflected operators, class variables
 - `@dataclass`, with the `eq=` and `frozen=` options only (every other option raises `NotImplementedError`),
     `field()` (with `default=...` / `default_factory=...`) and `__post_init__`, but no `fields()` or `asdict()`, plus host
     class instances passed in and out (and host classes the sandbox may instantiate when granted)
@@ -125,7 +125,7 @@ Each links to the page that owns it, which is where the full account lives:
     ([builtins.md](builtins.md)).
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
     error messages differ ([re.md](re.md)).
-- **Only the class dunders listed above are dispatched.** `__lt__`, `__len__`, `__abs__` and `__invert__` raise
+- **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
     `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic
     (`@=` is rejected at compile time).
     `__bool__` and the `__getattr__` family are ignored silently, so an instance is always truthy

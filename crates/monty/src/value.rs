@@ -7,7 +7,7 @@ use std::{
 };
 
 use num_bigint::{BigInt, Sign};
-use num_traits::ToPrimitive;
+use num_traits::{Signed, ToPrimitive};
 use serde::de::Error as _;
 use smallvec::smallvec;
 
@@ -541,6 +541,38 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_index_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         logical_dispatch!(self, vm, |view| view.py_index_impl(vm))
+    }
+
+    fn py_abs_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        logical_dispatch!(self, vm, |view| view.py_abs_impl(vm))
+    }
+
+    fn py_invert_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        logical_dispatch!(self, vm, |view| view.py_invert_impl(vm))
+    }
+
+    fn py_round_impl(&self, ndigits: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        logical_dispatch!(self, vm, |view| view.py_round_impl(ndigits, vm))
+    }
+
+    fn py_int_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        logical_dispatch!(self, vm, |view| view.py_int_impl(vm))
+    }
+
+    fn py_float_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<f64>> {
+        logical_dispatch!(self, vm, |view| view.py_float_impl(vm))
+    }
+
+    fn py_floor_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        logical_dispatch!(self, vm, |view| view.py_floor_impl(vm))
+    }
+
+    fn py_ceil_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        logical_dispatch!(self, vm, |view| view.py_ceil_impl(vm))
+    }
+
+    fn py_trunc_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        logical_dispatch!(self, vm, |view| view.py_trunc_impl(vm))
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
@@ -1177,6 +1209,40 @@ impl Value {
     /// reached via deserialization of crafted snapshot data.
     pub fn as_int(&self, vm: &mut VM<'_>) -> RunResult<i64> {
         self.as_int_with_overflow(vm, ExcType::overflow_c_ssize_t)
+    }
+
+    /// Returns an owned integer through `__index__` without narrowing its magnitude.
+    pub(crate) fn py_index(&self, vm: &mut VM<'_>) -> RunResult<Self> {
+        self.py_index_impl(vm)?
+            .ok_or_else(|| ExcType::type_error_not_integer(&self.py_type_name(vm)))
+    }
+
+    /// Converts an index to `i64`, saturating rather than raising on overflow.
+    pub(crate) fn saturating_index(&self, vm: &mut VM<'_>) -> RunResult<i64> {
+        let index = self.py_index(vm)?;
+        defer_drop!(index, vm);
+        Ok(match index {
+            Self::Int(n) => *n,
+            Self::Bool(b) => i64::from(*b),
+            _ => {
+                let n = index.as_long_int(vm).expect("py_index returned an integer");
+                n.to_i64()
+                    .unwrap_or_else(|| if n.is_negative() { i64::MIN } else { i64::MAX })
+            }
+        })
+    }
+
+    /// Numeric float conversion, trying `__float__` before `__index__`.
+    /// Leaves unsupported-type errors to the consumer and never parses strings.
+    pub(crate) fn py_float(&self, vm: &mut VM<'_>) -> RunResult<Option<f64>> {
+        if let Some(value) = self.py_float_impl(vm)? {
+            Ok(Some(value))
+        } else if let Some(index) = self.py_index_impl(vm)? {
+            defer_drop!(index, vm);
+            index.py_float_impl(vm)
+        } else {
+            Ok(None)
+        }
     }
 
     /// [`Self::as_int`] with a caller-chosen overflow error.

@@ -3,7 +3,7 @@ use std::{borrow::Cow, fmt};
 use num_bigint::BigInt;
 
 use crate::{
-    args::{ArgValues, FromArgs, is_long_int},
+    args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions, object_setattr::builtin_object_setattr},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -24,7 +24,7 @@ use crate::{
         complex, date, datetime,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
-        long_int::{INT_MAX_STR_DIGITS, bigint_to_f64_checked},
+        long_int::INT_MAX_STR_DIGITS,
         path,
         str::{StringRepr, allocate_string},
         time,
@@ -838,20 +838,18 @@ impl Type {
                     return Ok(Value::Float(0.0));
                 };
                 defer_drop!(v, vm);
-                match v {
-                    Value::Float(f) => Ok(Value::Float(*f)),
-                    Value::Int(i) => Ok(Value::Float(*i as f64)),
-                    Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
-                    Value::InternString(string_id) => {
-                        Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
-                    }
-                    Value::InternLongInt(id) => Ok(Value::Float(bigint_to_f64_checked(interns.get_long_int(*id))?)),
-                    Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                        HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
-                        HeapData::LongInt(value) => Ok(Value::Float(value.to_f64_checked()?)),
+                if let Some(value) = v.py_float(vm)? {
+                    Ok(Value::Float(value))
+                } else {
+                    match v {
+                        Value::InternString(string_id) => {
+                            Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
+                        }
+                        Value::Ref(heap_id) if let HeapData::Str(s) = vm.heap.get(*heap_id) => {
+                            Ok(Value::Float(parse_f64_from_str(s.as_str())?))
+                        }
                         _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
-                    },
-                    _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
+                    }
                 }
             }
             Self::Bool => {
@@ -986,13 +984,16 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `int(x)` with no base: numeric coercion plus base-10 str/bytes parsing.
 fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    match x.py_value(vm) {
-        PyValue::Int(_) => Ok(x.clone_with_heap(vm.heap)),
-        PyValue::Float(value) => LongInt::value_from_f64(value, vm.heap),
-        PyValue::Bool(value) => Ok(Value::Int(i64::from(value))),
-        PyValue::Str(value) => parse_int_from_str(value.as_str(vm), 10, vm.heap),
-        PyValue::Bytes(value) => parse_int_from_bytes(value.as_slice(vm), 10, vm.heap),
-        _ => Err(ExcType::type_error_int_conversion(&x.py_type_name(vm))),
+    if let Some(value) = x.py_int_impl(vm)? {
+        Ok(value)
+    } else if let Some(value) = x.py_index_impl(vm)? {
+        Ok(value)
+    } else {
+        match x.py_value(vm) {
+            PyValue::Str(value) => parse_int_from_str(value.as_str(vm), 10, vm.heap),
+            PyValue::Bytes(value) => parse_int_from_bytes(value.as_slice(vm), 10, vm.heap),
+            _ => Err(ExcType::type_error_int_conversion(&x.py_type_name(vm))),
+        }
     }
 }
 
@@ -1004,13 +1005,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// `TypeError` before the range is checked.
 fn int_base(base: Value, vm: &mut VM<'_>) -> RunResult<u32> {
     defer_drop!(base, vm);
-    let n = match base {
-        Value::Bool(b) => i64::from(*b),
-        Value::Int(i) => *i,
-        // Clamped by PyNumber_AsSsize_t: any i64-overflowing int is out of range.
-        _ if is_long_int(base, vm) => i64::MAX,
-        _ => return Err(ExcType::type_error_not_integer(&base.py_type_name(vm))),
-    };
+    let n = base.saturating_index(vm)?;
     match u32::try_from(n) {
         Ok(0) => Ok(0),
         Ok(b @ 2..=36) => Ok(b),

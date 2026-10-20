@@ -49,7 +49,7 @@ impl StarMap {
 }
 
 /// Pulls one item, spreads it into an argument list, and calls the function.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let ItertoolsIter::StarMap(starmap) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::StarMap")
     };

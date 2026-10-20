@@ -385,7 +385,7 @@ pub(crate) fn deep_copy_attrs(
             break;
         };
         let (key_copy, value_copy) = deep_copy_pair(key, value, memo, vm)?;
-        let HeapReadOutput::Instance(mut instance) = vm.heap.read(copy_id) else {
+        let HeapReadOutput::Instance(instance) = vm.heap.read(copy_id) else {
             unreachable!("caller allocated an instance")
         };
         let replaced = instance.attrs_mut().set(key_copy, value_copy, vm)?;
@@ -512,7 +512,7 @@ impl Memo {
     pub(crate) fn insert(&mut self, source: &Value, copy: &Value, vm: &mut VM<'_>) -> RunResult<()> {
         let key = source.id().into_value(vm.heap);
         let value = copy.clone_with_heap(vm.heap);
-        let HeapReadOutput::Dict(mut dict) = vm.heap.read(self.dict_id()) else {
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id()) else {
             unreachable!("memo is a dict")
         };
         if let Some(replaced) = dict.set(key, value, vm)? {
@@ -610,7 +610,7 @@ fn insert_pairs(dict_id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) ->
         let Some((key, value)) = pairs.next() else {
             break;
         };
-        let HeapReadOutput::Dict(mut dest) = vm.heap.read(dict_id) else {
+        let HeapReadOutput::Dict(dest) = vm.heap.read(dict_id) else {
             unreachable!("copy was allocated as a dict")
         };
         // `set` takes ownership of the pair and releases it on failure.
@@ -632,7 +632,7 @@ fn insert_attrs(id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunR
         let Some((key, value)) = pairs.next() else {
             break;
         };
-        let HeapReadOutput::Instance(mut instance) = vm.heap.read(id) else {
+        let HeapReadOutput::Instance(instance) = vm.heap.read(id) else {
             unreachable!("caller allocated an instance")
         };
         let replaced = instance.attrs_mut().set(key, value, vm)?;

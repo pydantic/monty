@@ -16,7 +16,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, heap_read_ref_as_field},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapView, heap_read_ref_as_field},
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
@@ -132,7 +132,7 @@ impl<'h> PyStr<'h> {
     }
 
     /// Borrows the text only for the duration of the heap borrow.
-    pub(crate) fn as_str<'a>(&self, vm: &'a VM<'h>) -> &'a str {
+    pub(crate) fn as_str<'a>(&'a self, vm: &'a VM<'h>) -> &'a str {
         match self {
             Self::Interned(id) => vm.interns.get_str(*id),
             Self::Heap(value) => value.get(vm.heap).as_str(),
@@ -198,7 +198,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            Self::Interned(id) => str_getitem(&vm.heap.protect(vm.interns.get_str(*id)), key, vm),
+            Self::Interned(id) => str_getitem(&*vm.heap.protect(vm.interns.get_str(*id)), key, vm),
             Self::Heap(value) => value.py_getitem(key, vm),
         }
     }
@@ -216,7 +216,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
                     return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
                 };
                 let text = vm.heap.protect(vm.interns.get_str(*id));
-                call_str_method_impl(&text, method, args, vm).map(CallResult::Value)
+                call_str_method_impl(&*text, method, args, vm).map(CallResult::Value)
             }
             Self::Heap(value) => value.py_call_attr(vm, attr, args),
         }
@@ -384,7 +384,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         let s = heap_read_ref_as_field!(self, Str, 0);
-        str_getitem(&s.as_box_value(vm.heap), key, vm)
+        str_getitem(&s.as_box_value(), key, vm)
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -446,7 +446,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         };
 
         let s = heap_read_ref_as_field!(self, Str, 0);
-        let s = s.as_box_value(vm.heap);
+        let s = s.as_box_value();
         call_str_method_impl(&s, method, args, vm).map(CallResult::Value)
     }
 }
@@ -460,7 +460,7 @@ fn str_add(s: &str, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
 }
 
 /// Indexes protected text, allowing `__index__` to execute before borrowing it.
-fn str_getitem<'h>(s: &HeapRead<'h, str>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_getitem<'h>(s: &impl HeapView<'h, str>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
     if let Value::Ref(id) = key
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
@@ -502,7 +502,7 @@ pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) ->
 /// Dispatches methods for both logical strings and concrete heap strings.
 /// The protected text can remain live while a method re-enters Python.
 fn call_str_method_impl<'h>(
-    s: &HeapRead<'h, str>,
+    s: &impl HeapView<'h, str>,
     method: StaticStrings,
     args: ArgValues,
     vm: &mut VM<'h>,
@@ -646,7 +646,7 @@ fn call_str_method_impl<'h>(
 ///
 /// # Errors
 /// Returns `TypeError` if the argument is not iterable or if any element is not a string.
-fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_join<'h>(separator: &impl HeapView<'h, str>, iterable: Value, vm: &mut VM<'h>) -> RunResult<Value> {
     // Checked up front: a user `__iter__` can raise anything, and rewriting that
     // as "can only join an iterable" would hide it, resource errors included.
     if !iterable.py_is_iterable(vm) {
@@ -872,7 +872,7 @@ fn str_isdecimal(s: &str) -> bool {
 ///
 /// Returns the lowest index in the string where substring sub is found within
 /// the slice s[start:end]. Returns -1 if sub is not found.
-fn str_find<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.find", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -892,7 +892,7 @@ fn str_find<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunR
 ///
 /// Returns the highest index in the string where substring sub is found within
 /// the slice s[start:end]. Returns -1 if sub is not found.
-fn str_rfind<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.rfind", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -911,7 +911,7 @@ fn str_rfind<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
 /// Implements Python's `str.index(sub, start?, end?)` method.
 ///
 /// Like find(), but raises ValueError when the substring is not found.
-fn str_index<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.index", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -929,7 +929,7 @@ fn str_index<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
 /// Implements Python's `str.rindex(sub, start?, end?)` method.
 ///
 /// Like rfind(), but raises ValueError when the substring is not found.
-fn str_rindex<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.rindex", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -948,7 +948,7 @@ fn str_rindex<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
 ///
 /// Returns the number of non-overlapping occurrences of substring sub in
 /// the string s[start:end].
-fn str_count<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_count<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
     let (sub, start, end) = parse_search_args("str.count", str_len, args, vm)?;
     let s = s.get(vm.heap);
@@ -967,7 +967,7 @@ fn str_count<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
 ///
 /// Returns True if the string starts with the prefix, otherwise returns False.
 /// The prefix argument can be a string or a tuple of strings.
-fn str_startswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_startswith<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     str_starts_ends_with(s, "str.startswith", |hay, prefix| hay.starts_with(prefix), args, vm)
 }
 
@@ -975,7 +975,7 @@ fn str_startswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 ///
 /// Returns True if the string ends with the suffix, otherwise returns False.
 /// The suffix argument can be a string or a tuple of strings.
-fn str_endswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_endswith<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     str_starts_ends_with(s, "str.endswith", |hay, suffix| hay.ends_with(suffix), args, vm)
 }
 
@@ -987,7 +987,7 @@ fn str_endswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> 
 /// match short-circuits before later elements are type-checked. Affix strings
 /// are borrowed straight from interns/heap, never copied.
 fn str_starts_ends_with<'h>(
-    s: &HeapRead<'h, str>,
+    s: &impl HeapView<'h, str>,
     method: &'static str,
     matcher: impl Fn(&str, &str) -> bool,
     args: ArgValues,
@@ -1166,7 +1166,7 @@ fn slice_string(s: &str, start: usize, end: usize) -> &str {
 ///
 /// Returns a copy of the string with leading and trailing characters removed.
 /// If chars is not specified, whitespace characters are removed.
-fn str_strip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_strip<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let chars = parse_strip_arg("str.strip", args, vm)?;
     let s = s.get(vm.heap);
     let result = match &chars {
@@ -1179,7 +1179,7 @@ fn str_strip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
 /// Implements Python's `str.lstrip(chars?)` method.
 ///
 /// Returns a copy of the string with leading characters removed.
-fn str_lstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_lstrip<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let chars = parse_strip_arg("str.lstrip", args, vm)?;
     let s = s.get(vm.heap);
     let result = match &chars {
@@ -1192,7 +1192,7 @@ fn str_lstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
 /// Implements Python's `str.rstrip(chars?)` method.
 ///
 /// Returns a copy of the string with trailing characters removed.
-fn str_rstrip<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_rstrip<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let chars = parse_strip_arg("str.rstrip", args, vm)?;
     let s = s.get(vm.heap);
     let result = match &chars {
@@ -1222,7 +1222,7 @@ fn parse_strip_arg(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
 ///
 /// If the string starts with the prefix string, return string[len(prefix):].
 /// Otherwise, return a copy of the original string.
-fn str_removeprefix<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_removeprefix<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let prefix_value = args.get_one_arg("str.removeprefix", vm.heap)?;
     defer_drop!(prefix_value, vm);
     let prefix = extract_string_arg(prefix_value, vm)?;
@@ -1236,7 +1236,7 @@ fn str_removeprefix<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>)
 ///
 /// If the string ends with the suffix string, return string[:-len(suffix)].
 /// Otherwise, return a copy of the original string.
-fn str_removesuffix<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_removesuffix<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let suffix_value = args.get_one_arg("str.removesuffix", vm.heap)?;
     defer_drop!(suffix_value, vm);
     let suffix = extract_string_arg(suffix_value, vm)?;
@@ -1253,7 +1253,7 @@ fn str_removesuffix<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>)
 /// Implements Python's `str.split(sep?, maxsplit?)` method.
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string.
-fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
     let s = s.get(vm.heap);
@@ -1300,7 +1300,7 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string,
 /// splitting from the right.
-fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
     let s = s.get(vm.heap);
@@ -1435,7 +1435,7 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
 ///
 /// Returns a list of the lines in the string, breaking at line boundaries.
 /// Accepts keepends as either positional or keyword argument.
-fn str_splitlines<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let keepends = parse_splitlines_args(args, vm)?;
     let s = s.get(vm.heap);
 
@@ -1520,7 +1520,7 @@ fn value_is_truthy(v: &Value) -> bool {
 ///
 /// Splits the string at the first occurrence of sep, and returns a 3-tuple
 /// containing the part before the separator, the separator itself, and the part after.
-fn str_partition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_partition<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let sep_value = args.get_one_arg("str.partition", vm.heap)?;
     defer_drop!(sep_value, vm);
     let sep = extract_string_arg(sep_value, vm)?;
@@ -1549,7 +1549,7 @@ fn str_partition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) ->
 ///
 /// Splits the string at the last occurrence of sep, and returns a 3-tuple
 /// containing the part before the separator, the separator itself, and the part after.
-fn str_rpartition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_rpartition<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let sep_value = args.get_one_arg("str.rpartition", vm.heap)?;
     defer_drop!(sep_value, vm);
     let sep = extract_string_arg(sep_value, vm)?;
@@ -1582,7 +1582,7 @@ fn str_rpartition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 ///
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
-fn str_replace<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_replace<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (old, new, count) = parse_replace_args("str.replace", args, vm)?;
     let s = s.get(vm.heap);
 
@@ -1636,7 +1636,7 @@ struct ReplaceArgs {
 ///
 /// Returns centered in a string of length width. Padding is done using the
 /// specified fill character (default is a space).
-fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_center<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.center", args, vm)?;
     let s = s.get(vm.heap);
     let len = s.chars().count();
@@ -1666,7 +1666,7 @@ fn str_center<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Ru
 /// Implements Python's `str.ljust(width, fillchar?)` method.
 ///
 /// Returns left-justified in a string of length width.
-fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_ljust<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.ljust", args, vm)?;
     let s = s.get(vm.heap);
     let len = s.chars().count();
@@ -1688,7 +1688,7 @@ fn str_ljust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
 /// Implements Python's `str.rjust(width, fillchar?)` method.
 ///
 /// Returns right-justified in a string of length width.
-fn str_rjust<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_rjust<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.rjust", args, vm)?;
     let s = s.get(vm.heap);
     let len = s.chars().count();
@@ -1744,7 +1744,7 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
 ///
 /// Returns a copy of the string left filled with ASCII '0' digits to make a
 /// string of length width. A sign prefix is handled correctly.
-fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_zfill<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let width_value = args.get_one_arg("str.zfill", vm.heap)?;
     defer_drop!(width_value, vm);
     let width_i64 = extract_int_arg(width_value, vm)?;
@@ -1792,7 +1792,7 @@ fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> Run
 ///
 /// Returns a copy of the string where all tab characters are replaced by one or
 /// more spaces, depending on the current column and the given tab size.
-fn str_expandtabs<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_expandtabs<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
 
     let tabsize = match tabsize {
@@ -1856,7 +1856,7 @@ struct ExpandtabsArgs {
 /// is only looked up (and validated) when an actual encoding error occurs —
 /// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
 /// the handler to do.
-fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_encode<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
     defer_drop!(encoding, vm);
     defer_drop!(errors, vm);

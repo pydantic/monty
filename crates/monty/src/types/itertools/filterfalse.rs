@@ -49,7 +49,7 @@ impl FilterFalse {
 }
 
 /// Pulls items until one the predicate rejects, which is the one yielded.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let mut steps = 0usize;
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a

@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapRead},
+    heap::{DropWithContext, HeapId, HeapReadMut},
     types::itertools::{ItertoolsIter, step::next_item},
     value::Value,
 };
@@ -66,7 +66,7 @@ impl Accumulate {
 }
 
 /// Yields the initial if one is waiting, else folds the next item into the total.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let ItertoolsIter::Accumulate(accumulate) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Accumulate")
     };
