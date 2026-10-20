@@ -3,8 +3,9 @@
 //! - `#[derive(FromArgs)]` — `ArgValues` → typed struct (positional/kwarg
 //!   dispatch, defaults, type coercion via `FromValue`, refcount cleanup).
 //! - `#[derive(ToArgs)]` — typed struct → host call arguments.
+//! - `#[pyattrs]` — native methods → builtin attribute tables and adapters.
 //!
-//! Generated code is internal to `monty` (`FromArgs`) and `monty-types` (`ToArgs`).
+//! Generated code is internal to `monty` (`FromArgs`, `pyattrs`) and `monty-types` (`ToArgs`).
 //! See the crate `README.md` for usage and the docstrings on `StructAttrs` /
 //! `FieldKind` in `from_args.rs` for the full attribute surface.
 
