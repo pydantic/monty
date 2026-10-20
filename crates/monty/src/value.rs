@@ -17,7 +17,6 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    frozen::{FrozenFunction, FrozenFunctions},
     fstring::FormatFloat,
     hash::{HashValue, hash_f64, hash_named, hash_one, identity_hash},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
@@ -1493,19 +1492,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         if let Self::Ref(id) = self {
-            if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
-                // Only user code can return a non-iterator or suspend before returning it.
-                vm.call_frozen_exact(
-                    FrozenFunction::Iter,
-                    [
-                        self.clone_with_heap(vm.heap),
-                        Self::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::GetIter)),
-                        Self::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::ValidateIterator)),
-                    ],
-                )
-            } else {
-                vm.heap.read(*id).py_iter(vm)
-            }
+            vm.heap.read(*id).py_iter(vm)
         } else {
             match self {
                 Self::InternString(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),

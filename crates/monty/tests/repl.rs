@@ -863,32 +863,29 @@ fn repl_frozen_function_dump_bytes_are_stable() {
     }
 }
 
-/// Rejecting a first-use frozen frame must discard its provisional code and interned names.
+/// A frozen frame is published even when the recursion limit rejects its first user callback.
 #[test]
-fn repl_rejected_frozen_admission_keeps_no_products() {
+fn repl_frozen_admission_survives_callback_recursion_error() {
     for call in [
         "functools.reduce(add, [1, 2, 3])",
-        "cached(2, 4)",
+        "cached(6)",
         "next(iter(source))",
         "next(source, 0)",
     ] {
         let (mut repl, _) = init_repl(&format!(
-            "import functools\ndef add(a, b):\n    return a + b\ncached = functools.cache(add)\nclass Source:\n    def __iter__(self):\n        return self\n    def __next__(self):\n        return 6\nsource = Source()\ndef attempt():\n    try:\n        {call}\n    except RecursionError as exc:\n        return str(exc)"
+            "import functools\ndef add(a, b):\n    return a + b\ndef identity(value):\n    return value\ncached = functools.cache(identity)\nclass Source:\n    def __iter__(self):\n        return self\n    def __next__(self):\n        return 6\nsource = Source()\ndef attempt():\n    try:\n        {call}\n    except RecursionError as exc:\n        return str(exc)"
         ));
         *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(1));
         let before = to_value(&repl).unwrap();
         for _ in 0..3 {
-            let result = repl.call_function("attempt", vec![], PrintWriter::Disabled).unwrap();
+            let result = feed_run_print(&mut repl, "attempt()").unwrap();
             assert_eq!(result, MontyObject::string("maximum recursion depth exceeded"));
             let after = to_value(&repl).unwrap();
-            assert_eq!(after["interns"]["functions"], before["interns"]["functions"]);
             assert_eq!(
-                after["interns"]["frozen_functions"],
-                before["interns"]["frozen_functions"]
+                after["interns"]["functions"].as_array().unwrap().len(),
+                before["interns"]["functions"].as_array().unwrap().len() + 1
             );
-            // Host-call filenames are admitted independently; none of the internal source's names are.
-            let strings = after["interns"]["strings"].as_array().unwrap();
-            assert!(strings.iter().all(|value| value.as_str() != Some("<monty-frozen>")));
+            assert_eq!(after["interns"]["frozen_functions"].as_object().unwrap().len(), 1);
         }
         *repl.tracker_mut() = ResourceTracker::default();
         let mut repl = round_trip_repl(&repl);
@@ -900,6 +897,48 @@ fn repl_rejected_frozen_admission_keeps_no_products() {
                 .len(),
             1
         );
+    }
+}
+
+/// User recursion retains the same limit through each kind of frozen continuation, including after unwind.
+#[test]
+fn repl_frozen_callbacks_charge_only_user_frames() {
+    for (setup, call, reset) in [
+        (
+            "def descend(n):\n    return cached(n - 1) if n else 42\ncached = functools.cache(descend)",
+            "cached(remaining)",
+            "cached.cache_clear()",
+        ),
+        (
+            "def descend(acc, n):\n    return functools.reduce(descend, [n - 1], 0) if n else 42",
+            "descend(0, remaining)",
+            "",
+        ),
+        (
+            "class Source:\n    def __iter__(self):\n        global remaining\n        if remaining:\n            remaining -= 1\n            return iter(self)\n        return self\n    def __next__(self):\n        raise StopIteration\nsource = Source()",
+            "42 if iter(source) is source else 0",
+            "",
+        ),
+        (
+            "class Source:\n    def __next__(self):\n        global remaining\n        if remaining:\n            remaining -= 1\n            return next(self, 42)\n        raise StopIteration\nsource = Source()",
+            "next(source, 42)",
+            "",
+        ),
+    ] {
+        let (mut repl, _) = init_repl(&format!("import functools\n{setup}"));
+        *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(4));
+        for depth in [0, 3, 4, 3] {
+            let code = format!(
+                "remaining = {depth}\n{reset}\ntry:\n    result = {call}\nexcept RecursionError as exc:\n    result = str(exc)\nresult"
+            );
+            let result = feed_run_print(&mut repl, &code).unwrap();
+            let expected = if depth == 4 {
+                MontyObject::string("maximum recursion depth exceeded")
+            } else {
+                MontyObject::int(42)
+            };
+            assert_eq!(result, expected, "{call}, depth={depth}");
+        }
     }
 }
 
@@ -1047,6 +1086,98 @@ fn repl_frozen_reduce_iterator_survives_dumps() {
         assert_eq!(
             feed_run_print(&mut repl, "source.next_calls").unwrap(),
             MontyObject::int(4)
+        );
+    }
+}
+
+/// Restoring suspended cache, reduce and iterator frames does not consume the callback's recursion budget.
+#[test]
+fn repl_frozen_recursion_budget_survives_dumps() {
+    let (mut repl, _) = init_repl(SUSPENDABLE_ITERATOR);
+    feed_run_print(&mut repl, "cached_reduce = functools.cache(functools.reduce)").unwrap();
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(2));
+    let progress = repl.feed_start(
+        "assert iter(source) is source\nassert cached_reduce(combine, source) == 6\nassert next(source, 42) == 42\n42",
+        vec![],
+        PrintWriter::Disabled,
+    ).unwrap();
+    let (mut repl, value) = resume_iteration_events(
+        progress,
+        [
+            ("iter", vec![]),
+            ("iter", vec![]),
+            ("next", vec![1]),
+            ("next", vec![2]),
+            ("reduce", vec![1, 2]),
+            ("next", vec![3]),
+            ("reduce", vec![3, 3]),
+            ("next", vec![4]),
+            ("next", vec![5]),
+        ],
+    );
+    assert_eq!(value, MontyObject::int(42));
+    assert_eq!(
+        feed_run_print(&mut repl, "def check():\n    return 42\ncheck()").unwrap(),
+        MontyObject::int(42)
+    );
+}
+
+/// Task switches preserve the user-frame budget while a chain of cache misses awaits a gather.
+#[test]
+fn repl_frozen_recursion_budget_survives_task_switches() {
+    for fail in [false, true] {
+        let (mut repl, _) = init_repl(
+            r"
+import asyncio
+import functools
+
+def identity(value):
+    return value
+
+async def work(n):
+    value = await ext_fn(n)
+    return identity(value)
+
+async def main():
+    try:
+        values = await asyncio.gather(work(1), work(2))
+    except ValueError as exc:
+        assert str(exc) == 'host failed'
+        return identity(42)
+    return identity(sum(values))
+
+run = asyncio.run
+for _ in range(32):
+    run = functools.lru_cache(0)(run)
+",
+        );
+        *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(2));
+        let mut progress = repl.feed_start("run(main())", vec![], PrintWriter::Disabled).unwrap();
+        let mut call_ids = Vec::new();
+        for n in [1, 2] {
+            let restored = round_trip_progress(&progress);
+            drop(progress.into_repl());
+            let call = restored.into_function_call().expect("expected asynchronous host call");
+            assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(n)]);
+            call_ids.push(call.call_id);
+            progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+        }
+        for (i, call_id) in call_ids.into_iter().enumerate() {
+            let restored = round_trip_progress(&progress);
+            drop(progress.into_repl());
+            let pending = restored.into_resolve_futures().expect("expected pending futures");
+            let result = if fail && i == 1 {
+                ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("host failed".to_owned())))
+            } else {
+                ExtFunctionResult::Return(MontyObject::int(if i == 0 { 20 } else { 22 }))
+            };
+            progress = pending.resume(vec![(call_id, result)], PrintWriter::Disabled).unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().expect("expected completed gather");
+        assert_eq!(value, MontyObject::int(42));
+        assert_eq!(
+            feed_run_print(&mut repl, "identity(identity(42))").unwrap(),
+            MontyObject::int(42)
         );
     }
 }
@@ -1417,9 +1548,9 @@ fn repl_frozen_cache_miss_survives_dumps() {
     }
 }
 
-/// Cache hits bypass frozen entry even when the caller has exhausted its frame budget.
+/// Neither hits nor misses charge recursion for their internal implementation frames.
 #[test]
-fn repl_cache_hits_need_no_additional_frame() {
+fn repl_cache_calls_need_no_additional_recursion_budget() {
     let limits = ResourceLimits::default().max_recursion_depth(1);
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::new(limits), CompileOptions::default());
     feed_run_print(&mut repl, "import functools\ncached = functools.cache(abs)\ncached(-1)").unwrap();
@@ -1429,12 +1560,17 @@ fn repl_cache_hits_need_no_additional_frame() {
     )
     .unwrap();
     assert_eq!(feed_run_print(&mut repl, "hit()").unwrap(), MontyObject::int(1));
-    let error = feed_run_print(&mut repl, "miss()").unwrap_err();
-    assert_eq!(error.exc_type(), ExcType::RecursionError);
-    assert_snapshot!(error.message().unwrap(), @"maximum recursion depth exceeded");
+    assert_eq!(feed_run_print(&mut repl, "miss()").unwrap(), MontyObject::int(2));
     assert_eq!(
         feed_run_print(&mut repl, "cached.cache_info().currsize").unwrap(),
-        MontyObject::int(1)
+        MontyObject::int(2)
+    );
+    feed_run_print(&mut repl, "for _ in range(32):\n    cached = functools.cache(cached)").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "miss()").unwrap(), MontyObject::int(2));
+    assert_eq!(
+        repl.call_function("cached", vec![MontyObject::int(-3)], PrintWriter::Disabled)
+            .unwrap(),
+        MontyObject::int(3)
     );
 }
 

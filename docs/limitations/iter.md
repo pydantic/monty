@@ -5,10 +5,6 @@
     An external or OS call raises `NotImplementedError` inside the method, where it can be caught.
     Direct `iter()`, `next()` (including its default form), and `functools.reduce()` can suspend in these methods.
 
-- Acquiring a user iterator and calling `next(user_iterator, default)` each consume an extra recursion frame.
-    Recursive protocol methods can therefore reach the [recursion limit](resource_limits.md) earlier than CPython.
-    Native iterators do not need these extra frames.
-
 - `iter(callable, sentinel)` runs `callable` synchronously, so one that calls an external/OS function cannot suspend and
     raises `NotImplementedError`. Same limitation as `map`/`filter`/`sorted(key=...)`.
 

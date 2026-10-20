@@ -11,7 +11,10 @@ use std::{mem, task::Poll};
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
-use super::{AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace, stack_index};
+use super::{
+    AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace, recursion::frame_recursion_depth,
+    stack_index,
+};
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -533,7 +536,7 @@ impl<'h> VM<'h> {
 
         // Count this task's recursion depth contribution and subtract it from
         // the global counter so the next task gets a clean budget.
-        let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
+        let task_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), self.interns);
         self.recursion_depth -= task_depth;
 
         // Save VM state into the task
@@ -569,7 +572,7 @@ impl<'h> VM<'h> {
         let coroutine_id = task.coroutine_id;
 
         // Restore this task's recursion depth contribution to the global counter
-        let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
+        let task_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), self.interns);
         self.recursion_depth += task_depth;
 
         if !frames.is_empty() {

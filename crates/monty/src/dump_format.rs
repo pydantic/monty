@@ -45,6 +45,9 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// `BuiltinsFunctions` order (its discriminants are bytecode operands),
 /// `CmpOperator` values, the compiler's constant layout, how a dict or set key
 /// hashes (entries persist their hash), or a semantic change to a stored value.
+/// Frozen code is persisted too: incompatible changes to its Rust entry arguments or
+/// private native helper contracts need compatibility handling or a bump. Compatible
+/// source-body changes do not require one; restored sessions retain their captured code.
 /// Older dumps are then rejected instead of misexecuting.
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps

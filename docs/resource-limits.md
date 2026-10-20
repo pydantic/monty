@@ -172,6 +172,7 @@ Neither deadline covers [host mount I/O](filesystem.md#io-timeouts-and-cancellat
 ## Recursion
 
 Python-level call depth defaults to **1000 frames**; the 1001st nested call raises `RecursionError`.
+Internal Python frames implementing builtins do not count toward this limit; user callbacks still do.
 Unlike the memory and time limits, `RecursionError` is catchable inside the sandbox, matching CPython.
 Sandboxed code cannot raise the ceiling — `sys.setrecursionlimit` is not available in production builds.
 

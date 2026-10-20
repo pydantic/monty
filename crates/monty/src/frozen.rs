@@ -24,15 +24,15 @@ use crate::{
 /// Qualified names persist in dumps; the registry uses compact enum keys at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum FrozenFunction {
-    /// Store a cached call's result only after it returns successfully.
-    #[serde(rename = "functools._lru_cache_miss")]
-    CacheMiss,
     /// Suspendable fold loop behind `functools.reduce`.
     #[serde(rename = "functools.reduce")]
     FunctoolsReduce,
     /// Validate the result of a suspendable user `__iter__` method.
     #[serde(rename = "builtins.iter")]
     Iter,
+    /// Store a cached call's result only after it returns successfully.
+    #[serde(rename = "functools._lru_cache_miss")]
+    LruCacheMiss,
     /// Return a default when a suspendable user `__next__` method is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
@@ -40,7 +40,7 @@ pub(crate) enum FrozenFunction {
 
 impl FrozenFunction {
     /// Prepares an unpublished implementation using this session's intern IDs.
-    /// The caller must admit the frame before committing the overlay and caching its ID.
+    /// The caller publishes the overlay before installing its frame.
     pub(crate) fn compile(self, interns: &Interns) -> RunResult<(FunctionId, CompileInterns<'_>)> {
         let source = self.source();
         let mut overlay = CompileInterns::new(interns);
@@ -56,6 +56,11 @@ impl FrozenFunction {
             index + 1,
             "frozen source must define one function"
         );
+        assert_eq!(
+            globals.len(),
+            1,
+            "frozen source must take its dependencies as arguments"
+        );
         // Successful compilation checked the bytecode's function-ID limit.
         let id = FunctionId::from_index(u16::try_from(index).expect("compiled function ID fits u16"));
         Ok((id, overlay))
@@ -64,9 +69,9 @@ impl FrozenFunction {
     /// Selects one self-contained function; dependencies arrive as arguments, not globals.
     fn source(self) -> &'static str {
         match self {
-            Self::CacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::FunctoolsReduce => functools::REDUCE_SOURCE,
             Self::Iter => iter::ITER_SOURCE,
+            Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
         }
     }

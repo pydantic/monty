@@ -159,7 +159,7 @@ pub(crate) fn call(cache_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunRes
         vm.heap.inc_ref(cache_id);
         let (key, vm) = key_guard.into_parts();
         vm.call_frozen_exact(
-            FrozenFunction::CacheMiss,
+            FrozenFunction::LruCacheMiss,
             [store, Value::Ref(cache_id), key, function, args, kwargs],
         )
     }

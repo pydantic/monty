@@ -69,7 +69,7 @@ impl VM<'_> {
     }
 
     /// Returns whether the active frame implements a builtin in frozen Python.
-    fn current_frame_is_frozen(&self) -> bool {
+    pub(super) fn current_frame_is_frozen(&self) -> bool {
         self.current_frame()
             .function_id
             .is_some_and(|id| self.interns.is_internal_function(id))

@@ -22,14 +22,14 @@ def __monty_iter(object, get_iter, validate):
     return validate(get_iter(object))
 ";
 
-/// Invokes the user protocol without re-entering `Value::py_iter`'s validation frame.
+/// Invokes the user protocol without re-entering the instance's validation frame.
 pub(crate) fn call_get_iter(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let object = args.get_one_arg("get_iter", vm.heap)?;
     defer_drop!(object, vm);
     let Some(HeapReadOutput::Instance(instance)) = object.read_heap(vm) else {
         unreachable!("only instances need frozen iterator validation")
     };
-    instance.py_iter(vm)
+    instance.call_iter(vm)
 }
 
 /// Returns an owned iterator unchanged, rejecting invalid user `__iter__` results.

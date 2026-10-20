@@ -22,9 +22,7 @@ These names are absent from the module namespace rather than stubbed, so they ar
 
 ## Behavioural divergences
 
-- `reduce()` consumes an extra recursion frame for the fold, including acquisition and empty-input handling.
-    User iterator methods can suspend, but native iterator adaptors retain their
-    [synchronous callback restrictions](iter.md).
+- Native iterator adaptors used by `reduce()` retain their [synchronous callback restrictions](iter.md).
 
 - **Calling a `partial` charges the native re-entry budget.** A partial stored as a class attribute binds as a bound
     method whose `__func__` is another partial, so a chain of them nests on the interpreter's own call stack without
@@ -66,9 +64,6 @@ These names are absent from the module namespace rather than stubbed, so they ar
     CPython accepts arbitrarily negative sizes as zero and raises `OverflowError` when decorating with an oversized
     positive size.
     `cache_parameters()` reports normalized integer/boolean settings rather than the original argument objects.
-- Cache misses consume an additional recursion frame, including for `maxsize=0`.
-    Hits do not consume a frame.
-    Consequently recursive cached functions can reach the [recursion limit](resource_limits.md) earlier than CPython.
 - Eviction removes an entry by position without running user hashing or equality methods.
     CPython can compare colliding keys during eviction, so comparison side effects can differ.
     The number of hash and equality calls during lookup and insertion can also differ.

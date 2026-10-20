@@ -10,6 +10,7 @@ use crate::{
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
     heap::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
@@ -17,6 +18,7 @@ use crate::{
     },
     intern::Interns,
     modules::{
+        ModuleFunctions,
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
         dataclasses::{self, DataclassHash},
     },
@@ -94,6 +96,21 @@ pub(crate) struct BoundMethod {
 }
 
 impl<'h> HeapObjectRead<'h, Instance> {
+    /// Dispatches class-only `__iter__` for the frozen wrapper to validate after any suspension.
+    pub(crate) fn call_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let class_id = self.get(vm.heap).class();
+        if let Some(member) = class_member(class_id, "__iter__", vm) {
+            defer_drop!(member, vm);
+            if matches!(member, Value::None) {
+                Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
+            } else {
+                call_member_bound(member, self.id(), ArgValues::Empty, vm)
+            }
+        } else {
+            Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
+        }
+    }
+
     /// Advances a user iterator through class-only lookup without imposing a synchronous boundary.
     pub(crate) fn call_next(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class();
@@ -463,19 +480,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         class_defines(self.get(vm.heap).class, "__next__", vm)
     }
 
-    /// Dispatches class-only `__iter__`; `Value::py_iter` validates the eventual result.
+    /// Validates the user method's result, including after a host suspension.
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let class_id = self.get(vm.heap).class();
-        if let Some(member) = class_member(class_id, "__iter__", vm) {
-            defer_drop!(member, vm);
-            if matches!(member, Value::None) {
-                Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
-            } else {
-                call_member_bound(member, self.id(), ArgValues::Empty, vm)
-            }
-        } else {
-            Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
-        }
+        vm.call_frozen_exact(
+            FrozenFunction::Iter,
+            [
+                self.clone_value(vm.heap),
+                Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::GetIter)),
+                Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::ValidateIterator)),
+            ],
+        )
     }
 
     /// Dispatches the class's `__next__`, turning `StopIteration` into exhaustion.

@@ -247,6 +247,10 @@ set entries persist their hash, which is why keys without a heap identity hash b
 `FunctionId`, never by discriminant), a semantic change to a stored value, or a `sha1` / `sha2` crate upgrade that
 changes their `SerializableState` layout (`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim). `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
 change that breaks it decides between an alias, a default, or a bump plus `UPDATE_DUMP_FIXTURE=1` to regenerate.
+Frozen function code is also persisted: Rust calls its captured entry signature, and that code calls private native helpers.
+Incompatible changes to either calling convention require compatibility handling or a version bump, including changes
+to argument order or meaning.
+Compatible source-body changes do not require a bump; restored sessions retain their captured implementations.
 
 ### Compilation overlays and stable intern entries
 

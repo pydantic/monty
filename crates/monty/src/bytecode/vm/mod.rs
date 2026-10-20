@@ -25,6 +25,7 @@ pub(crate) use collections::unpack_exact;
 use exceptions::CaughtException;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
+use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
 
@@ -364,9 +365,7 @@ pub struct CallFrame<'code> {
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
-///
-/// The operand and exception stacks are bounded by the recursion limit and
-/// `Vec` capacity long before `u32::MAX`, so failure means a VM bug.
+/// Panics instead of truncating an index beyond the frame representation.
 #[inline]
 pub(super) fn stack_index(index: usize) -> u32 {
     u32::try_from(index).expect("VM stack index exceeds u32")
@@ -834,12 +833,12 @@ pub struct VM<'h> {
     /// the host; `None` for `obj.attr` and when nothing is in flight.
     pub(crate) pending_lookup_effect: Option<PendingLookupEffect>,
 
-    /// Current recursion depth — charged by function-call frames and by nested
+    /// Current recursion depth — charged by non-frozen call frames and by nested
     /// data-structure traversals (`repr`/`eq`/`cmp`/`hash`, json, ...).
     ///
     /// See [`recursion`](self::recursion) for the guard/token primitives that
     /// maintain it. Not serialized: it is reconstructed from the active frame
-    /// count on `restore` and rebalanced per-task across async switches.
+    /// count, excluding root and frozen frames, on `restore` and async switches.
     recursion_depth: usize,
 
     /// Reusable scratch buffer for building a sync call's locals, avoiding a
@@ -943,9 +942,7 @@ impl<'h> VM<'h> {
             })
             .collect();
 
-        // Restore recursion depth to match the number of suspended callers.
-        // The root frame does not contribute to recursion depth.
-        let current_frame_depth = frames.len().saturating_sub(1);
+        let current_frame_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), interns);
         let mut frames = frames;
         let current_frame = frames
             .pop()
@@ -2418,7 +2415,7 @@ impl<'h> VM<'h> {
         Ok(())
     }
 
-    /// Installs a frame whose recursion level has already been reserved.
+    /// Installs a frame after any required recursion reservation.
     fn push_admitted_frame(&mut self, frame: CallFrame<'h>) {
         let caller = mem::replace(&mut self.current_frame, frame);
         self.suspended_frames.push(caller);
@@ -2432,6 +2429,7 @@ impl<'h> VM<'h> {
     ///
     /// Returns `true` if this frame indicated evaluation should stop when popped.
     pub(super) fn pop_frame(&mut self) -> bool {
+        let is_frozen = self.current_frame_is_frozen();
         let caller = self.suspended_frames.pop().expect("cannot pop the root frame");
         let frame = mem::replace(&mut self.current_frame, caller);
         let should_return = frame.should_return;
@@ -2439,7 +2437,7 @@ impl<'h> VM<'h> {
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
         self.instruction_ip = self.current_frame.ip;
-        if !self.current_frame.is_parked {
+        if !self.current_frame.is_parked && !is_frozen {
             self.decr_recursion();
         }
         should_return
