@@ -13,10 +13,10 @@ use crate::{
     bytecode::{CallResult, ContainsVM, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead},
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
-    types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
+    types::{Dict, PyTrait, str::allocate_string},
     value::Value,
 };
 
@@ -485,91 +485,70 @@ impl<'h> Encoder<'_, 'h> {
     /// Handles immediate primitives directly and delegates to type-specific
     /// helpers for strings, long integers, lists, tuples, and dicts.
     fn serialize_value(&mut self, value: &Value, depth: usize) -> RunResult<()> {
+        let view = value.py_value(self.vm);
         // Strings size their own check, and containers check per item.
-        if !matches!(value, Value::InternString(_) | Value::Ref(_)) {
+        if matches!(
+            view,
+            PyValue::None | PyValue::Bool(_) | PyValue::Int(_) | PyValue::Float(_)
+        ) {
             self.check_output_growth(0)?;
         }
-        match value {
-            Value::None => {
+        match view {
+            PyValue::None => {
                 self.out.push_str("null");
                 Ok(())
             }
-            Value::Bool(true) => {
+            PyValue::Bool(true) => {
                 self.out.push_str("true");
                 Ok(())
             }
-            Value::Bool(false) => {
+            PyValue::Bool(false) => {
                 self.out.push_str("false");
                 Ok(())
             }
-            Value::Int(value) => {
-                write!(self.out, "{value}").expect("writing to String cannot fail");
+            PyValue::Int(integer) => integer.write_decimal(self.out, self.vm),
+            PyValue::Float(value) => serialize_float(value, self.out, self.config),
+            PyValue::Str(string) => {
+                self.check_output_growth(string.as_str(self.vm).len())?;
+                write_json_string(string.as_str(self.vm), self.out, self.config.ensure_ascii());
                 Ok(())
             }
-            Value::Float(value) => serialize_float(*value, self.out, self.config),
-            Value::InternString(string_id) => {
-                let string = self.vm.interns.get_str(*string_id);
-                self.check_output_growth(string.len())?;
-                write_json_string(string, self.out, self.config.ensure_ascii());
-                Ok(())
+            PyValue::List(list) => self.with_entered_container(list.id(), |enc| {
+                let iter = list.iter(enc.vm)?;
+                defer_drop_mut!(iter, enc);
+                enc.serialize_array(depth, |enc, depth| {
+                    if let Some(item) = iter.next(enc.vm)? {
+                        enc.serialize_value(item, depth)?;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                })
+            }),
+            PyValue::Tuple(tuple) => self.with_entered_container(tuple.id(), |enc| {
+                let iter = tuple.iter(enc.vm)?;
+                defer_drop_mut!(iter, enc);
+                enc.serialize_array(depth, |enc, depth| {
+                    if let Some(item) = iter.next(enc.vm)? {
+                        enc.serialize_value(item, depth)?;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                })
+            }),
+            PyValue::Dict(dict) => {
+                // Dict pre-materializes entries because `sort_keys` and
+                // `skipkeys` need to mutate the entries vector before output.
+                let entries = self.collect_dict_entries(&dict);
+                let this = self;
+                defer_drop_mut!(entries, this);
+                // Need to explicitly acquire a recursion token for the dict as we don't go
+                // via the default dict iterator.
+                let token = this.vm.recursion_token()?;
+                defer_drop!(token, this);
+                this.with_entered_container(dict.id(), |enc| enc.serialize_dict(entries, depth))
             }
-            Value::InternLongInt(long_int_id) => {
-                let value = self.vm.interns.get_long_int(*long_int_id);
-                check_bigint_str_digits_limit(value)?;
-                write!(self.out, "{value}").expect("writing to String cannot fail");
-                Ok(())
-            }
-            Value::Ref(heap_id) => match self.vm.heap.read(*heap_id) {
-                HeapReadOutput::Str(string) => {
-                    self.check_output_growth(string.get(self.vm.heap).as_str().len())?;
-                    write_json_string(string.get(self.vm.heap).as_str(), self.out, self.config.ensure_ascii());
-                    Ok(())
-                }
-                HeapReadOutput::LongInt(long_int) => {
-                    long_int.get(self.vm.heap).check_str_digits_limit()?;
-                    self.check_output_growth(0)?;
-                    write!(self.out, "{}", long_int.get(self.vm.heap).inner()).expect("writing to String cannot fail");
-                    Ok(())
-                }
-                HeapReadOutput::List(list) => self.with_entered_container(*heap_id, |enc| {
-                    let iter = list.iter(enc.vm)?;
-                    defer_drop_mut!(iter, enc);
-                    enc.serialize_array(depth, |enc, depth| {
-                        if let Some(item) = iter.next(enc.vm)? {
-                            enc.serialize_value(item, depth)?;
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    })
-                }),
-                HeapReadOutput::Tuple(tuple) => self.with_entered_container(*heap_id, |enc| {
-                    let iter = tuple.iter(enc.vm)?;
-                    defer_drop_mut!(iter, enc);
-                    enc.serialize_array(depth, |enc, depth| {
-                        if let Some(item) = iter.next(enc.vm)? {
-                            enc.serialize_value(item, depth)?;
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    })
-                }),
-                HeapReadOutput::Dict(dict) => {
-                    // Dict pre-materializes entries because `sort_keys` and
-                    // `skipkeys` need to mutate the entries vector before
-                    // output.
-                    let entries = self.collect_dict_entries(&dict);
-                    let this = self;
-                    defer_drop_mut!(entries, this);
-                    // Need to explicitly acquire a recursion token for the dict as we don't go
-                    // via the default dict iterator.
-                    let token = this.vm.recursion_token()?;
-                    defer_drop!(token, this);
-                    this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
-                }
-                _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
-            },
             _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
         }
     }

@@ -199,13 +199,13 @@ impl<'h> ValueRead<'h, '_> {
 /// Used to preflight operations that allocate many value slots at once.
 pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
 
-/// Runs a protocol method on the logical view of `$value`.
+/// Runs a protocol method on the Python-type view of `$value`.
 ///
 /// Immediate ints dominate arithmetic and truth tests in hot loops, so they open
 /// their `PyInt` view directly instead of building the full `PyValue`
 /// (whose wide match the optimizer cannot thread through). `PyValue::Int`
 /// forwards every protocol to the same `PyInt`, so semantics are unchanged.
-macro_rules! logical_dispatch {
+macro_rules! dispatch_py_value {
     ($value:expr, $vm:expr, |$view:ident| $body:expr) => {
         match $value {
             Value::Int(small) => {
@@ -447,7 +447,7 @@ impl<'h> PyTrait<'h> for Value {
         if let Self::Bool(value) = self {
             return Ok(*value);
         }
-        logical_dispatch!(self, vm, |view| view.py_bool(vm))
+        dispatch_py_value!(self, vm, |view| view.py_bool(vm))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'_>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -540,177 +540,177 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_index_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_index_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_index_impl(vm))
     }
 
     fn py_abs_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_abs_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_abs_impl(vm))
     }
 
     fn py_invert_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_invert_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_invert_impl(vm))
     }
 
     fn py_round_impl(&self, ndigits: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_round_impl(ndigits, vm))
+        dispatch_py_value!(self, vm, |view| view.py_round_impl(ndigits, vm))
     }
 
     fn py_int_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_int_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_int_impl(vm))
     }
 
     fn py_float_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<f64>> {
-        logical_dispatch!(self, vm, |view| view.py_float_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_float_impl(vm))
     }
 
     fn py_floor_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_floor_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_floor_impl(vm))
     }
 
     fn py_ceil_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_ceil_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_ceil_impl(vm))
     }
 
     fn py_trunc_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_trunc_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_trunc_impl(vm))
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_neg_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_neg_impl(vm))
     }
 
     fn py_pos_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_pos_impl(vm))
+        dispatch_py_value!(self, vm, |view| view.py_pos_impl(vm))
     }
 
     /// One-sided implementation of Python `+` over logical operand types.
     fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_add_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_add_impl(other, vm))
     }
 
     /// Reflected implementation of Python `+`.
     fn py_radd_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_radd_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_radd_impl(other, vm))
     }
 
     /// One-sided implementation of Python `-`.
     fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_sub_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_sub_impl(other, vm))
     }
 
     /// Reflected implementation of Python `-`.
     fn py_rsub_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rsub_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rsub_impl(other, vm))
     }
 
     /// One-sided implementation of Python `*` over logical operand types.
     fn py_mul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_mul_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_mul_impl(other, vm))
     }
 
     /// Reflected implementation of Python `*`, including sequence repetition.
     fn py_rmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rmul_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rmul_impl(other, vm))
     }
 
     /// One-sided implementation of Python `/`.
     fn py_truediv_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_truediv_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_truediv_impl(other, vm))
     }
 
     /// Reflected implementation of Python `/`.
     fn py_rtruediv_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rtruediv_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rtruediv_impl(other, vm))
     }
 
     /// One-sided implementation of Python `//`.
     fn py_floordiv_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_floordiv_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_floordiv_impl(other, vm))
     }
 
     /// Reflected implementation of Python `//`.
     fn py_rfloordiv_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rfloordiv_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rfloordiv_impl(other, vm))
     }
 
     /// One-sided implementation of Python `%`.
     fn py_mod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_mod_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_mod_impl(other, vm))
     }
 
     /// Reflected implementation of Python `%`.
     fn py_rmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rmod_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rmod_impl(other, vm))
     }
 
     /// One-sided implementation of Python `divmod()`.
     fn py_divmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_divmod_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_divmod_impl(other, vm))
     }
 
     /// Reflected implementation of Python `divmod()`.
     fn py_rdivmod_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rdivmod_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rdivmod_impl(other, vm))
     }
 
     /// One-sided implementation of Python `** or pow()`.
     fn py_pow_impl(&self, other: &Self, modulus: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_pow_impl(other, modulus, vm))
+        dispatch_py_value!(self, vm, |view| view.py_pow_impl(other, modulus, vm))
     }
 
     /// Reflected implementation of Python `** or pow()`.
     fn py_rpow_impl(&self, other: &Self, modulus: Option<&Self>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rpow_impl(other, modulus, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rpow_impl(other, modulus, vm))
     }
 
     /// One-sided implementation of Python `&`.
     fn py_and_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_and_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_and_impl(other, vm))
     }
 
     /// Reflected implementation of Python `&`.
     fn py_rand_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rand_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rand_impl(other, vm))
     }
 
     /// One-sided implementation of Python `|`.
     fn py_or_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_or_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_or_impl(other, vm))
     }
 
     /// Reflected implementation of Python `|`.
     fn py_ror_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_ror_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_ror_impl(other, vm))
     }
 
     /// One-sided implementation of Python `^`.
     fn py_xor_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_xor_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_xor_impl(other, vm))
     }
 
     /// Reflected implementation of Python `^`.
     fn py_rxor_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rxor_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rxor_impl(other, vm))
     }
 
     /// One-sided implementation of Python `<<`.
     fn py_lshift_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_lshift_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_lshift_impl(other, vm))
     }
 
     /// Reflected implementation of Python `<<`.
     fn py_rlshift_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rlshift_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rlshift_impl(other, vm))
     }
 
     /// One-sided implementation of Python `>>`.
     fn py_rshift_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rshift_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rshift_impl(other, vm))
     }
 
     /// Reflected implementation of Python `>>`.
     fn py_rrshift_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        logical_dispatch!(self, vm, |view| view.py_rrshift_impl(other, vm))
+        dispatch_py_value!(self, vm, |view| view.py_rrshift_impl(other, vm))
     }
 
     /// One-sided implementation of matrix multiplication.

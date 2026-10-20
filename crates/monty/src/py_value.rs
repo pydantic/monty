@@ -119,9 +119,9 @@ macro_rules! define_py_value {
 heap_payloads!(define_py_value);
 
 /// Combines concrete dispatch and custom arms in one match, allowing exhaustive protocols.
-macro_rules! logical_forward {
+macro_rules! forward_py_value {
     ($self:expr, |$value:ident| $body:expr, else $fallback:expr) => {
-        logical_forward!($self, |$value| $body, { _ => $fallback, })
+        forward_py_value!($self, |$value| $body, { _ => $fallback, })
     };
     ($self:expr, |$value:ident| $body:expr, {$($custom:tt)*}) => {
         heap_read_output_py_trait_forward!(
@@ -137,7 +137,7 @@ macro_rules! logical_forward {
 macro_rules! numeric_binary {
     ($method:ident, $reflected:literal, |$lhs:ident, $rhs:ident, $vm:ident| $body:expr) => {
         fn $method(&self, other: &Value, $vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-            logical_forward!(self, |value| value.$method(other, $vm), {
+            forward_py_value!(self, |value| value.$method(other, $vm), {
                 Self::Bool(value) => PyInt::Small(i64::from(*value)).$method(other, $vm),
                 Self::Float(value) => float_binary(*value, other, $vm, $reflected, |$lhs, $rhs| $body),
                 _ => Ok(None),
@@ -146,7 +146,7 @@ macro_rules! numeric_binary {
     };
     ($method:ident) => {
         fn $method(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-            logical_forward!(self, |value| value.$method(other, vm), {
+            forward_py_value!(self, |value| value.$method(other, vm), {
                 Self::Bool(value) => PyInt::Small(i64::from(*value)).$method(other, vm),
                 _ => Ok(None),
             })
@@ -168,7 +168,7 @@ impl<'h> PyValue<'h> {
 
     /// Formats the payload after the caller has handled repr recursion.
     fn repr_inner(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        logical_forward!(self, |value| value.py_repr_fmt(f, vm, heap_ids), {
+        forward_py_value!(self, |value| value.py_repr_fmt(f, vm, heap_ids), {
             Self::Undefined => Ok(f.write_str("Undefined")?),
             Self::Ellipsis => Ok(f.write_str("Ellipsis")?),
             Self::NotImplemented => Ok(f.write_str("NotImplemented")?),
@@ -206,7 +206,7 @@ impl<'h> PyValue<'h> {
 
 impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_type(&self, vm: &VM<'h>) -> Type {
-        logical_forward!(self, |value| value.py_type(vm), {
+        forward_py_value!(self, |value| value.py_type(vm), {
             Self::Undefined => panic!("Cannot get type of undefined value"),
             Self::Ellipsis => Type::Ellipsis,
             Self::NotImplemented => Type::NotImplementedType,
@@ -226,15 +226,15 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        logical_forward!(self, |value| value.py_type_name(vm), else self.py_type(vm).name(vm.heap, vm.interns))
+        forward_py_value!(self, |value| value.py_type_name(vm), else self.py_type(vm).name(vm.heap, vm.interns))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        logical_forward!(self, |value| value.py_len(vm), else None)
+        forward_py_value!(self, |value| value.py_len(vm), else None)
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
-        logical_forward!(self, |value| value.py_bool(vm), {
+        forward_py_value!(self, |value| value.py_bool(vm), {
             Self::NotImplemented => Err(SimpleException::new_msg(
                 ExcType::TypeError, "NotImplemented should not be used in a boolean context",
             ).into()),
@@ -269,18 +269,18 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        logical_forward!(self, |value| value.py_str(vm), {
+        forward_py_value!(self, |value| value.py_str(vm), {
             Self::Exception(value) => Ok(allocate_string(value.get(vm.heap).py_str(), vm.heap)),
             _ => self.py_repr(vm),
         })
     }
 
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        logical_forward!(self, |value| value.py_contains_impl(item, vm), else Ok(None))
+        forward_py_value!(self, |value| value.py_contains_impl(item, vm), else Ok(None))
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        logical_forward!(self, |value| value.py_eq_impl(other, vm), {
+        forward_py_value!(self, |value| value.py_eq_impl(other, vm), {
             Self::Undefined => Value::Undefined.py_eq_impl(other, vm),
             Self::Ellipsis => Value::Ellipsis.py_eq_impl(other, vm),
             Self::NotImplemented => Value::NotImplemented.py_eq_impl(other, vm),
@@ -297,7 +297,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_add_impl(other, vm), {
+        forward_py_value!(self, |value| value.py_add_impl(other, vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_add_impl(other, vm),
             Self::Float(lhs) => Ok(match other {
                 Value::Int(rhs) => Some(Value::Float(lhs + *rhs as f64)),
@@ -310,7 +310,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_mul_impl(other, vm), {
+        forward_py_value!(self, |value| value.py_mul_impl(other, vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_mul_impl(other, vm),
             Self::Float(lhs) => Ok(match other {
                 Value::Int(rhs) => Some(Value::Float(lhs * *rhs as f64)),
@@ -323,11 +323,11 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_radd_impl(other, vm), else Ok(None))
+        forward_py_value!(self, |value| value.py_radd_impl(other, vm), else Ok(None))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_rmul_impl(other, vm), else Ok(None))
+        forward_py_value!(self, |value| value.py_rmul_impl(other, vm), else Ok(None))
     }
 
     numeric_binary!(py_sub_impl, false, |lhs, rhs, vm| Ok(Value::Float(lhs - rhs)));
@@ -388,14 +388,14 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     numeric_binary!(py_rrshift_impl);
 
     fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_index_impl(vm), {
+        forward_py_value!(self, |value| value.py_index_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
             _ => Ok(None),
         })
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_neg_impl(vm), {
+        forward_py_value!(self, |value| value.py_neg_impl(vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_neg_impl(vm),
             Self::Float(value) => Ok(Some(Value::Float(-value))),
             _ => Ok(None),
@@ -403,7 +403,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_abs_impl(vm), {
+        forward_py_value!(self, |value| value.py_abs_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
             Self::Float(value) => Ok(Some(Value::Float(value.abs()))),
             _ => Ok(None),
@@ -411,14 +411,14 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_invert_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_invert_impl(vm), {
+        forward_py_value!(self, |value| value.py_invert_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(!i64::from(*value)))),
             _ => Ok(None),
         })
     }
 
     fn py_round_impl(&self, ndigits: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_round_impl(ndigits, vm), {
+        forward_py_value!(self, |value| value.py_round_impl(ndigits, vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_round_impl(ndigits, vm),
             Self::Float(value) => {
                 let digits = round_digits(ndigits, vm)?;
@@ -429,7 +429,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_int_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_int_impl(vm), {
+        forward_py_value!(self, |value| value.py_int_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
             Self::Float(value) => LongInt::value_from_f64(*value, vm.heap).map(Some),
             _ => Ok(None),
@@ -437,7 +437,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
-        logical_forward!(self, |value| value.py_float_impl(vm), {
+        forward_py_value!(self, |value| value.py_float_impl(vm), {
             Self::Bool(value) => Ok(Some(f64::from(*value))),
             Self::Float(value) => Ok(Some(*value)),
             _ => Ok(None),
@@ -445,7 +445,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_floor_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_floor_impl(vm), {
+        forward_py_value!(self, |value| value.py_floor_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
             Self::Float(value) => LongInt::value_from_f64(value.floor(), vm.heap).map(Some),
             _ => Ok(None),
@@ -453,7 +453,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_ceil_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_ceil_impl(vm), {
+        forward_py_value!(self, |value| value.py_ceil_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
             Self::Float(value) => LongInt::value_from_f64(value.ceil(), vm.heap).map(Some),
             _ => Ok(None),
@@ -461,7 +461,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_trunc_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_trunc_impl(vm), {
+        forward_py_value!(self, |value| value.py_trunc_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
             Self::Float(value) => LongInt::value_from_f64(*value, vm.heap).map(Some),
             _ => Ok(None),
@@ -469,7 +469,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_pos_impl(vm), {
+        forward_py_value!(self, |value| value.py_pos_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
             Self::Float(value) => Ok(Some(Value::Float(*value))),
             _ => Ok(None),
@@ -477,7 +477,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_pow_impl(other, modulus, vm), {
+        forward_py_value!(self, |value| value.py_pow_impl(other, modulus, vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_pow_impl(other, modulus, vm),
             Self::Float(_) if modulus.is_some() => Err(ExcType::type_error_pow_modulo()),
             Self::Float(value) => float_binary(*value, other, vm, false, |base, exp| float_pow_value(base, exp, vm.heap)),
@@ -486,14 +486,14 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_rpow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_rpow_impl(other, modulus, vm), {
+        forward_py_value!(self, |value| value.py_rpow_impl(other, modulus, vm), {
             Self::Float(_) if modulus.is_some() => Err(ExcType::type_error_pow_modulo()),
             _ => Ok(None),
         })
     }
 
     fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_and_impl(other, vm), {
+        forward_py_value!(self, |value| value.py_and_impl(other, vm), {
             Self::Bool(lhs) if let Value::Bool(rhs) = other => Ok(Some(Value::Bool(*lhs && *rhs))),
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_and_impl(other, vm),
             _ => Ok(None),
@@ -501,7 +501,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_or_impl(other, vm), {
+        forward_py_value!(self, |value| value.py_or_impl(other, vm), {
             Self::Bool(lhs) if let Value::Bool(rhs) = other => Ok(Some(Value::Bool(*lhs || *rhs))),
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_or_impl(other, vm),
             Self::Builtin(value) => Union::try_or(&Value::Builtin(*value), other, vm),
@@ -512,7 +512,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_ror_impl(other, vm), {
+        forward_py_value!(self, |value| value.py_ror_impl(other, vm), {
             Self::Builtin(value) => Union::try_or(other, &Value::Builtin(*value), vm),
             Self::None => Union::try_or(other, &Value::None, vm),
             Self::Marker(value) => Union::try_or(other, &Value::Marker(*value), vm),
@@ -521,7 +521,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        logical_forward!(self, |value| value.py_xor_impl(other, vm), {
+        forward_py_value!(self, |value| value.py_xor_impl(other, vm), {
             Self::Bool(lhs) if let Value::Bool(rhs) = other => Ok(Some(Value::Bool(*lhs ^ *rhs))),
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_xor_impl(other, vm),
             _ => Ok(None),
@@ -529,7 +529,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        logical_forward!(self, |value| value.py_call_attr(vm, attr, args), {
+        forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) if let EitherStr::Interned(id) = attr => ty.call_class_method(*id, args, vm),
             _ => {
@@ -540,7 +540,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        logical_forward!(self, |value| value.py_getitem(key, vm), {
+        forward_py_value!(self, |value| value.py_getitem(key, vm), {
             Self::Builtin(Builtins::Type(t)) if t.has_class_getitem() => Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm)),
             Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(Type::Type, key.clone_with_heap(vm), vm)),
             Self::Builtin(Builtins::Type(Type::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
