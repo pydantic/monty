@@ -1077,15 +1077,18 @@ async def test_cancelled_queued_feed_run_leaves_session_healthy(apool: AsyncMont
     """Cancelling a feed_run that is still queued on the session (waiting for
     another feed_run's turn to finish) must not poison the session: it never
     started any protocol I/O, so the first feed and later feeds keep working."""
+    # The first turn spins on the worker's clock rather than running a fixed workload,
+    # so it is still running when the second feed is cancelled however fast Monty gets.
+    spin = 'import time\nstart = time.monotonic()\nwhile time.monotonic() - start < 0.5:\n    pass\n"done"'
     async with apool.checkout() as session:
-        first = asyncio.ensure_future(session.feed_run('sum(range(20_000_000))'))
+        first = asyncio.ensure_future(session.feed_run(spin))
         await asyncio.sleep(0.05)  # the first turn is in flight, holding the session slot
         second = asyncio.ensure_future(session.feed_run('1 + 1'))
         await asyncio.sleep(0.05)  # the second feed is queued behind it
         second.cancel()
         with pytest.raises(asyncio.CancelledError):
             await second
-        assert await first == snapshot(199999990000000)
+        assert await first == snapshot('done')
         assert await session.feed_run('1 + 1') == snapshot(2)
 
 

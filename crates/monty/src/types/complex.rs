@@ -305,12 +305,12 @@ fn nan_to_zero(value: f64) -> f64 {
     if value.is_nan() { 0.0f64.copysign(value) } else { value }
 }
 
-/// The other operand of a complex arithmetic operation.
+/// The other operand of a complex arithmetic operation, or an item of a float or complex `sum()`.
 ///
 /// CPython 3.14's mixed-mode rules treat a real operand differently from
 /// `complex(x, 0)`, so the two are kept apart rather than widened up front.
 #[derive(Clone, Copy)]
-enum Operand {
+pub(crate) enum Operand {
     Real(f64),
     Complex(Complex),
 }
@@ -318,7 +318,7 @@ enum Operand {
 /// Classifies an operand, widening ints (an oversized big int raises
 /// `OverflowError`); `None` for a non-number so the operation reports
 /// `NotImplemented` and the reflected form gets its turn.
-fn operand(value: &Value, vm: &VM<'_>) -> RunResult<Option<Operand>> {
+pub(crate) fn operand(value: &Value, vm: &VM<'_>) -> RunResult<Option<Operand>> {
     Ok(match value {
         Value::Float(f) => Some(Operand::Real(*f)),
         Value::Int(i) => Some(Operand::Real(*i as f64)),
