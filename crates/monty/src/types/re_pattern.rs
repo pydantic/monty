@@ -928,8 +928,6 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
 
     /// Handles `pattern.sub(repl, string, count=0)` argument extraction and dispatch.
     ///
-    /// Separated from the main `py_call_attr` match to keep the borrow checker happy —
-    /// extracting multiple string arguments requires careful ordering of borrows.
     /// Supports `count` as either positional or keyword argument.
     #[pymethod]
     fn sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
