@@ -183,7 +183,7 @@ self_result_eq = SelfResultEq()
 assert (self_result_eq == 1) is self_result_eq, 'direct equality preserves a self result'
 assert self_result_eq in [1], 'container membership truth-tests a self result'
 
-# === Instances are always truthy ===
+# === Instances without truthiness hooks are truthy ===
 assert bool(p) is True
 if q:
     pass

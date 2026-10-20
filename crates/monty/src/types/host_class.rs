@@ -143,11 +143,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             .to_cow(vm.interns)
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        // Host class instances don't have a length
-        None
-    }
-
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
         let name = attribute_name_value(name, value_guard.ctx());
@@ -484,10 +479,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Type
-    }
-
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

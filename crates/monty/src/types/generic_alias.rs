@@ -123,10 +123,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         Type::GenericAlias
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     /// Two aliases are equal when their origins and `__args__` are.
     ///
     /// Takes a recursion level like the repr: an argument can be a list that

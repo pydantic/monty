@@ -335,12 +335,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
         self.get(vm.heap).py_type()
     }
 
-    /// `None` for every adaptor: CPython exposes remaining counts through
-    /// `__length_hint__`, never `__len__`.
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }

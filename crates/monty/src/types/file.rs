@@ -431,10 +431,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         self.get(vm.heap).file_type()
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // File objects use identity equality (handled before the heap read).
         Ok(None)

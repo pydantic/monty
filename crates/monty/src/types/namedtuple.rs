@@ -391,8 +391,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         Ok(CallResult::Value(TupleIterator::from_named_tuple(self.id(), vm)))
     }
 
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        Some(self.get(vm.heap).len())
+    fn py_len_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<i64>> {
+        i64::try_from(self.get(vm.heap).len())
+            .map(Some)
+            .map_err(|_| ExcType::overflow_c_ssize_t())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -878,10 +880,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // The type of a class object is `type` (matching `type(Point) is type`).
         Type::Type
-    }
-
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
     }
 
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {

@@ -271,9 +271,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         )))
     }
 
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        // Count Unicode characters, not bytes, to match Python semantics
-        Some(self.get(vm.heap).0.chars().count())
+    fn py_len_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<i64>> {
+        // Count Unicode characters, not bytes, to match Python semantics.
+        i64::try_from(self.get(vm.heap).0.chars().count())
+            .map(Some)
+            .map_err(|_| ExcType::overflow_c_ssize_t())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -1946,10 +1948,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
 
     fn py_type(&self, vm: &VM<'h>) -> Type {
         self.get(vm.heap).py_type()
-    }
-
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
     }
 
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {

@@ -1099,17 +1099,9 @@ fn is_sequence(ty: Type) -> bool {
     )
 }
 
-/// `len(value)`, with `len()`'s own `TypeError` for unsized values and its
-/// `OverflowError` for a `range` longer than `ssize_t`.
-fn len_of(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
-    let len = value
-        .py_len(vm)
-        .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", value.py_type_name(vm))))?;
-    if i64::try_from(len).is_ok() {
-        Ok(len)
-    } else {
-        Err(ExcType::overflow_c_ssize_t())
-    }
+/// Python length narrowed to the indexing width used by the sampling algorithms.
+fn len_of(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+    usize::try_from(value.py_len(vm)?).map_err(|_| ExcType::overflow_c_ssize_t())
 }
 
 /// A `randbelow` result, which always fits the `i64` length it was drawn below.

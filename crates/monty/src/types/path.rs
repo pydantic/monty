@@ -532,11 +532,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
         Type::Path
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        // Paths don't have a length in Python
-        None
-    }
-
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Path(other)) = other.read_heap(vm) else {
             return Ok(None);

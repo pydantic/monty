@@ -184,10 +184,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         self.get(vm.heap).py_type()
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }

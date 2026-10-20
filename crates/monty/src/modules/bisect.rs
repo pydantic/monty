@@ -6,7 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{Module, PyTrait, Type},
@@ -152,16 +152,7 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
         return Err(ExcType::value_error("lo must be non-negative"));
     }
     if hi == -1 {
-        // Ranges can exceed usize without allocating elements. Use their exact
-        // length so Monty's fixed i64 index limit also applies on 32-bit wasm.
-        hi = if let Some(HeapReadOutput::Range(range)) = a.read_heap(vm) {
-            i64::try_from(range.get(vm.heap).len_i128()).map_err(|_| ExcType::overflow_c_ssize_t())?
-        } else {
-            let len = a
-                .py_len(vm)
-                .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", a.py_type_name(vm))))?;
-            i64::try_from(len).map_err(|_| ExcType::overflow_c_ssize_t())?
-        };
+        hi = a.py_len(vm)?;
     }
     // _bisect obtains sq_item even when the search interval is empty.
     match a.py_type(vm) {
@@ -223,13 +214,15 @@ fn less_than(vm: &mut VM<'_>, a: &Value, b: &Value) -> RunResult<bool> {
     let vm = &mut *guard;
     let mut i = 0;
     loop {
-        let a_len = a.py_len(vm).expect("sequence has length");
-        let b_len = b.py_len(vm).expect("sequence has length");
+        let a_len = a.py_len(vm)?;
+        let b_len = b.py_len(vm)?;
         if i >= a_len.min(b_len) {
             return Ok(a_len < b_len);
         }
-        vm.heap.tracker.check_time_every(i)?;
-        let index = Value::Int(i64::try_from(i).expect("sequence index fits i64"));
+        vm.heap
+            .tracker
+            .check_time_every(usize::try_from(i).expect("sequence index fits usize"))?;
+        let index = Value::Int(i);
         let av = a.py_getitem(&index, vm)?;
         defer_drop!(av, vm);
         let bv = b.py_getitem(&index, vm)?;

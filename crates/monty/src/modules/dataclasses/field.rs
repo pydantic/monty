@@ -276,10 +276,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
         Type::DataclassField
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // `Field` defines no `__eq__`, so it compares by identity, which
         // `Value::py_eq_impl` resolves before ever reaching here.

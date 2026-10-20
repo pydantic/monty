@@ -385,10 +385,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
         Type::LruCacheWrapper
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }

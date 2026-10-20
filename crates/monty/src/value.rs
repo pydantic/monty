@@ -289,13 +289,17 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_len(&self, vm: &VM<'_>) -> Option<usize> {
+    fn py_len_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
         match self {
-            // Count Unicode characters, not bytes, to match Python semantics
-            Self::InternString(string_id) => Some(vm.interns.get_str(*string_id).chars().count()),
-            Self::InternBytes(bytes_id) => Some(vm.interns.get_bytes(*bytes_id).len()),
-            Self::Ref(id) => vm.heap.read(*id).py_len(vm),
-            _ => None,
+            // Count Unicode characters, not bytes, to match Python semantics.
+            Self::InternString(string_id) => i64::try_from(vm.interns.get_str(*string_id).chars().count())
+                .map(Some)
+                .map_err(|_| ExcType::overflow_c_ssize_t()),
+            Self::InternBytes(bytes_id) => i64::try_from(vm.interns.get_bytes(*bytes_id).len())
+                .map(Some)
+                .map_err(|_| ExcType::overflow_c_ssize_t()),
+            Self::Ref(id) => vm.heap.read(*id).py_len_impl(vm),
+            _ => Ok(None),
         }
     }
 
@@ -1922,6 +1926,12 @@ impl Value {
     /// reached via deserialization of crafted snapshot data.
     pub fn as_int(&self, vm: &mut VM<'_>) -> RunResult<i64> {
         self.as_int_with_overflow(vm, ExcType::overflow_c_ssize_t)
+    }
+
+    /// Python `len()`, raising for unsized objects rather than falling back to truthiness.
+    pub(crate) fn py_len(&self, vm: &mut VM<'_>) -> RunResult<i64> {
+        self.py_len_impl(vm)?
+            .ok_or_else(|| ExcType::type_error_no_len(&self.py_type_name(vm)))
     }
 
     /// Returns an owned integer through `__index__` without narrowing its magnitude.

@@ -119,10 +119,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         Type::Type
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Union::heap_or(self, other, vm)
     }

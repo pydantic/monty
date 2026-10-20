@@ -55,9 +55,10 @@ impl VM<'_> {
     ///
     /// Sequences are `list`, `tuple`, namedtuples, `range` and `deque`, never
     /// `str` or `bytes`; mappings are `dict` and its `collections` subclasses.
-    pub(super) fn match_shape(&mut self, length: u16, flags: u8) {
-        let subject = self.peek();
-        let ty = subject.py_type(self);
+    pub(super) fn match_shape(&mut self, length: u16, flags: u8) -> RunResult<()> {
+        let this = self;
+        let subject = this.peek();
+        let ty = subject.py_type(this);
         let shape_ok = if flags & MATCH_SHAPE_MAPPING != 0 {
             matches!(ty, Type::Dict | Type::DefaultDict | Type::Counter)
         } else {
@@ -67,14 +68,17 @@ impl VM<'_> {
             )
         };
         let matched = shape_ok && {
-            let actual = subject.py_len(self).unwrap_or(0);
+            let subject = subject.clone_with_heap(this.heap);
+            defer_drop!(subject, this);
+            let actual = subject.py_len(this)?;
             if flags & MATCH_SHAPE_MIN_LEN != 0 {
-                actual >= usize::from(length)
+                actual >= i64::from(length)
             } else {
-                actual == usize::from(length)
+                actual == i64::from(length)
             }
         };
-        self.push(Value::Bool(matched));
+        this.push(Value::Bool(matched));
+        Ok(())
     }
 
     /// `MatchKeys` (values mode): `[subject, keys] -> [subject, keys, values_or_None, bool]`.

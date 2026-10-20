@@ -306,8 +306,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         Ok(CallResult::Value(BytesIterator::from_heap(self.id(), vm)))
     }
 
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        Some(self.get(vm.heap).0.len())
+    fn py_len_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<i64>> {
+        i64::try_from(self.get(vm.heap).0.len())
+            .map(Some)
+            .map_err(|_| ExcType::overflow_c_ssize_t())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -2392,10 +2394,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
 
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::BytesIterator
-    }
-
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
     }
 
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {

@@ -567,10 +567,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Type::Complex
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     /// Equal to another complex part-wise, and to a real number when the
     /// imaginary part is zero and the real part matches it exactly.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {

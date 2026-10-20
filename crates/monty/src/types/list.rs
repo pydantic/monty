@@ -519,8 +519,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Type::List
     }
 
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        Some(self.get(vm.heap).items.len())
+    fn py_len_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<i64>> {
+        i64::try_from(self.get(vm.heap).items.len())
+            .map(Some)
+            .map_err(|_| ExcType::overflow_c_ssize_t())
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
@@ -1175,10 +1177,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
 
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::ListIterator
-    }
-
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
     }
 
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {

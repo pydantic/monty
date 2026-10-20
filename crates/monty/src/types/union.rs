@@ -280,10 +280,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         Type::Union
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     /// Two unions are equal when they have the same members in any order.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Union(other)) = other.read_heap(vm) else {

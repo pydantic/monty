@@ -1300,14 +1300,8 @@ fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<Cow<'a, [u8]>>
 }
 
 /// Reproduces `assert len(value) == expected, repr(value)` on a raw argument.
-fn assert_len(value: &Value, expected: usize, vm: &mut VM<'_>) -> RunResult<()> {
-    let Some(len) = value.py_len(vm) else {
-        return Err(ExcType::type_error(format!(
-            "object of type '{}' has no len()",
-            value.py_type_name(vm)
-        )));
-    };
-    if len == expected {
+fn assert_len(value: &Value, expected: i64, vm: &mut VM<'_>) -> RunResult<()> {
+    if value.py_len(vm)? == expected {
         Ok(())
     } else {
         Err(assertion_error(value, vm)?)

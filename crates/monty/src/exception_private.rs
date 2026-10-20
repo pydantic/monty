@@ -1640,6 +1640,26 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ZeroDivisionError, "division by zero")
     }
 
+    /// Python length operations on an object without `__len__`.
+    fn type_error_no_len(type_name: &str) -> RunError {
+        Self::type_error(format!("object of type '{type_name}' has no len()"))
+    }
+
+    /// A user `__len__` returned a negative integer, including one beyond i64.
+    fn value_error_negative_len() -> RunError {
+        Self::value_error("__len__() should return >= 0")
+    }
+
+    /// An explicit `__bool__ = None` opts out of truth testing.
+    fn type_error_not_boolean(type_name: &str) -> RunError {
+        Self::type_error(format!("'{type_name}' cannot be interpreted as a boolean"))
+    }
+
+    /// `__bool__` must return an actual bool rather than another truth-testable value.
+    fn type_error_non_bool_return(type_name: &str) -> RunError {
+        Self::type_error(format!("__bool__ should return bool, returned {type_name}"))
+    }
+
     /// Creates an OverflowError for an int too large for an index-sized integer.
     ///
     /// This is CPython's `PyNumber_AsSsize_t` wording, used wherever a count or

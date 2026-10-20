@@ -414,10 +414,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Type::Int
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(!self.get(vm.heap).is_zero())
     }

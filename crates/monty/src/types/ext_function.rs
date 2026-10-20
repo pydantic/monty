@@ -46,10 +46,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ExtFunction> {
         Type::Function
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     /// Identity only. Two lookups of the same name share one heap entry (the
     /// weak external-function cache), so `is` already answers this.
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {

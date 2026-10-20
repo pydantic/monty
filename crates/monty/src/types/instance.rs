@@ -317,8 +317,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     ///
     /// `None` leaves the caller to fall back to iteration. An explicit
     /// `__contains__ = None` instead reports that the object is not a container.
-    /// Results use `py_bool`, whose handling of user objects is documented in
-    /// `limitations/classes.md`.
+    /// Results use `py_bool`, including a returned instance's truthiness hooks.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let class_id = self.get(vm.heap).class();
         if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
@@ -356,8 +355,38 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         Type::Instance(self.get(vm.heap).class)
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
+    fn py_len_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<i64>> {
+        if let Some(result) = instance_call_dunder_sync(self.id(), "__len__", None, vm)? {
+            defer_drop!(result, vm);
+            let index = result.py_index(vm)?;
+            defer_drop!(index, vm);
+            // CPython rejects negative lengths before checking their magnitude.
+            if matches!(index, Value::Int(n) if *n < 0) || index.long_int_is_negative(vm) {
+                Err(ExcType::value_error_negative_len())
+            } else {
+                index
+                    .as_int_with_overflow(vm, || ExcType::overflow_index_sized_int().into())
+                    .map(Some)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        let class_id = self.get(vm.heap).class();
+        if matches!(class_dunder(class_id, "__bool__", vm), Some(Value::None)) {
+            Err(ExcType::type_error_not_boolean(&self.py_type_name(vm)))
+        } else if let Some(result) = instance_call_dunder_sync(self.id(), "__bool__", None, vm)? {
+            defer_drop!(result, vm);
+            if let Value::Bool(value) = result {
+                Ok(*value)
+            } else {
+                Err(ExcType::type_error_non_bool_return(&result.py_type_name(vm)))
+            }
+        } else {
+            Ok(self.py_len_impl(vm)? != Some(0))
+        }
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
@@ -603,10 +632,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         // Monty has no dedicated `method` type; bound methods report `function`.
         Type::Function
-    }
-
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
     }
 
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {

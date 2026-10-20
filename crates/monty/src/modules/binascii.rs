@@ -502,13 +502,11 @@ fn hex_digit(byte: u8) -> Option<u8> {
 /// `ValueError` — "sep must be str or bytes." only applies to a sized object
 /// of length one. `None` is not "no separator": omitting `sep` leaves it
 /// unset, so an explicit `None` fails the length check as any other object.
-fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
+fn hex_separator(sep: Option<&Value>, vm: &mut VM<'_>) -> RunResult<Option<u8>> {
     let Some(sep) = sep else {
         return Ok(None);
     };
-    let length = sep
-        .py_len(vm)
-        .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", sep.py_type_name(vm))))?;
+    let length = sep.py_len(vm)?;
 
     if length != 1 {
         Err(value_error("sep must be length 1."))

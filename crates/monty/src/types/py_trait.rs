@@ -136,11 +136,11 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         self.py_type(vm).name(vm.heap, vm.interns)
     }
 
-    /// Returns the number of elements in this container.
-    ///
-    /// For interns, returns the number of Unicode codepoints (characters), matching Python.
-    /// Returns `None` if the type doesn't support `len()`.
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize>;
+    /// Returns a validated, nonnegative Python length, or `None` when unsized.
+    /// User hooks may execute Python and raise; lengths must fit Monty's fixed i64 index width.
+    fn py_len_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<i64>> {
+        Ok(None)
+    }
 
     /// Computes the hash for this Python value, used for dict and set keys.
     ///
@@ -220,7 +220,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Container types should typically report `false` when empty. Truth
     /// testing may raise, notably for Python 3.14's `NotImplemented` singleton.
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
-        Ok(self.py_len(vm) != Some(0))
+        Ok(self.py_len_impl(vm)? != Some(0))
     }
 
     /// Writes Python's identity-bearing default object representation.

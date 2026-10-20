@@ -439,10 +439,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
         self.get(vm.heap).algorithm.py_type()
     }
 
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }

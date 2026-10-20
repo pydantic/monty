@@ -461,10 +461,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
         Type::RePattern
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
-    }
-
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::RePattern(other)) = other.read_heap(vm) else {
             return Ok(None);

@@ -425,8 +425,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(CallResult::Value(Value::Ref(iterator)))
     }
 
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        Some(self.get(vm.heap).len())
+    fn py_len_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<i64>> {
+        i64::try_from(self.get(vm.heap).len())
+            .map(Some)
+            .map_err(|_| ExcType::overflow_c_ssize_t())
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -715,10 +717,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
 
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::DequeIterator
-    }
-
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
     }
 
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {

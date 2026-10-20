@@ -1674,6 +1674,9 @@ re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
 #[test]
 fn recursive_instance_protocols_are_bounded() {
     for (slot, body, invocation) in [
+        ("__len__", "return len(self)", "len(obj)"),
+        ("__len__", "return len(self)", "bool(obj)"),
+        ("__bool__", "return bool(self)", "bool(obj)"),
         ("__neg__", "return -self", "-obj"),
         ("__add__", "return self + args[0]", "obj + ['argument']"),
         ("__radd__", "return args[0] + self", "['argument'] + obj"),
