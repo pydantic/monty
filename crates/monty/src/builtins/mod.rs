@@ -19,12 +19,13 @@ mod hash;
 mod hex;
 mod id;
 pub(crate) mod isinstance;
+pub(crate) mod iter;
 mod len;
 mod locals;
 mod map;
 mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
-mod next;
+pub(crate) mod next;
 pub(crate) mod object_setattr;
 mod oct;
 pub(crate) mod open;
@@ -78,19 +79,16 @@ impl Builtins {
 
     /// Calls this builtin, allowing builtins that need host involvement to yield.
     ///
-    /// Most builtins complete synchronously and produce a [`CallResult::Value`].
-    /// `open()` is the exception: it must touch the host filesystem at call
-    /// time to perform the open-time effect, so it returns a
-    /// [`CallResult::OsCall`] for [`OsFunctionCall::Open`](monty_types::OsFunctionCall) (see
-    /// [`crate::builtins::open`]). `next()` on a file nobody has read yet
-    /// likewise yields the read that loads it.
+    /// Most builtins produce a [`CallResult::Value`]. `iter()` and `next()` can
+    /// push frames for user methods; `open()` yields its host filesystem operation,
+    /// and `next()` on an unread file yields the read that loads its buffer.
     pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Function(b) => b.call(vm, args),
             Self::ExcType(exc) => exc.call(vm, args).map(CallResult::Value),
             // `DictReader(f)` on an unread file yields the read that loads it.
             Self::Type(Type::CsvDictReader) => csv::dict_reader_call(vm, args),
-            Self::Type(t) => t.call(vm, args).map(CallResult::Value),
+            Self::Type(t) => t.call(vm, args),
         }
     }
 
@@ -132,6 +130,7 @@ impl FromStr for Builtins {
 }
 
 pub use monty_types::BuiltinsFunctions;
+pub(crate) use type_::type_of_ref;
 
 pub(crate) trait BuiltinsFunctionsExt: Sized {
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult>;

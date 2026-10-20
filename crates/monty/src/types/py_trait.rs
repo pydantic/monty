@@ -708,21 +708,19 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Whether `next()` can drive this object, the counterpart to
     /// [`py_is_iterable`](PyTrait::py_is_iterable)'s "can `iter()` be called".
     ///
-    /// Mirrors CPython's `PyIter_Check`, used by `PyObject_GetIter` to reject an
-    /// `__iter__` returning a non-iterator — the one caller here, in
-    /// `Instance::py_iter`. A type overriding `py_next` MUST return `true`, or
-    /// a user `__iter__` returning it is wrongly rejected.
+    /// Rejects a user `__iter__` returning a non-iterator, like CPython's `PyIter_Check`.
+    /// A type overriding `py_next` must return `true` or its instances will be rejected.
     fn py_is_iterator(&self, _vm: &VM<'h>) -> bool {
         false
     }
 
-    /// Returns a Python iterator for this object (`__iter__`).
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    /// Invokes `__iter__`; use `Value::py_iter` to also validate a user method's eventual result.
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
     }
 
-    /// Advances this object using Python's iterator protocol (`__next__`).
-    ///
+    /// Advances an iterator synchronously for Rust consumers.
+    /// Public `next()` dispatches user methods separately so they can suspend.
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
     }

@@ -250,7 +250,7 @@ fn step<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult
         item.clone_with_heap(vm.heap)
     } else {
         let arg = item.clone_with_heap(vm.heap);
-        vm.evaluate_function("groupby()", keyfunc, ArgValues::One(arg))?
+        vm.evaluate_function(keyfunc, ArgValues::One(arg))?
     };
     let (item, vm) = item_guard.into_parts();
     let groupby = groupby_mut(iter, vm);

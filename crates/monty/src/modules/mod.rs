@@ -9,6 +9,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
+    frozen::{self, FrozenFunctions},
     heap::HeapId,
     intern::StaticStrings,
 };
@@ -73,7 +74,7 @@ pub(crate) enum StandardLib {
     /// The `collections` module providing container datatypes: `deque`,
     /// `namedtuple`, `defaultdict`, and `Counter`.
     Collections,
-    /// The `functools` module providing `reduce` and `partial`.
+    /// The `functools` module providing reduction, partial application, and caching.
     Functools,
     /// The `base64` module providing the base64/base32/base16 codecs.
     Base64,
@@ -200,6 +201,8 @@ pub(crate) enum ModuleFunctions {
     Binascii(binascii::BinasciiFunctions),
     Random(random::RandomFunctions),
     Copy(copy::CopyFunctions),
+    /// Private primitives passed explicitly to frozen Python implementations.
+    Frozen(FrozenFunctions),
     Time(time::TimeFunctions),
     Hashlib(hashlib::HashlibFunctions),
     Bisect(bisect::BisectFunctions),
@@ -236,6 +239,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Binascii(func) => write!(f, "{func}"),
             Self::Random(func) => write!(f, "{func}"),
             Self::Copy(func) => write!(f, "{func}"),
+            Self::Frozen(func) => write!(f, "{func}"),
             Self::Time(func) => write!(f, "{func}"),
             Self::Hashlib(func) => write!(f, "{func}"),
             Self::Bisect(func) => write!(f, "{func}"),
@@ -266,11 +270,12 @@ impl ModuleFunctions {
             Self::Unicodedata(functions) => unicodedata::call(vm, functions, args).map(CallResult::Value),
             Self::Itertools(functions) => itertools::call(vm, functions, args).map(CallResult::Value),
             Self::Dataclasses(functions) => dataclasses::call(vm, functions, args).map(CallResult::Value),
-            Self::Functools(functions) => functools::call(vm, functions, args).map(CallResult::Value),
+            Self::Functools(functions) => functools::call(vm, functions, args),
             Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
             Self::Random(functions) => random::call(vm, functions, args),
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
+            Self::Frozen(functions) => frozen::call_helper(functions, args, vm),
             Self::Time(functions) => time::call(vm, functions, args),
             Self::Hashlib(functions) => hashlib::call(vm, functions, args).map(CallResult::Value),
             Self::Bisect(functions) => bisect::call(vm, functions, args).map(CallResult::Value),

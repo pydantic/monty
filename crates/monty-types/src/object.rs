@@ -1033,11 +1033,13 @@ impl CallArgs {
     }
 
     /// The positional arguments, in order.
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn args(&self) -> impl ExactSizeIterator<Item = ObjectRef<'_>> {
         self.arg_ids.iter().map(|id| self.graph.value(*id))
     }
 
     /// The keyword arguments as `(key, value)` views, in order.
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn kwargs(&self) -> impl ExactSizeIterator<Item = (ObjectRef<'_>, ObjectRef<'_>)> {
         self.kwarg_ids
             .iter()
@@ -1114,6 +1116,7 @@ impl NamedValues {
     }
 
     /// The `(name, value)` pairs, in order.
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, ObjectRef<'_>)> {
         self.names
             .iter()
@@ -1400,6 +1403,9 @@ pub enum MontyType {
     ItertoolsTee,
     #[strum(serialize = "itertools._tee_dataobject")]
     ItertoolsTeeDataObject,
+    /// The wrapper `functools.lru_cache` / `functools.cache` returns.
+    #[strum(serialize = "functools._lru_cache_wrapper")]
+    LruCacheWrapper,
 }
 
 impl fmt::Display for MontyType {

@@ -165,6 +165,8 @@ macro_rules! heap_payloads {
             Union(inline $crate::types::Union),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
+            /// A `functools.lru_cache` / `functools.cache` wrapper.
+            LruCache(boxed $crate::types::LruCache),
             /// A `hashlib` hash object mid-stream.
             HashObject(boxed $crate::types::HashObject),
             /// An `os.DirEntry`, `os.scandir()` iterator or `os.walk()` iterator.
@@ -258,6 +260,7 @@ impl HeapData {
             | Self::Partial(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::LruCache(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
@@ -305,6 +308,7 @@ impl HeapData {
                 | Self::ExtFunction(_)
                 | Self::Partial(_)
                 | Self::GenericAlias(_)
+                | Self::LruCache(_)
         )
     }
 
@@ -328,6 +332,7 @@ impl HeapData {
             Self::HashObject(hash) => hash.algorithm().py_type(),
             Self::GenericAlias(_) => Type::GenericAlias,
             Self::Union(_) => Type::Union,
+            Self::LruCache(_) => Type::LruCacheWrapper,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
             Self::DictValuesView(_) => Type::DictValues,
@@ -685,6 +690,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::HashObject($value) => $body,
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
+            Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
             Self::NamedTupleClass($value) => $body,
@@ -916,7 +922,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         match self {
             Self::Str(value) => value.py_iter(vm),
             Self::Bytes(value) => value.py_iter(vm),
@@ -971,6 +977,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::HashObject(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::LruCache(_)
             | Self::Cell(_)
             | Self::Exception(_)
             | Self::LongInt(_)

@@ -624,11 +624,7 @@ fn attributes_equal(a: &Value, b: &Value, attr: StaticStrings, vm: &mut VM<'_>) 
 fn data_attribute(value: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunResult<Value> {
     let name = Value::InternString(vm.interns.intern_static(attr));
     let getattr = Value::Builtin(Builtins::Function(BuiltinsFunctions::Getattr));
-    vm.evaluate_function(
-        "os.path.samestat",
-        &getattr,
-        ArgValues::Two(value.clone_with_heap(vm), name),
-    )
+    vm.evaluate_function(&getattr, ArgValues::Two(value.clone_with_heap(vm), name))
 }
 
 // ============================================================================

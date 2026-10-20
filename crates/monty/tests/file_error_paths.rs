@@ -367,9 +367,7 @@ caught[0]
     let result = progress.into_complete().expect("expected Complete");
     assert_eq!(
         result,
-        MontyObject::string(
-            "sorted() key argument: OS function 'Path.read_text' is not yet supported in this context".to_owned()
-        )
+        MontyObject::string("OS function 'Path.read_text' cannot suspend in this synchronous context".to_owned())
     );
 }
 

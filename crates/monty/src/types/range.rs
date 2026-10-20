@@ -13,7 +13,7 @@ use num_integer::div_ceil;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
@@ -221,8 +221,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
         Type::Range
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(RangeIterator::allocate(*self.get(vm.heap), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(RangeIterator::allocate(*self.get(vm.heap), vm)))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -374,8 +374,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

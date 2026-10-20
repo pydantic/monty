@@ -496,7 +496,7 @@ impl MontyRepl {
                                     vm.run_external()
                                 }
                                 Ok(exit) => {
-                                    let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
+                                    let error = vm.unsupported_frame_exit(exit);
                                     vm.resume_with_exception(error)
                                 }
                                 Err(error) => {

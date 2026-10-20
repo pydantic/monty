@@ -252,7 +252,7 @@ fn call_pairwise(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PairwiseArgs { iterable } = PairwiseArgs::from_args(args, vm)?;
     // Resolve to an iterator up front, as CPython does: a non-iterable raises
     // here rather than on the first `next()`.
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Pairwise(Pairwise::new(source));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -275,10 +275,10 @@ fn call_compress(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // `into_py_iter` consumes its receiver, so each conversion guards the other
     // argument: whichever is not being converted is released if this one raises.
     let mut guard = DropGuard::new(selectors, vm);
-    let data = data.into_py_iter(guard.ctx())?;
+    let data = data.into_py_iter(guard.ctx())?.require_synchronous(guard.ctx())?;
     let (selectors, vm) = guard.into_parts();
     let mut guard = DropGuard::new(data, vm);
-    let selectors = selectors.into_py_iter(guard.ctx())?;
+    let selectors = selectors.into_py_iter(guard.ctx())?.require_synchronous(guard.ctx())?;
     let (data, vm) = guard.into_parts();
     let iter = ItertoolsIter::Compress(Compress::new(data, selectors));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
@@ -322,7 +322,7 @@ fn call_islice(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (start, stop, step) = bounds?;
     let (iterable, vm) = guard.into_parts();
 
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Islice(Islice::new(source, start, stop, step));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -424,7 +424,7 @@ struct CycleArgs {
 fn call_cycle(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let CycleArgs { iterable } = CycleArgs::from_args(args, vm)?;
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Cycle(Cycle::new(source));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -566,7 +566,7 @@ fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
     };
 
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Batched(Batched::new(source, size, strict));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -624,7 +624,7 @@ fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     for slot in iterables.iter_mut() {
         let iterable = mem::replace(slot, Value::None);
         let (resolved, vm) = guard.as_parts_mut();
-        match iterable.into_py_iter(vm) {
+        match iterable.into_py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(source) => resolved.push(source),
             Err(error) => {
                 fillvalue.drop_with(vm);
@@ -864,7 +864,7 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
     // The outer iterable is resolved now — `chain.from_iterable(5)` raises
     // here — while its items are resolved one at a time, as `chain`'s
     // arguments are.
-    let outer = iterable.into_py_iter(vm)?;
+    let outer = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Chain(Chain::from_iterable(outer));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -914,7 +914,7 @@ fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Resolved first, then tested: CPython calls `iter()` before it reaches for
     // `__copy__`, so an object whose `__iter__` hands back an existing `_tee`
     // is copied too rather than being drained into a second buffer.
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     // An existing `_tee` is copied rather than drained, so the copies replay
     // from where it stands — CPython reaches for `__copy__` for the same
     // reason. Anything else becomes the source of a fresh group.
@@ -952,7 +952,7 @@ fn tee_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 /// non-callable is only discovered when the adaptor first applies it.
 fn resolve_source(callable: Value, iterable: Value, vm: &mut VM<'_>) -> RunResult<(Value, Value)> {
     let mut guard = DropGuard::new(callable, vm);
-    let source = iterable.into_py_iter(guard.ctx())?;
+    let source = iterable.into_py_iter(guard.ctx())?.require_synchronous(guard.ctx())?;
     let (callable, _) = guard.into_parts();
     Ok((callable, source))
 }

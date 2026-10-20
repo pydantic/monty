@@ -70,7 +70,7 @@ pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
     // fails, so a source that raises `StopIteration` and later yields again is
     // re-driven on the next call rather than treated as spent.
     let Some((item, accepted)) = next_tested(predicate, source, vm, |predicate, item, vm| {
-        call_predicate(predicate, item, "takewhile()", vm)
+        call_predicate(predicate, item, vm)
     })?
     else {
         return Ok(None);

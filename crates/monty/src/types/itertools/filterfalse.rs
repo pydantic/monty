@@ -68,7 +68,7 @@ pub(super) fn next<'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> R
             if matches!(predicate, Value::None) {
                 item.py_bool(vm)
             } else {
-                call_predicate(predicate, item, "filterfalse()", vm)
+                call_predicate(predicate, item, vm)
             }
         })?
         else {

@@ -307,6 +307,11 @@ assert 'hi'.center(6) == '  hi  '
 assert 'hi'.center(6, '-') == '--hi--'
 assert 'hi'.center(2) == 'hi'
 assert 'hi'.center(1) == 'hi'
+# odd padding goes on the left only when the width is also odd, as in CPython
+assert 'hi'.center(5) == '  hi '
+assert 'hi'.center(5, '*') == '**hi*'
+assert 'abc'.center(6) == ' abc  '
+assert 'a'.center(4, '-') == '-a--'
 
 # ljust()
 assert 'hi'.ljust(6) == 'hi    '

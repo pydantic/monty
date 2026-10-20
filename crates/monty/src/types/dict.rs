@@ -879,7 +879,7 @@ impl<'h> HeapReadMut<'h, Dict> {
 
     /// Merges key-value pairs from an iterable of 2-item pairs.
     fn merge_from_iterable_pairs(&self, iterable: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        let iter = iterable.into_py_iter(vm)?;
+        let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
 
@@ -1268,8 +1268,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         Ok(())
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(DictKeyIterator::allocate(self.id(), self.get(vm.heap).len(), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(DictKeyIterator::allocate(
+            self.id(),
+            self.get(vm.heap).len(),
+            vm,
+        )))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1814,7 +1818,7 @@ fn check_pair_snapshot(len: usize, vm: &VM<'_>) -> RunResult<()> {
 /// Each item from `iterable` is treated as `(key, value)`; see
 /// [`unpack_update_pair`] for the errors a malformed item raises.
 fn dict_merge_from_iterable_pairs(dict: &mut Dict, iterable: Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let iter = iterable.into_py_iter(vm)?;
+    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -1837,7 +1841,7 @@ fn dict_merge_from_iterable_pairs(dict: &mut Dict, iterable: Value, vm: &mut VM<
 /// the element's full length: an over-long item is drained to count it,
 /// polling the time limit as it goes.
 fn unpack_update_pair(item: Value, index: usize, vm: &mut VM<'_>) -> RunResult<(Value, Value)> {
-    let pair_iter = item.into_py_iter(vm)?;
+    let pair_iter = item.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(pair_iter, vm);
     let mut pair_iter = pair_iter.read(vm);
 
@@ -1972,7 +1976,7 @@ pub fn dict_fromkeys(args: ArgValues, kind: DictKind, vm: &mut VM<'_>) -> RunRes
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 
-    let iter = iterable.into_py_iter(vm)?;
+    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -2080,8 +2084,8 @@ macro_rules! impl_dict_iterator {
                 Ok(None)
             }
 
-            fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-                Ok(self.clone_value(vm.heap))
+            fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+                Ok(CallResult::Value(self.clone_value(vm.heap)))
             }
 
             fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

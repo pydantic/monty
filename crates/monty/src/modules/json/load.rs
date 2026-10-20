@@ -107,7 +107,7 @@ pub(super) fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
         }
         FileTarget::Method(read) => {
             defer_drop!(read, vm);
-            let text = vm.evaluate_function("json.load()", read, ArgValues::Empty)?;
+            let text = vm.evaluate_function(read, ArgValues::Empty)?;
             parse_owned(text, vm).map(CallResult::Value)
         }
     }

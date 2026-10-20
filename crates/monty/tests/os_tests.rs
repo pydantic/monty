@@ -1287,9 +1287,7 @@ msg
     let result = run_oscall_sequence(code, vec![("open", mock_file_handle("/data/sample.txt"))]);
     assert_eq!(
         result,
-        MontyObject::string(
-            "sorted() key argument: OS function 'Path.read_text' is not yet supported in this context".to_owned()
-        )
+        MontyObject::string("OS function 'Path.read_text' cannot suspend in this synchronous context".to_owned())
     );
 }
 

@@ -411,8 +411,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         Type::Bytes
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(BytesIterator::from_heap(self.id(), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(BytesIterator::from_heap(self.id(), vm)))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1962,7 +1962,8 @@ fn bytes_center<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
     } else {
         check_repeat_size(width, 1, &vm.heap.tracker)?;
         let total_pad = width - len;
-        let left_pad = total_pad / 2;
+        // CPython puts the odd fill unit on the left only when `width` is also odd.
+        let left_pad = total_pad / 2 + (total_pad & width & 1);
         let right_pad = total_pad - left_pad;
         let mut result = Vec::with_capacity(width);
         for _ in 0..left_pad {
@@ -2124,7 +2125,7 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
         iterable.drop_with(vm);
         return Err(ExcType::type_error_join_not_iterable());
     }
-    let iter = iterable.into_py_iter(vm)?;
+    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -2497,8 +2498,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

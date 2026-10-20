@@ -145,13 +145,16 @@ impl<'h> HeapReadMut<'h, List> {
             Some(HeapReadOutput::List(list)) => list.clone_all_items(vm)?,
             Some(HeapReadOutput::Tuple(tuple)) => tuple.cloned_items(vm)?,
             _ => {
-                let iterator = value.py_iter(vm).map_err(|error| {
-                    if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::TypeError) {
-                        ExcType::type_error("must assign iterable to extended slice")
-                    } else {
-                        error
-                    }
-                })?;
+                let iterator = value
+                    .py_iter(vm)
+                    .and_then(|call| call.require_synchronous(vm))
+                    .map_err(|error| {
+                        if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::TypeError) {
+                            ExcType::type_error("must assign iterable to extended slice")
+                        } else {
+                            error
+                        }
+                    })?;
                 collect_python_iterator(iterator, vm)?
             }
         };
@@ -714,11 +717,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         call_list_method(self, method, args, vm).map(CallResult::Value)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let list_id = self.id();
         let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list_id)));
         vm.heap.inc_ref(list_id);
-        Ok(Value::Ref(iterator))
+        Ok(CallResult::Value(Value::Ref(iterator)))
     }
 }
 
@@ -1004,7 +1007,7 @@ fn do_list_sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'
     let items = mem::take(&mut list.get_mut(vm.heap).items);
     defer_drop_mut!(items, vm);
 
-    let sort_result = parse_and_sort("sort() key argument", items, args, vm);
+    let sort_result = parse_and_sort(items, args, vm);
 
     // Swap our (sorted) buffer back into the list. Whatever the user placed
     // on the live empty list during the sort ends up in `items`; if
@@ -1166,8 +1169,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

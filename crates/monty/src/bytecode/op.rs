@@ -1039,7 +1039,7 @@ impl Opcode {
             (Jump, Operand::Offset(_)) => 0,
             // Conditional jumps pop the condition on either path, so the tracker absorbs the pop immediately.
             (JumpIfTrue | JumpIfFalse | JumpIfTrueOrPop | JumpIfFalseOrPop, Operand::Offset(_)) => -1,
-            // `ForIter` adds the the value yielded by the iterator to the stack.
+            // `ForIter` adds the value yielded by the iterator to the stack.
             (ForIter, Operand::Offset(_)) => 1,
 
             // Catch-all: opcode emitted with the wrong operand variant, or a

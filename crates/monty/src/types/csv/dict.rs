@@ -347,7 +347,7 @@ pub(super) fn writer_writerows<'h>(
             super::writer::writerows(writer_obj, ArgValues::One(rows), vm)
         })
     } else {
-        let iterator = rowdicts.py_iter(vm)?;
+        let iterator = rowdicts.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         let terminator_chars = terminator_chars(&dialect.lineterminator);
         let mut line = String::new();

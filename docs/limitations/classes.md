@@ -409,13 +409,11 @@ every construction request. Divergences:
     bounds written as literals and to those returned by `__index__` alike. Plain
     indexing is unaffected: `[1, 2, 3][10**30]` raises `IndexError` as CPython
     does.
-- `__iter__` / `__next__` / `__contains__` **are** dispatched, but like
-    `__repr__`/`__str__` they run synchronously, so one that calls an external or
-    OS function cannot suspend and raises `NotImplementedError`. The error is
-    raised at the offending call inside the callee, so a `try`/`except` there
-    catches it like any other exception. Two related protocols are still not
-    dispatched, so a class relying on either is not
-    iterable:
+- `__contains__` cannot suspend on an external or OS call; it raises `NotImplementedError` inside the method.
+    `__iter__` and `__next__` have the same restriction in `for`, comprehensions, collection constructors,
+    and native iterator adaptors, but can suspend through direct `iter()`, `next()`, and `functools.reduce()` calls.
+    See [iter.md](iter.md) for other iteration restrictions.
+    Two related protocols are still not dispatched:
     - the legacy `__getitem__`-only fallback: CPython iterates a class defining
         `__getitem__` but not `__iter__` from index 0 until `IndexError`, while
         Monty reports it as not iterable. (`monty -t` accepts `iter(obj)` for

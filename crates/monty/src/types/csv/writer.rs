@@ -147,7 +147,7 @@ pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: 
             write_line(target, write, lines, vm).map(discard_write_result)
         }
     } else {
-        let iterator = rows.py_iter(vm)?;
+        let iterator = rows.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         // One line buffer serves every row, so each costs a single exact-size allocation.
         let mut line = String::new();
@@ -174,8 +174,7 @@ pub(super) fn writerow_now(
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
     let line = format_items(dialect, terminator_chars, items, line, vm)?;
-    vm.evaluate_function("writer.writerows", write, ArgValues::One(line))?
-        .drop_with(vm);
+    vm.evaluate_function(write, ArgValues::One(line))?.drop_with(vm);
     Ok(())
 }
 
@@ -407,7 +406,7 @@ fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
         vm.heap.tracker.check_allocation(items.len() * VALUE_SIZE)?;
         Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
     } else {
-        let iterator = match row.py_iter(vm) {
+        let iterator = match row.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(iterator) => iterator,
             Err(err) if err.is_catchable(ExcType::TypeError) => {
                 return Err(ExcType::csv_error(format!(

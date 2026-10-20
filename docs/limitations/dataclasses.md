@@ -83,8 +83,9 @@ field after a defaulted one
 - **`default_factory` and `__post_init__` cannot suspend.** Both run in a
     synchronous position the interpreter cannot preserve and resume, so calling an
     external function, an `os` function, or awaiting inside one raises
-    `NotImplementedError: dataclass field default_factory: external function 'f' is not yet supported in this context`
-    (and the `__post_init__` equivalent). Ordinary in-sandbox code in them runs normally.
+    `NotImplementedError: external function 'f' cannot suspend in this synchronous context`.
+    The traceback identifies the calling code.
+    Ordinary in-sandbox code in them runs normally.
 - **`ClassVar` / `InitVar` detection is purely textual.** Monty matches the
     annotation text (bare, dotted, subscripted, or quoted) without checking that
     the name is actually imported, where CPython resolves a *string* annotation

@@ -204,9 +204,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         self.py_is_iterable(vm)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         if self.py_is_iterable(vm) {
-            Ok(self.clone_value(vm.heap))
+            Ok(CallResult::Value(self.clone_value(vm.heap)))
         } else {
             Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
         }
@@ -446,7 +446,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                         return Err(error);
                     };
                     let exc = Value::Ref(vm.heap.allocate(HeapData::Exception(raise.exc)));
-                    let result = vm.evaluate_function("os.walk() onerror", onerror, ArgValues::One(exc))?;
+                    let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }
             }

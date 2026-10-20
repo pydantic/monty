@@ -22,8 +22,10 @@ use std::{borrow::Cow, mem};
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
+use exceptions::CaughtException;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
+use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
 
@@ -363,9 +365,7 @@ pub struct CallFrame<'code> {
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
-///
-/// The operand and exception stacks are bounded by the recursion limit and
-/// `Vec` capacity long before `u32::MAX`, so failure means a VM bug.
+/// Panics instead of truncating an index beyond the frame representation.
 #[inline]
 pub(super) fn stack_index(index: usize) -> u32 {
     u32::try_from(index).expect("VM stack index exceeds u32")
@@ -663,7 +663,7 @@ pub struct VMSnapshot {
     /// When entering an except handler, the exception is pushed onto this stack.
     /// When exiting via `ClearException`, the top is popped. This allows nested
     /// except handlers to restore the outer exception context.
-    exception_stack: Vec<Value>,
+    exception_stack: Vec<CaughtException>,
 
     /// IP of the instruction that caused the pause (for exception handling).
     instruction_ip: usize,
@@ -778,7 +778,7 @@ pub struct VM<'h> {
     /// When entering an except handler, the exception is pushed onto this stack.
     /// When exiting via `ClearException`, the top is popped. This allows nested
     /// except handlers to restore the outer exception context.
-    exception_stack: Vec<Value>,
+    exception_stack: Vec<CaughtException>,
 
     /// IP of the instruction being executed (for exception table lookup).
     ///
@@ -833,12 +833,12 @@ pub struct VM<'h> {
     /// the host; `None` for `obj.attr` and when nothing is in flight.
     pub(crate) pending_lookup_effect: Option<PendingLookupEffect>,
 
-    /// Current recursion depth — charged by function-call frames and by nested
+    /// Current recursion depth — charged by non-frozen call frames and by nested
     /// data-structure traversals (`repr`/`eq`/`cmp`/`hash`, json, ...).
     ///
     /// See [`recursion`](self::recursion) for the guard/token primitives that
     /// maintain it. Not serialized: it is reconstructed from the active frame
-    /// count on `restore` and rebalanced per-task across async switches.
+    /// count, excluding root and frozen frames, on `restore` and async switches.
     recursion_depth: usize,
 
     /// Reusable scratch buffer for building a sync call's locals, avoiding a
@@ -942,9 +942,7 @@ impl<'h> VM<'h> {
             })
             .collect();
 
-        // Restore recursion depth to match the number of suspended callers.
-        // The root frame does not contribute to recursion depth.
-        let current_frame_depth = frames.len().saturating_sub(1);
+        let current_frame_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), interns);
         let mut frames = frames;
         let current_frame = frames
             .pop()
@@ -1671,7 +1669,7 @@ impl<'h> VM<'h> {
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
                     let value = self.pop();
-                    let iterator = value.py_iter(self);
+                    let iterator = value.py_iter(self).and_then(|call| call.require_synchronous(self));
                     value.drop_with(self);
                     match iterator {
                         Ok(iterator) => self.push(iterator),
@@ -1732,23 +1730,14 @@ impl<'h> VM<'h> {
                     let (type_id, arg_count) = self.current_frame.fetch_u8_u8();
                     let arg_count = arg_count as usize;
 
-                    match self.exec_call_builtin_type(type_id, arg_count) {
-                        Ok(result) => self.push(result),
-                        Err(err) => catch!(self, err),
-                    }
+                    handle_call_result!(self, self.exec_call_builtin_type(type_id, arg_count));
                 }
                 Opcode::CallFunctionKw => {
                     // Fetch operands: pos_count, kw_count, then kw_count name indices
                     let (pos_count, kw_count) = self.current_frame.fetch_u8_u8();
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
-                    // Read keyword name StringIds
-                    let mut kwname_ids = Vec::with_capacity(kw_count);
-                    for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(self.current_frame.fetch_u16()));
-                    }
-
-                    handle_call_result!(self, self.exec_call_function_kw(pos_count, kwname_ids));
+                    handle_call_result!(self, self.exec_call_function_kw(pos_count, kw_count));
                 }
                 Opcode::CallAttr => {
                     // CallAttr: u16 name_id, u8 arg_count
@@ -1766,13 +1755,7 @@ impl<'h> VM<'h> {
                     let name_id = StringId::from_index(name_idx);
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
-                    // Read keyword name StringIds
-                    let mut kwname_ids = Vec::with_capacity(kw_count);
-                    for _ in 0..kw_count {
-                        kwname_ids.push(StringId::from_index(self.current_frame.fetch_u16()));
-                    }
-
-                    handle_call_result!(self, self.exec_call_attr_kw(name_id, pos_count, kwname_ids));
+                    handle_call_result!(self, self.exec_call_attr_kw(name_id, pos_count, kw_count));
                 }
                 Opcode::CallFunctionExtended => {
                     let flags = self.current_frame.fetch_u8();
@@ -1904,14 +1887,7 @@ impl<'h> VM<'h> {
                 Opcode::Reraise => {
                     // Clone rather than pop: a locally caught bare raise must
                     // preserve its enclosing handler's active exception.
-                    let raised = self.exception_stack.last().map(|exc| exc.clone_with_heap(self.heap));
-                    let error = match &raised {
-                        Some(exc) => self.make_exception(exc, true), // is_raise=true for reraise
-                        // No active exception - create a RuntimeError
-                        None => {
-                            SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
-                        }
-                    };
+                    let (error, raised) = self.reraise_exception();
                     if let Some(result) = self.handle_exception_with_value(error, raised) {
                         return Err(result);
                     }
@@ -2420,7 +2396,7 @@ impl<'h> VM<'h> {
         Ok(())
     }
 
-    /// Installs a frame whose recursion level has already been reserved.
+    /// Installs a frame after any required recursion reservation.
     fn push_admitted_frame(&mut self, frame: CallFrame<'h>) {
         let caller = mem::replace(&mut self.current_frame, frame);
         self.suspended_frames.push(caller);
@@ -2434,6 +2410,7 @@ impl<'h> VM<'h> {
     ///
     /// Returns `true` if this frame indicated evaluation should stop when popped.
     pub(super) fn pop_frame(&mut self) -> bool {
+        let is_frozen = self.current_frame_is_frozen();
         let caller = self.suspended_frames.pop().expect("cannot pop the root frame");
         let frame = mem::replace(&mut self.current_frame, caller);
         let should_return = frame.should_return;
@@ -2441,7 +2418,7 @@ impl<'h> VM<'h> {
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
         self.instruction_ip = self.current_frame.ip;
-        if !self.current_frame.is_parked {
+        if !self.current_frame.is_parked && !is_frozen {
             self.decr_recursion();
         }
         should_return

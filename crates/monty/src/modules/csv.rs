@@ -223,7 +223,7 @@ fn reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(csvfile, vm);
     defer_drop!(dialect, vm);
     let dialect = Dialect::resolve(dialect.as_ref(), params, vm)?;
-    let source = csvfile.py_iter(vm)?;
+    let source = csvfile.py_iter(vm)?.require_synchronous(vm)?;
     Ok(CsvObject::Reader(Reader::new(source, dialect)).allocate(vm))
 }
 
@@ -468,7 +468,7 @@ fn materialize_fieldnames(fieldnames: &mut Value, vm: &mut VM<'_>) -> RunResult<
     if matches!(fieldnames, Value::None) {
         return Ok(());
     }
-    let iterator = fieldnames.py_iter(vm)?;
+    let iterator = fieldnames.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
     if iterator.is(fieldnames) {
         let names = collect_iterable(fieldnames, vm)?;

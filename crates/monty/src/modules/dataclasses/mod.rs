@@ -807,7 +807,7 @@ fn run_post_init<'h>(instance_id: HeapId, class: &HeapRead<'h, Class>, vm: &mut 
         return Ok(());
     };
     defer_drop!(post_init, vm);
-    let result = vm.evaluate_function("__post_init__", post_init, ArgValues::Empty)?;
+    let result = vm.evaluate_function(post_init, ArgValues::Empty)?;
     result.drop_with(vm);
     Ok(())
 }
@@ -928,7 +928,7 @@ fn bind_dataclass_fields<'h>(
             FieldInit::Default(default) => default,
             FieldInit::Factory(factory) => {
                 defer_drop!(factory, vm);
-                vm.evaluate_function("dataclass field default_factory", factory, ArgValues::Empty)?
+                vm.evaluate_function(factory, ArgValues::Empty)?
             }
             FieldInit::Unsupplied => unreachable!("the missing check rejected every unsupplied field"),
         });

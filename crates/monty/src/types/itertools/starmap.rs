@@ -64,7 +64,7 @@ pub(super) fn next<'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> R
     // `collect_owned_iterable` consumes `item` on both paths, raising here for
     // a non-iterable one, so the arguments never outlive a failed spread.
     let args: Vec<Value> = collect_owned_iterable(item, vm)?;
-    vm.evaluate_function("starmap()", function, pack_args(args)).map(Some)
+    vm.evaluate_function(function, pack_args(args)).map(Some)
 }
 
 /// Packs the spread item into the arity-specific [`ArgValues`] shape.

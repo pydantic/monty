@@ -805,7 +805,7 @@ impl Set {
         }
 
         let (iterable, vm) = guard.into_parts();
-        let iterator = iterable.into_py_iter(vm)?;
+        let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         let mut iterator = iterator.read(vm);
         let hint = iterator.iter_size_hint(vm);
@@ -1141,8 +1141,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         Type::Set
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(SetIterator::from_set(self.id(), self.get(vm.heap).len(), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(SetIterator::from_set(
+            self.id(),
+            self.get(vm.heap).len(),
+            vm,
+        )))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1454,8 +1458,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         Type::FrozenSet
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(SetIterator::from_frozen_set(self.id(), self.get(vm.heap).len(), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(SetIterator::from_frozen_set(
+            self.id(),
+            self.get(vm.heap).len(),
+            vm,
+        )))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -1744,8 +1752,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

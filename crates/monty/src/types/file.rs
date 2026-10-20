@@ -453,9 +453,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     }
 
     /// `iter(f) is f`, as in CPython; whether it can be read is `__next__`'s concern.
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         self.get(vm.heap).ensure_open()?;
-        Ok(self.clone_value(vm.heap))
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     /// The next line of the loaded buffer. An unread file cannot be loaded from

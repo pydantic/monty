@@ -45,11 +45,6 @@ fn run_min_max(
     is_min: bool,
 ) -> RunResult<Value> {
     let func_name = if is_min { "min" } else { "max" };
-    let key_context = if is_min {
-        "min() key argument"
-    } else {
-        "max() key argument"
-    };
 
     // Normalise `key=None` to "no key function" so the comparison path can
     // skip the call entirely.
@@ -77,7 +72,7 @@ fn run_min_max(
 
     if args.is_empty() {
         // Single argument: iterate over it
-        let iter = first_arg.into_py_iter(vm)?;
+        let iter = first_arg.into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
 
@@ -96,12 +91,12 @@ fn run_min_max(
             let mut result_guard = DropGuard::new(result, vm);
             {
                 let (result, vm) = result_guard.as_parts_mut();
-                let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, key_context, vm)?;
+                let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, vm)?;
                 defer_drop_mut!(result_key, vm);
 
                 while let Some(item) = iter.py_next(vm)? {
                     defer_drop_mut!(item, vm);
-                    let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, key_context, vm)?;
+                    let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, vm)?;
                     defer_drop_mut!(item_key, vm);
 
                     if candidate_wins(result_key, item_key, is_min, vm)? {
@@ -137,12 +132,12 @@ fn run_min_max(
             let mut result_guard = DropGuard::new(first_arg, vm);
             {
                 let (result, vm) = result_guard.as_parts_mut();
-                let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, key_context, vm)?;
+                let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, vm)?;
                 defer_drop_mut!(result_key, vm);
 
                 for item in args.drain(..) {
                     defer_drop_mut!(item, vm);
-                    let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, key_context, vm)?;
+                    let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, vm)?;
                     defer_drop_mut!(item_key, vm);
 
                     if candidate_wins(result_key, item_key, is_min, vm)? {
@@ -207,8 +202,8 @@ struct MaxArgs {
 /// The caller passes an owned clone of the candidate so this helper can forward it
 /// into the function call without changing ownership of the original item being
 /// tracked as the eventual min/max result.
-fn evaluate_key(item: Value, key_fn: &Value, key_context: &'static str, vm: &mut VM<'_>) -> RunResult<Value> {
-    vm.evaluate_function(key_context, key_fn, ArgValues::One(item))
+fn evaluate_key(item: Value, key_fn: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    vm.evaluate_function(key_fn, ArgValues::One(item))
 }
 
 /// Returns whether `candidate` should replace `current` as the best value seen so far.

@@ -1,9 +1,9 @@
 use std::mem;
 
 use insta::assert_snapshot;
-use monty::MontyRun;
+use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, MontyObject, MontyUuid,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, PrintWriter, ResourceTracker,
     unstable::{self, MontyNode},
 };
 
@@ -161,34 +161,136 @@ fn external_function_as_init_raises_not_implemented() {
     let err = ex
         .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
         .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 4, in <module>\n    Foo()\n    ~~~~~\nNotImplementedError: __init__: external function 'ext_fn' is not yet supported in this context"
-    );
+    assert_snapshot!(err, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 4, in <module>
+        Foo()
+        ~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+    "#);
 }
 
-/// `functools.reduce` calls its function through `evaluate_function`, which
-/// cannot suspend, so an external one raises `NotImplementedError` (documented
-/// in `limitations/functools.md`). Rust-side for the same reason as
-/// `external_function_as_init_raises_not_implemented`: on CPython the external
-/// is a real function and the reduction would succeed.
+/// `functools.reduce` runs its callback from a frozen Python frame, allowing
+/// every reduction step to suspend and round-trip through a VM snapshot.
 #[test]
-fn external_function_in_reduce_raises_not_implemented() {
+fn external_function_in_reduce_suspends() {
     let code = "import functools\n\nfunctools.reduce(ext_fn, [1, 2, 3])";
-    let mut ex = MontyRun::new(
+    let runner = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let err = ex
-        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
+    let progress = runner
+        .start(
+            vec![MontyObject::function("ext_fn".to_owned(), None)],
+            ResourceTracker::default(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected running dump")
+    };
+
+    assert_eq!(complete_external_reduce(progress), MontyObject::int(6));
+    assert_eq!(complete_external_reduce(*restored), MontyObject::int(6));
+}
+
+/// Resumes both external calls expected from the three-item reduce fixture.
+fn complete_external_reduce(mut progress: RunProgress) -> MontyObject {
+    for (expected_args, result) in [([1, 2], 3), ([3, 3], 6)] {
+        let RunProgress::FunctionCall(call) = progress else {
+            panic!("expected reduce callback, got {progress:?}")
+        };
+        assert_eq!(call.function_name, "ext_fn");
+        assert_eq!(
+            call.args.args().collect::<Vec<_>>(),
+            expected_args.into_iter().map(MontyObject::int).collect::<Vec<_>>()
+        );
+        progress = call.resume(MontyObject::int(result), PrintWriter::Stdout).unwrap();
+    }
+    progress.into_complete().expect("expected Complete")
+}
+
+/// Nested caches around a host callable resume and store through ordinary frozen frames.
+#[test]
+fn external_function_in_cache_suspends() {
+    let code = "import functools\ncached = functools.cache(functools.cache(ext_fn))\n[cached(1), cached(1), cached(2)]";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![MontyObject::function("ext_fn".to_owned(), None)],
+            ResourceTracker::default(),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected running dump")
+    };
+    for mut progress in [progress, *restored] {
+        for arg in [1, 2] {
+            let RunProgress::FunctionCall(call) = progress else {
+                panic!("expected cache miss")
+            };
+            assert_eq!(call.function_name, "ext_fn");
+            assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(arg)]);
+            progress = call.resume(MontyObject::int(arg * 10), PrintWriter::Disabled).unwrap();
+        }
+        assert_eq!(
+            progress.into_complete(),
+            Some(MontyObject::list(vec![
+                MontyObject::int(10),
+                MontyObject::int(10),
+                MontyObject::int(20)
+            ]))
+        );
+    }
+}
+
+/// The frozen implementation is an interpreter detail and must not appear in
+/// tracebacks when a suspended callback fails in the host.
+#[test]
+fn frozen_reduce_frame_is_hidden_from_traceback() {
+    let code = "import functools\n\nfunctools.reduce(ext_fn, [1, 2])";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![MontyObject::function("ext_fn".to_owned(), None)],
+            ResourceTracker::default(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let RunProgress::FunctionCall(call) = progress else {
+        panic!("expected reduce callback, got {progress:?}")
+    };
+    let error = MontyException::new(ExcType::ValueError, Some("callback failed".to_owned()));
+    let error = call
+        .resume(ExtFunctionResult::Error(error), PrintWriter::Stdout)
         .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 3, in <module>\n    functools.reduce(ext_fn, [1, 2, 3])\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nNotImplementedError: reduce(): external function 'ext_fn' is not yet supported in this context"
-    );
+
+    insta::assert_snapshot!(error, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        functools.reduce(ext_fn, [1, 2])
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: callback failed
+    "#);
 }
 
 /// A `__deepcopy__` reaching an external function cannot suspend either: the
@@ -218,16 +320,12 @@ fn external_function_in_deepcopy_raises_not_implemented() {
       File "test.py", line 6, in __deepcopy__
         return ext_fn()
                ~~~~~~~~
-    NotImplementedError: __deepcopy__: external function 'ext_fn' is not yet supported in this context
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
     "#);
 }
 
-/// A user `__next__` calling an external function cannot suspend: like
-/// `__repr__`/`__str__` it runs synchronously via `evaluate_function`, so the
-/// call raises `NotImplementedError` at the `ext_fn()` call site inside
-/// `__next__` (see `limitations/classes.md`). Rust-side for the same reason as
-/// `external_function_as_init_raises_not_implemented`: on CPython the external
-/// is a real function and the loop would succeed.
+/// `for` still requires synchronous advancement, so an external call in
+/// `__next__` raises at that call site rather than suspending the loop.
 #[test]
 fn external_function_in_next_raises_not_implemented() {
     let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
@@ -249,8 +347,124 @@ fn external_function_in_next_raises_not_implemented() {
       File "test.py", line 6, in __next__
         return ext_fn()
                ~~~~~~~~
-    NotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
     "#);
+}
+
+/// Iterator acquisition reports both the synchronous consumer and the suspended method in its traceback.
+#[test]
+fn synchronous_sum_acquisition_has_traceback() {
+    let code = "class Iterable:\n    def __iter__(self):\n        return ext_fn()\n\nsum(Iterable())";
+    let mut runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let error = runner
+        .run_no_limits(vec![MontyObject::function("ext_fn", None)])
+        .unwrap_err();
+    assert_snapshot!(error, @r#"
+    Traceback (most recent call last):
+      File "test.py", line 5, in <module>
+        sum(Iterable())
+        ~~~~~~~~~~~~~~~
+      File "test.py", line 3, in __iter__
+        return ext_fn()
+               ~~~~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+    "#);
+}
+
+/// Synchronous consumers reject both direct host calls and calls inside Python frames, without
+/// consuming an outer handler or retaining pending arguments after the rejection.
+#[test]
+fn synchronous_iteration_rejection_restores_state() {
+    let code = r#"
+import functools
+
+class RecoverIter:
+    def __iter__(self):
+        items = [1, 2]
+        try:
+            ext_fn(items)
+        except NotImplementedError:
+            return iter(items)
+
+class RecoverNext:
+    def __iter__(self):
+        return self
+    def __next__(self):
+        try:
+            return ext_fn(['owned'])
+        except NotImplementedError:
+            raise StopIteration
+
+class FailIter:
+    def __iter__(self):
+        return ext_fn(['owned'])
+
+class DirectNext:
+    def __iter__(self):
+        return self
+    __next__ = functools.partial(ext_fn, ['owned'])
+
+for _ in range(3):
+    assert list(RecoverIter()) == [1, 2]
+    assert list(RecoverNext()) == []
+    try:
+        list(FailIter())
+        assert False, 'expected synchronous acquisition to fail'
+    except NotImplementedError as exc:
+        assert str(exc) == "external function 'ext_fn' cannot suspend in this synchronous context"
+    try:
+        list(DirectNext())
+        assert False, 'expected synchronous advancement to fail'
+    except NotImplementedError as exc:
+        assert str(exc) == "external function 'ext_fn' cannot suspend in this synchronous context"
+    assert list(RecoverIter()) == [1, 2]
+42
+"#;
+    let mut runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runner
+            .run_no_limits(vec![MontyObject::function("ext_fn", None)])
+            .unwrap(),
+        MontyObject::int(42)
+    );
+}
+
+/// Rejecting native re-entry after dispatch must pop the unexecuted frame and release its budget.
+#[test]
+fn synchronous_iteration_reentry_limit_restores_state() {
+    let code = r"
+class Recursive:
+    def __iter__(self):
+        list(self)
+        return iter([])
+
+class Ordinary:
+    def __iter__(self):
+        return iter([1, 2])
+
+for _ in range(3):
+    try:
+        list(Recursive())
+        assert False, 'expected the native re-entry limit'
+    except RecursionError as exc:
+        assert str(exc) == 'maximum recursion depth exceeded'
+    assert list(Ordinary()) == [1, 2]
+42
+";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(42));
 }
 
 /// Rejected suspensions are raised inside the key function's frame, where an
@@ -321,9 +535,9 @@ seen
     );
 }
 
-/// Rejected-suspension errors identify `list.sort()` rather than `sorted()`.
+/// The traceback identifies `list.sort()` and its key function without a context prefix.
 #[test]
-fn not_implemented_in_list_sort_key_names_sort() {
+fn not_implemented_in_list_sort_key_has_traceback() {
     let code = "[1, 2].sort(key=lambda x: ext_fn())";
     let mut ex = MontyRun::new(
         code.to_owned(),
@@ -343,27 +557,22 @@ fn not_implemented_in_list_sort_key_names_sort() {
       File "test.py", line 1, in <lambda>
         [1, 2].sort(key=lambda x: ext_fn())
                                   ~~~~~~~~
-    NotImplementedError: sort() key argument: external function 'ext_fn' is not yet supported in this context
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
     "#);
 }
 
-/// The `itertools` adaptors that apply a callable drive it through
-/// `evaluate_function`, so one reaching an external function cannot suspend and
-/// raises `NotImplementedError` (see `limitations/itertools.md`). Rust-side for
-/// the same reason as the tests above: on CPython the external is an ordinary
-/// function and the call would succeed.
-///
-/// Every call site is covered — the predicate helper shared by `takewhile`,
-/// `dropwhile` and `filterfalse`, plus `starmap`, `accumulate` and `groupby`,
-/// which each call their callable themselves and so name themselves in the
-/// error. `accumulate` needs two items, since the first is yielded untouched.
+/// Synchronous adaptor callbacks report a generic error with the consuming expression in the traceback.
+/// `accumulate` needs two items, since the first is yielded untouched.
 #[test]
 fn external_function_as_itertools_callable_raises_not_implemented() {
-    for (call, adaptor) in [
-        ("itertools.takewhile(ext_fn, [1])", "takewhile"),
-        ("itertools.starmap(ext_fn, [(1,)])", "starmap"),
-        ("itertools.accumulate([1, 2], ext_fn)", "accumulate"),
-        ("itertools.groupby([1], ext_fn)", "groupby"),
+    let mut errors = Vec::new();
+    for call in [
+        "itertools.takewhile(ext_fn, [1])",
+        "itertools.dropwhile(ext_fn, [1])",
+        "itertools.filterfalse(ext_fn, [1])",
+        "itertools.starmap(ext_fn, [(1,)])",
+        "itertools.accumulate([1, 2], ext_fn)",
+        "itertools.groupby([1], ext_fn)",
     ] {
         let expr = format!("list({call})");
         let code = format!("import itertools\n\n{expr}");
@@ -371,14 +580,45 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
         let err = ex
             .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
             .unwrap_err();
-        let carets = "~".repeat(expr.len());
-        assert_eq!(
-            err.to_string(),
-            format!(
-                "Traceback (most recent call last):\n  File \"test.py\", line 3, in <module>\n    {expr}\n    {carets}\nNotImplementedError: {adaptor}(): external function 'ext_fn' is not yet supported in this context"
-            )
-        );
+        errors.push(err.to_string());
     }
+    assert_snapshot!(errors.join("\n\n"), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        list(itertools.takewhile(ext_fn, [1]))
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        list(itertools.dropwhile(ext_fn, [1]))
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        list(itertools.filterfalse(ext_fn, [1]))
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        list(itertools.starmap(ext_fn, [(1,)]))
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        list(itertools.accumulate([1, 2], ext_fn))
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        list(itertools.groupby([1], ext_fn))
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+    "#);
 }
 
 /// The 3-arg `type()` form rejects non-empty bases because Monty classes

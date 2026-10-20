@@ -246,6 +246,8 @@ assert b'aaa'.replace(b'aa', b'b') == b'ba'
 assert b'hello'.center(10) == b'  hello   '
 assert b'hello'.center(10, b'*') == b'**hello***'
 assert b'hello'.center(3) == b'hello'
+assert b'hi'.center(5) == b'  hi '
+assert b'abc'.center(6, b'*') == b'*abc**'
 
 # === bytes.ljust() ===
 assert b'hello'.ljust(10) == b'hello     '

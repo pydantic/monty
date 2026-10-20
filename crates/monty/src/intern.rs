@@ -22,6 +22,7 @@ mod storage;
 
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeMap,
     mem,
     slice::from_ref,
     str::FromStr,
@@ -35,6 +36,7 @@ use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
+    frozen::FrozenFunction,
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
 };
@@ -697,6 +699,17 @@ pub enum StaticStrings {
     BytesPerSep,
     /// `sys.flags.bytes_warning` field.
     BytesWarning,
+    /// `functools.cache()` function and private helper parameter.
+    Cache,
+    /// Cached callable's `cache_clear()` method.
+    CacheClear,
+    /// Cached callable's `cache_info()` method.
+    CacheInfo,
+    /// The named tuple returned by `cache_info()`.
+    #[strum(serialize = "CacheInfo")]
+    CacheInfoName,
+    /// Cached callable's `cache_parameters()` method.
+    CacheParameters,
     /// `typing.Callable` marker.
     #[strum(serialize = "Callable")]
     Callable,
@@ -802,6 +815,8 @@ pub enum StaticStrings {
     CumWeights,
     /// `os.curdir` constant name.
     Curdir,
+    /// `CacheInfo.currsize` field.
+    Currsize,
     /// `Path.cwd()` classmethod: answered from the VM's working directory, no host call.
     Cwd,
     /// `itertools.cycle()` function.
@@ -956,6 +971,9 @@ pub enum StaticStrings {
     /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
     #[strum(serialize = "__qualname__")]
     DunderQualname,
+    /// The uncached callable.
+    #[strum(serialize = "__wrapped__")]
+    DunderWrapped,
     /// `Counter.elements()` method.
     Elements,
     /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
@@ -1058,10 +1076,10 @@ pub enum StaticStrings {
     /// `namedtuple(field_names=...)` keyword argument.
     #[strum(serialize = "field_names")]
     FieldNames,
-    /// `fieldnames` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
-    Fieldnames,
     /// `csv.field_size_limit()` function.
     FieldSizeLimit,
+    /// `fieldnames` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
+    Fieldnames,
     /// Kwarg name `file` — `open(file=...)`.
     File,
     /// Kwarg name `filename` — `os.path.getsize(filename=...)`, `os.path.realpath(filename=...)`.
@@ -1097,8 +1115,6 @@ pub enum StaticStrings {
     Fmod,
     /// `datetime` / `time` `fold` attribute and constructor kwarg.
     Fold,
-    /// `fp` parameter of `json.load()` / `json.dump()`.
-    Fp,
     /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "foldspaces")]
     Foldspaces,
@@ -1108,6 +1124,8 @@ pub enum StaticStrings {
     Followlinks,
     /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
     Format,
+    /// `fp` parameter of `json.load()` / `json.dump()`.
+    Fp,
     /// `math.frexp()` function.
     Frexp,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
@@ -1224,6 +1242,8 @@ pub enum StaticStrings {
     Hi,
     /// `high` parameter of `random.triangular()`.
     High,
+    /// `CacheInfo.hits` field.
+    Hits,
     /// `datetime` / `time` `hour` attribute and constructor kwarg.
     Hour,
     /// `timedelta(hours=...)` constructor kwarg.
@@ -1412,10 +1432,10 @@ pub enum StaticStrings {
     LineNum,
     /// `os.linesep` constant name.
     Linesep,
-    /// `csv.list_dialects()` function.
-    ListDialects,
     /// `lineterminator` dialect attribute and `csv` format parameter.
     Lineterminator,
+    /// `csv.list_dialects()` function.
+    ListDialects,
     /// `typing.List` marker.
     #[strum(serialize = "List")]
     ListType,
@@ -1454,6 +1474,8 @@ pub enum StaticStrings {
     Low,
     /// `lower()` method, shared by `str` and `bytes`.
     Lower,
+    /// `functools.lru_cache()` function.
+    LruCache,
     /// `lstrip()` method, shared by `str` and `bytes`.
     Lstrip,
     /// `sys.version_info.major` field.
@@ -1540,6 +1562,8 @@ pub enum StaticStrings {
     Minute,
     /// `timedelta(minutes=...)` constructor kwarg.
     Minutes,
+    /// `CacheInfo.misses` field.
+    Misses,
     /// `dataclasses.MISSING` — the sentinel for an argument not given, since
     /// `None` is a legitimate default.
     #[strum(serialize = "MISSING")]
@@ -2075,6 +2099,8 @@ pub enum StaticStrings {
     Step,
     /// `slice.stop` attribute.
     Stop,
+    /// Private cache insertion primitive.
+    Store,
     /// `date.strftime()` / `datetime.strftime()` method.
     Strftime,
     /// Kwarg name `strict` — `zip(strict=...)`.
@@ -2221,6 +2247,8 @@ pub enum StaticStrings {
     /// `typing.TypeVar` marker.
     #[strum(serialize = "TypeVar")]
     TypeVar,
+    /// Whether argument types distinguish cache keys.
+    Typed,
     /// `namedtuple(typename=...)` keyword argument.
     Typename,
     /// Module name for `import typing`.
@@ -2284,6 +2312,8 @@ pub enum StaticStrings {
     UrlsafeB64Encode,
     /// `usedforsecurity` keyword of the `hashlib` constructors.
     Usedforsecurity,
+    /// Callable accepted by caching decorators.
+    UserFunction,
     /// `timezone.utc` class constant.
     Utc,
     /// `utcoffset()` method of `time`, `datetime` and `timezone`.
@@ -2576,6 +2606,8 @@ pub(crate) struct Interns {
     long_ints: Entries<WithHash<BigInt>>,
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
     functions: Entries<Box<Function>>,
+    /// Installed internal implementations by identity, ordered for stable dump bytes.
+    frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
     eval_sources: Entries<Arc<str>>,
     #[serde(skip)]
     string_id_by_name: RefCell<AHashMap<String, StringId>>,
@@ -2599,6 +2631,8 @@ struct InternsWire {
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     functions: Entries<Box<Function>>,
+    #[serde(default)]
+    frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
     eval_sources: Entries<Arc<str>>,
 }
 
@@ -2626,6 +2660,7 @@ impl TryFrom<InternsWire> for Interns {
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
+            frozen_functions: wire.frozen_functions,
             eval_sources: wire.eval_sources,
             string_id_by_name: RefCell::new(string_id_by_name),
             static_string_ids: RefCell::new(static_string_ids),
@@ -2651,6 +2686,7 @@ impl Interns {
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
+            frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
             string_id_by_name: RefCell::default(),
             static_string_ids: RefCell::default(),
@@ -2666,6 +2702,7 @@ impl Interns {
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
+            frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
             string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
@@ -2757,6 +2794,21 @@ impl Interns {
     #[inline]
     pub fn long_int_hash(&self, id: LongIntId) -> HashValue {
         self.long_ints[id.index()].hash()
+    }
+
+    /// Returns the captured implementation if this session has already compiled it.
+    pub(crate) fn frozen_function(&self, function: FrozenFunction) -> Option<FunctionId> {
+        self.frozen_functions.borrow().get(&function).copied()
+    }
+
+    /// Records an admitted implementation after its compilation overlay is committed.
+    pub(crate) fn set_frozen_function(&self, function: FrozenFunction, id: FunctionId) {
+        self.frozen_functions.borrow_mut().insert(function, id);
+    }
+
+    /// Identifies implementation frames hidden from tracebacks and namespace introspection.
+    pub(crate) fn is_internal_function(&self, id: FunctionId) -> bool {
+        self.frozen_functions.borrow().values().any(|&function| function == id)
     }
 
     /// Finds canonical text already interned, excluding snippet filename IDs.

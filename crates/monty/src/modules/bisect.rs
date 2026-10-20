@@ -117,20 +117,14 @@ pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) 
     let hi = convert_hi(hi, vm)?;
     let insert = matches!(function, BisectFunctions::InsortLeft | BisectFunctions::InsortRight);
     let left = matches!(function, BisectFunctions::BisectLeft | BisectFunctions::InsortLeft);
-    let context = match function {
-        BisectFunctions::BisectLeft => "bisect_left()",
-        BisectFunctions::BisectRight => "bisect_right()",
-        BisectFunctions::InsortLeft => "insort_left()",
-        BisectFunctions::InsortRight => "insort_right()",
-    };
     let search_x = if insert && !matches!(key, Value::None) {
         let argument = x.clone_with_heap(vm);
-        vm.evaluate_function(context, key, ArgValues::One(argument))?
+        vm.evaluate_function(key, ArgValues::One(argument))?
     } else {
         x.clone_with_heap(vm)
     };
     defer_drop!(search_x, vm);
-    let index = search(vm, a, search_x, (lo, hi), key, left, context)?;
+    let index = search(vm, a, search_x, (lo, hi), key, left)?;
     if insert {
         let Value::Ref(_) = a else {
             return Err(ExcType::attribute_error(a.py_type_name(vm), "insert"));
@@ -152,15 +146,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) 
 }
 
 /// Search without retaining a borrowed container across Python callbacks.
-fn search(
-    vm: &mut VM<'_>,
-    a: &Value,
-    x: &Value,
-    bounds: (i64, i64),
-    key: &Value,
-    left: bool,
-    context: &'static str,
-) -> RunResult<i64> {
+fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value, left: bool) -> RunResult<i64> {
     let (mut lo, mut hi) = bounds;
     if lo < 0 {
         return Err(ExcType::value_error("lo must be non-negative"));
@@ -206,7 +192,7 @@ fn search(
         let item = if matches!(key, Value::None) {
             item
         } else {
-            vm.evaluate_function(context, key, ArgValues::One(item))?
+            vm.evaluate_function(key, ArgValues::One(item))?
         };
         defer_drop!(item, vm);
         let less = if left {

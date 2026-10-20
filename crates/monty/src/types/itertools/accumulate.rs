@@ -130,6 +130,6 @@ fn combine(total: &Value, item: &Value, func: &Value, vm: &mut VM<'_>) -> RunRes
         total.py_add(item, vm)
     } else {
         let args = ArgValues::Two(total.clone_with_heap(vm.heap), item.clone_with_heap(vm.heap));
-        vm.evaluate_function("accumulate()", func, args)
+        vm.evaluate_function(func, args)
     }
 }

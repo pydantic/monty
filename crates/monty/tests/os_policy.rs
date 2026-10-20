@@ -677,7 +677,7 @@ fn call_function_honours_call_host_too() {
       File "<python-input-0>", line 3, in when
         return date.today()
                ~~~~~~~~~~~~
-    NotImplementedError: MontyRepl::call_function: OS function 'date.today' is not yet supported in this context
+    NotImplementedError: OS function 'date.today' cannot suspend in this synchronous context
     "#);
 }
 

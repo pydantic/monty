@@ -1218,20 +1218,6 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("Step for islice() must be a positive integer or None.")
     }
 
-    /// Creates the TypeError `functools.reduce` raises when the iterable is
-    /// empty and no `initial` was given, so there is nothing to return.
-    #[must_use]
-    fn reduce_empty_iterable() -> RunError {
-        Self::type_error("reduce() of empty iterable with no initial value")
-    }
-
-    /// Creates the TypeError `functools.reduce` raises for a second argument
-    /// that cannot be iterated, replacing the generic not-iterable wording.
-    #[must_use]
-    fn reduce_not_iterable() -> RunError {
-        Self::type_error("reduce() arg 2 must support iteration")
-    }
-
     /// Creates the TypeError `functools.partial()` raises when called with no
     /// positional argument, so there is no callable to wrap.
     #[must_use]
@@ -1627,6 +1613,12 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn not_implemented(msg: impl fmt::Display) -> SimpleException {
         SimpleException::new_msg(ExcType::NotImplementedError, msg)
+    }
+
+    /// Reports a host call rejected by a synchronous VM boundary; the traceback identifies the caller.
+    #[must_use]
+    fn not_implemented_synchronous_call(kind: &str, name: &str) -> SimpleException {
+        Self::not_implemented(format!("{kind} '{name}' cannot suspend in this synchronous context"))
     }
 
     /// Creates a ZeroDivisionError for division by zero.

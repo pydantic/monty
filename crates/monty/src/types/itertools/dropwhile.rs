@@ -80,7 +80,7 @@ pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
         let predicate = drop_while.predicate.clone_with_heap(vm.heap);
 
         let Some((item, accepted)) = next_tested(predicate, source, vm, |predicate, item, vm| {
-            call_predicate(predicate, item, "dropwhile()", vm)
+            call_predicate(predicate, item, vm)
         })?
         else {
             return Ok(None);

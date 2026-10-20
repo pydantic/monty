@@ -238,7 +238,7 @@ fn next_raw_source<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -
 /// raised by a resolved source's `__next__` leaves the chain live, since
 /// CPython keeps that iterator in place.
 fn into_py_iter_tracking<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, raw: Value, vm: &mut VM<'h>) -> RunResult<Value> {
-    match raw.into_py_iter(vm) {
+    match raw.into_py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
         Ok(resolved) => Ok(resolved),
         Err(err) => {
             finish(iter, vm);

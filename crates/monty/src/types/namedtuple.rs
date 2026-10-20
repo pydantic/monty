@@ -387,8 +387,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         self.get(vm.heap).name_either().to_cow(vm.interns)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(TupleIterator::from_named_tuple(self.id(), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(TupleIterator::from_named_tuple(self.id(), vm)))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {

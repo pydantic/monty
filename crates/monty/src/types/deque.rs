@@ -416,13 +416,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         }
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let deque_id = self.id();
         let iterator = vm
             .heap
             .allocate(HeapData::DequeIterator(DequeIterator::new(deque_id, vm)));
         vm.heap.inc_ref(deque_id);
-        Ok(Value::Ref(iterator))
+        Ok(CallResult::Value(Value::Ref(iterator)))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -725,8 +725,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1060,7 +1060,7 @@ pub(crate) fn deque_extend<'h>(
         }
         Ok(())
     } else {
-        let iter = iterable.into_py_iter(vm)?;
+        let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
         // One-shot preflight from the size hint: exact-hint iterators (e.g.

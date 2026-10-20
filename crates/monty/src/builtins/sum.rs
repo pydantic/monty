@@ -34,7 +34,7 @@ pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
 
-    let iter = iterable.into_py_iter(vm)?;
+    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 

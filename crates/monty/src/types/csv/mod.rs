@@ -133,9 +133,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
     }
 
     /// `iter(reader) is reader`; the other objects are not iterable.
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         if self.py_is_iterator(vm) {
-            Ok(self.clone_value(vm.heap))
+            Ok(CallResult::Value(self.clone_value(vm.heap)))
         } else {
             Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
         }

@@ -764,13 +764,13 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_iter(vm)
         } else {
             match self {
-                Self::InternString(id) => Ok(StringIterator::from_intern(*id, vm)),
-                Self::InternBytes(id) => Ok(BytesIterator::from_intern(*id, vm)),
+                Self::InternString(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
+                Self::InternBytes(id) => Ok(CallResult::Value(BytesIterator::from_intern(*id, vm))),
                 _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
             }
         }
@@ -1012,12 +1012,13 @@ impl Value {
         }
     }
 
-    /// Returns an iterator for this value using its type-specific protocol when available.
-    pub fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<Self> {
+    /// Acquires and validates an iterator, allowing user `__iter__` methods to suspend.
+    /// Rust consumers which cannot yield must explicitly require synchronous completion.
+    pub fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         <Self as PyTrait<'_>>::py_iter(self, vm)
     }
 
-    /// Advances this value as an iterator, mirroring the inherent [`Value::py_iter`].
+    /// Advances this value synchronously for native iterator consumers.
     pub(crate) fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         <Self as PyTrait<'_>>::py_next(self, vm)
     }
@@ -1025,8 +1026,8 @@ impl Value {
     /// Converts an owned value into its Python iterator and releases the original reference.
     ///
     /// This is the ownership-preserving entry point for Rust consumers of the
-    /// iteration protocol; the returned iterator retains its source as needed.
-    pub(crate) fn into_py_iter(self, vm: &mut VM<'_>) -> RunResult<Self> {
+    /// iteration protocol; the pending call or resulting iterator retains its source as needed.
+    pub(crate) fn into_py_iter(self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         let iterator = self.py_iter(vm);
         self.drop_with(vm);
         iterator
@@ -1124,7 +1125,7 @@ impl Value {
     /// Only called for values already known to be iterable, so it does not
     /// re-check. An endless iterable runs until a resource limit fires.
     fn contains_by_iteration(&self, item: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        let iter = self.py_iter(vm)?;
+        let iter = self.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
         loop {
