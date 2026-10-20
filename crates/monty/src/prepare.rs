@@ -846,6 +846,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             signature,
                             body,
                             is_async,
+                            is_generator,
                         },
                     decorators,
                 } => {
@@ -856,7 +857,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .into_iter()
                         .map(|d| self.prepare_expression(d))
                         .collect::<Result<Vec<_>, ParseError>>()?;
-                    let func = self.prepare_function_def(name, &signature, body, is_async)?;
+                    let mut func = self.prepare_function_def(name, &signature, body, is_async)?;
+                    func.is_generator = is_generator;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -1074,6 +1076,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// Returns a NameError if an attribute call references an undefined variable
     fn prepare_expression(&mut self, loc_expr: ExprLoc) -> Result<ExprLoc, ParseError> {
         let ExprLoc { position, expr } = loc_expr;
+        let is_yield_from = matches!(&expr, Expr::YieldFrom(_));
         let expr = match expr {
             Expr::Literal(object) => Expr::Literal(object),
             Expr::Builtin(callable) => Expr::Builtin(callable),
@@ -1212,9 +1215,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 name_id,
                 signature,
                 body,
+                is_generator,
             } => {
                 // Convert the raw lambda into a prepared lambda expression
-                return self.prepare_lambda(name_id, &signature, &body, position);
+                let mut prepared = self.prepare_lambda(name_id, &signature, &body, position)?;
+                if let Expr::Lambda { func_def } = &mut prepared.expr {
+                    func_def.is_generator = is_generator;
+                }
+                return Ok(prepared);
             }
             Expr::Lambda { .. } => {
                 // Lambda should only be created during prepare, never during parsing
@@ -1239,6 +1247,20 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
             }
             Expr::Await(value) => Expr::Await(Box::new(self.prepare_expression(*value)?)),
+            Expr::Yield(value) | Expr::YieldFrom(value) => {
+                if self.is_class_scope || self.is_module_scope() {
+                    return Err(ParseError::syntax("'yield' outside function", position));
+                }
+                if !self.comp_name_scopes.is_empty() {
+                    return Err(ParseError::syntax("'yield' inside comprehension", position));
+                }
+                let value = Box::new(self.prepare_expression(*value)?);
+                if is_yield_from {
+                    Expr::YieldFrom(value)
+                } else {
+                    Expr::Yield(value)
+                }
+            }
         };
 
         Ok(ExprLoc { position, expr })
@@ -1846,6 +1868,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async,
+            is_generator: false,
         })
     }
 
@@ -2000,6 +2023,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs: Vec::new(),
             is_async: false,
+            is_generator: false,
         };
 
         Ok(Node::ClassDef {
@@ -2164,6 +2188,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async: false,
+            is_generator: false,
         };
 
         Ok(ExprLoc::new(
@@ -2775,7 +2800,9 @@ fn collect_assigned_names_from_expr(
         | Expr::UnaryMinus(operand)
         | Expr::UnaryPlus(operand)
         | Expr::UnaryInvert(operand)
-        | Expr::Await(operand) => {
+        | Expr::Await(operand)
+        | Expr::Yield(operand)
+        | Expr::YieldFrom(operand) => {
             collect_assigned_names_from_expr(operand, assigned_names, interner);
         }
         Expr::Subscript { object, index } => {
@@ -3357,7 +3384,7 @@ fn collect_cell_vars_from_expr(
             // Only scan the value expression for cell vars
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
-        Expr::Await(value) => {
+        Expr::Await(value) | Expr::Yield(value) | Expr::YieldFrom(value) => {
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
         // Leaf expressions
@@ -3784,7 +3811,7 @@ fn collect_referenced_names_from_expr(
                 collect_referenced_names_from_expr(expr, referenced, interner);
             }
         }
-        Expr::Await(value) => {
+        Expr::Await(value) | Expr::Yield(value) | Expr::YieldFrom(value) => {
             collect_referenced_names_from_expr(value, referenced, interner);
         }
     }

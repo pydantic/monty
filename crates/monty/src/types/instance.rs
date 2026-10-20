@@ -692,6 +692,23 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
     }
 }
 
+/// Calls a custom iterator on the VM stack so delegation can suspend at host calls.
+pub(crate) fn instance_next(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let class_id = instance_class(self_id, vm);
+    let Some(member) = class_member(class_id, "__next__", vm) else {
+        return Err(ExcType::type_error_not_iterator(&class_name(
+            class_id, vm.heap, vm.interns,
+        )));
+    };
+    defer_drop!(member, vm);
+    if let Value::Ref(id) = member
+        && matches!(vm.heap.get(*id), HeapData::ExtFunction(_))
+    {
+        return Err(ExcType::not_implemented("yield from: external callable as __next__ is not yet supported").into());
+    }
+    call_member_bound(member, self_id, ArgValues::Empty, vm)
+}
+
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
 /// defines one, otherwise the default `<ClassName object at 0x..>`.
 pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {

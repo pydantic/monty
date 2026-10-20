@@ -127,6 +127,15 @@ The host's answer becomes the module; dotted imports read subsequent components 
 Hosts usually return a host-backed class instance containing the module's attributes.
 `ExtFunctionResult::NotFound`, or running without a host, raises `ModuleNotFoundError`.
 The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
+## Generators
+
+Calling a function containing `yield` binds its arguments and returns a lazy generator.
+`next()` and `for` resume it on the normal VM stack until it yields or finishes.
+`yield from` delegates to generators, builtin iterators and custom iterators, preserving `StopIteration.value`.
+Suspended generators own their saved frame, locals, operands and exception state in the heap;
+active frames own a reference to their generator and the pending iterator consumer.
+Both forms are included in session dumps, including suspensions at host calls.
+Generator-held references participate in reference counting and cycle collection.
 
 ## Other pieces
 

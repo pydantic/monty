@@ -342,6 +342,14 @@ Once restoration is attempted, a failure, including using the wrong loader for a
 Check out a fresh session rather than retrying on the failed one.
 Calling a loader after a feed or a previous load is rejected before restoration, leaving the existing session usable.
 
+## Generators
+
+A snapshot preserves generators in the session, including their locals, operand stacks, closures and exception handlers.
+Restoring resumes each generator at its saved `yield` when sandbox code next calls `next()` or advances a `for` loop.
+Generators paused during a host call also retain their active frames and iterator consumers,
+so supplying the host result continues the same nested generator calls.
+Shared objects held by multiple generators retain their identity after restoration.
+
 ## What restoring does and does not carry
 
 - **The dump carries its own configuration.** `script_name` and type-check state come from the dump, not from the

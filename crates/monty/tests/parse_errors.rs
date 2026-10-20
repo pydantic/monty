@@ -11,10 +11,10 @@ fn get_parse_err(code: impl Into<String>) -> MontyException {
 }
 
 #[test]
-fn yield_expressions_return_not_implemented_error() {
-    let err = get_parse_err("def foo():\n    yield 1");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support yield expressions");
+fn yield_from_outside_function_returns_syntax_error() {
+    let err = get_parse_err("yield from [1]");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"'yield' outside function");
 }
 
 #[test]

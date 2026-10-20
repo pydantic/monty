@@ -12,6 +12,9 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod generator;
+pub(crate) use generator::{Generator, GeneratorConsumer};
+use generator::{GeneratorBoundary, GeneratorReturn};
 mod namespace;
 mod pattern;
 mod recursion;
@@ -301,6 +304,10 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
 /// Each frame represents one level in the call stack and owns its own
 /// instruction pointer. This design avoids sync bugs on call/return.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent frame lifecycle and return flags"
+)]
 pub struct CallFrame<'code> {
     /// Compiled body, stable even when runtime compilation publishes more functions.
     code: &'code Code,
@@ -362,6 +369,10 @@ pub struct CallFrame<'code> {
     /// Keeping it on the frame avoids another opcode operand; the compiler emits
     /// no intervening instructions that change it.
     import_from_module: Option<StringId>,
+    /// A custom __next__ frame whose result is consumed by the caller's yield from.
+    is_yield_from: bool,
+    /// Owned generator reference and iterator consumer while its frame is active.
+    generator: Option<Box<GeneratorBoundary>>,
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
@@ -401,6 +412,8 @@ impl<'code> CallFrame<'code> {
             namespace: None,
             is_initializer: false,
             import_from_module: None,
+            is_yield_from: false,
+            generator: None,
         }
     }
 
@@ -424,6 +437,8 @@ impl<'code> CallFrame<'code> {
         self.should_return = false;
         self.is_parked = true;
         self.is_initializer = false;
+        self.is_yield_from = false;
+        debug_assert!(self.generator.is_none());
         debug_assert!(self.namespace.is_none(), "parked frame still owns a namespace");
     }
 
@@ -458,6 +473,8 @@ impl<'code> CallFrame<'code> {
             namespace,
             is_initializer: false,
             import_from_module: None,
+            is_yield_from: false,
+            generator: None,
         }
     }
 }
@@ -599,6 +616,10 @@ pub struct SerializedFrame {
     /// `None` instead of leaving the instance on the stack.
     #[serde(rename = "I")]
     is_initializer: bool,
+    #[serde(rename = "Y", default)]
+    is_yield_from: bool,
+    #[serde(rename = "G", default)]
+    generator: Option<Box<GeneratorBoundary>>,
 
     /// Frame namespace, with ownership of its dict references (see
     /// `CallFrame.namespace`).
@@ -627,6 +648,8 @@ impl CallFrame<'_> {
             exception_stack_base: self.exception_stack_base(),
             call_offset: self.call_offset,
             is_initializer: self.is_initializer,
+            is_yield_from: self.is_yield_from,
+            generator: self.generator.take(),
             namespace: mem::take(&mut self.namespace),
             import_from_module: self.import_from_module,
         }
@@ -713,6 +736,7 @@ impl VMSnapshot {
             stack.drop_with(heap);
             for frame in frames {
                 frame.namespace.drop_with(heap);
+                frame.generator.drop_with(heap);
             }
             scheduler.cleanup(heap);
         });
@@ -938,6 +962,8 @@ impl<'h> VM<'h> {
                     namespace: sf.namespace,
                     is_initializer: sf.is_initializer,
                     import_from_module: sf.import_from_module,
+                    is_yield_from: sf.is_yield_from,
+                    generator: sf.generator,
                 }
             })
             .collect();
@@ -1689,6 +1715,11 @@ impl<'h> VM<'h> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
+                    if matches!(self.heap.read(heap_id), HeapReadOutput::Generator(_)) {
+                        let end_ip = self.current_frame.ip.wrapping_add_signed(isize::from(offset));
+                        try_catch!(self, self.resume_generator(heap_id, GeneratorConsumer::For { end_ip }));
+                        continue;
+                    }
                     let mut iter = self.heap.read(heap_id);
                     // A file nobody has read yet has no buffer to slice: load it from
                     // the host, then re-dispatch this instruction against the buffer.
@@ -1925,8 +1956,44 @@ impl<'h> VM<'h> {
                     }
                 }
                 // Return
+                Opcode::YieldFrom => match self.yield_from() {
+                    Ok(Some(value)) => return Ok(FrameExit::Return(value)),
+                    Ok(None) => {}
+                    Err(error) => catch!(self, error),
+                },
+                Opcode::YieldValue => {
+                    if let Some(value) = self.yield_generator() {
+                        return Ok(FrameExit::Return(value));
+                    }
+                }
                 Opcode::ReturnValue => {
                     let value = self.pop();
+                    if self.current_frame.is_yield_from {
+                        self.pop_frame();
+                        self.push(value);
+                        if let Some(value) = self.yield_generator() {
+                            return Ok(FrameExit::Return(value));
+                        }
+                        continue;
+                    }
+                    if self.current_frame.generator.is_some() {
+                        match self.return_generator(value) {
+                            GeneratorReturn::Continue => {}
+                            GeneratorReturn::Stop(value) => return Ok(FrameExit::Return(value)),
+                            GeneratorReturn::Raise { exception, stop } => {
+                                let error = self.make_exception(&exception, false);
+                                if stop {
+                                    exception.drop_with(self);
+                                    return Err(error);
+                                }
+                                if let Some(error) = self.handle_exception_with_value(error, Some(exception)) {
+                                    return Err(error);
+                                }
+                                yield_if_parked!(self);
+                            }
+                        }
+                        continue;
+                    }
                     if self.suspended_frames.is_empty() {
                         // Last frame - check if this is main task or spawned task
                         let is_main_task = self.is_main_task();
@@ -2433,7 +2500,13 @@ impl<'h> VM<'h> {
 
     /// Releases what a finished frame owns: its stack region and namespace.
     #[inline]
-    fn cleanup_frame_state(&mut self, frame: CallFrame<'_>) {
+    fn cleanup_frame_state(&mut self, mut frame: CallFrame<'_>) {
+        if let Some(boundary) = frame.generator.take() {
+            self.exception_stack
+                .drain(frame.exception_stack_base()..)
+                .drop_with(self.heap);
+            self.abandon_generator(*boundary);
+        }
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).
@@ -2453,8 +2526,10 @@ impl<'h> VM<'h> {
         self.exception_stack.drain(..).drop_with(self.heap);
         for frame in self.suspended_frames.drain(..) {
             frame.namespace.drop_with(self.heap);
+            frame.generator.drop_with(self.heap);
         }
         self.current_frame.namespace.take().drop_with(self.heap);
+        self.current_frame.generator.take().drop_with(self.heap);
         self.current_frame.park(self.module_code);
     }
 

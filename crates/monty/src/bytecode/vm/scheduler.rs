@@ -66,6 +66,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
         self.exception_stack.drain(..).drop_with(heap);
         for frame in self.frames.drain(..) {
             frame.namespace.drop_with(heap);
+            frame.generator.drop_with(heap);
         }
         self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
@@ -99,6 +100,10 @@ pub(crate) struct SerializedTaskFrame {
     pub call_offset: Option<u32>,
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
     pub is_initializer: bool,
+    #[serde(default)]
+    pub is_yield_from: bool,
+    #[serde(default)]
+    pub generator: Option<Box<super::GeneratorBoundary>>,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,
     /// The `from ... import` in progress, if the frame parked inside one.

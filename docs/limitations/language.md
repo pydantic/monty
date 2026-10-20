@@ -19,10 +19,9 @@ any code runs.
     `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
     inside a class body are unavailable. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
-- **`yield` / `yield from` expressions** — no generator functions. Generator
-    *expressions* (`(x for x in ...)`) parse but currently materialize to a
-    `list` rather than a lazy iterator, a known temporary divergence; see
-    `iter__generator_expr_type.py`.
+- Async generators are not supported.
+    Generator *expressions* (`(x for x in ...)`) parse but currently materialize to a
+    `list` rather than a lazy iterator; see `iter__generator_expr_type.py`.
 - **`del` statements** — neither `del x` nor `del d[k]` parse.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
@@ -224,3 +223,13 @@ direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`
 - `import x`, `import x.y`, `from x import y, z as w`.
 - f-strings including `=` debug specifier, `!r`/`!s`/`!a` conversions, and
     format specs.
+
+## Generators
+
+Generator `send()` only accepts `None`; other values raise `NotImplementedError`.
+Generator methods `throw()` and `close()` are not exposed.
+For `yield from`, custom `__next__` methods may call external functions, but assigning an external callable directly
+to `__next__` is not supported.
+Generator frame attributes (`gi_frame`, `gi_code`, `gi_running`, `gi_yieldfrom`) are not exposed.
+Dropping an unfinished generator releases its references without executing pending `finally` blocks.
+For generator iteration through container constructors and iterator adaptors, see [iter.md](iter.md).

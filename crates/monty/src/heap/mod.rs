@@ -2061,6 +2061,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::Exception(exception) => {
+            if let Some(Value::Ref(id)) = &exception.value {
+                on_child(*id);
+            }
+        }
+        HeapData::Generator(generator) => generator.for_each_child(&mut on_child),
         HeapData::Coroutine(coro) => {
             // Add namespace values that are heap references
             for value in &coro.namespace {
@@ -2208,6 +2214,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Union(union) => union.py_dec_ref_ids(stack),
         HeapData::LruCache(cache) => cache.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
+        HeapData::Exception(exception) => exception.py_dec_ref_ids(stack),
+        HeapData::Generator(generator) => generator.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references
             for value in &mut coro.namespace {

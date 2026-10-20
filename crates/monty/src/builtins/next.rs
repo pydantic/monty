@@ -3,7 +3,7 @@
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, GeneratorConsumer, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::FrozenFunction,
@@ -50,6 +50,9 @@ pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
     defer_drop!(iterator, vm);
     match iterator.read_heap(vm) {
+        Some(HeapReadOutput::Generator(generator)) => {
+            vm.resume_generator(generator.id(), GeneratorConsumer::Next(default))
+        }
         Some(HeapReadOutput::Instance(instance)) => {
             if let Some(default) = default {
                 vm.call_frozen_exact(

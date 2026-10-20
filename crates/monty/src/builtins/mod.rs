@@ -159,7 +159,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Map => map::builtin_map(vm, args),
             Self::Max => min_max::builtin_max(vm, args),
             Self::Min => min_max::builtin_min(vm, args),
-            // `next()` on an unread file yields the read that loads it.
+            // `next()` on a generator or unread file yields the read that loads it.
             Self::Next => return next::builtin_next(vm, args),
             Self::Oct => oct::builtin_oct(vm, args),
             // `open()` yields an OS call rather than a plain value.

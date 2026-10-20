@@ -14,13 +14,13 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, ExceptionValue, RunError, RunResult},
     expressions::CmpOperator,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::FunctionId,
     modules::collections::defaultdict::defaultdict_missing,
-    types::{LazyHeapSet, LongInt, PyTrait, Type, str::allocate_string},
+    types::{LazyHeapSet, LongInt, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -77,7 +77,7 @@ macro_rules! heap_payloads {
             Slice(inline $crate::types::Slice),
             /// An exception instance such as `ValueError('message')`.
             #[serde(rename = "X")]
-            Exception(inline $crate::exception_private::SimpleException),
+            Exception(inline $crate::exception_private::ExceptionValue),
             /// A host-backed class instance (the heap form of the wire `ClassInstance`).
             HostClass(boxed $crate::types::HostClass),
             /// The lightweight type object `type(x)` materializes for a `HostClass`
@@ -130,6 +130,7 @@ macro_rules! heap_payloads {
             /// A coroutine object from an async function call.
             #[serde(rename = "O")]
             Coroutine(inline $crate::asyncio::Coroutine),
+            Generator(boxed $crate::bytecode::Generator),
             /// An `asyncio.gather()` result tracking multiple coroutines or tasks.
             GatherFuture(boxed $crate::asyncio::GatherFuture),
             /// An external future driven by the host.
@@ -214,7 +215,7 @@ impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
     /// Only container types that can hold references to other heap objects need to be
-    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and Exception cannot
+    /// tracked for GC purposes. Leaf types like Str, Bytes and Range cannot
     /// form cycles and should not count toward the GC allocation threshold.
     ///
     /// This optimization allows programs that allocate many leaf objects (like strings)
@@ -224,6 +225,7 @@ impl HeapData {
     #[inline]
     pub(crate) fn is_gc_tracked(&self) -> bool {
         match self {
+            Self::Exception(exception) => exception.value.is_some(),
             Self::Itertools(iter) => iter.is_gc_tracked(),
             Self::DirScan(scan) => scan.is_gc_tracked(),
             Self::List(_)
@@ -255,6 +257,7 @@ impl HeapData {
             | Self::SetIterator(_)
             | Self::CallableIterator(_)
             | Self::Module(_)
+            | Self::Generator(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_)
@@ -269,7 +272,6 @@ impl HeapData {
             | Self::Bytes(_)
             | Self::Range(_)
             | Self::Slice(_)
-            | Self::Exception(_)
             | Self::DataclassParams(_)
             | Self::StringIterator(_)
             | Self::BytesIterator(_)
@@ -355,6 +357,7 @@ impl HeapData {
             Self::LongInt(_) => Type::Int,
             Self::Complex(_) => Type::Complex,
             Self::Module(_) => Type::Module,
+            Self::Generator(_) => Type::Generator,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
             Self::OpenFile(file) => file.file_type(),
@@ -582,9 +585,11 @@ fn hash_func_id(func_id: FunctionId) -> HashValue {
     HashValue::new(hasher.finish())
 }
 
-impl HeapItem for SimpleException {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Exceptions don't contain heap references
+impl HeapItem for ExceptionValue {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Some(value) = &mut self.value {
+            value.py_dec_ref_ids(stack);
+        }
     }
 }
 
@@ -713,6 +718,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Cell(_)
             | Self::Exception(_)
             | Self::Module(_)
+            | Self::Generator(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_) => $fallback,
@@ -761,7 +767,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                     Self::Cell(_)
                     | Self::Exception(_)
                     | Self::Module(_)
-                    | Self::Coroutine(_)
+                    | Self::Generator(_)
+            | Self::Coroutine(_)
                     | Self::GatherFuture(_)
                     | Self::ExternalFuture(_) => Ok(true),
                     _ => unreachable!("py-trait variants handled by heap_read_output_py_trait_forward"),
@@ -882,6 +889,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> Result<CallResult, RunError> {
+        if let Self::Generator(generator) = self
+            && attr.as_str(vm.interns) == "send"
+        {
+            return vm.send_generator(generator.id(), args);
+        }
+
         if let Self::Module(module) = self {
             Ok(module.py_call_attr(vm, attr, args)?)
         } else {
@@ -948,7 +961,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                     Self::Cell(_) => Type::Cell,
                     Self::Exception(e) => e.py_type(vm),
                     Self::Module(_) => Type::Module,
-                    Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
+                    Self::Generator(_) => Type::Generator,
+            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
                     _ => unreachable!("py-trait variants handled by heap_read_output_py_trait_forward"),
                 }
             }
@@ -968,7 +982,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                     Self::Cell(_)
                     | Self::Exception(_)
                     | Self::Module(_)
-                    | Self::Coroutine(_)
+                    | Self::Generator(_)
+            | Self::Coroutine(_)
                     | Self::GatherFuture(_)
                     | Self::ExternalFuture(_) => Ok(None),
                     _ => unreachable!("py-trait variants handled by heap_read_output_py_trait_forward"),
@@ -989,6 +1004,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                     Self::Module(value) => Ok(Some(identity_hash(value.id()))),
                     Self::Exception(_)
                     | Self::Coroutine(_)
+                    | Self::Generator(_)
                     | Self::GatherFuture(_)
                     | Self::ExternalFuture(_) => Ok(None),
                     _ => unreachable!("py-trait variants handled by heap_read_output_py_trait_forward"),
@@ -1004,8 +1020,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             else {
                 match self {
                     Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
-                    Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
+                    Self::Exception(e) => e.py_repr_fmt(f, vm, heap_ids),
                     Self::Module(m) => Ok(write!(f, "<module '{}'>", m.get(vm.heap).name_str(vm.interns))?),
+                    Self::Generator(_) => Ok(write!(f, "<generator object>")?),
                     Self::Coroutine(coro) => {
                         let func = vm.interns.get_function(coro.get(vm.heap).func_id);
                         let name = vm.interns.get_str(func.name.name_id);
@@ -1029,7 +1046,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             |value| value.py_str(vm),
             else {
                 match self {
-                    Self::Exception(e) => Ok(allocate_string(e.get(vm.heap).py_str(), vm.heap)),
+                    Self::Exception(e) => e.py_str(vm),
                     _ => self.py_repr(vm),
                 }
             }
@@ -1164,6 +1181,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        if let Self::Generator(generator) = self {
+            vm.heap.inc_ref(generator.id());
+            return Ok(CallResult::Value(Value::Ref(generator.id())));
+        }
         match self {
             Self::Str(value) => value.py_iter(vm),
             Self::Bytes(value) => value.py_iter(vm),
@@ -1224,6 +1245,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::LongInt(_)
             | Self::Complex(_)
             | Self::Module(_)
+            | Self::Generator(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_) => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),

@@ -3020,3 +3020,23 @@ fn slice_assignment_rejects_large_replacement_without_killing_worker() {
         child.shutdown();
     }
 }
+
+#[test]
+fn suspended_generators_remain_charged_to_memory_limit() {
+    for definition in [
+        "def generate(arg):\n    yield arg",
+        "def inner(arg):\n    yield arg\ndef generate(arg):\n    yield from inner(arg)",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(1024 * 1024));
+        let (_, event) = child.feed(
+            &format!("{definition}\ngenerators = []\nfor _ in range(1000):\n    g = generate([None] * 10000)\n    next(g)\n    generators.append(g)"),
+        );
+        assert_eq!(expect_error(event).exc_type, "MemoryError");
+        assert_eq!(
+            child.feed_complete("generators = None\ng = None\n1 + 1"),
+            MontyObject::int(2)
+        );
+        child.shutdown();
+    }
+}

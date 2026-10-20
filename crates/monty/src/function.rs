@@ -80,6 +80,8 @@ pub(crate) struct Function {
     /// and starts execution only when awaited.
     #[serde(rename = "A")]
     pub is_async: bool,
+    #[serde(rename = "Y", default)]
+    pub is_generator: bool,
     /// Cached binder-free call plan, derived from the fields above and cached
     /// via [`Self::exact_positional_call`].
     ///
@@ -133,6 +135,7 @@ impl Function {
             cell_param_indices,
             defaults_count,
             is_async,
+            is_generator: false,
             exact_positional_call: OnceCell::new(),
             code,
         }
@@ -148,7 +151,7 @@ impl Function {
 
     /// Derives the binder-free call plan from authoritative function metadata.
     fn derive_exact_positional_call(&self) -> Option<ExactPositionalCall> {
-        if self.cell_var_slots.is_empty() && self.free_var_slots.is_empty() {
+        if !self.is_generator && self.cell_var_slots.is_empty() && self.free_var_slots.is_empty() {
             self.signature.exact_positional_count().map(|count| {
                 if self.is_async {
                     ExactPositionalCall::Async(count)

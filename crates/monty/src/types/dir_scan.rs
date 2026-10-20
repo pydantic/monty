@@ -445,7 +445,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                     let RunError::Exc(raise) = error else {
                         return Err(error);
                     };
-                    let exc = Value::Ref(vm.heap.allocate(HeapData::Exception(raise.exc)));
+                    let exc = Value::Ref(vm.heap.allocate(HeapData::Exception(raise.exc.into())));
                     let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }

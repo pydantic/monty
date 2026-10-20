@@ -462,6 +462,7 @@ impl GraphExporter {
                 }
                 None => MontyNode::Repr(format!("<module '{}'>", m.get(vm.heap).name_str(vm.interns))),
             },
+            HeapReadOutput::Generator(_) => MontyNode::Repr("<generator object>".to_owned()),
             HeapReadOutput::Coroutine(coro) => {
                 let func_id = coro.get(vm.heap).func_id;
                 let func = vm.interns.get_function(func_id);
@@ -728,6 +729,7 @@ impl MontyTypeExt for MontyType {
             // No dedicated host-side deque-iterator type; it crosses as the
             // generic `iterator`, like any iterator without a MontyType variant.
             Type::DequeIterator => Self::Iterator,
+            Type::Generator => return None,
             Type::ListIterator => Self::ListIterator,
             Type::TupleIterator => Self::TupleIterator,
             Type::StrAsciiIterator => Self::StrAsciiIterator,
@@ -964,7 +966,7 @@ fn import_node(
         }
         MontyNode::Exception { exc_type, arg } => {
             let exc = SimpleException::new(exc_type, arg);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))))
+            Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc.into()))))
         }
         // A sandbox class the host hands back resolves to the class object
         // itself; a host class resolves to its single `HostClassType` entry,

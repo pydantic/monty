@@ -917,11 +917,34 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let func = self.interns.get_function(func_id);
 
-        if func.is_async {
+        if func.is_generator {
+            self.create_generator(func_id, func, cells, defaults, globals, args)
+        } else if func.is_async {
             self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
             self.call_sync_function(func_id, func, cells, defaults, globals, args)
         }
+    }
+
+    fn create_generator(
+        &mut self,
+        func_id: FunctionId,
+        func: &Function,
+        cells: &[HeapId],
+        defaults: &[Value],
+        globals: Option<HeapId>,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let mut guard = DropGuard::new(Vec::with_capacity(func.namespace_size), self);
+        let (locals, vm) = guard.as_parts_mut();
+        func.signature.bind(args, defaults, vm, func.name, locals)?;
+        vm.install_closure_cells(func, cells, locals);
+        let (locals, vm) = guard.into_parts();
+        let namespace = function_namespace(globals, &*vm.heap);
+        let generator = super::Generator::new(func_id, locals, namespace);
+        Ok(CallResult::Value(Value::Ref(
+            vm.heap.allocate(HeapData::Generator(Box::new(generator))),
+        )))
     }
 
     /// Creates a Coroutine for an async function call.
@@ -1185,15 +1208,19 @@ impl<'h> VM<'h> {
 
     /// Whether calling `value` would push a regular synchronous frame
     /// (`CallResult::FramePushed`): a plain `def`, closure, function-with-defaults,
-    /// or a bound method wrapping one — but not an `async def`, whose call creates
-    /// a coroutine instead. Used by [`instantiate_class`](Self::instantiate_class)
+    /// or a bound method wrapping one. Async and generator calls create heap objects instead.
+    /// Used by [`instantiate_class`](Self::instantiate_class)
     /// to decide whether `__init__` can run as a suspendable initializer frame.
     fn is_plain_sync_function(&self, value: &Value) -> bool {
+        let pushes_frame = |id| {
+            let function = self.interns.get_function(id);
+            !function.is_async && !function.is_generator
+        };
         match value {
-            Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
+            Value::DefFunction(func_id) => pushes_frame(*func_id),
             Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
-                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                HeapData::Closure(closure) => pushes_frame(closure.func_id),
+                HeapData::FunctionDefaults(fd) => pushes_frame(fd.func_id),
                 // Bound methods never wrap another bound method, so this
                 // recursion is at most one level deep.
                 HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
