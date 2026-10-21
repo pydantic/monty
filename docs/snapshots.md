@@ -395,8 +395,10 @@ snapshot's `allow_eager_await` is true,
 which it is for a call that is awaited immediately while no other sandbox task can run and no external future is pending.
 Otherwise it is awaited concurrently: `resume_auto()` yields an [`AsyncFutureSnapshot`][pydantic_monty.AsyncFutureSnapshot] whose
 `resume_auto()` settles the pending coroutines.
+A default `'system'` sleep follows the same rule, waited by the pool rather than a host function.
 
-The sync [`FutureSnapshot.resume_auto()`][pydantic_monty.FutureSnapshot.resume_auto] always raises — a sync session cannot drive coroutine host functions.
+The sync [`FutureSnapshot.resume_auto()`][pydantic_monty.FutureSnapshot.resume_auto] waits only for gathered `'system'`
+sleeps; with none in flight it raises — a sync session cannot drive coroutine host functions.
 
 ## Rust
 

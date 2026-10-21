@@ -20,8 +20,9 @@
 //! `is_os_function` set. The captured `external_lookup=` / `os=`, the
 //! session's `external_modules=` and the feed's mounts are consulted only by
 //! `resume_auto`, which answers a host module's OS call (`import`,
-//! `import_stubs`) from `external_modules=` and offers any other to the mounts
-//! first, falling back to `os=`. Mounts are fixed for the whole feed
+//! `import_stubs`) from `external_modules=`, waits out a `'system'` sleep itself
+//! as `feed_run` does, and offers any other OS call to the mounts first, falling
+//! back to `os=`. Mounts are fixed for the whole feed
 //! (passed to `feed_start`), so `resume` takes no `mount=`. Restoring a
 //! suspended feed with `load_snapshot` re-establishes those mounts — the caller
 //! re-supplies them, as they are never part of the dump.
@@ -32,6 +33,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
@@ -54,7 +56,7 @@ mod tests;
 use crate::{
     async_dispatch::{
         CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
-        dispatch_module_coroutine, wait_for_futures,
+        dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
     },
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
@@ -96,11 +98,11 @@ pub(crate) struct DriveContext {
     /// `os=` captured at `feed_start` / `load_snapshot`; consulted only by
     /// `resume_auto`, and only for OS calls this feed's mounts don't cover.
     os: Option<Py<PyAny>>,
-    /// Pending coroutine externals spawned by async `resume_auto`, keyed by
-    /// `call_id`. `Arc` so every `clone_ref`'d snapshot of one session shares a
-    /// single `JoinSet`; the `tokio` `Mutex` because `wait_for_futures` holds it
-    /// across `.await`. Unused (but harmlessly present) on sync sessions, where
-    /// a coroutine external is a hard error.
+    /// Answers spawned by `resume_auto` and delivered by the future snapshot's
+    /// `resume_auto`, keyed by `call_id`: coroutine externals (async sessions
+    /// only) and gathered `'system'` sleeps. `Arc` so every `clone_ref`'d
+    /// snapshot of one session shares a single `JoinSet`; the `tokio` `Mutex`
+    /// because `wait_for_futures` holds it across `.await`.
     pending_futures: Arc<Mutex<JoinSet<(u32, ExtFunctionResult)>>>,
 }
 
@@ -303,6 +305,7 @@ pub(crate) fn build_snapshot(
                 is_os_function: false,
                 object_id,
                 allow_eager_await,
+                system_sleep: None,
                 position,
             };
             function_snapshot_py(py, ctx, call, is_async)
@@ -312,8 +315,8 @@ pub(crate) fn build_snapshot(
             args,
             call_id,
             allow_eager_await,
+            system_sleep,
             position,
-            ..
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -322,6 +325,7 @@ pub(crate) fn build_snapshot(
                 is_os_function: true,
                 object_id: None,
                 allow_eager_await,
+                system_sleep,
                 position,
             };
             function_snapshot_py(py, ctx, call, is_async)
@@ -589,6 +593,9 @@ struct FunctionCallData {
     object_id: Option<MontyUuid>,
     /// The worker accepts a settled coroutine at this suspension.
     allow_eager_await: bool,
+    /// The capped delay of a `'system'` sleep, which `resume_auto` waits out
+    /// itself rather than offering it to mounts or `os=`.
+    system_sleep: Option<Duration>,
     /// Where the call expression is in the source.
     position: SourceRange,
 }
@@ -721,7 +728,8 @@ impl PyFunctionSnapshot {
 
     /// Answers this call automatically, then drives to the next snapshot (or
     /// [`MontyComplete`]). A host module's OS call (`import`, `import_stubs`)
-    /// is answered from the session's `external_modules=`; any other OS call is
+    /// is answered from the session's `external_modules=`; a `'system'` sleep is
+    /// waited out here; any other OS call is
     /// offered to the feed's mounts first and falls back to the `os=` captured at
     /// `feed_start` / `load_snapshot`; an external call is resolved through
     /// `external_lookup=`, and a name absent
@@ -744,6 +752,11 @@ impl PyFunctionSnapshot {
             context.enter(py, &native)
         })?;
         let call = &self.0.call;
+        if let Some(delay) = call.system_sleep {
+            // the pool services its own sleeps, as in `feed_run`: no callback runs
+            drop(guard);
+            return resume_system_sleep_sync(py, ctx, call, delay);
+        }
         // the host's modules answer their own OS calls, ahead of mounts and `os=`
         let module_call = call.is_os_function && is_module_call(&call.function_name);
         let value = if call.is_os_function && !module_call {
@@ -808,6 +821,44 @@ impl PyFunctionSnapshot {
             self.0.call.function_name, self.0.call.is_os_function
         )
     }
+}
+
+/// Waits out a `'system'` sleep for the sync `resume_auto`, as `feed_run` does,
+/// and resumes. A gathered sleep is spawned onto the session's pending futures
+/// and answered with a future, for [`PyFutureSnapshot::resume_auto`] to deliver.
+fn resume_system_sleep_sync(
+    py: Python<'_>,
+    ctx: DriveContext,
+    call: &FunctionCallData,
+    delay: Duration,
+) -> PyResult<Py<PyAny>> {
+    let call_id = call.call_id;
+    let mode = CoroutineMode::for_os_call(&call.function_name, call.allow_eager_await);
+    let (eager, value) = py.detach(|| {
+        block_on_sync(async {
+            // spawning needs the runtime context `block_on_sync` provides
+            let dispatched = dispatch_system_sleep(delay, call_id, mode, &mut *ctx.pending_futures.lock().await);
+            match dispatched {
+                Dispatched::Done(value) => (false, value),
+                Dispatched::Eager(wait) => (true, ext_result_to_resume(wait.await)),
+                Dispatched::AsValue(wait) => (false, ext_result_to_resume(wait.await)),
+                Dispatched::Module(_) => unreachable!("a sleep is not a module call"),
+            }
+        })
+    })?;
+    drive_sync(
+        py,
+        ctx,
+        turn_fn(move |c, p| {
+            Box::pin(async move {
+                if eager {
+                    c.resume_futures(vec![(call_id, value)], p).await
+                } else {
+                    c.resume(value, p).await
+                }
+            })
+        }),
+    )
 }
 
 /// Async sibling of [`PyFunctionSnapshot`]: `resume` / `resume_not_handled`
@@ -885,8 +936,9 @@ impl PyAsyncFunctionSnapshot {
         })
     }
 
-    /// Awaits eligible coroutine calls directly; other coroutines are spawned
-    /// for later resolution by [`PyAsyncFutureSnapshot::resume_auto`].
+    /// Awaits eligible coroutine calls and `'system'` sleeps directly; other
+    /// coroutines and sleeps are spawned for later resolution by
+    /// [`PyAsyncFutureSnapshot::resume_auto`].
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let context = CallbackContext::capture(py)?;
         let ctx = self.0.snapshot.claim(py)?;
@@ -907,7 +959,12 @@ impl PyAsyncFunctionSnapshot {
             // only a handed-back await runs outside it.
             // the host's modules answer their own OS calls, ahead of mounts and `os=`
             let module_call = call.is_os_function && is_module_call(&call.function_name);
-            let dispatched = if call.is_os_function && !module_call {
+            let dispatched = if let Some(delay) = call.system_sleep {
+                // the pool services its own sleeps, as in `feed_run`
+                let mode = CoroutineMode::for_os_call(&call.function_name, call.allow_eager_await);
+                let mut join_set = ctx.pending_futures.lock().await;
+                Ok(dispatch_system_sleep(delay, call.call_id, mode, &mut join_set))
+            } else if call.is_os_function && !module_call {
                 // mounts get first refusal, then the captured `os=`
                 let mounted = run_turn_async(
                     &ctx.checkout,
@@ -1310,12 +1367,33 @@ impl PyFutureSnapshot {
         drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume_futures(resolved, p))))
     }
 
-    /// Sync sessions have no event loop to drive coroutine externals, so this
-    /// always raises; resolve the pending futures manually with
-    /// `resume({call_id: ...})`. Does not consume the snapshot (no side effects).
-    #[expect(clippy::unused_self, reason = "a pyclass instance method must take &self")]
-    fn resume_auto(&self) -> PyResult<Py<PyAny>> {
-        Err(PyRuntimeError::new_err("async external functions require AsyncMonty"))
+    /// Waits for the `'system'` sleeps earlier `resume_auto` calls spawned and
+    /// delivers them. Sync sessions cannot drive coroutine externals, so with no
+    /// sleep in flight this raises without consuming the snapshot; resolve other
+    /// pending futures manually with `resume({call_id: ...})`.
+    fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let pending = Arc::clone(&self.0.snapshot.ctx.pending_futures);
+        if py.detach(|| block_on_sync(async { pending.lock().await.is_empty() }))? {
+            return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
+        }
+        let ctx = self.0.snapshot.claim(py)?;
+        let resolved = py
+            .detach(|| block_on_sync(async { wait_for_futures(&mut *ctx.pending_futures.lock().await).await }))
+            .and_then(|resolved| resolved)
+            .and_then(|results| {
+                results
+                    .into_iter()
+                    .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
+                    .collect::<PyResult<Vec<_>>>()
+            });
+        let results = match resolved {
+            Ok(results) => results,
+            Err(err) => {
+                discard_checkout_sync(py, &ctx.checkout);
+                return Err(err);
+            }
+        };
+        drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume_futures(results, p))))
     }
 
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
@@ -1362,9 +1440,9 @@ impl PyAsyncFutureSnapshot {
         })
     }
 
-    /// Waits for one or more of the coroutine externals spawned by earlier
-    /// `resume_auto` calls to settle, delivers them, and drives to the next
-    /// snapshot. Raises if there are no pending coroutines to await — e.g. on a
+    /// Waits for one or more of the coroutine externals or `'system'` sleeps
+    /// spawned by earlier `resume_auto` calls to settle, delivers them, and
+    /// drives to the next snapshot. Raises if there are no pending coroutines to await — e.g. on a
     /// snapshot restored via `load_snapshot`, whose spawned coroutines lived in
     /// the previous process (resolve those manually with `resume({...})`).
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {

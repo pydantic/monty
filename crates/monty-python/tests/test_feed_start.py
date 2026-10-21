@@ -709,6 +709,45 @@ def test_sync_future_snapshot_resume_auto_raises(session: MontySession):
     assert done.output == snapshot(7)
 
 
+@pytest.mark.parametrize(
+    'code,expected',
+    [
+        pytest.param("import time\ntime.sleep(0.001)\n'slept'", 'slept', id='time_sleep'),
+        pytest.param(
+            "import asyncio\nasync def main():\n    return await asyncio.sleep(0.001, 'woken')\nasyncio.run(main())",
+            'woken',
+            id='asyncio_sleep',
+        ),
+    ],
+)
+def test_resume_auto_system_sleep(session: MontySession, code: str, expected: str):
+    """The default `'system'` sleep is waited by the pool, as `feed_run` does, never offered to `os=`."""
+    snap = session.feed_start(code)
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.is_os_function
+    done = snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == expected
+
+
+def test_resume_auto_gathered_system_sleeps(session: MontySession):
+    """Gathered system sleeps are spawned, then waited by the sync future snapshot's `resume_auto`."""
+    code = (
+        'import asyncio\n'
+        'async def main():\n'
+        "    return await asyncio.gather(asyncio.sleep(0.002, 'a'), asyncio.sleep(0.001, 'b'))\n"
+        'asyncio.run(main())'
+    )
+    snap: Any = session.feed_start(code)
+    kinds: list[str] = []
+    while not isinstance(snap, MontyComplete):
+        kinds.append(type(snap).__name__)
+        snap = snap.resume_auto()
+    assert snap.output == snapshot(['a', 'b'])
+    # one or two future snapshots follow, depending on whether the sleeps finish together
+    assert kinds[:3] == snapshot(['FunctionSnapshot', 'FunctionSnapshot', 'FutureSnapshot'])
+
+
 def test_sync_resume_auto_coroutine_external_raises(pool: Monty):
     # a coroutine external in a sync session is a hard error; it poisons the
     # checkout, so use a dedicated one rather than the shared `session` fixture
@@ -854,6 +893,34 @@ async def test_async_resume_auto_gathered_asyncio_sleeps_are_futures():
                 snap = await snap.resume_auto()
             assert snap.output == snapshot(['a', 'b'])
             assert started == snapshot([0.002, 0.001])
+            # one or two future snapshots follow, depending on whether the sleeps finish together
+            assert kinds[:3] == snapshot(['AsyncFunctionSnapshot', 'AsyncFunctionSnapshot', 'AsyncFutureSnapshot'])
+
+
+async def test_async_resume_auto_awaits_system_sleep_eagerly():
+    """A default `'system'` sleep awaited at once is waited in place, with no future snapshot."""
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("import asyncio\nawait asyncio.sleep(0.001, 'woken')")
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert snap.is_os_function
+            assert snap.allow_eager_await
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('woken')
+
+
+async def test_async_resume_auto_gathered_system_sleeps_are_futures():
+    """Gathered system sleeps are spawned and delivered by the async future snapshot."""
+    code = "import asyncio\nawait asyncio.gather(asyncio.sleep(0.002, 'a'), asyncio.sleep(0.001, 'b'))"
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code)
+            kinds: list[str] = []
+            while not isinstance(snap, MontyComplete):
+                kinds.append(type(snap).__name__)
+                snap = await snap.resume_auto()
+            assert snap.output == snapshot(['a', 'b'])
             # one or two future snapshots follow, depending on whether the sleeps finish together
             assert kinds[:3] == snapshot(['AsyncFunctionSnapshot', 'AsyncFunctionSnapshot', 'AsyncFutureSnapshot'])
 
