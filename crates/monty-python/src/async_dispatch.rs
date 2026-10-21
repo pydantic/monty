@@ -271,6 +271,23 @@ pub(crate) async fn wait_for_futures(
     Ok(results)
 }
 
+/// Like [`wait_for_futures`], but drops results whose `call_id` the sandbox no
+/// longer awaits, and keeps waiting until one it does settles. A snapshot's
+/// manual `resume({...})` answers a future without cancelling its spawned task,
+/// so that task's result would otherwise reach the worker as an unknown call.
+pub(crate) async fn wait_for_pending_futures(
+    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    pending_call_ids: &[u32],
+) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
+    loop {
+        let mut results = wait_for_futures(join_set).await?;
+        results.retain(|(call_id, _)| pending_call_ids.contains(call_id));
+        if !results.is_empty() {
+            break Ok(results);
+        }
+    }
+}
+
 /// Converts a `tokio::task::JoinError` to a `PyErr`.
 #[expect(clippy::needless_pass_by_value)]
 pub(crate) fn join_error_to_py(err: JoinError) -> PyErr {

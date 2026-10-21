@@ -1477,7 +1477,8 @@ class FutureSnapshot:
 
     def resume_auto(self) -> SyncSnapshot:
         """Wait for the `'system'` sleeps earlier `resume_auto` calls spawned,
-        deliver them, and return the next snapshot. With no sleep in flight this
+        deliver them (skipping any already answered by a manual `resume`), and
+        return the next snapshot. With no sleep in flight this
         raises `RuntimeError` without consuming the snapshot: a sync session cannot
         drive coroutine externals, so resolve other pending futures manually with
         `resume({...})`, or use `AsyncMonty`."""
@@ -1570,7 +1571,8 @@ class AsyncFutureSnapshot:
     async def resume_auto(self) -> AsyncSnapshot:
         """Wait for one or more coroutine externals or `'system'` sleeps spawned by
         earlier `resume_auto` calls to settle, deliver them, and return the next
-        snapshot. Raises if there are no pending coroutines to await (e.g. a
+        snapshot; results already answered by a manual `resume` are skipped.
+        Raises if there are no pending coroutines or sleeps to await (e.g. a
         snapshot restored via `load_snapshot`)."""
 
     def dump(self) -> bytes: ...

@@ -56,7 +56,7 @@ mod tests;
 use crate::{
     async_dispatch::{
         CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
-        dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
+        dispatch_module_coroutine, dispatch_system_sleep, wait_for_pending_futures,
     },
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
@@ -1368,17 +1368,23 @@ impl PyFutureSnapshot {
     }
 
     /// Waits for the `'system'` sleeps earlier `resume_auto` calls spawned and
-    /// delivers them. Sync sessions cannot drive coroutine externals, so with no
-    /// sleep in flight this raises without consuming the snapshot; resolve other
-    /// pending futures manually with `resume({call_id: ...})`.
+    /// delivers them, skipping any already answered by a manual `resume`. Sync
+    /// sessions cannot drive coroutine externals, so with no sleep in flight this
+    /// raises without consuming the snapshot; resolve other pending futures
+    /// manually with `resume({call_id: ...})`.
     fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let pending = Arc::clone(&self.0.snapshot.ctx.pending_futures);
         if py.detach(|| block_on_sync(async { pending.lock().await.is_empty() }))? {
             return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
         }
         let ctx = self.0.snapshot.claim(py)?;
+        let pending_call_ids = &self.0.pending_call_ids;
         let resolved = py
-            .detach(|| block_on_sync(async { wait_for_futures(&mut *ctx.pending_futures.lock().await).await }))
+            .detach(|| {
+                block_on_sync(async {
+                    wait_for_pending_futures(&mut *ctx.pending_futures.lock().await, pending_call_ids).await
+                })
+            })
             .and_then(|resolved| resolved)
             .and_then(|results| {
                 results
@@ -1442,15 +1448,17 @@ impl PyAsyncFutureSnapshot {
 
     /// Waits for one or more of the coroutine externals or `'system'` sleeps
     /// spawned by earlier `resume_auto` calls to settle, delivers them, and
-    /// drives to the next snapshot. Raises if there are no pending coroutines to await — e.g. on a
-    /// snapshot restored via `load_snapshot`, whose spawned coroutines lived in
-    /// the previous process (resolve those manually with `resume({...})`).
+    /// drives to the next snapshot; results already answered by a manual `resume`
+    /// are skipped. Raises if there are no pending coroutines or sleeps to await —
+    /// e.g. on a snapshot restored via `load_snapshot`, whose spawned tasks lived
+    /// in the previous process (resolve those manually with `resume({...})`).
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
+        let pending_call_ids = self.0.pending_call_ids.clone();
         future_into_py(py, async move {
             let resolved = {
                 let mut join_set = ctx.pending_futures.lock().await;
-                wait_for_futures(&mut join_set).await
+                wait_for_pending_futures(&mut join_set, &pending_call_ids).await
             }
             .and_then(|results| {
                 results

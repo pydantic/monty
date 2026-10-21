@@ -69,7 +69,7 @@ Instead of driving a snippet to completion it hands control back at every suspen
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
 | [`FunctionSnapshot`][pydantic_monty.FunctionSnapshot]     | A host function or OS call, or with `object_id` set a method call on a [host object](host-objects.md) (construction arrives as `__call__`) | `resume(result)`, `resume_not_handled()`, `resume_auto()`                                                        |
 | [`NameLookupSnapshot`][pydantic_monty.NameLookupSnapshot] | An undefined name was read, or with `object_id` set a lazy attribute of a host object                                                      | `resume(value=...)`, `resume()` to raise `NameError` (`AttributeError` when `object_id` is set), `resume_auto()` |
-| [`FutureSnapshot`][pydantic_monty.FutureSnapshot]         | Every sandbox task is blocked on host futures                                                                                              | `resume({call_id: result})`                                                                                      |
+| [`FutureSnapshot`][pydantic_monty.FutureSnapshot]         | Every sandbox task is blocked on host futures                                                                                              | `resume({call_id: result})`, `resume_auto()`                                                                     |
 | [`MontyComplete`][pydantic_monty.MontyComplete]           | Nothing — the snippet finished                                                                                                             | nothing; read `.output`                                                                                          |
 
 [`FunctionSnapshot.resume`][pydantic_monty.FunctionSnapshot.resume] accepts four shapes of answer:
@@ -398,7 +398,8 @@ Otherwise it is awaited concurrently: `resume_auto()` yields an [`AsyncFutureSna
 A default `'system'` sleep follows the same rule, waited by the pool rather than a host function.
 
 The sync [`FutureSnapshot.resume_auto()`][pydantic_monty.FutureSnapshot.resume_auto] waits only for gathered `'system'`
-sleeps; with none in flight it raises — a sync session cannot drive coroutine host functions.
+sleeps; with none in flight it raises without consuming the snapshot — a sync session cannot drive coroutine host
+functions, so resolve them with `resume({call_id: ...})`.
 
 ## Rust
 
