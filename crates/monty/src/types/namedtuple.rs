@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
     cell::Cell,
-    cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -28,10 +27,11 @@ use std::{
 /// named access improves usability and readability.
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, tuple::TupleIterator};
+use super::{PyTrait, tuple::TupleIterator};
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
@@ -495,6 +495,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
             Some(HeapReadOutput::Tuple(other)) => Ok(Some(self.eq_tuple(&other, vm)?)),
             _ => Ok(None),
         }
+    }
+
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.py_eq_impl(other, vm)?));
+        }
+        let Some(other) = cloned_tuple_like_items(other, vm)? else {
+            return Ok(Value::NotImplemented);
+        };
+        defer_drop!(other, vm);
+        let items = self.cloned_items(vm)?;
+        defer_drop!(items, vm);
+        cmp_item_seqs(items, other, op, vm)
     }
 
     /// Hashes by element only (not by class name), matching `Tuple::py_hash`
@@ -1008,78 +1021,17 @@ impl HeapItem for NamedTupleClass {
 // Construction and shared helpers.
 // ============================================================================
 
-/// Lexicographic ordering between two cloned item sequences.
-///
-/// A namedtuple is a tuple subclass, so it orders element-wise against another
-/// namedtuple *or* a plain tuple, with the shorter sequence sorting first when
-/// it is a prefix of the longer. The class and field names take no part, so two
-/// different namedtuple classes compare purely by value (matching CPython).
-///
-/// Takes both sides already cloned — the comparison needs `&mut VM`, which the
-/// caller cannot hold alongside two live `HeapRead`s. Both vectors are consumed
-/// and their items dropped.
-///
-/// Element-level results propagate exactly as in [`Tuple::py_cmp`]: a `NaN`
-/// yields [`CmpOrder::Unordered`] rather than an error, while a genuinely
-/// type-mismatched pair yields [`CmpOrder::Incomparable`].
-///
-/// Charges one recursion level: unlike equality/repr, ordering does not walk a
-/// token-bearing `NamedTupleIter` (it compares detached item vecs), so nested
-/// namedtuples (`a < b` where each wraps the last) would otherwise recurse
-/// through here per level and overflow the host stack instead of raising
-/// `RecursionError`. A [`RecursionToken`] rather than a `recursion_guard()` is
-/// used because both vecs are still owned on the failure path — the token does
-/// not borrow the VM, so they can be dropped before returning the error.
-pub(crate) fn cmp_item_seqs(a: Vec<Value>, b: Vec<Value>, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-    let token = match vm.recursion_token() {
-        Ok(token) => token,
-        Err(err) => {
-            a.drop_with(vm);
-            b.drop_with(vm);
-            return Err(err.into());
-        }
-    };
-
-    let (a_len, b_len) = (a.len(), b.len());
-    let mut result = None;
-    for (av, bv) in a.iter().zip(b.iter()) {
-        match av.py_cmp(bv, vm) {
-            Ok(CmpOrder::Ordered(Ordering::Equal)) => {}
-            Ok(CmpOrder::Ordered(ord)) => {
-                result = Some(Ok(CmpOrder::Ordered(ord)));
-                break;
-            }
-            Ok(CmpOrder::Unordered) => {
-                result = Some(Ok(CmpOrder::Unordered));
-                break;
-            }
-            Ok(CmpOrder::Incomparable) => {
-                // CPython checks `__eq__` first and only orders non-equal pairs,
-                // so equal-but-unorderable elements (e.g. `None == None`) do not
-                // block the comparison.
-                match av.py_eq(bv, vm) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        result = Some(Ok(CmpOrder::Incomparable));
-                        break;
-                    }
-                    Err(e) => {
-                        result = Some(Err(e));
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                result = Some(Err(e));
-                break;
-            }
+/// Compares detached tuple-like items, bounding recursion and preserving the
+/// first unequal pair's rich result. The caller owns and guards both slices.
+fn cmp_item_seqs(a: &[Value], b: &[Value], op: RichCompareOp, vm: &mut VM<'_>) -> RunResult<Value> {
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
+    for (av, bv) in a.iter().zip(b) {
+        if !av.py_eq(bv, vm)? {
+            return av.py_richcompare(bv, op, vm);
         }
     }
-    a.drop_with(vm);
-    b.drop_with(vm);
-    token.drop_with(vm);
-    // All compared pairs were equal, so the shorter sequence sorts first.
-    result.unwrap_or_else(|| Ok(CmpOrder::Ordered(a_len.cmp(&b_len))))
+    Ok(op.apply(Some(a.len().cmp(&b.len()))))
 }
 
 /// Clones the items of a tuple-like value (`tuple` or `namedtuple`) into an

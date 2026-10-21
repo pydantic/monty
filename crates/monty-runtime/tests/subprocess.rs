@@ -1170,6 +1170,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("x = [None] * 40_000\nx += x", 1_962_551),
         ("t = (None,) * 40_000\nt + t", 1_322_547),
         ("x = [None] * 40_000\nx.copy()", 1_322_293),
+        // Sorting preflights its index buffer, then the merge scratch buffer.
+        ("x = [0] * 45_000\nx.sort()", 1_122_293),
+        ("x = [0] * 35_000\nx.sort()", 1_162_293),
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
         ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_423),

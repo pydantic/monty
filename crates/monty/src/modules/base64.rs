@@ -13,7 +13,7 @@
 //! Encoders take bytes only; decoders also take ASCII `str` (CPython's
 //! `_bytes_from_decode_data`).
 
-use std::{borrow::Cow, cmp::Ordering};
+use std::borrow::Cow;
 
 use monty_types::ResourceTracker;
 
@@ -26,7 +26,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
-    types::{CmpOrder, Module, PyTrait, bytes::bytes_repr},
+    types::{Module, PyTrait, bytes::bytes_repr},
     value::Value,
 };
 
@@ -1037,15 +1037,7 @@ fn a85_wrap(result: &[u8], width: usize, adobe: bool, tracker: &ResourceTracker)
 /// ordered against an `int` fails in `max`, and one that wins the comparison
 /// but is no index — a `float` of one or more — fails in `range`.
 fn a85_wrapcol(wrapcol: &Value, floor: u8, vm: &mut VM<'_>) -> RunResult<usize> {
-    let wider = match wrapcol.py_cmp(&Value::Int(i64::from(floor)), vm)? {
-        CmpOrder::Ordered(Ordering::Greater) => true,
-        // `NaN` is neither larger nor smaller, so the floor stands, as in `max`.
-        CmpOrder::Ordered(_) | CmpOrder::Unordered => false,
-        CmpOrder::Incomparable => {
-            return Err(ExcType::type_error_ordering(">", &wrapcol.py_type_name(vm), "int"));
-        }
-    };
-    if wider {
+    if wrapcol.py_gt_operator(&Value::Int(i64::from(floor)), vm)? {
         a85_width(wrapcol, vm)
     } else {
         Ok(usize::from(floor))

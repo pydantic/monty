@@ -27,6 +27,7 @@ use smallvec::smallvec;
 use self::arithmetic::IntArithmetic;
 use crate::{
     bytecode::VM,
+    comparison::{Number, RichCompareOp},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData, HeapObjectRead},
@@ -585,14 +586,6 @@ impl LongInt {
         bigint_to_f64_checked(&self.0)
     }
 
-    /// Compares this integer against an `f64` *exactly* (no precision loss).
-    ///
-    /// Thin wrapper around [`bigint_cmp_f64`]; see it for the semantics. The
-    /// result is the ordering of `self` relative to `f`.
-    pub fn partial_cmp_f64(&self, f: f64) -> Option<Ordering> {
-        bigint_cmp_f64(&self.0, f)
-    }
-
     /// Returns the number of significant bits in this LongInt.
     ///
     /// Zero returns 0 bits. For non-zero values, this is the position of the
@@ -808,6 +801,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     /// (or reports the overflow its own way).
     fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(Some(self.clone_value(vm.heap)))
+    }
+
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(Number::BigInt(self.get(vm.heap).inner()).richcompare(other, op, vm))
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {

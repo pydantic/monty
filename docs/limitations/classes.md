@@ -1,7 +1,7 @@
 # Classes
 
 Sandboxed Python code in Monty can define simple classes. A `class`
-statement with instance methods, `__init__`, `__eq__`, `__repr__`/`__str__`,
+statement with instance methods, `__init__`, rich comparisons, `__repr__`/`__str__`,
 and class variables works. The class body has a real scope (like CPython's
 class-body code object), so class variables may be arbitrary expressions
 and may reference earlier class variables:
@@ -36,7 +36,7 @@ shapes), instance and class attribute get/set (including `setattr(Foo, ...)`
 and function-attributes-become-methods), bound methods, class variables
 (arbitrary expressions, evaluated in a real suspendable class-body scope),
 **class decorators** (`@deco class Foo`),
-`__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
+`__repr__`/`__str__`/`__enter__`/`__exit__`/`__hash__` and all six rich comparison dunders,
 `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
@@ -84,11 +84,6 @@ order and error wording, but with these divergences:
 - **Bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
-- **Ordering comparisons on instances raise, but a user `__lt__`/`__gt__`/… is
-    not dispatched.** `a < b` on instances of a class with no comparison dunders
-    raises `TypeError: '<' not supported between instances of 'Foo' and 'Foo'`
-    (matching CPython). A class that *defines* `__lt__` etc. still raises: those
-    dunders are not dispatched (see the not-dispatched dunder list below).
 - **`__repr__`/`__str__` cannot suspend**: they are run to completion
     synchronously, so a `__repr__`/`__str__` that calls an external/OS function
     raises rather than yielding to the host. `__init__` and regular methods
@@ -100,18 +95,15 @@ order and error wording, but with these divergences:
     runs to completion synchronously, so it cannot yield to the host, and an
     external-function `__init__` raises `NotImplementedError` rather than
     suspending.
-- **`__eq__`/`__hash__`/`__index__` cannot suspend**: like `__repr__`/`__str__`
-    they run to completion synchronously, so one that calls an external/OS
-    function raises rather than yielding to the host. An exception raised by
-    `__eq__` terminates the run instead of being catchable by a `try` around the
-    comparison.
+- **Rich comparison dunders, `__hash__` and `__index__` cannot suspend**: like `__repr__`/`__str__`,
+    they run synchronously, so calling an external/OS function raises rather than yielding to the host.
 - **Arithmetic, conversion, rounding and subscript dunders cannot suspend.**
     `__neg__`, `__pos__`, `__abs__`, `__invert__`, `__int__`, `__float__`, `__round__`, `__floor__`, `__ceil__`,
     `__trunc__`, binary numeric dunders (including reflected forms), `__getitem__` and `__setitem__` run synchronously.
     An external or OS call raises `NotImplementedError` rather than yielding to the host.
     `__call__` uses the ordinary suspendable call path.
-- **Ordering dunders are still not dispatched**; see the entry above.
-    Instances are always truthy (no `__bool__`/`__len__` dispatch).
+- **Instances are always truthy**: `__bool__` and `__len__` are not dispatched,
+    including when truth-testing an instance returned by a comparison dunder.
 - **Bound methods compare and hash by identity**: each `obj.method` access
     creates a fresh object, so `obj.method == obj.method` is `False` and two
     accesses hash differently. CPython compares/hashes bound methods by
@@ -381,11 +373,10 @@ every construction request. Divergences:
     `...<N lines>...`), where CPython pins the individual decorator that raised.
     Every decorator in a stack reports that same location; only the callee frame
     identifies which one raised.
-- Dunder protocols not dispatched for user-defined instances include `__new__`, `__ne__`, ordering comparisons,
+- Dunder protocols not dispatched for user-defined instances include `__new__`,
     `__bool__`, `__len__`, `__complex__`, `__format__`, and all in-place arithmetic dunders (`__iadd__`, etc.).
     Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,
     except `@=`, which is rejected at compile time.
-    `__ne__` is always the negation of `__eq__`, so a custom `__ne__` is ignored.
 - **Sequence repetition does not consult `__index__`.**
     `'ab' * obj` and `[0] * obj` raise `TypeError: can't multiply sequence by non-int of type 'Foo'`
     for an instance of `Foo`, where CPython repeats.

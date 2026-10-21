@@ -1,6 +1,5 @@
 use std::{
     cell::Cell,
-    cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -25,10 +24,11 @@ use std::{
 /// All tuple methods from Python's builtins are implemented.
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
+use super::{PyTrait, iter::collect_owned_iterable};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
@@ -168,8 +168,8 @@ impl<'h> HeapRead<'h, Tuple> {
         self.get(vm.heap).items[index].clone_with_heap(vm)
     }
 
-    /// Clones every item into a plain `Vec`, for the namedtuple orderings in
-    /// [`cmp_item_seqs`](crate::types::namedtuple::cmp_item_seqs).
+    /// Clones owned items into a plain vector for consumers such as list slice assignment.
+    /// The caller must release or transfer every cloned reference.
     pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         Ok(self.clone_all_items(vm)?.into_vec())
     }
@@ -385,19 +385,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         Ok(Some(hash))
     }
 
-    /// Lexicographic comparison for tuples.
-    ///
-    /// Compares element-by-element left-to-right. The first non-equal pair
-    /// determines the result. If all compared elements are equal, the shorter
-    /// tuple is considered less than the longer one — matching Python semantics:
-    /// `(1, 2) < (1, 2, 3)` is `True`.
-    ///
-    /// The result of the first differing pair propagates directly: a `NaN`
-    /// element yields [`CmpOrder::Unordered`] (`(nan,) < (1,)` is `False`, not a
-    /// `TypeError`), while a type-mismatched element yields
-    /// [`CmpOrder::Incomparable`] (`(1,) < ('a',)` raises) — this element-level
-    /// distinction is exactly why [`CmpOrder`] exists.
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.py_eq_impl(other, vm)?));
+        }
+        // Named tuples handle mixed pairings on the reflected pass.
+        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
         let a_len = self.get(vm.heap).items.len();
         let b_len = other.get(vm.heap).items.len();
         let min_len = a_len.min(b_len);
@@ -411,26 +406,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
             }
             let bv = other.clone_item(i, vm);
             defer_drop!(bv, vm);
-            match av.py_cmp(bv, vm)? {
-                CmpOrder::Ordered(Ordering::Equal) => {}
-                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
-                // A `NaN` element: elements are never `==`-equal to a `NaN`, so
-                // this is the first differing pair and the tuple is unordered.
-                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
-                CmpOrder::Incomparable => {
-                    // The elements don't support ordering. CPython checks
-                    // `__eq__` first and only calls `__lt__` for non-equal
-                    // pairs, so equal-but-unorderable elements (e.g.
-                    // `None == None`) are treated as equal and don't block the
-                    // comparison; a genuinely differing pair makes the tuple
-                    // incomparable.
-                    if !av.py_eq(bv, vm)? {
-                        return Ok(CmpOrder::Incomparable);
-                    }
-                }
+            if !av.py_eq(bv, vm)? {
+                return av.py_richcompare(bv, op, vm);
             }
         }
-        Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
+        Ok(op.apply(Some(a_len.cmp(&b_len))))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

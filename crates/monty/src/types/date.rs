@@ -16,6 +16,7 @@ use monty_types::{OsFunctionCall, ResourceTracker};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
+    comparison::RichCompareOp,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
@@ -23,7 +24,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     string_builder::StringBuilder,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
+        LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
@@ -227,8 +228,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::from_total(self.get(vm.heap).partial_cmp(other.get(vm.heap))))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if let Some(HeapReadOutput::Date(other)) = other.read_heap(vm) {
+            Ok(op.apply(self.get(vm.heap).partial_cmp(other.get(vm.heap))))
+        } else {
+            Ok(Value::NotImplemented)
+        }
     }
 
     fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {

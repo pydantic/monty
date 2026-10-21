@@ -561,6 +561,38 @@ fn not_implemented_in_list_sort_key_has_traceback() {
     "#);
 }
 
+/// Comparison dunders reject suspension synchronously and leave outer exception handlers usable.
+#[test]
+fn rich_comparison_external_calls_cannot_suspend() {
+    let mut messages = Vec::new();
+    for (method, op) in [
+        ("__eq__", "=="),
+        ("__ne__", "!="),
+        ("__lt__", "<"),
+        ("__le__", "<="),
+        ("__gt__", ">"),
+        ("__ge__", ">="),
+    ] {
+        let code = format!(
+            "class Compare:\n    def {method}(self, other):\n        return ext_fn()\n\
+             try:\n    Compare() {op} 0\nexcept NotImplementedError as exc:\n    message = str(exc)\nmessage"
+        );
+        let mut run = MontyRun::new(code, "test.py", vec!["ext_fn".to_owned()], CompileOptions::default()).unwrap();
+        let result = run
+            .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
+            .unwrap();
+        messages.push(result.as_ref().as_str().unwrap().to_owned());
+    }
+    assert_snapshot!(messages.join("\n"), @"
+    external function 'ext_fn' cannot suspend in this synchronous context
+    external function 'ext_fn' cannot suspend in this synchronous context
+    external function 'ext_fn' cannot suspend in this synchronous context
+    external function 'ext_fn' cannot suspend in this synchronous context
+    external function 'ext_fn' cannot suspend in this synchronous context
+    external function 'ext_fn' cannot suspend in this synchronous context
+    ");
+}
+
 /// Synchronous adaptor callbacks report a generic error with the consuming expression in the traceback.
 /// `accumulate` needs two items, since the first is yielded untouched.
 #[test]

@@ -1,9 +1,10 @@
-use std::{cmp::Ordering, collections::VecDeque, fmt::Write, mem};
+use std::{collections::VecDeque, fmt::Write, mem};
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
+use super::{PyTrait, iter::collect_owned_iterable};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{
@@ -485,16 +486,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(Some(true))
     }
 
-    /// Lexicographic ordering, deque-vs-deque only.
-    ///
-    /// The trait takes `&Self`, so the dispatcher has already rejected other
-    /// types with "'<' not supported between instances of ...". Charges a
-    /// recursion level for the same reason [`py_eq_impl`](Self::py_eq_impl)
-    /// does — nested deques recurse through here.
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            return Ok(op.equality_result(self.py_eq_impl(other, vm)?));
+        }
+        let Some(HeapReadOutput::Deque(other)) = other.read_heap(vm) else {
+            return Ok(Value::NotImplemented);
+        };
         let self_len = self.get(vm.heap).len();
         let other_len = other.get(vm.heap).len();
-        let start_states = states(self, other, vm);
+        let start_states = states(self, &other, vm);
         let mut guard = vm.recursion_guard()?;
         let vm = &mut *guard;
         for i in 0..self_len.min(other_len) {
@@ -502,29 +503,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             defer_drop!(a, vm);
             let b = other.get(vm.heap).items[i].clone_with_heap(vm.heap);
             defer_drop!(b, vm);
-            match a.py_cmp(b, vm)? {
-                CmpOrder::Ordered(Ordering::Equal) => {}
-                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
-                // A `NaN` element is never `==`-equal, so it is the first
-                // differing pair and the deque is unordered (yields `False`).
-                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
-                // CPython checks `__eq__` first and only orders non-equal pairs,
-                // so equal-but-unorderable elements (e.g. `None == None`) don't
-                // block the comparison — mirror list/tuple.
-                CmpOrder::Incomparable => {
-                    if !a.py_eq(b, vm)? {
-                        return Ok(CmpOrder::Incomparable);
-                    }
-                }
+            if !a.py_eq(b, vm)? {
+                // Unlike list and tuple, deque truth-tests its element's result.
+                return Ok(Value::Bool(a.py_richcompare_bool(b, op, vm)?));
             }
-            // Either comparison above can run a user `__eq__`/`__lt__` that
-            // resizes a deque, invalidating the indices — see `py_eq_impl`.
-            if states(self, other, vm) != start_states {
+            // Equality may resize a deque, invalidating the next indices.
+            if states(self, &other, vm) != start_states {
                 return Err(ExcType::runtime_error_deque_mutated());
             }
         }
         // All shared items equal — the shorter deque sorts first.
-        Ok(CmpOrder::Ordered(self_len.cmp(&other_len)))
+        Ok(op.apply(Some(self_len.cmp(&other_len))))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {

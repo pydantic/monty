@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, fmt::Write};
+use std::{borrow::Cow, fmt::Write};
 
 use ahash::AHashSet;
 
@@ -6,69 +6,13 @@ use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
+    comparison::RichCompareOp,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    expressions::CmpOperator,
     hash::HashValue,
     heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
     identity::Identity,
     value::{EitherStr, Value},
 };
-
-/// Outcome of an ordering comparison ([`PyTrait::py_cmp`] / [`Value::py_cmp`]).
-///
-/// A plain `Option<Ordering>` conflated two very different "no ordering" cases;
-/// this enum splits them so callers reproduce CPython exactly:
-///
-/// - [`Ordered`](Self::Ordered) — a definite `<` / `==` / `>` result.
-/// - [`Unordered`](Self::Unordered) — the operands *are* valid comparison
-///   partners but have no ordering because a `NaN` is involved (directly, or as
-///   the first differing element of a list/tuple). CPython's ordering operators
-///   (`<`, `<=`, `>`, `>=`) all yield `False` here rather than raising, and
-///   `sorted`/`min`/`max` treat it as "no swap".
-/// - [`Incomparable`](Self::Incomparable) — the operand types (or the types of
-///   their first differing elements) have no defined ordering at all; ordering
-///   operators raise `TypeError`.
-///
-/// Collapsing `Unordered` into `Incomparable` is exactly the bug that made
-/// `float('nan') < 1` raise instead of returning `False`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CmpOrder {
-    /// A definite ordering between the two operands.
-    Ordered(Ordering),
-    /// Valid partners, but unordered because a `NaN` is involved.
-    Unordered,
-    /// The operand types have no defined ordering.
-    Incomparable,
-}
-
-impl CmpOrder {
-    /// Maps an `Option<Ordering>` from a numeric comparison helper, where `None`
-    /// can *only* mean a `NaN` operand (`f64::partial_cmp`, `i64_cmp_f64`,
-    /// `bigint_cmp_f64`, and `LongInt::partial_cmp_f64` all return `None`
-    /// exclusively for `NaN`). `None` therefore becomes [`Unordered`], never
-    /// [`Incomparable`].
-    ///
-    /// [`Unordered`]: Self::Unordered
-    /// [`Incomparable`]: Self::Incomparable
-    pub(crate) fn from_numeric(ordering: Option<Ordering>) -> Self {
-        match ordering {
-            Some(ordering) => Self::Ordered(ordering),
-            None => Self::Unordered,
-        }
-    }
-
-    /// Maps an `Option<Ordering>` from a *total*-order comparison (strings,
-    /// bytes, dates, timedeltas), where `None` never arises from a valid pair —
-    /// so `None` means the types don't compare at all ([`Incomparable`]).
-    ///
-    /// [`Incomparable`]: Self::Incomparable
-    pub(crate) fn from_total(ordering: Option<Ordering>) -> Self {
-        match ordering {
-            Some(ordering) => Self::Ordered(ordering),
-            None => Self::Incomparable,
-        }
-    }
-}
 
 /// Supplies the Python identity shared by `PyTrait`'s dynamic and concrete receivers.
 ///
@@ -149,54 +93,22 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Ok(None)
     }
 
-    /// One-sided equality normalized for identity-or-equality operations.
-    ///
-    /// Returns `Some(bool)` when this type handles `other`, or `None` for
-    /// `NotImplemented`. User instances truth-test arbitrary `__eq__` results
-    /// here, while [`Value::py_rich_eq`] uses a separate path to preserve them.
-    /// This mirrors the `NotImplemented` half of [`py_cmp`](Self::py_cmp)'s
-    /// [`CmpOrder::Incomparable`].
-    ///
-    /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
-    /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`
-    /// directly. For containers this performs element-wise comparison using the
-    /// heap to resolve nested references; `&mut VM` allows lazy hash computation
-    /// for dict key lookups and access to interned string content.
-    ///
-    /// Recursion depth is tracked via `vm.recursion_guard()`; returns
-    /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
+    /// One-sided boolean equality for builtins; `None` declines this operand pairing.
+    /// The default rich-comparison hook adapts it for `==` and `!=`. Instances
+    /// override that hook to preserve arbitrary results. Containers compare
+    /// elements with [`Value::py_eq`] and must bound recursion.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
 
-    /// Python comparison (`<`, `>`, etc.).
-    ///
-    /// For containers, this performs element-wise comparison using the heap
-    /// to resolve nested references. Takes `&mut VM` to allow lazy hash
-    /// computation for dict key lookups and access to interned string content.
-    ///
-    /// Recursion depth is tracked via `vm.recursion_guard()`.
-    ///
-    /// Returns a [`CmpOrder`] distinguishing a definite ordering, a
-    /// `NaN`-driven unordered-but-valid result (ordering operators yield
-    /// `False`), and a genuine type mismatch (ordering operators raise
-    /// `TypeError`) — see [`CmpOrder`] for why the distinction matters. The
-    /// default is [`CmpOrder::Incomparable`] (the type has no ordering).
-    /// Returns `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Incomparable)
-    }
-
-    /// Answers a single ordering operator (`<` `<=` `>` `>=`) for types that a
-    /// [`CmpOrder`] cannot describe, taking precedence over [`py_cmp`](Self::py_cmp).
-    ///
-    /// A `Counter` compares as a multiset, where `<=` and `>=` are independent
-    /// containment tests (neither need hold) and each operator names *itself* in
-    /// the `TypeError` an unorderable count raises — so the answer depends on
-    /// which operator was written, which a single `CmpOrder` cannot carry.
-    ///
-    /// Only the four ordering operators reach here. `Ok(None)` — the default —
-    /// defers to `py_cmp`.
-    fn py_cmp_op(&self, _other: &Value, _op: CmpOperator, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(None)
+    /// One side of Python's rich comparison protocol, returning an owned result.
+    /// `NotImplemented` requests reflected dispatch; false does not.
+    /// The default adapts builtin equality and declines ordering. Containers
+    /// must bound recursive comparisons with a recursion guard or iterator token.
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            Ok(op.equality_result(self.py_eq_impl(other, vm)?))
+        } else {
+            Ok(Value::NotImplemented)
+        }
     }
 
     /// Returns the truthiness of the value following Python semantics.

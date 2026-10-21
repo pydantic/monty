@@ -167,8 +167,11 @@ These raise `NameError`:
     `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython
     on macOS and Windows says `(34, 'Result too large')`), and `exc.args` is that
     text as one string rather than CPython's `(34, '...')` tuple.
-- **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
-    must be passed by keyword; positional forms raise `TypeError`.
+- **`sorted()` and `list.sort()`** use a different stable sorting algorithm from CPython.
+    The order and number of comparison calls can differ, affecting side effects and the first exception raised.
+    NaNs, partial orders and inconsistent comparison methods can produce a different permutation.
+    If a comparison raises, `list.sort()` restores the original element order; CPython may leave it partially sorted.
+    NaNs inside containers also have the [float identity limitation](language.md#float-identity).
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
     clamped by sign. For floats this matches CPython (which clamps to
     `Py_ssize_t`); for an int `n` with a hugely negative `ndigits`, CPython

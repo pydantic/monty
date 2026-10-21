@@ -224,11 +224,16 @@ assert not ([1, nan] < [1, 2]), 'nan as second element is unordered'
 try:
     [nan] < ['a']
     assert False, 'expected list with float/str element mismatch to raise'
-except TypeError:
-    # Both raise TypeError; only the message text diverges (Monty names the
-    # outer 'list'/'list', CPython the inner 'float'/'str') — see
-    # limitations/language.md, so the exact message is not asserted here.
-    pass
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'float' and 'str'"
+
+# Identical NaNs are skipped before ordering the remaining elements.
+assert [nan, 0] < [nan, 1]
+assert (nan, 0) < (nan, 1)
+assert [nan] <= [nan]
+assert (nan,) >= (nan,)
+assert (nan <= nan) is False
+assert (nan >= nan) is False
 
 # === sorted / min / max with NaN do not raise ===
 # NaN compares as neither less nor greater, so it never triggers a swap; CPython

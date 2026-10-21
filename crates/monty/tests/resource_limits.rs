@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use insta::{allow_duplicates, assert_snapshot};
 use monty::{MontyRepl, MontyRun, RunProgress};
 use monty_types::{
     CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
@@ -1838,6 +1839,32 @@ a < b
 
         let exc = result.expect_err("nested namedtuple ordering should exceed the recursion limit");
         assert_eq!(exc.exc_type(), ExcType::RecursionError, "build: {build}");
+    }
+}
+
+/// Rich-comparison callbacks must charge re-entry before recursively invoking themselves.
+#[test]
+fn recursive_rich_comparisons_are_bounded() {
+    for (method, op) in [
+        ("__eq__", "=="),
+        ("__ne__", "!="),
+        ("__lt__", "<"),
+        ("__le__", "<="),
+        ("__gt__", ">"),
+        ("__ge__", ">="),
+    ] {
+        let code = format!(
+            "class Recursive:\n    def {method}(self, other):\n        return self {op} other\nRecursive() {op} Recursive()"
+        );
+        let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_recursion_depth(10);
+        let exc = run
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::RecursionError, "operator {op}");
+        allow_duplicates! {
+            assert_snapshot!(exc.message().unwrap(), @"maximum recursion depth exceeded");
+        }
     }
 }
 

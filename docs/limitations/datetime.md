@@ -181,12 +181,6 @@ boundary, but is never read: Monty has no DST model, so it cannot use the flag
 to pick between the two readings of a repeated wall clock. As in CPython, `fold`
 is excluded from `==` and `hash()`, and omitted by `isoformat()`.
 
-Ordering an aware `time` against a naive one raises
-`TypeError: '<' not supported between instances of 'datetime.time' and 'datetime.time'`, where CPython raises
-`TypeError: can't compare offset-naive and offset-aware times`. `==` returns `False` without
-raising, matching CPython. The same wording divergence applies to
-`datetime`.
-
 A host `datetime.time` carrying a `tzinfo` that is not a `datetime.timezone`
 (a `ZoneInfo`, say) is rejected with `cannot convert datetime.time with tzinfo of type '...' to a Monty value`. A bare
 time has no instant to resolve

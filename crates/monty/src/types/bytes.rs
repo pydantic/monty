@@ -72,11 +72,12 @@ use monty_types::ResourceError;
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
 use smallvec::smallvec;
 
-use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
+use super::{LazyHeapSet, PyTrait, Type};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
+    comparison::{RichCompareOp, compare_bytes},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
@@ -442,8 +443,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         Ok(Some(hash))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(compare_bytes(self.get(vm.heap).as_slice(), other, op, vm))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

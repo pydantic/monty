@@ -6,9 +6,9 @@ use super::{PyTrait, iter::checked_preallocation_hint};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    expressions::CmpOperator,
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId,
@@ -321,17 +321,17 @@ impl<'h> HeapRead<'h, SetStorage> {
     }
 
     /// Set ordering tests containment; overlapping sets can satisfy neither <= nor >=.
-    fn compare_storage(&self, other: &Self, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn compare_storage(&self, other: &Self, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let lhs_len = self.get(vm.heap).len();
         let rhs_len = other.get(vm.heap).len();
 
         // Strict containment requires different lengths; non-strict containment includes equality.
         let (smaller, larger) = match op {
-            CmpOperator::Lt if lhs_len < rhs_len => (self, other),
-            CmpOperator::LtE if lhs_len <= rhs_len => (self, other),
-            CmpOperator::Gt if lhs_len > rhs_len => (other, self),
-            CmpOperator::GtE if lhs_len >= rhs_len => (other, self),
-            CmpOperator::Lt | CmpOperator::LtE | CmpOperator::Gt | CmpOperator::GtE => return Ok(Some(false)),
+            RichCompareOp::Lt if lhs_len < rhs_len => (self, other),
+            RichCompareOp::Le if lhs_len <= rhs_len => (self, other),
+            RichCompareOp::Gt if lhs_len > rhs_len => (other, self),
+            RichCompareOp::Ge if lhs_len >= rhs_len => (other, self),
+            RichCompareOp::Lt | RichCompareOp::Le | RichCompareOp::Gt | RichCompareOp::Ge => return Ok(Some(false)),
             _ => return Ok(None),
         };
 
@@ -352,7 +352,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 
     /// Ordering accepts set, frozenset, dict_keys and dict_items, in either operand position.
     /// Other iterables (including dict_values) are accepted by issubset/issuperset, but not by these operators.
-    fn compare_operand(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn compare_operand(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::Set(other)) => self.compare_storage(&other.storage(), op, vm),
             Some(HeapReadOutput::FrozenSet(other)) => self.compare_storage(&other.storage(), op, vm),
@@ -361,10 +361,10 @@ impl<'h> HeapRead<'h, SetStorage> {
                 let lhs_len = self.get(vm.heap).len();
                 let rhs_len = view.py_len(vm).expect("dict views have a length");
                 let possible = match op {
-                    CmpOperator::Lt => lhs_len < rhs_len,
-                    CmpOperator::LtE => lhs_len <= rhs_len,
-                    CmpOperator::Gt => lhs_len > rhs_len,
-                    CmpOperator::GtE => lhs_len >= rhs_len,
+                    RichCompareOp::Lt => lhs_len < rhs_len,
+                    RichCompareOp::Le => lhs_len <= rhs_len,
+                    RichCompareOp::Gt => lhs_len > rhs_len,
+                    RichCompareOp::Ge => lhs_len >= rhs_len,
                     _ => return Ok(None),
                 };
                 if !possible {
@@ -373,7 +373,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 
                 // Probe the view directly: an items view may contain unhashable values
                 // without preventing a set from being its subset.
-                if matches!(op, CmpOperator::Lt | CmpOperator::LtE) {
+                if matches!(op, RichCompareOp::Lt | RichCompareOp::Le) {
                     let iter = self.iter(vm)?;
                     defer_drop_mut!(iter, vm);
                     while let Some(elem) = iter.next(vm)? {
@@ -1153,8 +1153,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        self.storage().compare_operand(other, op, vm)
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            Ok(op.equality_result(self.py_eq_impl(other, vm)?))
+        } else {
+            Ok(self
+                .storage()
+                .compare_operand(other, op, vm)?
+                .map_or(Value::NotImplemented, Value::Bool))
+        }
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -1470,8 +1477,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        self.storage().compare_operand(other, op, vm)
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            Ok(op.equality_result(self.py_eq_impl(other, vm)?))
+        } else {
+            Ok(self
+                .storage()
+                .compare_operand(other, op, vm)?
+                .map_or(Value::NotImplemented, Value::Bool))
+        }
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
