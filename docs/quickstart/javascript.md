@@ -222,27 +222,33 @@ This instrumentation is native-only; WASM still preserves caller context through
 import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } from '@pydantic/monty'
 ```
 
-| Class               | Raised when                                                              | Session survives |
-| ------------------- | ------------------------------------------------------------------------ | ---------------- |
-| `MontySyntaxError`  | The snippet does not parse                                               | yes              |
-| `MontyTypingError`  | Type checking rejected the snippet                                       | yes              |
-| `MontyRuntimeError` | The code raised at runtime                                               | yes              |
-| `MontyCrashedError` | The worker died, or the watchdog killed it                               | no               |
-| `ProtocolError`     | The worker, or a caller misusing the session, violated the wire protocol | no               |
+| Class                  | Raised when                                                                           | Session survives |
+| ---------------------- | ------------------------------------------------------------------------------------- | ---------------- |
+| `MontySyntaxError`     | The snippet does not parse                                                            | yes              |
+| `MontyTypingError`     | Type checking rejected the snippet                                                    | yes              |
+| `MontyRuntimeError`    | The code raised at runtime                                                            | yes              |
+| `MontyCrashedError`    | The worker died, or the watchdog killed it                                            | no               |
+| `MontyDisconnectError` | A [remote worker's](#remote-workers) connection closed                                | no               |
+| `MontyShutdown`        | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
+| `ProtocolError`        | The worker, or a caller misusing the session, violated the wire protocol              | no               |
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
 Which formats a class accepts differs; passing one a class does not accept throws, except `MontyTypingError.display()`,
 which ignores any argument:
 
-| Class                             | `display` formats                              |
-| --------------------------------- | ---------------------------------------------- |
-| `MontyError`, `MontyCrashedError` | `'msg'` (default), `'type-msg'`                |
-| `MontySyntaxError`                | `'msg'` (default), `'type-msg'`, `'traceback'` |
-| `MontyRuntimeError`               | `'traceback'` (default), `'type-msg'`, `'msg'` |
-| `MontyTypingError`                | takes no argument; returns the diagnostics     |
+| Class                                                                      | `display` formats                              |
+| -------------------------------------------------------------------------- | ---------------------------------------------- |
+| `MontyError`, `MontyCrashedError`, `MontyDisconnectError`, `MontyShutdown` | `'msg'` (default), `'type-msg'`                |
+| `MontySyntaxError`                                                         | `'msg'` (default), `'type-msg'`, `'traceback'` |
+| `MontyRuntimeError`                                                        | `'traceback'` (default), `'type-msg'`, `'msg'` |
+| `MontyTypingError`                                                         | takes no argument; returns the diagnostics     |
 
-`MontyCrashedError` adds `timedOut` and `exitStatus`.
+`MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`.
+`checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
+refusing it.
+When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
+that fails to spawn or a refused connection rejects with a plain `Error`.
 
 ## Limits and type checking
 
@@ -369,6 +375,37 @@ See [snapshot security](../security.md#deserializing-snapshots) before accepting
 
 See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTelemetry context propagation.
 
+## Remote workers
+
+`MontyWebsocket` is a pool of remote workers, usually [Full Monty](../server.md): each checkout dials the URL, and no
+connection is pre-warmed or reused.
+Sessions are the same `MontySession` a local pool returns:
+
+```ts test="skip"
+import { MontyWebsocket } from '@pydantic/monty'
+
+await using pool = await MontyWebsocket.create('ws://localhost:8000/', {
+  connectHeaders: () => ({ authorization: `Bearer ${process.env.MONTY_TOKEN}` }),
+})
+await using session = await pool.checkout({ limits: { maxFeedDurationSecs: 30 } })
+console.log(await session.feedRun('1 + 1')) // 2
+```
+
+`connectHeaders` is called at each checkout, and may return a promise, for headers on that connection's upgrade request.
+`requestTimeout` defaults to 10 seconds rather than no deadline; `null` disables it.
+`checkout()` also takes `ephemeral` and `profile`, which the server interprets.
+A refused connection rejects `checkout()`.
+
+A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
+Either can also reject `checkout()` itself, while the session is being created.
+Against a server that stores sessions, `session.sessionId` names the session, `session.dump()` returns the ID of a
+stored record, and both load into a fresh session with `loadSession` / `loadSnapshot`.
+When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
+unless `autoResume: false` is passed to `MontyWebsocket.create()`.
+These behave as in the Python client; see [stored sessions](../api/python/websocket.md#stored-sessions).
+The transport adds no isolation of its own: see [remote workers](../security.md#remote-workers).
+`MontyWebsocket` is native-only; `@pydantic/monty/wasm` does not export it.
+
 ## Browsers and WebAssembly
 
 Anywhere subprocesses are impossible, the same public API is available under `@pydantic/monty/wasm`, backed by a
@@ -405,6 +442,7 @@ Differences from the native path:
 
 The package includes declarations with option and method documentation, maintained alongside the implementation:
 [pool options](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/pool.ts),
+[remote pools](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/websocket.ts),
 [sessions and snapshots](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/session.ts),
 [host objects](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/classInstance.ts),
 [OS policies](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/options.ts) and

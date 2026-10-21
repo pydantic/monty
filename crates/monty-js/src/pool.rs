@@ -1,5 +1,6 @@
 //! napi binding over `monty-pool`: crash-isolated execution in pools of
-//! `monty subprocess` workers, the Node.js counterpart of `pydantic_monty`.
+//! `monty subprocess` workers, or of remote workers dialed over a WebSocket —
+//! the Node.js counterpart of `pydantic_monty`.
 //!
 //! The architecture mirrors the Python binding but keeps JS-shaped concerns in
 //! TypeScript: this module exposes *turn-level* primitives ([`NativePool`],
@@ -115,6 +116,37 @@ pub struct NativePoolOptions {
     pub max_checkouts_per_worker: Option<u32>,
 }
 
+/// Options for a pool of remote workers ([`NativePool::websocket`]). Timeouts
+/// are pre-normalised to milliseconds by the TypeScript `MontyWebsocket`.
+#[napi(object, js_name = "NativeWebsocketPoolOptions")]
+pub struct NativeWebsocketPoolOptions {
+    /// `ws://`/`wss://` URL each checkout dials verbatim.
+    pub url: String,
+    /// Cap on concurrent connections; checkouts beyond it wait. Absent: the
+    /// CPU count.
+    pub max_processes: Option<u32>,
+    /// How long `enter()` waits for capacity (ms). Absent: forever.
+    pub checkout_timeout_ms: Option<f64>,
+    /// Parent-side hard deadline per protocol turn (ms). Absent: none.
+    pub request_timeout_ms: Option<f64>,
+    /// As [`NativePoolOptions::feed_duration_limit_grace_ms`].
+    pub feed_duration_limit_grace_ms: Option<f64>,
+    /// As [`NativePoolOptions::turn_duration_limit_grace_ms`].
+    pub turn_duration_limit_grace_ms: Option<f64>,
+    /// Redial and reload a session a draining server stored, instead of
+    /// reporting the shutdown (see `PoolConfig::auto_resume`).
+    pub auto_resume: bool,
+}
+
+/// One header for a WebSocket checkout's upgrade request.
+#[napi(object, js_name = "NativeHeader")]
+pub struct NativeHeader {
+    /// Header name, validated by `monty-pool` when the connection is dialed.
+    pub name: String,
+    /// Header value, validated likewise.
+    pub value: String,
+}
+
 /// Session options for `checkout()`.
 #[napi(object, js_name = "NativeCheckoutOptions")]
 pub struct NativeCheckoutOptions {
@@ -173,6 +205,12 @@ pub struct NativeCheckoutOptions {
     pub random_seed_float: Option<f64>,
     pub random_seed_str: Option<String>,
     pub random_seed_bytes: Option<Buffer>,
+    /// Ask a server that stores sessions not to store this one (`true`) or to
+    /// store it (`false`). Absent: the server's default. Subprocess workers ignore it.
+    pub ephemeral: Option<bool>,
+    /// Server-side profile to run the session under, sent unchecked. Absent:
+    /// the server's default. Subprocess workers ignore it.
+    pub profile: Option<String>,
 }
 
 /// Per-feed settings other than the mounts, passed by the TypeScript
@@ -239,14 +277,17 @@ impl NativeMountDir {
     }
 }
 
-/// A pool of `monty` worker subprocesses. Wrapped by the TypeScript `Monty`
-/// class — not part of the public API.
+/// A pool of `monty` worker subprocesses, or of remote workers reached over a
+/// WebSocket. Wrapped by the TypeScript `Monty` / `MontyWebsocket` classes —
+/// not part of the public API.
 #[napi(js_name = "NativePool")]
 pub struct NativePool {
     config: PoolConfig,
     pool: SharedPool,
     /// Cancels pending checkouts without interrupting sessions already checked out.
     closing: watch::Sender<bool>,
+    /// The public class wrapping this pool, named in its error messages.
+    pool_name: &'static str,
 }
 
 #[napi]
@@ -258,35 +299,37 @@ impl NativePool {
         let mut config = PoolConfig::subprocess(&options.binary_path);
         config.min_processes = options.min_processes as usize;
         config.max_processes = options.max_processes as usize;
-        config.checkout_timeout = options
-            .checkout_timeout_ms
-            .map(|ms| duration_from_ms("checkoutTimeout", ms))
-            .transpose()?;
-        config.request_timeout = options
-            .request_timeout_ms
-            .map(|ms| duration_from_ms("requestTimeout", ms))
-            .transpose()?;
-        config.feed_duration_limit_grace = options
-            .feed_duration_limit_grace_ms
-            .map(|ms| duration_from_ms("feedDurationLimitGrace", ms))
-            .transpose()?;
-        config.turn_duration_limit_grace = options
-            .turn_duration_limit_grace_ms
-            .map(|ms| duration_from_ms("turnDurationLimitGrace", ms))
-            .transpose()?;
+        apply_timeouts(
+            &mut config,
+            options.checkout_timeout_ms,
+            options.request_timeout_ms,
+            options.feed_duration_limit_grace_ms,
+            options.turn_duration_limit_grace_ms,
+        )?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
-        config.metrics = configured_adapter().map(TelemetryAdapterHandle::metrics);
-        if config.max_processes < 1 {
-            return Err(invalid("maxProcesses must be at least 1"));
-        }
         if config.min_processes > config.max_processes {
             return Err(invalid("minProcesses cannot exceed maxProcesses"));
         }
-        Ok(Self {
-            config,
-            pool: Arc::new(Mutex::new(None)),
-            closing: watch::channel(false).0,
-        })
+        Self::from_config(config, "Monty")
+    }
+
+    /// Configures a pool of remote workers: each checkout dials `url`, and no
+    /// connection is pre-warmed or reused.
+    #[napi(factory)]
+    pub fn websocket(options: NativeWebsocketPoolOptions) -> Result<Self> {
+        let mut config = PoolConfig::websocket(options.url);
+        if let Some(max) = options.max_processes {
+            config.max_processes = max as usize;
+        }
+        apply_timeouts(
+            &mut config,
+            options.checkout_timeout_ms,
+            options.request_timeout_ms,
+            options.feed_duration_limit_grace_ms,
+            options.turn_duration_limit_grace_ms,
+        )?;
+        config.auto_resume = options.auto_resume;
+        Self::from_config(config, "MontyWebsocket")
     }
 
     /// Spawns the prewarmed workers off the event loop.
@@ -309,6 +352,7 @@ impl NativePool {
         Ok(NativeSession {
             pool: Arc::clone(&self.pool),
             closing: self.closing.subscribe(),
+            pool_name: self.pool_name,
             repl_config: ReplConfig {
                 script_name: options.script_name,
                 limits,
@@ -330,13 +374,16 @@ impl NativePool {
                     .map(|ms| duration_from_ms("printFlushInterval", ms))
                     .transpose()?,
                 os_policy,
-                // only a serving relay stores sessions; its default applies
-                persistence: Persistence::ServerDefault,
-                // only a serving relay has profiles; its default applies
-                profile: None,
+                persistence: match options.ephemeral {
+                    None => Persistence::ServerDefault,
+                    Some(true) => Persistence::Ephemeral,
+                    Some(false) => Persistence::Stored,
+                },
+                profile: options.profile,
             },
 
             checkout: Arc::new(AsyncMutex::new(None)),
+            session_id: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -353,6 +400,23 @@ impl NativePool {
                 drop(pool);
             }
             Ok(())
+        })
+    }
+}
+
+impl NativePool {
+    /// Checks the settings both transports share and wraps `config`;
+    /// `pool_name` is the TypeScript class, for error messages.
+    fn from_config(mut config: PoolConfig, pool_name: &'static str) -> Result<Self> {
+        if config.max_processes < 1 {
+            return Err(invalid("maxProcesses must be at least 1"));
+        }
+        config.metrics = configured_adapter().map(TelemetryAdapterHandle::metrics);
+        Ok(Self {
+            config,
+            pool: Arc::new(Mutex::new(None)),
+            closing: watch::channel(false).0,
+            pool_name,
         })
     }
 }
@@ -397,49 +461,77 @@ pub struct NativeSession {
     pool: SharedPool,
     /// Observes closure while waiting to acquire a worker; unused after entry.
     closing: watch::Receiver<bool>,
+    /// As [`NativePool`]'s, for the errors `enter` raises.
+    pool_name: &'static str,
     repl_config: ReplConfig,
     checkout: SharedCheckout,
+    /// The checkout's session ID, copied after entry and every turn so the
+    /// getter never waits on the checkout lock a running turn holds.
+    session_id: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 #[napi]
 impl NativeSession {
-    /// Checks a worker out of the pool (spawning one if allowed) and creates
-    /// the REPL session in it. Rejects with the pool error message on
-    /// exhaustion or spawn failure.
+    /// Checks a worker out of the pool (spawning or dialing one if allowed)
+    /// and creates the REPL session in it. `connect_headers` go on a WebSocket
+    /// pool's upgrade request; a subprocess pool ignores them. Resolves to
+    /// `{kind:'ok'}` or a failure turn object (`exhausted` for a checkout
+    /// timeout), so the TypeScript layer raises the same classes as for a turn;
+    /// rejects only when the pool is closed or not started.
     #[napi]
     pub fn enter<'env>(
         &self,
         env: &'env Env,
         telemetry_context: Option<NativeTelemetryContext>,
-    ) -> Result<PromiseRaw<'env, ()>> {
+        connect_headers: Option<Vec<NativeHeader>>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let pool = Arc::clone(&self.pool);
         let mut closing = self.closing.clone();
+        let pool_name = self.pool_name;
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
+        let session_id = Arc::clone(&self.session_id);
         let telemetry_context =
             telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
-        env.spawn_future(async move {
-            let checkout = tokio::select! {
-                biased;
-                _ = closing.wait_for(|closed| *closed) => {
-                    return Err(invalid("the pool is closed — create a new Monty pool"));
-                }
-                checkout = async {
-                    let pool = lock(&pool)
-                        .as_ref()
-                        .map(Arc::clone)
-                        .ok_or_else(|| invalid("the pool is not started — create it with Monty.create()"))?;
-                    pool.checkout_with(
-                        &repl_config,
-                        CheckoutOptions::default().with_telemetry(telemetry_context),
-                    )
-                    .await
-                    .map_err(pool_error)
-                } => checkout?,
-            };
-            *slot.lock().await = Some(checkout);
-            Ok(())
-        })
+        let connect_headers = connect_headers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|header| (header.name, header.value))
+            .collect();
+        env.spawn_future_with_callback(
+            async move {
+                let checkout = tokio::select! {
+                    biased;
+                    _ = closing.wait_for(|closed| *closed) => {
+                        return Err(invalid(&format!("the pool is closed — create a new {pool_name} pool")));
+                    }
+                    checkout = async {
+                        let pool = lock(&pool).as_ref().map(Arc::clone).ok_or_else(|| {
+                            invalid(&format!("the pool is not started — create it with {pool_name}.create()"))
+                        })?;
+                        Ok::<_, Error>(pool
+                            .checkout_with(
+                                &repl_config,
+                                CheckoutOptions::default()
+                                    .with_telemetry(telemetry_context)
+                                    .with_connect_headers(connect_headers),
+                            )
+                            .await)
+                    } => checkout?,
+                };
+                let outcome = match checkout {
+                    Ok(checkout) => {
+                        *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
+                        *slot.lock().await = Some(checkout);
+                        TurnOutcome::Ok
+                    }
+                    Err(err @ PoolError::Exhausted) => TurnOutcome::Exhausted(err.to_string()),
+                    Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                };
+                Ok((outcome, None))
+            },
+            turn_to_js,
+        )
     }
 
     /// Runs one feed turn: executes `code` until completion or the first
@@ -715,15 +807,24 @@ impl NativeSession {
     }
 
     /// Serializes the worker's session state (idle or suspended) into opaque
-    /// bytes via monty's dump format. The session stays usable.
+    /// bytes via monty's dump format — or, against a server that stores
+    /// sessions, the ID of the stored record. The session stays usable.
+    /// Resolves to `{kind:'dumped', state}` or a failure turn object; takes
+    /// `on_print` to share the turn machinery, never invoking it.
     #[napi]
-    pub fn dump<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, Buffer>> {
-        let slot = Arc::clone(&self.checkout);
-        env.spawn_future(async move {
-            let mut guard = slot.lock().await;
-            let checkout = guard.as_mut().ok_or_else(|| pool_error(PoolError::Finished))?;
-            checkout.dump().await.map(Buffer::from).map_err(pool_error)
-        })
+    pub fn dump<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(|checkout, _on_print| {
+                Box::pin(async move {
+                    match checkout.dump().await {
+                        Ok(state) => TurnOutcome::Dumped(state),
+                        Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                    }
+                })
+            }),
+        )
     }
 
     /// Installs third-party Python packages into the session via the worker's
@@ -759,11 +860,14 @@ impl NativeSession {
     #[napi]
     pub fn finish<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
         let slot = Arc::clone(&self.checkout);
+        let session_id = Arc::clone(&self.session_id);
         env.spawn_future(async move {
             // take in its own statement so the lock is released before the
             // finish turn runs
             let checkout = slot.lock().await.take();
             if let Some(checkout) = checkout {
+                // the getter reads the cache once the checkout is gone
+                *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
                 // best effort: a worker that cannot reset is discarded by
                 // monty-pool itself
                 let _ = checkout.finish().await;
@@ -786,6 +890,14 @@ impl NativeSession {
     #[napi(getter)]
     pub fn worker_pid(&self) -> Option<u32> {
         self.checkout.try_lock().ok()?.as_ref().and_then(Checkout::pid)
+    }
+
+    /// The opaque ID a server that stores sessions gave this session, or
+    /// `null`: subprocess workers, ephemeral sessions and servers that store
+    /// nothing. As of the last completed turn, so an auto-resume shows here.
+    #[napi(getter)]
+    pub fn session_id(&self) -> Option<Buffer> {
+        lock(&self.session_id).clone().map(Buffer::from)
     }
 }
 
@@ -825,6 +937,7 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let tsfn = Arc::new(on_print.build_threadsafe_function().build()?);
         let slot = Arc::clone(&self.checkout);
+        let session_id = Arc::clone(&self.session_id);
         env.spawn_future_with_callback(
             async move {
                 let mut guard = slot.lock().await;
@@ -856,6 +969,8 @@ impl NativeSession {
                     })
                 };
                 let outcome = compute(checkout, &mut on_print).await;
+                // a load or an auto-resume can each move the session to a new ID
+                *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
                 Ok((outcome, callback_span_key(&checkout.callback_context())))
             },
             turn_to_js,
@@ -880,6 +995,11 @@ enum TurnOutcome {
     },
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
+    /// A remote worker's connection closed mid-session; the session is lost.
+    Disconnected(String),
+    /// A draining server declined the request, which did not run; `dump`
+    /// names what restores the session, when the server stored it.
+    Shutdown { message: String, dump: Option<Vec<u8>> },
     /// A restore of an idle (between-feeds) dump — there is no suspension to
     /// resume. Only produced by [`NativeSession::restore`].
     LoadedIdle,
@@ -888,8 +1008,14 @@ enum TurnOutcome {
     /// [`NativeSession::resume_from_mounts`].
     NotMounted,
     /// A non-feed request succeeded with no value or suspension. Produced by
-    /// [`NativeSession::install_dependencies`].
+    /// [`NativeSession::install_dependencies`] and [`NativeSession::enter`].
     Ok,
+    /// No worker became available within the checkout timeout. Only produced
+    /// by [`NativeSession::enter`].
+    Exhausted(String),
+    /// The session's dump (or stored-record ID). Only produced by
+    /// [`NativeSession::dump`].
+    Dumped(Vec<u8>),
 }
 
 impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
@@ -911,16 +1037,16 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
                 message: PoolError::Crashed { status, cause }.to_string(),
                 timed_out: false,
             },
-            // WebSocket-only, so both are unreachable here (the napi binding
-            // is subprocess-only). Mapped to their local analogue anyway
-            // rather than falling through to a misleading protocol error: a
-            // dropped connection and a server shutdown both mean the session
-            // is gone, which is what `Crashed` tells the caller.
-            Err(err @ (PoolError::Disconnected { .. } | PoolError::Shutdown { .. })) => Self::Crashed {
-                message: err.to_string(),
-                timed_out: false,
-                exit_status: None,
-            },
+            Err(err @ PoolError::Disconnected { .. }) => Self::Disconnected(err.to_string()),
+            // the error's Display notes whether a dump came with it, so render
+            // it before taking the dump back out
+            Err(err @ PoolError::Shutdown { .. }) => {
+                let message = err.to_string();
+                let PoolError::Shutdown { dump } = err else {
+                    unreachable!("matched as Shutdown above")
+                };
+                Self::Shutdown { message, dump }
+            }
             Err(other) => Self::Protocol(other.to_string()),
         }
     }
@@ -1025,6 +1151,21 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("kind", "protocol")?;
             obj.set("message", message)?;
         }
+        TurnOutcome::Disconnected(message) => {
+            obj.set("kind", "disconnected")?;
+            obj.set("message", message)?;
+        }
+        TurnOutcome::Shutdown { message, dump } => {
+            obj.set("kind", "shutdown")?;
+            obj.set("message", message)?;
+            if let Some(dump) = dump {
+                obj.set("dump", Buffer::from(dump))?;
+            }
+        }
+        TurnOutcome::Dumped(state) => {
+            obj.set("kind", "dumped")?;
+            obj.set("state", Buffer::from(state))?;
+        }
         TurnOutcome::LoadedIdle => {
             obj.set("kind", "loaded")?;
         }
@@ -1033,6 +1174,10 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }
         TurnOutcome::Ok => {
             obj.set("kind", "ok")?;
+        }
+        TurnOutcome::Exhausted(message) => {
+            obj.set("kind", "exhausted")?;
+            obj.set("message", message)?;
         }
     }
     Ok(obj)
@@ -1211,6 +1356,30 @@ fn bytes_limit(limit: f64, name: &str) -> Result<u64> {
     } else {
         Err(invalid(&format!("{name} must be a non-negative integer below 2**64")))
     }
+}
+
+/// Applies the timeout and grace settings both pool transports take, in
+/// milliseconds; an absent grace disables that backstop.
+fn apply_timeouts(
+    config: &mut PoolConfig,
+    checkout_timeout_ms: Option<f64>,
+    request_timeout_ms: Option<f64>,
+    feed_duration_limit_grace_ms: Option<f64>,
+    turn_duration_limit_grace_ms: Option<f64>,
+) -> Result<()> {
+    config.checkout_timeout = checkout_timeout_ms
+        .map(|ms| duration_from_ms("checkoutTimeout", ms))
+        .transpose()?;
+    config.request_timeout = request_timeout_ms
+        .map(|ms| duration_from_ms("requestTimeout", ms))
+        .transpose()?;
+    config.feed_duration_limit_grace = feed_duration_limit_grace_ms
+        .map(|ms| duration_from_ms("feedDurationLimitGrace", ms))
+        .transpose()?;
+    config.turn_duration_limit_grace = turn_duration_limit_grace_ms
+        .map(|ms| duration_from_ms("turnDurationLimitGrace", ms))
+        .transpose()?;
+    Ok(())
 }
 
 /// Converts a millisecond count from JS into a `Duration`, naming the option

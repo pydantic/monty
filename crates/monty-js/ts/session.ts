@@ -24,8 +24,10 @@ import {
 } from './classInstance.js'
 import {
   MontyCrashedError,
+  MontyDisconnectError,
   MontyError,
   montyErrorFromNative,
+  MontyShutdown,
   MontyTypingError,
   notCallableMessage,
   ProtocolError,
@@ -36,6 +38,10 @@ import { checkModuleName, ExternalModule, kindOf } from './externalModule.js'
 import { mountsToNative } from './mount.js'
 import type { MountDir } from './mountDir.js'
 import {
+  type CrashedTurn,
+  type DisconnectedTurn,
+  type DumpedTurn,
+  type EnterTurn,
   type FunctionCallTurn,
   type LoadedTurn,
   type NameLookupTurn,
@@ -45,6 +51,7 @@ import {
   type NotMountedTurn,
   type OsCallTurn,
   type ResolveFuturesTurn,
+  type ShutdownTurn,
   osCallAcceptsFuture,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
@@ -234,7 +241,9 @@ export class MontySession {
           printTarget.throwIfFailed()
           throw new MontyTypingError(turn.diagnostics)
         case 'crashed':
-          throw this.poison(new MontyCrashedError(turn.message, turn))
+        case 'disconnected':
+        case 'shutdown':
+          throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
       }
@@ -318,7 +327,9 @@ export class MontySession {
       case 'loaded':
         return
       case 'crashed':
-        throw await this.failedLoad(new MontyCrashedError(turn.message, turn))
+      case 'disconnected':
+      case 'shutdown':
+        throw await this.failedLoad(lostSessionError(turn))
       case 'protocol':
         throw await this.failedLoad(new ProtocolError(turn.message))
       case 'error':
@@ -394,10 +405,16 @@ export class MontySession {
    * Serializes the worker's session state into opaque bytes via monty's dump
    * format. The session stays usable; the bytes can only be restored by a
    * monty worker of the same version.
+   *
+   * Against a `MontyWebsocket` server that stores sessions, returns the ID of
+   * a record holding the current state instead; `loadSession` / `loadSnapshot`
+   * accept it like dump bytes. A server that stores nothing may refuse with
+   * `MontyRuntimeError`, and the session carries on.
    */
   async dump(): Promise<Buffer> {
     this.ensureUsable()
-    return bufferFrom(await this.native.dump())
+    const printTarget = new PrintTarget(undefined)
+    return dumpSession(this.native, printTarget.write.bind(printTarget), (err) => this.poison(err))
   }
 
   /**
@@ -426,7 +443,9 @@ export class MontySession {
       case 'error':
         throw montyErrorFromNative(turn.exception)
       case 'crashed':
-        throw this.poison(new MontyCrashedError(turn.message, turn))
+      case 'disconnected':
+      case 'shutdown':
+        throw this.poison(lostSessionError(turn))
       case 'protocol':
         throw this.poison(new ProtocolError(turn.message))
       default:
@@ -440,6 +459,18 @@ export class MontySession {
    */
   get workerPid(): number | undefined {
     return this.native.workerPid ?? undefined
+  }
+
+  /**
+   * The opaque ID a `MontyWebsocket` server that stores sessions gave this
+   * session, or `undefined`: local workers, ephemeral sessions and servers that
+   * store nothing. Pass it to `loadSession` / `loadSnapshot` on a fresh session
+   * to start a new session from the state stored under it. Changes when the
+   * pool resumes the session after a server shutdown.
+   */
+  get sessionId(): Buffer | undefined {
+    const id = this.native.sessionId
+    return id === undefined || id === null ? undefined : bufferFrom(id)
   }
 
   /**
@@ -1002,7 +1033,9 @@ class SnapshotDriver {
           this.printTarget.throwIfFailed()
           throw new MontyTypingError(turn.diagnostics)
         case 'crashed':
-          throw this.poison(new MontyCrashedError(turn.message, turn))
+        case 'disconnected':
+        case 'shutdown':
+          throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
         case 'osCall':
@@ -1099,7 +1132,7 @@ class SnapshotDriver {
   }
 
   async dump(): Promise<Buffer> {
-    return bufferFrom(await this.native.dump())
+    return dumpSession(this.native, this.onPrint, this.poison)
   }
 }
 
@@ -1538,6 +1571,79 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
   return typeof value === 'object' && value !== null && typeof (value as { then?: unknown }).then === 'function'
+}
+
+/**
+ * Checks `native` out of its pool, raising what a turn would for the same
+ * failure: `MontyRuntimeError` when the server refuses the session,
+ * `MontyCrashedError` / `MontyDisconnectError` / `MontyShutdown` when the worker
+ * is lost, and a `TimeoutError` `DOMException` when no worker became available
+ * within the checkout timeout. Anything else (a failed spawn or dial) is a plain `Error`.
+ */
+export async function enterSession(
+  native: NativeSession,
+  telemetryContext: unknown,
+  connectHeaders?: { name: string; value: string }[],
+): Promise<void> {
+  const turn = (await native.enter(telemetryContext, connectHeaders)) as EnterTurn
+  switch (turn.kind) {
+    case 'ok':
+      return
+    case 'exhausted':
+      throw new DOMException(turn.message, 'TimeoutError')
+    case 'error':
+      throw montyErrorFromNative(turn.exception)
+    case 'crashed':
+    case 'disconnected':
+    case 'shutdown':
+      throw lostSessionError(turn)
+    case 'typingError':
+      throw new Error(turn.diagnostics)
+    case 'protocol':
+      throw new Error(turn.message)
+  }
+}
+
+/**
+ * The error for a turn that lost the session's worker: a crash, a dropped
+ * remote connection, or a remote server shutting down.
+ */
+function lostSessionError(turn: CrashedTurn | DisconnectedTurn | ShutdownTurn): MontyError {
+  switch (turn.kind) {
+    case 'crashed':
+      return new MontyCrashedError(turn.message, turn)
+    case 'disconnected':
+      return new MontyDisconnectError(turn.message)
+    case 'shutdown':
+      return new MontyShutdown(turn.message, turn.dump === undefined ? null : bufferFrom(turn.dump))
+  }
+}
+
+/**
+ * Runs a dump turn, resolving to the session's state or a storing server's
+ * record ID. A refused dump throws `MontyRuntimeError` and leaves the session
+ * usable; a lost worker or protocol failure poisons it.
+ */
+async function dumpSession(
+  native: NativeSession,
+  onPrint: PrintCallback,
+  poison: (err: Error) => Error,
+): Promise<Buffer> {
+  const turn = (await native.dump(onPrint)) as NativeTurn | DumpedTurn
+  switch (turn.kind) {
+    case 'dumped':
+      return bufferFrom(turn.state)
+    case 'error':
+      throw montyErrorFromNative(turn.exception)
+    case 'crashed':
+    case 'disconnected':
+    case 'shutdown':
+      throw poison(lostSessionError(turn))
+    case 'protocol':
+      throw poison(new ProtocolError(turn.message))
+    default:
+      throw poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
+  }
 }
 
 function bytesForNative(bytes: Uint8Array): Buffer {

@@ -165,7 +165,7 @@ export class WorkerPool {
         waiter.timer = deadlineTimer(this.options.checkoutTimeoutMs, () => {
           const index = this.waiters.indexOf(waiter)
           if (index >= 0) this.waiters.splice(index, 1)
-          reject(new Error('no monty worker became available within the checkout timeout'))
+          reject(new DOMException('no monty worker became available within the checkout timeout', 'TimeoutError'))
         })
       }
       this.waiters.push(waiter)

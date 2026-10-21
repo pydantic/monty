@@ -4,8 +4,8 @@ Full Monty is a WebSocket server that hosts Monty sandbox workers: each connecti
 subprocess from an elastic pool.
 A worker serves one session at a time and is reset or replaced between sessions, so no sandbox state crosses from one
 client to another.
-`pydantic_monty.AsyncMontyWebsocket` connects directly from Python; the TypeScript package (`@pydantic/monty`) is
-subprocess-only today and cannot dial a remote server.
+`pydantic_monty.AsyncMontyWebsocket` connects directly from Python, and `MontyWebsocket` from Node with
+`@pydantic/monty`; the package's WebAssembly build cannot dial a remote server.
 The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
 Logfire](https://pydantic.dev/logfire). The `monty` worker provides the sandboxing.
 Additionally, Full Monty can act as a reverse proxy, forwarding requests to a full sandbox running CPython.

@@ -1,7 +1,8 @@
 // Error classes thrown by the pool client, mirroring pydantic_monty's
 // exception hierarchy: MontyError is the base, with MontySyntaxError /
 // MontyRuntimeError / MontyTypingError for sandbox failures and
-// MontyCrashedError for worker death. The full Python traceback is rendered
+// MontyCrashedError for worker death (MontyDisconnectError / MontyShutdown
+// for a remote worker's connection). The full Python traceback is rendered
 // once, in the worker (monty's `MontyException` Display), and carried across
 // as a string — never re-implemented here. Structured frames travel alongside
 // it for programmatic access via `MontyRuntimeError.traceback()`.
@@ -209,6 +210,43 @@ export class MontyCrashedError extends MontyError {
     this.name = 'MontyCrashedError'
     this.timedOut = options.timedOut ?? false
     this.exitStatus = options.exitStatus ?? null
+  }
+}
+
+/**
+ * Raised when a remote worker's connection closed mid-session (`MontyWebsocket`
+ * only; the local analogue is `MontyCrashedError`). The sandbox may have died,
+ * or the server may have dropped the session by policy — an idle, session or
+ * turn timeout, or being over capacity; the client cannot tell which. The
+ * session is lost; check out a new one.
+ */
+export class MontyDisconnectError extends MontyError {
+  constructor(message: string) {
+    super('RuntimeError', message)
+    this.name = 'MontyDisconnectError'
+  }
+}
+
+/**
+ * Raised when the remote server is shutting down (`MontyWebsocket` only). The
+ * request that raised it **did not run**, so re-running it is safe; the
+ * session is lost. Against a server that stores sessions the pool resumes the
+ * session itself first (see `MontyWebsocketOptions.autoResume`), so this is
+ * raised only when that fails or is disabled.
+ *
+ * `dump` restores the session on a fresh one, with `loadSession` (idle) or
+ * `loadSnapshot` (suspended mid-feed); `null` when the server stored nothing.
+ * Restoring a suspended call re-announces it, so a host callback the
+ * interrupted request was answering runs again.
+ */
+export class MontyShutdown extends MontyError {
+  /** What `loadSession` / `loadSnapshot` restores, or `null` when there is nothing to load. */
+  readonly dump: Buffer | null
+
+  constructor(message: string, dump: Buffer | null = null) {
+    super('RuntimeError', message)
+    this.name = 'MontyShutdown'
+    this.dump = dump
   }
 }
 

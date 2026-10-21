@@ -449,7 +449,8 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     Across feeds neither applies — every in-sandbox budget restarts at the next feed, so a session fed repeatedly is
     bounded only by what the host counts and ends itself.
     Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
-    `request_timeout` to no deadline; only [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] sets one, at 10 seconds.
+    `request_timeout` to no deadline; only the WebSocket pools ([`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket],
+    JavaScript `MontyWebsocket.create()`) set one, at 10 seconds.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
     session rather than continuing to run code in it.
     The pool does not do this for you, and neither limit stops you: the duration budgets restart at the next feed, and
@@ -486,7 +487,7 @@ process. The Python and JavaScript APIs do not offer an in-process execution mod
 
 ### Remote workers
 
-[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] (Python) and [`PoolConfig::websocket`](api/rust/monty-pool.md#poolconfig) (Rust) dial a remote worker instead of spawning a local one.
+[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] (Python), `MontyWebsocket` (JavaScript) and [`PoolConfig::websocket`](api/rust/monty-pool.md#poolconfig) (Rust) dial a remote worker instead of spawning a local one.
 **A remote peer need not be a Monty sandbox at all.** It may be real CPython with no sandbox, no resource limits and
 full host access, relying on deployment isolation — a container or VM per session — rather than on the interpreter.
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the

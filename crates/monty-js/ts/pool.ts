@@ -16,7 +16,7 @@ import {
   encodeOsPolicy,
   validateMaxCheckouts,
 } from './options.js'
-import { type ExternalModules, HostModules, MontySession } from './session.js'
+import { enterSession, type ExternalModules, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
 /** Options for [`Monty`]. */
@@ -199,22 +199,10 @@ export class Monty {
     if (this.closed) {
       throw new Error('the pool is closed — create a new Monty pool')
     }
-    const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
-    const osPolicy = encodeOsPolicy(options.osPolicy ?? {})
     const modules = new HostModules(options.externalModules)
-    const native = this.native.checkout({
-      scriptName: options.scriptName ?? 'main.py',
-      ...(options.limits !== undefined ? { limits: options.limits } : {}),
-      typeCheck: options.typeCheck ?? false,
-      ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
-      ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
-      ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
-      ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
-      ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
-      ...nativeOsPolicy(osPolicy),
-    })
+    const native = this.native.checkout(nativeCheckoutOptions(options))
     const telemetryContext = captureTelemetryContext()
-    await native.enter(telemetryContext)
+    await enterSession(native, telemetryContext)
     return new MontySession(native, modules)
   }
 
@@ -236,10 +224,29 @@ export class Monty {
 }
 
 /**
+ * Encodes checkout options as the native binding's fields; shared by `Monty`
+ * and `MontyWebsocket`, which add their own transport-specific fields.
+ */
+export function nativeCheckoutOptions(options: CheckoutOptions): Record<string, unknown> {
+  const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
+  return {
+    scriptName: options.scriptName ?? 'main.py',
+    ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    typeCheck: options.typeCheck ?? false,
+    ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+    ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
+    ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
+    ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
+    ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
+    ...nativeOsPolicy(encodeOsPolicy(options.osPolicy ?? {})),
+  }
+}
+
+/**
  * Renders one duration-backstop grace as the native option the pool takes:
  * `null` yields no key at all, and an absent grace falls back to 1s.
  */
-function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
+export function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
   return seconds === null ? {} : { [key]: (seconds ?? 1) * 1000 }
 }
 

@@ -305,7 +305,8 @@ test('exhausted pool times out the checkout', async () => {
   await using pool = await Monty.create({ maxProcesses: 1, checkoutTimeout: 0.2 })
   const held = await pool.checkout()
   try {
-    const error = await t.throwsAsync(() => pool.checkout())
+    const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: DOMException })
+    t.is(error.name, 'TimeoutError')
     t.is(error.message, 'no monty worker became available within the checkout timeout')
   } finally {
     await held.close()
