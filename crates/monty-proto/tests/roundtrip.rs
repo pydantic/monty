@@ -53,6 +53,37 @@ fn scalar_values_round_trip() {
     assert_value_round_trip(&MontyObject::path("/mnt/data/file.txt".to_owned()));
 }
 
+/// Mirrors the decoder's UTF-8 window: a multi-byte sequence is shifted through
+/// the boundary at every offset, and invalid input is rejected throughout the
+/// payload rather than only at the start or end of a window.
+const UTF8_WINDOW: usize = 4 * 1024 * 1024;
+
+#[test]
+fn long_strings_round_trip_across_validation_windows() {
+    for pad in 0..8 {
+        let mut text = "x".repeat(UTF8_WINDOW - 4 + pad);
+        text.push_str("\u{1F40D}héllo");
+        assert_value_round_trip(&MontyObject::string(text));
+    }
+
+    assert_value_round_trip(&MontyObject::string("\u{1F40D}é".repeat(UTF8_WINDOW / 2)));
+
+    for offset in [0, UTF8_WINDOW - 1, UTF8_WINDOW, UTF8_WINDOW + 7] {
+        let node = MontyNode::String("x".repeat(2 * UTF8_WINDOW));
+        let mut wire = WireArena(vec![node].into()).encode_to_vec();
+        let start = wire
+            .windows(4)
+            .position(|w| w == b"xxxx")
+            .expect("the payload is in the frame");
+        wire[start + offset] = 0xFF;
+        let err = decode_frame::<WireArena>(wire.as_slice()).expect_err("invalid UTF-8 is rejected");
+        assert!(
+            err.to_string().contains("data is not UTF-8 encoded"),
+            "unexpected error: {err}"
+        );
+    }
+}
+
 #[test]
 fn float_values_round_trip_bit_exact() {
     // MontyObject's PartialEq compares floats via to_bits, so these assert
