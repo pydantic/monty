@@ -84,6 +84,8 @@ package = false
 # https://docs.astral.sh/uv/reference/settings/#exclude-newer
 # make sure to use relative durations:
 exclude-newer = "7 days"
+# Apply CA distrust updates immediately (CVE-2026-111943).
+exclude-newer-package = { certifi = "0 days" }
 
 [tool.ruff.lint]
 extend-select = [
