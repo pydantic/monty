@@ -408,9 +408,10 @@ class MontyFileHandle:
 class ExternalModule:
     """A host module for `external_modules`: its attributes, optional `.pyi` stubs and id.
 
-    `attrs` is copied at construction: callables cross as host functions, nested
-    `ExternalModule`s as submodules (`import pkg.sub`), other values as attributes;
-    keys starting with `_` are not exposed. A module returned from the sandbox decodes
+    `attrs` is copied at construction. Python types that Monty supports, including
+    its exception classes, remain types; other callables become host functions.
+    Nested `ExternalModule`s become submodules (`import pkg.sub`); other values are converted normally.
+    Keys starting with `_` are not exposed. A module returned from the sandbox decodes
     to an `ExternalModule` with the id it imported with.
     """
 

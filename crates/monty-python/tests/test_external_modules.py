@@ -67,6 +67,45 @@ def test_import_binds_the_host_module(pool: Monty):
         assert session.feed_run(CODE) == snapshot([3, 'ab', 3])
 
 
+@pytest.mark.parametrize('nested', [False, True])
+def test_module_exception_type_catches_host_errors(pool: Monty, nested: bool):
+    """Exception types retain their identity while aliased callbacks still call the host."""
+
+    def fail() -> None:
+        raise ValueError('host')
+
+    module = ExternalModule({'MyError': ValueError, 'raise_error': fail})
+    modules = {'hostmod': ExternalModule({'errors': module}) if nested else module}
+    path = 'hostmod.errors' if nested else 'hostmod'
+    with pool.checkout(external_modules=modules) as session:
+        code = f"""
+from {path} import MyError, raise_error
+message = None
+try:
+    raise_error()
+except MyError as exc:
+    message = str(exc)
+[MyError is ValueError, message]
+"""
+        assert session.feed_run(code) == snapshot([True, 'host'])
+
+
+def test_module_types_and_callable_instances(pool: Monty):
+    """Supported classes stay types; callable instances remain host functions."""
+
+    class CallableInt(int):
+        def __call__(self) -> int:
+            return 42
+
+    module = ExternalModule({'Number': int, 'callable': CallableInt(7)})
+    with pool.checkout(external_modules={'hostmod': module}) as session:
+        code = """
+import hostmod
+[hostmod.Number is int, hostmod.Number('42'), hostmod.callable()]
+"""
+        assert session.feed_run(code) == snapshot([True, 42, 42])
+
+
 @pytest.mark.parametrize(
     ('attrs', 'kwargs', 'message'),
     [
