@@ -69,6 +69,19 @@ assert capture_error('{0:.2147482624g}', 0.0001) == ('ValueError', 'precision to
 assert capture_error('{0:.2147482624f}', float('inf')) == ('ValueError', 'precision too big')
 assert capture_error('{0:.{1}e}', 1, 2**31) == ('ValueError', 'precision too big')
 assert '{:}'.format(True) == 'True'
+
+for value, type_name, text in (([1], 'list', '[1]'), (None, 'NoneType', 'None')):
+    assert '{:}'.format(value) == text
+    for spec in ('5', '>5', '0', '０', 's', '+', '#', '.', 'q', 'not-a-spec'):
+        assert capture_error('{0:{1}}', value, spec) == (
+            'TypeError',
+            f'unsupported format string passed to {type_name}.__format__',
+        )
+
+assert '{!s:>5}'.format([1]) == '  [1]'
+assert '{!r:>5}'.format(None) == ' None'
+assert '{!a:>10}'.format(['é']) == "  ['\\xe9']"
+
 assert '{0!r:>6}'.format(123) == '   123'
 assert '{0:{align}{width}}'.format('test', align='^', width=10) == '   test   '
 assert '{0:{width}.{precision}f}'.format(2.7182, width=5, precision=2) == ' 2.72'
