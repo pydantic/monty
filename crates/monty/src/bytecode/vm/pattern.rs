@@ -20,7 +20,10 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
     modules::ModuleFunctions,
     types::{
-        Dict, PyTrait, Type, descriptor, instance::class_name, set::set_element_hash, str::allocate_string,
+        Dict, PyTrait, Type, descriptor,
+        instance::{class_dunder, class_name, plain_attribute},
+        set::set_element_hash,
+        str::allocate_string,
         tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -125,7 +128,7 @@ impl VM<'_> {
     /// meaning the subject itself, for self-matching builtins), then the
     /// keywords. Every other problem raises `TypeError`; the reads themselves
     /// are the following `MatchAttr` instructions.
-    pub(super) fn match_class(&mut self, nargs: usize) -> RunResult<CallResult> {
+    pub(super) fn match_class(&mut self, nargs: usize) -> RunResult<()> {
         let this = self;
         let kwd_names = this.pop();
         let len = this.stack.len();
@@ -139,28 +142,60 @@ impl VM<'_> {
         }
         if !isinstance_check(subject, cls, this)? {
             this.push(Value::None);
-            return Ok(CallResult::Value(Value::Bool(false)));
+            this.push(Value::Bool(false));
+            return Ok(());
         }
-        if nargs > 0 && matches!(cls, Value::Ref(id) if matches!(this.heap.get(*id), HeapData::Class(_))) {
-            let result = this.call_frozen_exact(
-                FrozenFunction::DescriptorMatchClass,
-                [
-                    descriptor::attribute_helper(),
-                    Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::MatchClassNames)),
-                    cls.clone_with_heap(this.heap),
-                    kwd_names.clone_with_heap(this.heap),
-                    Value::Int(i64::try_from(nargs).expect("pattern count is a byte")),
-                    Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
-                ],
-            )?;
-            // Both pattern continuations return the opcode's two stack values as a pair.
-            this.current_frame_mut().result = FrameResult::MatchAttr;
-            return Ok(result);
+        if nargs > 0
+            && matches!(cls, Value::Ref(id)
+            if !descriptor::class_descriptor_free(*id, this)
+                && class_dunder(*id, "__match_args__", this)
+                .is_some_and(|member| descriptor::has_get(member, this)))
+        {
+            return this.match_descriptor_class(cls, kwd_names, nargs);
         }
         let names = class_pattern_names(cls, kwd_names, nargs, None, this)?;
         let tuple = allocate_tuple(names.into_iter().collect(), this.heap);
         this.push(tuple);
-        Ok(CallResult::Value(Value::Bool(true)))
+        this.push(Value::Bool(true));
+        Ok(())
+    }
+
+    #[cold]
+    fn match_descriptor_attr(&mut self, subject: &Value, name: &Value) -> RunResult<CallResult> {
+        let this = self;
+        let result = this.call_frozen_exact(
+            FrozenFunction::DescriptorMatch,
+            [
+                descriptor::attribute_helper(),
+                subject.clone_with_heap(this.heap),
+                name.clone_with_heap(this.heap),
+                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+            ],
+        )?;
+        this.current_frame_mut().result = FrameResult::MatchAttr;
+        Ok(result)
+    }
+
+    #[cold]
+    fn match_descriptor_class(&mut self, cls: &Value, kwd_names: &Value, nargs: usize) -> RunResult<()> {
+        let this = self;
+        let CallResult::FramePushed = this.call_frozen_exact(
+            FrozenFunction::DescriptorMatchClass,
+            [
+                descriptor::attribute_helper(),
+                Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::MatchClassNames)),
+                cls.clone_with_heap(this.heap),
+                kwd_names.clone_with_heap(this.heap),
+                Value::Int(i64::try_from(nargs).expect("pattern count is a byte")),
+                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+            ],
+        )?
+        else {
+            unreachable!("frozen class pattern lookup installs a frame")
+        };
+        // Both pattern continuations return the opcode's two stack values as a pair.
+        this.current_frame_mut().result = FrameResult::MatchAttr;
+        Ok(())
     }
 
     /// Validate resolved metadata after its descriptor has returned, possibly from the host.
@@ -221,18 +256,13 @@ impl VM<'_> {
                 )));
             }
         }
-        if matches!(subject, Value::Ref(id) if matches!(this.heap.get(*id), HeapData::Instance(_))) {
-            let result = this.call_frozen_exact(
-                FrozenFunction::DescriptorMatch,
-                [
-                    descriptor::attribute_helper(),
-                    subject.clone_with_heap(this.heap),
-                    name.clone_with_heap(this.heap),
-                    Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
-                ],
-            )?;
-            this.current_frame_mut().result = FrameResult::MatchAttr;
-            return Ok(result);
+        if let Some(value) = plain_attribute(subject, &attr, this) {
+            let found = value.is_some();
+            this.push(value.unwrap_or(Value::None));
+            return Ok(CallResult::Value(Value::Bool(found)));
+        }
+        if descriptor::attribute_uses_descriptor(subject, &attr, this) {
+            return this.match_descriptor_attr(subject, name);
         }
         match subject.py_getattr(&attr, this) {
             Ok(CallResult::Value(value)) => {
@@ -416,6 +446,10 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
             check_count(fields.len(), vm)?;
             return Ok(MatchArgs::Names(fields[..nargs].to_vec()));
         }
+        HeapData::Class(class) => class
+            .namespace()
+            .get_by_str("__match_args__", vm.heap, vm.interns)
+            .map(|value| value.clone_with_heap(vm.heap)),
         // A host class only has `__match_args__` if the host sent it as a class attribute.
         HeapData::HostClassType(class) => class
             .attrs()

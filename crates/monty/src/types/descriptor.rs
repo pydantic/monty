@@ -12,7 +12,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
-    heap::{DropGuard, HeapData, HeapId},
+    heap::{DropGuard, Heap, HeapData, HeapId},
     modules::{ModuleFunctions, dataclasses},
     value::{EitherStr, Value},
 };
@@ -81,6 +81,41 @@ def _hasattr(get, obj, name, attribute_error):
 
 pub(crate) fn attribute_helper() -> Value {
     Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::GetAttribute))
+}
+
+/// Instances remain candidates even before their class defines descriptor hooks.
+pub(crate) fn may_be_descriptor(value: &Value, heap: &Heap) -> bool {
+    matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_) | HeapData::BuiltinDescriptor(_)))
+}
+
+pub(crate) fn class_descriptor_free(class: HeapId, vm: &VM<'_>) -> bool {
+    matches!(vm.heap.get(class), HeapData::Class(class) if class.descriptor_free())
+}
+
+/// Whether resolving this particular attribute can execute a descriptor getter.
+pub(crate) fn attribute_uses_descriptor(object: &Value, name: &EitherStr, vm: &VM<'_>) -> bool {
+    let Value::Ref(id) = object else { return false };
+    let name = name.as_str(vm.interns);
+    match vm.heap.get(*id) {
+        HeapData::Class(class) => {
+            name != "__name__"
+                && !class.descriptor_free()
+                && super::instance::class_dunder(*id, name, vm).is_some_and(|member| has_get(member, vm))
+        }
+        HeapData::Instance(instance) => {
+            let class = instance.class();
+            if class_descriptor_free(class, vm) {
+                return false;
+            }
+            let member = super::instance::class_dunder(class, name, vm);
+            if member.is_some_and(|member| is_data(member, vm) && has_get(member, vm)) {
+                return true;
+            }
+            instance.attrs().get_by_str(name, vm.heap, vm.interns).is_none()
+                && member.is_some_and(|member| has_get(member, vm))
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn descriptor_class(value: &Value, vm: &VM<'_>) -> Option<HeapId> {
