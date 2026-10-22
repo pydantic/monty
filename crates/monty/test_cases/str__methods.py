@@ -283,6 +283,28 @@ assert 'a\nb\nc'.splitlines(True) == ['a\n', 'b\n', 'c']
 assert 'a\r\nb'.splitlines() == ['a', 'b']
 assert ''.splitlines() == []
 
+# All Python line boundaries, including multi-byte Unicode separators.
+for boundary in ['\n', '\r', '\r\n', '\v', '\f', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029']:
+    for first, last in [('a', 'b'), ('é', '🐍')]:
+        text = first + boundary + last
+        assert text.splitlines() == [first, last]
+        assert text.splitlines(keepends=True) == [first + boundary, last]
+    assert boundary.splitlines() == ['']
+    assert boundary.splitlines(True) == [boundary]
+    assert (boundary * 2).splitlines() == ['', '']
+    assert (boundary * 2).splitlines(True) == [boundary, boundary]
+    assert ('a' + boundary).splitlines() == ['a']
+    assert ('a' + boundary).splitlines(True) == ['a' + boundary]
+
+mixed_lines = 'a\r\n\u2028b\x85c\vd\fe\x1cf\x1dg\x1eh\u2029'
+assert mixed_lines.splitlines() == ['a', '', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+assert mixed_lines.splitlines(True) == ['a\r\n', '\u2028', 'b\x85', 'c\v', 'd\f', 'e\x1c', 'f\x1d', 'g\x1e', 'h\u2029']
+# Whitespace and UTF-8 bytes resembling separators are not themselves line boundaries.
+assert 'a\t b\x1fc\xa0d\u2003e\u200bf\u0084g\u0086h\u2027i\u202aj'.splitlines() == [
+    'a\t b\x1fc\xa0d\u2003e\u200bf\u0084g\u0086h\u2027i\u202aj'
+]
+assert 'ą測'.splitlines() == ['ą測']
+
 # partition()
 assert 'hello world'.partition(' ') == ('hello', ' ', 'world')
 assert 'hello'.partition('x') == ('hello', '', '')

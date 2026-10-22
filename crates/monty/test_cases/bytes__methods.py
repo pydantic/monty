@@ -224,6 +224,10 @@ assert b'a\nb'.splitlines(True) == [b'a\n', b'b']
 assert b''.splitlines() == []
 assert b'a\nb'.splitlines(keepends=True) == [b'a\n', b'b']
 assert b'a\nb'.splitlines(keepends=False) == [b'a', b'b']
+# Unlike str.splitlines(), bytes split only at CR, LF and CRLF.
+other_boundaries = b'a\vb\fc\x1cd\x1de\x1ef\x85g\xc2\x85h\xe2\x80\xa8i\xe2\x80\xa9j'
+assert other_boundaries.splitlines() == [other_boundaries]
+assert other_boundaries.splitlines(True) == [other_boundaries]
 
 # === bytes.partition() ===
 assert b'hello world'.partition(b' ') == (b'hello', b' ', b'world')

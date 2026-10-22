@@ -1452,26 +1452,21 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
         let mut line_end = start;
 
         while end < len {
-            match bytes[end] {
-                b'\n' => {
-                    line_end = end;
-                    end += 1;
-                    break;
-                }
-                b'\r' => {
-                    line_end = end;
-                    end += 1;
-                    // Check for \r\n
-                    if end < len && bytes[end] == b'\n' {
-                        end += 1;
-                    }
-                    break;
-                }
-                _ => {
-                    end += 1;
-                    line_end = end;
-                }
+            // Match CPython's line boundaries as complete UTF-8 sequences.
+            let boundary_len = match &bytes[end..] {
+                [b'\r', b'\n', ..] => 2,
+                [b'\n' | b'\r' | b'\x0b' | b'\x0c' | b'\x1c'..=b'\x1e', ..] => 1,
+                [0xc2, 0x85, ..] => 2,              // U+0085 NEXT LINE
+                [0xe2, 0x80, 0xa8 | 0xa9, ..] => 3, // U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR
+                _ => 0,
+            };
+            if boundary_len > 0 {
+                line_end = end;
+                end += boundary_len;
+                break;
             }
+            end += 1;
+            line_end = end;
         }
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
