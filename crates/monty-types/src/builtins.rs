@@ -119,4 +119,6 @@ pub enum BuiltinsFunctions {
     Exec,
     /// `locals()`, appended after [`Self::Exec`].
     Locals,
+    /// Delete an attribute, including descriptor deletion.
+    Delattr,
 }

@@ -301,6 +301,15 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
     }
 }
 
+/// Return handling for descriptor continuations; old frames return one value.
+#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) enum FrameResult {
+    #[default]
+    Value,
+    Discard,
+    MatchAttr,
+}
+
 /// A single function activation record.
 ///
 /// Each frame represents one level in the call stack and owns its own
@@ -363,6 +372,8 @@ pub struct CallFrame<'code> {
     /// construction or import. Threaded through serialization (`SerializedFrame`)
     /// so a suspended initializer resumes correctly.
     is_initializer: bool,
+    /// Post-process a descriptor continuation after restoring its caller.
+    result: FrameResult,
 
     /// Module name for `LoadAttrImport` errors, set by `LoadModule`/`LoadSubmodule`.
     /// Keeping it on the frame avoids another opcode operand; the compiler emits
@@ -406,6 +417,7 @@ impl<'code> CallFrame<'code> {
             is_parked: false,
             namespace: None,
             is_initializer: false,
+            result: FrameResult::Value,
             import_from_module: None,
         }
     }
@@ -430,6 +442,7 @@ impl<'code> CallFrame<'code> {
         self.should_return = false;
         self.is_parked = true;
         self.is_initializer = false;
+        self.result = FrameResult::Value;
         debug_assert!(self.namespace.is_none(), "parked frame still owns a namespace");
     }
 
@@ -463,6 +476,7 @@ impl<'code> CallFrame<'code> {
             is_parked: false,
             namespace,
             is_initializer: false,
+            result: FrameResult::Value,
             import_from_module: None,
         }
     }
@@ -605,6 +619,8 @@ pub struct SerializedFrame {
     /// `None` instead of leaving the instance on the stack.
     #[serde(rename = "I")]
     is_initializer: bool,
+    #[serde(default, rename = "R")]
+    result: FrameResult,
 
     /// Frame namespace, with ownership of its dict references (see
     /// `CallFrame.namespace`).
@@ -633,6 +649,7 @@ impl CallFrame<'_> {
             exception_stack_base: self.exception_stack_base(),
             call_offset: self.call_offset,
             is_initializer: self.is_initializer,
+            result: self.result,
             namespace: mem::take(&mut self.namespace),
             import_from_module: self.import_from_module,
         }
@@ -967,6 +984,7 @@ impl<'h> VM<'h> {
                     is_parked: false,
                     namespace: sf.namespace,
                     is_initializer: sf.is_initializer,
+                    result: sf.result,
                     import_from_module: sf.import_from_module,
                 }
             })
@@ -1643,7 +1661,15 @@ impl<'h> VM<'h> {
                 Opcode::StoreAttr => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
-                    try_catch!(self, self.store_attr(name_id));
+                    match self.store_attr(name_id) {
+                        Ok(CallResult::Value(value)) => value.drop_with(self),
+                        Ok(CallResult::FramePushed) => self.current_frame_mut().result = FrameResult::Discard,
+                        Ok(other) => {
+                            let error = self.unsupported_call_result(other);
+                            catch!(self, error);
+                        }
+                        Err(error) => catch!(self, error),
+                    }
                 }
                 // Control Flow - use self.current_frame.ip directly for jumps
                 Opcode::Jump => {
@@ -1990,6 +2016,7 @@ impl<'h> VM<'h> {
                         continue;
                     }
                     // Read the initializer flag before popping the frame.
+                    let result = self.current_frame().result;
                     let is_init = self.current_frame().is_initializer;
                     // Pop current frame; `stop` requests returning to the host
                     // (e.g. `evaluate_function`).
@@ -2026,6 +2053,23 @@ impl<'h> VM<'h> {
                         // Instance (or imported module) already on the caller's
                         // stack — push nothing.
                         try_catch!(self, self.finish_module_init());
+                    } else if matches!(result, FrameResult::MatchAttr) && !stop {
+                        let Value::Ref(id) = &value else {
+                            unreachable!("match continuation returns a tuple")
+                        };
+                        let HeapData::Tuple(pair) = self.heap.get(*id) else {
+                            unreachable!("match continuation returns a tuple")
+                        };
+                        let [attr, found] = pair.as_slice() else {
+                            unreachable!("match continuation returns a pair")
+                        };
+                        let attr = attr.clone_with_heap(self.heap);
+                        let found = found.clone_with_heap(self.heap);
+                        value.drop_with(self);
+                        self.push(attr);
+                        self.push(found);
+                    } else if matches!(result, FrameResult::Discard) && !stop {
+                        value.drop_with(self);
                     } else if stop {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
@@ -2075,7 +2119,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::MatchClass => {
                     let nargs = usize::from(self.current_frame.fetch_u8());
-                    try_catch!(self, self.match_class(nargs));
+                    handle_call_result!(self, self.match_class(nargs));
                 }
                 Opcode::MatchAttr => {
                     let index = usize::from(self.current_frame.fetch_u8());

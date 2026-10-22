@@ -197,7 +197,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         }
         // Otherwise look up a member (method or class variable) in the namespace.
         match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
-            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
+            Some(value) => {
+                let value = value.clone_with_heap(vm.heap);
+                defer_drop!(value, vm);
+                super::descriptor::get(value, None, self.id(), vm).map(Some)
+            }
             None => Err(ExcType::attribute_error_type(
                 self.get(vm.heap).name.as_str(vm.interns),
                 attr_str,
@@ -206,6 +210,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let member = super::instance::class_member(self.id(), attr.as_str(vm.interns), vm);
+        defer_drop!(member, vm);
+        if member
+            .as_ref()
+            .is_some_and(|member| super::descriptor::has_get(member, vm))
+        {
+            vm.heap.inc_ref(self.id());
+            return super::descriptor::call_attr(Value::Ref(self.id()), attr, args, vm);
+        }
+
         let attr_str = attr.as_str(vm.interns);
         // `__name__` is a synthesized string, not a namespace member (see
         // `py_getattr`), so calling it goes through the normal callable

@@ -167,6 +167,7 @@ macro_rules! forward_py_value {
             Self::HostClassType($value) => $body,
             Self::Class($value) => $body,
             Self::Instance($value) => $body,
+            Self::BuiltinDescriptor($value) => $body,
             Self::BoundMethod($value) => $body,
             Self::DataclassField($value) => $body,
             Self::DataclassMethod($value) => $body,

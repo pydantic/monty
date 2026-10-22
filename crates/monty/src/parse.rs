@@ -17,6 +17,7 @@ use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
+    builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
@@ -712,10 +713,28 @@ impl<'a, 'i> Parser<'a, 'i> {
                 Some(value) => Some(self.parse_expression(*value)?),
                 None => None,
             })),
-            Stmt::Delete(d) => Err(ParseError::not_implemented(
-                "the 'del' statement",
-                self.convert_range(d.range),
-            )),
+            Stmt::Delete(d) => {
+                let position = self.convert_range(d.range);
+                let mut targets = d.targets.into_iter();
+                let Some(AstExpr::Attribute(ast::ExprAttribute { value, attr, .. })) = targets.next() else {
+                    return Err(ParseError::not_implemented("the 'del' statement", position));
+                };
+                if targets.next().is_some() {
+                    return Err(ParseError::not_implemented("multiple del targets", position));
+                }
+                let object = self.parse_expression(*value)?;
+                let name = self.interner.intern(attr.id());
+                Ok(Node::Expr(ExprLoc::new(
+                    position,
+                    Expr::Call {
+                        callable: Callable::Builtin(Builtins::Function(BuiltinsFunctions::Delattr)),
+                        args: Box::new(ArgExprs::Two(
+                            object,
+                            ExprLoc::new(position, Expr::Literal(Literal::Str(name))),
+                        )),
+                    },
+                )))
+            }
             Stmt::TypeAlias(t) => Err(ParseError::not_implemented("type aliases", self.convert_range(t.range))),
             Stmt::Assign(ast::StmtAssign {
                 mut targets,
@@ -1355,26 +1374,15 @@ impl<'a, 'i> Parser<'a, 'i> {
         for (i, stmt) in class.body.into_iter().enumerate() {
             match stmt {
                 Stmt::FunctionDef(function) => {
-                    if !function.decorator_list.is_empty() {
-                        return Err(ParseError::not_implemented(
-                            "method decorators (classmethod/staticmethod/property)",
-                            self.convert_range(function.range),
-                        ));
-                    }
-                    // Parameter defaults evaluate in the class-body scope, so a
-                    // walrus target there would become a class member (see
-                    // `reject_class_body_walrus`); walrus in the method *body*
-                    // binds in the method scope and is fine.
                     for param in function.parameters.iter_non_variadic_params() {
                         if let Some(default) = &param.default {
                             self.reject_class_body_walrus(default)?;
                         }
                     }
+                    for decorator in &function.decorator_list {
+                        self.reject_class_body_walrus(&decorator.expression)?;
+                    }
                     let (method, decorators) = self.parse_function_def(function)?;
-                    // Rejected above, so a decorated method never reaches the
-                    // class namespace — where a decorator's return value, not a
-                    // function, would end up bound as the member.
-                    debug_assert!(decorators.is_empty(), "method decorators are rejected above");
                     members.push(method.name);
                     body.push(Node::FunctionDef {
                         def: method,

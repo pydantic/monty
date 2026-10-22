@@ -990,6 +990,9 @@ pub enum StaticStrings {
     Dklen,
     /// `field(doc=...)`, CPython's per-field docstring.
     Doc,
+    Fget,
+    Fset,
+    Fdel,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
     /// `re.DOTALL` flag

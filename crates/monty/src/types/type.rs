@@ -74,6 +74,10 @@ pub enum Type {
     Complex,
     Range,
     Slice,
+    #[strum(serialize = "classmethod")]
+    ClassMethod,
+    #[strum(serialize = "staticmethod")]
+    StaticMethod,
     /// The four `datetime` classes are qualified like `collections.deque`:
     /// this is the `tp_name` CPython gives these C types, so it is the
     /// spelling its reprs and type-naming error messages use. `__name__`
@@ -438,6 +442,8 @@ impl Type {
             Self::Iterator => Some("iter"),
             Self::Type => Some("type"),
             Self::Property => Some("property"),
+            Self::ClassMethod => Some("classmethod"),
+            Self::StaticMethod => Some("staticmethod"),
             _ => None,
         }
     }
@@ -466,6 +472,8 @@ impl Type {
             "frozenset" => Some(Self::FrozenSet),
             "range" => Some(Self::Range),
             "slice" => Some(Self::Slice),
+            "classmethod" => Some(Self::ClassMethod),
+            "staticmethod" => Some(Self::StaticMethod),
             "iter" => Some(Self::Iterator),
             "type" => Some(Self::Type),
             "property" => Some(Self::Property),
@@ -693,7 +701,7 @@ impl Type {
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `class_getattr`.
             (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => {
-                builtin_object_setattr(vm, args).map(CallResult::Value)
+                builtin_object_setattr(vm, args)
             }
             (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
             (Self::Time, Some(StaticStrings::Fromisoformat)) => {
@@ -829,6 +837,9 @@ impl Type {
             Self::Bytes => Bytes::init(vm, args),
             Self::Range => Range::init(vm, args),
             Self::Slice => Slice::init(vm, args),
+            Self::Property => super::builtin_descriptor::property_init(vm, args),
+            Self::ClassMethod => super::builtin_descriptor::classmethod_init(vm, args),
+            Self::StaticMethod => super::builtin_descriptor::staticmethod_init(vm, args),
             Self::Date => date::init(vm, args),
             Self::DateTime => datetime::init(vm, args),
             Self::Time => time::init(vm, args),
