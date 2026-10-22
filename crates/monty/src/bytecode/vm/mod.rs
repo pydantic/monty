@@ -2113,7 +2113,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::MatchClass => {
                     let nargs = usize::from(self.current_frame.fetch_u8());
-                    handle_call_result!(self, self.match_class(nargs));
+                    try_catch!(self, self.match_class(nargs));
                 }
                 Opcode::MatchAttr => {
                     let index = usize::from(self.current_frame.fetch_u8());

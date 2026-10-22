@@ -218,6 +218,7 @@ fn create_class(
         class_name,
         namespace_dict,
         future_annotations,
+        vm.heap,
     ))));
     Ok(Value::Ref(class_id))
 }

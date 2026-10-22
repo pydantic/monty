@@ -28,6 +28,121 @@ fn descriptor_protocol_and_builtin_wrappers() {
 }
 
 #[test]
+fn ordinary_attribute_fast_paths_observe_descriptor_mutations() {
+    repl()
+        .feed_run(
+            r"
+class Record:
+    x = 7
+    __match_args__ = ('x',)
+
+record = Record()
+assert record.x == 7
+assert getattr(record, 'x', 0) == 7
+assert hasattr(record, 'x')
+assert not hasattr(record, 'absent')
+match record:
+    case Record(x):
+        assert x == 7
+
+Record.x = property(lambda obj: 42)
+assert record.x == 42
+assert getattr(record, 'x', 0) == 42
+assert hasattr(record, 'x')
+match record:
+    case Record(x):
+        assert x == 42
+
+class Candidate:
+    pass
+
+class LateRecord:
+    y = Candidate()
+
+class Inserted:
+    pass
+
+late = LateRecord()
+inserted = Inserted()
+late.y = 3
+inserted.y = 4
+Inserted.y = Candidate()
+Candidate.__get__ = lambda self, obj, owner: 8
+assert late.y == 3
+assert inserted.y == 4
+
+def store(self, obj, value):
+    obj.stored = value
+
+Candidate.__set__ = store
+late.y = 9
+inserted.y = 10
+assert late.stored == 9
+assert inserted.stored == 10
+assert late.y == 8
+assert inserted.y == 8
+del Candidate.__set__
+assert late.y == 3
+assert inserted.y == 4
+
+class Names:
+    def __get__(self, obj, owner):
+        assert obj is None
+        return ('y',)
+
+Record.__match_args__ = Names()
+record.y = 3
+match record:
+    case Record(y):
+        assert y == 3
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+}
+
+#[test]
+fn restored_plain_classes_can_gain_suspending_descriptors() {
+    let mut repl = repl();
+    repl.feed_run(
+        "class Record:\n    x = 7\nrecord = Record()\nassert record.x == 7",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let bytes = dump("descriptors.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected idle state")
+    };
+    let mut progress = repl
+        .feed_start(
+            "Record.x = property(host_get)\ngetattr(record, 'x', 99)",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    loop {
+        match restore(progress) {
+            ReplProgress::NameLookup(lookup) => {
+                let function = MontyObject::function(lookup.name.clone(), None);
+                progress = lookup
+                    .resume(NameLookupResult::Value(function), PrintWriter::Disabled)
+                    .unwrap();
+            }
+            ReplProgress::FunctionCall(call) => {
+                assert_eq!(call.function_name, "host_get");
+                progress = call.resume(MontyObject::int(42), PrintWriter::Disabled).unwrap();
+            }
+            complete => {
+                assert_eq!(complete.into_complete().unwrap().1, MontyObject::int(42));
+                break;
+            }
+        }
+    }
+}
+
+#[test]
 fn builtin_descriptor_get_requires_a_receiver_or_owner() {
     repl()
         .feed_run(
