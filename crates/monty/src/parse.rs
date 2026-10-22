@@ -1071,8 +1071,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// Shared by the top-level `Stmt::FunctionDef` arm and by class-body method
     /// parsing in [`parse_class_def`](Self::parse_class_def). The decorators are
     /// returned separately because they belong to the statement, not the function
-    /// (see [`Node::FunctionDef`]); the class-body path rejects decorated methods
-    /// before calling here, so it always receives an empty list.
+    /// (see [`Node::FunctionDef`]). Class-body methods use the same decorator path.
     fn parse_function_def(
         &mut self,
         mut function: ast::StmtFunctionDef,
@@ -1185,7 +1184,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
     /// member, and annotated names a stringized `__annotations__`. Class
     /// decorators are supported (enclosing scope, applied bottom-up);
-    /// inheritance, function/method decorators, and anything else in the body
+    /// inheritance and anything else in the body
     /// are rejected as not-implemented, reserving the syntax for later.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
         let position = self.class_keyword_range(&class);

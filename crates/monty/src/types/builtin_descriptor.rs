@@ -122,6 +122,9 @@ pub(crate) fn get(id: HeapId, instance: Option<HeapId>, owner: HeapId, vm: &mut 
 }
 
 fn protocol_get(id: HeapId, instance: &Value, owner: Option<&Value>, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    if matches!(instance, Value::None) && owner.is_none_or(|v| matches!(v, Value::None)) {
+        return Err(ExcType::type_error("__get__(None, None) is invalid"));
+    }
     let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(id) else {
         unreachable!()
     };
@@ -139,9 +142,6 @@ fn protocol_get(id: HeapId, instance: &Value, owner: Option<&Value>, vm: &mut VM
         }
         Type::Property => {
             if matches!(instance, Value::None) {
-                if owner.is_none_or(|v| matches!(v, Value::None)) {
-                    return Err(ExcType::type_error("__get__(None, None) is invalid"));
-                }
                 vm.heap.inc_ref(id);
                 return Ok(CallResult::Value(Value::Ref(id)));
             }
@@ -150,6 +150,10 @@ fn protocol_get(id: HeapId, instance: &Value, owner: Option<&Value>, vm: &mut VM
             if matches!(function, Value::None) {
                 return Err(missing_accessor("getter"));
             }
+            // Native getter chains can recurse without installing a Python frame.
+            vm.enter_run_reentry()?;
+            let mut reentry = RunReentryGuard::new(vm);
+            let vm = &mut *reentry;
             vm.call_function(function, ArgValues::One(instance.clone_with_heap(vm.heap)))
         }
         _ => unreachable!("descriptor constructor selects its kind"),
