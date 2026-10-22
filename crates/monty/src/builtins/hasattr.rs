@@ -9,8 +9,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::FrozenFunction,
-    heap::{DropWithContext, HeapData},
-    types::{attribute_name_value, descriptor},
+    heap::DropWithContext,
+    types::{attribute_name_value, descriptor, instance::plain_attribute},
     value::Value,
 };
 
@@ -49,7 +49,13 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         .into());
     };
 
-    if matches!(object, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_) | HeapData::Class(_))) {
+    if let Some(value) = plain_attribute(object, &name, vm) {
+        let found = value.is_some();
+        value.drop_with(vm);
+        return Ok(CallResult::Value(Value::Bool(found)));
+    }
+
+    if descriptor::attribute_uses_descriptor(object, &name, vm) {
         let name = attribute_name_value(&name, vm);
         return vm.call_frozen_exact(
             FrozenFunction::DescriptorHasattr,

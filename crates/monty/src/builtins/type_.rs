@@ -5,12 +5,12 @@ use std::mem;
 use super::object::builtin_object_init_subclass;
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    types::{Class, Dict, List, OwnedTypeRef, PyTrait, Tuple, Type, TypeRef, type_ref::c3_merge},
+    types::{Class, Dict, List, OwnedTypeRef, PyTrait, Tuple, Type, TypeRef, descriptor, type_ref::c3_merge},
     value::Value,
 };
 
@@ -24,13 +24,13 @@ use crate::{
 /// because the "exactly 1 *or* 3 positionals, same name" overload isn't
 /// expressible by any of the binder families — CPython special-cases `type`'s
 /// argument parsing in `type_new`/`type_init` for the same reason.
-pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (mut pos, kwargs) = args.into_parts();
     match pos.len() {
         1 => {
             let value = pos.next().expect("length checked");
             if kwargs.is_empty() {
-                Ok(type_of(vm, value))
+                Ok(CallResult::Value(type_of(vm, value)))
             } else {
                 value.drop_with(vm);
                 kwargs.drop_with(vm);
@@ -41,7 +41,8 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let name = pos.next().expect("length checked");
             let bases = pos.next().expect("length checked");
             let namespace = pos.next().expect("length checked");
-            create_class(vm, name, bases, namespace, kwargs)
+            let class = create_class(vm, name, bases, namespace, kwargs)?;
+            descriptor::finish_class(class, vm)
         }
         _ => {
             pos.drop_with(vm);
@@ -162,7 +163,7 @@ fn create_class(
             }
         })
         .collect();
-    let class = Class::with_bases(class_name, namespace_dict, owned_bases, mro.into());
+    let class = Class::with_bases(class_name, namespace_dict, owned_bases, mro.into(), vm.heap);
     let class_value = Value::allocate(class, vm.heap);
     let mut class_guard = DropGuard::new(class_value, vm);
     let (class_value, vm) = class_guard.as_parts_mut();

@@ -58,13 +58,16 @@ pub(crate) struct Class {
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
+    // Older dumps omit this hint and take the conservative descriptor path.
+    #[serde(default)]
+    descriptor_free: bool,
 }
 
 impl Class {
     /// Creates a new class object with no explicit bases, so `object` is its only ancestor.
     #[must_use]
-    pub fn new(name: EitherStr, namespace: Dict) -> Self {
-        Self::with_bases(name, namespace, Box::default(), Box::default())
+    pub fn new(name: EitherStr, namespace: Dict, heap: &Heap) -> Self {
+        Self::with_bases(name, namespace, Box::default(), Box::default(), heap)
     }
 
     /// Creates a class with `bases` (whose class references it takes) and the
@@ -75,14 +78,24 @@ impl Class {
         namespace: Dict,
         bases: Box<[OwnedTypeRef]>,
         mro: Box<[TypeRef]>,
+        heap: &Heap,
     ) -> Self {
+        let descriptor_free = namespace
+            .iter()
+            .all(|(_, value)| !super::descriptor::may_be_descriptor(value, heap));
         Self {
             name,
             namespace,
             bases,
             mro,
             uuid: None,
+            descriptor_free,
         }
+    }
+
+    /// No stored member can become a descriptor without a class-namespace write.
+    pub(crate) fn descriptor_free(&self) -> bool {
+        self.descriptor_free
     }
 
     /// Boundary identity of the class, generated and stored on first use so
@@ -152,6 +165,10 @@ impl<'h> HeapReadMut<'h, Class> {
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
     pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if super::descriptor::may_be_descriptor(&value, vm.heap) {
+            // Never reset this hint: a stored instance can gain hooks through its own class.
+            self.get_mut(vm.heap).descriptor_free = false;
+        }
         let guarded = name
             .as_either_str(vm.heap)
             .map(|name| name.as_str(vm.interns).to_owned());
@@ -376,5 +393,29 @@ impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.extend(self.bases.iter().filter_map(|base| base.class_id()));
         self.namespace.py_dec_ref_ids(stack);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_classes_default_to_descriptor_lookup() {
+        #[derive(serde::Serialize)]
+        struct OlderClass {
+            name: EitherStr,
+            namespace: Dict,
+            uuid: Option<MontyUuid>,
+        }
+
+        let old = OlderClass {
+            name: EitherStr::Heap("Record".to_owned()),
+            namespace: Dict::new(),
+            uuid: None,
+        };
+        let bytes = minicbor_serde::to_vec(&old).unwrap();
+        let restored: Class = minicbor_serde::from_slice(&bytes).unwrap();
+        assert!(!restored.descriptor_free());
     }
 }
