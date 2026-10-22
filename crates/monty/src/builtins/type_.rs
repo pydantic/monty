@@ -3,12 +3,12 @@
 use super::Builtins;
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait},
+    types::{Class, Dict, PyTrait, descriptor},
     value::Value,
 };
 
@@ -23,13 +23,13 @@ use crate::{
 /// because the "exactly 1 *or* 3 positionals, same name" overload isn't
 /// expressible by any of the binder families — CPython special-cases `type`'s
 /// argument parsing in `type_new`/`type_init` for the same reason.
-pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (mut pos, kwargs) = args.into_parts();
     match pos.len() {
         1 => {
             let value = pos.next().expect("length checked");
             if kwargs.is_empty() {
-                Ok(type_of(vm, value))
+                Ok(CallResult::Value(type_of(vm, value)))
             } else {
                 value.drop_with(vm);
                 kwargs.drop_with(vm);
@@ -42,7 +42,8 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let namespace = pos.next().expect("length checked");
             // A namespace built by hand holds real values, so its strings are
             // forward references, as in CPython, whatever the caller's module declared.
-            create_class(vm, name, bases, namespace, kwargs, true)
+            let class = create_class(vm, name, bases, namespace, kwargs, true)?;
+            descriptor::finish_class(class, vm)
         }
         _ => {
             pos.drop_with(vm);
@@ -68,7 +69,7 @@ struct BuildClassArgs {
 /// class a compiled body assembled, keeping the body's `from __future__ import
 /// annotations` state so `get_type_hints()` reads its stringized annotations
 /// the right way. Unreachable from Python code (see `BuiltinsFunctions::BuildClass`).
-pub fn builtin_build_class(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_build_class(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let BuildClassArgs {
         name,
         namespace,
@@ -76,7 +77,8 @@ pub fn builtin_build_class(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     } = BuildClassArgs::from_args(args, vm)?;
     let future_annotations = matches!(future_annotations, Value::Bool(true));
     let bases = vm.heap.get_empty_tuple();
-    create_class(vm, name, bases, namespace, KwargsValues::Empty, future_annotations)
+    let class = create_class(vm, name, bases, namespace, KwargsValues::Empty, future_annotations)?;
+    descriptor::finish_class(class, vm)
 }
 
 /// The 1-arg `type(obj)` form.

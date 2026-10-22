@@ -361,6 +361,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if let Some(member) = class_member(self.get(vm.heap).class(), name.as_str(vm.interns), vm) {
+            defer_drop!(member, vm);
+            if super::descriptor::is_data(member, vm) {
+                vm.heap.inc_ref(self.id());
+                let object = Value::Ref(self.id());
+                defer_drop!(object, vm);
+                let result = super::descriptor::mutate(member, object, Some(value), vm)?.require_synchronous(vm)?;
+                result.drop_with(vm);
+                return Ok(());
+            }
+        }
         let mut value_guard = DropGuard::new(value, vm);
         let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
@@ -414,6 +425,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let member = super::instance::class_member(self.get(vm.heap).class(), attr.as_str(vm.interns), vm);
+        defer_drop!(member, vm);
+        if member
+            .as_ref()
+            .is_some_and(|member| super::descriptor::has_get(member, vm))
+        {
+            vm.heap.inc_ref(self.id());
+            return super::descriptor::call_attr(Value::Ref(self.id()), attr, args, vm);
+        }
+
         let attr_str = attr.as_str(vm.interns);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).
@@ -619,64 +640,43 @@ impl HeapItem for BoundMethod {
     }
 }
 
-/// Reads an instance attribute for `obj.attr` (the `LoadAttr` path).
-///
-/// Mirrors Python's lookup order: the instance `__dict__` first, then the class
-/// namespace, then the `__class__` special case. A class method becomes a
-/// [`BoundMethod`] (binding `self`); a class variable is returned as-is. A missing
-/// attribute raises `AttributeError` with the real class name. Takes `self_id`
-/// (available at the `Value` level) because binding a method needs the instance's
-/// `HeapId`.
+/// Reads data descriptors before instance storage, then other class members.
+/// Descriptor code uses ordinary VM frames and may suspend.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let attr_str = attr.as_str(vm.interns);
-    if let Some(value) = instance_attr(self_id, attr_str, vm) {
-        Ok(CallResult::Value(value))
-    } else {
-        let class_id = instance_class(self_id, vm);
-        Err(ExcType::attribute_error(
-            class_name(class_id, vm.heap, vm.interns),
-            attr_str,
-        ))
+    let name = attr.as_str(vm.interns).to_owned();
+    let class = instance_class(self_id, vm);
+    let member = class_member(class, &name, vm);
+    defer_drop!(member, vm);
+    if let Some(member) = member
+        && super::descriptor::is_data(member, vm)
+        && super::descriptor::has_get(member, vm)
+    {
+        return super::descriptor::get(member, Some(self_id), class, vm);
     }
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+        unreachable!()
+    };
+    if let Some(value) = instance.attrs().get_by_str(&name, vm.heap, vm.interns) {
+        return Ok(CallResult::Value(value.clone_with_heap(vm.heap)));
+    }
+    if let Some(member) = member {
+        return super::descriptor::get(member, Some(self_id), class, vm);
+    }
+    if name == "__class__" {
+        vm.heap.inc_ref(class);
+        return Ok(CallResult::Value(Value::Ref(class)));
+    }
+    Err(ExcType::attribute_error(class_name(class, vm.heap, vm.interns), &name))
 }
 
-/// The lookup half of [`instance_getattr`]: the instance `__dict__`, then the
-/// class namespace, then the `__class__` special case; `None` when nothing binds
-/// `attr`, leaving the `AttributeError` to the caller.
-///
-/// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
-/// exactly as `self.field` does, binding a function-valued class member as a
-/// [`BoundMethod`].
-pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
-    if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
-        && let Some(value) = inst
-            .get(vm.heap)
-            .attrs
-            .get_by_str(attr, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap))
-    {
-        return Some(value);
-    }
-    let class_id = instance_class(self_id, vm);
-    match class_member(class_id, attr, vm) {
-        // A class variable is returned as-is; a function binds `self`.
-        Some(member) if is_method_value(&member, vm) => {
-            vm.heap.inc_ref(self_id);
-            let bound = BoundMethod {
-                instance: Value::Ref(self_id),
-                func: member,
-            };
-            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
-        }
-        Some(member) => Some(member),
-        // `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
-        // Last, so an explicit member of the same name wins, mirroring the
-        // `__name__` handling on class objects.
-        None if attr == "__class__" => {
-            vm.heap.inc_ref(class_id);
-            Some(Value::Ref(class_id))
-        }
-        None => None,
+/// Attribute lookup for native operations that require synchronous completion.
+/// Dataclass repr, comparison and hash use the same descriptor precedence as `obj.attr`.
+pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    let attr = EitherStr::Heap(attr.to_owned());
+    match instance_getattr(self_id, &attr, vm) {
+        Ok(result) => result.require_synchronous(vm).map(Some),
+        Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -830,16 +830,7 @@ pub(crate) fn instance_call_copy_hook(
 /// Invokes an already-looked-up dunder member, whose reference it takes.
 fn call_dunder_member(self_id: HeapId, func: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(func, vm);
-    // Only a plain function binds `self` as a descriptor (CPython's method
-    // lookup protocol, mirrored by `call_member_bound`); an already-bound
-    // method or other callable value is invoked without it.
-    let args = if is_method_value(func, vm) {
-        vm.heap.inc_ref(self_id);
-        args.prepend(Value::Ref(self_id))
-    } else {
-        args
-    };
-    vm.evaluate_function(func, args)
+    call_member_bound(func, self_id, args, vm)?.require_synchronous(vm)
 }
 
 /// Whether `self_id` is an instance whose class has an `__iter__` member —
@@ -952,7 +943,7 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
 }
 
 /// Looks up a member in a class namespace and clones it out, or `None` if absent.
-fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
+pub(crate) fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
     match vm.heap.get(class_id) {
         HeapData::Class(class) => class
             .namespace()
@@ -981,24 +972,15 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
     }
 }
 
-/// Calls a class member with CPython's descriptor-binding semantics: a
-/// plain user-defined function binds `self` (prepended to `args`), while any
-/// other callable value is called as-is. Shared by `py_call_attr` and the
-/// context-manager and iterator hooks so special-method invocation and
-/// ordinary method calls dispatch identically.
+/// Binds a class member before invoking an ordinary or implicit special method.
 fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    if is_method_value(member, vm) {
-        vm.heap.inc_ref(self_id);
-        vm.call_function(member, args.prepend(Value::Ref(self_id)))
-    } else {
-        vm.call_function(member, args)
-    }
+    super::descriptor::call_member(member, self_id, args, vm)
 }
 
 /// Whether a value is a user-defined function (so it should bind `self` when
 /// accessed as a method). Class variables that are not functions are returned
 /// unbound.
-fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
+pub(crate) fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::DefFunction(_) => true,
         Value::Ref(id) => matches!(
@@ -1047,6 +1029,15 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, BoundMethod> {
         instance.drop_with(vm);
         Ok(self.allocate_like(copied?, vm))
     }
+}
+
+/// Binds a callable to an owned reference to its receiver.
+pub(crate) fn bind_method(func: &Value, receiver: HeapId, vm: &VM<'_>) -> Value {
+    vm.heap.inc_ref(receiver);
+    Value::Ref(vm.heap.allocate(HeapData::BoundMethod(BoundMethod {
+        instance: Value::Ref(receiver),
+        func: func.clone_with_heap(vm.heap),
+    })))
 }
 
 #[cfg(test)]

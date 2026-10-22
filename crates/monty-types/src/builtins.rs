@@ -126,4 +126,6 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "type.__build_class__")]
     #[serde(rename = "type.__build_class__")]
     BuildClass,
+    /// Delete an attribute, including descriptor deletion.
+    Delattr,
 }
