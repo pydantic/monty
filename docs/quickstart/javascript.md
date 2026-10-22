@@ -384,9 +384,7 @@ Sessions are the same `MontySession` a local pool returns:
 ```ts test="skip"
 import { MontyWebsocket } from '@pydantic/monty'
 
-await using pool = await MontyWebsocket.create('ws://localhost:8000/', {
-  connectHeaders: () => ({ authorization: `Bearer ${process.env.MONTY_TOKEN}` }),
-})
+await using pool = await MontyWebsocket.create('ws://localhost:8000/')
 await using session = await pool.checkout({ limits: { maxFeedDurationSecs: 30 } })
 console.log(await session.feedRun('1 + 1')) // 2
 ```
