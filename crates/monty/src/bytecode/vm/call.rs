@@ -29,8 +29,8 @@ use crate::{
     py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{
-        Dict, Instance, PyTrait, Tuple, Type, TypeRef,
-        instance::{class_defines, class_lookup},
+        Dict, Instance, PyTrait, Tuple, Type, TypeRef, descriptor,
+        instance::{class_name, class_defines, class_lookup},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -470,7 +470,7 @@ impl<'h> VM<'h> {
 
     /// Converts a direct call suspension into a specific synchronous-context error.
     #[cold]
-    fn unsupported_call_result(&mut self, result: CallResult) -> RunError {
+    pub(super) fn unsupported_call_result(&mut self, result: CallResult) -> RunError {
         let error = match &result {
             CallResult::External {
                 name: function_name, ..
@@ -1212,6 +1212,16 @@ impl<'h> VM<'h> {
             Some(init_func) => {
                 let this = self;
                 defer_drop!(init_func, this);
+                if descriptor::has_get(init_func, this) {
+                    this.push(Value::Ref(instance_id));
+                    match descriptor::call_member(init_func, instance_id, args, this)? {
+                        CallResult::FramePushed => {
+                            this.current_frame_mut().is_initializer = true;
+                            return Ok(CallResult::FramePushed);
+                        }
+                        _ => unreachable!("descriptor call installs a continuation"),
+                    }
+                }
                 // CPython's `type.__call__` looks up `__init__` with descriptor
                 // binding: only plain functions bind the new instance as `self`.
                 // Bound methods already carry their own receiver, and builtins,

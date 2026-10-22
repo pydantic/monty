@@ -139,4 +139,6 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "type.mro")]
     #[serde(rename = "type.mro")]
     TypeMro = 41,
+    /// Delete an attribute, including descriptor deletion.
+    Delattr = 42,
 }

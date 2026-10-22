@@ -1107,6 +1107,7 @@ impl<'h> VM<'h> {
                 exception_stack_base: f.exception_stack_base(),
                 call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
+                result: f.result,
                 namespace: f.namespace,
                 import_from_module: f.import_from_module,
             })
@@ -1121,6 +1122,7 @@ impl<'h> VM<'h> {
             exception_stack_base: current.exception_stack_base(),
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
+            result: current.result,
             namespace: mem::take(&mut current.namespace),
             import_from_module: current.import_from_module,
         });
@@ -1218,6 +1220,7 @@ impl<'h> VM<'h> {
                         is_parked: false,
                         namespace: sf.namespace,
                         is_initializer: sf.is_initializer,
+                        result: sf.result,
                         import_from_module: sf.import_from_module,
                     }
                 })

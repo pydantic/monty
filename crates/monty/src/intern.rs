@@ -1078,6 +1078,9 @@ pub enum StaticStrings {
     Doc,
     /// `asyncio.Task.done()` method.
     Done,
+    Fget,
+    Fset,
+    Fdel,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
     /// `re.DOTALL` flag
