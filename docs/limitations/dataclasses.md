@@ -87,8 +87,8 @@ field after a defaulted one
     a second, distinct object.
 - **Descriptor defaults are read from the class namespace directly.** Decoration does not call
     `descriptor.__get__(None, cls)` to determine the default value.
-- **`default_factory` and `__post_init__` cannot suspend.** Both run in a
-    synchronous position the interpreter cannot preserve and resume, so calling an
+- **`default_factory`, `__post_init__`, and data-descriptor setters in the synthesized initializer cannot suspend.**
+    These run in a synchronous position the interpreter cannot preserve and resume, so calling an
     external function, an `os` function, or awaiting inside one raises
     `NotImplementedError: external function 'f' cannot suspend in this synchronous context`.
     The traceback identifies the calling code.
@@ -111,8 +111,8 @@ field after a defaulted one
     a function reprs as `Local(x=1)` where CPython gives
     `make.<locals>.Local(x=1)`.
 - **A class-body `__setattr__` never runs for the synthesized `__init__`**,
-    which honors descriptors but otherwise writes to the instance `__dict__`. This is the
-    never-dispatched attribute hook described in [classes.md](classes.md) rather than
+    which dispatches data-descriptor setters synchronously but otherwise writes to the instance `__dict__`.
+    This is the never-dispatched attribute hook described in [classes.md](classes.md) rather than
     something dataclass-specific, so `@dataclass` does not reject it.
 - **`@dataclass` on a non-class** (e.g. `dataclasses.dataclass(5)`) raises
     `TypeError: dataclass() should be called on a class, not '<type>'`. CPython

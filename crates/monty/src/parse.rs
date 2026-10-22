@@ -1137,8 +1137,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// Shared by the top-level `Stmt::FunctionDef` arm and by class-body method
     /// parsing in [`parse_class_def`](Self::parse_class_def). The decorators are
     /// returned separately because they belong to the statement, not the function
-    /// (see [`Node::FunctionDef`]); the class-body path rejects decorated methods
-    /// before calling here, so it always receives an empty list.
+    /// (see [`Node::FunctionDef`]). Class-body methods use the same decorator path.
     fn parse_function_def(
         &mut self,
         mut function: ast::StmtFunctionDef,
