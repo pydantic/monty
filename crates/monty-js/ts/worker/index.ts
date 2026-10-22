@@ -1,15 +1,22 @@
 // Browser/default WASM entry. Node selects index.node.ts through package exports.
 import { browserWorkerFactory } from './browserFactory.js'
 import type { ComponentModules } from './host.js'
-import { loadModule } from './loadModule.browser.js'
+import { loadCodecModules, loadModule } from './loadModule.browser.js'
 import {
   createWorkerPoolFromFactory,
   workerChannelOptions,
   type Monty as MontyPool,
   type WasmPoolOptions,
 } from './poolOptions.js'
+import {
+  createWebsocketPool,
+  type MontyWebsocket as MontyWebsocketPool,
+  type WasmWebsocketOptions,
+} from './websocket.js'
 
 export * from '../shared.js'
+export type { WebsocketCheckoutOptions } from '../websocket.js'
+export type { WasmWebsocketOptions, WasmWebsocketOptions as MontyWebsocketOptions } from './websocket.js'
 export { loadModule }
 export type { ComponentModules } from './host.js'
 export type { WasmPoolOptions, WasmPoolOptions as MontyOptions } from './poolOptions.js'
@@ -28,5 +35,14 @@ export async function createWorkerPool(modules: ComponentModules, options: WasmP
 export const Monty = {
   async create(options: WasmPoolOptions = {}): Promise<Monty> {
     return createWorkerPool(await loadModule(), options)
+  },
+}
+
+export type MontyWebsocket = MontyWebsocketPool
+
+/** Dials remote workers over the global `WebSocket`, loading only the protocol codec. */
+export const MontyWebsocket = {
+  async create(url: string, options: WasmWebsocketOptions = {}): Promise<MontyWebsocket> {
+    return createWebsocketPool(await loadCodecModules(), url, options)
   },
 }

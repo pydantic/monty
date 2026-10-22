@@ -1,0 +1,22 @@
+[package]
+name = "monty-wasm-types"
+# Shared by the components the monty-js build distributes via npm, not crates.io
+publish = false
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Rust bindings for Monty's WebAssembly component types and their protobuf conversions."
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+monty-proto = { workspace = true }
+monty-types = { workspace = true }
+wit-bindgen = "0.46"
+
+[lints]
+workspace = true

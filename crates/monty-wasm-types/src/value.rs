@@ -4,8 +4,7 @@
 //! the same flat post-order arena the wire does: one per message, container
 //! nodes holding the indexes of their (lower-numbered) children. Conversion
 //! is node for node; the arena's invariants are checked by
-//! [`MontyGraph::from_nodes`]. Protobuf remains an internal detail of
-//! `monty-proto`; no wire bytes cross into JavaScript.
+//! [`MontyGraph::from_nodes`].
 
 use std::borrow::Cow;
 
@@ -16,7 +15,7 @@ use monty_types::{
     unstable::{ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
-use crate::bindings::exports::pydantic::monty::worker::{
+use crate::types::{
     Arena, ClassInstanceNode, ClassTypeNode, ComplexNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode,
     FunctionNode, ModuleNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
 };

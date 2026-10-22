@@ -1,0 +1,29 @@
+[package]
+name = "monty-wasm-codec"
+# Used by the monty-js build which is distributed via npm, not crates.io
+publish = false
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "WebAssembly component that encodes and validates Monty protocol frames for a remote worker."
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+# A stateless component: no interpreter, so a browser reaching a remote worker
+# downloads the protocol code alone.
+crate-type = ["cdylib"]
+
+# Built in its own cargo invocation (see `build:wasm` in crates/monty-js/package.json):
+# building it alongside monty-wasm-runtime would unify monty-types' `tzdb-bundled` in.
+[dependencies]
+monty-proto = { workspace = true }
+monty-wasm-types = { workspace = true }
+wit-bindgen = "0.46"
+
+[lints]
+workspace = true

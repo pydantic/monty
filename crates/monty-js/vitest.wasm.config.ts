@@ -19,6 +19,8 @@ export default defineConfig({
   test: {
     include: ['__test__/*.spec.ts'],
     exclude: ['__test__/node_*.spec.ts'],
+    // servers for wasm_websocket.spec.ts, bridged to `monty subprocess` children
+    globalSetup: ['__test__/websocket_setup.ts'],
     testTimeout: 120_000,
     hookTimeout: 120_000,
     fileParallelism: false,

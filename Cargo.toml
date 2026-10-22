@@ -9,6 +9,8 @@ members = [
     "crates/monty-proto",
     "crates/monty-pool",
     "crates/monty-wasm-runtime",
+    "crates/monty-wasm-codec",
+    "crates/monty-wasm-types",
     "crates/monty-python",
     "crates/monty-js",
     "crates/monty-apidoc",
@@ -70,6 +72,8 @@ monty-proto = { path = "crates/monty-proto", version = "1.3.0" }
 monty-pool = { path = "crates/monty-pool", version = "1.3.0" }
 monty-type-checking = { path = "crates/monty-type-checking", version = "1.3.0" }
 monty-typeshed = { path = "crates/monty-typeshed", version = "1.3.0" }
+# Unpublished: shared by the WebAssembly components only.
+monty-wasm-types = { path = "crates/monty-wasm-types" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.14"
 ruff_python_stdlib = "0.0.14"
