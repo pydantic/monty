@@ -1436,6 +1436,18 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
 /// Returns a list of the lines in the string, breaking at line boundaries.
 /// Accepts keepends as either positional or keyword argument.
 fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    // Skip ordinary bytes with one lookup; Unicode boundaries start with 0xc2 or 0xe2.
+    const LINE_BOUNDARY_START: [bool; 256] = {
+        let mut table = [false; 256];
+        let starts = b"\n\r\x0b\x0c\x1c\x1d\x1e\xc2\xe2";
+        let mut i = 0;
+        while i < starts.len() {
+            table[starts[i] as usize] = true;
+            i += 1;
+        }
+        table
+    };
+
     let keepends = parse_splitlines_args(args, vm)?;
     let s = s.get(vm.heap);
 
@@ -1452,12 +1464,20 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
         let mut line_end = start;
 
         while end < len {
+            end += bytes[end..]
+                .iter()
+                .position(|b| LINE_BOUNDARY_START[usize::from(*b)])
+                .unwrap_or(len - end);
+            if end == len {
+                line_end = end;
+                break;
+            }
             // Match CPython's line boundaries as complete UTF-8 sequences.
-            let boundary_len = match &bytes[end..] {
-                [b'\r', b'\n', ..] => 2,
-                [b'\n' | b'\r' | b'\x0b' | b'\x0c' | b'\x1c'..=b'\x1e', ..] => 1,
-                [0xc2, 0x85, ..] => 2,              // U+0085 NEXT LINE
-                [0xe2, 0x80, 0xa8 | 0xa9, ..] => 3, // U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR
+            let boundary_len = match bytes[end] {
+                b'\r' if bytes.get(end + 1) == Some(&b'\n') => 2,
+                b'\n' | b'\r' | b'\x0b' | b'\x0c' | b'\x1c'..=b'\x1e' => 1,
+                0xc2 if bytes.get(end + 1) == Some(&0x85) => 2, // U+0085 NEXT LINE
+                0xe2 if matches!(bytes.get(end + 1..end + 3), Some([0x80, 0xa8 | 0xa9])) => 3,
                 _ => 0,
             };
             if boundary_len > 0 {
