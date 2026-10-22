@@ -28,6 +28,170 @@ fn descriptor_protocol_and_builtin_wrappers() {
 }
 
 #[test]
+fn builtin_descriptor_get_requires_a_receiver_or_owner() {
+    repl()
+        .feed_run(
+            r"
+for constructor in (property, classmethod, staticmethod):
+    descriptor = constructor(len)
+    for args in ((None,), (None, None)):
+        try:
+            descriptor.__get__(*args)
+        except TypeError as exc:
+            assert str(exc) == '__get__(None, None) is invalid'
+        else:
+            assert False
+    assert descriptor.__get__(None, list) is not None
+42
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+}
+
+#[test]
+fn native_property_getter_chains_are_bounded_and_release_the_recursion_guard() {
+    let mut repl = repl();
+    assert_eq!(
+        repl.feed_run(
+            r"
+p = property(len)
+for _ in range(100):
+    p = property(p.__get__)
+for _ in range(2):
+    try:
+        p.__get__([])
+    except RecursionError:
+        pass
+    else:
+        assert False
+assert property(len).__get__([1, 2]) == 2
+42
+",
+            vec![],
+            PrintWriter::Disabled
+        )
+        .unwrap(),
+        MontyObject::int(42)
+    );
+    assert_eq!(
+        repl.feed_run("1 + 1", vec![], PrintWriter::Disabled).unwrap(),
+        MontyObject::int(2)
+    );
+}
+
+#[test]
+fn native_descriptor_reads_propagate_accessor_attribute_errors() {
+    repl()
+        .feed_run(
+            r"
+import dataclasses
+
+@dataclasses.dataclass
+class Record:
+    x: int
+
+left = Record(1)
+right = Record(1)
+Record.x = property()
+for operation in (lambda: repr(left), lambda: left == right):
+    try:
+        operation()
+    except AttributeError as exc:
+        assert str(exc) == 'property has no getter'
+    else:
+        assert False
+42
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+}
+
+#[test]
+fn dataclass_descriptor_setters_reject_suspension_without_corrupting_state() {
+    let mut repl = repl();
+    repl.feed_run(
+        r"
+import dataclasses
+import os
+
+@dataclasses.dataclass
+class Record:
+    x: int
+
+def external_setter(obj, value):
+    ext_fn(value)
+
+def os_setter(obj, value):
+    os.path.exists('/value')
+
+class ExternalField:
+    def __set__(self, obj, value):
+        ext_fn(value)
+
+class OsField:
+    def __set__(self, obj, value):
+        os.path.exists('/value')
+
+for descriptor in (property(None, external_setter), property(None, os_setter), ExternalField(), OsField()):
+    Record.x = descriptor
+    for _ in range(2):
+        try:
+            Record(42)
+        except NotImplementedError as exc:
+            assert 'cannot suspend in this synchronous context' in str(exc)
+        else:
+            assert False
+
+def local_setter(obj, value):
+    obj.actual = value
+
+Record.x = property(None, local_setter)
+assert Record(42).actual == 42
+",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    assert_eq!(
+        repl.feed_run("Record(7).actual", vec![], PrintWriter::Disabled)
+            .unwrap(),
+        MontyObject::int(7)
+    );
+}
+
+#[test]
+fn delattr_errors_identify_the_class_and_invalid_name_type() {
+    repl()
+        .feed_run(
+            r#"
+class Record:
+    pass
+
+try:
+    delattr(Record, 'missing')
+except AttributeError as exc:
+    assert str(exc) == "type object 'Record' has no attribute 'missing'"
+else:
+    assert False
+
+try:
+    delattr(Record(), 1)
+except TypeError as exc:
+    assert str(exc) == "attribute name must be string, not 'int'"
+else:
+    assert False
+"#,
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+}
+
+#[test]
 fn every_descriptor_hook_survives_suspension_and_restore() {
     let code = r"
 class Field:

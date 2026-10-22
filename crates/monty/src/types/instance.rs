@@ -693,12 +693,18 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// Attribute lookup for native operations that require synchronous completion.
 /// Dataclass repr, comparison and hash use the same descriptor precedence as `obj.attr`.
 pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    let attr = EitherStr::Heap(attr.to_owned());
-    match instance_getattr(self_id, &attr, vm) {
-        Ok(result) => result.require_synchronous(vm).map(Some),
-        Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => Ok(None),
-        Err(error) => Err(error),
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+        unreachable!("instance_attr requires an instance")
+    };
+    // Decide absence before dispatch: a present descriptor may itself raise AttributeError.
+    if attr != "__class__"
+        && !class_defines(instance.class(), attr, vm)
+        && instance.attrs().get_by_str(attr, vm.heap, vm.interns).is_none()
+    {
+        return Ok(None);
     }
+    let attr = EitherStr::Heap(attr.to_owned());
+    instance_getattr(self_id, &attr, vm)?.require_synchronous(vm).map(Some)
 }
 
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class

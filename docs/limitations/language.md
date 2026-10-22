@@ -18,7 +18,7 @@ any code runs.
     *expressions* (`(x for x in ...)`) parse but currently materialize to a
     `list` rather than a lazy iterator, a known temporary divergence; see
     `iter__generator_expr_type.py`.
-- **`del` statements** — `del x`, `del d[k]`, and multiple targets are unsupported; `del obj.attr` is supported.
+- **Unsupported `del` forms** — `del x`, `del d[k]`, and multiple targets.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
 - **`async for` loops** and **async comprehensions**.
@@ -242,8 +242,7 @@ another order (`Counter(a=x, b=x, c=x).most_common(2)` is
 
 ## What *does* work
 
-- Functions (`def`, `async def`), nested functions, closures, and decorators on
-    them, but not on methods (see above).
+- Functions (`def`, `async def`), nested functions, closures, and decorators on functions and methods.
 - List / dict / set comprehensions; generator comprehensions degrade to
     lists (see above).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.
