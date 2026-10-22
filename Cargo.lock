@@ -2783,10 +2783,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "monty-wasm-codec"
+version = "1.4.0"
+dependencies = [
+ "monty-proto",
+ "monty-wasm-types",
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
 name = "monty-wasm-runtime"
 version = "1.4.0"
 dependencies = [
  "monty-alloc",
+ "monty-proto",
+ "monty-types",
+ "monty-wasm-types",
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
+name = "monty-wasm-types"
+version = "1.4.0"
+dependencies = [
  "monty-proto",
  "monty-types",
  "wit-bindgen 0.46.0",

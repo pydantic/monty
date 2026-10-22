@@ -23,3 +23,11 @@ export function timeoutOption(value: number | undefined, name: string): number |
   }
   return value
 }
+
+/** Formats milliseconds like the native pool's duration diagnostics. */
+export function formatDuration(ms: number): string {
+  if (ms >= 1000) return `${ms / 1000}s`
+  if (ms >= 1) return `${ms}ms`
+  if (ms >= 0.001) return `${ms * 1000}µs`
+  return `${ms * 1_000_000}ns`
+}

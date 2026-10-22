@@ -1322,6 +1322,21 @@ jobs:
         with:
           node-version: 24
 
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-on-failure: true
+          save-if: ${{ env.SAVE_CI_CACHE }}
+
+      # the workers behind the WebSocket servers the remote-client specs dial
+      - name: Build the monty binary
+        run: cargo build -p monty-runtime
+
       - name: Build TypeScript
         run: npm run build:ts
         working-directory: crates/monty-js
@@ -1336,10 +1351,14 @@ jobs:
       - name: Test wasm module in node
         run: npm run test:wasm
         working-directory: crates/monty-js
+        env:
+          MONTY_BIN: ${{ github.workspace }}/target/debug/monty
 
       - name: Test browser bindings
         run: npx playwright install --with-deps chromium && npm run test:browser
         working-directory: crates/monty-js
+        env:
+          MONTY_BIN: ${{ github.workspace }}/target/debug/monty
 
   assemble-js-packages:
     name: assemble JS packages

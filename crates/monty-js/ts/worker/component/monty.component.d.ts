@@ -2,7 +2,7 @@
 
 import type * as Worker from './interfaces/pydantic-monty-worker.js'
 
-export * from './interfaces/pydantic-monty-worker.js'
+export * from './interfaces/pydantic-monty-types.js'
 
 export interface ComponentExports {
   'pydantic:monty/worker': typeof Worker

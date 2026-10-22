@@ -493,6 +493,9 @@ full host access, relying on deployment isolation — a container or VM per sess
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the
 other end.
 
+The browser `MontyWebsocket` decodes its server's frames with the protocol codec, under the same frame cap and
+allocation budget the native clients use, and a malformed frame ends the session with `ProtocolError`.
+
 ### Pin the worker binary
 
 The worker binary is resolved from the explicit path you pass, then `MONTY_BIN`, then the bundled platform package, then

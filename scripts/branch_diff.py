@@ -111,7 +111,7 @@ RULES: list[tuple[str, Category]] = [
     ('crates/monty-js/*.d.ts', PRODUCTION),
     ('crates/monty-python/python/**', PRODUCTION),
     ('crates/monty-proto/proto/**/*.proto', PRODUCTION),
-    ('crates/monty-wasm-runtime/wit/**', PRODUCTION),
+    ('crates/monty-wasm-types/wit/**', PRODUCTION),
     ('crates/monty-typeshed/custom/**', PRODUCTION),
     ('crates/monty-typeshed/vendor/**', PRODUCTION),
 ]

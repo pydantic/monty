@@ -1,5 +1,6 @@
 // In-process WebSocket servers for the `MontyWebsocket` specs, the Node
 // counterparts of the fixtures in crates/monty-python/tests/test_websocket.py.
+// The WebAssembly client's specs reach them through `websocket_setup.ts`.
 // Each connection is bridged to a real `monty subprocess` child: the child
 // length-prefixes each protocol frame on stdio, the WebSocket carries one
 // frame per binary message, so the bridge only adds and strips the prefix.
@@ -8,8 +9,10 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import type { IncomingHttpHeaders } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
-import { findMontyBinary } from '@pydantic/monty/node'
 import { type RawData, type WebSocket, WebSocketServer } from 'ws'
+
+// not `@pydantic/monty/node`: the wasm and browser configs alias that entry to stubs
+import { findMontyBinary } from '../dist/binary.js'
 
 /** A listening test server. */
 export interface TestServer {
@@ -53,6 +56,14 @@ export function relay(ws: WebSocket): void {
     }
     ws.terminate()
   })()
+}
+
+/** A server that accepts the connection and never answers. */
+export function silent(): void {}
+
+/** A server that answers every request with bytes that are not a protocol frame. */
+export function garbage(ws: WebSocket): void {
+  ws.on('message', () => ws.send(Buffer.from([0xff, 0xff, 0xff])))
 }
 
 /** A relay that drops the connection, without a reply, on its `dropAt`-th request. */

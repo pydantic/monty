@@ -78,11 +78,13 @@ check-wasm-types: build-wasm ## Verify checked-in component declarations match t
 
 .PHONY: test-wasm
 test-wasm: install-js ## Test the wasm worker component from node, with no browser
-	cd crates/monty-js && npm run build:wasm && npm run build:ts && npm run test:wasm
+	cargo build -p monty-runtime
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty$(EXE_EXT)" npm run test:wasm
 
 .PHONY: test-browser
 test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
-	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser
+	cargo build -p monty-runtime
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty$(EXE_EXT)" npm run test:browser
 
 .PHONY: dev-py-pgo
 dev-py-pgo: install-py ## Install the Python package with a PGO-optimized Monty interpreter

@@ -1,7 +1,7 @@
 package pydantic:monty;
 
-/// Drives one persistent Monty child through semantic component calls.
-interface worker {
+/// The semantic values, requests and events shared by `worker` and `codec`.
+interface types {
     /// Whether the component can accept another request after this turn.
     enum status {
         /// The child remains ready for another turn.
@@ -307,6 +307,11 @@ interface worker {
         print-flush-interval-ms: option<u32>,
         /// The session's `os-policy`; absent uses every default.
         os-policy: option<os-policy>,
+        /// Asks a remote that stores sessions not to store this one (true) or to
+        /// store it (false); absent takes its default. A local child ignores it.
+        ephemeral: option<bool>,
+        /// The server-side profile to run under, sent unchecked; a local child ignores it.
+        profile: option<string>,
     }
 
     /// One Python snippet and its host inputs.
@@ -385,6 +390,8 @@ interface worker {
         dump,
         load(list<u8>),
         reset,
+        /// PEP 508 requirements for a CPython worker; a Monty child rejects a non-empty list.
+        install-dependencies(list<string>),
     }
 
     /// One Python traceback frame.
@@ -520,12 +527,52 @@ interface worker {
         max-feed-duration-micros: option<u64>,
         max-turn-duration-micros: option<u64>,
     }
+}
+
+/// Drives one persistent Monty child through semantic component calls.
+interface worker {
+    use types.{request, dispatch-result};
 
     /// Handles one semantic request using the retained child.
     dispatch: func(request: request) -> dispatch-result;
 }
 
+/// Converts between semantic requests and events and the protobuf frames a
+/// remote worker speaks over a WebSocket, one frame per binary message.
+interface codec {
+    use types.{request, event};
+
+    /// One decoded child frame: a `Print` expands into one event per stream run.
+    record decoded-frame {
+        events: list<event>,
+        /// Set by a remote that stores sessions, on its replies to `configure` and `load`.
+        session-id: option<list<u8>>,
+        /// As the `dispatch-result` fields of the same names.
+        feed-execution-micros: u64,
+        max-feed-duration-micros: option<u64>,
+        max-turn-duration-micros: option<u64>,
+        max-suspensions: option<u64>,
+        max-total-sleep-micros: option<u64>,
+    }
+
+    /// Encodes one request as a frame; fails on values the protocol rejects.
+    encode-request: func(request: request) -> result<list<u8>, string>;
+    /// Validates and decodes one frame from an untrusted remote.
+    decode-event: func(frame: list<u8>) -> result<decoded-frame, string>;
+}
+
 /// A component instance containing one stateful Monty worker.
 world monty-runtime {
     export worker;
+}
+
+/// The protocol codec alone, without an interpreter, for remote workers.
+world monty-codec {
+    export codec;
+}
+
+/// Bindings only: `monty-wasm-types` generates the shared types from this
+/// world once, and the component crates reuse them.
+world monty-types {
+    import types;
 }

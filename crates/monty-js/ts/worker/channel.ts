@@ -1,8 +1,8 @@
 // Shared request correlation, hard deadlines and termination for browser and Node workers.
 
 import { MontyCrashedError } from '../errors.js'
-import { deadlineTimer, type DeadlineTimer } from './deadline.js'
-import type { DispatchRequest as ComponentRequest, DispatchResult, Dispatcher } from './host.js'
+import { deadlineTimer, formatDuration, type DeadlineTimer } from './deadline.js'
+import type { DispatchRequest as ComponentRequest, DispatchResult, Dispatcher } from './dispatch.js'
 import type { PooledWorker } from './pool.js'
 
 /** A semantic component request sent to a worker. */
@@ -159,12 +159,4 @@ export class WorkerChannel implements PooledWorker {
     this.failStartup(this.failure)
     for (const item of pending) item.reject(this.failure)
   }
-}
-
-/** Formats milliseconds like the native pool's duration diagnostics. */
-function formatDuration(ms: number): string {
-  if (ms >= 1000) return `${ms / 1000}s`
-  if (ms >= 1) return `${ms}ms`
-  if (ms >= 0.001) return `${ms * 1000}µs`
-  return `${ms * 1_000_000}ns`
 }
