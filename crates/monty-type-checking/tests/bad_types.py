@@ -1,11 +1,11 @@
 # This file contains intentional type errors to test the type checker.
 # Each section demonstrates a different category of type error.
-# ===
 
 import functools
 import hashlib
 import sys
 import tomllib
+from pathlib import Path
 from typing import TypedDict, assert_type
 
 
@@ -159,3 +159,21 @@ def cached_takes_int(n: int) -> int:
 cached_takes_int('nope')
 cached_takes_int(1, 2)
 cached_takes_int(n='nope')
+
+
+# === Invalid open calls ===
+# Non-default `buffering`, `errors` and the like are left to the runtime to reject,
+# since a variable holding the default must still type-check.
+
+open()
+open('/work/example.txt', 1)
+open('/work/example.txt', encoding=1)
+open('/work/example.txt', 'w').write(b'hello')
+open('/work/example.bin', 'wb').write('hello')
+open('/work/example.txt').closed = False
+
+path = Path('/work/example.txt')
+path.open(1)
+path.open(encoding=1)
+path.open(closefd=False)
+path.open(opener=lambda file, flags: 0)

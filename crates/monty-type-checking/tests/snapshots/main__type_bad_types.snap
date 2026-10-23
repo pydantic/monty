@@ -36,3 +36,13 @@ bad_types.py:149:7: error[unresolved-attribute] Module `functools` has no member
 bad_types.py:159:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`
 bad_types.py:160:21: error[too-many-positional-arguments] Too many positional arguments to bound method `_lru_cache_wrapper.__call__`: expected 2, got 3
 bad_types.py:161:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`
+bad_types.py:168:1: error[no-matching-overload] No overload of function `open` matches arguments
+bad_types.py:169:1: error[no-matching-overload] No overload of function `open` matches arguments
+bad_types.py:170:27: error[invalid-argument-type] Argument to function `open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:171:38: error[invalid-argument-type] Argument to bound method `_TextIOBase.write` is incorrect: Expected `str`, found `Literal[b"hello"]`
+bad_types.py:172:39: error[invalid-argument-type] Argument to bound method `BufferedWriter.write` is incorrect: Expected `Buffer`, found `Literal["hello"]`
+bad_types.py:173:1: error[invalid-assignment] Cannot assign to read-only property `closed` on object of type `TextIOWrapper[_WrappedBuffer]`: Attempted assignment to `TextIOWrapper[_WrappedBuffer].closed` here
+bad_types.py:176:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:177:11: error[invalid-argument-type] Argument to bound method `Path.open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:178:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:179:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments

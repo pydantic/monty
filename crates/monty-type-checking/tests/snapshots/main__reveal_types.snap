@@ -49,3 +49,13 @@ reveal_types.py:64:13: info[revealed-type] Revealed type: `time`
 reveal_types.py:65:13: info[revealed-type] Revealed type: `datetime`
 reveal_types.py:66:13: info[revealed-type] Revealed type: `timedelta`
 reveal_types.py:67:13: info[revealed-type] Revealed type: `timezone`
+reveal_types.py:74:13: info[revealed-type] Revealed type: `TextIOWrapper[_WrappedBuffer]`
+reveal_types.py:75:13: info[revealed-type] Revealed type: `TextIOWrapper[_WrappedBuffer]`
+reveal_types.py:76:13: info[revealed-type] Revealed type: `BufferedReader[_BufferedReaderStream]`
+reveal_types.py:77:13: info[revealed-type] Revealed type: `BufferedWriter`
+reveal_types.py:80:13: info[revealed-type] Revealed type: `TextIOWrapper[_WrappedBuffer]`
+reveal_types.py:81:13: info[revealed-type] Revealed type: `TextIOWrapper[_WrappedBuffer]`
+reveal_types.py:82:13: info[revealed-type] Revealed type: `BufferedReader[_BufferedReaderStream]`
+reveal_types.py:83:13: info[revealed-type] Revealed type: `BufferedWriter`
+reveal_types.py:87:17: info[revealed-type] Revealed type: `IO[Any]`
+reveal_types.py:88:17: info[revealed-type] Revealed type: `IO[Any]`

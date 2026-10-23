@@ -8,12 +8,21 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, get_args
 
 import pytest
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyError, MontyRuntimeError, MontySession, MontyTypingError, TypeCheckFormat
+from pydantic_monty import (
+    Monty,
+    MontyError,
+    MontyRuntimeError,
+    MontySession,
+    MontyTypingError,
+    MountDir,
+    TypeCheckFormat,
+)
 
 
 @pytest.fixture
@@ -173,6 +182,20 @@ def test_type_check_default_allows_run_with_inputs(pool: Monty):
     """Default (type_check=False) allows running code that would fail type checking."""
     with pool.checkout() as session:
         assert session.feed_run('x + 1', inputs={'x': 5}) == 6
+
+
+def test_type_check_open_and_run(tc_session: MontySession, tmp_path: Path):
+    """Builtin open has type information and writes through a mounted directory."""
+    code = """\
+with open('/work/example.txt', 'w') as output:
+    output.write('hello')
+"""
+    mount = MountDir(host_path=tmp_path, virtual_path='/work', mode='read-write')
+
+    result = tc_session.feed_run(code, mount=mount)
+
+    assert result == snapshot(None)
+    assert (tmp_path / 'example.txt').read_text() == snapshot('hello')
 
 
 # === MontyTypingError shape ===

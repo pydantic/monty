@@ -78,8 +78,9 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 
-`abc`, `enum`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored stubs, so their
-imports pass type checking.
+`abc`, `enum`, `io`, `_io`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored
+stubs, so their imports pass type checking.
+`io` and `_io` declare the file objects `open()` returns.
 At runtime, the host must provide them or the import raises `ModuleNotFoundError`.
 The worker never requests host stubs for vendored typeshed modules: a host-provided `abc` is checked against
 typeshed's `abc` declarations.
