@@ -1106,7 +1106,9 @@ impl Child {
     /// `Err` means the type checker still holds this session's files, which is
     /// terminal for the worker — see the `Reset` arm in [`Self::handle`].
     fn reset(&mut self) -> Result<(), String> {
-        self.state = SessionState::Configured(None);
+        if let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) {
+            drop((*progress).into_repl());
+        }
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
