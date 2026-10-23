@@ -1,7 +1,5 @@
 //! A checked-out worker: one REPL session, driven turn by turn.
 
-#[cfg(feature = "telemetry")]
-use std::time::Instant;
 use std::{
     borrow::Cow,
     fmt,
@@ -11,13 +9,13 @@ use std::{
     pin::Pin,
     process::ExitStatus,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
-    os_call_from_proto, pb, validate_requirement,
+    FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, exceeds_max_frame_len, ext_result_to_proto, future_results_to_proto,
+    named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
@@ -404,6 +402,8 @@ pub struct Checkout {
     /// `None` after `finish()` or after the worker was discarded on error.
     worker: Option<Worker>,
     pool: Arc<PoolInner>,
+    /// A subprocess session's `Configure`, held until its first request sends it (see [`Checkout::open_session`]).
+    deferred: Option<Box<DeferredConfigure>>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
     /// Set while a turn's I/O is in flight; still set on the next call only
@@ -744,9 +744,17 @@ pub(crate) struct Redial {
     pub(crate) telemetry: Option<TelemetryContext>,
 }
 
+/// The `Configure` a subprocess session sends with its first request.
+struct DeferredConfigure {
+    request: pb::ParentRequest,
+    /// The host's trace context, attached to the worker that starts the session.
+    #[cfg(feature = "telemetry")]
+    telemetry: Option<TelemetryContext>,
+}
+
 impl Checkout {
-    /// Sends `Configure` on a fresh worker (the worker materializes the repl
-    /// lazily on the first feed, or restores one via `load_snapshot` instead).
+    /// Creates `repl`'s session. A WebSocket worker gets `Configure` now, as its relay names the session in the reply;
+    /// a subprocess worker gets it with the first request (see [`Self::open_session`]).
     ///
     /// `redial` is kept for [`PoolConfig::auto_resume`]; `None` disables it.
     pub(crate) async fn create(
@@ -754,11 +762,13 @@ impl Checkout {
         pool: Arc<PoolInner>,
         repl: &ReplConfig,
         redial: Option<Redial>,
+        #[cfg(feature = "telemetry")] telemetry: Option<TelemetryContext>,
     ) -> Result<Self, PoolError> {
         let request = configure_request(repl);
         let mut this = Self {
             worker: Some(worker),
             pool,
+            deferred: None,
             pending: None,
             turn_in_flight: false,
             abort_in_flight: false,
@@ -774,11 +784,27 @@ impl Checkout {
             #[cfg(feature = "telemetry")]
             started: Some(Instant::now()),
         };
-        let mut no_print = on_print_sync(|_, _| {});
-        let deadline = this.pool.config.request_timeout;
-        match this.request_turn(&request, deadline, &mut no_print).await? {
-            ControlEvent::Ok => Ok(this),
-            other => Err(this.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
+        if this.pool.config.transport.is_websocket() {
+            #[cfg(feature = "telemetry")]
+            if let Some(worker) = &mut this.worker {
+                worker.set_adapter_context(telemetry);
+            }
+            let mut no_print = on_print_sync(|_, _| {});
+            let deadline = this.pool.config.request_timeout;
+            match this.request_turn(&request, deadline, &mut no_print).await? {
+                ControlEvent::Ok => Ok(this),
+                other => Err(this.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
+            }
+        } else if let Some(len) = exceeds_max_frame_len(&request) {
+            // what sending it would return; dropping `this` kills the unused worker
+            Err(oversize_request(len, MAX_FRAME_LEN))
+        } else {
+            this.deferred = Some(Box::new(DeferredConfigure {
+                request,
+                #[cfg(feature = "telemetry")]
+                telemetry,
+            }));
+            Ok(this)
         }
     }
 
@@ -868,8 +894,8 @@ impl Checkout {
     /// to `on_print` throughout.
     ///
     /// # Errors
-    /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
-    /// usable; all other errors mean the worker was discarded.
+    /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session usable; all other errors mean the worker was
+    /// discarded. So does a [`ReplConfig`] the worker rejects, which the session's first request reports as `Runtime`.
     pub async fn feed(
         &mut self,
         code: impl Into<String>,
@@ -1180,10 +1206,8 @@ impl Checkout {
         }
     }
 
-    /// Ends the session and returns the worker to the pool.
-    ///
-    /// Consumes the checkout. On error the worker is discarded (and the
-    /// error reported), but the pool remains healthy either way.
+    /// Ends the session and returns the worker to the pool; an error discards the worker but leaves the pool healthy.
+    /// A subprocess `Reset` is not awaited: the next checkout reads its reply and swaps in a fresh worker if it failed.
     pub async fn finish(mut self) -> Result<(), PoolError> {
         let result = self.finish_session().await;
         #[cfg(feature = "telemetry")]
@@ -1214,18 +1238,41 @@ impl Checkout {
             }
             return Ok(());
         }
-        let request = request(pb::parent_request::Kind::Reset(pb::Reset {}));
-        let mut no_print = on_print_sync(|_, _| {});
+        self.ensure_ready()?;
+        if let Some(worker) = &mut self.worker {
+            worker.checkouts_served += 1;
+        }
+        // nothing to reset when the session never reached the worker, or when
+        // retiring the worker kills it anyway
+        if self.deferred.is_none() && self.worker.as_ref().is_some_and(|worker| !self.pool.retires(worker)) {
+            self.send_reset().await?;
+        }
+        if let Some(worker) = self.worker.take() {
+            self.pool.release_worker(worker);
+        }
+        Ok(())
+    }
+
+    /// Writes `Reset` without waiting for its `Ok`, which the worker's next
+    /// checkout reads first (see [`Self::open_session`]).
+    async fn send_reset(&mut self) -> Result<(), PoolError> {
+        let reset = request(pb::parent_request::Kind::Reset(pb::Reset {}));
         let deadline = self.pool.config.request_timeout;
-        match self.request_turn(&request, deadline, &mut no_print).await? {
-            ControlEvent::Ok => {
-                if let Some(mut worker) = self.worker.take() {
-                    worker.checkouts_served += 1;
-                    self.pool.release_worker(worker);
-                }
+        self.armed_deadline = deadline;
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
+        };
+        let sent = match deadline {
+            Some(limit) => timeout(limit, worker.send(&reset)).await.ok(),
+            None => Some(worker.send(&reset).await),
+        };
+        match sent {
+            Some(Ok(())) => {
+                worker.owes_reset_ack = true;
                 Ok(())
             }
-            other => Err(self.protocol_violation(format!("unexpected reply to Reset: {other:?}"))),
+            Some(Err(_)) => Err(self.poison("sending a request").await),
+            None => Err(self.poison_timeout().await),
         }
     }
 
@@ -1237,8 +1284,8 @@ impl Checkout {
         }
     }
 
-    /// Stable identity within this pool, independent of PID reuse or transport.
-    /// Returns `None` after the worker has been released or discarded.
+    /// Stable identity within this pool, independent of PID reuse or transport; `None` once released or discarded.
+    /// The first request can replace a worker whose last reset failed.
     #[must_use]
     pub fn worker_id(&self) -> Option<u64> {
         self.worker.as_ref().map(|worker| worker.id)
@@ -1473,10 +1520,11 @@ impl Checkout {
     /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl);
-        let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
+        self.worker = Some(self.pool.acquire_worker(&redial.connect_headers).await?);
         #[cfg(feature = "telemetry")]
-        let worker = worker.with_adapter_context(redial.telemetry.clone());
-        self.worker = Some(worker);
+        if let Some(worker) = &mut self.worker {
+            worker.set_adapter_context(redial.telemetry.clone());
+        }
         let expected = self.pending.as_ref().map(PendingKey::of);
         let timeout = self.pool.config.request_timeout;
         let mut no_print = on_print_sync(|_, _| {});
@@ -1607,7 +1655,12 @@ impl Checkout {
         request: &pb::ParentRequest,
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
-        self.send_request(request).await?;
+        if self.deferred.is_some() {
+            // boxed: once per session, so it must not enlarge every turn's future
+            Box::pin(self.open_session(request)).await?;
+        } else {
+            self.send_request(request).await?;
+        }
         loop {
             let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
@@ -1683,7 +1736,12 @@ impl Checkout {
     /// the turn-ending event. All failure paths discard the worker except
     /// `Runtime` / `Typing`, which are sandbox-level outcomes.
     async fn turn_io(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
-        self.send_request(request).await?;
+        if self.deferred.is_some() {
+            // boxed: once per session, so it must not enlarge every turn's future
+            Box::pin(self.open_session(request)).await?;
+        } else {
+            self.send_request(request).await?;
+        }
         loop {
             let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
@@ -1929,13 +1987,154 @@ impl Checkout {
                 self.request_sent = true;
                 Ok(())
             }
-            Err(FrameError::FrameTooLarge { len, max }) => Err(PoolError::Runtime(MontyException::new(
-                ExcType::RuntimeError,
-                Some(format!(
-                    "request frame of {len} bytes exceeds the maximum of {max} bytes"
-                )),
-            ))),
+            Err(FrameError::FrameTooLarge { len, max }) => Err(oversize_request(len, max)),
             Err(_) => Err(self.poison("sending a request").await),
+        }
+    }
+
+    /// Writes the deferred `Configure` with `request`, then reads the last session's `Reset` ack and this `Configure`
+    /// ack, all within the turn's deadline. A worker failing the `Reset` ack is replaced, at most once.
+    async fn open_session(&mut self, request: &pb::ParentRequest) -> Result<(), PoolError> {
+        let (sent, configure_len, request_len) = loop {
+            let owes_ack = self.worker.as_ref().is_some_and(|worker| worker.owes_reset_ack);
+            self.request_sent = false;
+            // no deadlock: until it has read `request`, the worker writes nothing but acks
+            let lost = match self.send_session_start(request).await {
+                Ok((configure_len, request_len)) => {
+                    let sent = Instant::now();
+                    self.request_sent = true;
+                    self.trace_session_start(request);
+                    if !owes_ack {
+                        break (sent, configure_len, request_len);
+                    }
+                    match self.read_ack().await {
+                        Ok(()) => {
+                            self.worker.as_mut().expect(HELD).owes_reset_ack = false;
+                            break (sent, configure_len, request_len);
+                        }
+                        Err(failure) => failure.termination_reason(),
+                    }
+                }
+                // rejected before any I/O: the session can still start
+                Err(FrameError::FrameTooLarge { len, max }) => return Err(oversize_request(len, max)),
+                Err(_) if owes_ack => "crash",
+                Err(_) => return Err(self.lost_while_sending().await),
+            };
+            self.replace_worker(lost).await?;
+        };
+        let deferred = self.deferred.take().expect(DEFERRED);
+        // timed from the write, but begun after the `Reset` ack, whose `Ok` would end them
+        self.worker
+            .as_mut()
+            .expect(HELD)
+            .meter_sent_at(&deferred.request, configure_len, sent);
+        match self.read_ack().await {
+            Ok(()) => {
+                self.worker
+                    .as_mut()
+                    .expect(HELD)
+                    .meter_sent_at(request, request_len, sent);
+                Ok(())
+            }
+            Err(failure) => Err(self.configure_refused(failure).await),
+        }
+    }
+
+    /// Writes the deferred `Configure` then `request`, returning each body's length.
+    async fn send_session_start(&mut self, request: &pb::ParentRequest) -> Result<(usize, usize), FrameError> {
+        let deferred = self.deferred.as_deref().expect(DEFERRED);
+        let worker = self.worker.as_mut().expect(HELD);
+        worker.send_pair(&deferred.request, request).await
+    }
+
+    /// Opens the session's spans as its frames are written, so they cover the worker's whole reply.
+    fn trace_session_start(&mut self, request: &pb::ParentRequest) {
+        let deferred = self.deferred.as_deref().expect(DEFERRED);
+        let worker = self.worker.as_mut().expect(HELD);
+        #[cfg(feature = "telemetry")]
+        worker.set_adapter_context(deferred.telemetry.clone());
+        worker.trace_sent(&deferred.request);
+        worker.trace_sent(request);
+    }
+
+    /// Reads the `Ok` answering a pipelined `Reset` or `Configure`, skipping prints. Touches no session state, so an
+    /// ack is never taken for the next request's reply.
+    async fn read_ack(&mut self) -> Result<(), AckFailure> {
+        let worker = self.worker.as_mut().expect(HELD);
+        loop {
+            match worker.recv_ack().await {
+                Ok(event) => match event.kind {
+                    Some(pb::child_event::Kind::Ok(_)) => return Ok(()),
+                    Some(pb::child_event::Kind::Print(_)) => {}
+                    _ => return Err(AckFailure::Event(Box::new(event))),
+                },
+                Err(FrameError::Decode(err)) => return Err(AckFailure::Garbled(err.to_string())),
+                Err(_) => return Err(AckFailure::Lost),
+            }
+        }
+    }
+
+    /// Swaps in a fresh worker, in the same pool slot, for one lost before
+    /// this session reached it. Nothing is recorded against the session.
+    async fn replace_worker(&mut self, reason: &'static str) -> Result<(), PoolError> {
+        if let Some(worker) = self.worker.take() {
+            drop(worker); // kill-on-drop
+            self.pool.count_termination(reason);
+        }
+        match self.pool.spawn_replacement().await {
+            Ok(worker) => {
+                self.worker = Some(worker);
+                Ok(())
+            }
+            Err(err) => {
+                #[cfg(feature = "telemetry")]
+                self.record_finish("error");
+                self.pending = None;
+                self.feed_mounts = None;
+                Err(err)
+            }
+        }
+    }
+
+    /// Reports a refused deferred `Configure` as checkout did, discarding the worker even for a rejected config: it
+    /// answers the next request outside any session, and would run a `Load` without the configured limits.
+    async fn configure_refused(&mut self, failure: AckFailure) -> PoolError {
+        match failure {
+            AckFailure::Lost => self.poison("waiting for a reply").await,
+            AckFailure::Garbled(err) => self.protocol_violation(format!("invalid payload from worker: {err}")),
+            AckFailure::Event(event) => {
+                // it ends the turn, so the spans record it
+                self.worker.as_mut().expect(HELD).trace_event(&event);
+                match event.kind {
+                    Some(pb::child_event::Kind::FatalError(fatal)) => self.fatal_error(&fatal.message).await,
+                    Some(pb::child_event::Kind::Error(error)) => match error.exception.map(MontyException::try_from) {
+                        Some(Ok(exc)) => {
+                            self.discard_worker();
+                            PoolError::Runtime(exc)
+                        }
+                        Some(Err(err)) => self.protocol_violation(format!("invalid exception payload: {err}")),
+                        None => self.protocol_violation("error event with no exception"),
+                    },
+                    _ => self.protocol_violation("unexpected reply to Configure"),
+                }
+            }
+        }
+    }
+
+    /// Classifies a worker lost while a session's first frames were written. One refusing the `Configure` (version
+    /// skew) answers it and exits without reading on, so its `FatalError` may be waiting.
+    async fn lost_while_sending(&mut self) -> PoolError {
+        let worker = self.worker.as_mut().expect(HELD);
+        let announced = match timeout(FATAL_EXIT_GRACE, worker.recv()).await {
+            Ok(Ok(pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::FatalError(fatal)),
+                ..
+            })) => Some(fatal.message),
+            _ => None,
+        };
+        match announced {
+            Some(message) => self.fatal_error(&message).await,
+            None => self.poison("sending a request").await,
         }
     }
 
@@ -2204,6 +2403,34 @@ enum ControlEvent {
     Dump(Vec<u8>),
 }
 
+/// Why a worker did not answer a pipelined `Reset` or `Configure` with `Ok`.
+enum AckFailure {
+    /// The stream ended or broke: the worker died.
+    Lost,
+    /// A frame arrived but its payload did not decode.
+    Garbled(String),
+    /// Any other event.
+    Event(Box<pb::ChildEvent>),
+}
+
+impl AckFailure {
+    /// The `monty.pool.worker.terminated` reason for a worker lost this way.
+    fn termination_reason(&self) -> &'static str {
+        match self {
+            Self::Lost => "crash",
+            Self::Event(event) if matches!(event.kind, Some(pb::child_event::Kind::FatalError(_))) => "fatal",
+            Self::Garbled(_) | Self::Event(_) => "discarded",
+        }
+    }
+}
+
+/// `expect` message for the worker a starting session uses: `ensure_ready`
+/// checked it, and `replace_worker` installs a replacement or fails.
+const HELD: &str = "a starting session holds a worker";
+
+/// `expect` message for the `Configure` `open_session` sends: `turn_io` calls it only while one is deferred.
+const DEFERRED: &str = "open_session runs only while `Configure` is deferred";
+
 /// How long a child that announced a `FatalError` is given to exit on its own
 /// before it is killed. It writes the frame and exits immediately, so this is
 /// a scheduling allowance rather than a real wait — and it is only ever spent
@@ -2235,6 +2462,16 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
         (Some(a), Some(b)) => Some(a.min(b)),
         (deadline, None) | (None, deadline) => deadline,
     }
+}
+
+/// The session-preserving error for a request frame too large to send.
+fn oversize_request(len: u32, max: u32) -> PoolError {
+    PoolError::Runtime(MontyException::new(
+        ExcType::RuntimeError,
+        Some(format!(
+            "request frame of {len} bytes exceeds the maximum of {max} bytes"
+        )),
+    ))
 }
 /// Checks an explicit working directory with [`validate_cwd`], raising its
 /// message as a session-preserving `ValueError`.

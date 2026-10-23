@@ -456,9 +456,10 @@ test('worker environment is empty', async (ctx) => {
   t.truthy(process.env.PATH, 'test process should have PATH set')
   await using pool = await Monty.create()
   const session = await pool.checkout()
+  // The worker works without an environment. Read it only after a reply: checkout sends nothing, and before
+  // `execve` the child still shows this process's environment.
+  t.is(await session.feedRun('1 + 1'), 2)
   const environ = await readFile(`/proc/${session.workerPid}/environ`)
   t.is(environ.length, 0, `worker environment should be empty, got: ${environ.toString().replaceAll('\0', ' ')}`)
-  // The worker is fully functional without an environment.
-  t.is(await session.feedRun('1 + 1'), 2)
   await session.close()
 })

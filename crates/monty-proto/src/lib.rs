@@ -102,7 +102,7 @@ pub use convert::{
 #[doc(hidden)]
 pub use decode_budget::{decode_budget_remaining, with_decode_budget};
 pub use frame::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,
+    DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, append_framed, decode_frame, encode_framed_into,
     encode_to_capped_vec, exceeds_max_frame_len, write_frame,
 };
 pub use generated::pb;

@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 
 use monty_proto::{
-    FrameError, FrameReader, pb,
+    FrameError, FrameReader, append_framed, encode_framed_into, pb,
     pb::{child_event::Kind as EventKind, parent_request::Kind as RequestKind},
     write_frame,
 };
@@ -50,6 +50,28 @@ fn frames_round_trip() {
     assert!(matches!(event.kind, Some(EventKind::Ok(_))));
     // clean EOF at the frame boundary
     assert!(reader.read::<pb::ChildEvent>().unwrap().is_none());
+}
+
+/// Appended frames follow what the buffer held, so one write can carry several.
+#[test]
+fn appended_frames_follow_the_buffered_ones() {
+    let reset = pb::ParentRequest {
+        kind: Some(RequestKind::Reset(pb::Reset {})),
+        trace_parent: None,
+    };
+    let mut buf = Vec::new();
+    encode_framed_into(&reset, &mut buf).unwrap();
+    append_framed(&feed(), &mut buf).unwrap();
+
+    let mut expected = Vec::new();
+    write_frame(&mut expected, &reset).unwrap();
+    write_frame(&mut expected, &feed()).unwrap();
+    assert_eq!(buf, expected);
+
+    let mut reader = FrameReader::new(buf.as_slice());
+    assert_eq!(reader.read::<pb::ParentRequest>().unwrap(), Some(reset));
+    assert_eq!(reader.read::<pb::ParentRequest>().unwrap(), Some(feed()));
+    assert!(reader.read::<pb::ParentRequest>().unwrap().is_none());
 }
 
 #[test]

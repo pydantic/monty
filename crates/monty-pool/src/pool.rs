@@ -54,6 +54,15 @@ struct PoolState {
     next_id: u64,
 }
 
+impl PoolState {
+    /// Takes the next worker identity.
+    fn next_worker_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = id.checked_add(1).expect("worker identity exhausted");
+        id
+    }
+}
+
 impl Pool {
     /// Creates the pool and eagerly spawns `min_processes` workers, failing
     /// fast if the binary cannot be spawned. Must be called within a tokio
@@ -106,6 +115,9 @@ impl Pool {
     /// `options.telemetry`) while below `max_processes`, and otherwise waits
     /// up to `checkout_timeout` (forever when `None`) before failing with
     /// [`PoolError::Exhausted`].
+    ///
+    /// A subprocess checkout sends nothing: `Configure` goes out with the session's first request, which reports a
+    /// rejected `repl` or a worker that cannot serve this protocol version.
     pub async fn checkout_with(&self, repl: &ReplConfig, mut options: CheckoutOptions) -> Result<Checkout, PoolError> {
         // ahead of the caller's headers, which stay last-wins
         #[cfg(feature = "telemetry")]
@@ -120,9 +132,15 @@ impl Pool {
             #[cfg(feature = "telemetry")]
             telemetry: options.telemetry.clone(),
         });
-        #[cfg(feature = "telemetry")]
-        let worker = worker.with_adapter_context(options.telemetry);
-        Checkout::create(worker, Arc::clone(&self.inner), repl, redial).await
+        Checkout::create(
+            worker,
+            Arc::clone(&self.inner),
+            repl,
+            redial,
+            #[cfg(feature = "telemetry")]
+            options.telemetry,
+        )
+        .await
     }
 
     /// Asks idle workers to exit cleanly and reaps them, capping the wait per
@@ -253,9 +271,7 @@ impl PoolInner {
                 let below_cap = reused.is_none() && state.total < self.config.max_processes;
                 let id = if below_cap {
                     state.total += 1;
-                    let id = state.next_id;
-                    state.next_id = id.checked_add(1).expect("worker identity exhausted");
-                    Some(id)
+                    Some(state.next_worker_id())
                 } else {
                     None
                 };
@@ -323,24 +339,40 @@ impl PoolInner {
         let _ = (live, idle);
     }
 
-    /// Returns a healthy worker to the idle queue (or retires it when it hit
-    /// the recycle limit, or it is a single-use WebSocket connection).
+    /// Returns a healthy worker to the idle queue, or retires it (see [`Self::retires`]).
     pub(crate) fn release_worker(&self, worker: Worker) {
-        let websocket = self.config.transport.is_websocket();
-        let recycle = websocket
-            || self
-                .config
-                .max_checkouts_per_worker
-                .is_some_and(|max| worker.checkouts_served >= max);
-        if recycle {
+        if self.retires(&worker) {
             drop(worker); // kill (on drop) — reaped by tokio in the background
-            self.count_termination(if websocket { "single_use" } else { "recycled" });
+            self.count_termination(if self.config.transport.is_websocket() {
+                "single_use"
+            } else {
+                "recycled"
+            });
             self.release_capacity();
         } else {
             lock_ignore_poison(&self.state).idle.push(worker);
             self.available.notify_one();
             self.record_worker_delta(0, 1);
         }
+    }
+
+    /// Whether releasing `worker` kills it instead of pooling it: a WebSocket worker, or one that has served
+    /// `max_checkouts_per_worker` checkouts.
+    pub(crate) fn retires(&self, worker: &Worker) -> bool {
+        self.config.transport.is_websocket()
+            || self
+                .config
+                .max_checkouts_per_worker
+                .is_some_and(|max| worker.checkouts_served >= max)
+    }
+
+    /// Spawns a subprocess worker into the slot of one the caller just discarded; a failed spawn releases the slot.
+    pub(crate) async fn spawn_replacement(&self) -> Result<Worker, PoolError> {
+        let capacity = CapacityGuard::new(self);
+        let mut worker = Worker::new(&self.config, &[]).await?;
+        worker.id = lock_ignore_poison(&self.state).next_worker_id();
+        capacity.disarm();
+        Ok(worker)
     }
 
     /// Records the death/retirement of a worker, freeing capacity for a

@@ -21,14 +21,16 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
+#[cfg(unix)]
+use insta::allow_duplicates;
 use insta::assert_snapshot;
 use monty_pool::{
     MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
     on_print_sync,
 };
-// only the unix-gated raw-path test forges worker frames
+// only the unix-gated stand-in tests forge and read worker frames
 #[cfg(unix)]
-use monty_proto::{encode_framed_into, pb};
+use monty_proto::{FrameReader, encode_framed_into, pb};
 #[cfg(unix)]
 use monty_types::SourceRange;
 use monty_types::{
@@ -1509,16 +1511,9 @@ async fn deadline_kills_hung_worker_after_request_timeout() {
     let mut config = config();
     config.request_timeout = Some(Duration::from_secs(1));
     let pool = Pool::new(config).await.unwrap();
-    // The checkout's Configure turn shares the pool-wide deadline, and a cold
-    // child on a fully loaded test machine has (rarely) missed it — retry so
-    // the setup is independent of the deadline actually under test below.
-    let mut session = loop {
-        match pool.checkout(&ReplConfig::default()).await {
-            Ok(session) => break session,
-            Err(PoolError::Timeout { .. }) => {}
-            Err(err) => panic!("checkout failed: {err:?}"),
-        }
-    };
+    // the `Configure` goes with the feed, under its deadline, so a slow cold
+    // child also ends in the `Timeout` asserted below
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let err = session
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
         .await
@@ -1634,7 +1629,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     fs::write(&replies_path, &replies).unwrap();
 
     // both frames are written up front and the process stays alive; the parent
-    // reads them in turn as it sends `Configure` and then the raw request
+    // reads them in turn after sending `Configure` with the raw request
     let fake = write_fake_monty(
         dir.path(),
         &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
@@ -1644,7 +1639,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let mut checkout = pool
         .checkout(&ReplConfig::default())
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("a subprocess checkout does no I/O");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -1688,7 +1683,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let mut checkout = pool
         .checkout(&ReplConfig::default())
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("a subprocess checkout does no I/O");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -1736,7 +1731,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let mut checkout = pool
         .checkout(&ReplConfig::default())
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("a subprocess checkout does no I/O");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -2484,6 +2479,330 @@ async fn cancelled_turn_discards_the_worker_on_resume_from_mounts() {
 }
 
 // =============================================================================
+// Session start and reset: `Configure` goes with the first request, `Reset` is not awaited
+// =============================================================================
+
+/// A subprocess checkout writes nothing, and the first request's write shares its one deadline: a worker that never
+/// reads blocks the write, which the feed backstop still ends with no `request_timeout`, typed or raw.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_blocked_first_write_is_bounded_by_the_backstop() {
+    let dir = tempfile::tempdir().unwrap();
+    // never reads, so a large first request fills the pipe
+    let fake = write_fake_monty(dir.path(), "#!/bin/sh\nsleep 30\n");
+    let (budget, grace) = (Duration::from_millis(100), Duration::from_millis(100));
+    let mut config = PoolConfig::subprocess(&fake);
+    config.request_timeout = None;
+    config.feed_duration_limit_grace = Some(grace);
+    let pool = Pool::new(config).await.unwrap();
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_feed_duration(budget)),
+        ..ReplConfig::default()
+    };
+    let code = format!("{}\n1", "#".repeat(8 * 1024 * 1024));
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: code.clone(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    for raw in [false, true] {
+        let mut session = pool.checkout(&repl).await.expect("a subprocess checkout does no I/O");
+        let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+        let turn = async {
+            if raw {
+                session.turn_raw(&feed, &mut on_event).await.map(drop)
+            } else {
+                session
+                    .feed(code.as_str(), vec![], vec![], false, &mut no_print)
+                    .await
+                    .map(drop)
+            }
+        };
+        // bounded, so a write the deadline misses fails here rather than hangs
+        let outcome = timeout(Duration::from_secs(5), turn).await;
+        let Ok(Err(PoolError::Timeout { timeout })) = outcome else {
+            panic!("the backstop must end a blocked first write, got {outcome:?}");
+        };
+        assert_eq!(timeout, budget + grace);
+    }
+}
+
+/// The last session's reset ack, the `Configure` ack and the reply each arrive within `request_timeout`, but not
+/// all three: the first request's one deadline covers them together.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_first_request_counts_its_acks_against_its_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str, kinds: Vec<pb::child_event::Kind>| {
+        let path = dir.path().join(name);
+        let frames: Vec<u8> = kinds.into_iter().flat_map(|kind| framed(&child_event(kind))).collect();
+        fs::write(&path, frames).unwrap();
+        path
+    };
+    let ok = || pb::child_event::Kind::Ok(pb::Ok {});
+    let first = path(
+        "first.bin",
+        vec![
+            ok(),
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(2))),
+        ],
+    );
+    let ack = path("ack.bin", vec![ok()]);
+    let dump = path(
+        "dump.bin",
+        vec![pb::child_event::Kind::DumpResult(pb::DumpResult {
+            state: vec![1].into(),
+        })],
+    );
+    // 0.4s apart: the reset ack, the `Configure` ack, then the dump
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!(
+            "#!/bin/sh\ncat '{first}'\nsleep 0.4\ncat '{ack}'\nsleep 0.4\ncat '{ack}'\nsleep 0.4\ncat '{dump}'\nsleep 30\n",
+            first = first.display(),
+            ack = ack.display(),
+            dump = dump.display(),
+        ),
+    );
+    let request_timeout = Duration::from_millis(700);
+    let mut config = PoolConfig::subprocess(&fake);
+    config.max_processes = 1;
+    config.request_timeout = Some(request_timeout);
+    let pool = Pool::new(config).await.unwrap();
+
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::int(2));
+    session.finish().await.unwrap();
+
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let err = session.dump().await.unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert_eq!(timeout, request_timeout);
+}
+
+/// A configuration the worker rejects fails the first request with the error `checkout` used to return, and discards
+/// the worker: it answers that request outside any session, and would run a `Load` without the configured limits.
+#[tokio::test]
+async fn a_rejected_configuration_fails_the_first_request() {
+    let mut config = config();
+    config.max_processes = 1;
+    // a leaked slot would leave the last checkout waiting
+    config.checkout_timeout = Some(Duration::from_secs(10));
+    let pool = Pool::new(config).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let dump = session.dump().await.unwrap();
+    session.finish().await.unwrap();
+
+    let nested = ReplConfig {
+        type_check: true,
+        type_check_stubs: Some(format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000))),
+        ..ReplConfig::default()
+    };
+    for restore in [false, true] {
+        let mut session = pool.checkout(&nested).await.unwrap();
+        let err = if restore {
+            session.restore(dump.clone(), vec![], &mut no_print).await.unwrap_err()
+        } else {
+            session
+                .feed("1 + 1", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap_err()
+        };
+        let PoolError::Runtime(exc) = &err else {
+            panic!("expected Runtime, got {err:?}");
+        };
+        assert_eq!(
+            exc.message(),
+            Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
+        );
+        let err = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PoolError::Finished), "got {err:?}");
+    }
+
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::int(2));
+    session.finish().await.unwrap();
+}
+
+/// A worker failing its last session's reset is replaced before the next session reaches it, so that session's
+/// first request still succeeds.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worker_failing_its_reset_is_replaced_for_the_next_session() {
+    let fatal = child_event(pb::child_event::Kind::FatalError(pb::FatalError {
+        message: "type-check cleanup failed".to_owned(),
+    }));
+    // the reset ack is a `FatalError`, or stdout closes before it (EOF) while the process lives on
+    for (reset_reply, tail) in [(Some(fatal), "sleep 30"), (None, "exec 1>&-\nsleep 30")] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+        replies.extend(framed(&child_event(pb::child_event::Kind::Complete(
+            pb::Complete::from(MontyObject::int(2)),
+        ))));
+        if let Some(reply) = &reset_reply {
+            replies.extend(framed(reply));
+        }
+        let replies_path = dir.path().join("replies.bin");
+        fs::write(&replies_path, &replies).unwrap();
+        let fake = write_fake_monty(
+            dir.path(),
+            &format!("#!/bin/sh\ncat '{}'\n{tail}\n", replies_path.display()),
+        );
+        let mut config = PoolConfig::subprocess(&fake);
+        config.max_processes = 1;
+        config.request_timeout = Some(Duration::from_secs(10));
+        let pool = Pool::new(config).await.unwrap();
+
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let (first_pid, first_id) = (session.pid(), session.worker_id());
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        session.finish().await.unwrap();
+
+        // the same worker is checked out, then swapped by the first request
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        assert_eq!(session.pid(), first_pid);
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        assert_ne!(session.pid(), first_pid);
+        assert_ne!(session.worker_id(), first_id);
+        session.finish().await.unwrap();
+    }
+}
+
+/// A worker refusing the `Configure` (version skew) answers it and exits without reading on; its message is
+/// reported even when the first request is too large to finish writing before it exits.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_refused_configure_is_reported_whatever_the_request_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let replies = framed(&child_event(pb::child_event::Kind::FatalError(pb::FatalError {
+        message: "unsupported protocol version".to_owned(),
+    })));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nexit 4\n", replies_path.display()),
+    );
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    // the larger input overflows any pipe buffer, so its write fails
+    for input_len in [0, 8 * 1024 * 1024] {
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let input = MontyObject::string("x".repeat(input_len));
+        let err = session
+            .feed("data", vec![("data".to_owned(), input)], vec![], false, &mut no_print)
+            .await
+            .unwrap_err();
+        allow_duplicates! {
+            assert_snapshot!(err.to_string(), @"monty worker crashed: unsupported protocol version (exit status: 4)");
+        }
+    }
+}
+
+/// What reaches the worker: `Configure` then the first request, a `Reset` after a started session, and no `Reset`
+/// after a checkout that sent nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn only_a_started_session_is_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let ok = || framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    let complete = || {
+        framed(&child_event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(2),
+        ))))
+    };
+    // the second session's acks, then the third's: the second's reset ack,
+    // the third's `Configure` ack and result
+    let replies = [ok(), complete(), ok(), ok(), complete()].concat();
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let log = dir.path().join("requests.bin");
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!(
+            "#!/bin/sh\ncat '{}'\nexec cat > '{}'\n",
+            replies_path.display(),
+            log.display()
+        ),
+    );
+    let mut config = PoolConfig::subprocess(&fake);
+    config.max_processes = 1;
+    let pool = Pool::new(config).await.unwrap();
+
+    pool.checkout(&ReplConfig::default())
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        session.finish().await.unwrap();
+    }
+
+    let kinds: Vec<&str> = logged_requests(&log, 6)
+        .await
+        .iter()
+        .map(|request| match request.kind {
+            Some(pb::parent_request::Kind::Configure(_)) => "Configure",
+            Some(pb::parent_request::Kind::Feed(_)) => "Feed",
+            Some(pb::parent_request::Kind::Reset(_)) => "Reset",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["Configure", "Feed", "Reset", "Configure", "Feed", "Reset"]);
+}
+
+/// The requests a logging stand-in has copied to `log`, once there are at
+/// least `count`; the copy runs behind the parent's writes.
+#[cfg(unix)]
+async fn logged_requests(log: &Path, count: usize) -> Vec<pb::ParentRequest> {
+    for _ in 0..500 {
+        let bytes = fs::read(log).unwrap_or_default();
+        let mut reader = FrameReader::new(bytes.as_slice());
+        let mut requests = Vec::new();
+        while let Ok(Some(request)) = reader.read::<pb::ParentRequest>() {
+            requests.push(request);
+        }
+        if requests.len() >= count {
+            return requests;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the stand-in logged fewer than {count} requests");
+}
+
+// =============================================================================
 // Dump / load across workers
 // =============================================================================
 
@@ -2615,19 +2934,19 @@ async fn worker_environment_is_empty() {
 
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    // The worker works without an environment. Read it only after a reply: checkout sends nothing, and before
+    // `execve` the child still shows this process's environment.
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::int(2));
     let environ = fs::read(format!("/proc/{}/environ", session.pid().unwrap())).unwrap();
     assert!(
         environ.is_empty(),
         "worker environment should be empty, got: {}",
         String::from_utf8_lossy(&environ).replace('\0', " ")
     );
-
-    // The worker is fully functional without an environment.
-    let event = session
-        .feed("1 + 1", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::int(2));
     session.finish().await.unwrap();
 }
 
@@ -2759,7 +3078,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("a subprocess checkout does no I/O");
 
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
@@ -2816,7 +3135,7 @@ async fn a_suspension_without_a_position_reads_as_unknown() {
     let mut checkout = pool
         .checkout(&ReplConfig::default())
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("a subprocess checkout does no I/O");
     let event = checkout.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
     let TurnEvent::NameLookup { name, position, .. } = event else {
         panic!("expected a name lookup, got {event:?}");
@@ -2865,7 +3184,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("a subprocess checkout does no I/O");
 
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
@@ -2921,7 +3240,7 @@ async fn a_load_reply_cannot_loosen_the_feed_backstop() {
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("a subprocess checkout does no I/O");
     let (event, _) = checkout.restore(vec![0], vec![], &mut no_print).await.unwrap();
     assert!(event.is_none());
 

@@ -354,6 +354,9 @@ An `external_lookup` value is converted mid-execution, while the worker is suspe
 is discarded and reusing it raises `RuntimeError: this checkout has already been finished`.
 Check out again to retry.
 
+A `checkout()` option the worker rejects, such as `type_check_stubs` nested too deeply, raises `MontyRuntimeError` from
+the session's first call rather than from `with`, and the checkout is discarded the same way.
+
 A `MontyRuntimeError` carrying `TimeoutError`, or a `MemoryError` from the sandbox heap, is a [resource
 limit](../resource-limits.md#after-a-limit-fires) rather than ordinary sandbox code raising.
 The pool leaves the checkout open, but the heap behind it is no longer trustworthy, so discard it rather than feeding it

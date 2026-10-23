@@ -19,18 +19,20 @@
 //! is cancel-safe.
 
 use std::{
-    env,
+    env, io,
     path::PathBuf,
     process::{ExitStatus, Stdio},
     sync::Once,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_into, encode_to_capped_vec, pb};
+use monty_proto::{
+    FrameError, MAX_FRAME_LEN, append_framed, decode_frame, encode_framed_into, encode_to_capped_vec, pb,
+};
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -67,6 +69,8 @@ pub(crate) struct Worker {
     pub(crate) id: u64,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
+    /// Whether the `Ok` answering the last checkout's unawaited `Reset` is unread; the next checkout reads it first.
+    pub(crate) owes_reset_ack: bool,
     /// Records an adapter checkout's protocol turns, created only while needed.
     #[cfg(feature = "telemetry")]
     recorder: Option<Box<Recorder>>,
@@ -108,7 +112,32 @@ struct WebSocketWorker {
     reader: JoinHandle<()>,
 }
 
+impl SubprocessWorker {
+    /// Writes the frames encoded in `send_buf` with one `write_all`, then
+    /// drops a buffer one huge frame grew past [`RETAIN_BUF_MAX`].
+    async fn write_send_buf(&mut self) -> io::Result<()> {
+        self.stdin.write_all(&self.send_buf).await?;
+        if self.send_buf.capacity() > RETAIN_BUF_MAX {
+            self.send_buf = Vec::with_capacity(SEND_BUF_CAPACITY);
+        }
+        Ok(())
+    }
+}
+
 impl WebSocketWorker {
+    /// Sends one frame body as a binary message, returning its length.
+    async fn send(&mut self, body: Vec<u8>) -> Result<usize, FrameError> {
+        let len = body.len();
+        match &mut self.sink {
+            Some(sink) => sink
+                .send(Message::Binary(body.into()))
+                .await
+                .map(|()| len)
+                .map_err(ws_to_frame_error),
+            None => Err(FrameError::Truncated),
+        }
+    }
+
     /// Ends the connection: a bounded Close frame, then abort the reader and
     /// drop the sink — releasing both halves is what closes the socket.
     ///
@@ -215,6 +244,7 @@ impl Worker {
                 send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
             })),
             checkouts_served: 0,
+            owes_reset_ack: false,
             #[cfg(feature = "telemetry")]
             recorder: None,
             #[cfg(feature = "telemetry")]
@@ -274,6 +304,7 @@ impl Worker {
                 reader,
             })),
             checkouts_served: 0,
+            owes_reset_ack: false,
             #[cfg(feature = "telemetry")]
             recorder: None,
             #[cfg(feature = "telemetry")]
@@ -293,45 +324,66 @@ impl Worker {
     /// oversize frame is rejected *before* any I/O so the stream stays synced
     /// (see `Checkout::request_turn`).
     pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
-        let result = match &mut self.kind {
+        let len = match &mut self.kind {
             WorkerKind::Subprocess(w) => {
                 // prefix + body in one reused buffer: a single write syscall
                 // per request, no per-frame allocation, and a pipe write needs
                 // no flush
                 encode_framed_into(request, &mut w.send_buf)?;
-                w.stdin.write_all(&w.send_buf).await?;
                 // body only, matching the WebSocket transport and both receive
                 // paths, which never see the 4-byte length prefix
                 let len = w.send_buf.len() - 4;
-                // don't let one huge frame pin its capacity for the worker's life
-                if w.send_buf.capacity() > RETAIN_BUF_MAX {
-                    w.send_buf = Vec::with_capacity(SEND_BUF_CAPACITY);
-                }
-                Ok(len)
+                w.write_send_buf().await?;
+                len
+            }
+            WorkerKind::WebSocket(w) => w.send(encode_to_capped_vec(request)?).await?,
+        };
+        self.record_sent(request, len);
+        Ok(())
+    }
+
+    /// Sends `first` then `second` (one write on a pipe), returning each body's length; oversize fails before any I/O.
+    /// Records nothing: the caller reports each with [`Self::record_sent`] once the worker reaches it.
+    pub(crate) async fn send_pair(
+        &mut self,
+        first: &pb::ParentRequest,
+        second: &pb::ParentRequest,
+    ) -> Result<(usize, usize), FrameError> {
+        match &mut self.kind {
+            WorkerKind::Subprocess(w) => {
+                encode_framed_into(first, &mut w.send_buf)?;
+                let first_len = w.send_buf.len() - 4;
+                append_framed(second, &mut w.send_buf)?;
+                let second_len = w.send_buf.len() - first_len - 8;
+                w.write_send_buf().await?;
+                Ok((first_len, second_len))
             }
             WorkerKind::WebSocket(w) => {
-                let body = encode_to_capped_vec(request)?;
-                let len = body.len();
-                match &mut w.sink {
-                    Some(sink) => sink
-                        .send(Message::Binary(body.into()))
-                        .await
-                        .map(|()| len)
-                        .map_err(ws_to_frame_error),
-                    None => Err(FrameError::Truncated),
-                }
+                let (first, second) = (encode_to_capped_vec(first)?, encode_to_capped_vec(second)?);
+                Ok((w.send(first).await?, w.send(second).await?))
             }
-        };
-        // record only requests that hit the wire: a rejected oversize frame
-        // leaves the turn (and any pending suspension) exactly where it was
+        }
+    }
+
+    /// Records a written request: its span, turn metrics and frame size. Only written requests are recorded, so a
+    /// rejected oversize frame leaves the turn (and any pending suspension) where it was.
+    pub(crate) fn record_sent(&mut self, request: &pb::ParentRequest, len: usize) {
+        self.trace_sent(request);
         #[cfg(feature = "telemetry")]
-        if let Ok(len) = result {
+        if let Some(metrics) = &mut self.metrics {
+            metrics.frame("sent", len);
+            metrics.begin_turn(request);
+        }
+        #[cfg(not(feature = "telemetry"))]
+        let _ = len;
+    }
+
+    /// Opens `request`'s span; a `Reset` or `Shutdown` ends the session's spans.
+    pub(crate) fn trace_sent(&mut self, request: &pb::ParentRequest) {
+        #[cfg(feature = "telemetry")]
+        {
             if let Some(recorder) = &mut self.recorder {
                 recorder.begin_turn(request);
-            }
-            if let Some(metrics) = &mut self.metrics {
-                metrics.frame("sent", len);
-                metrics.begin_turn(request);
             }
             if matches!(
                 request.kind,
@@ -340,20 +392,40 @@ impl Worker {
                 self.recorder = None;
             }
         }
-        result.map(drop)
+        #[cfg(not(feature = "telemetry"))]
+        let _ = request;
     }
 
-    /// Attaches the host's trace context, if it captured one, before this
-    /// worker starts a checkout.
+    /// Records `request`'s frame size and starts its turn metrics at `sent`, when it was written.
+    pub(crate) fn meter_sent_at(&mut self, request: &pb::ParentRequest, len: usize, sent: Instant) {
+        #[cfg(feature = "telemetry")]
+        if let Some(metrics) = &mut self.metrics {
+            metrics.frame("sent", len);
+            metrics.begin_turn_at(request, sent);
+        }
+        #[cfg(not(feature = "telemetry"))]
+        let _ = (request, len, sent);
+    }
+
+    /// Records `event` in the session's spans, for one [`Self::recv_ack`] left out.
+    pub(crate) fn trace_event(&mut self, event: &pb::ChildEvent) {
+        #[cfg(feature = "telemetry")]
+        if let Some(recorder) = &mut self.recorder {
+            recorder.event(event);
+        }
+        #[cfg(not(feature = "telemetry"))]
+        let _ = event;
+    }
+
+    /// Attaches the host's trace context, if it captured one, before this worker starts a checkout's session.
     #[cfg(feature = "telemetry")]
-    pub(crate) fn with_adapter_context(mut self, context: Option<TelemetryContext>) -> Self {
+    pub(crate) fn set_adapter_context(&mut self, context: Option<TelemetryContext>) {
         if let Some(context) = context {
             let worker_pid = self.pid();
             self.recorder
                 .get_or_insert_with(|| Box::new(Recorder::new(worker_pid)))
                 .set_adapter_context(context);
         }
-        self
     }
 
     /// Marks this worker's session span as a session resumed after its relay shut down.
@@ -404,6 +476,18 @@ impl Worker {
         #[cfg(not(feature = "telemetry"))]
         let _ = len;
         Ok(event)
+    }
+
+    /// [`Self::recv`] for a pipelined `Reset` or `Configure` ack, kept out of the spans: it would close a `Load` one.
+    pub(crate) async fn recv_ack(&mut self) -> Result<pb::ChildEvent, FrameError> {
+        #[cfg(feature = "telemetry")]
+        let recorder = self.recorder.take();
+        let event = self.recv().await;
+        #[cfg(feature = "telemetry")]
+        {
+            self.recorder = recorder;
+        }
+        event
     }
 
     /// The OS process id, when the worker is a local subprocess (`None` for a

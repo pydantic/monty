@@ -22,6 +22,13 @@ async futures) until the snippet completes, then `Checkout::finish` returns the 
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
 state cannot be trusted back into the pool.
 
+A subprocess checkout sends nothing to the worker.
+The session's `Configure` goes out in the same write as its first request, so that request reports a `ReplConfig` the
+worker rejects (as `PoolError::Runtime`, discarding the worker) or a worker that cannot serve this protocol version.
+`Checkout::finish` writes `Reset` without waiting for the reply; the worker's next checkout reads it first and replaces
+the worker if the reset failed.
+The first request's deadline covers those acks too.
+
 The pool is async end-to-end and runs on [tokio](https://tokio.rs): frame reads are
 cancel-safe (partial-frame state lives in the worker), and turn deadlines are ordinary timers
 rather than a watchdog thread. Turn futures are not resumable after being dropped mid-flight —

@@ -233,7 +233,7 @@ impl Metrics {
         );
     }
 
-    /// Lifetime of one checkout, from `Configure` to `finish` (or to the drop
+    /// Lifetime of one checkout, from `Pool::checkout` to `finish` (or to the drop
     /// that abandoned it). With the checkout rate this sizes the pool.
     pub(crate) fn session_duration(&self, elapsed: Duration, outcome: &'static str) {
         self.record(
@@ -507,7 +507,11 @@ impl TurnMetrics {
     /// it closes that instead, which is what makes the recorded duration the
     /// host round-trip.
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
-        let now = Instant::now();
+        self.begin_turn_at(request, Instant::now());
+    }
+
+    /// [`Self::begin_turn`] for a request written at `now`, before this call.
+    pub(crate) fn begin_turn_at(&mut self, request: &pb::ParentRequest, now: Instant) {
         match &request.kind {
             // a new session on this worker; its execution clock restarts, so
             // the delta ratchet has to as well
@@ -534,14 +538,9 @@ impl TurnMetrics {
             Some(pb::parent_request::Kind::InstallDependencies(_)) => {
                 self.turn = Some(("install_dependencies", now));
             }
-            Some(pb::parent_request::Kind::Reset(_)) => {
-                self.feed = None;
-                self.run_active = false;
-                self.abandon_pending();
-                self.turn = Some(("reset", now));
-            }
-            // no reply is awaited, so nothing is left open to close
-            Some(pb::parent_request::Kind::Shutdown(_)) => {
+            // no reply is awaited, so nothing is left open to close: the next
+            // checkout reads a reset's ack (see `Checkout::finish`)
+            Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_)) => {
                 self.feed = None;
                 self.run_active = false;
                 self.abandon_pending();

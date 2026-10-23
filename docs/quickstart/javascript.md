@@ -232,6 +232,10 @@ import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } fr
 | `MontyShutdown`        | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
 | `ProtocolError`        | The worker, or a caller misusing the session, violated the wire protocol              | no               |
 
+A `checkout()` option the worker rejects, such as `typeCheckStubs` nested too deeply, fails the session's first call
+with `MontyRuntimeError` on the native backend, and later calls with `ProtocolError`; the WASM backend rejects
+`checkout()`.
+
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
 Which formats a class accepts differs; passing one a class does not accept throws, except `MontyTypingError.display()`,

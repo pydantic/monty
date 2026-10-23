@@ -171,6 +171,7 @@ pub enum PoolError {
     /// worker exceeding its memory limit produces, where the worker is already
     /// dead and the checkout finished (its distinct message distinguishes it
     /// from the interpreter's own `MemoryError`).
+    /// A subprocess session's first request also reports a [`ReplConfig`] the worker rejected, discarding the worker.
     Runtime(MontyException),
     /// Type checking rejected the fed snippet (sessions created with
     /// `type_check`). The worker and session remain alive; the snippet did

@@ -104,15 +104,7 @@ pub fn write_frame(writer: &mut impl Write, msg: &impl Message) -> Result<(), Fr
 /// with no length prefix but still need the same oversize guard so the wire size
 /// cap is identical across transports.
 pub fn encode_to_capped_vec(msg: &impl Message) -> Result<Vec<u8>, FrameError> {
-    // Size before encoding to avoid building a giant Vec just to reject it.
-    let encoded_len = msg.encoded_len();
-    u32::try_from(encoded_len)
-        .ok()
-        .filter(|&len| len <= MAX_FRAME_LEN)
-        .ok_or(FrameError::FrameTooLarge {
-            len: u32::try_from(encoded_len).unwrap_or(u32::MAX),
-            max: MAX_FRAME_LEN,
-        })?;
+    capped_len(msg)?;
     // encode_to_vec cannot fail (Vec<u8> grows as needed)
     Ok(msg.encode_to_vec())
 }
@@ -126,22 +118,40 @@ pub fn encode_to_capped_vec(msg: &impl Message) -> Result<Vec<u8>, FrameError> {
 /// syscalls of a prefix-then-body pair; taking the buffer lets callers reuse
 /// one allocation across frames.
 pub fn encode_framed_into(msg: &impl Message, buf: &mut Vec<u8>) -> Result<(), FrameError> {
-    // Size before encoding to avoid building a giant buffer just to reject it.
+    let len = capped_len(msg)?;
+    buf.clear();
+    push_frame(msg, len, buf);
+    Ok(())
+}
+
+/// [`encode_framed_into`] without clearing `buf`: the frame goes after its contents, so several frames can share one
+/// write. An oversize `msg` leaves `buf` unchanged.
+pub fn append_framed(msg: &impl Message, buf: &mut Vec<u8>) -> Result<(), FrameError> {
+    let len = capped_len(msg)?;
+    push_frame(msg, len, buf);
+    Ok(())
+}
+
+/// The encoded length of `msg`, or [`FrameError::FrameTooLarge`] above [`MAX_FRAME_LEN`], checked before encoding
+/// so an oversize message is never built.
+fn capped_len(msg: &impl Message) -> Result<u32, FrameError> {
     let encoded_len = msg.encoded_len();
-    let len = u32::try_from(encoded_len)
+    u32::try_from(encoded_len)
         .ok()
         .filter(|&len| len <= MAX_FRAME_LEN)
         .ok_or(FrameError::FrameTooLarge {
             len: u32::try_from(encoded_len).unwrap_or(u32::MAX),
             max: MAX_FRAME_LEN,
-        })?;
-    buf.clear();
-    buf.reserve(4 + encoded_len);
+        })
+}
+
+/// Appends `msg`'s length prefix and body to `buf`; `len` is its checked encoded length.
+fn push_frame(msg: &impl Message, len: u32, buf: &mut Vec<u8>) {
+    buf.reserve(4 + len as usize);
     buf.extend_from_slice(&len.to_le_bytes());
     // encode_raw: infallible into a Vec (encode's only failure is a
     // fixed-capacity buffer running out of space, which a Vec cannot)
     msg.encode_raw(buf);
-    Ok(())
 }
 
 /// Decodes one already-deframed message from `bytes`.
