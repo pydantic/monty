@@ -14,7 +14,7 @@ use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    types::{Module, Type},
+    types::{BuiltinType, Module},
     value::{Marker, Value},
 };
 
@@ -30,7 +30,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // `types.UnionType` since 3.14), so it is a real type rather than a marker.
     module.set_attr(
         StaticStrings::UnionType,
-        Value::Builtin(Builtins::Type(Type::Union)),
+        Value::Builtin(Builtins::Type(BuiltinType::Union)),
         vm,
     );
 

@@ -181,8 +181,7 @@ impl GraphExporter {
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),
-            Value::Builtin(Builtins::Type(Type::Instance(class_id))) => return self.sandbox_class_node(*class_id, vm),
-            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(*t) {
+            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(Type::from(*t)) {
                 Some(ty) => MontyNode::Type(ty),
                 None => repr_node(value, vm),
             },
@@ -1038,7 +1037,9 @@ fn import_node(
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
             Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
         }
-        MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
+        MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(
+            t.to_internal().try_into().expect("host types are static"),
+        ))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
         MontyNode::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
         MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),

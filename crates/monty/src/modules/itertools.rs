@@ -18,7 +18,7 @@ use crate::{
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
     types::{
-        ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
+        BuiltinType, ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
         iter::collect_owned_iterable,
         itertools::{
             Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Islice,
@@ -45,32 +45,32 @@ pub(crate) enum ItertoolsFunctions {
 }
 
 /// The module's type objects, by the name each is bound to.
-const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
-    (StaticStrings::Count, Type::ItertoolsCount),
-    (StaticStrings::Repeat, Type::ItertoolsRepeat),
-    (StaticStrings::Pairwise, Type::ItertoolsPairwise),
-    (StaticStrings::Compress, Type::ItertoolsCompress),
-    (StaticStrings::Islice, Type::ItertoolsIslice),
-    (StaticStrings::Chain, Type::ItertoolsChain),
-    (StaticStrings::Cycle, Type::ItertoolsCycle),
-    (StaticStrings::Takewhile, Type::ItertoolsTakeWhile),
-    (StaticStrings::Dropwhile, Type::ItertoolsDropWhile),
-    (StaticStrings::Filterfalse, Type::ItertoolsFilterFalse),
-    (StaticStrings::Starmap, Type::ItertoolsStarMap),
-    (StaticStrings::Accumulate, Type::ItertoolsAccumulate),
-    (StaticStrings::Batched, Type::ItertoolsBatched),
-    (StaticStrings::ZipLongest, Type::ItertoolsZipLongest),
-    (StaticStrings::Combinations, Type::ItertoolsCombinations),
+const ITERTOOLS_TYPES: &[(StaticStrings, BuiltinType)] = &[
+    (StaticStrings::Count, BuiltinType::ItertoolsCount),
+    (StaticStrings::Repeat, BuiltinType::ItertoolsRepeat),
+    (StaticStrings::Pairwise, BuiltinType::ItertoolsPairwise),
+    (StaticStrings::Compress, BuiltinType::ItertoolsCompress),
+    (StaticStrings::Islice, BuiltinType::ItertoolsIslice),
+    (StaticStrings::Chain, BuiltinType::ItertoolsChain),
+    (StaticStrings::Cycle, BuiltinType::ItertoolsCycle),
+    (StaticStrings::Takewhile, BuiltinType::ItertoolsTakeWhile),
+    (StaticStrings::Dropwhile, BuiltinType::ItertoolsDropWhile),
+    (StaticStrings::Filterfalse, BuiltinType::ItertoolsFilterFalse),
+    (StaticStrings::Starmap, BuiltinType::ItertoolsStarMap),
+    (StaticStrings::Accumulate, BuiltinType::ItertoolsAccumulate),
+    (StaticStrings::Batched, BuiltinType::ItertoolsBatched),
+    (StaticStrings::ZipLongest, BuiltinType::ItertoolsZipLongest),
+    (StaticStrings::Combinations, BuiltinType::ItertoolsCombinations),
     (
         StaticStrings::CombinationsWithReplacement,
-        Type::ItertoolsCombinationsWithReplacement,
+        BuiltinType::ItertoolsCombinationsWithReplacement,
     ),
-    (StaticStrings::Permutations, Type::ItertoolsPermutations),
-    (StaticStrings::Product, Type::ItertoolsProduct),
-    (StaticStrings::Groupby, Type::ItertoolsGroupBy),
-    (StaticStrings::Grouper, Type::ItertoolsGrouper),
-    (StaticStrings::TeeType, Type::ItertoolsTee),
-    (StaticStrings::TeeDataObject, Type::ItertoolsTeeDataObject),
+    (StaticStrings::Permutations, BuiltinType::ItertoolsPermutations),
+    (StaticStrings::Product, BuiltinType::ItertoolsProduct),
+    (StaticStrings::Groupby, BuiltinType::ItertoolsGroupBy),
+    (StaticStrings::Grouper, BuiltinType::ItertoolsGrouper),
+    (StaticStrings::TeeType, BuiltinType::ItertoolsTee),
+    (StaticStrings::TeeDataObject, BuiltinType::ItertoolsTeeDataObject),
 ];
 
 /// Creates the `itertools` module on the heap.

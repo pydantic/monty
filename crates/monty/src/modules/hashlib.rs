@@ -27,7 +27,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        Module, Set, Type, allocate_string,
+        BuiltinType, Module, Set, allocate_string,
         bytes::allocate_bytes,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
@@ -86,12 +86,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     }
     module.set_attr(
         StaticStrings::Blake2b,
-        Value::Builtin(Builtins::Type(Type::Blake2b)),
+        Value::Builtin(Builtins::Type(BuiltinType::Blake2b)),
         vm,
     );
     module.set_attr(
         StaticStrings::Blake2s,
-        Value::Builtin(Builtins::Type(Type::Blake2s)),
+        Value::Builtin(Builtins::Type(BuiltinType::Blake2s)),
         vm,
     );
     // Two sets, as in CPython, where mutating one leaves the other alone.

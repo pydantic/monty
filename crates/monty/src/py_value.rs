@@ -23,7 +23,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     types::{
-        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
+        BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
         bytes::PyBytes,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
@@ -531,7 +531,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Builtin(Builtins::Type(ty)) if let EitherStr::Interned(id) = attr => ty.call_class_method(*id, args, vm),
+            Self::Builtin(Builtins::Type(ty)) if let EitherStr::Interned(id) = attr => Type::from(*ty).call_class_method(*id, args, vm),
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
@@ -541,11 +541,11 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_getitem(key, vm), {
-            Self::Builtin(Builtins::Type(t)) if t.has_class_getitem() => Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm)),
+            Self::Builtin(Builtins::Type(t)) if Type::from(*t).has_class_getitem() => Ok(GenericAlias::subscript((*t).into(), key.clone_with_heap(vm), vm)),
             Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(Type::Type, key.clone_with_heap(vm), vm)),
-            Self::Builtin(Builtins::Type(Type::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
+            Self::Builtin(Builtins::Type(BuiltinType::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
             Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
-            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&t.name(vm.heap, vm.interns))),
+            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&Type::from(*t).name(vm.heap, vm.interns))),
             Self::Builtin(Builtins::ExcType(exc_type)) => Err(ExcType::type_error_type_not_subscriptable((*exc_type).into())),
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         })

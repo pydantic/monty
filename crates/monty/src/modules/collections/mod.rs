@@ -34,7 +34,7 @@ use crate::{
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        Dict, Module, NamedTupleClass, PyTrait, Type,
+        BuiltinType, Dict, Module, NamedTupleClass, PyTrait,
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
@@ -46,7 +46,11 @@ use crate::{
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
-    module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
+    module.set_attr(
+        StaticStrings::Deque,
+        Value::Builtin(Builtins::Type(BuiltinType::Deque)),
+        vm,
+    );
     module.set_attr(
         StaticStrings::Namedtuple,
         Value::ModuleFunction(super::ModuleFunctions::Collections(CollectionsFunctions::Namedtuple)),
@@ -56,12 +60,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // functions, so `type(d) is defaultdict` and `isinstance(c, Counter)` hold.
     module.set_attr(
         StaticStrings::Defaultdict,
-        Value::Builtin(Builtins::Type(Type::DefaultDict)),
+        Value::Builtin(Builtins::Type(BuiltinType::DefaultDict)),
         vm,
     );
     module.set_attr(
         StaticStrings::Counter,
-        Value::Builtin(Builtins::Type(Type::Counter)),
+        Value::Builtin(Builtins::Type(BuiltinType::Counter)),
         vm,
     );
 

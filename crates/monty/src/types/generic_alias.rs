@@ -70,7 +70,9 @@ impl GenericAlias {
     pub(crate) fn origin_value(&self) -> Value {
         match self.origin {
             Type::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
-            origin => Value::Builtin(Builtins::Type(origin)),
+            origin => Value::Builtin(Builtins::Type(
+                origin.try_into().expect("generic alias origins are static"),
+            )),
         }
     }
 
@@ -205,7 +207,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(self.get(vm.heap).origin_value()))),
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(args.clone_with_heap(vm)))),
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
-            _ => Value::Builtin(Builtins::Type(origin)).py_getattr(attr, vm).map(Some),
+            _ => Value::Builtin(Builtins::Type(
+                origin.try_into().expect("generic alias origins are static"),
+            ))
+            .py_getattr(attr, vm)
+            .map(Some),
         }
     }
 
@@ -262,7 +268,7 @@ pub(crate) fn repr_type_arg(
 ) -> RunResult<()> {
     match item {
         Value::Ellipsis => Ok(f.write_str("...")?),
-        Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(&ty.name(vm.heap, vm.interns))?),
+        Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(&Type::from(*ty).name(vm.heap, vm.interns))?),
         Value::Builtin(Builtins::ExcType(exc_type)) => Ok(f.write_str(exc_type.into())?),
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(f.write_str("type")?),
         Value::Ref(id) => match vm.heap.get(*id) {

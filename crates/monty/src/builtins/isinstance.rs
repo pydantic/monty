@@ -34,7 +34,7 @@ pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 /// - Tuples (possibly nested) of the above
 pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
     match classinfo {
-        Value::Builtin(Builtins::Type(t)) => Ok(obj.py_type(vm).is_instance_of(*t)),
+        Value::Builtin(Builtins::Type(t)) => Ok(obj.py_type(vm).is_instance_of((*t).into())),
         Value::Builtin(Builtins::ExcType(handler_type)) => {
             Ok(matches!(obj.py_type(vm), Type::Exception(exc_type) if exc_type.is_subclass_of(*handler_type)))
         }
@@ -93,7 +93,7 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
     for i in 0..len {
         match &tuple.get(vm.heap).as_slice()[i] {
             Value::Builtin(Builtins::Type(t)) => {
-                if obj.py_type(vm).is_instance_of(*t) {
+                if obj.py_type(vm).is_instance_of((*t).into()) {
                     return Ok(true);
                 }
             }

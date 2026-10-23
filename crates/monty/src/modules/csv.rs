@@ -23,7 +23,7 @@ use crate::{
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
     types::{
-        CsvObject, List, Module, PyTrait, Type,
+        BuiltinType, CsvObject, List, Module, PyTrait, Type,
         csv::{
             DIALECT_NAMES, Dialect, DictReader, DictWriter, FIELD_SIZE_LIMIT, FmtParams, Quoting, Reader, Writer,
             write_method,
@@ -64,9 +64,9 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Csv(function)), vm);
     }
     for (name, type_) in [
-        (StaticStrings::DictReader, Type::CsvDictReader),
-        (StaticStrings::DictWriter, Type::CsvDictWriter),
-        (StaticStrings::DialectClass, Type::CsvDialect),
+        (StaticStrings::DictReader, BuiltinType::CsvDictReader),
+        (StaticStrings::DictWriter, BuiltinType::CsvDictWriter),
+        (StaticStrings::DialectClass, BuiltinType::CsvDialect),
     ] {
         module.set_attr(name, Value::Builtin(Builtins::Type(type_)), vm);
     }
@@ -119,7 +119,7 @@ fn call_reader(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `csv.DictReader(f, ...)` as called from Python, loading an unread file first.
 pub(crate) fn dict_reader_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let callable = Value::Builtin(Builtins::Type(Type::CsvDictReader));
+    let callable = Value::Builtin(Builtins::Type(BuiltinType::CsvDictReader));
     match load_then_call(callable, args, Some("f"), vm) {
         Ok(load) => Ok(load),
         Err(args) => dict_reader_init(vm, args).map(CallResult::Value),

@@ -355,7 +355,7 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
     };
     let Value::Ref(cls_id) = cls else {
         return match cls {
-            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(t) => {
+            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(&(*t).into()) => {
                 check_count(1, vm).map(|()| MatchArgs::SelfMatch)
             }
             _ => check_count(0, vm).map(|()| MatchArgs::Names(Vec::new())),
@@ -432,7 +432,7 @@ fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>
 /// The class's `__name__`, as CPython's class pattern errors spell it.
 fn class_pattern_name(cls: &Value, vm: &VM<'_>) -> String {
     match cls {
-        Value::Builtin(Builtins::Type(t)) => t.dunder_name(vm.heap, vm.interns).into_owned(),
+        Value::Builtin(Builtins::Type(t)) => Type::from(*t).dunder_name(vm.heap, vm.interns).into_owned(),
         Value::Builtin(Builtins::ExcType(exc_type)) => {
             let qualified = exc_type.to_string();
             qualified.rsplit('.').next().unwrap_or(&qualified).to_owned()

@@ -48,7 +48,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     modules::csv,
-    types::Type,
+    types::{BuiltinType, Type},
     value::Value,
 };
 
@@ -63,7 +63,7 @@ pub(crate) enum Builtins {
     /// An exception type constructor like `ValueError`, `TypeError`, etc.
     ExcType(ExcType),
     /// A type constructor like `list`, `dict`, `int`, etc.
-    Type(Type),
+    Type(BuiltinType),
 }
 
 impl Builtins {
@@ -87,8 +87,8 @@ impl Builtins {
             Self::Function(b) => b.call(vm, args),
             Self::ExcType(exc) => exc.call(vm, args).map(CallResult::Value),
             // `DictReader(f)` on an unread file yields the read that loads it.
-            Self::Type(Type::CsvDictReader) => csv::dict_reader_call(vm, args),
-            Self::Type(t) => t.call(vm, args),
+            Self::Type(BuiltinType::CsvDictReader) => csv::dict_reader_call(vm, args),
+            Self::Type(t) => Type::from(t).call(vm, args),
         }
     }
 
@@ -122,7 +122,7 @@ impl FromStr for Builtins {
         } else if let Ok(exc) = ExcType::from_str(s) {
             Ok(Self::ExcType(exc))
         } else if let Some(t) = Type::from_builtin_name(s) {
-            Ok(Self::Type(t))
+            Ok(Self::Type(t.try_into().expect("builtin names have static types")))
         } else {
             Err(())
         }

@@ -1828,7 +1828,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // - Callable must be a builtin type constructor (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
         if let Callable::Builtin(Builtins::Type(t)) = callable
-            && let Some(type_id) = t.callable_to_u8()
+            && let Some(type_id) = Type::from(*t).callable_to_u8()
             && let Some(arg_count) = self.compile_builtin_call(args, call_pos)?
         {
             // Optimization applied - CallBuiltinType emitted
@@ -2291,7 +2291,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
             Builtins::ExcType(exc_type) => self.interns.get_string_id_by_name(&exc_type.to_string())?,
             Builtins::Type(type_) => {
-                let name = type_.builtin_name()?;
+                let name = Type::from(type_).builtin_name()?;
                 self.interns.get_string_id_by_name(name)?
             }
         };

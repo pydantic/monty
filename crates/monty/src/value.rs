@@ -17,7 +17,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    hash::{HashValue, hash_f64, hash_named, hash_one, identity_hash},
+    hash::{HashValue, hash_f64, hash_named, hash_one},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
@@ -1088,9 +1088,9 @@ impl Value {
             Self::None => Ok(Some(hash_named("singleton", "None"))),
             Self::Builtin(Builtins::Function(function)) => Ok(Some(hash_named("builtin", (*function).into()))),
             Self::Builtin(Builtins::ExcType(exc_type)) => Ok(Some(hash_named("type", (*exc_type).into()))),
-            // an instance's class is a heap object, hashed by identity like its instances
-            Self::Builtin(Builtins::Type(Type::Instance(class_id))) => Ok(Some(identity_hash(*class_id))),
-            Self::Builtin(Builtins::Type(ty)) => Ok(Some(hash_named("type", &ty.name(vm.heap, vm.interns)))),
+            Self::Builtin(Builtins::Type(ty)) => {
+                Ok(Some(hash_named("type", &Type::from(*ty).name(vm.heap, vm.interns))))
+            }
             // the `Debug` form carries the module too, so `time.sleep` and `asyncio.sleep` differ
             Self::ModuleFunction(function) => Ok(Some(hash_named("module_function", &format!("{function:?}")))),
             // Hash functions based on function ID
@@ -1168,9 +1168,9 @@ impl Value {
             // `__name__`, class constants and the members handed out as values
             // all live with the type, including the `AttributeError`.
             Self::Builtin(Builtins::Type(t)) => {
-                return match t.class_getattr(attr, vm) {
+                return match Type::from(*t).class_getattr(attr, vm) {
                     Some(value) => Ok(CallResult::Value(value)),
-                    None => Err(t.attribute_error(attr, vm)),
+                    None => Err(Type::from(*t).attribute_error(attr, vm)),
                 };
             }
             _ => {}

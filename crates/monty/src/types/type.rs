@@ -34,31 +34,88 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Represents the Python type of a value.
-///
-/// This enum is used both for type checking and as a callable constructor.
-/// Some variants are Python builtins accessible by name (e.g., `int`, `list`),
-/// while others are internal types only available through imports or introspection
-/// (e.g., `TextIOWrapper`, `PosixPath`).
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::EnumString,
-    strum::IntoStaticStr,
-    strum::VariantNames,
-)]
-#[strum(serialize_all = "lowercase")]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "`Type` and `NoneType` mirror the Python type names"
-)]
-pub enum Type {
+// Share static variants and names; the separator preserves Instance's serialized position in Type.
+macro_rules! define_types {
+    ($($(#[$before_attr:meta])* $before:ident $(($before_binding:ident: $before_payload:ty))?,)*
+     ; $($(#[$after_attr:meta])* $after:ident $(($after_binding:ident: $after_payload:ty))?,)*) => {
+        /// Python types used for runtime dispatch, including borrowed class identities.
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            Hash,
+            serde::Serialize,
+            serde::Deserialize,
+            strum::EnumString,
+            strum::IntoStaticStr,
+            strum::VariantNames,
+        )]
+        #[strum(serialize_all = "lowercase")]
+        #[expect(
+            clippy::enum_variant_names,
+            reason = "`Type` and `NoneType` mirror the Python type names"
+        )]
+        pub enum Type {
+            $($(#[$before_attr])* $before $(($before_payload))?,)*
+            /// A user-defined instance's class, borrowed for runtime type checks and names.
+            /// The class object itself reports `Type::Type`.
+            ///
+            /// The id is non-owning: this `Copy` type does not participate in refcounting.
+            /// It is valid only while the source value keeps its class alive. Never retain it
+            /// in snapshots or constant pools; type objects use `BuiltinType` or a heap class.
+            #[strum(disabled)]
+            Instance(HeapId),
+            $($(#[$after_attr])* $after $(($after_payload))?,)*
+        }
+
+        /// Type objects stored inline in values; user classes use heap references.
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            Hash,
+            serde::Serialize,
+            serde::Deserialize,
+            strum::EnumString,
+            strum::IntoStaticStr,
+            strum::VariantNames,
+        )]
+        #[strum(serialize_all = "lowercase")]
+        // Preserve Type's variant indices for id()'s postcard encoding and its names for dumps.
+        #[serde(into = "Type", try_from = "Type")]
+        pub(crate) enum BuiltinType {
+            $($(#[$before_attr])* $before $(($before_payload))?,)*
+            $($(#[$after_attr])* $after $(($after_payload))?,)*
+        }
+
+        impl From<BuiltinType> for Type {
+            fn from(value: BuiltinType) -> Self {
+                match value {
+                    $(BuiltinType::$before $( ($before_binding) )? => Self::$before $( ($before_binding) )?,)*
+                    $(BuiltinType::$after $( ($after_binding) )? => Self::$after $( ($after_binding) )?,)*
+                }
+            }
+        }
+
+        impl TryFrom<Type> for BuiltinType {
+            type Error = &'static str;
+
+            fn try_from(value: Type) -> Result<Self, Self::Error> {
+                Ok(match value {
+                    $(Type::$before $( ($before_binding) )? => Self::$before $( ($before_binding) )?,)*
+                    Type::Instance(_) => return Err("user-defined classes use heap type objects"),
+                    $(Type::$after $( ($after_binding) )? => Self::$after $( ($after_binding) )?,)*
+                })
+            }
+        }
+    };
+}
+
+define_types! {
     Ellipsis,
     #[strum(serialize = "NotImplementedType")]
     NotImplementedType,
@@ -111,22 +168,7 @@ pub enum Type {
     /// [`HeapData::HostClass`]: crate::heap::HeapData::HostClass
     #[strum(serialize = "HostClass")]
     HostClass,
-    /// An instance of a user-defined class (`class Foo: ...`), carrying the
-    /// `HeapId` of its class object so the real class name can be resolved
-    /// (via [`Type::name`]) for error messages and reprs. The class
-    /// object itself reports [`Type::Type`] (matching `type(Foo) is type`).
-    ///
-    /// **SAFETY/LIFETIME INVARIANT**: the id is a NON-OWNING, transient
-    /// reference — `Type` is `Copy`, untracked by refcounting, and has no
-    /// `Drop`. A `Type::Instance` is only valid while the value it was derived
-    /// from is alive (an instance holds a counted ref to its class, taken in
-    /// `VM::instantiate_class`). It must NEVER be stored long-lived,
-    /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
-    /// `type()` builtin returns the class object itself for instances), or
-    /// converted to `MontyType`, which has no class variant (a sandbox class
-    /// crosses the boundary as its own `ClassType` arena node).
-    #[strum(disabled)]
-    Instance(HeapId),
+    ;
     /// Exception types render/parse via `ExcType`'s own strum name
     /// (`"ValueError"`, `"json.JSONDecodeError"`, ...), so this variant is
     /// `#[strum(disabled)]`: every strum consumer (`Display`, [`Type::name`],
@@ -134,7 +176,7 @@ pub enum Type {
     /// enabling it would make `EnumString` accept the meaningless
     /// `"exception"`.
     #[strum(disabled)]
-    Exception(ExcType),
+    Exception(exc_type: ExcType),
     Function,
     #[strum(serialize = "builtin_function_or_method")]
     BuiltinFunction,
@@ -327,22 +369,16 @@ pub enum Type {
     CsvDialect,
 }
 
-/// Writes the canonical static name of every non-[`Instance`](Type::Instance)
-/// variant — the single name table backing [`Type::name`] and `MontyType`'s
-/// `Display`.
-///
-/// The names live on the enum via the `IntoStaticStr` derive
-/// (`serialize_all = "lowercase"` plus per-variant `serialize` overrides);
-/// `Exception` delegates to `ExcType`'s own strum name.
+impl fmt::Display for BuiltinType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Type::from(*self).fmt(f)
+    }
+}
+
+/// Writes static type names, delegating exception names to `ExcType`.
 ///
 /// # Panics
-/// On `Instance`, which has no static name — callers with heap access must
-/// resolve the real class name via [`Type::name`]. Well-formed data never
-/// puts an `Instance` where no heap exists (`Builtins::Type`, `MontyObject`,
-/// the wire protocol), so this is a programmer-error tripwire. A crafted
-/// snapshot payload *can* smuggle one in, but snapshot bytes are not a
-/// panic-free boundary anyway — any bogus `HeapId` in them panics on first
-/// heap access.
+/// `Instance` requires heap access to resolve its class name; use [`Type::name`].
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match *self {
@@ -1158,5 +1194,51 @@ fn parse_int_digits(value: &str, base: u32, invalid: &impl Fn() -> RunError, hea
         Some(bi) => Ok(LongInt::new(bi).into_value(heap)),
         // Unreachable in practice: every char was validated as a digit above.
         None => Err(invalid()),
+    }
+}
+
+#[cfg(test)]
+mod builtin_type_tests {
+    use std::mem::size_of;
+
+    use strum::VariantNames;
+
+    use super::{BuiltinType, ExcType, HeapId, Type};
+    use crate::{builtins::Builtins, value::Value};
+
+    #[test]
+    fn static_type_conversions_preserve_serialization() {
+        let types = Type::VARIANTS
+            .iter()
+            .filter(|name| !matches!(**name, "instance" | "exception"))
+            .map(|name| name.parse::<Type>().unwrap());
+        for ty in types.chain([Type::Exception(ExcType::ValueError)]) {
+            let builtin = BuiltinType::try_from(ty).unwrap();
+            assert_eq!(Type::from(builtin), ty);
+            assert_eq!(builtin.to_string(), ty.to_string());
+
+            let cbor = minicbor_serde::to_vec(ty).unwrap();
+            assert_eq!(minicbor_serde::to_vec(builtin).unwrap(), cbor);
+            assert_eq!(minicbor_serde::from_slice::<BuiltinType>(&cbor).unwrap(), builtin);
+
+            // id() encodes builtins through postcard, whose variant indices must also stay stable.
+            let postcard = postcard::to_allocvec(&ty).unwrap();
+            assert_eq!(postcard::to_allocvec(&builtin).unwrap(), postcard);
+            assert_eq!(postcard::from_bytes::<BuiltinType>(&postcard).unwrap(), builtin);
+        }
+    }
+
+    #[test]
+    fn instance_types_cannot_be_builtins() {
+        assert!(BuiltinType::try_from(Type::Instance(HeapId::from_index(0))).is_err());
+    }
+
+    #[test]
+    fn compact_builtin_layout() {
+        assert_eq!(size_of::<BuiltinType>(), 1);
+        assert_eq!(size_of::<Builtins>(), 2);
+
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(size_of::<Value>(), 16);
     }
 }

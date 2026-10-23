@@ -15,7 +15,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Module, PyTrait, Type, lru_cache},
+    types::{BuiltinType, Module, PyTrait, lru_cache},
     value::Value,
 };
 
@@ -62,7 +62,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     );
     module.set_attr(
         StaticStrings::Partial,
-        Value::Builtin(Builtins::Type(Type::Partial)),
+        Value::Builtin(Builtins::Type(BuiltinType::Partial)),
         vm,
     );
 
@@ -125,7 +125,7 @@ fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             iterable,
             initial.unwrap_or(Value::None),
             Value::Bool(has_initial),
-            Value::Builtin(Builtins::Type(Type::Iterator)),
+            Value::Builtin(Builtins::Type(BuiltinType::Iterator)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
             Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
             Value::Builtin(Builtins::ExcType(ExcType::TypeError)),

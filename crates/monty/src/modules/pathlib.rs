@@ -11,7 +11,7 @@ use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    types::{Module, Type},
+    types::{BuiltinType, Module},
     value::Value,
 };
 
@@ -21,7 +21,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Pathlib, vm.interns);
 
     // pathlib.Path - the Path class (callable to create Path instances)
-    module.set_attr(StaticStrings::PathClass, Value::Builtin(Builtins::Type(Type::Path)), vm);
+    module.set_attr(
+        StaticStrings::PathClass,
+        Value::Builtin(Builtins::Type(BuiltinType::Path)),
+        vm,
+    );
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }

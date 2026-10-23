@@ -23,7 +23,10 @@ use crate::{
         HeapReadOutput,
     },
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_check_time, tuple::allocate_tuple},
+    types::{
+        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_check_time,
+        tuple::allocate_tuple,
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -188,7 +191,7 @@ impl Union {
 /// `None` is stored as `NoneType`, which is what `__args__` reports.
 fn push_unique(flat: &mut Vec<Value>, member: &Value, vm: &mut VM<'_>) -> RunResult<()> {
     let member = match member {
-        Value::None => Value::Builtin(Builtins::Type(Type::NoneType)),
+        Value::None => Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
         other => other.clone_with_heap(vm),
     };
     defer_drop!(member, vm);
@@ -367,7 +370,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
             }
             let member = args.clone_item(index, vm);
             defer_drop!(member, vm);
-            if matches!(member, Value::Builtin(Builtins::Type(Type::NoneType))) {
+            if matches!(member, Value::Builtin(Builtins::Type(BuiltinType::NoneType))) {
                 f.write_str("None")?;
             } else {
                 repr_type_arg(member, f, vm, heap_ids)?;
@@ -382,9 +385,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.get(vm.heap).args(vm.heap)))),
-            Some(StaticStrings::DunderOrigin) => {
-                Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(Type::Union)))))
-            }
+            Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(
+                BuiltinType::Union,
+            ))))),
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
             _ => Ok(None),
         }

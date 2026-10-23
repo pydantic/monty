@@ -86,5 +86,5 @@ pub(crate) use str::{Str, StringIterator, allocate_string};
 pub(crate) use timedelta::TimeDelta;
 pub(crate) use timezone::TimeZone;
 pub(crate) use tuple::{Tuple, TupleIterator, TupleVec, allocate_tuple};
-pub(crate) use r#type::Type;
+pub(crate) use r#type::{BuiltinType, Type};
 pub(crate) use union::Union;

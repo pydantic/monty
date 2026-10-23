@@ -36,7 +36,7 @@ use crate::{
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
-        List, LongInt, Module, PyTrait, Type,
+        BuiltinType, List, LongInt, Module, PyTrait, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
@@ -122,7 +122,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     }
     module.set_attr(
         StaticStrings::RandomClass,
-        Value::Builtin(Builtins::Type(Type::Random)),
+        Value::Builtin(Builtins::Type(BuiltinType::Random)),
         vm,
     );
     vm.heap.allocate(HeapData::Module(Box::new(module)))

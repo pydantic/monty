@@ -44,7 +44,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        BoundedCompileError, Module, RePattern, Type,
+        BoundedCompileError, BuiltinType, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit, translate_replacement},
         str::allocate_string,
     },
@@ -167,12 +167,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // Constructed types
     module.set_attr(
         StaticStrings::PatternClass,
-        Value::Builtin(Builtins::Type(Type::RePattern)),
+        Value::Builtin(Builtins::Type(BuiltinType::RePattern)),
         vm,
     );
     module.set_attr(
         StaticStrings::MatchClass,
-        Value::Builtin(Builtins::Type(Type::ReMatch)),
+        Value::Builtin(Builtins::Type(BuiltinType::ReMatch)),
         vm,
     );
 
