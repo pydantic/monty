@@ -8,7 +8,8 @@
 #[cfg(feature = "telemetry")]
 use std::env;
 use std::{
-    fmt, fs, io,
+    fmt, fs,
+    io::{self, Read},
     process::ExitCode,
     thread,
     time::{Duration, Instant},
@@ -153,7 +154,13 @@ fn run_cli(cli: Cli) -> ExitCode {
     }
 
     if let Some(file_path) = cli.file.as_deref() {
-        let code = match read_file(file_path) {
+        // `-` reads the program from standard input, like `python -`
+        let (file_path, code) = if file_path == "-" {
+            ("<stdin>", read_stdin())
+        } else {
+            (file_path, read_file(file_path))
+        };
+        let code = match code {
             Ok(code) => code,
             Err(err) => {
                 eprintln!("{BOLD_RED}error{BOLD_RED:#}: {err}");
@@ -840,6 +847,15 @@ fn read_file(file_path: &str) -> Result<String, String> {
     match fs::read_to_string(file_path) {
         Ok(contents) => Ok(contents),
         Err(err) => Err(format!("reading file: {err}")),
+    }
+}
+
+/// Reads the whole program from standard input, for a `-` file argument.
+fn read_stdin() -> Result<String, String> {
+    let mut contents = String::new();
+    match io::stdin().read_to_string(&mut contents) {
+        Ok(_) => Ok(contents),
+        Err(err) => Err(format!("reading <stdin>: {err}")),
     }
 }
 
