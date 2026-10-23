@@ -183,6 +183,29 @@ function it receives, but cannot ask the function about itself, so
 `functools.wraps`-style metadata copying, registries keyed by `fn.__name__`, and
 attribute tagging for later discovery all have no equivalent.
 
+## Walrus assignments in lambda defaults
+
+Monty does not recognize a new enclosing local introduced only by a lambda default.
+
+For example, Monty raises `SyntaxError: no binding for nonlocal 'name' found` for this code:
+
+```python test="skip"
+def outer():
+    assert (lambda value=(name := 0): value)() == 0
+
+    def inner():
+        nonlocal name
+        name += 1
+
+    inner()
+    return name
+
+
+assert outer() == 1
+```
+
+CPython accepts this code, and `outer()` returns `1`.
+
 ## Ordering comparisons
 
 `<`, `<=`, `>`, `>=` on operands with no defined ordering raise

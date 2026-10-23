@@ -26,6 +26,32 @@ fn repeated_class_keyword_returns_syntax_error() {
 }
 
 #[test]
+fn missing_nonlocal_binding_in_nested_function_returns_syntax_error() {
+    let err =
+        get_parse_err("def outer():\n    def inner():\n        nonlocal absent\n        absent += 1\n    inner()");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"no binding for nonlocal 'absent' found");
+}
+
+#[test]
+fn default_assignment_before_global_declaration_returns_syntax_error() {
+    let err = get_parse_err(
+        "def outer():\n    def inner(value=(bound := 0)):\n        return value\n    global bound\nouter()",
+    );
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"name 'bound' is assigned to before global declaration");
+}
+
+#[test]
+fn default_assignment_before_nonlocal_declaration_returns_syntax_error() {
+    let err = get_parse_err(
+        "def outer():\n    bound = 10\n    def middle():\n        def inner(value=(bound := 0)):\n            return value\n        nonlocal bound\n    middle()\nouter()",
+    );
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"name 'bound' is assigned to before nonlocal declaration");
+}
+
+#[test]
 fn simple_classes_compile_successfully() {
     // Simple classes are supported; only the advanced forms below are rejected.
     let result = MontyRun::new(
