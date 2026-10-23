@@ -23,6 +23,7 @@ use crate::{
     types::{
         CsvObject, PyTrait, Type,
         csv::dialect::{Dialect, Quoting},
+        instance,
         iter::collect_owned_iterable,
         str::allocate_string,
     },
@@ -382,7 +383,13 @@ fn append_field(
 
 /// `PyNumber_Check`: the numeric types a `QUOTE_NONNUMERIC` writer leaves unquoted.
 fn is_number(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value.py_type(vm), Type::Int | Type::Float | Type::Bool | Type::Complex)
+    match value.py_type(vm) {
+        Type::Int | Type::Float | Type::Bool | Type::Complex => true,
+        Type::Instance(class_id) => ["__int__", "__float__", "__index__"]
+            .iter()
+            .any(|dunder| instance::class_defines(class_id, dunder, vm)),
+        _ => false,
+    }
 }
 
 /// Whether `value` is an `open()` file, whose `write()` yields a host call.
