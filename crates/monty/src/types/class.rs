@@ -47,6 +47,8 @@ pub(crate) struct Class {
     // Older dumps omit this hint and take the conservative descriptor path.
     #[serde(default)]
     descriptor_free: bool,
+    #[serde(default)]
+    data_descriptor_free: bool,
 }
 
 impl Class {
@@ -56,17 +58,26 @@ impl Class {
         let descriptor_free = namespace
             .iter()
             .all(|(_, value)| !super::descriptor::may_be_descriptor(value, heap));
+        let data_descriptor_free = namespace
+            .iter()
+            .all(|(_, value)| !super::descriptor::may_be_data_descriptor(value, heap));
         Self {
             name,
             namespace,
             uuid: None,
             descriptor_free,
+            data_descriptor_free,
         }
     }
 
     /// No stored member can become a descriptor without a class-namespace write.
     pub(crate) fn descriptor_free(&self) -> bool {
         self.descriptor_free
+    }
+
+    /// No stored member can become a data descriptor without a namespace write.
+    pub(crate) fn data_descriptor_free(&self) -> bool {
+        self.data_descriptor_free
     }
 
     /// Boundary identity of the class, generated and stored on first use so
@@ -110,6 +121,9 @@ impl<'h> HeapReadMut<'h, Class> {
         if super::descriptor::may_be_descriptor(&value, vm.heap) {
             // Never reset this hint: a stored instance can gain hooks through its own class.
             self.get_mut(vm.heap).descriptor_free = false;
+        }
+        if super::descriptor::may_be_data_descriptor(&value, vm.heap) {
+            self.get_mut(vm.heap).data_descriptor_free = false;
         }
         self.namespace_mut().set(name, value, vm)
     }
@@ -294,5 +308,6 @@ mod tests {
         let bytes = minicbor_serde::to_vec(&old).unwrap();
         let restored: Class = minicbor_serde::from_slice(&bytes).unwrap();
         assert!(!restored.descriptor_free());
+        assert!(!restored.data_descriptor_free());
     }
 }

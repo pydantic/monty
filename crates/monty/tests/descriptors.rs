@@ -103,6 +103,173 @@ match record:
 }
 
 #[test]
+fn mixed_classes_preserve_lookup_precedence_and_mutation() {
+    repl()
+        .feed_run(
+            r"
+class NonData:
+    def __get__(self, obj, owner):
+        return 91
+
+class Record:
+    __match_args__ = ('x',)
+    candidate = NonData()
+    @property
+    def computed(self):
+        return 42
+    @staticmethod
+    def static():
+        return 12
+    @classmethod
+    def class_method(cls):
+        return 13
+    def method(self):
+        return self.x
+    def defaults(self, delta=2):
+        return self.x + delta
+
+record = Record()
+record.x = 7
+record.candidate = 8
+record.static = lambda: 22
+record.class_method = lambda: 23
+for _ in range(3):
+    assert record.x == getattr(record, 'x') == 7
+    assert record.method() == 7
+    assert record.defaults() == 9
+    assert record.defaults(delta=3) == 10
+    assert getattr(record, 'method')() == 7
+    assert record.static() == 22
+    assert record.class_method() == 23
+    assert record.computed == 42
+    assert record.candidate == 8
+    assert hasattr(record, 'x')
+    assert not hasattr(record, 'absent')
+    assert getattr(record, 'absent', 99) == 99
+    match record:
+        case Record(x):
+            assert x == 7
+NonData.__set__ = lambda self, obj, value: None
+assert record.candidate == 91
+del NonData.__set__
+assert record.candidate == 8
+NonData.__delete__ = lambda self, obj: None
+assert record.candidate == 91
+del NonData.__delete__
+assert record.candidate == 8
+Record.x = property(lambda obj: 17)
+assert record.x == 17
+del Record.x
+assert record.x == 7
+del record.static
+del record.class_method
+assert record.static() == 12
+assert record.class_method() == 13
+record.method = lambda: 31
+assert record.method() == 31
+del record.method
+assert record.method() == 7
+Record.method = property(lambda obj: lambda: 32)
+assert record.method() == 32
+Record.method = lambda self: self.x + 1
+assert record.method() == 8
+class OnlyNonData:
+    static = staticmethod(lambda: 1)
+    class_method = classmethod(lambda cls: 2)
+other = OnlyNonData()
+other.static = lambda: 3
+other.class_method = lambda: 4
+assert other.static() == 3
+assert other.class_method() == 4
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+}
+
+#[test]
+fn mixed_class_lookup_survives_restore_and_suspension() {
+    let mut repl = repl();
+    repl.feed_run(
+        r"
+class Record:
+    __match_args__ = ('x',)
+    @staticmethod
+    def method():
+        return 1
+record = Record()
+record.x = 7
+",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let bytes = dump("descriptors.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected idle state")
+    };
+    let mut progress = repl
+        .feed_start(
+            r"
+assert record.x == 7
+Record.method = lambda self: self.x
+assert record.method() == 7
+record.method = lambda: 9
+assert record.method() == 9
+Record.computed = property(host_get)
+assert getattr(record, 'x') == 7
+assert not hasattr(record, 'absent')
+assert record.computed == 42
+del record.method
+Record.method = lambda self: host_get()
+assert record.method() == 42
+
+def suspended(self, value=0):
+    return host_get() + value
+
+Record.method = suspended
+assert record.method(value=1) == 43
+record.method = lambda: 9
+Record.method = property(lambda self: host_get)
+assert record.method() == 42
+match record:
+    case Record(x):
+        assert x == 7
+Record.x = property(host_get)
+match record:
+    case Record(x):
+        assert x == 42
+42
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let mut calls = 0;
+    loop {
+        match restore(progress) {
+            ReplProgress::NameLookup(lookup) => {
+                let function = MontyObject::function(lookup.name.clone(), None);
+                progress = lookup
+                    .resume(NameLookupResult::Value(function), PrintWriter::Disabled)
+                    .unwrap();
+            }
+            ReplProgress::FunctionCall(call) => {
+                assert_eq!(call.function_name, "host_get");
+                calls += 1;
+                progress = call.resume(MontyObject::int(42), PrintWriter::Disabled).unwrap();
+            }
+            complete => {
+                assert_eq!(complete.into_complete().unwrap().1, MontyObject::int(42));
+                assert_eq!(calls, 5);
+                break;
+            }
+        }
+    }
+}
+
+#[test]
 fn restored_plain_classes_can_gain_suspending_descriptors() {
     let mut repl = repl();
     repl.feed_run(
