@@ -24,6 +24,9 @@ pub struct MontyException {
     traceback: Vec<StackFrame>,
     /// Structured payload for exception types that carry more than a message.
     data: ExcData,
+    /// Custom type name for user-defined exception subclasses.
+    #[serde(default)]
+    custom_type_name: Option<String>,
 }
 
 /// Number of identical consecutive frames to show before collapsing.
@@ -69,10 +72,11 @@ impl fmt::Display for MontyException {
             }
         }
 
+        let type_name: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         if let Some(msg) = &self.message {
-            write!(f, "{}: {}", self.exc_type, msg)
+            write!(f, "{type_name}: {msg}")
         } else {
-            write!(f, "{}", self.exc_type)
+            write!(f, "{type_name}")
         }
     }
 }
@@ -90,6 +94,7 @@ impl MontyException {
             message,
             traceback: vec![],
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -107,6 +112,7 @@ impl MontyException {
             message,
             traceback,
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -117,6 +123,19 @@ impl MontyException {
     #[must_use]
     pub fn with_data(mut self, data: ExcData) -> Self {
         self.data = data;
+        self
+    }
+
+    /// Returns the custom type name if this exception came from a custom subclass.
+    #[must_use]
+    pub fn custom_type_name(&self) -> Option<&str> {
+        self.custom_type_name.as_deref()
+    }
+
+    /// Attaches a custom type name for user-defined exception subclasses.
+    #[must_use]
+    pub fn with_custom_type_name(mut self, name: Option<String>) -> Self {
+        self.custom_type_name = name;
         self
     }
 
@@ -164,6 +183,7 @@ impl MontyException {
             message: Some(err.to_string()),
             traceback: vec![],
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -203,10 +223,11 @@ impl MontyException {
     /// If there's no message, just returns the exception type name.
     #[must_use]
     pub fn summary(&self) -> String {
+        let type_name: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         if let Some(msg) = &self.message {
-            format!("{}: {}", self.exc_type, msg)
+            format!("{type_name}: {msg}")
         } else {
-            self.exc_type.to_string()
+            type_name.to_owned()
         }
     }
 
@@ -216,7 +237,7 @@ impl MontyException {
     /// Uses appropriate quoting for messages containing quotes.
     #[must_use]
     pub fn py_repr(&self) -> String {
-        let type_str: &'static str = self.exc_type.into();
+        let type_str: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         if let Some(msg) = &self.message {
             format!("{}({})", type_str, StringRepr(msg))
         } else {
@@ -455,6 +476,119 @@ impl ExcType {
             ),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
+        }
+    }
+
+    /// Returns the immediate parent exception type in the exception hierarchy,
+    /// or `None` for `BaseException` (whose parent is `object`).
+    #[must_use]
+    pub fn parent(self) -> Option<Self> {
+        match self {
+            Self::BaseException => None,
+            Self::Exception | Self::KeyboardInterrupt | Self::SystemExit => Some(Self::BaseException),
+            Self::KeyError | Self::IndexError => Some(Self::LookupError),
+            Self::LookupError => Some(Self::Exception),
+            Self::ZeroDivisionError | Self::OverflowError => Some(Self::ArithmeticError),
+            Self::ArithmeticError => Some(Self::Exception),
+            Self::RecursionError | Self::NotImplementedError => Some(Self::RuntimeError),
+            Self::RuntimeError => Some(Self::Exception),
+            Self::FrozenInstanceError => Some(Self::AttributeError),
+            Self::AttributeError => Some(Self::Exception),
+            Self::UnboundLocalError => Some(Self::NameError),
+            Self::NameError => Some(Self::Exception),
+            Self::UnicodeDecodeError
+            | Self::UnicodeEncodeError
+            | Self::JsonDecodeError
+            | Self::TomlDecodeError
+            | Self::BinasciiError => Some(Self::ValueError),
+            Self::ValueError => Some(Self::Exception),
+            Self::ModuleNotFoundError => Some(Self::ImportError),
+            Self::ImportError => Some(Self::Exception),
+            Self::FileNotFoundError
+            | Self::FileExistsError
+            | Self::IsADirectoryError
+            | Self::NotADirectoryError
+            | Self::PermissionError
+            | Self::TimeoutError
+            | Self::UnsupportedOperation => Some(Self::OSError),
+            Self::OSError => Some(Self::Exception),
+            Self::AssertionError
+            | Self::MemoryError
+            | Self::StopIteration
+            | Self::SyntaxError
+            | Self::TypeError
+            | Self::RePatternError
+            | Self::BinasciiIncomplete
+            | Self::CsvError => Some(Self::Exception),
+        }
+    }
+
+    /// Returns the direct bases of this exception type.
+    ///
+    /// In CPython, `io.UnsupportedOperation` inherits from both `OSError` and `ValueError`.
+    /// All other exception types have a single parent (or none for `BaseException`).
+    #[must_use]
+    pub const fn direct_bases(self) -> &'static [Self] {
+        match self {
+            Self::BaseException => &[],
+            Self::UnsupportedOperation => &[Self::OSError, Self::ValueError],
+            Self::Exception | Self::KeyboardInterrupt | Self::SystemExit => &[Self::BaseException],
+            Self::KeyError | Self::IndexError => &[Self::LookupError],
+            Self::LookupError => &[Self::Exception],
+            Self::ZeroDivisionError | Self::OverflowError => &[Self::ArithmeticError],
+            Self::ArithmeticError => &[Self::Exception],
+            Self::RecursionError | Self::NotImplementedError => &[Self::RuntimeError],
+            Self::RuntimeError => &[Self::Exception],
+            Self::FrozenInstanceError => &[Self::AttributeError],
+            Self::AttributeError => &[Self::Exception],
+            Self::UnboundLocalError => &[Self::NameError],
+            Self::NameError => &[Self::Exception],
+            Self::UnicodeDecodeError
+            | Self::UnicodeEncodeError
+            | Self::JsonDecodeError
+            | Self::TomlDecodeError
+            | Self::BinasciiError => &[Self::ValueError],
+            Self::ValueError => &[Self::Exception],
+            Self::ModuleNotFoundError => &[Self::ImportError],
+            Self::ImportError => &[Self::Exception],
+            Self::FileNotFoundError
+            | Self::FileExistsError
+            | Self::IsADirectoryError
+            | Self::NotADirectoryError
+            | Self::PermissionError
+            | Self::TimeoutError => &[Self::OSError],
+            Self::OSError => &[Self::Exception],
+            Self::AssertionError
+            | Self::MemoryError
+            | Self::StopIteration
+            | Self::SyntaxError
+            | Self::TypeError
+            | Self::RePatternError
+            | Self::BinasciiIncomplete
+            | Self::CsvError => &[Self::Exception],
+        }
+    }
+
+    /// Returns the method resolution order (MRO) for this exception type
+    /// (excluding `object`).
+    #[must_use]
+    pub fn mro(self) -> Vec<Self> {
+        if self == Self::UnsupportedOperation {
+            vec![
+                Self::UnsupportedOperation,
+                Self::OSError,
+                Self::ValueError,
+                Self::Exception,
+                Self::BaseException,
+            ]
+        } else {
+            let mut list = vec![self];
+            let mut cur = self.parent();
+            while let Some(p) = cur {
+                list.push(p);
+                cur = p.parent();
+            }
+            list
         }
     }
 }

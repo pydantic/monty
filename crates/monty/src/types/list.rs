@@ -150,6 +150,7 @@ impl<'h> HeapReadMut<'h, List> {
                     .and_then(|call| call.require_synchronous(vm))
                     .map_err(|error| {
                         if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::TypeError) {
+                            vm.clear_unwinding_exception();
                             ExcType::type_error("must assign iterable to extended slice")
                         } else {
                             error

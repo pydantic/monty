@@ -49,6 +49,10 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
         .into());
     };
 
+    if name.as_str(vm.interns) == "__class__" {
+        return Err(ExcType::type_error("__class__ assignment not supported"));
+    }
+
     // Only an instance has a `__dict__` to write into. Everything else gets the
     // error CPython's own `object.__setattr__` produces for a type whose
     // instances have no attribute storage.

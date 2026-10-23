@@ -148,7 +148,7 @@ pub(crate) struct WalkIterator {
     /// The directory last yielded top-down and its `dirnames` list (owned).
     pending: Option<PendingDirnames>,
     /// The host's error for the root, reported on the first step.
-    root_error: Option<SimpleException>,
+    root_error: Option<Box<SimpleException>>,
     /// A step is in progress; `onerror` advancing the walk again is refused.
     #[serde(default)]
     running: bool,
@@ -594,7 +594,7 @@ impl WalkIterator {
     /// Pops steps until one yields or fails, as CPython's `os.walk` loop does.
     fn step(&mut self) -> WalkAction {
         if let Some(exc) = self.root_error.take() {
-            return WalkAction::Error(exc.into());
+            return WalkAction::Error((*exc).into());
         }
         loop {
             let Some(step) = self.stack.pop() else {
@@ -824,7 +824,7 @@ impl ScanEffect {
             Self::Walk(setup) => {
                 let (tree, root_error) = match reply {
                     Ok(reply) => (tree(reply), None),
-                    Err(exc) => (ScanTree::default(), Some(exc)),
+                    Err(exc) => (ScanTree::default(), Some(Box::new(exc))),
                 };
                 let stack = if root_error.is_some() {
                     Vec::new()

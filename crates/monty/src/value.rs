@@ -12,7 +12,7 @@ use serde::de::Error as _;
 use smallvec::smallvec;
 
 use crate::{
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -901,7 +901,7 @@ impl Value {
             Self::Float(_) => Type::Float,
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
-            Self::Builtin(_) => Type::BuiltinFunction,
+            Self::Builtin(b) => b.py_type(),
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
@@ -1149,17 +1149,18 @@ impl Value {
             // Instances resolve attributes (instance dict → class methods/vars,
             // binding methods) in a dedicated path that has the heap id needed to
             // build bound methods.
-            Self::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) => {
-                return instance_getattr(*heap_id, attr, vm);
-            }
             Self::Ref(heap_id) => {
-                if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
+                if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) {
+                    return instance_getattr(*heap_id, attr, vm);
+                }
+                let output = vm.heap.read(*heap_id);
+                if let Some(call_result) = output.py_getattr(attr, vm)? {
                     return Ok(call_result);
                 }
                 // CPython names the module, not its type, for a missing module attribute.
-                if let HeapData::Module(module) = vm.heap.get(*heap_id) {
+                if let HeapReadOutput::Module(module) = output {
                     return Err(ExcType::attribute_error_module(
-                        module.name_str(vm.interns),
+                        module.get(vm.heap).name_str(vm.interns),
                         attr.as_str(vm.interns),
                     ));
                 }
@@ -1171,6 +1172,69 @@ impl Value {
                 return match t.class_getattr(attr, vm) {
                     Some(value) => Ok(CallResult::Value(value)),
                     None => Err(t.attribute_error(attr, vm)),
+                };
+            }
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                let attr_str = attr.as_str(vm.interns);
+                return match attr_str {
+                    "__name__" => {
+                        let name: &'static str = (*exc_type).into();
+                        let bare_name = name.rsplit_once('.').map_or(name, |(_, bare)| bare);
+                        Ok(CallResult::Value(allocate_string(bare_name, vm.heap)))
+                    }
+                    "__class__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::Type,
+                    )))),
+                    "__bases__" => {
+                        let bases = exc_type.direct_bases();
+                        let items: Vec<Self> = if bases.is_empty() {
+                            vec![Self::Builtin(Builtins::Type(Type::Object))]
+                        } else {
+                            bases.iter().map(|&b| Self::Builtin(Builtins::ExcType(b))).collect()
+                        };
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__mro__" => {
+                        let mut items: Vec<Self> = exc_type
+                            .mro()
+                            .into_iter()
+                            .map(|b| Self::Builtin(Builtins::ExcType(b)))
+                            .collect();
+                        items.push(Self::Builtin(Builtins::Type(Type::Object)));
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__new__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::ObjectNew,
+                    )))),
+                    _ => Err(ExcType::attribute_error_type(
+                        (*exc_type).into(),
+                        attr.as_str(vm.interns),
+                    )),
+                };
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                let attr_str = attr.as_str(vm.interns);
+                return match attr_str {
+                    "__name__" => Ok(CallResult::Value(allocate_string("type", vm.heap))),
+                    "__class__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::Type,
+                    )))),
+                    "__bases__" => {
+                        let items = vec![Self::Builtin(Builtins::Type(Type::Object))];
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__mro__" => {
+                        let items = vec![
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                            Self::Builtin(Builtins::Type(Type::Object)),
+                        ];
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    _ => Err(ExcType::attribute_error_type("type", attr.as_str(vm.interns))),
                 };
             }
             _ => {}

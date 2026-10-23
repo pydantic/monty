@@ -11,10 +11,11 @@
 use std::cmp::Ordering;
 
 use crate::{
-    args::{ArgValues, FromArgs, LaxBool},
+    args::{ArgValues, FromArgs, KwargsValues, LaxBool},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::DropWithContext,
     types::{CmpOrder, PyTrait},
     value::Value,
 };
@@ -40,6 +41,27 @@ struct ListSortArgs {
 /// read `sort() got an unexpected keyword argument 'X'` (matching
 /// CPython, whose `sorted` delegates to `list.sort` internally).
 pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
+    match &args {
+        ArgValues::Empty => return sort_values(items, None, false, vm),
+        ArgValues::Kwargs(KwargsValues::Inline(kws)) if kws.len() == 1 => {
+            let name = vm.interns.get_str(kws[0].0);
+            if name == "reverse" {
+                let reverse = match kws[0].1.py_bool(vm) {
+                    Ok(reverse) => reverse,
+                    Err(error) => {
+                        args.drop_with(vm);
+                        return Err(error);
+                    }
+                };
+                args.drop_with(vm);
+                return sort_values(items, None, reverse, vm);
+            } else if name == "key" && matches!(kws[0].1, Value::None) {
+                args.drop_with(vm);
+                return sort_values(items, None, false, vm);
+            }
+        }
+        _ => {}
+    }
     let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
     let key_fn = match key {
         Some(v) if matches!(v, Value::None) => {

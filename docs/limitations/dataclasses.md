@@ -148,8 +148,18 @@ field after a defaulted one
     or `Q.__setattr__ = F.__setattr__` followed by `Q().w = 1`, raises
     `FrozenInstanceError` where CPython raises a `TypeError` from `super()`.
 
+## Inheritance
+
+- **Field inheritance across dataclasses is not supported.** Monty constructs dataclass
+    instances by binding fields directly off `__dataclass_fields__` without synthesizing
+    bytecode `__init__` methods:
+    - Subclassing with `@dataclass` (e.g. `@dataclass class Child(Parent): y: int`) only
+        includes fields declared directly on the child class; parent fields are omitted from
+        the synthesized constructor and `__dataclass_fields__`.
+    - Plain inheritance from a `@dataclass` without the `@dataclass` decorator (and without defining an explicit `__init__`)
+        raises `TypeError: <Subclass>() takes no arguments`.
+
 ## Architectural gaps (cannot match)
 
-- **No inheritance**, so field inheritance across base dataclasses is
-    unsupported (Monty has no class inheritance at all).
+- **Dataclass inheritance** — see [above](#inheritance).
 - **`slots=True` / `weakref_slot=True`** — no `__slots__`, no weakrefs.

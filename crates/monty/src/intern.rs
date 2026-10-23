@@ -956,7 +956,7 @@ pub enum StaticStrings {
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,
-    /// `__hash__` — written into a class namespace by `@dataclass`.
+    /// `__hash__` — written into a class namespace by `@dataclass`, or synthesized for classes with `__eq__`.
     #[strum(serialize = "__hash__")]
     DunderHash,
     /// `__init__` — written into a class namespace by `@dataclass`.

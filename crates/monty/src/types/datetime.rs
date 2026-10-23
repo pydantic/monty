@@ -23,7 +23,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
@@ -1080,6 +1080,48 @@ fn year_in_python_range(year: i32) -> bool {
 /// [`date::format_date_strftime`]). The zone directives are substituted from
 /// the offset and name first (`%z` and `%Z` are empty for a naive value).
 pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
+    if dt.offset_seconds.is_none() {
+        let y = dt.naive.year();
+        if year_in_python_range(y) {
+            match format {
+                "%Y-%m" => {
+                    return Ok(format!("{y:04}-{:02}", dt.naive.month()));
+                }
+                "%Y-%m-%d" => {
+                    return Ok(format!("{y:04}-{:02}-{:02}", dt.naive.month(), dt.naive.day()));
+                }
+                "%H:%M:%S" => {
+                    return Ok(format!(
+                        "{:02}:{:02}:{:02}",
+                        dt.naive.hour(),
+                        dt.naive.minute(),
+                        dt.naive.second()
+                    ));
+                }
+                "%Y-%m-%d %H:%M:%S" => {
+                    return Ok(format!(
+                        "{y:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                        dt.naive.month(),
+                        dt.naive.day(),
+                        dt.naive.hour(),
+                        dt.naive.minute(),
+                        dt.naive.second()
+                    ));
+                }
+                "%Y-%m-%dT%H:%M:%S" => {
+                    return Ok(format!(
+                        "{y:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                        dt.naive.month(),
+                        dt.naive.day(),
+                        dt.naive.hour(),
+                        dt.naive.minute(),
+                        dt.naive.second()
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
     let format = date::rewrite_zone_directives(format, dt.offset_seconds, dt.timezone_name.as_deref(), tracker)?;
     let format = date::rewrite_microsecond_directive(&format);
     date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(&format)))
@@ -1334,6 +1376,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
             }
             Some(StaticStrings::Strftime) => {
+                if let ArgValues::One(Value::InternString(id)) = &args {
+                    let format_str = vm.interns.get_str(*id);
+                    let formatted = format_datetime_strftime(&dt, format_str, &vm.heap.tracker)?;
+                    args.drop_with(vm);
+                    return Ok(CallResult::Value(allocate_string(formatted, vm.heap)));
+                }
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 let formatted = format_datetime_strftime(&dt, format.as_str(vm), &vm.heap.tracker)?;

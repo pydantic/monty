@@ -565,6 +565,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
             message: Some("suspension limit 3 exceeded".to_owned()),
             traceback: vec![].into(),
             data: None,
+            custom_type_name: None,
         }),
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
@@ -595,6 +596,7 @@ fn abort_feed_without_a_suspension_is_a_protocol_violation() {
             message: None,
             traceback: vec![].into(),
             data: None,
+            custom_type_name: None,
         }),
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);

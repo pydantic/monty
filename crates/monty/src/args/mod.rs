@@ -226,6 +226,20 @@ impl ArgValues {
         ExcType::type_error_no_kwargs(method_name)
     }
 
+    /// Creates an independent clone of the arguments, bumping heap reference counts.
+    pub(crate) fn clone_with_heap(&self, heap: &mut Heap) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::One(v) => Self::One(v.clone_with_heap(heap)),
+            Self::Two(a, b) => Self::Two(a.clone_with_heap(heap), b.clone_with_heap(heap)),
+            Self::Kwargs(kw) => Self::Kwargs(kw.clone_with_heap(heap)),
+            Self::ArgsKargs { args, kwargs } => Self::ArgsKargs {
+                args: args.iter().map(|v| v.clone_with_heap(heap)).collect(),
+                kwargs: kwargs.clone_with_heap(heap),
+            },
+        }
+    }
+
     /// Exports the arguments into one arena for delivery to an external
     /// function, so an object passed twice crosses once.
     pub fn into_call_args(self, vm: &mut VM<'_>) -> CallArgs {
@@ -407,6 +421,25 @@ impl KwargsValues {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Creates an independent clone of the keyword arguments, bumping heap reference counts.
+    pub(crate) fn clone_with_heap(&self, heap: &mut Heap) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Inline(items) => Self::Inline(items.iter().map(|(k, v)| (*k, v.clone_with_heap(heap))).collect()),
+            Self::Pairs(items) => Self::Pairs(
+                items
+                    .iter()
+                    .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                    .collect(),
+            ),
+            Self::Dict(dict) => Self::Pairs(
+                dict.iter()
+                    .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                    .collect(),
+            ),
+        }
     }
 
     /// The value passed under `name`, if any; a non-string key (only possible via `**`

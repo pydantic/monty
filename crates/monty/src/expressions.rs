@@ -2,7 +2,7 @@
 use strum::IntoEnumIterator;
 
 use crate::{
-    args::{ArgExprs, Signature},
+    args::{ArgExprs, Kwarg, Signature},
     builtins::Builtins,
     fstring::FStringPart,
     intern::{BytesId, LongIntId, StringId},
@@ -817,13 +817,18 @@ pub enum Node<F> {
     /// executes the class statements top-to-bottom into its own scope, then
     /// assembles the namespace and returns a `Class`. Methods are ordinary
     /// `FunctionDef`s in that body (with `self` as the first parameter); class
-    /// variables are `Assign`s. Class decorators are supported (see
-    /// [`decorators`](Self::ClassDef::decorators)); inheritance, metaclasses and
-    /// decorators on a `def` — including `classmethod`/`staticmethod`/`property`
-    /// — are rejected at parse time. See `limitations/classes.md`.
+    /// variables are `Assign`s. Class decorators and single/multiple inheritance
+    /// are supported (see [`bases`](Self::ClassDef::bases) and
+    /// [`decorators`](Self::ClassDef::decorators)); metaclasses and decorators on
+    /// methods — including `classmethod`/`staticmethod`/`property` — are
+    /// rejected at parse time. See `limitations/classes.md`.
     ClassDef {
         /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
         name: Identifier,
+        /// The base classes to inherit from (may include `*unpack` items).
+        bases: Vec<SequenceItem>,
+        /// Keyword arguments passed to the class definition (e.g. `class Sub(Base, extra="val"):`).
+        keywords: Vec<Kwarg>,
         /// The synthetic class-body function: its body is the class statements
         /// in source order. Prepared and compiled exactly like a function; its
         /// emitted code ends by building the namespace `Dict` and returning the
