@@ -21,7 +21,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Dict, PyTrait, Tuple, Type, TypeRef, type_ref::is_class_like, descriptor,
-        instance::{PlainAttribute, class_dunder, class_name, plain_attribute},
+        instance::{AttributeLookup, class_dunder, class_name, lookup_attribute_fast},
         key_hash::set_element_hash,
         str::allocate_string,
         tuple::allocate_tuple,
@@ -253,16 +253,16 @@ impl VM<'_> {
                 )));
             }
         }
-        match plain_attribute(subject, &attr, this) {
-            PlainAttribute::Found(value) => {
+        match lookup_attribute_fast(subject, &attr, this) {
+            AttributeLookup::Found(value) => {
                 this.push(value);
                 return Ok(CallResult::Value(Value::Bool(true)));
             }
-            PlainAttribute::Absent => {
+            AttributeLookup::Absent => {
                 this.push(Value::None);
                 return Ok(CallResult::Value(Value::Bool(false)));
             }
-            PlainAttribute::Fallback => {}
+            AttributeLookup::Fallback => {}
         }
         if descriptor::attribute_uses_descriptor(subject, &attr, this) {
             return this.match_descriptor_attr(subject, name);

@@ -18,7 +18,7 @@ use crate::{
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
-    types::{forward_ref, generic_alias, iter, lru_cache, map_filter},
+    types::{builtin_descriptor::DescriptorMethod, descriptor, forward_ref, generic_alias, iter, lru_cache, map_filter},
 };
 
 /// Identifies an internal implementation with one authoritative source definition.
@@ -61,6 +61,24 @@ pub(crate) enum FrozenFunction {
     /// Evaluate and cache a class's `__annotations__` from its `__annotate__`.
     #[serde(rename = "type.__annotations__")]
     ClassAnnotations,
+    #[serde(rename = "descriptors.call")]
+    DescriptorCall,
+    #[serde(rename = "descriptors.bind_call")]
+    DescriptorBindCall,
+    #[serde(rename = "descriptors.discard")]
+    DescriptorDiscard,
+    #[serde(rename = "descriptors.mutation")]
+    DescriptorMutation,
+    #[serde(rename = "descriptors.set_names")]
+    DescriptorNames,
+    #[serde(rename = "descriptors.getattr")]
+    DescriptorGetattr,
+    #[serde(rename = "descriptors.hasattr")]
+    DescriptorHasattr,
+    #[serde(rename = "descriptors.match")]
+    DescriptorMatch,
+    #[serde(rename = "descriptors.match_class")]
+    DescriptorMatchClass,
 }
 
 impl FrozenFunction {
@@ -93,6 +111,15 @@ impl FrozenFunction {
             Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,
             Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
             Self::ClassAnnotations => annotations::CLASS_ANNOTATIONS_SOURCE,
+            Self::DescriptorBindCall => descriptor::BIND_CALL_SOURCE,
+            Self::DescriptorCall => descriptor::CALL_SOURCE,
+            Self::DescriptorMutation => descriptor::MUTATION_SOURCE,
+            Self::DescriptorDiscard => descriptor::DISCARD_SOURCE,
+            Self::DescriptorNames => descriptor::NAMES_SOURCE,
+            Self::DescriptorGetattr => descriptor::GETATTR_SOURCE,
+            Self::DescriptorMatch => descriptor::MATCH_SOURCE,
+            Self::DescriptorMatchClass => descriptor::MATCH_CLASS_SOURCE,
+            Self::DescriptorHasattr => descriptor::HASATTR_SOURCE,
             Self::MapInit => map_filter::MAP_INIT_SOURCE,
             Self::MapNext => map_filter::MAP_NEXT_SOURCE,
             Self::FilterInit => map_filter::FILTER_INIT_SOURCE,
@@ -125,6 +152,7 @@ impl FrozenFunction {
 /// These identities and their signatures are part of the captured bytecode's ABI.
 #[monty_macros::explicit_discriminants(checksum = 0x47d0_77e5_f6a8_58b8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
+#[repr(u8)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FrozenFunctions {
     /// Rebuild a generic alias around resolved arguments (see `generic_alias::call_alias_with`).
@@ -151,6 +179,11 @@ pub(crate) enum FrozenFunctions {
     MapLengthError = 10,
     /// Exit the loop beneath a deferred advancement's catcher, without pushing an item.
     EndForIter = 11,
+    GetAttribute = 12,
+    BindDescriptor = 13,
+    SetNameLookup = 14,
+    MatchClassNames = 15,
+    Descriptor(DescriptorMethod) = 16,
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.
@@ -162,6 +195,11 @@ pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut V
         }
         FrozenFunctions::CallAnnotate => annotations::call_annotate_helper(args, vm),
         FrozenFunctions::EvalHint => typing::call_eval_hint(args, vm),
+        FrozenFunctions::MatchClassNames => vm.match_class_names(args),
+        FrozenFunctions::SetNameLookup => descriptor::lookup_set_name(args, vm),
+        FrozenFunctions::BindDescriptor => descriptor::bind_descriptor(args, vm),
+        FrozenFunctions::GetAttribute => descriptor::get_attribute(args, vm),
+        FrozenFunctions::Descriptor(method) => method.call(vm, args),
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::TypeRepr => typing::call_type_repr(args, vm).map(CallResult::Value),

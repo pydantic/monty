@@ -5,7 +5,7 @@ use std::{
     mem,
 };
 
-use super::{LazyHeapSet, PyTrait, Type, instance::bind_method};
+use super::{BoundMethod, LazyHeapSet, PyTrait, Type, descriptor, instance::bind_method, str::allocate_string};
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::type_of_ref,
@@ -136,9 +136,9 @@ fn protocol_get(id: HeapId, instance: &Value, owner: Option<&Value>, vm: &mut VM
                 Some(owner) if !matches!(owner, Value::None) => owner.clone_with_heap(vm.heap),
                 _ => type_of_ref(vm, instance),
             };
-            Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(
-                super::BoundMethod { instance, func },
-            )))))
+            Ok(CallResult::Value(Value::Ref(
+                vm.heap.allocate(HeapData::BoundMethod(BoundMethod { instance, func })),
+            )))
         }
         Type::Property => {
             if matches!(instance, Value::None) {
@@ -172,7 +172,7 @@ pub(crate) fn mutate(id: HeapId, object: &Value, value: Option<Value>, vm: &mut 
     }
     let mut args = vec![object.clone_with_heap(vm.heap)];
     args.extend(value.as_ref().map(|v| v.clone_with_heap(vm.heap)));
-    super::descriptor::discard_call(function, args, vm)
+    descriptor::discard_call(function, args, vm)
 }
 
 fn missing_accessor(accessor: &str) -> RunError {
@@ -304,7 +304,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
             return Ok(descriptor
                 .name
                 .as_ref()
-                .map(|name| CallResult::Value(super::str::allocate_string(name.clone(), vm.heap))));
+                .map(|name| CallResult::Value(allocate_string(name.clone(), vm.heap))));
         }
         let value = if descriptor.kind == Type::Property {
             let index = match name {

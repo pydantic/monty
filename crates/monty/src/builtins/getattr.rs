@@ -11,7 +11,7 @@ use crate::{
     frozen::FrozenFunction,
     types::{
         attribute_name_value, descriptor,
-        instance::{PlainAttribute, plain_attribute},
+        instance::{AttributeLookup, lookup_attribute_fast},
     },
     value::Value,
 };
@@ -54,9 +54,9 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         );
     };
 
-    match plain_attribute(object, &attr, vm) {
-        PlainAttribute::Found(value) => return Ok(CallResult::Value(value)),
-        PlainAttribute::Absent => {
+    match lookup_attribute_fast(object, &attr, vm) {
+        AttributeLookup::Found(value) => return Ok(CallResult::Value(value)),
+        AttributeLookup::Absent => {
             return match default {
                 Some(default) => Ok(CallResult::Value(default.clone_with_heap(vm.heap))),
                 None => Err(ExcType::attribute_error(
@@ -65,7 +65,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
                 )),
             };
         }
-        PlainAttribute::Fallback => {}
+        AttributeLookup::Fallback => {}
     }
 
     if let Some(default) = default

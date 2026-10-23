@@ -5,7 +5,7 @@ use smallvec::smallvec;
 
 use super::{
     Dict, LazyHeapSet, OwnedTypeRef, PyTrait, Type, TypeRef,
-    instance::{BoundMethod, is_method_value},
+    descriptor, instance::{BoundMethod, is_method_value},
     tuple::allocate_tuple,
 };
 use crate::{
@@ -58,9 +58,12 @@ pub(crate) struct Class {
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
-    // Older dumps omit this hint and take the conservative descriptor path.
+    /// No member needs descriptor-hook dispatch; native function binding is handled separately.
+    /// Missing hints in older dumps default to false, retaining full precedence checks.
     #[serde(default)]
     descriptor_free: bool,
+    /// Instance storage can be checked first, even with builtin non-data descriptors present.
+    /// User-defined members remain candidates because their types can acquire setter/deleter hooks.
     #[serde(default)]
     data_descriptor_free: bool,
 }
@@ -84,10 +87,10 @@ impl Class {
     ) -> Self {
         let descriptor_free = namespace
             .iter()
-            .all(|(_, value)| !super::descriptor::may_be_descriptor(value, heap));
+            .all(|(_, value)| !descriptor::may_be_descriptor(value, heap));
         let data_descriptor_free = namespace
             .iter()
-            .all(|(_, value)| !super::descriptor::may_be_data_descriptor(value, heap));
+            .all(|(_, value)| !descriptor::may_be_data_descriptor(value, heap));
         Self {
             name,
             namespace,
@@ -99,7 +102,7 @@ impl Class {
         }
     }
 
-    /// No stored member can become a descriptor without a class-namespace write.
+    /// No stored member can require descriptor-hook dispatch without a namespace write.
     pub(crate) fn descriptor_free(&self) -> bool {
         self.descriptor_free
     }
@@ -176,11 +179,12 @@ impl<'h> HeapReadMut<'h, Class> {
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
     pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if super::descriptor::may_be_descriptor(&value, vm.heap) {
-            // Never reset this hint: a stored instance can gain hooks through its own class.
+        // Clear hints before publishing a candidate, including instances whose types have no hooks yet.
+        // Re-enabling after replacement/deletion would require rescanning all remaining candidates.
+        if descriptor::may_be_descriptor(&value, vm.heap) {
             self.get_mut(vm.heap).descriptor_free = false;
         }
-        if super::descriptor::may_be_data_descriptor(&value, vm.heap) {
+        if descriptor::may_be_data_descriptor(&value, vm.heap) {
             self.get_mut(vm.heap).data_descriptor_free = false;
         }
         let guarded = name
