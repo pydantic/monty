@@ -699,6 +699,11 @@ impl Dict {
             .map(|entry| (entry.key.clone_with_heap(heap), entry.value.clone_with_heap(heap))))
     }
 
+    pub(crate) fn skip_next_pair(&self, cursor: &mut TableCursor) -> RunResult<()> {
+        self.table.step(cursor)?;
+        Ok(())
+    }
+
     /// The next live `(key, value)` after the last one `scan` yielded, for a
     /// walk that tolerates mutation between steps — see [`TableScan`].
     pub(crate) fn scan_next<'a>(&'a self, scan: &mut TableScan) -> Option<(&'a Value, &'a Value)> {

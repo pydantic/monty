@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value, instance_attrs::InstanceLayout};
 use crate::{
     args::ArgValues,
     boundary_uuid::create_uuid,
@@ -42,6 +42,8 @@ pub(crate) struct Class {
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
+    #[serde(default)]
+    instance_layout: InstanceLayout,
 }
 
 impl Class {
@@ -52,6 +54,7 @@ impl Class {
             name,
             namespace,
             uuid: None,
+            instance_layout: InstanceLayout::default(),
         }
     }
 
@@ -78,6 +81,14 @@ impl Class {
     #[must_use]
     pub fn namespace(&self) -> &Dict {
         &self.namespace
+    }
+
+    pub(crate) fn instance_layout(&self) -> &InstanceLayout {
+        &self.instance_layout
+    }
+
+    pub(crate) fn instance_layout_mut(&mut self) -> &mut InstanceLayout {
+        &mut self.instance_layout
     }
 }
 

@@ -411,7 +411,11 @@ impl GraphExporter {
                 let instance_id = vm.heap.boundary_uuid(id);
                 let class_type = self.sandbox_class_node(class_id, vm);
                 // Snapshot before recursing: attrs are mutable via `setattr`.
-                let children = snapshot_dict_pairs(inst.get(vm.heap).attrs(), vm.heap);
+                let children = inst
+                    .get(vm.heap)
+                    .attrs(vm.heap)
+                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
+                    .collect::<Vec<_>>();
                 defer_drop!(children, vm);
                 MontyNode::ClassInstance {
                     class_type,

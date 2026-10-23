@@ -1056,7 +1056,7 @@ impl<'h> VM<'h> {
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
         let instance_id = self
             .heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
+            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, self.heap))));
         // The instance now owns a reference to its class object.
         self.heap.inc_ref(class_id);
 
