@@ -9,7 +9,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::FrozenFunction,
-    types::{attribute_name_value, descriptor, instance::plain_attribute},
+    types::{
+        attribute_name_value, descriptor,
+        instance::{PlainAttribute, plain_attribute},
+    },
     value::Value,
 };
 
@@ -51,15 +54,18 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         );
     };
 
-    if let Some(value) = plain_attribute(object, &attr, vm) {
-        return match value {
-            Some(value) => Ok(CallResult::Value(value)),
-            None if let Some(default) = default => Ok(CallResult::Value(default.clone_with_heap(vm.heap))),
-            None => Err(ExcType::attribute_error(
-                object.py_type_name(vm),
-                attr.as_str(vm.interns),
-            )),
-        };
+    match plain_attribute(object, &attr, vm) {
+        PlainAttribute::Found(value) => return Ok(CallResult::Value(value)),
+        PlainAttribute::Absent => {
+            return match default {
+                Some(default) => Ok(CallResult::Value(default.clone_with_heap(vm.heap))),
+                None => Err(ExcType::attribute_error(
+                    object.py_type_name(vm),
+                    attr.as_str(vm.interns),
+                )),
+            };
+        }
+        PlainAttribute::Fallback => {}
     }
 
     if let Some(default) = default
