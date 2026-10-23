@@ -12,7 +12,7 @@ use crate::{
     heap::DropWithContext,
     types::{
         attribute_name_value, descriptor,
-        instance::{PlainAttribute, plain_attribute},
+        instance::{AttributeLookup, lookup_attribute_fast},
     },
     value::Value,
 };
@@ -52,13 +52,13 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         .into());
     };
 
-    match plain_attribute(object, &name, vm) {
-        PlainAttribute::Found(value) => {
+    match lookup_attribute_fast(object, &name, vm) {
+        AttributeLookup::Found(value) => {
             value.drop_with(vm);
             return Ok(CallResult::Value(Value::Bool(true)));
         }
-        PlainAttribute::Absent => return Ok(CallResult::Value(Value::Bool(false))),
-        PlainAttribute::Fallback => {}
+        AttributeLookup::Absent => return Ok(CallResult::Value(Value::Bool(false))),
+        AttributeLookup::Fallback => {}
     }
 
     if descriptor::attribute_uses_descriptor(object, &name, vm) {
