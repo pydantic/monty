@@ -296,8 +296,8 @@ following overlay would give the old. No in-memory representation fixes that,
 so the mode refuses links rather than answering wrongly. The target is never
 resolved, so the error reveals nothing about it.
 
-Renaming a **directory that contains a symlink** is refused for the same
-reason: the link cannot move with it and cannot be left behind.
+Renaming a **directory that contains a symlink** to a new path is refused for
+the same reason: the link cannot move with it and cannot be left behind.
 
 `is_symlink()` still answers `True`; it reports only that the name is a link,
 as CPython does. The other predicates answer `False`. Direct mounts are

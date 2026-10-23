@@ -1243,6 +1243,20 @@ fn rename(
         return Err(MountError::not_found(src_vpath));
     }
 
+    // POSIX makes `rename(x, x)` a no-op whatever `x` holds, so it skips the
+    // non-empty refusal below. Symlinks and tombstones were refused above; a
+    // missing path falls through and raises not-found like any other rename.
+    if src_rel == dst_rel {
+        let src_exists = match state.get(&src_rel) {
+            // `OverlayEntry::Deleted` returned above, so any entry is present.
+            Some(_) => true,
+            None => ctx.mount_dir.exists(resolve_real(src_vpath, ctx)?.for_dir_op()),
+        };
+        if src_exists {
+            return Ok(MontyObject::none());
+        }
+    }
+
     // Determine whether the source is a directory before removing it from state,
     // so that validation checks below don't lose the entry on failure.
     let src_is_dir = match state.get(&src_rel) {

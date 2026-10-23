@@ -1349,6 +1349,84 @@ fn ovl_mem_rename_to_same_path() {
 }
 
 #[test]
+fn ovl_mem_rename_directory_to_same_path() {
+    // Renaming a non-empty directory onto itself is a POSIX no-op, not the
+    // `Directory not empty` refusal renaming onto another directory gets.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    // `subdir` holds real entries (`nested.txt`, `deep/file.txt`).
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/subdir", "/mnt/subdir")),
+        MontyObject::none()
+    );
+    // An aliasing path resolves to the same entry, so it is a no-op too.
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/subdir/../subdir", "/mnt/subdir")),
+        MontyObject::none()
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/subdir/nested.txt".into())),
+        MontyObject::string("nested content".to_owned())
+    );
+    // Host unchanged.
+    assert!(dir.path().join("subdir/nested.txt").exists());
+
+    // A tombstoned self-rename is still not-found: the deletion check runs
+    // before the no-op early return.
+    call(&mut mt, &OsFunctionCall::Unlink("/mnt/hello.txt".into()))
+        .unwrap()
+        .unwrap();
+    let err = call(&mut mt, &rename("/mnt/hello.txt", "/mnt/hello.txt"))
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/hello.txt'",
+    );
+}
+
+#[test]
+fn ovl_mem_rename_overlay_directory_to_same_path() {
+    // A self-rename of an overlay-built directory leaves every child in place.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    call_ok(&mut mt, &mkdir("/mnt/ovl_dir", false, false));
+    call(&mut mt, &write_text("/mnt/ovl_dir/child.txt", "kept".to_owned()))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/ovl_dir", "/mnt/ovl_dir")),
+        MontyObject::none()
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/ovl_dir/child.txt".into())),
+        MontyObject::string("kept".to_owned())
+    );
+}
+
+#[test]
+fn ovl_mem_rename_missing_path_to_same_path_fails() {
+    // A self-rename still requires the entry to exist: POSIX raises ENOENT.
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+
+    let err = call(&mut mt, &rename("/mnt/no_such_file.txt", "/mnt/no_such_file.txt"))
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/no_such_file.txt'",
+    );
+}
+
+#[test]
 fn ovl_mem_rename_deleted_file_fails() {
     // Renaming a tombstoned file should fail with not-found.
     let dir = create_test_dir();
