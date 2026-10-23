@@ -18,8 +18,8 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        builtin_descriptor, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
-        Set, Slice, Str, TimeZone, Tuple,
+        Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
+        Set, Slice, Str, TimeZone, Tuple, builtin_descriptor,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -74,10 +74,6 @@ pub enum Type {
     Complex,
     Range,
     Slice,
-    #[strum(serialize = "classmethod")]
-    ClassMethod,
-    #[strum(serialize = "staticmethod")]
-    StaticMethod,
     /// The four `datetime` classes are qualified like `collections.deque`:
     /// this is the `tp_name` CPython gives these C types, so it is the
     /// spelling its reprs and type-naming error messages use. `__name__`
@@ -349,6 +345,10 @@ pub enum Type {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    #[strum(serialize = "classmethod")]
+    ClassMethod,
+    #[strum(serialize = "staticmethod")]
+    StaticMethod,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -700,9 +700,7 @@ impl Type {
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `class_getattr`.
-            (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => {
-                builtin_object_setattr(vm, args)
-            }
+            (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => builtin_object_setattr(vm, args),
             (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
             (Self::Time, Some(StaticStrings::Fromisoformat)) => {
                 time::class_fromisoformat(vm, args).map(CallResult::Value)

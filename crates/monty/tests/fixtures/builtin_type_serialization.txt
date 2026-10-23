@@ -103,3 +103,5 @@ DecimalContext 103
 DecimalSignalDict 104
 DecimalContextManager 105
 ForwardRef 106
+ClassMethod 107
+StaticMethod 108

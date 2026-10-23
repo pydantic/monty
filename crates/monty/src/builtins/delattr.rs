@@ -8,7 +8,7 @@ use crate::{
     heap::{HeapData, HeapReadOutput},
     modules::dataclasses,
     types::{
-        attribute_name_value, descriptor,
+        descriptor,
         instance::{class_member, class_name},
     },
     value::Value,
@@ -39,7 +39,7 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
             return descriptor::mutate(member, object, None, vm);
         }
     }
-    let key = attribute_name_value(&attr, vm);
+    let key = attr.as_value(vm.heap);
     defer_drop!(key, vm);
     let removed = match object {
         Value::Ref(id) => match vm.heap.read(*id) {

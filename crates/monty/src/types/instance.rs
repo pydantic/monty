@@ -873,29 +873,30 @@ fn instance_getattr_with_descriptors(self_id: HeapId, attr: &EitherStr, vm: &mut
     Err(ExcType::attribute_error(class_name(class, vm.heap, vm.interns), name))
 }
 
-/// Result of attribute lookup without descriptor dispatch.
-pub(crate) enum AttributeLookup {
+/// Outcome of the attribute fast path, which checks precedence without invoking getters.
+/// `Found` and `Missing` finish the lookup; `Inconclusive` requires the full attribute protocol.
+pub(crate) enum FastAttributeLookupResult {
     /// Owns the returned reference, just like a completed general lookup.
     Found(Value),
     /// Absence is final; callers can apply their default or missing-attribute behavior.
-    Absent,
+    Missing,
     /// This object or selected getter requires general lookup, possibly suspending.
-    Fallback,
+    Inconclusive,
 }
 
 /// Fast attribute lookup shared by `getattr`, `hasattr` and class patterns.
 /// Instance storage wins when no data getter can override it. Only a selected
 /// descriptor getter requires general lookup, where its hook may suspend.
-pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_>) -> AttributeLookup {
+pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
     let Value::Ref(id) = object else {
-        return AttributeLookup::Fallback;
+        return FastAttributeLookupResult::Inconclusive;
     };
     lookup_instance_attribute_fast(*id, attr, vm)
 }
 
-fn lookup_instance_attribute_fast(id: HeapId, attr: &EitherStr, vm: &VM<'_>) -> AttributeLookup {
+fn lookup_instance_attribute_fast(id: HeapId, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
     let HeapData::Instance(instance) = vm.heap.get(id) else {
-        return AttributeLookup::Fallback;
+        return FastAttributeLookupResult::Inconclusive;
     };
     let class = instance.class();
     let name = attr.as_str(vm.interns);
@@ -904,38 +905,39 @@ fn lookup_instance_attribute_fast(id: HeapId, attr: &EitherStr, vm: &VM<'_>) -> 
     };
     if class_info.descriptor_free() {
         return match lookup_descriptor_free_instance_attr(id, name, vm) {
-            Some(value) => AttributeLookup::Found(value),
-            None => AttributeLookup::Absent,
+            Some(value) => FastAttributeLookupResult::Found(value),
+            None => FastAttributeLookupResult::Missing,
         };
     }
 
-    // Read the class namespace only if instance storage cannot settle the lookup.
+    // Keep the borrowed value while checking precedence, then clone it only if it wins.
+    // These dictionary reads and hook checks execute no Python, so no second instance lookup is needed.
     let instance_value = instance.attrs().get_by_str(name, vm.heap, vm.interns);
     if class_info.data_descriptor_free()
         && let Some(value) = instance_value
     {
-        return AttributeLookup::Found(value.clone_with_heap(vm.heap));
+        return FastAttributeLookupResult::Found(value.clone_with_heap(vm.heap));
     }
-    // Mixed classes need a name-specific check; an unrelated property cannot affect this field.
-    // Reading instance storage above is harmless, but returning it must wait for this check.
+    // A mixed class can still complete this lookup: unrelated descriptors do not matter.
+    // A data getter overrides an instance hit; other getters run only on an instance miss.
     let member = class_info.namespace().get_by_str(name, vm.heap, vm.interns);
     if let Some(member) = member
         && descriptor::has_get(member, vm)
         && (descriptor::is_data(member, vm) || instance_value.is_none())
     {
-        return AttributeLookup::Fallback;
+        return FastAttributeLookupResult::Inconclusive;
     }
     if let Some(value) = instance_value {
-        return AttributeLookup::Found(value.clone_with_heap(vm.heap));
+        return FastAttributeLookupResult::Found(value.clone_with_heap(vm.heap));
     }
     match member {
-        Some(member) if is_method_value(member, vm) => AttributeLookup::Found(bind_method(member, id, vm)),
-        Some(member) => AttributeLookup::Found(member.clone_with_heap(vm.heap)),
+        Some(member) if is_method_value(member, vm) => FastAttributeLookupResult::Found(bind_method(member, id, vm)),
+        Some(member) => FastAttributeLookupResult::Found(member.clone_with_heap(vm.heap)),
         None if name == "__class__" => {
             vm.heap.inc_ref(class);
-            AttributeLookup::Found(Value::Ref(class))
+            FastAttributeLookupResult::Found(Value::Ref(class))
         }
-        None => AttributeLookup::Absent,
+        None => FastAttributeLookupResult::Missing,
     }
 }
 
@@ -1304,7 +1306,11 @@ fn is_heap_method(data: &HeapData) -> bool {
     // Partial and cache wrappers bind the instance after arguments they already carry.
     matches!(
         data,
-        HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_) | HeapData::LruCache(_) | HeapData::DataclassMethod(_)
+        HeapData::Closure(_)
+            | HeapData::FunctionDefaults(_)
+            | HeapData::Partial(_)
+            | HeapData::LruCache(_)
+            | HeapData::DataclassMethod(_)
     )
 }
 

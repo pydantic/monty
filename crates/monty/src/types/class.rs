@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReader,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReader,
         heap_read_ref_as_field_mut,
     },
     intern::{Interns, StringId},

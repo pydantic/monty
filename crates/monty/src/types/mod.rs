@@ -1,5 +1,5 @@
-mod builtin_type;
 pub(crate) mod builtin_descriptor;
+mod builtin_type;
 /// Type definitions for Python runtime values.
 ///
 /// This module contains structured types that wrap heap-allocated data
@@ -58,8 +58,8 @@ mod unicode_type;
 mod unicode_type_data;
 pub mod union;
 
-pub(crate) use builtin_type::BuiltinType;
 pub(crate) use builtin_descriptor::BuiltinDescriptor;
+pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::Class;
 pub(crate) use complex::Complex;
