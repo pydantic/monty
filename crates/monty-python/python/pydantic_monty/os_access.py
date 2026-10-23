@@ -1252,7 +1252,7 @@ class OSAccess(AbstractOS):
         # remove from parent
         parent_dir = self._parent_entry(path)
         assert _is_dir(parent_dir), f'Expected parent of a file to always be a directory, got {parent_dir}'
-        del parent_dir[file.name]
+        del parent_dir[PurePosixPath(path).name]
 
     def path_rmdir(self, path: PurePosixPath) -> None:
         dir = self._get_dir(path)
@@ -1297,12 +1297,15 @@ class OSAccess(AbstractOS):
                 # need to mark the target as deleted as it'll be overwritten
                 target_entry.delete()
 
-            src_name = src_entry.path.name
+            src_name = PurePosixPath(path).name
             target_name = PurePosixPath(target).name
             # remove it from the old directory
             del parent_dir[src_name]
             # and put it in the new directory
             target_parent[target_name] = src_entry
+            # keep the file's own path and name in sync with its new location
+            src_entry.path = PurePosixPath(target)
+            src_entry.name = target_name
         else:
             assert _is_dir(src_entry), 'src path must be a directory here'
             if _is_file(target_entry):

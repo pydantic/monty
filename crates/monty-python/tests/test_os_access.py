@@ -1419,6 +1419,42 @@ def test_rename_file_direct():
     assert fs.path_read_text(P('/test/new.txt')) == 'content'
 
 
+def test_rename_file_updates_file_path_direct():
+    """path_rename keeps the moved file's path and name in sync, so later operations use the new name."""
+    file = MemoryFile('/test/old.txt', content='content')
+    fs = OSAccess([file])
+
+    fs.path_rename(P('/test/old.txt'), P('/test/mid.txt'))
+    assert file.path.as_posix() == '/test/mid.txt'
+    assert file.name == 'mid.txt'
+
+    # a second rename must find the entry under its current name
+    fs.path_rename(P('/test/mid.txt'), P('/test/new.txt'))
+    assert file.path.as_posix() == '/test/new.txt'
+    assert file.name == 'new.txt'
+
+    fs.path_unlink(P('/test/new.txt'))
+    assert fs.path_exists(P('/test/new.txt')) is False
+    assert fs.path_exists(P('/test/old.txt')) is False
+    assert fs.path_exists(P('/test/mid.txt')) is False
+    assert file.deleted is True
+
+
+def test_rename_then_unlink_via_monty(monty_run: RunMonty):
+    """Path.unlink() works on a file that was renamed earlier in the same run."""
+    fs = OSAccess()
+
+    code = """
+from pathlib import Path
+Path('/r').write_text('x')
+Path('/r').rename('/r2')
+exists_after_rename = Path('/r2').exists()
+Path('/r2').unlink()
+(exists_after_rename, Path('/r2').exists(), Path('/r').exists())
+"""
+    assert monty_run(code, os=fs) == snapshot((True, False, False))
+
+
 def test_rename_source_not_found_direct():
     """path_rename raises FileNotFoundError when source doesn't exist via direct API."""
     fs = OSAccess()
