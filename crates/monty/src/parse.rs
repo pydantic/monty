@@ -17,7 +17,7 @@ use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
-    exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         MatchCase, Node, Operator, Pattern, SequenceItem, Submodule, UnpackTarget,
@@ -914,6 +914,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                     };
                 }
                 // We only support absolute imports (level 0)
+                // TODO(site-packages): relative imports in modules imported from files,
+                // resolved against the importing module's `__package__`.
                 if level != 0 {
                     return Err(ParseError::import_error(
                         "attempted relative import with no known parent package",
@@ -2808,32 +2810,46 @@ impl ParseError {
         }
     }
 
+    /// Converts an imported file's compile error: the file is the innermost
+    /// traceback frame, as CPython reports an error that `import` meets.
+    pub(crate) fn into_file_run_error(self, path: &str, source: &str) -> RunError {
+        let (exc_type, msg, frame) = self.into_parts(path, source);
+        RunError::Exc(ExceptionRaise {
+            exc: SimpleException::new_msg(exc_type, msg),
+            frame: None,
+            snippet_frame: Some(Box::new(frame)),
+            hide_caret: false,
+        })
+    }
+
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
+        let (exc_type, msg, frame) = self.into_parts(filename, source);
+        MontyException::with_traceback(exc_type, Some(msg), vec![frame])
+    }
+
+    /// The exception type, message and the frame locating the error in `filename`.
+    fn into_parts(self, filename: &str, source: &str) -> (ExcType, String, StackFrame) {
         let mut source_map = SourceMap::new(source);
         match self {
-            Self::Syntax { msg, position } => MontyException::with_traceback(
+            Self::Syntax { msg, position } => (
                 ExcType::SyntaxError,
-                Some(msg.into_owned()),
-                vec![StackFrame::from_position_syntax_error(
-                    position,
-                    filename,
-                    &mut source_map,
-                )],
+                msg.into_owned(),
+                StackFrame::from_position_syntax_error(position, filename, &mut source_map),
             ),
-            Self::NotImplemented { msg, position } => MontyException::with_traceback(
+            Self::NotImplemented { msg, position } => (
                 ExcType::NotImplementedError,
-                Some(format!("The monty syntax parser does not yet support {msg}")),
-                vec![StackFrame::from_position(position, filename, &mut source_map)],
+                format!("The monty syntax parser does not yet support {msg}"),
+                StackFrame::from_position(position, filename, &mut source_map),
             ),
-            Self::NotSupported { msg, position } => MontyException::with_traceback(
+            Self::NotSupported { msg, position } => (
                 ExcType::NotImplementedError,
-                Some(msg.into_owned()),
-                vec![StackFrame::from_position(position, filename, &mut source_map)],
+                msg.into_owned(),
+                StackFrame::from_position(position, filename, &mut source_map),
             ),
-            Self::Import { msg, position } => MontyException::with_traceback(
+            Self::Import { msg, position } => (
                 ExcType::ImportError,
-                Some(msg.into_owned()),
-                vec![StackFrame::from_position_no_caret(position, filename, &mut source_map)],
+                msg.into_owned(),
+                StackFrame::from_position_no_caret(position, filename, &mut source_map),
             ),
         }
     }

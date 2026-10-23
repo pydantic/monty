@@ -573,7 +573,7 @@ fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
         return err;
     }
     if let Some(module) = vm.suspended_import_from() {
-        ExcType::cannot_import_name(name, vm.interns.get_str(module))
+        ExcType::cannot_import_name(name, vm.interns.get_str(module), None)
     } else if let Some(path) = vm.suspended_submodule() {
         ExcType::module_not_found_error(vm.interns.get_str(path), None)
     } else {
@@ -913,7 +913,16 @@ pub(crate) fn resume_with_result(
     result: ExtFunctionResult,
     eager_call_id: Option<u32>,
 ) -> Result<FrameExit, RunError> {
-    if let Some(module_id) = vm.suspended_import() {
+    // A probe for an import's file that no handler serves finds no file there.
+    if matches!(result, ExtFunctionResult::NotFound(_))
+        && eager_call_id.is_none()
+        && let Some(probe) = vm.take_import_probe()
+    {
+        return vm.resume_import_miss(probe);
+    }
+    if let Some(module_id) = vm.suspended_import()
+        && !matches!(vm.pending_effect, Some(PendingEffect::Import(_)))
+    {
         return resume_import(vm, module_id, result, eager_call_id);
     }
     // An eager answer and a future both register the call's future; the
@@ -964,7 +973,8 @@ pub(crate) fn resume_with_result(
 }
 
 /// Resumes an import with the host's module value or raises its exception without carets.
-/// `NotFound` raises `ModuleNotFoundError`; futures are rejected because imports cannot await.
+/// `NotFound` (also what a host with no handler answers) searches for a `.py` file
+/// instead; futures are rejected because imports cannot await.
 fn resume_import(
     vm: &mut VM<'_>,
     module_id: StringId,
@@ -978,9 +988,7 @@ fn resume_import(
             raise.hide_caret = true;
             vm.resume_with_exception(RunError::Exc(raise))
         }
-        (ExtFunctionResult::NotFound(_), None) => {
-            vm.resume_with_exception(ExcType::module_not_found_error(vm.interns.get_str(module_id), None))
-        }
+        (ExtFunctionResult::NotFound(_), None) => vm.resume_import_from_files(vm.interns.get_str(module_id)),
         (ExtFunctionResult::Future(_), _) | (_, Some(_)) => {
             let message = format!(
                 "import of '{}' cannot be answered with a future",

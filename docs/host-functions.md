@@ -369,10 +369,11 @@ an awaitable.
 Factory exceptions and invalid return values raise at the requesting import, stub request or call, and the next use
 runs the factory again.
 `from tools import add` reads the attribute of that object and raises `ImportError` for a name it does not have.
-An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
-or `math`, are never looked up here.
-Every `import` statement asks again: the sandbox has no module cache, and a module bound by an earlier feed is a
-plain global.
+An import of a module absent from `external_modules` reads its `.py` file from the working directory
+(see [importing modules](filesystem.md#importing-modules)) and raises `ModuleNotFoundError` without one; the sandbox's
+own modules, `json` or `math`, are never looked up here.
+Every `import` of a host module asks again: the sandbox caches only modules read from files, and a module bound by an
+earlier feed is a plain global.
 Each import sends the entry the mapping holds at that moment, so replacing an entry changes what the next import
 binds, while a module's own `attrs` never change after construction.
 The bound value is a module object: `type(tools)` is `module`, a missing attribute raises
@@ -392,7 +393,8 @@ Submodules must be values, not factories, because they cross with their parent.
 
 The bindings answer two [OS calls](snapshots.md#the-snapshot-kinds) from `external_modules`, before mounts or `os`:
 
-- `import` requests the top-level module name and returns its value; `not_found` raises `ModuleNotFoundError`.
+- `import` requests the top-level module name and returns its value; `not_found` moves on to the module's `.py` file
+    and raises `ModuleNotFoundError` without one.
     Dotted imports read subsequent components as attributes.
 - `import_stubs` requests stubs for imported host modules the session has not asked about, once before type checking.
     Return a dict of dotted paths to `.pyi` sources, including submodules, with `None` for missing stubs.

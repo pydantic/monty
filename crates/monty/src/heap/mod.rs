@@ -2047,20 +2047,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::GenericAlias(alias) => alias.for_each_child_id(on_child),
         HeapData::Union(union) => union.for_each_child_id(on_child),
         HeapData::LruCache(cache) => cache.for_each_child_id(on_child),
-        HeapData::Module(m) => {
-            // Module attrs can contain references to heap values
-            if !m.has_refs() {
-                return;
-            }
-            for (k, v) in m.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
-                }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
-                }
-            }
-        }
+        // Attrs and, for a file module, its namespace dict.
+        HeapData::Module(m) => m.for_each_child_id(on_child),
         HeapData::Coroutine(coro) => {
             // Add namespace values that are heap references
             for value in &coro.namespace {

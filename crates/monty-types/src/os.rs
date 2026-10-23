@@ -18,6 +18,7 @@ use crate::{
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
     object::{CallArgs, MontyObject, MontyTimeZone},
+    results::ExtFunctionResult,
     scan::ScanArgs,
     unstable::{self, PushValue},
     virtual_path::normalize_virtual_path,
@@ -401,6 +402,17 @@ impl OsFunctionCall {
             | Self::ImportStubs(_) => (None, None),
         };
         primary.into_iter().chain(dst)
+    }
+
+    /// The answer when no handler accepted this call: `not_found` for an import,
+    /// so the sandbox goes on to look for the module's `.py` file, else the
+    /// [`on_no_handler`](Self::on_no_handler) exception.
+    #[must_use]
+    pub fn no_handler_result(&self) -> ExtFunctionResult {
+        match self {
+            Self::Import(_) => ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()),
+            _ => ExtFunctionResult::Error(self.on_no_handler()),
+        }
     }
 
     /// Exception to raise when no handler accepted this call: `PermissionError`

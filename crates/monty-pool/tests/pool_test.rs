@@ -510,6 +510,37 @@ os.chdir('sub')
     session.finish().await.unwrap();
 }
 
+/// A module file in a mount imports through it, as `open()` reads it, once
+/// the host has no such module: the working directory defaults to the first mount.
+#[tokio::test]
+async fn a_module_file_in_a_mount_is_imported() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("helpers.py"), "def double(x):\n    return x * 2\n").unwrap();
+    fs::create_dir(dir.path().join("pkg")).unwrap();
+    fs::write(dir.path().join("pkg/__init__.py"), "").unwrap();
+    fs::write(dir.path().join("pkg/sub.py"), "value = 3\n").unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+
+    let code = "import helpers\nfrom pkg.sub import value\n(helpers.double(value), helpers.__file__)";
+    let result = session.feed(code, vec![], mount(), false, &mut no_print).await;
+    let mut event = feed_with_mounts(&mut session, result).await.unwrap();
+    // no host modules: each host import is unhandled, so the module is read from the mount
+    let mut host_imports = Vec::new();
+    while matches!(&event, TurnEvent::OsCall { function_name, .. } if function_name == IMPORT_CALL) {
+        host_imports.push(expect_import(event));
+        let result = session.resume(ResumeValue::NotHandled, &mut no_print).await;
+        event = feed_with_mounts(&mut session, result).await.unwrap();
+    }
+    assert_eq!(host_imports, ["helpers", "pkg"]);
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([MontyObject::int(6), MontyObject::string("/mnt/helpers.py".to_owned())])
+    );
+    session.finish().await.unwrap();
+}
+
 /// A first feed that type checking rejects never reaches the worker's
 /// directory switch, so the next feed still establishes the mount default.
 #[tokio::test]
@@ -3062,7 +3093,21 @@ async fn an_import_is_answered_by_the_host() {
         .await
         .unwrap();
     assert_eq!(expect_import(event), "nope");
-    let err = session.resume(ResumeValue::NotFound, &mut no_print).await.unwrap_err();
+    // a module the host lacks is looked for as a file, read like any other
+    let mut event = session.resume(ResumeValue::NotFound, &mut no_print).await;
+    for path in ["/nope.py", "/nope/__init__.py"] {
+        let Ok(TurnEvent::OsCall {
+            function_name, args, ..
+        }) = event
+        else {
+            panic!("expected a read of {path}, got {event:?}");
+        };
+        assert_eq!(function_name, "Path.read_text");
+        let read: Vec<_> = args.args().map(|arg| arg.to_owned()).collect();
+        assert_eq!(read, vec![MontyObject::path(path.to_owned())]);
+        event = session.resume(ResumeValue::NotHandled, &mut no_print).await;
+    }
+    let err = event.unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };

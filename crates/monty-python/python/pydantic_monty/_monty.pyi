@@ -690,7 +690,9 @@ class Monty:
                 `ExternalModule` or a zero-argument factory returning one, called
                 once per session when first needed. The mapping is read live and
                 each entry validated when first imported, so modules may be
-                added later.
+                added later. Other non-bundled imports read `<cwd>/name.py`, or a
+                package's `<cwd>/name/__init__.py`, through the mounts and `os`
+                handler.
         """
 
 @final

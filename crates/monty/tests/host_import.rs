@@ -169,13 +169,15 @@ fn a_missing_name_is_an_import_error_naming_the_module() {
     "#);
 }
 
-/// `not_found`, and a host with no handler at all, both raise `ModuleNotFoundError`.
+/// `not_found`, and a host with no handler at all, both raise `ModuleNotFoundError`
+/// once the import reads no file for the module either (see `file_import.rs`).
 #[test]
 fn a_not_found_answer_is_a_module_not_found_error() {
     let call = start("import nope").into_os_call().unwrap();
-    let err = call
+    let progress = call
         .resume(ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()), PrintWriter::Stdout)
-        .unwrap_err();
+        .unwrap();
+    let err = read_no_files(progress).unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
       File "test.py", line 1, in <module>
@@ -184,17 +186,26 @@ fn a_not_found_answer_is_a_module_not_found_error() {
     "#);
 
     let call = start("import nope").into_os_call().unwrap();
-    let err = call
-        .resume_with(PrintWriter::Stdout, |call| {
-            ExtFunctionResult::Error(call.on_no_handler())
-        })
-        .unwrap_err();
+    let progress = call
+        .resume_with(PrintWriter::Stdout, |call| call.no_handler_result())
+        .unwrap();
+    let err = read_no_files(progress).unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
       File "test.py", line 1, in <module>
         import nope
     ModuleNotFoundError: No module named 'nope'
     "#);
+}
+
+/// Answers each read of a module's candidate files as missing, with the error that follows.
+fn read_no_files(mut progress: RunProgress) -> Result<RunProgress, MontyException> {
+    while let RunProgress::OsCall(call) = progress {
+        assert!(matches!(call.function_call, OsFunctionCall::ReadText(_)));
+        let missing = MontyException::new(ExcType::FileNotFoundError, None);
+        progress = call.resume(ExtFunctionResult::Error(missing), PrintWriter::Stdout)?;
+    }
+    Ok(progress)
 }
 
 #[test]

@@ -433,9 +433,14 @@ impl VM<'_> {
             // This is where the caller invoked the function that's failing.
             let call_offset = this.current_frame().call_offset;
 
+            // A raising module body must not stay cached; checked before the pop.
+            let is_initializer = this.current_frame().is_initializer;
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
             let should_return = this.pop_frame();
+            if is_initializer {
+                this.forget_failed_module();
+            }
 
             // Add caller frame info to traceback (if we have a call site).
             // Resolve the offset now — against the caller, which is the current
@@ -468,7 +473,11 @@ impl VM<'_> {
             let call_offset = self.current_frame().call_offset;
 
             // Pop this frame (cleans up namespace, etc.)
+            let is_initializer = self.current_frame().is_initializer;
             self.pop_frame();
+            if is_initializer {
+                self.forget_failed_module();
+            }
 
             // Add caller frame info to traceback. Resolve the offset against the
             // caller, which is the current frame after the pop above.

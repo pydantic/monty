@@ -447,10 +447,10 @@ impl GraphExporter {
                     imag: c.imag,
                 })
             }
-            // A host module crosses back with its id and attrs; a bundled one
-            // has no host identity and crosses as its repr.
-            HeapReadOutput::Module(m) => match m.get(vm.heap).id() {
-                Some(id) => {
+            // A host module crosses back with its id and attrs; a bundled or
+            // file one has no host identity and crosses as its repr.
+            HeapReadOutput::Module(m) => {
+                if let Some(id) = m.get(vm.heap).id() {
                     let name = m.get(vm.heap).name_str(vm.interns).to_owned();
                     let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
                     defer_drop!(children, vm);
@@ -459,9 +459,10 @@ impl GraphExporter {
                         id,
                         attrs: self.push_pairs(children, vm),
                     }
+                } else {
+                    MontyNode::Repr(m.get(vm.heap).repr(vm.interns))
                 }
-                None => MontyNode::Repr(format!("<module '{}'>", m.get(vm.heap).name_str(vm.interns))),
-            },
+            }
             HeapReadOutput::Coroutine(coro) => {
                 let func_id = coro.get(vm.heap).func_id;
                 let func = vm.interns.get_function(func_id);

@@ -894,6 +894,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if let Self::Module(module) = self {
+            return module.py_set_attr(name, value, vm);
+        }
         heap_read_output_py_trait_forward!(
             self,
             |item| item.py_set_attr(name, value, vm),

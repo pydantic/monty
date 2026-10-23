@@ -20,6 +20,7 @@ use crate::{
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
+    os_dispatch::PendingEffect,
     parse::{CodeRange, parse_with_interner, source_nesting_exception},
     prepare::prepare_with_existing_names,
     run_progress::{
@@ -746,12 +747,21 @@ impl Program {
                     args.drop_with(vm);
                     frame_exit_result = vm.resume_with_exception(err);
                 }
-                // An import nobody serves is a missing module.
+                // An import nobody serves is a missing module, and its file a missing file.
                 Ok(FrameExit::OsCall {
                     function_call: call @ OsFunctionCall::Import(_),
                     ..
                 }) => {
-                    frame_exit_result = resume_with_result(vm, ExtFunctionResult::Error(call.on_no_handler()), None);
+                    frame_exit_result = resume_with_result(vm, call.no_handler_result(), None);
+                }
+                Ok(FrameExit::OsCall {
+                    function_call,
+                    effect: effect @ Some(PendingEffect::Import(_)),
+                    ..
+                }) => {
+                    vm.pending_effect = effect;
+                    let missing = ExtFunctionResult::NotFound(function_call.name().to_owned());
+                    frame_exit_result = resume_with_result(vm, missing, None);
                 }
                 // Standard execution waits inline, excluding sleep from execution time.
                 Ok(FrameExit::OsCall {

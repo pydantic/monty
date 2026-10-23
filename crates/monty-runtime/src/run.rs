@@ -697,9 +697,9 @@ impl HostOs {
             Some(mounts) => match mounts.handle_os_call(call) {
                 MountCallOutcome::Handled(Ok(obj)) => obj.into(),
                 MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
-                MountCallOutcome::NotHandled(call) => call.on_no_handler().into(),
+                MountCallOutcome::NotHandled(call) => call.no_handler_result(),
             },
-            None => call.on_no_handler().into(),
+            None => call.no_handler_result(),
         }
     }
 }

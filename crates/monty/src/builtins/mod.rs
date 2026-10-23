@@ -10,7 +10,7 @@ mod bin;
 mod chr;
 mod divmod;
 mod enumerate;
-mod eval_exec;
+pub(crate) mod eval_exec;
 mod filter;
 mod format;
 mod getattr;

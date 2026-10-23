@@ -1,12 +1,14 @@
 # Standard library modules
 
 Monty provides a fixed set of stdlib modules.
-Other imports request [host modules](#host-modules) and raise `ModuleNotFoundError` if none is provided.
-There is no `sys.path` or site-packages; sandboxed code cannot load additional modules itself.
+Other imports request [host modules](#host-modules), then read a [`.py` file](#modules-from-files) from the working
+directory, and raise `ModuleNotFoundError` if neither provides one.
+There is no `sys.path` or site-packages.
 
 `os.path` (also importable as `posixpath`) is the only submodule.
 
-Every bundled import builds a fresh module object; there is no `sys.modules` cache.
+Every bundled import builds a fresh module object; there is no `sys.modules` cache, except for
+[modules from files](#modules-from-files).
 Thus `import math as a; import math as b` leaves `a is not b`, and changes such as `sys.argv.append(...)` do not
 survive the next import.
 Assigning a bundled module's attributes raises `AttributeError`, as in `sys.x = 1`.
@@ -87,6 +89,8 @@ typeshed's `abc` declarations.
 ## Host modules
 
 Unknown imports request the top-level name through the `import` OS call; `__import__` is undefined.
+A host module shadows a file of the same name; a `not_found` answer, or no handler, moves on to
+[files](#modules-from-files), while an exception the host raises is the import's error.
 Dotted imports such as `import a.b.c` request `a`, then read `b` and `c` as successive attributes.
 Bundled modules that are not packages never request host submodules: `import os.x` raises
 `ModuleNotFoundError: No module named 'os.x'; 'os' is not a package`.
@@ -108,3 +112,38 @@ The host's answer becomes the imported `module` object, with these differences f
 - Imports with more than 32 dotted components raise `SyntaxError`; `import a.b.c` has three.
 
 With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.
+
+## Modules from files
+
+An `import` of a top-level name the host has no module for reads `<cwd>/name.py`, then `<cwd>/name/__init__.py`, and
+runs the first it finds as the module.
+The reads are `Path.read_text` OS calls, served exactly as `open()` is: by a mount or the host's `os` handler.
+`FileNotFoundError`, `NotADirectoryError`, `IsADirectoryError` and `PermissionError` (including the answer outside
+any mount) move on to the next file; any other error raises at the `import`.
+Differences from CPython:
+
+- The working directory at the time of the `import` is the only search location.
+    There is no `sys.path`, `PYTHONPATH`, `.pth` file or site-packages.
+- The first import of a file module costs the host `import` call before the reads, and an import that neither the
+    host nor a file answers costs the call and two reads; the host's `os` handler sees those reads.
+- A file module is cached for the session by its dotted name, but there is no `sys.modules` or `importlib`, so nothing
+    clears the cache: a file edited after its first import is not read again, even in later feeds or after `os.chdir`,
+    and later imports of the name bind the cached module without asking the host.
+    A module whose body raises is dropped from the cache, so the next import runs it again.
+- Submodules are read from the package's `__path__` directories.
+    Relative imports (`from . import x`) are rejected, so a package that uses them raises
+    `ImportError: attempted relative import with no known parent package` when imported.
+    Directories without an `__init__.py` (namespace packages) are not found.
+- Module globals are `__name__`, `__file__`, `__package__` and, for a package, `__path__`; `__spec__`, `__loader__`,
+    `__cached__`, `__builtins__` and `__doc__` are not defined.
+- Module code looks names up in its globals and the builtins, never on the host: calling a
+    [host function](../host-functions.md) by name raises `NameError` unless the importer binds it on the module first,
+    as in `helpers.fetch = fetch`.
+- A `SyntaxError` in a module file shows the file's frame and line, but `str(exc)` lacks CPython's
+    `(name.py, line N)` suffix.
+- No bytecode is cached: each session compiles every module it imports.
+    The source of an imported module stays allocated for the rest of the session, counted against `max_memory`.
+- The type checker does not read module files, so a type-checked feed that imports a file module fails with
+    `unresolved-import`.
+    [Module stubs](../type-checking.md) come only with host modules, which would shadow the file; feed such code with
+    `skip_type_check=True`.

@@ -2609,6 +2609,9 @@ pub(crate) struct Interns {
     /// Installed internal implementations by identity, ordered for stable dump bytes.
     frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
     eval_sources: Entries<Arc<str>>,
+    /// Sources of imported `.py` files, with the virtual paths tracebacks name.
+    #[serde(default)]
+    file_sources: Entries<FileSource>,
     #[serde(skip)]
     string_id_by_name: RefCell<AHashMap<String, StringId>>,
     #[serde(skip)]
@@ -2634,6 +2637,8 @@ struct InternsWire {
     #[serde(default)]
     frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
     eval_sources: Entries<Arc<str>>,
+    #[serde(default)]
+    file_sources: Entries<FileSource>,
 }
 
 impl TryFrom<InternsWire> for Interns {
@@ -2662,6 +2667,7 @@ impl TryFrom<InternsWire> for Interns {
             functions: wire.functions,
             frozen_functions: wire.frozen_functions,
             eval_sources: wire.eval_sources,
+            file_sources: wire.file_sources,
             string_id_by_name: RefCell::new(string_id_by_name),
             static_string_ids: RefCell::new(static_string_ids),
             compiling: Cell::new(false),
@@ -2672,6 +2678,16 @@ impl TryFrom<InternsWire> for Interns {
 /// Filename-only IDs are separate from canonical Python strings.
 /// Each snippet has distinct source identity but the same displayed filename.
 const SOURCE_ID_BASE: usize = 1 << 31;
+
+/// Imported files take the IDs above the snippet range, so each displays its own path.
+const FILE_SOURCE_ID_BASE: usize = 3 << 30;
+
+/// An imported module file: its virtual path and text, for tracebacks.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FileSource {
+    path: Arc<str>,
+    source: Arc<str>,
+}
 
 impl Interns {
     /// Moves session ownership without initializing another interner.
@@ -2688,6 +2704,7 @@ impl Interns {
             functions: Entries::default(),
             frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
+            file_sources: Entries::default(),
             string_id_by_name: RefCell::default(),
             static_string_ids: RefCell::default(),
             compiling: Cell::new(false),
@@ -2704,6 +2721,7 @@ impl Interns {
             functions: Entries::default(),
             frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
+            file_sources: Entries::default(),
             string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
             compiling: Cell::new(false),
@@ -2729,9 +2747,11 @@ impl Interns {
         get_str(&self.strings, id)
     }
 
-    /// Resolves a traceback filename, displaying each snippet's source identity as `<string>`.
+    /// Resolves a traceback filename: a snippet displays as `<string>`, an imported file as its path.
     pub(crate) fn get_filename(&self, id: StringId) -> &str {
-        if id.index() >= SOURCE_ID_BASE {
+        if id.index() >= FILE_SOURCE_ID_BASE {
+            &self.file_sources[id.index() - FILE_SOURCE_ID_BASE].path
+        } else if id.index() >= SOURCE_ID_BASE {
             assert!(
                 id.index() - SOURCE_ID_BASE < self.eval_sources.len(),
                 "invalid snippet source ID"
@@ -2765,13 +2785,23 @@ impl Interns {
         &self.functions[id.index()]
     }
 
-    /// Looks up source by its filename-only ID, never by the displayed text.
+    /// Looks up snippet source by its filename-only ID, never by the displayed text.
     pub(crate) fn eval_source(&self, filename: StringId) -> Option<&str> {
-        filename
-            .index()
-            .checked_sub(SOURCE_ID_BASE)
+        let index = filename.index();
+        (index < FILE_SOURCE_ID_BASE)
+            .then(|| index.checked_sub(SOURCE_ID_BASE))
+            .flatten()
             .and_then(|index| self.eval_sources.get(index))
             .map(AsRef::as_ref)
+    }
+
+    /// Looks up an imported file's source by its filename-only ID.
+    pub(crate) fn file_source(&self, filename: StringId) -> Option<&str> {
+        filename
+            .index()
+            .checked_sub(FILE_SOURCE_ID_BASE)
+            .and_then(|index| self.file_sources.get(index))
+            .map(|file| &*file.source)
     }
 
     /// Returns the same hash as an equal heap string.

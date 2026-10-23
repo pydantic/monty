@@ -125,7 +125,10 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 Imports of unknown modules suspend with `OsFunctionCall::Import` and the top-level module name.
 The host's answer becomes the module; dotted imports read subsequent components as attributes of that value.
 Hosts usually return a host-backed class instance containing the module's attributes.
-`ExtFunctionResult::NotFound`, or running without a host, raises `ModuleNotFoundError`.
+`ExtFunctionResult::NotFound` (what `OsFunctionCall::no_handler_result` answers) instead reads `<cwd>/name.py`,
+then `<cwd>/name/__init__.py`, through `OsFunctionCall::ReadText` suspensions, and runs the first file found as the
+module, cached for the session; with neither, or running without a host, the import raises `ModuleNotFoundError`.
+An exception the host raises for the import is raised as it is.
 The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
 
 ## Other pieces
