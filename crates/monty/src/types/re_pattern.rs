@@ -9,11 +9,21 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
+use std::{
+    borrow::Cow,
+    cell::OnceCell,
+    cmp::Ordering,
+    fmt::Write,
+    iter,
+    mem::{self, ManuallyDrop},
+    str,
+};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
+use monty_macros::pyattrs;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -512,42 +522,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let result = match attr.static_string(vm.interns) {
-            Some(StaticStrings::Search) => {
-                let arg = args.get_one_arg("Pattern.search", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).search(arg, text, vm.heap)
-            }
-            Some(StaticStrings::Match) => {
-                let arg = args.get_one_arg("Pattern.match", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).match_start(arg, text, vm.heap)
-            }
-            Some(StaticStrings::Fullmatch) => {
-                let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).fullmatch(arg, text, vm.heap)
-            }
-            Some(StaticStrings::Findall) => {
-                let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).findall(text, vm.heap)
-            }
-            Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
-            Some(StaticStrings::Split) => call_pattern_split(self, args, vm),
-            Some(StaticStrings::Finditer) => {
-                let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
-                defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).finditer(arg, text, vm.heap)
-            }
-            _ => return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm)),
-        }?;
-        Ok(CallResult::Value(result))
+        let Some(AttrDef::Method(call)) = Type::RePattern.get_attr(attr, vm.interns) else {
+            return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
+        };
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 }
 
@@ -555,61 +534,6 @@ impl HeapItem for RePattern {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // No heap references — all data is owned.
     }
-}
-
-/// Handles `pattern.sub(repl, string, count=0)` argument extraction and dispatch.
-///
-/// Separated from the main `py_call_attr` match to keep the borrow checker happy —
-/// extracting multiple string arguments requires careful ordering of borrows.
-/// Supports `count` as either positional or keyword argument.
-fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let PatternSubArgs {
-        repl: repl_val,
-        string: string_val,
-        count: count_val,
-    } = PatternSubArgs::from_args(args, vm)?;
-    defer_drop!(repl_val, vm);
-    defer_drop!(string_val, vm);
-
-    let count = extract_count(count_val, vm)?;
-
-    // Check that repl is a string — callable replacement is not supported.
-    // CPython processes the replacement template *before* its match loop, so
-    // this check must precede the negative-count early return below: a bad
-    // repl raises even when zero substitutions will run.
-    let Ok(repl) = repl_val.to_str(vm) else {
-        return Err(ExcType::type_error(
-            "callable replacement is not yet supported in re.sub()",
-        ));
-    };
-    let Some(count) = count else {
-        // Validate octal escapes even when the negative count skips matching.
-        translate_replacement(repl)?;
-        // Negative count — Pattern.sub returns the input string unchanged.
-        // The subject is still type-checked (`to_str` raises this method's
-        // `expected string, not {t}` wording) before the refcount bump; no
-        // need to re-allocate.
-        let _ = string_val.to_str(vm)?;
-        return Ok(string_val.clone_with_heap(vm.heap));
-    };
-
-    let text = string_val.to_str(vm)?;
-    pattern.get(vm.heap).sub(repl, text, count, vm.heap)
-}
-
-/// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
-///
-/// Supports `maxsplit` as either positional or keyword argument.
-fn call_pattern_split<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let PatternSplitArgs {
-        string: string_val,
-        maxsplit: maxsplit_val,
-    } = PatternSplitArgs::from_args(args, vm)?;
-    defer_drop!(string_val, vm);
-
-    let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
-    let text = string_val.to_str(vm)?.to_owned();
-    pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
 }
 
 /// Argument shape for `Pattern.sub(repl, string, count=0)`.
@@ -900,5 +824,107 @@ impl<'de> Deserialize<'de> for RePattern {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let (pattern, flags): (String, u16) = Deserialize::deserialize(deserializer)?;
         Self::compile(pattern, flags).map_err(|e| de::Error::custom(format!("{e:?}")))
+    }
+}
+
+pub(crate) struct PyRePatternImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
+    type Receiver = HeapRead<'heap, RePattern>;
+
+    #[pymethod]
+    fn search<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let arg = args.get_one_arg("Pattern.search", vm.heap)?;
+        defer_drop!(arg, vm);
+        let text = arg.to_str(vm)?;
+        value.get(vm.heap).search(arg, text, vm.heap)
+    }
+
+    #[pymethod]
+    fn r#match<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let arg = args.get_one_arg("Pattern.match", vm.heap)?;
+        defer_drop!(arg, vm);
+        let text = arg.to_str(vm)?;
+        value.get(vm.heap).match_start(arg, text, vm.heap)
+    }
+
+    #[pymethod]
+    fn fullmatch<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
+        defer_drop!(arg, vm);
+        let text = arg.to_str(vm)?;
+        value.get(vm.heap).fullmatch(arg, text, vm.heap)
+    }
+
+    #[pymethod]
+    fn findall<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
+        defer_drop!(arg, vm);
+        let text = arg.to_str(vm)?;
+        value.get(vm.heap).findall(text, vm.heap)
+    }
+
+    /// Handles `pattern.sub(repl, string, count=0)` argument extraction and dispatch.
+    ///
+    /// Supports `count` as either positional or keyword argument.
+    #[pymethod]
+    fn sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let PatternSubArgs {
+            repl: repl_val,
+            string: string_val,
+            count: count_val,
+        } = PatternSubArgs::from_args(args, vm)?;
+        defer_drop!(repl_val, vm);
+        defer_drop!(string_val, vm);
+
+        let count = extract_count(count_val, vm)?;
+
+        // Check that repl is a string — callable replacement is not supported.
+        // CPython processes the replacement template *before* its match loop, so
+        // this check must precede the negative-count early return below: a bad
+        // repl raises even when zero substitutions will run.
+        let Ok(repl) = repl_val.to_str(vm) else {
+            return Err(ExcType::type_error(
+                "callable replacement is not yet supported in re.sub()",
+            ));
+        };
+        let Some(count) = count else {
+            // Validate octal escapes even when the negative count skips matching.
+            translate_replacement(repl)?;
+            // Negative count — Pattern.sub returns the input string unchanged.
+            // The subject is still type-checked (`to_str` raises this method's
+            // `expected string, not {t}` wording) before the refcount bump; no
+            // need to re-allocate.
+            let _ = string_val.to_str(vm)?;
+            return Ok(string_val.clone_with_heap(vm.heap));
+        };
+
+        let text = string_val.to_str(vm)?;
+        pattern.get(vm.heap).sub(repl, text, count, vm.heap)
+    }
+
+    /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
+    ///
+    /// Supports `maxsplit` as either positional or keyword argument.
+    #[pymethod]
+    fn split<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let PatternSplitArgs {
+            string: string_val,
+            maxsplit: maxsplit_val,
+        } = PatternSplitArgs::from_args(args, vm)?;
+        defer_drop!(string_val, vm);
+
+        let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
+        let text = string_val.to_str(vm)?.to_owned();
+        pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
+    }
+
+    #[pymethod]
+    fn finditer<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
+        defer_drop!(arg, vm);
+        let text = arg.to_str(vm)?;
+        value.get(vm.heap).finditer(arg, text, vm.heap)
     }
 }

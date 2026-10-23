@@ -9,11 +9,14 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
+    mem::ManuallyDrop,
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
+use monty_macros::pyattrs;
 use smallvec::smallvec;
 
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
@@ -541,13 +544,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::TotalSeconds) {
-            // Copy the TimeDelta to release the HeapRead borrow before checking args
-            let td = *self.get(vm.heap);
-            args.check_zero_args("timedelta.total_seconds", vm.heap)?;
-            return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
-        }
-        Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm))
+        let Some(AttrDef::Method(call)) = Type::TimeDelta.get_attr(attr, vm.interns) else {
+            return Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm));
+        };
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -558,5 +559,38 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
             Some(StaticStrings::Microseconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),
             _ => Ok(None),
         }
+    }
+}
+
+pub(crate) struct PyTimeDeltaImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyTimeDeltaImpl {
+    type Receiver = HeapObjectRead<'heap, TimeDelta>;
+
+    #[pymethod]
+    fn total_seconds<'h>(
+        value: &mut HeapObjectRead<'h, TimeDelta>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        let td = *value.get(vm.heap);
+        args.check_zero_args("timedelta.total_seconds", vm.heap)?;
+        Ok(Value::Float(total_seconds(&td)))
+    }
+
+    #[pyvalue]
+    fn min(vm: &mut VM<'_>) -> Value {
+        allocate_micros(i128::from(MIN_TIMEDELTA_DAYS) * DAY_MICROSECONDS, vm.heap)
+    }
+
+    #[pyvalue]
+    fn max(vm: &mut VM<'_>) -> Value {
+        allocate_micros((i128::from(MAX_TIMEDELTA_DAYS) + 1) * DAY_MICROSECONDS - 1, vm.heap)
+    }
+
+    #[pyvalue]
+    fn resolution(vm: &mut VM<'_>) -> Value {
+        allocate_micros(1, vm.heap)
     }
 }

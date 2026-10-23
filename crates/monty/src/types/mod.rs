@@ -1,3 +1,5 @@
+pub(crate) mod builtin_attr;
+
 /// Type definitions for Python runtime values.
 ///
 /// This module contains structured types that wrap heap-allocated data

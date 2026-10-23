@@ -7,10 +7,12 @@
 //! which a real operand only touches the part it combines with (`1j * inf` is `nan+infj`
 //! but `(1+1j) * inf` is `inf+infj`).
 
-use std::fmt::Write;
+use std::{fmt::Write, mem::ManuallyDrop};
 
+use monty_macros::pyattrs;
 use monty_types::FormatComplex;
 
+use super::builtin_attr::{AttrDef, PyAttrs};
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
@@ -731,12 +733,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Conjugate) {
-            let c = *self.get(vm.heap);
-            args.check_zero_args("complex.conjugate", vm.heap)?;
-            return Ok(CallResult::Value(c.conjugate().into_value(vm.heap)));
-        }
-        Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm))
+        let Some(AttrDef::Method(call)) = Type::Complex.get_attr(attr, vm.interns) else {
+            return Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm));
+        };
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm).map(CallResult::Value)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -756,5 +757,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
             Some(StaticStrings::Real | StaticStrings::Imag) => ExcType::attribute_error_readonly(),
             _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.interns)),
         })
+    }
+}
+
+pub(crate) struct PyComplexImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyComplexImpl {
+    type Receiver = HeapObjectRead<'heap, Complex>;
+
+    #[pymethod]
+    fn conjugate<'h>(value: &mut HeapObjectRead<'h, Complex>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let c = *value.get(vm.heap);
+        args.check_zero_args("complex.conjugate", vm.heap)?;
+        Ok(c.conjugate().into_value(vm.heap))
+    }
+
+    #[pyclassmethod]
+    fn from_number(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_from_number(vm, args).map(CallResult::Value)
     }
 }
