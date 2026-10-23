@@ -201,11 +201,13 @@ fn compile_and_push(
 
 /// The snippet's text: a `str`, or `bytes` decoded as UTF-8.
 fn snippet_source(name: &str, source: &Value, vm: &mut VM<'_>) -> RunResult<Arc<str>> {
+    if let Some(text) = source.as_str(vm) {
+        return Ok(Arc::from(text));
+    }
+
     let bytes: &[u8] = match source {
-        Value::InternString(id) => return Ok(Arc::from(vm.interns.get_str(*id))),
         Value::InternBytes(id) => vm.interns.get_bytes(*id),
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => return Ok(Arc::from(s.as_str())),
             HeapData::Bytes(b) => b.as_slice(),
             _ => return Err(source_type_error(name)),
         },

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, fmt::Write};
+use std::{borrow::Cow, cmp::Ordering, fmt::Write, str};
 
 use ahash::AHashSet;
 
@@ -730,6 +730,10 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
 pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> Value {
     match name {
         EitherStr::Interned(string_id) => Value::InternString(*string_id),
+        EitherStr::Inline { len, bytes } => {
+            let text = str::from_utf8(&bytes[..len.get()]).expect("inline name is valid UTF-8");
+            allocate_string(text.to_owned(), vm.heap)
+        }
         EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap),
     }
 }

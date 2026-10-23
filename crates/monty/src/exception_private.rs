@@ -266,7 +266,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
                 defer_drop!(key_value, vm);
-                if let Ok(s) = key_value.to_str(vm) {
+                if let Some(s) = key_value.as_str(vm) {
                     s.to_owned()
                 } else {
                     format!("<{}>", key.py_type_name(vm))
@@ -1045,7 +1045,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
                 repr_value
-                    .to_str(vm)
+                    .try_to_str(vm)
                     .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
             }
             Err(err) => return err,

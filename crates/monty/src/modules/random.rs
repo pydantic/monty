@@ -376,7 +376,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         other => {
             let text = other.py_str(vm)?;
             defer_drop!(text, vm);
-            let text = text.to_str_heap(vm.heap, vm.interns)?;
+            let text = text.try_to_str_heap(vm.heap, vm.interns)?;
             return Err(ExcType::value_error(format!(
                 "state with version {text} passed to Random.setstate() of version 3"
             )));
@@ -971,7 +971,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             defer_drop!(k, vm);
             return Err(ExcType::type_error(format!(
                 "The number of choices must be a keyword argument: k={}",
-                k.to_str_heap(vm.heap, vm.interns)?
+                k.try_to_str_heap(vm.heap, vm.interns)?
             )));
         } else {
             Some(cumulative_weights(weights, vm)?)

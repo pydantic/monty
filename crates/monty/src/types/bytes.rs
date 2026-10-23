@@ -86,6 +86,7 @@ use crate::{
     identity::Identity,
     intern::{BytesId, StaticStrings},
     percent_format::{copy_bytes_template, percent_format_bytes},
+    py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
@@ -186,7 +187,7 @@ impl Bytes {
             let Some(v) = source_str else {
                 return Err(ExcType::type_error_encoding_without_string());
             };
-            let s = v.to_str(vm)?;
+            let s = v.try_to_str(vm)?;
             let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
             let encoding = encoding.as_str(vm);
             let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
@@ -929,38 +930,28 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
     // Extract the method name (e.g., "startswith" from "bytes.startswith")
     let method_name = method.strip_prefix("bytes.").unwrap_or(method);
 
-    match value {
-        Value::InternBytes(id) => Ok(PrefixSuffixArg::Single(vm.interns.get_bytes(*id).to_vec())),
-        Value::InternString(_) => Err(ExcType::type_error(format!(
+    match value.py_value(vm) {
+        PyValue::Bytes(bytes) => Ok(PrefixSuffixArg::Single(bytes.as_slice(vm).to_vec())),
+        PyValue::Str(_) => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not str"
         ))),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => Ok(PrefixSuffixArg::Single(b.as_slice().to_vec())),
-            HeapData::Str(_) => Err(ExcType::type_error(format!(
-                "{method_name} first arg must be bytes or a tuple of bytes, not str"
-            ))),
-            HeapData::Tuple(tuple) => {
-                // Extract each element as bytes
-                let items = tuple.as_slice();
-                let mut prefixes = Vec::with_capacity(items.len());
-                for (i, item) in items.iter().enumerate() {
-                    if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
-                        prefixes.push(b);
-                    } else {
-                        let item_type = item.py_type_name(vm);
-                        return Err(ExcType::type_error(format!(
-                            "{method_name} first arg must be bytes or a tuple of bytes, \
-                             not tuple containing {item_type} at index {i}"
-                        )));
-                    }
+        PyValue::Tuple(tuple) => {
+            // Extract each element as bytes
+            let items = tuple.get(vm.heap).as_slice();
+            let mut prefixes = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
+                    prefixes.push(b);
+                } else {
+                    let item_type = item.py_type_name(vm);
+                    return Err(ExcType::type_error(format!(
+                        "{method_name} first arg must be bytes or a tuple of bytes, \
+                         not tuple containing {item_type} at index {i}"
+                    )));
                 }
-                Ok(PrefixSuffixArg::Multiple(prefixes))
             }
-            _ => Err(ExcType::type_error(format!(
-                "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-                value.py_type_name(vm)
-            ))),
-        },
+            Ok(PrefixSuffixArg::Multiple(prefixes))
+        }
         _ => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not {}",
             value.py_type_name(vm)
@@ -970,13 +961,9 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
 
 /// Extracts a single bytes value for tuple element in startswith/endswith.
 fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
-    match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id).to_vec()),
-        Value::InternString(_) => Err(ExcType::type_error("expected bytes, not str")),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
-            _ => Err(ExcType::type_error("expected bytes")),
-        },
+    match value.py_value(vm) {
+        PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm).to_vec()),
+        PyValue::Str(_) => Err(ExcType::type_error("expected bytes, not str")),
         _ => Err(ExcType::type_error("expected bytes")),
     }
 }
@@ -988,7 +975,9 @@ fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResu
 fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::InternString(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
+        Value::InternString(_) | Value::InlineString { .. } => {
+            Err(ExcType::type_error("a bytes-like object is required, not 'str'"))
+        }
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice()),
             HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
@@ -2257,20 +2246,24 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
         return Ok((None, 1));
     };
 
-    let sep_bytes = match sep_value {
-        Value::InternString(id) => vm.interns.get_str(*id).as_bytes(),
-        Value::InternBytes(id) => vm.interns.get_bytes(*id),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => s.as_bytes(),
-            HeapData::Bytes(b) => b.as_slice(),
-            _ => return Err(ExcType::type_error("sep must be str or bytes")),
+    let sep_char = match sep_value.py_value(vm) {
+        PyValue::Str(sep) => match sep.as_str(vm).as_bytes() {
+            [b] if b.is_ascii() => *b as char,
+            _ => {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into(),
+                );
+            }
+        },
+        PyValue::Bytes(sep) => match sep.as_slice(vm) {
+            [b] if b.is_ascii() => *b as char,
+            _ => {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into(),
+                );
+            }
         },
         _ => return Err(ExcType::type_error("sep must be str or bytes")),
-    };
-
-    let sep_char = match sep_bytes {
-        [b] if b.is_ascii() => *b as char,
-        _ => return Err(SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into()),
     };
 
     let bytes_per_sep = match bytes_per_sep {
@@ -2319,14 +2312,11 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let hex_value = args.get_one_arg("bytes.fromhex", vm.heap)?;
     defer_drop!(hex_value, vm);
 
-    let hex_str = match hex_value {
-        Value::InternString(id) => vm.interns.get_str(*id),
-        Value::Ref(heap_id) => {
-            if let HeapData::Str(s) = vm.heap.get(*heap_id) {
-                s.as_str()
-            } else {
-                return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
-            }
+    let hex_value_py = hex_value.py_value(vm);
+    let hex_str = match &hex_value_py {
+        PyValue::Str(value) => value.as_str(vm),
+        PyValue::Bytes(_) => {
+            return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
         }
         _ => {
             let t = hex_value.py_type_name(vm);

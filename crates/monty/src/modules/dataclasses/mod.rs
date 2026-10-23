@@ -500,7 +500,7 @@ fn annotations_dict<'a, 'h>(class: &HeapRead<'h, Class>, vm: &'a VM<'h>) -> Opti
 fn annotation_text(annotation: &Value, vm: &VM<'_>) -> String {
     annotation
         .as_either_str(vm.heap)
-        .map(|s| s.as_str(vm.interns).to_owned())
+        .map(|s| s.into_string(vm.interns))
         .unwrap_or_default()
 }
 

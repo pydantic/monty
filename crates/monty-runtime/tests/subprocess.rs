@@ -925,7 +925,7 @@ fn small_memory_limit_leaves_normal_work_alone() {
 fn exceeding_the_soft_memory_limit_preserves_the_worker() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
-    let (_, event) = child.feed("[str(i) for i in range(131_072)]");
+    let (_, event) = child.feed("[str(i) + 'abcdefgh' for i in range(131_072)]");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
@@ -1190,7 +1190,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_055_460,
+            1_103_055,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (

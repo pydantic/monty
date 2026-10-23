@@ -189,13 +189,13 @@ pub(crate) fn allocate_ymd(year: i32, month: i32, day: i32, heap: &Heap) -> Valu
 
 /// Extracts a string from a `Value` for use by classmethods.
 pub(crate) fn extract_str_arg(value: &Value, method_name: &str, heap: &Heap, interns: &Interns) -> RunResult<String> {
-    match value {
-        Value::InternString(string_id) => Ok(interns.get_str(*string_id).to_owned()),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
-            HeapData::Str(s) => Ok(s.as_str().to_owned()),
-            _ => Err(ExcType::type_error(format!("{method_name}: argument must be str"))),
-        },
-        _ => Err(ExcType::type_error(format!("{method_name}: argument must be str"))),
+    if value.is_str(heap) {
+        Ok(value
+            .try_to_str_heap(heap, interns)
+            .expect("is_str checked above")
+            .to_owned())
+    } else {
+        Err(ExcType::type_error(format!("{method_name}: argument must be str")))
     }
 }
 

@@ -209,7 +209,8 @@ fn construct(algorithm: HashAlgorithm, args: ConstructorArgs, vm: &mut VM<'_>) -
     defer_drop!(args, vm);
     let mut hash = HashObject::new(algorithm);
     if let Some(input) = initial_data(args.data.as_ref(), args.string.as_ref())? {
-        hash.update(hash_input(input, vm)?, &vm.heap.tracker)?;
+        let input = input.py_value(vm);
+        hash.update(hash_input(&input, vm)?, &vm.heap.tracker)?;
     }
     Ok(hash.allocate(vm.heap))
 }
@@ -260,7 +261,7 @@ struct OpensslNewArgs {
 /// OpenSSL alias such as `'blake2b512'` takes the plain path, as in CPython.
 fn call_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let HashNewArgs { name, args, kwargs } = HashNewArgs::from_args(args, vm)?;
-    let blake2 = name.to_str(vm).ok().and_then(Blake2Kind::from_name);
+    let blake2 = name.as_str(vm).and_then(Blake2Kind::from_name);
     if let Some(kind) = blake2 {
         name.drop_with(vm);
         return blake2_init(kind, vm, ArgValues::from_parts(args, kwargs));
@@ -280,13 +281,12 @@ fn call_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(usedforsecurity, vm);
     defer_drop!(string, vm);
     // The data is checked before the name is resolved, as `_hashlib.new` does.
-    let input = initial_data(data.as_ref(), string.as_ref())?
-        .map(|input| hash_input(input, vm))
-        .transpose()?;
+    let input = initial_data(data.as_ref(), string.as_ref())?.map(|input| input.py_value(vm));
+    let input_bytes = input.as_ref().map(|input| hash_input(input, vm)).transpose()?;
     let name = name.as_str(vm);
     let algorithm = HashAlgorithm::from_name(name).ok_or_else(|| unsupported_hash_type(name))?;
     let mut hash = HashObject::new(algorithm);
-    if let Some(input) = input {
+    if let Some(input) = input_bytes {
         hash.update(input, &vm.heap.tracker)?;
     }
     Ok(hash.allocate(vm.heap))
@@ -541,7 +541,8 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
             "maximum key length is {max_digest} bytes"
         )));
     }
-    let input = input.map(|input| hash_input(input, vm)).transpose()?;
+    let py_input = input.map(|input| input.py_value(vm));
+    let input = py_input.as_ref().map(|input| hash_input(input, vm)).transpose()?;
 
     let params = Blake2Params {
         digest_size,

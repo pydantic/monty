@@ -41,7 +41,7 @@ impl VM<'_> {
 
         let mut total_len = 0_usize;
         for part in parts.as_slice() {
-            let s = part.to_str_heap(this.heap, this.interns)?;
+            let s = part.try_to_str_heap(this.heap, this.interns)?;
             total_len = total_len.saturating_add(s.len());
         }
 
@@ -49,7 +49,7 @@ impl VM<'_> {
         let mut result = String::with_capacity(total_len);
 
         for part in parts.as_slice() {
-            let s = part.to_str_heap(this.heap, this.interns)?;
+            let s = part.try_to_str_heap(this.heap, this.interns)?;
             result.push_str(s);
         }
 
@@ -153,7 +153,7 @@ impl VM<'_> {
     /// Applies the f-string and `str.format()` conversion flags to a value.
     pub(crate) fn convert_value(&mut self, value: &Value, conversion: u8) -> Result<String, RunError> {
         match conversion {
-            0 | 1 if value.py_type(self) == Type::Str => Ok(value.to_str(self)?.to_owned()),
+            0 | 1 if value.py_type(self) == Type::Str => Ok(value.try_to_str(self)?.to_owned()),
             2 => str_value_into_string(value.py_repr(self)?, self),
             3 => {
                 let value = str_value_into_string(value.py_repr(self)?, self)?;
@@ -258,5 +258,5 @@ impl VM<'_> {
 /// the mini-language formatter.
 fn str_value_into_string(value: Value, vm: &mut VM<'_>) -> Result<String, RunError> {
     defer_drop!(value, vm);
-    Ok(value.to_str(vm)?.to_owned())
+    Ok(value.try_to_str(vm)?.to_owned())
 }

@@ -248,30 +248,15 @@ impl VM<'_> {
             let copied_items = copied_items.into_iter();
             defer_drop_mut!(copied_items, this);
             for (key, value) in copied_items {
-                // Validate key is a string (InternString or heap-allocated Str)
-                let is_string = match &key {
-                    Value::InternString(_) => true,
-                    Value::Ref(id) => matches!(this.heap.get(*id), HeapData::Str(_)),
-                    _ => false,
-                };
-                if !is_string {
-                    key.drop_with(this);
-                    value.drop_with(this);
-                    return Err(ExcType::type_error_kwargs_nonstring_key());
-                }
-
-                // Get the string key for error messages (needed before moving key into closure)
-                let key_str = match &key {
-                    Value::InternString(id) => this.interns.get_str(*id).to_string(),
-                    Value::Ref(id) => {
-                        if let HeapData::Str(s) = this.heap.get(*id) {
-                            s.as_str().to_string()
-                        } else {
-                            "<unknown>".to_string()
-                        }
-                    }
-                    _ => "<unknown>".to_string(),
-                };
+                let mut pair_guard = DropGuard::new((key, value), this);
+                let (pair, this) = pair_guard.as_parts();
+                // Borrow string keys uniformly across their storage forms.
+                let key_str = pair
+                    .0
+                    .try_to_str(this)
+                    .map_err(|_| ExcType::type_error_kwargs_nonstring_key())?
+                    .to_owned();
+                let ((key, value), this) = pair_guard.into_parts();
 
                 let HeapReadOutput::Dict(dict) = this.heap.read(dict_id) else {
                     unreachable!("DictMerge: entry is not a Dict")

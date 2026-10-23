@@ -258,7 +258,7 @@ pub(crate) fn format_row(
                 append_field_data(
                     dialect,
                     terminator_chars,
-                    text.to_str(vm)?,
+                    text.try_to_str(vm)?,
                     &mut quoted,
                     &mut field_buffer,
                     &vm.heap.tracker,

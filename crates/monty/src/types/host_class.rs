@@ -193,12 +193,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             defer_drop!(key, vm);
             // Keys are strings in practice; render a non-string key (possible
             // in host-built attrs) via repr rather than fail.
-            let key_str = if let Ok(s) = key.to_str(vm) {
+            let key_str = if let Some(s) = key.as_str(vm) {
                 s.to_owned()
             } else {
                 let repr = key.py_repr(vm)?;
                 defer_drop!(repr, vm);
-                repr.to_str(vm)?.to_owned()
+                repr.try_to_str(vm)?.to_owned()
             };
             // The value is cloned only after the fallible key formatting, so a
             // formatting error cannot strand an unguarded clone; re-reading at

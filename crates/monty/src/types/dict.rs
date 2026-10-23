@@ -398,6 +398,7 @@ impl Dict {
 fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match key {
         Value::InternString(id) => Some(interns.get_str(*id)),
+        Value::InlineString { .. } => key.inline_str(),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Str(string) => Some(string.as_str()),
             _ => None,
@@ -413,6 +414,7 @@ fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Intern
 fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Interns) -> bool {
     match key {
         Value::InternString(id) => interns.get_str(*id) == expected,
+        Value::InlineString { .. } => key.inline_str() == Some(expected),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Str(string) => string.as_str() == expected,
             _ => false,
@@ -776,6 +778,7 @@ pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Op
             Value::Float(f) => eq_f64(*f, key, vm),
             Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
             Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
+            Value::InlineString { .. } => eq_str(candidate.inline_str().unwrap(), key, vm),
             Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Str(s) => eq_str(s.as_str(), key, vm),

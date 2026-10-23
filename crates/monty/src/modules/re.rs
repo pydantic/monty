@@ -282,7 +282,7 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // CPython parses the replacement template before its match loop, so a bad
     // replacement raises even when a negative count skips matching.
-    let Ok(repl) = repl.to_str(vm) else {
+    let Some(repl) = repl.as_str(vm) else {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
@@ -456,8 +456,8 @@ struct ReFinditerArgs {
 /// pattern, and flags errors always win. Monty has no bytes matching: a bytes subject
 /// gets CPython's mixed-types message, anything else the `sre` wording.
 fn subject_str<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
-    if value.is_str(vm.heap) {
-        value.to_str(vm)
+    if let Some(text) = value.as_str(vm) {
+        Ok(text)
     } else if value.py_type_heap(vm.heap) == Type::Bytes {
         // Monty patterns are always str, so a bytes subject is always
         // CPython's string-pattern/bytes-subject mismatch.
@@ -744,7 +744,7 @@ fn call_finditer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_escape(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReEscapeArgs { pattern } = ReEscapeArgs::from_args(args, vm)?;
     defer_drop!(pattern, vm);
-    let Ok(text) = pattern.to_str(vm) else {
+    let Some(text) = pattern.as_str(vm) else {
         // CPython's escape() falls back to `str(pattern, 'latin1')` for
         // non-str input, so this is the (incidental) message it raises.
         let t = pattern.py_type_name(vm);

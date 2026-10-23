@@ -137,10 +137,10 @@ impl<'h> HeapRead<'h, Module> {
 
         let attr_str = match attr {
             EitherStr::Interned(id) => vm.interns.get_str(*id),
-            EitherStr::Heap(s) => {
+            EitherStr::Inline { .. } | EitherStr::Heap(_) => {
                 return Err(ExcType::attribute_error_module(
                     self.get(vm.heap).name_str(vm.interns),
-                    s,
+                    attr.as_str(vm.interns),
                 ));
             }
         };

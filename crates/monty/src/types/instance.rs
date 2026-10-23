@@ -410,7 +410,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         let self_id = self.id();
         if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
             defer_drop!(s, vm);
-            Ok(f.write_str(s.to_str(vm)?)?)
+            Ok(f.write_str(s.try_to_str(vm)?)?)
         } else {
             let class_id = instance_class(self_id, vm);
             match dataclasses::dataclass_fields(class_id, vm) {
@@ -994,10 +994,7 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
 /// programmer-error tripwire.
 pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
     match heap.get(class_id) {
-        HeapData::Class(class) => match class.name() {
-            EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
-            EitherStr::Heap(s) => Cow::Owned(s.clone()),
-        },
+        HeapData::Class(class) => class.name().to_cow(interns),
         _ => unreachable!("class_name called with a non-class heap id"),
     }
 }

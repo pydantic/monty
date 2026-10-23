@@ -139,7 +139,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("lookup", vm.heap)?;
     defer_drop!(value, vm);
-    let name = value.to_str(vm)?;
+    let name = value.try_to_str(vm)?;
     match unicode_names2::character(name) {
         Some(c) => Ok(allocate_string(c.to_string(), vm.heap)),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),
@@ -293,13 +293,12 @@ fn single_char(value: &Value, fn_name: &str, arg_num: Option<u32>, vm: &VM<'_>) 
         Some(n) => format!("argument {n}"),
         None => "argument".to_string(),
     };
-    if !value.is_str(vm.heap) {
-        return Err(ExcType::type_error(format!(
+    let s = value.as_str(vm).ok_or_else(|| {
+        ExcType::type_error(format!(
             "{fn_name}() {arg_word} must be a unicode character, not {}",
             value.py_type_name(vm)
-        )));
-    }
-    let s = value.to_str(vm)?;
+        ))
+    })?;
     let mut chars = s.chars();
     match (chars.next(), chars.next()) {
         (Some(c), None) => Ok(c),

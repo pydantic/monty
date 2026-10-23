@@ -142,6 +142,10 @@ struct JsonLoadArgs {
 fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let (bytes, is_str): (Cow<'_, [u8]>, bool) = match value {
         Value::InternString(string_id) => (Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()), true),
+        Value::InlineString { .. } => (
+            Cow::Borrowed(value.inline_str().expect("inline string").as_bytes()),
+            true,
+        ),
         Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.interns.get_bytes(*bytes_id)), false),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => (Cow::Owned(s.as_str().as_bytes().to_vec()), true),
@@ -239,12 +243,10 @@ fn parse_json_value_from_peek(
     }
 }
 
-/// Allocates a string using the cache when eligible, falling back to direct
-/// allocation for empty/single-char strings (already interned by
-/// `allocate_string`).
+/// Caches strings of 8–64 UTF-8 bytes and allocates other strings directly.
 fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> Value {
-    if s.len() < 2 {
-        // Empty and single-char strings are interned by allocate_string.
+    if s.len() <= 7 {
+        // Empty and single-char strings are interned; 2–7 byte strings are inline.
         allocate_string(s, heap.heap())
     } else {
         cache.get_or_allocate(s, heap)

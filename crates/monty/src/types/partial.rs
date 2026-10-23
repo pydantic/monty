@@ -230,7 +230,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
         }
         let position = match &index {
             Some(index) => name
-                .to_str_heap(vm.heap, vm.interns)
+                .try_to_str_heap(vm.heap, vm.interns)
                 .ok()
                 .and_then(|name| index.get(name).copied()),
             None => keyword_index(bound, &name, vm),
@@ -241,7 +241,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
             old_value.drop_with(vm);
         } else {
             if let Some(index) = &mut index
-                && let Ok(name) = name.to_str_heap(vm.heap, vm.interns)
+                && let Ok(name) = name.try_to_str_heap(vm.heap, vm.interns)
             {
                 index.insert(name.to_owned(), bound.len());
             }
@@ -255,10 +255,12 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
 /// A non-`str` name never matches; the binder rejects it when the merged
 /// arguments reach the wrapped callable.
 fn keyword_index(bound: &[(Value, Value)], name: &Value, vm: &VM<'_>) -> Option<usize> {
-    let name = name.to_str_heap(vm.heap, vm.interns).ok()?;
-    bound
-        .iter()
-        .position(|(bound, _)| bound.to_str_heap(vm.heap, vm.interns).is_ok_and(|bound| bound == name))
+    let name = name.try_to_str_heap(vm.heap, vm.interns).ok()?;
+    bound.iter().position(|(bound, _)| {
+        bound
+            .try_to_str_heap(vm.heap, vm.interns)
+            .is_ok_and(|bound| bound == name)
+    })
 }
 
 /// Maps each bound keyword name to its position, for [`merge_keywords`].
@@ -270,7 +272,9 @@ fn keyword_index_map(bound: &[(Value, Value)], vm: &VM<'_>) -> AHashMap<String, 
     bound
         .iter()
         .enumerate()
-        .filter_map(|(position, (name, _))| Some((name.to_str_heap(vm.heap, vm.interns).ok()?.to_owned(), position)))
+        .filter_map(|(position, (name, _))| {
+            Some((name.try_to_str_heap(vm.heap, vm.interns).ok()?.to_owned(), position))
+        })
         .collect()
 }
 
@@ -395,7 +399,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
                 // CPython writes the name unquoted, as keyword syntax rather than
                 // as a dict key. The `repr` fallback is for a non-`str` name, which
                 // Monty rejects at the `**` unpack before it can reach a partial.
-                if let Ok(name) = name.to_str_heap(vm.heap, vm.interns) {
+                if let Ok(name) = name.try_to_str_heap(vm.heap, vm.interns) {
                     write!(f, ", {name}=")?;
                 } else {
                     f.write_str(", ")?;

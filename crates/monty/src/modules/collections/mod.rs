@@ -222,7 +222,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         name
     } else {
         let as_str = typename.py_str(vm)?;
-        let owned = as_str.to_str(vm).map(str::to_owned);
+        let owned = as_str.try_to_str(vm).map(str::to_owned);
         as_str.drop_with(vm);
         EitherStr::from(owned?)
     };
@@ -278,7 +278,7 @@ fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Stri
             defer_drop!(item, vm);
             let as_str = item.py_str(vm)?;
             defer_drop!(as_str, vm);
-            names.push(as_str.to_str(vm)?.to_owned());
+            names.push(as_str.try_to_str(vm)?.to_owned());
         }
         Ok(names)
     }

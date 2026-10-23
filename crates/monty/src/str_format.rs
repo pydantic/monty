@@ -374,7 +374,7 @@ fn resolve_positional(index: usize, arguments: &FormatArguments, vm: &VM<'_>) ->
 fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> RunResult<Value> {
     for (index, (key, value)) in arguments.keywords.iter().enumerate() {
         vm.heap.tracker.check_time_every(index)?;
-        if key.to_str(vm)? == name {
+        if key.try_to_str(vm)? == name {
             return Ok(value.clone_with_heap(vm.heap));
         }
     }
