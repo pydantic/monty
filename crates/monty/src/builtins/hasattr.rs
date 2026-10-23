@@ -10,7 +10,10 @@ use crate::{
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::FrozenFunction,
     heap::DropWithContext,
-    types::{attribute_name_value, descriptor, instance::plain_attribute},
+    types::{
+        attribute_name_value, descriptor,
+        instance::{PlainAttribute, plain_attribute},
+    },
     value::Value,
 };
 
@@ -49,10 +52,13 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         .into());
     };
 
-    if let Some(value) = plain_attribute(object, &name, vm) {
-        let found = value.is_some();
-        value.drop_with(vm);
-        return Ok(CallResult::Value(Value::Bool(found)));
+    match plain_attribute(object, &name, vm) {
+        PlainAttribute::Found(value) => {
+            value.drop_with(vm);
+            return Ok(CallResult::Value(Value::Bool(true)));
+        }
+        PlainAttribute::Absent => return Ok(CallResult::Value(Value::Bool(false))),
+        PlainAttribute::Fallback => {}
     }
 
     if descriptor::attribute_uses_descriptor(object, &name, vm) {

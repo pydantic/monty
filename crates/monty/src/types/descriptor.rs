@@ -88,6 +88,15 @@ pub(crate) fn may_be_descriptor(value: &Value, heap: &Heap) -> bool {
     matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_) | HeapData::BuiltinDescriptor(_)))
 }
 
+/// User-defined members may gain setter/deleter hooks through mutations of their type.
+pub(crate) fn may_be_data_descriptor(value: &Value, heap: &Heap) -> bool {
+    matches!(value, Value::Ref(id) if match heap.get(*id) {
+        HeapData::Instance(_) => true,
+        HeapData::BuiltinDescriptor(d) => d.kind == super::Type::Property,
+        _ => false,
+    })
+}
+
 pub(crate) fn class_descriptor_free(class: HeapId, vm: &VM<'_>) -> bool {
     matches!(vm.heap.get(class), HeapData::Class(class) if class.descriptor_free())
 }

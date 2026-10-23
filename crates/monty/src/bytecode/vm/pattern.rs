@@ -21,7 +21,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Dict, PyTrait, Tuple, Type, TypeRef, type_ref::is_class_like, descriptor,
-        instance::{class_dunder, class_name, plain_attribute},
+        instance::{PlainAttribute, class_dunder, class_name, plain_attribute},
         key_hash::set_element_hash,
         str::allocate_string,
         tuple::allocate_tuple,
@@ -253,10 +253,16 @@ impl VM<'_> {
                 )));
             }
         }
-        if let Some(value) = plain_attribute(subject, &attr, this) {
-            let found = value.is_some();
-            this.push(value.unwrap_or(Value::None));
-            return Ok(CallResult::Value(Value::Bool(found)));
+        match plain_attribute(subject, &attr, this) {
+            PlainAttribute::Found(value) => {
+                this.push(value);
+                return Ok(CallResult::Value(Value::Bool(true)));
+            }
+            PlainAttribute::Absent => {
+                this.push(Value::None);
+                return Ok(CallResult::Value(Value::Bool(false)));
+            }
+            PlainAttribute::Fallback => {}
         }
         if descriptor::attribute_uses_descriptor(subject, &attr, this) {
             return this.match_descriptor_attr(subject, name);
