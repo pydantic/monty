@@ -17,13 +17,12 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     modules::ModuleFunctions,
     types::{
         Dict, PyTrait, Type, descriptor,
-        instance::{AttributeLookup, class_dunder, class_name, lookup_attribute_fast},
+        instance::{FastAttributeLookupResult, class_dunder, class_name, lookup_attribute_fast},
         set::set_element_hash,
-        str::allocate_string,
         tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -257,15 +256,15 @@ impl VM<'_> {
             }
         }
         match lookup_attribute_fast(subject, &attr, this) {
-            AttributeLookup::Found(value) => {
+            FastAttributeLookupResult::Found(value) => {
                 this.push(value);
                 return Ok(CallResult::Value(Value::Bool(true)));
             }
-            AttributeLookup::Absent => {
+            FastAttributeLookupResult::Missing => {
                 this.push(Value::None);
                 return Ok(CallResult::Value(Value::Bool(false)));
             }
-            AttributeLookup::Fallback => {}
+            FastAttributeLookupResult::Inconclusive => {}
         }
         if descriptor::attribute_uses_descriptor(subject, &attr, this) {
             return this.match_descriptor_attr(subject, name);

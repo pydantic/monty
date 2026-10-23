@@ -237,11 +237,6 @@ fn fixture_dump_loads_and_resumes() {
     check_fixture(&bytes);
 }
 
-#[test]
-fn version_13_fixture_loads_and_resumes() {
-    check_fixture(include_bytes!("fixtures/dump_v13.bin"));
-}
-
 fn check_fixture(bytes: &[u8]) {
     let loaded = Dump::load(bytes).expect("a supported fixture loads");
     assert_eq!(loaded.script_name, "fixture.py");

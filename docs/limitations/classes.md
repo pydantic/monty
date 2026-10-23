@@ -493,15 +493,15 @@ of `AttributeError`, so `except AttributeError:` catches it, as in CPython's
 ## Descriptor limitations
 
 - Direct calls (`obj.attr(...)`) evaluate arguments before descriptor binding.
-  Read the attribute into a variable first when binding order matters.
+    Read the attribute into a variable first when binding order matters.
 - `property` does not infer `__doc__` from its getter; pass `doc=` explicitly.
-  `__doc__` and `__name__` cannot be reassigned on the property object.
+    `__doc__` and `__name__` cannot be reassigned on the property object.
 - `classmethod` and `staticmethod` expose `__func__`, `__wrapped__`, and `__name__`, but do not copy
-  other function metadata (including `__doc__`) or expose a writable wrapper `__dict__`.
+    other function metadata (including `__doc__`) or expose a writable wrapper `__dict__`.
 - Descriptor types cannot be subclassed, since class inheritance is unsupported.
 - Missing descriptor hooks and property accessors raise `AttributeError` with shorter messages than CPython.
 - Native operations that already run Python hooks synchronously, including dataclass comparison and repr,
-  also require descriptor reads to finish synchronously.
-  Data-descriptor setters in the synthesized dataclass initializer also cannot suspend; see [dataclasses.md](dataclasses.md).
+    also require descriptor reads to finish synchronously.
+    Data-descriptor setters in the synthesized dataclass initializer also cannot suspend; see [dataclasses.md](dataclasses.md).
 - Explicit `property.__get__` and other methods on the descriptor *type* are unavailable;
-  access the methods on the descriptor object instead (`descriptor.__get__(obj, cls)`).
+    access the methods on the descriptor object instead (`descriptor.__get__(obj, cls)`).

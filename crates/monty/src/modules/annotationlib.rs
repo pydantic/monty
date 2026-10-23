@@ -76,7 +76,7 @@ fn format_class(vm: &mut VM<'_>) -> Value {
     let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::FormatClass));
     Value::Ref(
         vm.heap
-            .allocate(HeapData::Class(Box::new(Class::new(name, namespace, false)))),
+            .allocate(HeapData::Class(Box::new(Class::new(name, namespace, false, vm.heap)))),
     )
 }
 
