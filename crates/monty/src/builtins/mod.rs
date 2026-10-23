@@ -177,3 +177,12 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => return type_::builtin_type(vm, args),
+            Self::Zip => zip::builtin_zip(vm, args),
+            // `eval()` / `exec()` push the compiled snippet's frame.
+            Self::Eval => return eval_exec::builtin_eval(vm, args),
+            Self::Exec => return eval_exec::builtin_exec(vm, args),
+            Self::Locals => locals::builtin_locals(vm, args),
+        };
+        r.map(CallResult::Value)
+    }
+}

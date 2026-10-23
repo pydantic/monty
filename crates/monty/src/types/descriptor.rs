@@ -1,9 +1,13 @@
 //! Descriptor lookup and suspendable continuations for sandbox classes.
+//!
+//! Reads prefer data descriptors with getters, then instance storage, then other class members.
+//! Hooks belong to the descriptor's type, so changing that type can alter precedence without
+//! writing to the owning class. Class hints must therefore account for possible future hooks.
 
 use super::{
-    Dict,
-    builtin_descriptor::DescriptorMethod,
-    instance::{bind_method, class_defines, class_member, is_method_value},
+    Dict, Type, attribute_name_value,
+    builtin_descriptor::{self, DescriptorMethod},
+    instance::{bind_method, class_defines, class_dunder, class_member, is_method_value},
     tuple::allocate_tuple,
 };
 use crate::{
@@ -89,10 +93,11 @@ pub(crate) fn may_be_descriptor(value: &Value, heap: &Heap) -> bool {
 }
 
 /// User-defined members may gain setter/deleter hooks through mutations of their type.
+/// Builtin staticmethod/classmethod objects cannot gain those hooks; property is always data.
 pub(crate) fn may_be_data_descriptor(value: &Value, heap: &Heap) -> bool {
     matches!(value, Value::Ref(id) if match heap.get(*id) {
         HeapData::Instance(_) => true,
-        HeapData::BuiltinDescriptor(d) => d.kind == super::Type::Property,
+        HeapData::BuiltinDescriptor(d) => d.kind == Type::Property,
         _ => false,
     })
 }
@@ -109,14 +114,15 @@ pub(crate) fn attribute_uses_descriptor(object: &Value, name: &EitherStr, vm: &V
         HeapData::Class(class) => {
             name != "__name__"
                 && !class.descriptor_free()
-                && super::instance::class_dunder(*id, name, vm).is_some_and(|member| has_get(member, vm))
+                && class_dunder(*id, name, vm).is_some_and(|member| has_get(member, vm))
         }
         HeapData::Instance(instance) => {
             let class = instance.class();
             if class_descriptor_free(class, vm) {
                 return false;
             }
-            let member = super::instance::class_dunder(class, name, vm);
+            let member = class_dunder(class, name, vm);
+            // Only a data getter can defeat an instance hit; other getters run on a miss.
             if member.is_some_and(|member| is_data(member, vm) && has_get(member, vm)) {
                 return true;
             }
@@ -142,8 +148,9 @@ pub(crate) fn is_data(value: &Value, vm: &VM<'_>) -> bool {
     if let Value::Ref(id) = value
         && let HeapData::BuiltinDescriptor(d) = vm.heap.get(*id)
     {
-        return d.kind == super::Type::Property;
+        return d.kind == Type::Property;
     }
+    // Presence, not callability, determines precedence: a broken setter is still a data descriptor.
     descriptor_class(value, vm)
         .is_some_and(|class| class_defines(class, "__set__", vm) || class_defines(class, "__delete__", vm))
 }
@@ -158,7 +165,7 @@ pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &m
     if let Value::Ref(id) = value
         && matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_))
     {
-        return super::builtin_descriptor::get(*id, instance, owner, vm);
+        return builtin_descriptor::get(*id, instance, owner, vm);
     }
     if let Some(class) = descriptor_class(value, vm)
         && let Some(getter) = class_member(class, "__get__", vm)
@@ -198,7 +205,7 @@ pub(crate) fn get_attribute(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallR
 pub(crate) fn call_attr(object: Value, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let mut guard = DropGuard::new((object, args), vm);
     let (_, vm) = guard.as_parts_mut();
-    let name = super::attribute_name_value(attr, vm);
+    let name = attribute_name_value(attr, vm);
     let ((object, args), vm) = guard.into_parts();
     let mut guard = DropGuard::new([object, name], vm);
     let (_, vm) = guard.as_parts_mut();
@@ -276,7 +283,7 @@ pub(crate) fn discard_call(function: Value, args: Vec<Value>, vm: &mut VM<'_>) -
 pub(crate) fn set_attr(object: &Value, name: &EitherStr, value: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
     defer_drop!(value, vm);
     if let Some(class) = descriptor_class(object, vm) {
-        let key = super::attribute_name_value(name, vm);
+        let key = attribute_name_value(name, vm);
         defer_drop!(key, vm);
         if let Some(error) = dataclasses::frozen_assignment_error(class, key, vm) {
             return Err(error);
@@ -307,7 +314,7 @@ pub(crate) fn mutate(
         && matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_))
     {
         let (value, vm) = guard.into_parts();
-        return super::builtin_descriptor::mutate(*id, object, value, vm);
+        return builtin_descriptor::mutate(*id, object, value, vm);
     }
     let name = if setting { "__set__" } else { "__delete__" };
     let class = descriptor_class(descriptor, vm).expect("data descriptor has a class");
@@ -375,7 +382,7 @@ pub(crate) fn lookup_set_name(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
     };
     if let Value::Ref(id) = descriptor
         && let HeapData::BuiltinDescriptor(d) = vm.heap.get(*id)
-        && d.kind == super::Type::Property
+        && d.kind == Type::Property
     {
         let function = Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::Descriptor(
             DescriptorMethod::SetName,
@@ -396,5 +403,5 @@ pub(crate) fn lookup_set_name(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
 
 fn may_have_name_hook(value: &Value, vm: &VM<'_>) -> bool {
     descriptor_class(value, vm).is_some()
-        || matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(d) if d.kind == super::Type::Property))
+        || matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(d) if d.kind == Type::Property))
 }
