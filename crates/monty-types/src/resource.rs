@@ -36,7 +36,7 @@ pub static LIVE_MEMORY: AtomicUsize = AtomicUsize::new(0);
 pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Runs `build` and adds what it leaves allocated to [`BASELINE_MEMORY`], so a
-/// structure the worker keeps for life (the type checker) is not charged to the
+/// structure the worker keeps for life (such as typeshed) is not charged to the
 /// session that happened to build it first.
 ///
 /// Only accurate while no other thread changes [`LIVE_MEMORY`]. An unset baseline is

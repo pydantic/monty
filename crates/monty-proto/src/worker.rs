@@ -31,7 +31,7 @@ use monty_types::{
     AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
     ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
     PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD, SourceRange,
-    TypeCheckState, TypeCheckingConfig, allocate_into_baseline,
+    TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -219,9 +219,7 @@ pub struct Child {
     /// Script name of the current session (used for error and type-check
     /// diagnostics).
     script_name: String,
-    /// Built by the first type-checked feed and kept for the worker's life; what
-    /// building it allocates joins the baseline rather than that session's budget.
-    /// What its first run caches is charged to the session, as it always was.
+    /// Built by the first type-checked feed and dropped when the session resets.
     type_checker: Option<TypeChecker>,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
@@ -289,18 +287,10 @@ impl Child {
             pb::parent_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
             pb::parent_request::Kind::Dump(_) => self.handle_dump(),
             pb::parent_request::Kind::Load(load) => self.handle_load(&load),
-            pb::parent_request::Kind::Reset(_) => match self.reset() {
-                Ok(()) => ok_event(),
-                // A failed scrub leaves the finished session's files in the
-                // type checker, so this worker must never serve another one:
-                // the next session could resolve the previous session's
-                // modules. Die with an explanation the parent can log rather
-                // than carry on — or panic, which it would only see as a crash.
-                Err(err) => {
-                    sink.send(&self.fatal_event(&format!("type-check cleanup failed: {err}")))?;
-                    return Ok(HandleOutcome::Fatal);
-                }
-            },
+            pb::parent_request::Kind::Reset(_) => {
+                self.reset();
+                ok_event()
+            }
             pb::parent_request::Kind::Shutdown(_) => {
                 sink.send(&ok_event())?;
                 return Ok(HandleOutcome::Shutdown);
@@ -1088,9 +1078,7 @@ impl Child {
             module_stubs: &self.module_stubs,
             prelude: &state.committed_imports,
         };
-        let type_checker = self
-            .type_checker
-            .get_or_insert_with(|| allocate_into_baseline(TypeChecker::default));
+        let type_checker = self.type_checker.get_or_insert_with(TypeChecker::default);
         match type_checker.run_with(&SourceFile::new(code, &self.script_name), &context, state.config) {
             Ok(None) => None,
             Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
@@ -1102,17 +1090,15 @@ impl Child {
 
     /// Drops all session state, returning to the unconfigured state ready for
     /// the next `Configure` (or `Load`).
-    ///
-    /// `Err` means the type checker still holds this session's files, which is
-    /// terminal for the worker — see the `Reset` arm in [`Self::handle`].
-    fn reset(&mut self) -> Result<(), String> {
+    fn reset(&mut self) {
         self.state = SessionState::Configured(None);
+        // Invalidating source files leaves Salsa caches and interned data allocated.
+        self.type_checker = None;
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.os_policy = OsPolicy::default();
         self.module_stubs = Vec::new();
-        self.type_checker.as_mut().map_or(Ok(()), TypeChecker::reset)
     }
 }
 
