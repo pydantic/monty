@@ -74,13 +74,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let Some(value) = lookup.get_item(name)? else {
             return Ok(None);
         };
-        let value = py_to_monty_value(&value, self.instances)
-            .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?;
-        let (mut graph, root) = unstable::into_graph_parts(value);
-        if let MontyNode::Function { name: proxy_name, .. } = graph.node_mut(root) {
-            name.clone_into(proxy_name);
-        }
-        Ok(Some(unstable::object_from_graph(graph, root).expect("root unchanged")))
+        self.named_value(name, &value).map(Some)
     }
 
     /// Calls an external function by name, converting args/kwargs from Monty
@@ -378,23 +372,34 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         ExtFunctionResult::Return(MontyObject::dict(stubs))
     }
 
-    /// The module value an import binds: the module's public attrs, with callables
-    /// as host functions named by their dotted path (which a call resolves back
-    /// through the module) and nested modules as submodules.
+    /// The module's public attrs, preserving supported type objects and naming
+    /// host functions by their dotted path. Nested modules become submodules.
     fn module_value(&self, path: &str, module: &PyExternalModule) -> PyResult<MontyObject> {
         let mut attrs = Vec::new();
         for (name, value) in module.public_attrs(self.py) {
             let value = if let Ok(submodule) = value.cast::<PyExternalModule>() {
                 self.module_value(&format!("{path}.{name}"), submodule.get())?
-            } else if value.is_callable() {
+            } else if value.is_callable() && !value.is_instance_of::<PyType>() {
                 MontyObject::function(format!("{path}.{name}"), get_docstring(&value))
             } else {
-                py_to_monty_value(&value, self.instances)
-                    .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?
+                self.named_value(&format!("{path}.{name}"), &value)?
             };
             attrs.push((MontyObject::string(name), value));
         }
         Ok(MontyObject::module(path, module.uuid(), attrs))
+    }
+
+    /// Converts a value before deciding whether it is a host function: supported
+    /// Python classes are callable but must remain types. Function proxies use
+    /// the lookup key or module path so aliases call the correct host entry.
+    fn named_value(&self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
+        let value = py_to_monty_value(value, self.instances)
+            .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?;
+        let (mut graph, root) = unstable::into_graph_parts(value);
+        if let MontyNode::Function { name: proxy_name, .. } = graph.node_mut(root) {
+            name.clone_into(proxy_name);
+        }
+        Ok(unstable::object_from_graph(graph, root).expect("root unchanged"))
     }
 }
 

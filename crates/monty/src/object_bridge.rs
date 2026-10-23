@@ -1038,6 +1038,9 @@ fn import_node(
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
             Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
         }
+        // Exception handlers and raising a class use the same representation as
+        // builtin exception names, not a generic type wrapper.
+        MontyNode::Type(MontyType::Exception(exc_type)) => Ok(Value::Builtin(Builtins::ExcType(exc_type))),
         MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
         MontyNode::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),

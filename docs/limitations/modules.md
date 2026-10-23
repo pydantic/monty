@@ -102,9 +102,11 @@ The host's answer becomes the imported `module` object, with these differences f
     `ModuleNotFoundError: No module named 'm.x'`.
 - `from m import x` reads the module's attributes; missing names raise
     `ImportError: cannot import name 'x' from 'm' (unknown location)`.
-- Python classes among a module's attrs become host functions: `m.X()` constructs on the host, but
+- Python classes that Monty does not model become host functions: `m.X()` constructs on the host, but
     `isinstance(v, m.X)` raises `TypeError`.
     Wrap a class in `ClassType` to send it as a type.
+    Unsupported exception subclasses, such as `statistics.StatisticsError`, also remain host functions;
+    they cannot be used in `except` and are not replaced with a supported base exception.
 - Imports with more than 32 dotted components raise `SyntaxError`; `import a.b.c` has three.
 
 With no host to answer, `monty file.py` included, every unknown module raises `ModuleNotFoundError`.

@@ -353,8 +353,10 @@ imports as a `module` object whose attributes are its public items, those whose 
 Python module objects are rejected because they would also expose their imports; a dict explicitly selects attributes.
 In JavaScript a plain object is one whose prototype is `Object.prototype` or null, so a module namespace
 (`import * as tools`) qualifies while an instance of another class does not.
-A callable attribute becomes a host function named `<module>.<attr>`, dispatched like an `external_lookup` entry: a
-JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
+Python types that Monty supports remain types: `ValueError` can be used in `raise` and `except`, and `int` in `isinstance`.
+See [host module limitations](limitations/modules.md#host-modules) for unsupported classes.
+Other callable attributes become host functions named `<module>.<attr>`, dispatched like an `external_lookup` entry:
+a JavaScript promise is awaited, and a Python coroutine needs `AsyncMonty` (the sync `Monty` raises `RuntimeError`).
 Any other attribute is converted when the module is imported, so a [`ClassInstance`][pydantic_monty.ClassInstance]
 among them routes its methods back to the wrapped object.
 The constructor checks `attrs` (a dict with identifier keys, nested modules under valid module names) and raises
