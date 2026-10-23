@@ -4,10 +4,16 @@ use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
+    builtins::Builtins,
     bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::DropWithContext,
+    frozen::FrozenFunction,
+    types::{
+        attribute_name_value, descriptor,
+        instance::{FastAttributeLookupResult, lookup_attribute_fast},
+    },
+    value::Value,
 };
 
 /// Implementation of the getattr() builtin function.
@@ -48,6 +54,31 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         );
     };
 
+    match lookup_attribute_fast(object, &attr, vm) {
+        FastAttributeLookupResult::Found(value) => return Ok(CallResult::Value(value)),
+        FastAttributeLookupResult::Missing => {
+            return default
+                .map(|default| CallResult::Value(default.clone_with_heap(vm.heap)))
+                .ok_or_else(|| ExcType::attribute_error(object.py_type_name(vm), attr.as_str(vm.interns)));
+        }
+        FastAttributeLookupResult::Inconclusive => {}
+    }
+
+    if let Some(default) = default
+        && descriptor::attribute_uses_descriptor(object, &attr, vm)
+    {
+        let name = attribute_name_value(&attr, vm);
+        return vm.call_frozen_exact(
+            FrozenFunction::DescriptorGetattr,
+            [
+                descriptor::attribute_helper(),
+                object.clone_with_heap(vm.heap),
+                name,
+                default.clone_with_heap(vm.heap),
+                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+            ],
+        );
+    }
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(CallResult::Value(value)),
         Ok(CallResult::AttrLookup {
@@ -63,14 +94,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
             type_object,
             effect: default.map(|d| PendingLookupEffect::Default(d.clone_with_heap(vm))),
         }),
-        Ok(other) => {
-            other.drop_with(vm);
-            // getattr() only retrieves attribute values — OS calls, external calls,
-            // method calls, and awaits are not supported here
-            //
-            // TODO: might need to support this case?
-            Err(SimpleException::new_msg(ExcType::TypeError, "getattr(): attribute is not a simple value").into())
-        }
+        Ok(other) => Ok(other),
         Err(RunError::Exc(e))
             if let Some(d) = default
                 && e.exc.exc_type() == ExcType::AttributeError =>

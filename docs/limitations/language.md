@@ -13,17 +13,12 @@ any code runs.
     class-body statements other than `def`, a simple `name [: T] = <expr>`
     assignment, `pass`, or a docstring. There is no inheritance and no general
     dunder protocol. See [classes.md](classes.md).
-- **Decorators** (`@deco`) — supported on classes and on top-level or nested
-    `def`/`async def`, taking any callable in scope, evaluated in the enclosing
-    scope and applied bottom-up. Rejected at parse time on **methods**, so
-    `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
-    inside a class body are unavailable. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
 - **`yield` / `yield from` expressions** — no generator functions. Generator
     *expressions* (`(x for x in ...)`) parse but currently materialize to a
     `list` rather than a lazy iterator, a known temporary divergence; see
     `iter__generator_expr_type.py`.
-- **`del` statements** — neither `del x` nor `del d[k]` parse.
+- **Unsupported `del` forms** — `del x`, `del d[k]`, and multiple targets.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
 - **`async for` loops** and **async comprehensions**.
@@ -220,8 +215,7 @@ direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`
 
 ## What *does* work
 
-- Functions (`def`, `async def`), nested functions, closures, and decorators on
-    them, but not on methods (see above).
+- Functions (`def`, `async def`), nested functions, closures, and decorators on functions and methods.
 - List / dict / set comprehensions; generator comprehensions degrade to
     lists (see above).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.

@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
+    types::{Dict, List, Module, Type, hash_table::TableCursor, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -102,7 +102,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         return Ok(value.clone_with_heap(vm.heap));
     };
     let id = *id;
-    match classify(&vm.heap.read(id)) {
+    match classify(&vm.heap.read(id), vm) {
         Copyability::Shared | Copyability::ImmutableContainer => Ok(value.clone_with_heap(vm.heap)),
         Copyability::Refused => Err(cannot_copy(value, vm)),
         Copyability::Rebuilt => match vm.heap.read(id) {
@@ -214,7 +214,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
     // Dispatched here rather than in a function of its own: every frame live
     // across the recursion is paid once per level of nesting. `classify`
     // returns before the recursion, so its frame is not one of them.
-    let copy = match classify(&vm.heap.read(id)) {
+    let copy = match classify(&vm.heap.read(id), vm) {
         Copyability::Shared => Ok(source.clone_with_heap(vm.heap)),
         Copyability::Refused => Err(cannot_copy(source, vm)),
         // An immutable container's items still change, so `deepcopy` rebuilds
@@ -272,7 +272,7 @@ enum Copyability {
 }
 
 /// Decides what the two passes do with a heap value.
-fn classify(output: &HeapReadOutput<'_>) -> Copyability {
+fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
     match output {
         HeapReadOutput::List(_)
         | HeapReadOutput::Dict(_)
@@ -288,6 +288,9 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => Copyability::ImmutableContainer,
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
+        HeapReadOutput::BuiltinDescriptor(d) => {
+            if d.get(vm.heap).kind == Type::Property { Copyability::Shared } else { Copyability::Refused }
+        }
         // Leaves and immutable containers Monty can never mutate, so a copy
         // that shared them is indistinguishable from one that rebuilt them.
         HeapReadOutput::Str(_)

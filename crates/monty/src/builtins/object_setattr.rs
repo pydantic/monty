@@ -4,11 +4,11 @@ use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapReadOutput},
-    types::py_trait::attribute_name_value,
+    types::{descriptor, instance::class_member, py_trait::attribute_name_value},
     value::{EitherStr, Value},
 };
 
@@ -23,7 +23,7 @@ use crate::{
 /// ```python
 /// object.__setattr__(point, 'x', 1)
 /// ```
-pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // CPython reaches this as a slot wrapper bound to `obj`, so its messages
     // name the wrapper and count `obj` as the receiver rather than an argument.
     let positional = args.into_pos_only("wrapper __setattr__", vm.heap)?;
@@ -59,11 +59,18 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
         return Err(no_dict_error(object, &name, vm));
     };
 
+    if let Some(member) = class_member(instance.get(vm.heap).class(), name.as_str(vm.interns), vm) {
+        defer_drop!(member, vm);
+        if descriptor::is_data(member, vm) {
+            return descriptor::mutate(member, object, Some(value.clone_with_heap(vm.heap)), vm);
+        }
+    }
+
     let name = attribute_name_value(&name, vm);
     // The write path itself, bypassing whatever the class would have done.
     let replaced = instance.set_attr_unchecked(name, value.clone_with_heap(vm), vm)?;
     replaced.drop_with(vm);
-    Ok(Value::None)
+    Ok(CallResult::Value(Value::None))
 }
 
 /// `object.__setattr__` applied to a value with no instance `__dict__`.

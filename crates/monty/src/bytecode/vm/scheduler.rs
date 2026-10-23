@@ -99,6 +99,8 @@ pub(crate) struct SerializedTaskFrame {
     pub call_offset: Option<u32>,
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
     pub is_initializer: bool,
+    #[serde(default)]
+    pub result: super::FrameResult,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,
     /// The `from ... import` in progress, if the frame parked inside one.

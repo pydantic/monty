@@ -4,10 +4,16 @@ use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
+    builtins::Builtins,
     bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    frozen::FrozenFunction,
     heap::DropWithContext,
+    types::{
+        attribute_name_value, descriptor,
+        instance::{FastAttributeLookupResult, lookup_attribute_fast},
+    },
     value::Value,
 };
 
@@ -45,6 +51,28 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         )
         .into());
     };
+
+    match lookup_attribute_fast(object, &name, vm) {
+        FastAttributeLookupResult::Found(value) => {
+            value.drop_with(vm);
+            return Ok(CallResult::Value(Value::Bool(true)));
+        }
+        FastAttributeLookupResult::Missing => return Ok(CallResult::Value(Value::Bool(false))),
+        FastAttributeLookupResult::Inconclusive => {}
+    }
+
+    if descriptor::attribute_uses_descriptor(object, &name, vm) {
+        let name = attribute_name_value(&name, vm);
+        return vm.call_frozen_exact(
+            FrozenFunction::DescriptorHasattr,
+            [
+                descriptor::attribute_helper(),
+                object.clone_with_heap(vm.heap),
+                name,
+                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+            ],
+        );
+    }
 
     // important: we must own the returned value if py_get_attr succeeds to drop it
     let has_attr = match object.py_getattr(&name, vm) {

@@ -3,12 +3,12 @@
 use super::Builtins;
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait},
+    types::{Class, Dict, PyTrait, descriptor},
     value::Value,
 };
 
@@ -23,13 +23,13 @@ use crate::{
 /// because the "exactly 1 *or* 3 positionals, same name" overload isn't
 /// expressible by any of the binder families — CPython special-cases `type`'s
 /// argument parsing in `type_new`/`type_init` for the same reason.
-pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (mut pos, kwargs) = args.into_parts();
     match pos.len() {
         1 => {
             let value = pos.next().expect("length checked");
             if kwargs.is_empty() {
-                Ok(type_of(vm, value))
+                Ok(CallResult::Value(type_of(vm, value)))
             } else {
                 value.drop_with(vm);
                 kwargs.drop_with(vm);
@@ -40,7 +40,8 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let name = pos.next().expect("length checked");
             let bases = pos.next().expect("length checked");
             let namespace = pos.next().expect("length checked");
-            create_class(vm, name, bases, namespace, kwargs)
+            let class = create_class(vm, name, bases, namespace, kwargs)?;
+            descriptor::finish_class(class, vm)
         }
         _ => {
             pos.drop_with(vm);
@@ -177,8 +178,10 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
-    let class_id = vm
-        .heap
-        .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict))));
+    let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
+        class_name,
+        namespace_dict,
+        vm.heap,
+    ))));
     Ok(Value::Ref(class_id))
 }

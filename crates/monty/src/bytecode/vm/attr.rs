@@ -5,8 +5,9 @@ use crate::{
     bytecode::{Opcode, vm::CallResult},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapReadOutput},
     intern::{Interns, StringId},
+    types::descriptor,
     value::{EitherStr, Value},
 };
 
@@ -163,15 +164,23 @@ impl VM<'_> {
     /// Stores a value as an attribute on an object.
     ///
     /// Returns an AttributeError if the attribute cannot be set.
-    pub(super) fn store_attr(&mut self, name_id: StringId) -> Result<(), RunError> {
+    pub(super) fn store_attr(&mut self, name_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
         let obj = this.pop();
         defer_drop!(obj, this);
 
         let value = this.pop();
+        if let Value::Ref(id) = obj
+            && let HeapReadOutput::Instance(instance) = this.heap.read(*id)
+            && descriptor::class_descriptor_free(instance.get(this.heap).class(), this)
+        {
+            let replaced = instance.set_attr(Value::InternString(name_id), value, this)?;
+            replaced.drop_with(this);
+            return Ok(CallResult::Value(Value::None));
+        }
         // py_set_attr takes ownership of value and drops it on error
-        obj.py_set_attr(&EitherStr::Interned(name_id), value, this)
+        descriptor::set_attr(obj, &EitherStr::Interned(name_id), value, this)
     }
 }
 

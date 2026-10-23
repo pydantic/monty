@@ -9,15 +9,22 @@
 //! per `MatchAttr` instruction so a read that has to go to the host can suspend
 //! between them like any other attribute load.
 
-use super::{CallResult, VM, attr::PendingLookupEffect};
+use super::{CallResult, FrameResult, VM, attr::PendingLookupEffect};
 use crate::{
+    args::ArgValues,
     builtins::{Builtins, isinstance::isinstance_check},
     bytecode::op::{MATCH_SHAPE_MAPPING, MATCH_SHAPE_MIN_LEN},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    frozen::{FrozenFunction, FrozenFunctions},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
+    modules::ModuleFunctions,
     types::{
-        Dict, PyTrait, Type, instance::class_name, set::set_element_hash, str::allocate_string, tuple::allocate_tuple,
+        Dict, PyTrait, Type, descriptor,
+        instance::{FastAttributeLookupResult, class_dunder, class_name, lookup_attribute_fast},
+        set::set_element_hash,
+        str::allocate_string,
+        tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -130,15 +137,81 @@ impl VM<'_> {
         defer_drop!(kwd_names, this);
         defer_drop!(cls, this);
         defer_drop!(subject, this);
-        if let Some(names) = class_pattern_names(subject, cls, kwd_names, nargs, this)? {
-            let tuple = allocate_tuple(names.into_iter().collect(), this.heap);
-            this.push(tuple);
-            this.push(Value::Bool(true));
-        } else {
+        if !is_class_object(cls, this) {
+            return Err(ExcType::type_error("called match pattern must be a class"));
+        }
+        if !isinstance_check(subject, cls, this)? {
             this.push(Value::None);
             this.push(Value::Bool(false));
+            return Ok(());
         }
+        if nargs > 0
+            && matches!(cls, Value::Ref(id)
+            if !descriptor::class_descriptor_free(*id, this)
+                && class_dunder(*id, "__match_args__", this)
+                .is_some_and(|member| descriptor::has_get(member, this)))
+        {
+            return this.match_descriptor_class(cls, kwd_names, nargs);
+        }
+        let names = class_pattern_names(cls, kwd_names, nargs, None, this)?;
+        let tuple = allocate_tuple(names.into_iter().collect(), this.heap);
+        this.push(tuple);
+        this.push(Value::Bool(true));
         Ok(())
+    }
+
+    #[cold]
+    fn match_descriptor_attr(&mut self, subject: &Value, name: &Value) -> RunResult<CallResult> {
+        let this = self;
+        let result = this.call_frozen_exact(
+            FrozenFunction::DescriptorMatch,
+            [
+                descriptor::attribute_helper(),
+                subject.clone_with_heap(this.heap),
+                name.clone_with_heap(this.heap),
+                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+            ],
+        )?;
+        this.current_frame_mut().result = FrameResult::MatchAttr;
+        Ok(result)
+    }
+
+    #[cold]
+    fn match_descriptor_class(&mut self, cls: &Value, kwd_names: &Value, nargs: usize) -> RunResult<()> {
+        let this = self;
+        let CallResult::FramePushed = this.call_frozen_exact(
+            FrozenFunction::DescriptorMatchClass,
+            [
+                descriptor::attribute_helper(),
+                Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::MatchClassNames)),
+                cls.clone_with_heap(this.heap),
+                kwd_names.clone_with_heap(this.heap),
+                Value::Int(i64::try_from(nargs).expect("pattern count is a byte")),
+                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+            ],
+        )?
+        else {
+            unreachable!("frozen class pattern lookup installs a frame")
+        };
+        // Both pattern continuations return the opcode's two stack values as a pair.
+        this.current_frame_mut().result = FrameResult::MatchAttr;
+        Ok(())
+    }
+
+    /// Validate resolved metadata after its descriptor has returned, possibly from the host.
+    pub(crate) fn match_class_names(&mut self, args: ArgValues) -> RunResult<CallResult> {
+        let this = self;
+        let args = args.into_pos_only("class pattern names", this.heap)?;
+        defer_drop!(args, this);
+        let [cls, keywords, Value::Int(nargs), match_args] = args.as_slice() else {
+            unreachable!("private class pattern signature")
+        };
+        let nargs = usize::try_from(*nargs).expect("pattern count is a byte");
+        let names = class_pattern_names(cls, keywords, nargs, Some(match_args), this)?;
+        Ok(CallResult::Value(allocate_tuple(
+            names.into_iter().collect(),
+            this.heap,
+        )))
     }
 
     /// `MatchAttr`: `[subject, cls, names] -> [subject, cls, names, value, bool]`.
@@ -182,6 +255,20 @@ impl VM<'_> {
                     attr.as_str(this.interns)
                 )));
             }
+        }
+        match lookup_attribute_fast(subject, &attr, this) {
+            FastAttributeLookupResult::Found(value) => {
+                this.push(value);
+                return Ok(CallResult::Value(Value::Bool(true)));
+            }
+            FastAttributeLookupResult::Missing => {
+                this.push(Value::None);
+                return Ok(CallResult::Value(Value::Bool(false)));
+            }
+            FastAttributeLookupResult::Inconclusive => {}
+        }
+        if descriptor::attribute_uses_descriptor(subject, &attr, this) {
+            return this.match_descriptor_attr(subject, name);
         }
         match subject.py_getattr(&attr, this) {
             Ok(CallResult::Value(value)) => {
@@ -289,24 +376,22 @@ fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<
 }
 
 /// The attribute names a class pattern reads, as `str` values (`None` for the
-/// subject itself), or `None` when the subject is not an instance of `cls`.
+/// subject itself). The caller has already checked the subject's class.
 fn class_pattern_names(
-    subject: &Value,
     cls: &Value,
     kwd_names: &Value,
     nargs: usize,
+    resolved: Option<&Value>,
     vm: &mut VM<'_>,
-) -> RunResult<Option<Vec<Value>>> {
-    if !is_class_object(cls, vm) {
-        return Err(ExcType::type_error("called match pattern must be a class"));
-    }
-    if !isinstance_check(subject, cls, vm)? {
-        return Ok(None);
-    }
+) -> RunResult<Vec<Value>> {
     let mut guard = DropGuard::new(Vec::with_capacity(nargs), vm);
     let (names, vm) = guard.as_parts_mut();
     if nargs > 0 {
-        match class_match_args(cls, nargs, vm)? {
+        match if let Some(value) = resolved {
+            validate_match_args(cls, nargs, value, vm)?
+        } else {
+            class_match_args(cls, nargs, vm)?
+        } {
             MatchArgs::SelfMatch => names.push(Value::None),
             MatchArgs::Names(positional) => {
                 names.extend(positional.iter().map(|name| either_str_value(name, vm.heap)));
@@ -323,7 +408,7 @@ fn class_pattern_names(
     for i in 0..len {
         names.push(kwd_names.clone_item(i, vm));
     }
-    Ok(Some(guard.into_inner()))
+    Ok(guard.into_inner())
 }
 
 /// Whether `value` is something `isinstance` accepts as a single class.
@@ -342,7 +427,7 @@ fn is_class_object(value: &Value, vm: &VM<'_>) -> bool {
 ///
 /// Builtins carry no `__match_args__`: the self-matching ones accept one
 /// positional sub-pattern, the rest none. A namedtuple's are its fields; a
-/// user or host class's come from its namespace and must be a tuple of strings
+/// host class's come from its namespace and must be a tuple of strings
 /// (checked only as far as `nargs`, like CPython). Too many positional
 /// sub-patterns is reported before a bad element, as CPython does.
 fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<MatchArgs> {
@@ -383,13 +468,20 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         return Ok(MatchArgs::Names(Vec::new()));
     };
     defer_drop!(match_args, vm);
+    validate_match_args(cls, nargs, match_args, vm)
+}
+
+fn validate_match_args(cls: &Value, nargs: usize, match_args: &Value, vm: &mut VM<'_>) -> RunResult<MatchArgs> {
     let Value::Ref(args_id) = match_args else {
         return Err(match_args_type_error(cls, match_args, vm));
     };
     let HeapReadOutput::Tuple(tuple) = vm.heap.read(*args_id) else {
         return Err(match_args_type_error(cls, match_args, vm));
     };
-    check_count(tuple.get(vm.heap).as_slice().len(), vm)?;
+    let allowed = tuple.get(vm.heap).as_slice().len();
+    if allowed < nargs {
+        return Err(positional_count_error(cls, allowed, nargs, vm));
+    }
     let mut names = Vec::with_capacity(nargs);
     for i in 0..nargs {
         let item = tuple.clone_item(i, vm);

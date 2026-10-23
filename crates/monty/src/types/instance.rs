@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value, descriptor};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -16,7 +16,7 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadMut, HeapReadOutput, heap_read_ref_as_field_mut,
     },
-    intern::Interns,
+    intern::{FunctionId, Interns},
     modules::{
         ModuleFunctions,
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
@@ -361,6 +361,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if !descriptor::class_descriptor_free(self.get(vm.heap).class(), vm)
+            && let Some(member) = class_member(self.get(vm.heap).class(), name.as_str(vm.interns), vm)
+        {
+            defer_drop!(member, vm);
+            if descriptor::is_data(member, vm) {
+                vm.heap.inc_ref(self.id());
+                let object = Value::Ref(self.id());
+                defer_drop!(object, vm);
+                let result = descriptor::mutate(member, object, Some(value), vm)?.require_synchronous(vm)?;
+                result.drop_with(vm);
+                return Ok(());
+            }
+        }
         let mut value_guard = DropGuard::new(value, vm);
         let name = attribute_name_value(name, value_guard.ctx());
         let (value, vm) = value_guard.into_parts();
@@ -426,6 +439,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let class_id = self.get(vm.heap).class();
+        if !descriptor::class_descriptor_free(class_id, vm) {
+            return instance_call_attr_mixed(self.id(), attr, args, vm);
+        }
         let attr_str = attr.as_str(vm.interns);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).
@@ -440,10 +457,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
 
         // 2. A class member: bind `self` for methods, call data attributes as-is.
-        let class_id = self.get(vm.heap).class;
         if let Some(member) = class_member(class_id, attr_str, vm) {
             defer_drop!(member, vm);
-            return call_member_bound(member, self.id(), args, vm);
+            // The class hint already rules out descriptor getters for this member.
+            if is_method_value(member, vm) {
+                vm.heap.inc_ref(self.id());
+                return vm.call_function(member, args.prepend(Value::Ref(self.id())));
+            }
+            return vm.call_function(member, args);
         }
 
         // 3. `obj.__class__(...)` constructs a new instance — the callable form of
@@ -631,45 +652,297 @@ impl HeapItem for BoundMethod {
     }
 }
 
-/// Reads an instance attribute for `obj.attr` (the `LoadAttr` path).
-///
-/// Mirrors Python's lookup order: the instance `__dict__` first, then the class
-/// namespace, then the `__class__` special case. A class method becomes a
-/// [`BoundMethod`] (binding `self`); a class variable is returned as-is. A missing
-/// attribute raises `AttributeError` with the real class name. Takes `self_id`
-/// (available at the `Value` level) because binding a method needs the instance's
-/// `HeapId`.
-pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let attr_str = attr.as_str(vm.interns);
-    if let Some(value) = instance_attr(self_id, attr_str, vm) {
-        Ok(CallResult::Value(value))
-    } else {
-        let class_id = instance_class(self_id, vm);
-        Err(ExcType::attribute_error(
-            class_name(class_id, vm.heap, vm.interns),
-            attr_str,
-        ))
+// A selected non-data getter must still yield to a same-named instance callable.
+#[cold]
+fn call_selected_descriptor(
+    self_id: HeapId,
+    member: &Value,
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    if !descriptor::is_data(member, vm) {
+        let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+            unreachable!()
+        };
+        if let Some(callable) = instance
+            .attrs()
+            .get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns)
+        {
+            let callable = callable.clone_with_heap(vm.heap);
+            defer_drop!(callable, vm);
+            return vm.call_function(callable, args);
+        }
+    }
+    vm.heap.inc_ref(self_id);
+    descriptor::call_attr(Value::Ref(self_id), attr, args, vm)
+}
+
+/// Borrowed native callable identity; the class retains its owning reference during lookup.
+/// No Python runs between selection and taking the references needed for the call.
+enum NativeMethod {
+    Function(FunctionId),
+    Heap(HeapId),
+}
+
+/// Native functions and wrappers bind directly, without repeating descriptor classification.
+/// Their builtin types cannot gain data-descriptor hooks, so instance shadowing is safe.
+// Outlining keeps mixed-class dispatch from enlarging the ordinary method call's stack frame.
+#[inline(never)]
+fn instance_call_attr_mixed(
+    self_id: HeapId,
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let class_id = instance_class(self_id, vm);
+    let target = match class_dunder(class_id, attr.as_str(vm.interns), vm) {
+        Some(Value::DefFunction(function)) => NativeMethod::Function(*function),
+        Some(Value::Ref(id)) => {
+            let data = vm.heap.get(*id);
+            if is_heap_method(data) {
+                NativeMethod::Heap(*id)
+            } else if matches!(data, HeapData::BuiltinDescriptor(_)) {
+                return call_builtin_descriptor(self_id, *id, attr, args, vm);
+            } else {
+                return instance_call_attr_with_descriptors(self_id, attr, args, vm);
+            }
+        }
+        _ => return instance_call_attr_with_descriptors(self_id, attr, args, vm),
+    };
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+        unreachable!()
+    };
+    if let Some(callable) = instance
+        .attrs()
+        .get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns)
+    {
+        let callable = callable.clone_with_heap(vm.heap);
+        defer_drop!(callable, vm);
+        return vm.call_function(callable, args);
+    }
+    vm.heap.inc_ref(self_id);
+    let args = args.prepend(Value::Ref(self_id));
+    match target {
+        NativeMethod::Function(function) => vm.call_function(&Value::DefFunction(function), args),
+        NativeMethod::Heap(id) => call_heap_method(id, args, vm),
     }
 }
 
-/// The lookup half of [`instance_getattr`]: the instance `__dict__`, then the
-/// class namespace, then the `__class__` special case; `None` when nothing binds
-/// `attr`, leaving the `AttributeError` to the caller.
-///
-/// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
-/// exactly as `self.field` does, binding a function-valued class member as a
-/// [`BoundMethod`].
-pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
-    if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
-        && let Some(value) = inst
-            .get(vm.heap)
-            .attrs
-            .get_by_str(attr, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap))
-    {
-        return Some(value);
-    }
+// Keep owned-callable cleanup out of the immediate-function call path.
+#[inline(never)]
+fn call_heap_method(id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    vm.heap.inc_ref(id);
+    let callable = Value::Ref(id);
+    defer_drop!(callable, vm);
+    vm.call_function(callable, args)
+}
+
+// Builtin descriptors always have a getter; reuse the selected object without another namespace lookup.
+#[cold]
+fn call_builtin_descriptor(
+    self_id: HeapId,
+    descriptor_id: HeapId,
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    vm.heap.inc_ref(descriptor_id);
+    let descriptor = Value::Ref(descriptor_id);
+    defer_drop!(descriptor, vm);
+    call_selected_descriptor(self_id, descriptor, attr, args, vm)
+}
+
+// Custom descriptor hooks may suspend, so their calls use the frozen continuation machinery.
+// Keep its argument packing and larger stack frame out of ordinary native method calls.
+#[cold]
+fn instance_call_attr_with_descriptors(
+    self_id: HeapId,
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
     let class_id = instance_class(self_id, vm);
+    let member = class_member(class_id, attr.as_str(vm.interns), vm);
+    defer_drop!(member, vm);
+    if member.as_ref().is_some_and(|member| descriptor::has_get(member, vm)) {
+        return call_selected_descriptor(self_id, member.as_ref().unwrap(), attr, args, vm);
+    }
+
+    let attr_str = attr.as_str(vm.interns);
+
+    // 1. An instance attribute shadows class methods; call it as-is (unbound).
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+        unreachable!()
+    };
+    if let Some(callable) = instance
+        .attrs()
+        .get_by_str(attr_str, vm.heap, vm.interns)
+        .map(|v| v.clone_with_heap(vm.heap))
+    {
+        defer_drop!(callable, vm);
+        return vm.call_function(callable, args);
+    }
+
+    // 2. Reuse the class lookup; plain methods need no descriptor continuation.
+    if let Some(member) = member {
+        return call_member_bound(member, self_id, args, vm);
+    }
+
+    // 3. `obj.__class__(...)` constructs a new instance — the callable form of
+    // the `obj.__class__` special attribute (see `instance_getattr` step 3).
+    // Checked after the dict/namespace lookups so a same-named member wins.
+    // The class value is a fresh owned ref (inc_ref) dropped by the guard once
+    // `call_function` has borrowed it; `instantiate_class` takes its own ref
+    // for the new instance.
+    if attr_str == "__class__" {
+        vm.heap.inc_ref(class_id);
+        let class_val = Value::Ref(class_id);
+        defer_drop!(class_val, vm);
+        return vm.call_function(class_val, args);
+    }
+
+    // 4. No such attribute.
+    args.drop_with(vm);
+    Err(ExcType::attribute_error(
+        class_name(class_id, vm.heap, vm.interns),
+        attr_str,
+    ))
+}
+
+/// Reads data descriptors before instance storage, then other class members.
+/// Descriptor code uses ordinary VM frames and may suspend.
+pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let name = attr.as_str(vm.interns);
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+        unreachable!()
+    };
+    let class_id = instance.class();
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        unreachable!()
+    };
+    if class.descriptor_free() || class.data_descriptor_free() {
+        // Both hints prove that instance storage cannot be overridden by a data getter.
+        if let Some(value) = instance.attrs().get_by_str(name, vm.heap, vm.interns) {
+            return Ok(CallResult::Value(value.clone_with_heap(vm.heap)));
+        }
+        if class.descriptor_free() {
+            return lookup_descriptor_free_instance_attr(self_id, name, vm)
+                .map(CallResult::Value)
+                .ok_or_else(|| ExcType::attribute_error(class_name(class_id, vm.heap, vm.interns), name));
+        }
+    }
+    instance_getattr_with_descriptors(self_id, attr, vm)
+}
+
+#[cold]
+fn instance_getattr_with_descriptors(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let name = attr.as_str(vm.interns);
+    let class = instance_class(self_id, vm);
+    let member = class_member(class, name, vm);
+    defer_drop!(member, vm);
+    // A setter/deleter alone does not override reads: precedence also requires a getter.
+    if let Some(member) = member
+        && descriptor::is_data(member, vm)
+        && descriptor::has_get(member, vm)
+    {
+        return descriptor::get(member, Some(self_id), class, vm);
+    }
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+        unreachable!()
+    };
+    if let Some(value) = instance.attrs().get_by_str(name, vm.heap, vm.interns) {
+        return Ok(CallResult::Value(value.clone_with_heap(vm.heap)));
+    }
+    if let Some(member) = member {
+        return descriptor::get(member, Some(self_id), class, vm);
+    }
+    if name == "__class__" {
+        vm.heap.inc_ref(class);
+        return Ok(CallResult::Value(Value::Ref(class)));
+    }
+    Err(ExcType::attribute_error(class_name(class, vm.heap, vm.interns), name))
+}
+
+/// Outcome of the attribute fast path, which checks precedence without invoking getters.
+/// `Found` and `Missing` finish the lookup; `Inconclusive` requires the full attribute protocol.
+pub(crate) enum FastAttributeLookupResult {
+    /// Owns the returned reference, just like a completed general lookup.
+    Found(Value),
+    /// Absence is final; callers can apply their default or missing-attribute behavior.
+    Missing,
+    /// This object or selected getter requires general lookup, possibly suspending.
+    Inconclusive,
+}
+
+/// Fast attribute lookup shared by `getattr`, `hasattr` and class patterns.
+/// Instance storage wins when no data getter can override it. Only a selected
+/// descriptor getter requires general lookup, where its hook may suspend.
+pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
+    let Value::Ref(id) = object else {
+        return FastAttributeLookupResult::Inconclusive;
+    };
+    lookup_instance_attribute_fast(*id, attr, vm)
+}
+
+fn lookup_instance_attribute_fast(id: HeapId, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
+    let HeapData::Instance(instance) = vm.heap.get(id) else {
+        return FastAttributeLookupResult::Inconclusive;
+    };
+    let class = instance.class();
+    let name = attr.as_str(vm.interns);
+    let HeapData::Class(class_info) = vm.heap.get(class) else {
+        unreachable!()
+    };
+    if class_info.descriptor_free() {
+        return match lookup_descriptor_free_instance_attr(id, name, vm) {
+            Some(value) => FastAttributeLookupResult::Found(value),
+            None => FastAttributeLookupResult::Missing,
+        };
+    }
+
+    // Keep the borrowed value while checking precedence, then clone it only if it wins.
+    // These dictionary reads and hook checks execute no Python, so no second instance lookup is needed.
+    let instance_value = instance.attrs().get_by_str(name, vm.heap, vm.interns);
+    if class_info.data_descriptor_free()
+        && let Some(value) = instance_value
+    {
+        return FastAttributeLookupResult::Found(value.clone_with_heap(vm.heap));
+    }
+    // A mixed class can still complete this lookup: unrelated descriptors do not matter.
+    // A data getter overrides an instance hit; other getters run only on an instance miss.
+    let member = class_info.namespace().get_by_str(name, vm.heap, vm.interns);
+    if let Some(member) = member
+        && descriptor::has_get(member, vm)
+        && (descriptor::is_data(member, vm) || instance_value.is_none())
+    {
+        return FastAttributeLookupResult::Inconclusive;
+    }
+    if let Some(value) = instance_value {
+        return FastAttributeLookupResult::Found(value.clone_with_heap(vm.heap));
+    }
+    match member {
+        Some(member) if is_method_value(member, vm) => FastAttributeLookupResult::Found(bind_method(member, id, vm)),
+        Some(member) => FastAttributeLookupResult::Found(member.clone_with_heap(vm.heap)),
+        None if name == "__class__" => {
+            vm.heap.inc_ref(class);
+            FastAttributeLookupResult::Found(Value::Ref(class))
+        }
+        None => FastAttributeLookupResult::Missing,
+    }
+}
+
+/// Looks up instance attributes before class members, binding functions to the instance.
+/// Callers must establish that the class needs no descriptor-hook dispatch; otherwise
+/// skipping hooks could violate data-descriptor precedence. Returns an owned value or `None`.
+fn lookup_descriptor_free_instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+        unreachable!("ordinary attribute lookup requires an instance")
+    };
+    if let Some(value) = instance.attrs().get_by_str(attr, vm.heap, vm.interns) {
+        return Some(value.clone_with_heap(vm.heap));
+    }
+    let class_id = instance.class();
     match class_member(class_id, attr, vm) {
         // A class variable is returned as-is; a function binds `self`.
         Some(member) if is_method_value(&member, vm) => {
@@ -690,6 +963,26 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
         }
         None => None,
     }
+}
+
+/// Attribute lookup for native operations that require synchronous completion.
+/// Dataclass repr, comparison and hash use the same descriptor precedence as `obj.attr`.
+pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
+        unreachable!("instance_attr requires an instance")
+    };
+    if descriptor::class_descriptor_free(instance.class(), vm) {
+        return Ok(lookup_descriptor_free_instance_attr(self_id, attr, vm));
+    }
+    // Decide absence before dispatch: a present descriptor may itself raise AttributeError.
+    if attr != "__class__"
+        && !class_defines(instance.class(), attr, vm)
+        && instance.attrs().get_by_str(attr, vm.heap, vm.interns).is_none()
+    {
+        return Ok(None);
+    }
+    let attr = EitherStr::Heap(attr.to_owned());
+    instance_getattr(self_id, &attr, vm)?.require_synchronous(vm).map(Some)
 }
 
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
@@ -842,16 +1135,7 @@ pub(crate) fn instance_call_copy_hook(
 /// Invokes an already-looked-up dunder member, whose reference it takes.
 fn call_dunder_member(self_id: HeapId, func: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(func, vm);
-    // Only a plain function binds `self` as a descriptor (CPython's method
-    // lookup protocol, mirrored by `call_member_bound`); an already-bound
-    // method or other callable value is invoked without it.
-    let args = if is_method_value(func, vm) {
-        vm.heap.inc_ref(self_id);
-        args.prepend(Value::Ref(self_id))
-    } else {
-        args
-    };
-    vm.evaluate_function(func, args)
+    call_member_bound(func, self_id, args, vm)?.require_synchronous(vm)
 }
 
 /// Whether `self_id` is an instance whose class has an `__iter__` member —
@@ -970,7 +1254,7 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
 }
 
 /// Looks up a member in a class namespace and clones it out, or `None` if absent.
-fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
+pub(crate) fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
     match vm.heap.get(class_id) {
         HeapData::Class(class) => class
             .namespace()
@@ -1002,35 +1286,28 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
     }
 }
 
-/// Calls a class member with CPython's descriptor-binding semantics: a
-/// plain user-defined function binds `self` (prepended to `args`), while any
-/// other callable value is called as-is. Shared by `py_call_attr` and the
-/// context-manager and iterator hooks so special-method invocation and
-/// ordinary method calls dispatch identically.
+/// Binds a class member before invoking an ordinary or implicit special method.
 fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    if is_method_value(member, vm) {
-        vm.heap.inc_ref(self_id);
-        vm.call_function(member, args.prepend(Value::Ref(self_id)))
-    } else {
-        vm.call_function(member, args)
-    }
+    descriptor::call_member(member, self_id, args, vm)
 }
 
 /// Whether a value is a user-defined function (so it should bind `self` when
 /// accessed as a method). Class variables that are not functions are returned
 /// unbound.
-fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
+pub(crate) fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::DefFunction(_) => true,
-        Value::Ref(id) => matches!(
-            vm.heap.get(*id),
-            // `functools.partial` and the `lru_cache` wrapper are descriptors in
-            // CPython 3.14 too, and bind the instance the same way: after the
-            // arguments they already carry.
-            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_) | HeapData::LruCache(_)
-        ),
+        Value::Ref(id) => is_heap_method(vm.heap.get(*id)),
         _ => false,
     }
+}
+
+fn is_heap_method(data: &HeapData) -> bool {
+    // Partial and cache wrappers bind the instance after arguments they already carry.
+    matches!(
+        data,
+        HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::Partial(_) | HeapData::LruCache(_)
+    )
 }
 
 impl<'h> PyDeepCopy<'h> for HeapRead<'h, Instance> {
@@ -1063,4 +1340,13 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, BoundMethod> {
         instance.drop_with(vm);
         Ok(self.allocate_like(copied?, vm))
     }
+}
+
+/// Binds a callable to an owned reference to its receiver.
+pub(crate) fn bind_method(func: &Value, receiver: HeapId, vm: &VM<'_>) -> Value {
+    vm.heap.inc_ref(receiver);
+    Value::Ref(vm.heap.allocate(HeapData::BoundMethod(BoundMethod {
+        instance: Value::Ref(receiver),
+        func: func.clone_with_heap(vm.heap),
+    })))
 }

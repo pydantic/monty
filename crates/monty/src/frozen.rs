@@ -17,7 +17,7 @@ use crate::{
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
-    types::{iter, lru_cache},
+    types::{builtin_descriptor::DescriptorMethod, descriptor, iter, lru_cache},
 };
 
 /// Identifies an internal implementation with one authoritative source definition.
@@ -36,6 +36,24 @@ pub(crate) enum FrozenFunction {
     /// Return a default when a suspendable user `__next__` method is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
+    #[serde(rename = "descriptors.call")]
+    DescriptorCall,
+    #[serde(rename = "descriptors.bind_call")]
+    DescriptorBindCall,
+    #[serde(rename = "descriptors.discard")]
+    DescriptorDiscard,
+    #[serde(rename = "descriptors.mutation")]
+    DescriptorMutation,
+    #[serde(rename = "descriptors.set_names")]
+    DescriptorNames,
+    #[serde(rename = "descriptors.getattr")]
+    DescriptorGetattr,
+    #[serde(rename = "descriptors.hasattr")]
+    DescriptorHasattr,
+    #[serde(rename = "descriptors.match")]
+    DescriptorMatch,
+    #[serde(rename = "descriptors.match_class")]
+    DescriptorMatchClass,
 }
 
 impl FrozenFunction {
@@ -73,6 +91,15 @@ impl FrozenFunction {
             Self::Iter => iter::ITER_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
+            Self::DescriptorBindCall => descriptor::BIND_CALL_SOURCE,
+            Self::DescriptorCall => descriptor::CALL_SOURCE,
+            Self::DescriptorMutation => descriptor::MUTATION_SOURCE,
+            Self::DescriptorDiscard => descriptor::DISCARD_SOURCE,
+            Self::DescriptorNames => descriptor::NAMES_SOURCE,
+            Self::DescriptorGetattr => descriptor::GETATTR_SOURCE,
+            Self::DescriptorMatch => descriptor::MATCH_SOURCE,
+            Self::DescriptorMatchClass => descriptor::MATCH_CLASS_SOURCE,
+            Self::DescriptorHasattr => descriptor::HASATTR_SOURCE,
         }
     }
 }
@@ -88,11 +115,21 @@ pub(crate) enum FrozenFunctions {
     Store,
     /// Check the result returned by a user `__iter__` method.
     ValidateIterator,
+    GetAttribute,
+    BindDescriptor,
+    SetNameLookup,
+    MatchClassNames,
+    Descriptor(DescriptorMethod),
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.
 pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     match function {
+        FrozenFunctions::MatchClassNames => vm.match_class_names(args),
+        FrozenFunctions::SetNameLookup => descriptor::lookup_set_name(args, vm),
+        FrozenFunctions::BindDescriptor => descriptor::bind_descriptor(args, vm),
+        FrozenFunctions::GetAttribute => descriptor::get_attribute(args, vm),
+        FrozenFunctions::Descriptor(method) => method.call(vm, args),
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::ValidateIterator => iter::call_validate_iterator(args, vm).map(CallResult::Value),

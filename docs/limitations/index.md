@@ -31,6 +31,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
+- Descriptors, `property`, `classmethod`, `staticmethod`, and decorators on methods
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
@@ -44,10 +45,9 @@ They exist for development and for agents debugging code that runs on Monty; mos
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
 - Class inheritance and metaclasses (`class Foo(Bar):`)
-- Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
-- `del`, both `del x` and `del d[k]`
+- `del x`, `del d[k]`, and multiple deletion targets; single attribute deletion is supported
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions

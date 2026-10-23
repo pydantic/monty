@@ -34,9 +34,9 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
-        Class, Dict, Instance, LazyHeapSet, Module, PyTrait, TupleVec, allocate_tuple,
+        Class, Dict, Instance, LazyHeapSet, Module, PyTrait, TupleVec, allocate_tuple, descriptor,
         host_class::{host_class_type, write_dataclass_repr},
-        instance::{class_defines, class_dunder, class_name, instance_attr},
+        instance::{class_defines, class_dunder, class_member, class_name, instance_attr},
     },
     value::{Marker, Value},
 };
@@ -699,6 +699,14 @@ pub(crate) fn hash_action(class_id: HeapId, vm: &VM<'_>) -> Option<DataclassHash
 /// alone: a plain class has none, so [`dataclass_options`]' field lookup would
 /// be redundant work on this path.
 pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &VM<'_>) -> Option<RunError> {
+    frozen_mutation_error(class_id, name, "assign to", vm)
+}
+
+pub(crate) fn frozen_deletion_error(class_id: HeapId, name: &Value, vm: &VM<'_>) -> Option<RunError> {
+    frozen_mutation_error(class_id, name, "delete", vm)
+}
+
+fn frozen_mutation_error(class_id: HeapId, name: &Value, action: &str, vm: &VM<'_>) -> Option<RunError> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         return None;
     };
@@ -708,8 +716,8 @@ pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &VM<'_
     // Refused for any attribute, declared field or not, as CPython's generated
     // `__setattr__` does.
     let message = match name.as_either_str(vm.heap) {
-        Some(field) => format!("cannot assign to field '{}'", field.as_str(vm.interns)),
-        None => "cannot assign to field".to_owned(),
+        Some(field) => format!("cannot {action} field '{}'", field.as_str(vm.interns)),
+        None => format!("cannot {action} field"),
     };
     Some(SimpleException::new_msg(ExcType::FrozenInstanceError, message).into())
 }
@@ -781,7 +789,7 @@ pub(crate) fn dataclass_init<'h>(
         unreachable!("the caller just allocated the instance")
     };
     let values = bind_dataclass_fields(vm, class, fields_id, &fields, args)?;
-    store_bound_fields(&instance, &fields, values, vm)?;
+    store_bound_fields(&instance, *instance_id, &fields, values, vm)?;
     run_post_init(*instance_id, class, vm)?;
     Ok(CallResult::Value(guard.into_inner()))
 }
@@ -803,7 +811,7 @@ fn run_post_init<'h>(instance_id: HeapId, class: &HeapRead<'h, Class>, vm: &mut 
         return Ok(());
     }
     // Read as an attribute, so the method arrives bound to the instance.
-    let Some(post_init) = instance_attr(instance_id, StaticStrings::PostInit.into(), vm) else {
+    let Some(post_init) = instance_attr(instance_id, StaticStrings::PostInit.into(), vm)? else {
         return Ok(());
     };
     defer_drop!(post_init, vm);
@@ -817,14 +825,27 @@ fn run_post_init<'h>(instance_id: HeapId, class: &HeapRead<'h, Class>, vm: &mut 
 /// guard; the caller owns the instance.
 fn store_bound_fields<'h>(
     instance: &HeapReadMut<'h, Instance>,
+    instance_id: HeapId,
     fields: &[(StringId, bool)],
     values: Vec<Value>,
     vm: &mut VM<'h>,
 ) -> Result<(), RunError> {
     defer_drop_mut!(values, vm);
     for i in 0..values.len() {
-        let value = mem::replace(&mut values[i], Value::None);
         let name = Value::InternString(fields[i].0);
+        if let Some(member) = class_member(instance.get(vm.heap).class(), vm.interns.get_str(fields[i].0), vm) {
+            defer_drop!(member, vm);
+            if descriptor::is_data(member, vm) {
+                let value = mem::replace(&mut values[i], Value::None);
+                vm.heap.inc_ref(instance_id);
+                let object = Value::Ref(instance_id);
+                defer_drop!(object, vm);
+                let result = descriptor::mutate(member, object, Some(value), vm)?.require_synchronous(vm)?;
+                result.drop_with(vm);
+                continue;
+            }
+        }
+        let value = mem::replace(&mut values[i], Value::None);
         // Unchecked: a `frozen=True` instance refuses its own `set_attr`, as
         // CPython's generated `__init__` goes through `object.__setattr__`.
         let replaced = instance.set_attr_unchecked(name, value, vm)?;
@@ -1051,9 +1072,9 @@ pub(crate) fn dataclass_eq(
         let field_name = vm.interns.get_str(*name_id).to_owned();
         // Both reads are guarded so a failing comparison below (or an early
         // return) cannot strand either value.
-        let a = instance_attr(self_id, &field_name, vm);
+        let a = instance_attr(self_id, &field_name, vm)?;
         defer_drop!(a, vm);
-        let b = instance_attr(other_id, &field_name, vm);
+        let b = instance_attr(other_id, &field_name, vm)?;
         defer_drop!(b, vm);
         match (a, b) {
             (Some(a), Some(b)) if !a.py_eq_operator(b, vm)? => return Ok(Some(false)),
@@ -1087,7 +1108,7 @@ pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut
     let mut hasher = DefaultHasher::new();
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
-        let value = instance_attr(self_id, &field_name, vm);
+        let value = instance_attr(self_id, &field_name, vm)?;
         defer_drop!(value, vm);
         let Some(value) = value else {
             let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
@@ -1118,7 +1139,7 @@ pub(crate) fn dataclass_repr_fmt(
     // generated f-string does. A field that resolves nowhere raises.
     write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, vm| {
         let field_name = vm.interns.get_str(field_names[i]).to_owned();
-        match instance_attr(self_id, &field_name, vm) {
+        match instance_attr(self_id, &field_name, vm)? {
             Some(value) => Ok((field_name, Some(value))),
             None => Err(ExcType::attribute_error(&name, &field_name)),
         }

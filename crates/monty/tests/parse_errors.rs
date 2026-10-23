@@ -72,16 +72,6 @@ fn method_default_walrus_returns_not_implemented_error() {
 }
 
 #[test]
-fn method_decorators_return_not_implemented_error() {
-    let err = get_parse_err("class Foo:\n    @staticmethod\n    def m(): pass");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(
-        err.message().unwrap(),
-        @"The monty syntax parser does not yet support method decorators (classmethod/staticmethod/property)"
-    );
-}
-
-#[test]
 fn non_literal_class_var_compiles_successfully() {
     // The class body now has a real scope, so class variables may be arbitrary
     // expressions (including ones referencing earlier class variables).

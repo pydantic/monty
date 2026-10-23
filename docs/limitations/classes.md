@@ -365,13 +365,10 @@ every construction request. Divergences:
 - `class Foo(Bar): ...` — no inheritance, no MRO, no `super()` (rejected at
     parse time: "class inheritance and metaclasses"; the runtime equivalent
     `type('Foo', (Bar,), {})` raises `TypeError`, see above).
-- Metaclasses, `__init_subclass__`, `__set_name__`, and any other
+- Metaclasses, `__init_subclass__`, and other
     metaclass-driven namespace customization.
-- `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
+- `__slots__`.
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
-- Method decorators — `@classmethod`, `@staticmethod`, `@property`, and any
-    decorator on a `def` inside a class body (rejected at parse time). Decorators
-    on classes and on non-method functions are supported.
 - **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
     are all unavailable (`cls.__name__` and `cls.__annotations__` work, the
     latter with stringized values, see [typing.md](typing.md)). A class decorator
@@ -494,3 +491,19 @@ are never frozen in the sandbox (see "Host class instances" above). Subclass
 of `AttributeError`, so `except AttributeError:` catches it, as in CPython's
 `dataclasses` module. A plain `class` is never frozen, and
 `object.__setattr__` writes past the check either way.
+
+## Descriptor limitations
+
+- Direct calls (`obj.attr(...)`) evaluate arguments before descriptor binding.
+    Read the attribute into a variable first when binding order matters.
+- `property` does not infer `__doc__` from its getter; pass `doc=` explicitly.
+    `__doc__` and `__name__` cannot be reassigned on the property object.
+- `classmethod` and `staticmethod` expose `__func__`, `__wrapped__`, and `__name__`, but do not copy
+    other function metadata (including `__doc__`) or expose a writable wrapper `__dict__`.
+- Descriptor types cannot be subclassed, since class inheritance is unsupported.
+- Missing descriptor hooks and property accessors raise `AttributeError` with shorter messages than CPython.
+- Native operations that already run Python hooks synchronously, including dataclass comparison and repr,
+    also require descriptor reads to finish synchronously.
+    Data-descriptor setters in the synthesized dataclass initializer also cannot suspend; see [dataclasses.md](dataclasses.md).
+- Explicit `property.__get__` and other methods on the descriptor *type* are unavailable;
+    access the methods on the descriptor object instead (`descriptor.__get__(obj, cls)`).

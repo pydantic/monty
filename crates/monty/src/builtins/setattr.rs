@@ -4,10 +4,10 @@ use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunResult, SimpleException},
-    value::Value,
+    types::descriptor,
 };
 
 /// Implementation of the setattr() builtin function.
@@ -20,7 +20,7 @@ use crate::{
 /// setattr(obj, 'x', 42)      # Set obj.x = 42
 /// setattr(obj, 'name', 'foo') # Set obj.name = 'foo'
 /// ```
-pub fn builtin_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let positional = args.into_pos_only("setattr", vm.heap)?;
     defer_drop!(positional, vm);
 
@@ -38,7 +38,5 @@ pub fn builtin_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     };
 
     // note: py_set_attr takes ownership of the inc-ref'd value and drops it on error
-    object.py_set_attr(&name, value.clone_with_heap(vm), vm)?;
-
-    Ok(Value::None)
+    descriptor::set_attr(object, &name, value.clone_with_heap(vm), vm)
 }
