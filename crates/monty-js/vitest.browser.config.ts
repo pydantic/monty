@@ -17,8 +17,9 @@ export default defineConfig({
     {
       name: 'monty-browser-node-builtins',
       enforce: 'pre',
-      resolveId(id) {
-        return id.startsWith('node:') ? nodeBuiltinsStub : null
+      // only browser code: the global setup's servers run in Node (ssr) and need the real modules
+      resolveId(id, _importer, options) {
+        return id.startsWith('node:') && !options.ssr ? nodeBuiltinsStub : null
       },
     },
   ],
@@ -32,6 +33,8 @@ export default defineConfig({
     // shelling out) and cannot run against a filesystem-less browser, where
     // every `node:` import resolves to the throwing stub above
     exclude: ['__test__/node_*.spec.ts'],
+    // servers for wasm_websocket.spec.ts, bridged to `monty subprocess` children
+    globalSetup: ['__test__/websocket_setup.ts'],
     testTimeout: 60_000,
     hookTimeout: 60_000,
     browser: {

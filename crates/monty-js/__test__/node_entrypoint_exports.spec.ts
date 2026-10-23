@@ -16,5 +16,8 @@ test('every entrypoint exports the same shared values', () => {
 })
 
 test('the WASM entry exports no implementation machinery', () => {
-  t.deepEqual(Object.keys(wasm).sort(), [...Object.keys(shared), 'Monty', 'createWorkerPool', 'loadModule'].sort())
+  t.deepEqual(
+    Object.keys(wasm).sort(),
+    [...Object.keys(shared), 'Monty', 'MontyWebsocket', 'createWorkerPool', 'loadModule'].sort(),
+  )
 })

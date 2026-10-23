@@ -402,7 +402,27 @@ When such a server drains, the pool resumes the session on a new connection inst
 unless `autoResume: false` is passed to `MontyWebsocket.create()`.
 These behave as in the Python client; see [stored sessions](../api/python/websocket.md#stored-sessions).
 The transport adds no isolation of its own: see [remote workers](../security.md#remote-workers).
-`MontyWebsocket` is native-only; `@pydantic/monty/wasm` does not export it.
+
+### Remote workers from a browser
+
+`@pydantic/monty/wasm`, and the main entry under the `browser` condition, export a `MontyWebsocket` with the same
+`create()` and `checkout()`, built on the runtime's global `WebSocket` (any browser, Node 22 and later).
+It loads a protocol codec of about 400 KB instead of the interpreter, and runs it on the calling thread:
+
+```ts test="skip"
+import { MontyWebsocket } from '@pydantic/monty/wasm'
+
+await using pool = await MontyWebsocket.create('wss://monty.example.com/')
+await using session = await pool.checkout()
+console.log(await session.feedRun('1 + 1')) // 2
+```
+
+It differs from the native client in these ways:
+
+- **No upgrade headers.** A browser `WebSocket` cannot set them, so `connectHeaders` is rejected with `TypeError`.
+- **No connection cap.** `maxProcesses` and `checkoutTimeout` are rejected; each checkout dials at once.
+- **The URL must be `ws://` or `wss://`.** A page served over HTTPS can only open `wss://`.
+- **Prints stream** as frames arrive, as they do on the native client.
 
 ## Browsers and WebAssembly
 
@@ -434,7 +454,7 @@ Differences from the native path:
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;
     see [allocator limits](../limitations/resource_limits.md#exceeding-max_memory-in-a-worker-pools).
-- **Prints are buffered per turn** rather than streamed live.
+- **Prints are buffered per turn** rather than streamed live; remote sessions stream them.
 
 ## TypeScript reference
 
@@ -445,4 +465,5 @@ The package includes declarations with option and method documentation, maintain
 [host objects](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/classInstance.ts),
 [OS policies](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/options.ts) and
 [value markers](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/types.ts).
-Worker pools, channels and transports are internal; the WASM-specific public functions are `loadModule` and `createWorkerPool`.
+Worker pools, channels and transports are internal; the WASM-specific public functions are `loadModule` and `createWorkerPool`,
+plus the browser `MontyWebsocket` ([declarations](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/worker/websocket.ts)).

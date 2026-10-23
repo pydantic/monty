@@ -1,12 +1,22 @@
 // The wasm worker transport: a structural stand-in for `NativeSession`.
 //
 // `MontySession` drives the same methods as the napi-backed session, while this
-// implementation sends semantic WIT requests to the Rust component. TypeScript
-// converts only between public JavaScript values and the component's flat value
-// arena; protobuf is now entirely internal to Rust.
+// implementation sends semantic WIT requests through a `Dispatcher`: to a local
+// wasm component, or to a remote worker over a WebSocket (`remote.ts`).
+// TypeScript converts only between public JavaScript values and the component's
+// flat value arena; protobuf stays inside Rust components.
 
-import { MontyCrashedError } from '../errors.js'
-import type { CrashedTurn, DumpedTurn, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
+import { MontyCrashedError, MontyDisconnectError, MontyShutdown, ProtocolError } from '../errors.js'
+import type {
+  CrashedTurn,
+  DisconnectedTurn,
+  DumpedTurn,
+  NativeFutureResult,
+  NativeTurn,
+  NotMountedTurn,
+  ProtocolTurn,
+  ShutdownTurn,
+} from '../native.js'
 import {
   type EncodedOsPolicy,
   type EncodedRandomSeed,
@@ -30,7 +40,7 @@ import type {
   ResourceLimits as ComponentResourceLimits,
   TypeCheckFormat as ComponentTypeCheckFormat,
 } from './component/monty.component.js'
-import type { Dispatcher } from './host.js'
+import { DispatchFailure, type Dispatcher } from './dispatch.js'
 import { ArenaEncoder, decodeArena } from './value.js'
 
 /** The arena of a request that carries no value. */
@@ -65,6 +75,9 @@ export interface DurationGraces {
   turnDurationLimitGraceMs?: number | null
 }
 
+/** A worker that died, a lost remote connection, or a protocol violation. */
+type FailureTurn = CrashedTurn | DisconnectedTurn | ProtocolTurn
+
 /** A session-shaped adapter over one semantic component dispatcher. */
 export class WorkerTransport {
   /** The id/name of the suspension awaiting an answer. */
@@ -74,13 +87,13 @@ export class WorkerTransport {
   /** No OS process backs a wasm worker. */
   readonly workerPid: number | null = null
 
-  /** Only a remote server that stores sessions names them. */
-  readonly sessionId: Uint8Array | null = null
+  /** Only a remote server that stores sessions names them; see `sessionId`. */
+  private namedSession: Uint8Array | null = null
 
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
   private finished = false
-  private failure: CrashedTurn | null = null
+  private failure: FailureTurn | null = null
   private exitStatus: string | undefined
   private feedBudgetMs: number | undefined
   private turnBudgetMs: number | undefined
@@ -106,6 +119,7 @@ export class WorkerTransport {
     configuredSleepLimitMicros: bigint | undefined,
     private readonly graces: DurationGraces,
     readonly workerId: number,
+    private readonly remote: boolean,
   ) {
     this.configuredSleepLimitMicros = configuredSleepLimitMicros
   }
@@ -120,15 +134,20 @@ export class WorkerTransport {
     return WorkerTransport.configure(dispatcher, prepareSession(config), graces, workerId)
   }
 
-  /** Configures a worker with options captured before waiting for pool capacity. */
+  /**
+   * Configures a worker with options captured before waiting for pool capacity.
+   * A `remote` worker is single-use, as in `monty-pool`: closing its connection
+   * ends the session, so `finish` sends no `reset`.
+   */
   static async configure(
     dispatcher: Dispatcher,
     config: ConfigureRequest,
     graces: DurationGraces,
     workerId: number,
+    remote = false,
   ): Promise<WorkerTransport> {
     const limits = config.limits ?? {}
-    const transport = new WorkerTransport(dispatcher, limits.maxTotalSleepMicros, graces, workerId)
+    const transport = new WorkerTransport(dispatcher, limits.maxTotalSleepMicros, graces, workerId, remote)
     transport.suspensionLimit = limits.maxSuspensions ?? 1000n
     transport.feedBudgetMs =
       limits.maxFeedDurationMicros === undefined ? undefined : Number(limits.maxFeedDurationMicros) / 1000
@@ -243,19 +262,17 @@ export class WorkerTransport {
     return this.turn({ tag: 'resume-name-lookup', val: request }, onPrint)
   }
 
-  /** Reports the sandbox worker's lack of dependency installation. */
-  async installDependencies(requirements: string[], _onPrint: OnPrint): Promise<NativeTurn | { kind: 'ok' }> {
-    return requirements.length === 0
-      ? { kind: 'ok' }
-      : {
-          kind: 'error',
-          exception: {
-            excType: 'RuntimeError',
-            message: 'dependency installation is only supported by the CPython worker',
-            traceback: '',
-            frames: [],
-          },
-        }
+  /** The session a remote that stores sessions named, or `null`. */
+  get sessionId(): Uint8Array | null {
+    return this.namedSession
+  }
+
+  /** Installs requirements; only a remote CPython worker can, and installing nothing always succeeds. */
+  async installDependencies(requirements: string[], onPrint: OnPrint): Promise<NativeTurn | { kind: 'ok' }> {
+    if (requirements.length === 0) return { kind: 'ok' }
+    const event = await this.run({ tag: 'install-dependencies', val: requirements }, onPrint)
+    if (!event) return this.crash()
+    return event.tag === 'ok' ? { kind: 'ok' } : this.toTurn(event)
   }
 
   /** Delivers settled external futures to the suspended worker, their
@@ -271,20 +288,12 @@ export class WorkerTransport {
     return this.turn({ tag: 'resume-futures', val: { results: settled, values: encoder.finish() } }, onPrint)
   }
 
-  /** Dumps the current session into opaque bytes, or resolves to the failure
-   *  turn; takes `onPrint` to match `NativeSession.dump`, never invoking it. */
-  async dump(_onPrint?: OnPrint): Promise<DumpedTurn | NativeTurn> {
-    const event = await this.run({ tag: 'dump' }, undefined)
+  /** Dumps the current session into opaque bytes, or a storing server's record
+   *  ID. A refusal is an `error` turn that leaves the session usable. */
+  async dump(onPrint?: OnPrint): Promise<DumpedTurn | NativeTurn> {
+    const event = await this.run({ tag: 'dump' }, onPrint)
     if (!event) return this.crash()
-    switch (event.tag) {
-      case 'dump-result':
-        return { kind: 'dumped', state: event.val }
-      case 'error':
-      case 'fatal-error':
-        return this.toTurn(event)
-      default:
-        return { kind: 'protocol', message: `Dump expected event dump-result, got ${event.tag}` }
-    }
+    return event.tag === 'dump-result' ? { kind: 'dumped', state: event.val } : this.toTurn(event)
   }
 
   /** Restores a previously dumped session into this fresh worker. */
@@ -305,7 +314,7 @@ export class WorkerTransport {
   async finish(): Promise<void> {
     if (this.finished) return
     this.finished = true
-    if (!this.dead) {
+    if (!this.dead && !this.remote) {
       try {
         await this.control({ tag: 'reset' }, 'ok', 'Reset')
       } catch {
@@ -341,7 +350,7 @@ export class WorkerTransport {
         if (refused !== null) turn = await this.abortFeed('TimeoutError', refused, onPrint)
       }
     }
-    if (turn.kind === 'crashed' || turn.kind === 'protocol') {
+    if (turn.kind === 'crashed' || turn.kind === 'protocol' || turn.kind === 'disconnected') {
       this.dead = true
       await this.finish()
     }
@@ -353,7 +362,8 @@ export class WorkerTransport {
     const aborted = await this.run({ tag: 'abort-feed', val: { excType, message } }, onPrint)
     const turn = aborted ? this.toTurn(aborted) : this.crash()
     // Reject suspensions after abort: servicing them would bypass the host's budget.
-    if (turn.kind !== 'error' && turn.kind !== 'crashed') {
+    // A lost worker, a drain and a protocol failure end the session anyway.
+    if (!['error', 'crashed', 'disconnected', 'shutdown', 'protocol'].includes(turn.kind)) {
       this.dead = true
       return { kind: 'protocol', message: `worker answered abort-feed with ${turn.kind}` }
     }
@@ -378,11 +388,14 @@ export class WorkerTransport {
   /** Sends a control request and verifies its expected event kind. */
   private async control(request: ComponentRequest, kind: ComponentEvent['tag'], what: string): Promise<ComponentEvent> {
     const event = await this.run(request, undefined)
-    if (!event) {
-      const failure = this.crash()
-      throw new MontyCrashedError(failure.message, failure)
-    }
+    if (!event) throw failureError(this.crash())
     if (event.tag === 'fatal-error') throw new MontyCrashedError(event.val, { exitStatus: this.exitStatus })
+    if (event.tag === 'shutdown') {
+      // a draining server has no session to name yet, so nothing to resume from
+      throw this.remote
+        ? new MontyShutdown(shutdownMessage(event.val))
+        : new ProtocolError('local worker sent a ShutdownDump')
+    }
     // the worker's own reason, e.g. a zone name its tz database lacks
     if (event.tag === 'error' && kind !== 'error') throw new Error(`${what} failed: ${event.val.message}`)
     if (event.tag !== kind) throw new Error(`${what} expected event ${kind}, got ${event.tag}`)
@@ -400,7 +413,8 @@ export class WorkerTransport {
     }
     let events: ComponentEvent[]
     try {
-      const result = await this.dispatcher(request, this.backstopMs())
+      const result = await this.dispatcher(request, this.backstopMs(), onPrint)
+      if (result.sessionId !== undefined) this.namedSession = result.sessionId
       this.feedExecutionMs = Math.max(this.feedExecutionMs, Number(result.feedExecutionMicros) / 1000)
       this.feedBudgetMs ??=
         result.maxFeedDurationMicros === undefined ? undefined : Number(result.maxFeedDurationMicros) / 1000
@@ -422,14 +436,16 @@ export class WorkerTransport {
     } catch (error) {
       this.dead = true
       this.failure =
-        error instanceof MontyCrashedError
-          ? {
-              kind: 'crashed',
-              message: error.exception.message,
-              timedOut: error.timedOut,
-              exitStatus: error.exitStatus ?? undefined,
-            }
-          : { kind: 'crashed', message: 'worker exited without a turn-ending event', timedOut: false }
+        error instanceof DispatchFailure
+          ? error.turn
+          : error instanceof MontyCrashedError
+            ? {
+                kind: 'crashed',
+                message: error.exception.message,
+                timedOut: error.timedOut,
+                exitStatus: error.exitStatus ?? undefined,
+              }
+            : { kind: 'crashed', message: 'worker exited without a turn-ending event', timedOut: false }
       return null
     }
     let terminating: ComponentEvent | null = null
@@ -441,12 +457,13 @@ export class WorkerTransport {
       }
     }
     if (this.dead && this.onFinish) await this.finish()
-    // Shutdown may carry a fatal diagnostic, but must never deliver a successful turn or another suspension.
-    return this.dead && terminating?.tag !== 'fatal-error' ? null : terminating
+    // Shutdown may carry a fatal diagnostic or a remote's drain, but must never
+    // deliver a successful turn or another suspension.
+    return this.dead && terminating?.tag !== 'fatal-error' && terminating?.tag !== 'shutdown' ? null : terminating
   }
 
   /** Retains crash metadata so subsequent requests cannot revive a dead component. */
-  private crash(): CrashedTurn {
+  private crash(): FailureTurn {
     this.dead = true
     return (this.failure ??= {
       kind: 'crashed',
@@ -526,6 +543,13 @@ export class WorkerTransport {
         }
       case 'fatal-error':
         return { kind: 'crashed', message: event.val, timedOut: false, exitStatus: this.exitStatus }
+      case 'shutdown': {
+        // only a serving relay drains: a local worker naming a dump would have
+        // the host restore bytes it minted, as `monty-pool` refuses too
+        if (!this.remote) return { kind: 'protocol', message: 'local worker sent a ShutdownDump' }
+        const turn: ShutdownTurn = { kind: 'shutdown', message: shutdownMessage(event.val) }
+        return event.val === undefined ? turn : { ...turn, dump: event.val }
+      }
       default:
         return { kind: 'protocol', message: `unexpected event kind ${event.tag}` }
     }
@@ -634,6 +658,24 @@ function micros(
     throw new TypeError(`invalid ${option}: expected a non-negative number of seconds, got ${seconds}`)
   }
   return { [key]: BigInt(Math.round(seconds * 1_000_000)) }
+}
+
+/** The error a failed control request throws, as `MontySession` would raise for the turn. */
+function failureError(turn: FailureTurn): Error {
+  switch (turn.kind) {
+    case 'crashed':
+      return new MontyCrashedError(turn.message, turn)
+    case 'disconnected':
+      return new MontyDisconnectError(turn.message)
+    case 'protocol':
+      return new ProtocolError(turn.message)
+  }
+}
+
+/** A draining server's refusal, worded as `monty-pool`'s `PoolError::Shutdown`. */
+function shutdownMessage(dump: Uint8Array | undefined): string {
+  const message = 'monty server is shutting down; the request did not run'
+  return dump === undefined ? message : `${message} (restorable state attached)`
 }
 
 /** Identifies turns that consume the host-side suspension budget. */
