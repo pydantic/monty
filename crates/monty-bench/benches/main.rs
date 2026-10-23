@@ -9,9 +9,10 @@
 //! - `mount = true`: bind `DATA` to the root of the mounted [`scan_tree`]
 //! - `overlay = true`: with `mount`, also register `<name>_overlay__monty` over an overlay mount
 //! - `limits = true`: also register `<name>_limits__monty` with resource limits armed
+//! - `always = true`: include the script in the PR suite as well as full runs
 
 use std::{
-    fs, mem,
+    env, fs, mem,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -49,11 +50,18 @@ const TEST_CASES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty/test
 /// Source of the `end_to_end` benchmarks, which parse inside the timed loop.
 const ADD_TWO: &str = include_str!("python/add_two.py");
 
-/// Registers every script benchmark, then the Rust-API benchmarks.
+/// Registers selected scripts and all Rust-API benchmarks.
 fn criterion_benchmark(c: &mut Criterion) {
+    let pr_only = match env::var("MONTY_BENCH_SUITE").as_deref() {
+        Ok("pr") => true,
+        Ok("full") | Err(env::VarError::NotPresent) => false,
+        _ => panic!("MONTY_BENCH_SUITE must be 'pr' or 'full'"),
+    };
     let tree = scan_tree();
     for script in Script::load_all() {
-        script.register(c, tree.path());
+        if !pr_only || script.always {
+            script.register(c, tree.path());
+        }
     }
 
     c.bench_function("end_to_end__monty", end_to_end_monty);
@@ -78,6 +86,8 @@ struct Script {
     limits: bool,
     /// Also benchmark over an overlay mount; requires [`Input::Mount`].
     overlay: bool,
+    /// Include the script in PR runs.
+    always: bool,
 }
 
 /// What a script's `DATA` global is bound to.
@@ -108,6 +118,7 @@ impl Script {
             mount,
             overlay,
             limits,
+            always,
         } = mem::take(&mut header.bench);
         assert!(
             header == Header::default(),
@@ -130,6 +141,7 @@ impl Script {
             input,
             limits,
             overlay,
+            always,
         }
     }
 

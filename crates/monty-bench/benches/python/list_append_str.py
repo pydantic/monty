@@ -1,3 +1,7 @@
+# /// monty
+# [bench]
+# always = true
+# ///
 # Appends 100,000 freshly allocated strings.
 
 a = []

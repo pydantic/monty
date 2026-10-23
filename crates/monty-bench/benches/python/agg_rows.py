@@ -1,3 +1,7 @@
+# /// monty
+# [bench]
+# always = true
+# ///
 # Group-by aggregation over rows of dicts, the core loop of a data-analysis agent:
 # str-keyed dict get/insert, `sorted` with a lambda key and a filtered generator `sum`.
 

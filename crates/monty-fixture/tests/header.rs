@@ -24,6 +24,7 @@ fn reads_every_key() {
 # [bench]
 # data = '../input.json'
 # limits = true
+# always = true
 # ///
 x = 1
 ";
@@ -38,6 +39,7 @@ x = 1
             bench: Bench {
                 data: Some("../input.json".to_owned()),
                 limits: true,
+                always: true,
                 ..Bench::default()
             },
             ..Header::default()
@@ -64,7 +66,7 @@ fn rejects_unknown_bench_key() {
       |
     2 | mount-fs = true
       | ^^^^^^^^
-    unknown field `mount-fs`, expected one of `data`, `mount`, `overlay`, `limits`
+    unknown field `mount-fs`, expected one of `data`, `mount`, `overlay`, `limits`, `always`
     ");
 }
 
@@ -96,4 +98,14 @@ fn rejects_unclosed_block() {
 #[test]
 fn rejects_non_comment_body_line() {
     assert_snapshot!(parse_error("# /// monty\n#run-async = true\n# ///\n"), @"line 2: `#run-async = true` inside the header is not a `# ` comment");
+}
+
+#[test]
+fn bench_always_defaults_to_false() {
+    assert!(!Header::parse("# /// monty\n# [bench]\n# ///\n").unwrap().bench.always);
+}
+
+#[test]
+fn rejects_non_boolean_bench_always() {
+    assert!(Header::parse("# /// monty\n# [bench]\n# always = 'true'\n# ///\n").is_err());
 }

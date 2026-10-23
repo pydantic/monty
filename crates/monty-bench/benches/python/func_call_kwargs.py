@@ -1,3 +1,7 @@
+# /// monty
+# [bench]
+# always = true
+# ///
 # A single call binding a keyword argument and a default.
 
 def add(a, b=2):

@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
@@ -14,8 +15,22 @@ env:
   SAVE_CI_CACHE: ${{ github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Save CI cache') }}
 
 jobs:
+  select-suite:
+    name: Select benchmark suite
+    if: github.event.action != 'labeled' || github.event.label.name == 'Full Benchmarks'
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.suite.outputs.full }}
+    steps:
+      - id: suite
+        env:
+          FULL_BENCHMARKS: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'Full Benchmarks') }}
+        run: echo "full=$FULL_BENCHMARKS" >> "$GITHUB_OUTPUT"
+
   build-worker:
     name: Build release worker
+    needs: [select-suite]
+    if: needs.select-suite.outputs.full == 'true'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,7 +70,13 @@ jobs:
 
   benchmarks:
     name: Run benchmarks (${{ matrix.mode }})
-    needs: [build-worker]
+    needs: [select-suite, build-worker]
+    # A reduced run deliberately skips the worker build; failed builds still block measurement.
+    if: >-
+      ${{ !cancelled() && needs.select-suite.result == 'success' &&
+          (needs.build-worker.result == 'success' || needs.build-worker.result == 'skipped') }}
+    env:
+      FULL_BENCHMARKS: ${{ needs.select-suite.outputs.full }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,7 +124,8 @@ jobs:
       - name: Install cargo-codspeed
         run: cargo install cargo-codspeed --version 5.0.1 --locked
 
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - if: env.FULL_BENCHMARKS == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codspeed-worker
           path: worker-wheels
@@ -111,18 +133,20 @@ jobs:
       # MONTY_TEST_BIN prevents the pool benchmarks from building a worker mid-run.
       # Both measurement modes use the same optimized worker from this workflow run.
       - name: Install the release worker
+        if: env.FULL_BENCHMARKS == 'true'
         run: |
           python -m venv worker
           worker/bin/python -m pip install --no-deps worker-wheels/*.whl
 
-      # No `--bench` filter: build and run every monty-bench target. The
-      # `codspeed` profile (root Cargo.toml) is release codegen — fat LTO,
-      # one codegen unit — with symbols kept for CodSpeed's flamegraphs, so
-      # measurements reflect the optimization level users actually run.
-      # The `codspeed` feature selects codspeed-criterion-compat and drops the
-      # CPython comparisons in both measurement modes.
+      # Both suites use release codegen and the same benchmark names, so reduced
+      # PR results compare against the full main-branch baseline.
       - name: Build benchmarks
-        run: cargo codspeed build -m ${{ matrix.mode }} -p monty-bench --profile codspeed --features codspeed
+        run: |
+          targets=()
+          if [ "$FULL_BENCHMARKS" != true ]; then
+            targets+=(--bench main)
+          fi
+          cargo codspeed build -m ${{ matrix.mode }} -p monty-bench --profile codspeed --features codspeed "${targets[@]}"
 
       # Every benchmark in a target runs in one process, so glibc's malloc
       # state carries over between them. By default glibc raises its mmap and
@@ -144,7 +168,12 @@ jobs:
         uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
         with:
           mode: ${{ matrix.mode }}
-          run: setarch $(uname -m) -R cargo codspeed run -p monty-bench
+          run: |
+            if [ "$FULL_BENCHMARKS" = true ]; then
+              MONTY_BENCH_SUITE=full setarch "$(uname -m)" -R cargo codspeed run -p monty-bench
+            else
+              MONTY_BENCH_SUITE=pr setarch "$(uname -m)" -R cargo codspeed run -p monty-bench --bench main
+            fi
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/worker/bin/monty
           GLIBC_TUNABLES: ${{ matrix.glibc_tunables }}

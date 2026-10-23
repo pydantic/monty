@@ -79,6 +79,7 @@ pub enum Interpreter {
 /// The `[bench]` table: how `monty-bench` runs a script.
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[expect(clippy::struct_excessive_bools, reason = "one bool per benchmark option")]
 pub struct Bench {
     /// Bind `DATA` to the contents of this file, relative to the script.
     pub data: Option<String>,
@@ -88,6 +89,8 @@ pub struct Bench {
     pub overlay: bool,
     /// Also benchmark with resource limits armed.
     pub limits: bool,
+    /// Include this script in PR runs as well as the full suite.
+    pub always: bool,
 }
 
 /// Why a header couldn't be read.

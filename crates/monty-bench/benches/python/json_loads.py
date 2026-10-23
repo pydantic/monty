@@ -1,5 +1,6 @@
 # /// monty
 # [bench]
+# always = true
 # data = '../medium_response.json'
 # ///
 # Parses the ~2 KB `medium_response.json` 1,000 times, amortizing per-run overhead.

@@ -1,3 +1,7 @@
+# /// monty
+# [bench]
+# always = true
+# ///
 # Several attribute names with cheap, non-allocating method bodies: operations on an
 # empty list, a one-entry dict and a single-character string.
 

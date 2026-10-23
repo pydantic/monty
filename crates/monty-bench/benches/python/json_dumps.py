@@ -1,5 +1,6 @@
 # /// monty
 # [bench]
+# always = true
 # data = '../medium_response.json'
 # ///
 # Serializes the parsed `medium_response.json` 1,000 times.

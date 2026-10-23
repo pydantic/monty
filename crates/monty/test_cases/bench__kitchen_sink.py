@@ -1,3 +1,7 @@
+# /// monty
+# [bench]
+# always = true
+# ///
 # Every `bench__*.py` test case is also a `monty-bench` benchmark (benches/main.rs)
 # List operations
 my_list = []

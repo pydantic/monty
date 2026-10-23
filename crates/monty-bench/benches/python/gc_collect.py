@@ -1,3 +1,7 @@
+# /// monty
+# [bench]
+# always = true
+# ///
 # Single-collection latency: 50,000 self-referencing lists, cycles that reference counting
 # alone cannot free, collected at once.
 
