@@ -5,7 +5,7 @@
 //! writing to the owning class. Class hints must therefore account for possible future hooks.
 
 use super::{
-    Dict, Type, attribute_name_value,
+    Dict, Type,
     builtin_descriptor::{self, DescriptorMethod},
     instance::{bind_method, class_defines, class_dunder, class_member, is_method_value},
     tuple::allocate_tuple,
@@ -205,7 +205,7 @@ pub(crate) fn get_attribute(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallR
 pub(crate) fn call_attr(object: Value, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let mut guard = DropGuard::new((object, args), vm);
     let (_, vm) = guard.as_parts_mut();
-    let name = attribute_name_value(attr, vm);
+    let name = attr.as_value(vm.heap);
     let ((object, args), vm) = guard.into_parts();
     let mut guard = DropGuard::new([object, name], vm);
     let (_, vm) = guard.as_parts_mut();
@@ -283,7 +283,7 @@ pub(crate) fn discard_call(function: Value, args: Vec<Value>, vm: &mut VM<'_>) -
 pub(crate) fn set_attr(object: &Value, name: &EitherStr, value: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
     defer_drop!(value, vm);
     if let Some(class) = descriptor_class(object, vm) {
-        let key = attribute_name_value(name, vm);
+        let key = name.as_value(vm.heap);
         defer_drop!(key, vm);
         if let Some(error) = dataclasses::frozen_assignment_error(class, key, vm) {
             return Err(error);

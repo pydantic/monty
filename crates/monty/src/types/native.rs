@@ -28,7 +28,7 @@ use crate::{
     py_attrs::{AttrTable, PyAttrs, SubtypeCall},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
-        complex, date, datetime, decimal,
+        builtin_descriptor, complex, date, datetime, decimal,
         io::{BytesIo, PyBytesIoImpl, PyStringIoImpl, StringIo},
         numeric,
         str::PyStr,
@@ -439,6 +439,8 @@ impl Type {
             Self::StringIo => 167,
             Self::BytesIo => 168,
             Self::BlockingIOError => 169,
+            Self::ClassMethod => 170,
+            Self::StaticMethod => 171,
         }
     }
 
@@ -592,7 +594,7 @@ native_types! {
     Type("type")
         .builtin()
         .class_getitem()
-        .ctor(Constructor::Value(builtin_type)),
+        .ctor(Constructor::Call(builtin_type)),
     NoneType("NoneType"),
     Bool("bool", Int)
         .builtin()
@@ -749,6 +751,7 @@ native_types! {
         .ctor(Constructor::Value(Path::init)),
     /// A property descriptor - displays as "property"
     Property("property")
+        .ctor(Constructor::Value(builtin_descriptor::property_init))
         .builtin()
         .basetype(),
     /// A compiled regex pattern from `re.compile()` - displays as "re.Pattern"
@@ -1208,6 +1211,8 @@ native_types! {
     /// through `create_task`; calling the class directly is unsupported.
     Task("_asyncio.Task"),
     /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
+    ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
+    StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
     InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)
         .exc(ExcType::InvalidStateError),
 }

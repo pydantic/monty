@@ -1,6 +1,7 @@
 //! Runtime value types and their Python operations.
 
 pub(crate) mod builtin_descriptor;
+mod builtin_type;
 pub mod bytes;
 pub mod callable_iterator;
 pub mod class;
@@ -58,6 +59,7 @@ mod unicode_type_data;
 pub mod union;
 
 pub(crate) use builtin_descriptor::BuiltinDescriptor;
+pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::Class;
 pub(crate) use complex::Complex;
