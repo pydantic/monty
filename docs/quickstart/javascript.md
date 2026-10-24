@@ -103,6 +103,7 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 | `int`               | `number` within ±2^53, otherwise `BigInt`       |
 | `float`             | `number`                                        |
 | `complex`           | `{ __monty_type__: 'Complex', real, imag }`     |
+| `decimal.Decimal`   | `{ __monty_type__: 'Decimal', value }`          |
 | `str`               | `string`                                        |
 | `bytes`             | `Buffer`                                        |
 | `list`              | `Array`                                         |
@@ -113,6 +114,8 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 | builtin types       | `{ __monty_type__: 'Type', value }`             |
 | builtin functions   | `{ __monty_type__: 'BuiltinFunction', value }`  |
 | file handles        | `MontyFileHandle`                               |
+
+A `Decimal` marker's `value` is the exact string `str(d)` gives (`'1.20'`, `'1E+5'`, `'NaN'`), never a `number`.
 
 Builtin type and function markers carry the builtin's name, never a JavaScript callable.
 Passing a marker back resolves it to that builtin; unrecognized names are rejected with `unknown type name` or

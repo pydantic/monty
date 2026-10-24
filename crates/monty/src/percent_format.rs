@@ -765,12 +765,15 @@ fn format_integer<T: Target>(
 }
 
 /// Coerces an integer directive's operand: ints and bools as they are, floats
-/// truncated for the decimal directives only, anything else through `__index__`.
+/// truncated for the decimal directives only, other real numbers through `__int__`
+/// for those, anything else through `__index__`.
 fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<Value> {
     let decimal = matches!(conversion, b'd' | b'i' | b'u');
     match value.py_value(vm) {
         PyValue::Int(_) | PyValue::Bool(_) => Ok(value.clone_with_heap(vm.heap)),
         PyValue::Float(value) if decimal => LongInt::value_from_f64(value, vm.heap),
+        // The decimal directives convert any real number through `__int__` (`Decimal`).
+        _ if decimal && let Some(int) = value.py_int_impl(vm)? => Ok(int),
         _ => {
             let requirement = if decimal { "a real number" } else { "an integer" };
             value.py_index_impl(vm)?.ok_or_else(|| {
@@ -893,7 +896,7 @@ fn format_float<T: Target>(
 }
 
 /// Coerces a float directive's operand: floats and ints directly, big ints
-/// when they fit a float, anything else through `__index__`.
+/// when they fit a float, anything else through `__float__` or `__index__`.
 fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
     match value.py_value(vm) {
         PyValue::Float(value) => Ok(value),
@@ -903,7 +906,10 @@ fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
             _ => Err(T::float_overflow_error()),
         },
         _ => {
-            if let Some(index) = value.py_index_impl(vm)? {
+            // `__float__` first (`Decimal`), then `__index__`, as `PyFloat_AsDouble` does.
+            if let Some(f) = value.py_float_impl(vm)? {
+                Ok(f)
+            } else if let Some(index) = value.py_index_impl(vm)? {
                 defer_drop!(index, vm);
                 float_operand::<T>(index, vm)
             } else {

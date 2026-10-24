@@ -109,8 +109,8 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 ### Which values cross the boundary
 
 `None`, `bool`, `int` (arbitrary precision), `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
-`Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named
-tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
+`Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`,
+`decimal.Decimal` (exactly, as its string form), named tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
 all convert in both directions.
 Builtin functions and other type objects come out as a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy]
 carrying the name; see [host-value limitations](../limitations/host-values.md#lossy-outputs).

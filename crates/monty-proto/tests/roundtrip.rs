@@ -141,6 +141,9 @@ fn datetime_values_round_trip() {
     assert_value_round_trip(&MontyObject::complex(f64::NAN, f64::NEG_INFINITY));
     // A plain `double` field would drop `-0.0` as its default.
     assert_value_round_trip(&MontyObject::complex(-0.0, -0.0));
+    for decimal in ["1.20", "-0", "1E+5", "-NaN12", "sNaN", "Infinity"] {
+        assert_value_round_trip(&MontyObject::decimal(decimal));
+    }
     assert_value_round_trip(&MontyObject::timezone(MontyTimeZone {
         offset_seconds: 19800,
         name: Some("IST".to_owned()),

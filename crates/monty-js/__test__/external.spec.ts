@@ -241,6 +241,8 @@ const exceptionTypes: Array<[string, string]> = [
   ['binascii.Error', 'binascii.Error'],
   ['binascii.Incomplete', 'binascii.Incomplete'],
   ['_csv.Error', '_csv.Error'],
+  ['decimal.InvalidOperation', 'decimal.InvalidOperation'],
+  ['decimal.DivisionByZero', 'decimal.DivisionByZero'],
   ['SomeCustomError', 'RuntimeError'],
 ]
 

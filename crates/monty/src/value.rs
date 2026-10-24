@@ -26,7 +26,7 @@ use crate::{
     types::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
         bytes::PyBytes,
-        host_class_type,
+        decimal, host_class_type,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
@@ -330,6 +330,11 @@ impl<'h> PyTrait<'h> for Value {
         // `from_total` maps `None` from a total-order comparison to
         // `CmpOrder::Incomparable`. Any operand pair with no comparison at all
         // falls through to the `Incomparable` catch-alls below.
+        if (matches!(self, Self::Ref(_)) || matches!(other, Self::Ref(_)))
+            && let Some(order) = decimal::py::cmp_order(self, other, vm)?
+        {
+            return Ok(order);
+        }
         match (self, other) {
             (Self::Int(s), Self::Int(o)) => Ok(CmpOrder::Ordered(s.cmp(o))),
             (Self::Float(s), Self::Float(o)) => Ok(CmpOrder::from_numeric(s.partial_cmp(o))),

@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 # === loads basics ===
 assert json.loads('null') is None
@@ -28,6 +29,21 @@ assert json.loads('{"a": 1, "a": 2}') == {'a': 2}
 # === loads big integers ===
 big = 1234567890123456789012345678901234567890
 assert json.loads(str(big)) == big
+
+# === loads parse_float / parse_int ===
+prices = json.loads('{"a": 1.10, "b": [2.50, 3], "c": NaN}', parse_float=Decimal)
+assert prices['a'] == Decimal('1.10')
+assert str(prices['a']) == '1.10'
+assert prices['b'] == [Decimal('2.50'), 3]
+assert prices['c'] != prices['c'], 'NaN goes to parse_constant, not parse_float'
+assert json.loads('[1, 2.5]', parse_int=str) == ['1', 2.5]
+assert json.loads('[1e3, -0.5]', parse_float=str, parse_int=float) == ['1e3', '-0.5']
+assert json.loads('10', parse_int=Decimal) == Decimal(10)
+try:
+    json.loads('1.5', parse_float=int)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == "invalid literal for int() with base 10: '1.5'"
 
 # === dumps basics ===
 assert json.dumps(None) == 'null'

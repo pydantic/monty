@@ -1250,6 +1250,23 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import csv\nclass S:\n    def write(self, t):\n        pass\nrow = {i: None for i in range(10_000)}\ncsv.DictWriter(S(), []).writerow(row)",
             1_079_568,
         ),
+        // `decimal` preflights results whose size scales with an exponent or the
+        // precision: an integer conversion, `f` formatting, and division, `sqrt` and
+        // `quantize` under a large `prec`.
+        ("import decimal\nint(decimal.Decimal('1e3000000'))", 3_046_935),
+        ("import decimal\nf'{decimal.Decimal(\"1e3000000\"):f}'", 3_047_203),
+        (
+            "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(1) / 3",
+            3_047_228,
+        ),
+        (
+            "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(2).sqrt()",
+            6_047_262,
+        ),
+        (
+            "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(1).quantize(decimal.Decimal('1e-2500000'))",
+            2_547_363,
+        ),
     ];
 
     for (code, expected) in cases {

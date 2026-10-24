@@ -549,7 +549,12 @@ impl<'h> Encoder<'_, 'h> {
                 defer_drop!(token, this);
                 this.with_entered_container(dict.id(), |enc| enc.serialize_dict(entries, depth))
             }
-            _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
+            _ => {
+                // CPython names the class by `__name__`: `Decimal`, not `decimal.Decimal`.
+                let type_name = value.py_type_name(self.vm);
+                let bare = type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare);
+                Err(ExcType::json_not_serializable_error(bare))
+            }
         }
     }
 

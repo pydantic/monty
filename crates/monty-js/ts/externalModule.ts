@@ -123,6 +123,7 @@ const SANDBOX_MODULES = new Set([
   'csv',
   'dataclasses',
   'datetime',
+  'decimal',
   'functools',
   'gc',
   'hashlib',

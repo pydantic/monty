@@ -38,7 +38,7 @@ pub struct Arena {
 pub struct MontyNode {
     #[prost(
         oneof = "monty_node::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
     )]
     pub kind: ::core::option::Option<monty_node::Kind>,
 }
@@ -126,6 +126,11 @@ pub mod monty_node {
         /// attrs, and exports back with the same id.
         #[prost(message, tag = "32")]
         Module(super::ModuleNode),
+        /// A decimal.Decimal as its canonical string, str(d): "1.20", "1E+5",
+        /// "-NaN12", "Infinity". Parsed as Decimal(text) on import; malformed text
+        /// is rejected.
+        #[prost(string, tag = "33")]
+        Decimal(::prost::alloc::string::String),
     }
 }
 /// Indexes of a container's children (list, tuple, set, frozenset items).

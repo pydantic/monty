@@ -12,6 +12,7 @@ pub mod complex;
 pub mod csv;
 pub mod date;
 pub mod datetime;
+pub mod decimal;
 pub mod deque;
 pub mod dict;
 pub mod dict_view;

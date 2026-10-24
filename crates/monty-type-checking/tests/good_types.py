@@ -1,6 +1,7 @@
 import asyncio
 import bisect
 import datetime
+import decimal
 import functools
 import hashlib
 import itertools
@@ -635,6 +636,28 @@ try:
     tomllib.loads('?')
 except tomllib.TOMLDecodeError as toml_exc:
     check_str(str(toml_exc))
+
+# === decimal ===
+price = decimal.Decimal('19.99')
+assert_type(price * 3, decimal.Decimal)
+assert_type(price + 1, decimal.Decimal)
+assert_type(1 - price, decimal.Decimal)
+assert_type(price.quantize(decimal.Decimal('0.1'), rounding=decimal.ROUND_HALF_UP), decimal.Decimal)
+assert_type(round(price), int)
+assert_type(round(price, 1), decimal.Decimal)
+assert_type(int(price), int)
+check_float(float(price))
+assert_type(price < 20, bool)
+assert_type(price.as_tuple(), decimal.DecimalTuple)
+assert_type(price.sqrt(), decimal.Decimal)
+assert_type(decimal.getcontext().prec, int)
+assert_type(decimal.getcontext().flags[decimal.Inexact], bool)
+with decimal.localcontext(prec=50) as decimal_ctx:
+    assert_type(decimal_ctx, decimal.Context)
+try:
+    decimal.Decimal('abc')
+except decimal.InvalidOperation as decimal_exc:
+    check_str(str(decimal_exc))
 
 # === iter() / next() ===
 # Element types must survive the `Iterator` protocol: `Iterator.__next__` is

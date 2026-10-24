@@ -169,6 +169,8 @@ interface worker {
         /// placeholder text (`[...]`, `(...)`, `{...}` or `...`).
         cycle(string),
         module(module-node),
+        /// A `decimal.Decimal` as its exact string form, `str(d)`.
+        decimal(string),
     }
 
     /// The values of one message: a post-order node arena. Every child

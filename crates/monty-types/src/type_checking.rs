@@ -201,6 +201,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "csv",
     "dataclasses",
     "datetime",
+    "decimal",
     "functools",
     "gc",
     "hashlib",

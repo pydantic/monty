@@ -159,6 +159,11 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             // A second generator at the same point in the same sequence, which is
             // what CPython's `__getstate__`/`__setstate__` pair produces.
             HeapReadOutput::Random(random) => Ok(random.allocate_like(vm)),
+            // `Context.__copy__`: the same settings and flags in a new object.
+            HeapReadOutput::DecimalContext(context) => {
+                let settings = *context.get(vm.heap);
+                Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
+            }
             _ => unreachable!("`classify` said this type is rebuilt, so `shallow_copy` must rebuild it"),
         },
     }
@@ -231,6 +236,11 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
             HeapReadOutput::BoundMethod(bound) => bound.py_deep_copy(source, memo, vm),
             HeapReadOutput::Partial(partial) => partial.py_deep_copy(source, memo, vm),
             HeapReadOutput::Random(random) => random.py_deep_copy(source, memo, vm),
+            // A context holds no references, so its deep copy is its shallow one.
+            HeapReadOutput::DecimalContext(context) => {
+                let settings = *context.get(vm.heap);
+                Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
+            }
             _ => unreachable!("`classify` said this type is rebuilt, so `deep_copy` must rebuild it"),
         },
     }?;
@@ -282,7 +292,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::Instance(_)
         | HeapReadOutput::BoundMethod(_)
         | HeapReadOutput::Partial(_)
-        | HeapReadOutput::Random(_) => Copyability::Rebuilt,
+        | HeapReadOutput::Random(_)
+        | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
         HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => Copyability::ImmutableContainer,
@@ -294,6 +305,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::Bytes(_)
         | HeapReadOutput::LongInt(_)
         | HeapReadOutput::Complex(_)
+        | HeapReadOutput::Decimal(_)
         | HeapReadOutput::Range(_)
         | HeapReadOutput::Slice(_)
         | HeapReadOutput::RePattern(_)
@@ -356,7 +368,9 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::ExtFunction(_)
         | HeapReadOutput::Cell(_)
         | HeapReadOutput::DataclassField(_)
-        | HeapReadOutput::DataclassParams(_) => Copyability::Refused,
+        | HeapReadOutput::DataclassParams(_)
+        | HeapReadOutput::DecimalSignalDict(_)
+        | HeapReadOutput::DecimalContextManager(_) => Copyability::Refused,
     }
 }
 

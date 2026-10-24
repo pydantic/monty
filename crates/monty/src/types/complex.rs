@@ -380,6 +380,8 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
     let parsed = match value.as_either_str(vm.heap) {
         Some(text) => Some(parse(text.as_str(vm.interns))?),
+        // `Decimal.__complex__`; Decimals take no part in complex arithmetic.
+        None if let PyValue::Decimal(d) = value.py_value(vm) => Some(Complex::new(d.get(vm.heap).to_f64()?, 0.0)),
         None => operand(value, vm)?.map(widen),
     };
     match parsed {

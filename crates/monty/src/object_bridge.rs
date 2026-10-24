@@ -27,7 +27,8 @@ use crate::{
         Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
         allocate_tuple,
         bytes::Bytes,
-        date as date_type, datetime as datetime_type,
+        date as date_type, datetime as datetime_type, decimal as decimal_type,
+        decimal::py as py_decimal,
         dict::Dict,
         instance::class_name,
         list::List,
@@ -373,6 +374,9 @@ impl GraphExporter {
                     microseconds,
                 })
             }
+            // The canonical string, with an upper-case exponent whatever the context's
+            // `capitals`, so the host parses back the exact value.
+            HeapReadOutput::Decimal(d) => MontyNode::Decimal(d.get(vm.heap).to_sci_string(false, true)),
             HeapReadOutput::TimeZone(tz) => {
                 let tz_ref = tz.get(vm.heap);
                 MontyNode::TimeZone(MontyTimeZone {
@@ -695,6 +699,7 @@ impl MontyTypeExt for MontyType {
             Self::ReMatch => Type::ReMatch,
             Self::Field => Type::DataclassField,
             Self::DataclassParams => Type::DataclassParams,
+            Self::Decimal => Type::Decimal,
         }
     }
 
@@ -778,7 +783,11 @@ impl MontyTypeExt for MontyType {
             | Type::CsvWriter
             | Type::CsvDictReader
             | Type::CsvDictWriter
-            | Type::CsvDialect => return None,
+            | Type::CsvDialect
+            | Type::DecimalContext
+            | Type::DecimalSignalDict
+            | Type::DecimalContextManager => return None,
+            Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,
@@ -953,6 +962,13 @@ fn import_node(
                 .map_err(|_| InvalidInputError::invalid_type("timedelta"))?;
             Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
         }
+        // The host's text is untrusted: it must parse as `Decimal(text)` would,
+        // a malformed literal or out-of-range exponent being rejected rather than
+        // turned into a NaN.
+        MontyNode::Decimal(text) => match decimal_type::parse::parse_str(&text) {
+            Ok(Ok(decimal)) => Ok(py_decimal::decimal_value(decimal, vm)),
+            Ok(Err(_)) | Err(_) => Err(InvalidInputError::invalid_type("Decimal")),
+        },
         MontyNode::TimeZone(tz) => {
             if tz.offset_seconds == 0 && tz.name.is_none() {
                 Ok(vm.heap.get_timezone_utc())

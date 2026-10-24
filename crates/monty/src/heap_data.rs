@@ -176,6 +176,14 @@ macro_rules! heap_payloads {
             DirScan(boxed $crate::types::DirScan),
             /// Any `csv` object: a reader, writer, `DictReader`, `DictWriter` or dialect.
             Csv(boxed $crate::types::CsvObject),
+            /// A `decimal.Decimal` value.
+            Decimal(inline $crate::types::decimal::Decimal),
+            /// A mutable `decimal.Context`.
+            DecimalContext(inline $crate::types::decimal::DecContext),
+            /// A context's `flags` or `traps` mapping.
+            DecimalSignalDict(inline $crate::types::decimal::py_context::SignalDict),
+            /// The manager `decimal.localcontext()` returns.
+            DecimalContextManager(inline $crate::types::decimal::py_context::ContextManager),
         }
     };
 }
@@ -290,7 +298,12 @@ impl HeapData {
             | Self::TimeDelta(_)
             | Self::TimeZone(_)
             | Self::Random(_)
-            | Self::HashObject(_) => false,
+            | Self::HashObject(_)
+            // A signal dict and a `localcontext()` manager only hold contexts, which are leaves.
+            | Self::Decimal(_)
+            | Self::DecimalContext(_)
+            | Self::DecimalSignalDict(_)
+            | Self::DecimalContextManager(_) => false,
         }
     }
 
@@ -384,6 +397,10 @@ impl HeapData {
             Self::Itertools(i) => i.py_type(),
             Self::DirScan(scan) => scan.py_type(),
             Self::Csv(csv) => csv.py_type(),
+            Self::Decimal(_) => Type::Decimal,
+            Self::DecimalContext(_) => Type::DecimalContext,
+            Self::DecimalSignalDict(_) => Type::DecimalSignalDict,
+            Self::DecimalContextManager(_) => Type::DecimalContextManager,
         }
     }
 }
@@ -729,6 +746,10 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Closure($value) => $body,
             Self::FunctionDefaults($value) => $body,
             Self::ExtFunction($value) => $body,
+            Self::Decimal($value) => $body,
+            Self::DecimalContext($value) => $body,
+            Self::DecimalSignalDict($value) => $body,
+            Self::DecimalContextManager($value) => $body,
             $($custom)*
         }
     };
@@ -976,7 +997,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Time(value) => value.py_iter(vm),
             Self::TimeDelta(value) => value.py_iter(vm),
             Self::TimeZone(value) => value.py_iter(vm),
-            Self::NamedTupleClass(_)
+            Self::DecimalSignalDict(value) => value.py_iter(vm),
+            Self::Decimal(_)
+            | Self::DecimalContext(_)
+            | Self::DecimalContextManager(_)
+            | Self::NamedTupleClass(_)
             | Self::Closure(_)
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)

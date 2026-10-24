@@ -81,6 +81,7 @@ The following modules are present:
 | `csv`         | [csv.md](csv.md)                 |
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
+| `decimal`     | [decimal.md](decimal.md)         |
 | `functools`   | [functools.md](functools.md)     |
 | `hashlib`     | [hashlib.md](hashlib.md)         |
 | `itertools`   | [itertools.md](itertools.md)     |
