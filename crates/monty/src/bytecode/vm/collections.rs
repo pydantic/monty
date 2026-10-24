@@ -499,7 +499,7 @@ impl VM<'_> {
         // Fast path: tuple, list, push onto stack without a temporary vector.
         if let Some(items) = exact_sequence_items(value, this.heap) {
             if items.len() != count {
-                return Err(unpack_size_error(count, items.len()));
+                return Err(ExcType::unpack_size_error(count, items.len()));
             }
             if count > this.stack.capacity() - this.stack.len() {
                 let capacity = this.stack.len().saturating_add(count);
@@ -602,7 +602,7 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
     // Fast path: tuple, list; unpack without iterator.
     if let Some(items) = exact_sequence_items(value, vm.heap) {
         if items.len() != count {
-            return Err(unpack_size_error(count, items.len()));
+            return Err(ExcType::unpack_size_error(count, items.len()));
         }
         vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
         return Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
@@ -628,13 +628,13 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
     } else {
         let err = if items.len() > count {
             match total {
-                Some(total) => unpack_size_error(count, total),
+                Some(total) => ExcType::unpack_size_error(count, total),
                 None => unpack_too_many_unknown_error(count),
             }
         } else {
             // Short of `count`, so the iterable was drained and its true
             // length is known whether or not the type could report one.
-            unpack_size_error(count, items.len())
+            ExcType::unpack_size_error(count, items.len())
         };
         items.drop_with(vm);
         Err(err)
@@ -653,24 +653,10 @@ fn exact_sequence_items<'a>(value: &Value, heap: &'a Heap) -> Option<&'a [Value]
     }
 }
 
-/// Creates the appropriate ValueError for unpacking size mismatches.
-///
-/// Python uses different messages depending on whether there are too few or too many values:
-/// - Too few: "not enough values to unpack (expected X, got Y)"
-/// - Too many: "too many values to unpack (expected X, got Y)"
-fn unpack_size_error(expected: usize, actual: usize) -> RunError {
-    let message = if actual < expected {
-        format!("not enough values to unpack (expected {expected}, got {actual})")
-    } else {
-        format!("too many values to unpack (expected {expected}, got {actual})")
-    };
-    SimpleException::new_msg(ExcType::ValueError, message).into()
-}
-
 /// Creates the "too many values" ValueError when the total is unknown.
 ///
 /// Unpacking an iterator stops at the first surplus item, so unlike
-/// [`unpack_size_error`] there is no total to report — matching CPython.
+/// [`ExcTypeExt::unpack_size_error`] there is no total to report — matching CPython.
 fn unpack_too_many_unknown_error(expected: usize) -> RunError {
     SimpleException::new_msg(
         ExcType::ValueError,

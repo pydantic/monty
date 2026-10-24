@@ -5,7 +5,7 @@
 //! the whole document first and hands it to the file object in one write
 //! (see [`FileTarget`]).
 
-use std::{cmp::Ordering, fmt::Write};
+use std::fmt::Write;
 
 use super::fp::FileTarget;
 use crate::{
@@ -402,14 +402,10 @@ fn parse_separators_value(value: &Value, vm: &VM<'_>) -> RunResult<Option<(Strin
 /// Raises `ValueError` with the same unpacking-style message as CPython when
 /// the length does not match the expected two elements.
 fn check_separators_length(len: usize) -> RunResult<()> {
-    match len.cmp(&2) {
-        Ordering::Greater => Err(ExcType::value_error(format!(
-            "too many values to unpack (expected 2, got {len})"
-        ))),
-        Ordering::Less => Err(ExcType::value_error(format!(
-            "not enough values to unpack (expected 2, got {len})"
-        ))),
-        Ordering::Equal => Ok(()),
+    if len == 2 {
+        Ok(())
+    } else {
+        Err(ExcType::unpack_size_error(2, len))
     }
 }
 
