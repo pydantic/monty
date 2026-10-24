@@ -35,6 +35,13 @@ operation raises and its `[<class 'decimal.DivisionByZero'>]` message all follow
     `("[<class 'decimal.DivisionByZero'>]",)` where CPython's is a one-element tuple holding a list of
     classes. `str(exc)` matches.
 
+## Formatting
+
+- An f-string whose format spec is written literally, aligns, and starts its width with `0`, such as
+    `f'{d:<020}'`, formats as if the spec were `0<20` instead of raising
+    `ValueError: invalid format string`.
+    The same spec passed at runtime (`format(d, '<020')`, `'{:<020}'.format(d)`) raises as in CPython.
+
 ## `json`
 
 `json.loads(s, parse_float=Decimal)` works (see [json.md](json.md)); `json.dumps` rejects a `Decimal`

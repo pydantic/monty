@@ -426,6 +426,23 @@ fn repl_dump_load_survives_between_snippets() {
     assert_eq!(output, MontyObject::int(42));
 }
 
+/// The current `decimal` context is session state: a `prec` set in one feed governs
+/// the next, survives a failing feed, and survives a dump round-trip.
+#[test]
+fn repl_decimal_context_persists_across_feeds_and_dumps() {
+    let (mut repl, _) = init_repl("import decimal\ndecimal.getcontext().prec = 5");
+    let output = feed_run_print(&mut repl, "decimal.getcontext().prec").unwrap();
+    assert_eq!(output, MontyObject::int(5));
+
+    feed_run_print(&mut repl, "decimal.getcontext().prec = 7\n1 / 0").unwrap_err();
+    let output = feed_run_print(&mut repl, "import decimal\ndecimal.getcontext().prec").unwrap();
+    assert_eq!(output, MontyObject::int(7));
+
+    let mut loaded = round_trip_repl(&repl);
+    let output = feed_run_print(&mut loaded, "decimal.getcontext().prec").unwrap();
+    assert_eq!(output, MontyObject::int(7));
+}
+
 #[test]
 fn repl_dump_load_derives_exact_positional_call_plans() {
     let (repl, _) = init_repl("def add(a, b):\n    return a + b\n\nasync def async_add(a, b):\n    return a + b");

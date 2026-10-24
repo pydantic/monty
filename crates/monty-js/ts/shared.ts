@@ -55,6 +55,7 @@ export {
 export {
   type MontyDate,
   type MontyDateTime,
+  type MontyDecimal,
   type MontyException,
   MontyFileHandle,
   type MontyFileHandleOptions,

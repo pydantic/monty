@@ -7,6 +7,8 @@
 //! Output and every zero padding are built through [`StringBuilder`], since a width,
 //! precision or exponent can each expand a short value into a huge string.
 
+use std::str;
+
 use super::{Ctx, Decimal, context::Rounding};
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -79,7 +81,7 @@ impl Decimal {
             frac.push_str(&value.coeff);
             ("0".to_owned(), frac)
         } else if dotplace > len {
-            let mut int = value.coeff.clone();
+            let mut int = value.coeff;
             int.push_str(&zeros(dotplace - len, ctx)?);
             (int, String::new())
         } else {
@@ -125,7 +127,7 @@ impl Parts {
         let mut digits = len_i128(&self.coeff) + self.exp - exp;
         let mut coeff = self.coeff;
         if digits < 0 {
-            coeff = "1".to_owned();
+            "1".clone_into(&mut coeff);
             digits = 0;
         }
         let digits = usize::try_from(digits).expect("digits fit the coefficient");
@@ -178,8 +180,9 @@ struct FormatSpec {
     minimumwidth: i128,
     /// Separator for the integer digits (empty for none).
     thousands_sep: &'static str,
-    /// `true` for the `n` type, which uses the C locale's empty grouping.
-    locale_grouping: bool,
+    /// Digits per thousands group: `Some(3)`, or `None` for the `n` type, which uses
+    /// the C locale's empty grouping.
+    group_len: Option<i128>,
     /// Separator for the fractional digits (empty for none).
     frac_sep: &'static str,
     precision: Option<i128>,
@@ -239,8 +242,8 @@ impl FormatSpec {
         if precision == Some(0) && matches!(kind, None | Some('g' | 'G' | 'n')) {
             precision = Some(1);
         }
-        let locale_grouping = kind == Some('n');
-        if locale_grouping {
+        let group_len = if kind == Some('n') { None } else { Some(3) };
+        if group_len.is_none() {
             if thousands_sep.is_some() {
                 return Err(invalid_format());
             }
@@ -255,7 +258,7 @@ impl FormatSpec {
             zeropad,
             minimumwidth,
             thousands_sep: separator(thousands_sep),
-            locale_grouping,
+            group_len,
             frac_sep: separator(frac_sep),
             precision,
             kind,
@@ -323,7 +326,7 @@ fn format_number(
             if i > 0 {
                 frac.push_str(spec.frac_sep)?;
             }
-            frac.push_str(std::str::from_utf8(chunk).expect("digits are ASCII"))?;
+            frac.push_str(str::from_utf8(chunk).expect("digits are ASCII"))?;
         }
     }
     if exp != 0 || matches!(kind, 'e' | 'E') {
@@ -356,11 +359,7 @@ fn format_number(
 fn insert_thousands_sep(digits: &str, spec: &FormatSpec, min_width: i128, ctx: &Ctx<'_>) -> RunResult<String> {
     let n = len_i128(digits);
     // `(group length, leftmost group length, groups before the leftmost)`.
-    let (group, last, full) = if spec.locale_grouping {
-        // The C locale's grouping is empty: one group, zero-padded to the width.
-        (1, n.max(min_width).max(1), 0)
-    } else {
-        let group = 3;
+    let (group, last, full) = if let Some(group) = spec.group_len {
         let step = group + len_i128(spec.thousands_sep);
         let by_digits = if n > group { ceil_div(n - group, group) } else { 0 };
         let by_width = if min_width > group { ceil_div(min_width - group, step) } else { 0 };
@@ -368,6 +367,9 @@ fn insert_thousands_sep(digits: &str, spec: &FormatSpec, min_width: i128, ctx: &
         let remaining = (n - full * group).max(0);
         let width_left = min_width - full * step;
         (group, remaining.max(width_left).max(1), full)
+    } else {
+        // The C locale's grouping is empty: one group, zero-padded to the width.
+        (1, n.max(min_width).max(1), 0)
     };
     let padded_len = full * group + last;
     let separators = if spec.thousands_sep.is_empty() { 0 } else { full };

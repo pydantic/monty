@@ -13,8 +13,7 @@ use std::fmt::Write;
 use smallvec::smallvec;
 
 use super::{
-    Decimal,
-    context::{Condition, Conditions, DecContext, MAX_EMAX, MAX_PREC, MIN_EMIN, Rounding, Signal},
+    context::{Conditions, DecContext, MAX_EMAX, MAX_PREC, MIN_EMIN, Rounding, Signal},
     py::{self, ContextMethod},
 };
 use crate::{
@@ -24,35 +23,30 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    heap_traits::ContainsHeap,
+    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     types::{Dict, LazyHeapSet, List, PyTrait, Type, allocate_string, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
-/// The session's decimal contexts: the current one and the module templates.
+/// The heap slots holding the session's decimal contexts (see `Heap::decimal_context`).
 ///
-/// Each slot holds an owned `Value::Ref` to a `DecimalContext`, created on first use.
-/// Released by [`DropWithContext`]; the VM moves it into snapshots and back into the
-/// REPL between feeds.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SessionDecimal {
+/// The heap owns one reference to each, so the current context and the templates
+/// survive across REPL feeds and dumps with the rest of the session's objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecimalSlot {
     /// The context `getcontext()` returns; a copy of `DefaultContext` when created.
-    #[serde(default)]
-    current: Option<Value>,
-    /// `DefaultContext`, `BasicContext` and `ExtendedContext`, in [`Template`] order.
-    #[serde(default)]
-    templates: [Option<Value>; 3],
+    Current,
+    /// `decimal.DefaultContext`.
+    Default,
+    /// `decimal.BasicContext`.
+    Basic,
+    /// `decimal.ExtendedContext`.
+    Extended,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for SessionDecimal {
-    fn drop_with(self, ctx: &mut C) {
-        let Self { current, templates } = self;
-        current.drop_with(ctx.heap_mut());
-        for template in templates {
-            template.drop_with(ctx.heap_mut());
-        }
-    }
+impl DecimalSlot {
+    /// The number of slots.
+    pub(crate) const COUNT: usize = 4;
 }
 
 /// The three module-level template contexts.
@@ -72,32 +66,38 @@ impl Template {
             Self::Extended => DecContext::EXTENDED,
         }
     }
+
+    /// The heap slot holding the template.
+    fn slot(self) -> DecimalSlot {
+        match self {
+            Self::Default => DecimalSlot::Default,
+            Self::Basic => DecimalSlot::Basic,
+            Self::Extended => DecimalSlot::Extended,
+        }
+    }
 }
 
 /// The heap id of a template context, allocating it on first use.
 pub(crate) fn template_id(vm: &mut VM<'_>, template: Template) -> HeapId {
-    let slot = template as usize;
-    if let Some(Value::Ref(id)) = &vm.decimal.templates[slot] {
-        *id
-    } else {
+    vm.heap.decimal_context(template.slot()).unwrap_or_else(|| {
         let id = vm.heap.allocate(HeapData::DecimalContext(template.settings()));
-        vm.decimal.templates[slot] = Some(Value::Ref(id));
+        let previous = vm.heap.replace_decimal_context(template.slot(), id);
+        debug_assert!(previous.is_none(), "template slot was empty");
         id
-    }
+    })
 }
 
 /// The heap id of the current context, creating it from `DefaultContext` on first use.
 pub(crate) fn current_context(vm: &mut VM<'_>) -> HeapId {
-    if let Some(Value::Ref(id)) = &vm.decimal.current {
-        *id
-    } else {
+    vm.heap.decimal_context(DecimalSlot::Current).unwrap_or_else(|| {
         let default = template_id(vm, Template::Default);
         let mut settings = settings_of(vm, default);
         settings.flags = Conditions::EMPTY;
         let id = vm.heap.allocate(HeapData::DecimalContext(settings));
-        vm.decimal.current = Some(Value::Ref(id));
+        let previous = vm.heap.replace_decimal_context(DecimalSlot::Current, id);
+        debug_assert!(previous.is_none(), "current slot was empty");
         id
-    }
+    })
 }
 
 /// The settings of the context at `id`.
@@ -133,11 +133,9 @@ pub(crate) fn apply_status(vm: &mut VM<'_>, id: HeapId, status: Conditions) -> R
 
 /// `setcontext(ctx)`: makes `ctx` current, copying it first if it is a template.
 fn set_current(vm: &mut VM<'_>, id: HeapId) {
-    let is_template = vm
-        .decimal
-        .templates
-        .iter()
-        .any(|slot| matches!(slot, Some(Value::Ref(t)) if *t == id));
+    let is_template = [DecimalSlot::Default, DecimalSlot::Basic, DecimalSlot::Extended]
+        .into_iter()
+        .any(|slot| vm.heap.decimal_context(slot) == Some(id));
     let new_current = if is_template {
         let mut settings = settings_of(vm, id);
         settings.flags = Conditions::EMPTY;
@@ -146,8 +144,8 @@ fn set_current(vm: &mut VM<'_>, id: HeapId) {
         vm.heap.inc_ref(id);
         id
     };
-    let old = vm.decimal.current.replace(Value::Ref(new_current));
-    old.drop_with(vm);
+    let old = vm.heap.replace_decimal_context(DecimalSlot::Current, new_current);
+    old.map(Value::Ref).drop_with(vm);
 }
 
 /// The context id a `Value` refers to, if it is a `decimal.Context`.
@@ -160,7 +158,7 @@ pub(crate) fn as_context(value: &Value, vm: &VM<'_>) -> Option<HeapId> {
 
 /// `decimal.getcontext()`.
 pub(crate) fn getcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("getcontext", vm.heap)?;
+    args.check_zero_args("_decimal.getcontext", vm.heap)?;
     let id = current_context(vm);
     vm.heap.inc_ref(id);
     Ok(Value::Ref(id))
@@ -168,7 +166,7 @@ pub(crate) fn getcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `decimal.setcontext(context)`.
 pub(crate) fn setcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("setcontext", vm.heap)?;
+    let value = args.get_one_arg("_decimal.setcontext", vm.heap)?;
     defer_drop!(value, vm);
     let id = as_context(value, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
     set_current(vm, id);
@@ -873,32 +871,4 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ContextManager> {
         }
         Ok(CallResult::Value(Value::None))
     }
-}
-
-/// Reads `ctx.flags` for a context known to exist, for the `py.rs` helpers.
-pub(crate) fn flags_of(vm: &VM<'_>, id: HeapId) -> Conditions {
-    settings_of(vm, id).flags
-}
-
-/// Records `condition` on the context at `id` and raises it if trapped.
-pub(crate) fn signal(vm: &mut VM<'_>, id: HeapId, condition: Condition) -> RunResult<()> {
-    let mut status = Conditions::EMPTY;
-    status.insert(condition);
-    apply_status(vm, id, status)
-}
-
-/// Clones the `Decimal` payload a value refers to, if it is one.
-pub(crate) fn decimal_payload(value: &Value, vm: &VM<'_>) -> Option<Decimal> {
-    match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Decimal(d) => Some(d.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Matches a `HeapReadOutput` that is a context, for dispatch elsewhere.
-pub(crate) fn is_context_output(output: &HeapReadOutput<'_>) -> bool {
-    matches!(output, HeapReadOutput::DecimalContext(_))
 }

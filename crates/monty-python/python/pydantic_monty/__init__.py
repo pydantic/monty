@@ -290,14 +290,29 @@ ExcType = Literal[
     're.PatternError',
     'binascii.Error',
     'binascii.Incomplete',
+    'decimal.DecimalException',
+    'decimal.Clamped',
+    'decimal.InvalidOperation',
+    'decimal.ConversionSyntax',
+    'decimal.DivisionByZero',
+    'decimal.DivisionImpossible',
+    'decimal.DivisionUndefined',
+    'decimal.Inexact',
+    'decimal.InvalidContext',
+    'decimal.Rounded',
+    'decimal.Subnormal',
+    'decimal.Overflow',
+    'decimal.Underflow',
+    'decimal.FloatOperation',
 ]
 """String names of Python exception types that Monty understands.
 
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
 exception classes, except for `json.JSONDecodeError`, `tomllib.TOMLDecodeError`,
-`re.PatternError`, `binascii.Error`, `binascii.Incomplete` and `_csv.Error`, which
-are dotted to disambiguate from their `ValueError` / `Exception` parents.
+`re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error` and the
+`decimal` signals (`decimal.InvalidOperation`, ...), which are dotted to
+disambiguate from their `ValueError` / `Exception` / `ArithmeticError` parents.
 """
 
 

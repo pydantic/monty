@@ -765,7 +765,8 @@ fn format_integer<T: Target>(
 }
 
 /// Coerces an integer directive's operand: ints and bools as they are, floats
-/// truncated for the decimal directives only, anything else through `__index__`.
+/// truncated for the decimal directives only, other real numbers through `__int__`
+/// for those, anything else through `__index__`.
 fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<Value> {
     let decimal = matches!(conversion, b'd' | b'i' | b'u');
     match value.py_value(vm) {
@@ -895,7 +896,7 @@ fn format_float<T: Target>(
 }
 
 /// Coerces a float directive's operand: floats and ints directly, big ints
-/// when they fit a float, anything else through `__index__`.
+/// when they fit a float, anything else through `__float__` or `__index__`.
 fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
     match value.py_value(vm) {
         PyValue::Float(value) => Ok(value),

@@ -190,7 +190,8 @@ impl Decimal {
         // `_pydecimal` works on a flag-ignoring copy of the context.
         let mut quiet = ctx.with_rounding(if down { Rounding::Floor } else { Rounding::Ceiling });
         let new_self = self.fix(&mut quiet);
-        if new_self != *self {
+        // A numeric comparison: `1.0` rounding to `1` is no step at all.
+        if new_self.cmp_numeric(self).is_ne() {
             return Ok(new_self);
         }
         let tiny = Self::from_triple(false, "1", settings.etiny() - 1);

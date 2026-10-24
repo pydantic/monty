@@ -132,6 +132,16 @@ try:
 except TypeError as e:
     assert str(e) == 'optional argument must be a context'
 try:
+    getcontext(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == '_decimal.getcontext() takes no arguments (1 given)'
+try:
+    setcontext()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == '_decimal.setcontext() takes exactly one argument (0 given)'
+try:
     setcontext(5)
     assert False, 'expected TypeError'
 except TypeError as e:
@@ -496,6 +506,16 @@ assert copy.deepcopy(c).flags[Inexact]
 assert c == c
 assert c != d
 assert hash(c) == hash(c)
+try:
+    copy.copy(c.flags)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "cannot pickle 'SignalDict' object"
+try:
+    hash(c.flags)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'SignalDict'"
 
 # === IEEEContext ===
 assert repr(decimal.IEEEContext(64)) == (

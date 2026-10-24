@@ -11,7 +11,7 @@ use num_traits::{One, Pow, ToPrimitive, Zero};
 
 use super::{
     Ctx, Decimal, coeff_to_int,
-    context::Condition,
+    context::{Condition, DecContext, MAX_EMAX, MIN_EMIN, Rounding},
     trans::{decimal_lshift_exact, dec_len, dec_len_i64, dpower, log10_lb, roundable, ten},
 };
 use crate::exception_private::RunResult;
@@ -19,6 +19,15 @@ use crate::exception_private::RunResult;
 /// Exponents of exact results are clamped to this magnitude when they do not fit an
 /// `i64`; `fix` then overflows or underflows them as the true value would.
 const EXPONENT_CLAMP: i64 = 4_000_000_000_000_000_000;
+
+/// libmpdec's guard digits for a non-integer power: `4 + MPD_EXPDIGITS` on 64-bit.
+const LIBMPDEC_POW_GUARD_DIGITS: i64 = 23;
+
+/// libmpdec's `MPD_EXP_INF`, the exponent it gives an overflowed power before rounding.
+const LIBMPDEC_EXP_INF: i64 = 2_000_000_000_000_000_001;
+
+/// The largest power of ten the three-argument form multiplies into its exponent.
+const MAX_DIRECT_EXPONENT_DIGITS: i64 = 10_000;
 
 impl Decimal {
     /// `self ** other`, or `pow(self, other, modulo)` when `modulo` is given.
@@ -92,65 +101,84 @@ impl Decimal {
         // the result is far beyond Emax (or below Etiny).
         let bound = i128::from(base.log10_exp_bound(ctx)?) + i128::from(other.adjusted());
         let settings = ctx.settings;
-        let mut ans = if (self_adj >= 0) == !other.sign() {
-            (bound >= i128::from(dec_len_i64(settings.emax))).then(|| Self::from_triple(result_sign, "1", settings.emax + 1))
-        } else {
+        // Underflow is possible for x > 1 with y < 0 or x < 1 with y > 0, overflow otherwise.
+        let ans = if (self_adj >= 0) == other.sign() {
             let etiny = settings.etiny();
             (bound >= i128::from(dec_len_i64(-etiny))).then(|| Self::from_triple(result_sign, "1", etiny - 1))
-        };
-
-        // Try for an exact result with one more digit than the precision.
-        let mut exact = false;
-        if ans.is_none() {
-            ans = base.power_exact(other, p + 1, ctx)?.map(|exact_ans| {
-                exact = true;
-                exact_ans.copy_with_sign(result_sign)
-            });
-        }
-
-        // The usual case: an inexact x**y = exp(y*ln(x)), with the working precision
-        // raised until the result is unambiguously roundable.
-        let ans = match ans {
-            Some(ans) => ans,
-            None => {
-                let (xc, xe) = (base.int(), base.exponent());
-                let yc = if other.sign() { -other.int() } else { other.int() };
-                let ye = other.exponent();
-                let mut extra = 3;
-                loop {
-                    ctx.check_time()?;
-                    let (coeff, exp) = dpower(&xc, xe, &yc, ye, p + extra, ctx)?;
-                    if roundable(&coeff, p, ctx)? {
-                        break Self::from_bigint_triple(result_sign, &coeff, exp);
-                    }
-                    extra += 3;
-                }
-            }
-        };
-
-        if exact && !other.is_integer() {
-            // An exact result of a non-integer power is still Inexact (and Underflow
-            // when subnormal) per the specification, which `fix` alone cannot know.
-            // Pad to prec+1 digits so Rounded is raised, then round in a scratch status.
-            let ans = if ans.digits() <= p {
-                let pad = p + 1 - ans.digits();
-                let mut coeff = String::from(ans.coeff());
-                super::push_zeros(&mut coeff, pad);
-                Self::from_triple(ans.sign(), coeff, ans.exponent() - pad)
-            } else {
-                ans
-            };
-            let mut scratch = Ctx::new(ctx.settings, ctx.tracker);
-            let ans = ans.fix(&mut scratch);
-            scratch.raise(Condition::Inexact);
-            if scratch.status.contains(Condition::Subnormal) {
-                scratch.raise(Condition::Underflow);
-            }
-            ctx.status.merge(scratch.status);
-            Ok(ans)
         } else {
-            Ok(ans.fix(ctx))
+            (bound >= i128::from(dec_len_i64(settings.emax))).then(|| Self::from_triple(result_sign, "1", settings.emax + 1))
+        };
+
+        if let Some(ans) = ans {
+            return Ok(ans.fix(ctx));
         }
+        if !other.is_integer() {
+            return base.power_real(other, ctx);
+        }
+
+        // An integer power: exact when it fits in one more digit than the precision,
+        // otherwise exp(y*ln(x)) with the working precision raised until the result is
+        // unambiguously roundable.
+        let ans = if let Some(exact) = base.power_exact(other, p + 1, ctx)? {
+            exact.copy_with_sign(result_sign)
+        } else {
+            let (xc, xe) = (base.int(), base.exponent());
+            let yc = if other.sign() { -other.int() } else { other.int() };
+            let ye = other.exponent();
+            let mut extra = 3;
+            loop {
+                ctx.check_time()?;
+                let (coeff, exp) = dpower(&xc, xe, &yc, ye, p + extra, ctx)?;
+                if roundable(&coeff, p, ctx)? {
+                    break Self::from_bigint_triple(result_sign, &coeff, exp);
+                }
+                extra += 3;
+            }
+        };
+        Ok(ans.fix(ctx))
+    }
+
+    /// A non-integer power of a positive finite value other than one, computed as
+    /// C `_decimal` (libmpdec's `_mpd_qpow_real`) does, so results and flags match it.
+    ///
+    /// `exp(y * ln(x))` is evaluated at `max(digits(x), prec) + 23` digits, each step
+    /// correctly rounded half-even, and the result rounded once more to the context.
+    /// That double rounding is visible: in a directed rounding mode an exact power
+    /// such as `4 ** -0.5` can come out one unit low (`0.499999999`), and a result
+    /// just above a subnormal boundary can raise Underflow. `_pydecimal`, which
+    /// detects exact powers, differs from CPython here; Monty follows CPython.
+    fn power_real(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
+        let prec = ctx.settings.prec;
+        let wp = self.digits().max(prec).saturating_add(LIBMPDEC_POW_GUARD_DIGITS);
+        ctx.check_digits(u64::try_from(wp).unwrap_or(u64::MAX).saturating_mul(2))?;
+        let work = DecContext {
+            prec: wp,
+            rounding: Rounding::HalfEven,
+            emin: MIN_EMIN,
+            emax: MAX_EMAX,
+            clamp: false,
+            ..ctx.settings
+        };
+        // ln and the product signal into a scratch status libmpdec discards.
+        let mut scratch = Ctx::new(work, ctx.tracker);
+        let log = self.ln(&mut scratch)?;
+        let product_coeff = log.int() * other.int();
+        let product_exp = log.exponent().saturating_add(other.exponent());
+        let product = Self::from_bigint_triple(log.sign() != other.sign(), &product_coeff, product_exp).fix(&mut scratch);
+        // exp's conditions are kept, then the final rounding adds the context's.
+        let mut exp_ctx = Ctx::new(work, ctx.tracker);
+        let mut result = product.exp(&mut exp_ctx)?;
+        ctx.status.merge(exp_ctx.status);
+        if result.is_finite() && result.is_numerically_one() {
+            // libmpdec widens an exact one to the full precision.
+            let mut coeff = String::from("1");
+            super::push_zeros(&mut coeff, prec - 1);
+            result = Self::from_triple(false, coeff, 1 - prec);
+        } else if result.is_infinite() {
+            // So that rounding towards zero yields the largest finite value.
+            result = Self::from_triple(false, "1", LIBMPDEC_EXP_INF);
+        }
+        Ok(result.fix(ctx))
     }
 
     /// `1**other`, where the result's exponent and flags depend on `other` and on the
@@ -186,14 +214,15 @@ impl Decimal {
     }
 
     /// `_power_exact(other, p)`: `self**other` if it is exactly representable in `p`
-    /// digits, else `None`, for positive finite `self != 1` and finite non-zero `other`.
+    /// digits, else `None`, for positive finite `self != 1` and a non-zero integer
+    /// `other` (`_pydecimal`'s n-th root branch serves non-integer powers, which take
+    /// [`Self::power_real`] here).
     ///
     /// Mostly cheap tests that rule exactness out; only a survivor is computed.
     fn power_exact(&self, other: &Self, p: i64, ctx: &Ctx<'_>) -> RunResult<Option<Self>> {
         // x = xc*10**xe and |y| = yc*10**ye with xc and yc not divisible by 10.
         let (xc, xe) = strip_tens(self);
         let (yc, ye) = strip_tens(other);
-        let mut xc = xc;
         let mut xe = BigInt::from(xe);
         let mut ye = ye;
 
@@ -274,54 +303,9 @@ impl Decimal {
             return Ok(Some(Self::from_triple(false, digits, clamp_exponent(&exp))));
         }
 
-        // A positive power y = m/n in lowest terms.
-        let xc_bits = i64::try_from(xc.bits()).expect("bit count fits");
-        let (m, n) = if ye >= 0 {
-            (&yc * ten(ye, ctx)?, BigInt::one())
-        } else {
-            if !xe.is_zero() && dec_len(&(&yc * &xe)) <= -ye {
-                return Ok(None);
-            }
-            if dec_len(&(&yc * xc_bits)) <= -ye {
-                return Ok(None);
-            }
-            let (mut m, mut n) = (yc.clone(), ten(-ye, ctx)?);
-            while m.is_even() && n.is_even() {
-                m /= 2u8;
-                n /= 2u8;
-            }
-            while (&m % 5u8).is_zero() && (&n % 5u8).is_zero() {
-                m /= 5u8;
-                n /= 5u8;
-            }
-            (m, n)
-        };
-
-        // The n-th root of xc*10**xe, if it is exact.
-        if n > BigInt::one() {
-            if BigInt::from(xc_bits) <= n {
-                return Ok(None);
-            }
-            let (q, rem) = xe.div_mod_floor(&n);
-            if !rem.is_zero() {
-                return Ok(None);
-            }
-            xe = q;
-            let n = n.to_u64().expect("n is below the bit count");
-            let mut a = BigInt::one() << u64::try_from(xc_bits).expect("positive").div_ceil(n);
-            let (q, r) = loop {
-                ctx.check_time()?;
-                let (q, r) = xc.div_rem(&Pow::pow(&a, n - 1));
-                if a <= q {
-                    break (q, r);
-                }
-                a = (&a * (n - 1) + q) / n;
-            };
-            if !(a == q && r.is_zero()) {
-                return Ok(None);
-            }
-            xc = a;
-        }
+        // A positive integer power m: stripping an integer's zeros leaves `ye >= 0`.
+        debug_assert!(ye >= 0, "non-integer powers take `power_real`");
+        let m = &yc * ten(ye, ctx)?;
 
         // If m > p*100/log10_lb(xc) then xc**m > 10**p, too many digits.
         if xc > BigInt::one() && m > BigInt::from(i128::from(p) * 100 / i128::from(log10_lb(&xc))) {
@@ -376,10 +360,20 @@ impl Decimal {
         let (base_int, base_exp) = integral_parts(self);
         let (exp_int, exp_exp) = integral_parts(other);
         let base = (base_int % &modulus * BigInt::from(10u8).modpow(&BigInt::from(base_exp), &modulus)) % &modulus;
-        // C `_decimal` evaluates the full exponent, so `1e9` costs no more than `10**9`.
-        ctx.check_digits(u64::try_from(exp_exp).expect("non-negative").saturating_add(dec_len(&exp_int).unsigned_abs()))?;
-        let exponent = exp_int * ten(exp_exp, ctx)?;
-        let result = base.modpow(&exponent, &modulus);
+        // base**(c * 10**k) = (base**c)**(10**k). A moderate `k` builds the exponent
+        // (as cheap as C `_decimal`); a huge one raises to the tenth power `k` times
+        // under the time limit rather than materializing `10**k`.
+        let result = if exp_exp <= MAX_DIRECT_EXPONENT_DIGITS {
+            base.modpow(&(exp_int * ten(exp_exp, ctx)?), &modulus)
+        } else {
+            let ten = BigInt::from(10u8);
+            let mut acc = base.modpow(&exp_int, &modulus);
+            for _ in 0..exp_exp {
+                ctx.check_time()?;
+                acc = acc.modpow(&ten, &modulus);
+            }
+            acc
+        };
         Ok(Self::from_bigint_triple(sign, &result, 0))
     }
 

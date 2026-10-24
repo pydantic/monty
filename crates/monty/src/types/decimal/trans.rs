@@ -9,6 +9,11 @@
 //! The four functions always round half-even, whatever the context's rounding,
 //! as C `_decimal` does: the result is correctly rounded either way.
 
+#![expect(
+    clippy::many_single_char_names,
+    reason = "the kernels keep _pydecimal's variable names so they can be read against it"
+)]
+
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
