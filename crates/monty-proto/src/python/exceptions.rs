@@ -136,8 +136,8 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
 }
 
 /// Builds the `decimal` module's own exception class for a decimal signal, so
-/// `except decimal.InvalidOperation:` catches it on the host. Falls back to
-/// `ArithmeticError`, every decimal signal's builtin base.
+/// `except decimal.InvalidOperation:` catches it on the host. Falls back to the
+/// signal's builtin base: `ZeroDivisionError`, `TypeError` or `ArithmeticError`.
 fn decimal_error_to_py(py: Python<'_>, exc_type: ExcType, msg: String) -> PyErr {
     let full: &'static str = exc_type.into();
     let name = full.strip_prefix("decimal.").unwrap_or(full);
@@ -147,7 +147,13 @@ fn decimal_error_to_py(py: Python<'_>, exc_type: ExcType, msg: String) -> PyErr 
     {
         PyErr::from_value(exc_instance)
     } else {
-        exceptions::PyArithmeticError::new_err(msg)
+        match exc_type {
+            ExcType::DecimalDivisionByZero | ExcType::DecimalDivisionUndefined => {
+                exceptions::PyZeroDivisionError::new_err(msg)
+            }
+            ExcType::DecimalFloatOperation => exceptions::PyTypeError::new_err(msg),
+            _ => exceptions::PyArithmeticError::new_err(msg),
+        }
     }
 }
 
@@ -160,7 +166,8 @@ fn get_decimal_module(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 }
 
 /// The `ExcType` of a host `decimal` exception: its nearest class in the MRO that
-/// the `decimal` module defines, so a subclass maps to the signal it extends.
+/// is one of the `decimal` module's signal classes (by identity, not by name), so a
+/// subclass maps to the signal it extends.
 /// `None` for anything that is not a `decimal.DecimalException`.
 fn decimal_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<ExcType> {
     let decimal = get_decimal_module(exc.py()).ok()?;
@@ -170,11 +177,9 @@ fn decimal_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<ExcT
     }
     let mro = exc.get_type().getattr("__mro__").ok()?.cast_into::<PyTuple>().ok()?;
     mro.iter().find_map(|cls| {
-        let module: String = cls.getattr("__module__").ok()?.extract().ok()?;
         let name: String = cls.getattr("__name__").ok()?.extract().ok()?;
-        (module == "decimal")
-            .then(|| format!("decimal.{name}").parse::<ExcType>().ok())
-            .flatten()
+        let exc_type = format!("decimal.{name}").parse::<ExcType>().ok()?;
+        decimal.getattr(name.as_str()).ok()?.is(&cls).then_some(exc_type)
     })
 }
 

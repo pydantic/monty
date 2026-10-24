@@ -111,7 +111,7 @@ impl Decimal {
         };
 
         if let Some(answer) = answer {
-            return Ok(answer.fix(ctx));
+            return answer.fix(ctx);
         }
         if !other.is_integer() {
             return base.power_real(other, ctx);
@@ -136,7 +136,7 @@ impl Decimal {
                 extra += 3;
             }
         };
-        Ok(answer.fix(ctx))
+        answer.fix(ctx)
     }
 
     /// A non-integer power of a positive finite value other than one, computed as
@@ -166,7 +166,7 @@ impl Decimal {
         let product_coeff = log.int() * other.int();
         let product_exp = log.exponent().saturating_add(other.exponent());
         let product =
-            Self::from_bigint_triple(log.sign() != other.sign(), &product_coeff, product_exp).fix(&mut scratch);
+            Self::from_bigint_triple(log.sign() != other.sign(), &product_coeff, product_exp).fix(&mut scratch)?;
         // exp's conditions are kept, then the final rounding adds the context's.
         let mut exp_ctx = Ctx::new(work, ctx.tracker);
         let mut result = product.exp(&mut exp_ctx)?;
@@ -180,7 +180,7 @@ impl Decimal {
             // So that rounding towards zero yields the largest finite value.
             result = Self::from_triple(false, "1", LIBMPDEC_EXP_INF);
         }
-        Ok(result.fix(ctx))
+        result.fix(ctx)
     }
 
     /// `1**other`, where the result's exponent and flags depend on `other` and on the

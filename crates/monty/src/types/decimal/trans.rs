@@ -37,7 +37,7 @@ impl Decimal {
         }
         if self.is_zero() {
             // The ideal exponent is half the operand's; `sqrt(-0)` is `-0`.
-            return Ok(Self::zero(self.sign(), self.exponent().div_euclid(2)).fix(ctx));
+            return Self::zero(self.sign(), self.exponent().div_euclid(2)).fix(ctx);
         }
         if self.sign() {
             return Ok(ctx.invalid(Condition::InvalidOperation));
@@ -88,7 +88,7 @@ impl Decimal {
             // An inexact root ending in 0 or 5 would round as if exact: nudge it.
             n += 1u8;
         }
-        Ok(round_half_even(&Self::from_bigint_triple(false, &n, e), ctx))
+        round_half_even(&Self::from_bigint_triple(false, &n, e), ctx)
     }
 
     /// `exp()`.
@@ -141,7 +141,7 @@ impl Decimal {
                 extra += 3;
             }
         };
-        Ok(round_half_even(&answer, ctx))
+        round_half_even(&answer, ctx)
     }
 
     /// `ln()`.
@@ -175,7 +175,7 @@ impl Decimal {
             places += 3;
         };
         let answer = Self::from_bigint_triple(coeff.is_negative(), &coeff.abs(), -places);
-        Ok(round_half_even(&answer, ctx))
+        round_half_even(&answer, ctx)
     }
 
     /// `log10()`.
@@ -211,7 +211,7 @@ impl Decimal {
             };
             Self::from_bigint_triple(coeff.is_negative(), &coeff.abs(), -places)
         };
-        Ok(round_half_even(&answer, ctx))
+        round_half_even(&answer, ctx)
     }
 
     /// Whether this is a finite value numerically equal to one (`self == _One`).
@@ -267,7 +267,7 @@ impl Decimal {
 }
 
 /// `_fix` under `ROUND_HALF_EVEN`, keeping the conditions on `ctx`.
-fn round_half_even(value: &Decimal, ctx: &mut Ctx<'_>) -> Decimal {
+fn round_half_even(value: &Decimal, ctx: &mut Ctx<'_>) -> RunResult<Decimal> {
     let rounding = ctx.settings.rounding;
     ctx.settings.rounding = Rounding::HalfEven;
     let answer = value.fix(ctx);

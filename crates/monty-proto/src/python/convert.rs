@@ -360,14 +360,14 @@ fn timezone_offset_seconds(delta: &MontyTimeDelta) -> PyResult<i32> {
     i32::try_from(total_seconds).map_err(|_| PyTypeError::new_err("datetime.timezone offset is out of range"))
 }
 
-/// Returns the Python `datetime.timezone` type object.
+/// Returns Python's `decimal.Decimal` class.
 pub(super) fn get_decimal_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     DECIMAL.import(py, "decimal", "Decimal")
 }
 
-/// Returns Python's `datetime.timezone` class.
+/// Returns the Python `datetime.timezone` type object.
 pub(super) fn get_datetime_timezone_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static TIMEZONE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 

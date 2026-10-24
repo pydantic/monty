@@ -16,6 +16,8 @@ operation raises and its `[<class 'decimal.DivisionByZero'>]` message all follow
     Their type prints as `<class 'SignalDict'>` (CPython: `<class 'abc.SignalDict'>`) and is not a
     `collections.abc.MutableMapping`.
     `keys()`, `values()` and `items()` return lists rather than views.
+    A mapping keeps its context alive, so it stays usable after the context is gone, where CPython 3.14.9+ raises
+    `ValueError: invalid signal dict` (as in `copy.deepcopy(ctx).flags[Inexact]`).
 - `Context` objects cannot be pickled (`__reduce__` is absent); `copy.copy()` and `copy.deepcopy()` work.
 
 ## `Decimal`
@@ -34,13 +36,16 @@ operation raises and its `[<class 'decimal.DivisionByZero'>]` message all follow
 - A trapped signal's exception carries its message as a string: `exc.args` is
     `("[<class 'decimal.DivisionByZero'>]",)` where CPython's is a one-element tuple holding a list of
     classes. `str(exc)` matches.
+- `Decimal.from_float` and `Decimal.from_number` can only be called in place (`Decimal.from_float(0.1)`);
+    reading them as attributes (`getattr(Decimal, 'from_float')`, `f = Decimal.from_float`) raises
+    `AttributeError`, as for Monty's other builtin class methods.
+- `Decimal.as_tuple()` returns a plain tuple subclass whose type is not `decimal.DecimalTuple`
+    (`isinstance(d.as_tuple(), DecimalTuple)` is `False`); the `sign`, `digits` and `exponent` fields work.
 
 ## Formatting
 
-- An f-string whose format spec is written literally, aligns, and starts its width with `0`, such as
-    `f'{d:<020}'`, formats as if the spec were `0<20` instead of raising
-    `ValueError: invalid format string`.
-    The same spec passed at runtime (`format(d, '<020')`, `'{:<020}'.format(d)`) raises as in CPython.
+- `Decimal.__format__(spec, override)` checks that `override` is a dict but ignores its
+    `thousands_sep`, `decimal_point` and `grouping` keys.
 
 ## `json`
 

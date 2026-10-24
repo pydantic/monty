@@ -32,8 +32,10 @@ pub mod worker;
 /// `Configure.persistence`, `Configure.profile` and `ChildEvent.session_id` did not bump it: a
 /// serving relay and its client act on them, children ignore them, and a
 /// child that drops them loses nothing. Version 6 added the `import` and
-/// `import_stubs` OS calls, which version 5 parents cannot answer.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// `import_stubs` OS calls, which version 5 parents cannot answer. Version 7
+/// added the `decimal` value node, which a version 6 peer rejects as a node
+/// without a kind; every other value still crosses.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///

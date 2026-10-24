@@ -175,10 +175,10 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Deep-copying, implemented by the heap types `copy.deepcopy` rebuilds.
 ///
-/// Narrow on purpose: only eleven of the fifty-seven heap types are rebuilt, so
-/// this is a trait of its own rather than a method on
-/// [`PyTrait`](crate::types::PyTrait) that the other forty-six would carry
-/// meaninglessly. The method is required, with no
+/// Narrow on purpose: only eleven of the sixty-seven heap types implement it (a
+/// `decimal.Context`, holding no references, is rebuilt inline), so this is a
+/// trait of its own rather than a method on [`PyTrait`](crate::types::PyTrait)
+/// that the others would carry meaninglessly. The method is required, with no
 /// default — a default would be the "refuse it" answer, which is legitimate for
 /// most types, so forgetting to override it would look exactly like deciding
 /// not to. Which types reach this at all is settled by [`classify`].

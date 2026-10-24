@@ -107,8 +107,8 @@ pub mod monty_node {
         #[prost(message, tag = "32")]
         Module(super::ModuleNode),
         /// A decimal.Decimal as its canonical string, str(d): "1.20", "1E+5",
-        /// "-NaN12", "Infinity". Parsed as Decimal(text) on import; malformed text
-        /// is rejected.
+        /// "-NaN12", "Infinity". Carried as text; whoever builds a Decimal from it
+        /// parses it as Decimal(text) and rejects malformed text there.
         #[prost(string, tag = "33")]
         Decimal(crate::budgeted_prost::alloc::string::String),
     }

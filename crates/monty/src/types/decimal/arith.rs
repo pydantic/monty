@@ -45,24 +45,24 @@ impl Decimal {
 
         if self.is_zero() && other.is_zero() {
             let sign = (self.sign() && other.sign()) || negative_zero;
-            return Ok(Self::zero(sign, exp).fix(ctx));
+            return Self::zero(sign, exp).fix(ctx);
         }
         if self.is_zero() {
             exp = exp.max(other.exponent() - ctx.settings.prec - 1);
             let answer = other.rescale(exp, ctx.settings.rounding, ctx)?;
-            return Ok(answer.fix(ctx));
+            return answer.fix(ctx);
         }
         if other.is_zero() {
             exp = exp.max(self.exponent() - ctx.settings.prec - 1);
             let answer = self.rescale(exp, ctx.settings.rounding, ctx)?;
-            return Ok(answer.fix(ctx));
+            return answer.fix(ctx);
         }
 
         let (mut op1, mut op2) = normalize(WorkRep::of(self), WorkRep::of(other), ctx)?;
         let result_sign = if op1.sign != op2.sign {
             if op1.int == op2.int {
                 // Equal and opposite.
-                return Ok(Self::zero(negative_zero, exp).fix(ctx));
+                return Self::zero(negative_zero, exp).fix(ctx);
             }
             if op1.int < op2.int {
                 mem::swap(&mut op1, &mut op2);
@@ -81,7 +81,7 @@ impl Decimal {
             false
         };
         let int = if op2.sign { op1.int - op2.int } else { op1.int + op2.int };
-        Ok(Self::from_bigint_triple(result_sign, &int, op1.exp).fix(ctx))
+        Self::from_bigint_triple(result_sign, &int, op1.exp).fix(ctx)
     }
 
     /// `self - other` (`__sub__`).
@@ -95,7 +95,6 @@ impl Decimal {
     }
 
     /// `self * other` (`__mul__`).
-    #[expect(clippy::unnecessary_wraps, reason = "shares the binary operators' signature")]
     pub(crate) fn mul(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         let sign = self.sign() != other.sign();
         if self.is_special() || other.is_special() {
@@ -129,7 +128,7 @@ impl Decimal {
         } else {
             Self::from_bigint_triple(sign, &(self.int() * other.int()), exp)
         };
-        Ok(answer.fix(ctx))
+        answer.fix(ctx)
     }
 
     /// `self / other` (`__truediv__`, `Context.divide`).
@@ -186,7 +185,7 @@ impl Decimal {
             }
             (coeff, exp)
         };
-        Ok(Self::from_bigint_triple(sign, &coeff, exp).fix(ctx))
+        Self::from_bigint_triple(sign, &coeff, exp).fix(ctx)
     }
 
     /// `self // other` (`__floordiv__`, `Context.divide_int`).
@@ -229,7 +228,7 @@ impl Decimal {
             });
         }
         let remainder = self.divide(other, ctx)?.1;
-        Ok(remainder.fix(ctx))
+        remainder.fix(ctx)
     }
 
     /// `divmod(self, other)` (`__divmod__`, `Context.divmod`).
@@ -255,7 +254,7 @@ impl Decimal {
             });
         }
         let (quotient, remainder) = self.divide(other, ctx)?;
-        Ok((quotient, remainder.fix(ctx)))
+        Ok((quotient, remainder.fix(ctx)?))
     }
 
     /// `remainder_near(other)`: the remainder of rounding the quotient to the
@@ -275,12 +274,12 @@ impl Decimal {
             });
         }
         if other.is_infinite() {
-            return Ok(self.fix(ctx));
+            return self.fix(ctx);
         }
 
         let ideal_exponent = self.exponent().min(other.exponent());
         if self.is_zero() {
-            return Ok(Self::zero(self.sign(), ideal_exponent).fix(ctx));
+            return Self::zero(self.sign(), ideal_exponent).fix(ctx);
         }
 
         let expdiff = self.adjusted() - other.adjusted();
@@ -291,7 +290,7 @@ impl Decimal {
         if expdiff <= -2 {
             // `abs(self / other) < 0.1`.
             let answer = self.rescale(ideal_exponent, ctx.settings.rounding, ctx)?;
-            return Ok(answer.fix(ctx));
+            return answer.fix(ctx);
         }
 
         let (op1, op2) = aligned_ints(self, other, ctx)?;
@@ -307,7 +306,7 @@ impl Decimal {
         }
         // The result has the dividend's sign unless the adjustment made it negative.
         let sign = if r.is_negative() { !self.sign() } else { self.sign() };
-        Ok(Self::from_bigint_triple(sign, &r.abs(), ideal_exponent).fix(ctx))
+        Self::from_bigint_triple(sign, &r.abs(), ideal_exponent).fix(ctx)
     }
 
     /// `fma(other, third)`: `self * other + third` with a single rounding.

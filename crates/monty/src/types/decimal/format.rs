@@ -289,7 +289,7 @@ fn parse_count(digits: &[char]) -> RunResult<Option<i128>> {
         return Ok(None);
     }
     let text: String = digits.iter().collect();
-    let value = text.parse::<u64>().ok().and_then(|n| i64::try_from(n).ok());
+    let value = text.parse::<isize>().ok().and_then(|n| i64::try_from(n).ok());
     match value {
         Some(n) => Ok(Some(i128::from(n))),
         None => Err(ExcType::overflow_error("cannot fit 'int' into an index-sized integer")),

@@ -26,10 +26,11 @@ keyword is rejected.
     with `ValueError` (matching CPython's `int_max_str_digits` behaviour)
     rather than `JSONDecodeError`.
 
-## `json.load(fp, **kwargs)`
+## `json.load(fp)`
 
 `json.load(fp)` is `json.loads(fp.read())`, but accepts no keyword arguments at all:
-`parse_float` and `parse_int` raise the same `TypeError` as the other keywords. A file from `open()` or `Path.open()` is read to EOF through the file's
+`parse_float` and `parse_int` raise the same `TypeError` as the other keywords.
+A file from `open()` or `Path.open()` is read to EOF through the file's
 own buffering, so `load` suspends to the host only when the buffer has not
 been loaded yet by a read, `seek()` or iteration step (see [open.md](open.md)).
 It sees the same errors as `fp.read()` (`ValueError` on a closed file,

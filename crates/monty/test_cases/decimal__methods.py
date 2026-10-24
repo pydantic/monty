@@ -167,6 +167,8 @@ assert str(float(D('nan'))) == 'nan'
 assert str(float(D('-nan'))) == 'nan'
 assert float(D('0.1000000000000000055511151231257827021181583404541015625')) == 0.1
 assert complex(D('2.5')) == 2.5 + 0j
+assert complex(D('1.5'), D('2')) == 1.5 + 2j
+assert complex(1, D('-0.5')) == 1 - 0.5j
 try:
     float(D('snan'))
     assert False, 'expected ValueError'

@@ -2191,6 +2191,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
+        // Mirror `py_dec_ref_ids_for_data`: both own references to decimal contexts.
+        HeapData::DecimalSignalDict(dict) => on_child(dict.context_id()),
+        HeapData::DecimalContextManager(manager) => manager.context_ids().for_each(on_child),
         // Leaf types with no heap references
         _ => {}
     }
@@ -2321,6 +2324,9 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         }
         // Release the shared subject reference (mirrors `for_each_child_id`).
         HeapData::ReMatch(m) => m.py_dec_ref_ids(stack),
+        // Release the owned decimal context references (mirrors `for_each_child_id`).
+        HeapData::DecimalSignalDict(dict) => dict.py_dec_ref_ids(stack),
+        HeapData::DecimalContextManager(manager) => manager.py_dec_ref_ids(stack),
         // other types have no nested heap references
         _ => {}
     }

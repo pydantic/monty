@@ -744,11 +744,11 @@ pub enum StaticStrings {
     Choice,
     /// `random.choices()` function.
     Choices,
+    /// Kwarg name `clamp` — `decimal.Context()`.
+    Clamp,
     /// `decimal.Clamped` signal.
     #[strum(serialize = "Clamped")]
     Clamped,
-    /// Kwarg name `clamp` — `decimal.Context()`.
-    Clamp,
     /// `__class_getitem__`, the classmethod behind `list[int]`.
     #[strum(serialize = "__class_getitem__")]
     ClassGetitem,
@@ -795,14 +795,14 @@ pub enum StaticStrings {
     Compress,
     /// `complex.conjugate()` method.
     Conjugate,
-    /// `decimal.ConversionSyntax` condition.
-    #[strum(serialize = "ConversionSyntax")]
-    ConversionSyntax,
+    /// Kwarg name `context` — the `decimal` methods.
+    Context,
     /// `decimal.Context` class.
     #[strum(serialize = "Context")]
     ContextType,
-    /// Kwarg name `context` — the `decimal` methods.
-    Context,
+    /// `decimal.ConversionSyntax` condition.
+    #[strum(serialize = "ConversionSyntax")]
+    ConversionSyntax,
     /// `copy()` method, shared by `list`, `dict` and `set`; also the `copy` module and `copy.copy()`.
     Copy,
     /// `sys.copyright` attribute.
@@ -873,18 +873,18 @@ pub enum StaticStrings {
     Days,
     /// `sys.flags.debug` field.
     Debug,
-    /// `decimal.Decimal` class.
-    #[strum(serialize = "Decimal")]
-    DecimalType,
-    /// `decimal.DecimalTuple`, the named tuple `Decimal.as_tuple()` returns.
-    #[strum(serialize = "DecimalTuple")]
-    DecimalTuple,
-    /// Module name for `import decimal`.
-    #[strum(serialize = "decimal")]
-    DecimalMod,
     /// `decimal.DecimalException` exception class.
     #[strum(serialize = "DecimalException")]
     DecimalException,
+    /// Module name for `import decimal`.
+    #[strum(serialize = "decimal")]
+    DecimalMod,
+    /// `decimal.DecimalTuple`, the named tuple `Decimal.as_tuple()` returns.
+    #[strum(serialize = "DecimalTuple")]
+    DecimalTuple,
+    /// `decimal.Decimal` class.
+    #[strum(serialize = "Decimal")]
+    DecimalType,
     /// `bytes.decode()` method.
     Decode,
     /// `base64.decodebytes()` function.
@@ -960,15 +960,15 @@ pub enum StaticStrings {
     Discard,
     /// `math.dist()` function.
     Dist,
-    /// `decimal.DivisionUndefined` condition.
-    #[strum(serialize = "DivisionUndefined")]
-    DivisionUndefined,
-    /// `decimal.DivisionImpossible` condition.
-    #[strum(serialize = "DivisionImpossible")]
-    DivisionImpossible,
     /// `decimal.DivisionByZero` signal.
     #[strum(serialize = "DivisionByZero")]
     DivisionByZero,
+    /// `decimal.DivisionImpossible` condition.
+    #[strum(serialize = "DivisionImpossible")]
+    DivisionImpossible,
+    /// `decimal.DivisionUndefined` condition.
+    #[strum(serialize = "DivisionUndefined")]
+    DivisionUndefined,
     /// `dklen` parameter of `hashlib.pbkdf2_hmac()`.
     Dklen,
     /// `field(doc=...)`, CPython's per-field docstring.
@@ -1053,12 +1053,12 @@ pub enum StaticStrings {
     /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
-    /// Kwarg name `Emin` — `decimal.Context()`.
-    #[strum(serialize = "Emin")]
-    Emin,
     /// Kwarg name `Emax` — `decimal.Context()`.
     #[strum(serialize = "Emax")]
     Emax,
+    /// Kwarg name `Emin` — `decimal.Context()`.
+    #[strum(serialize = "Emin")]
+    Emin,
     /// `gc.enable()` function.
     Enable,
     /// `str.encode()` method.
@@ -1313,12 +1313,12 @@ pub enum StaticStrings {
     HashRandomization,
     /// Module name for `import hashlib`.
     Hashlib,
-    /// `decimal.HAVE_THREADS` constant.
-    #[strum(serialize = "HAVE_THREADS")]
-    HaveThreads,
     /// `decimal.HAVE_CONTEXTVAR` constant.
     #[strum(serialize = "HAVE_CONTEXTVAR")]
     HaveContextvar,
+    /// `decimal.HAVE_THREADS` constant.
+    #[strum(serialize = "HAVE_THREADS")]
+    HaveThreads,
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
@@ -1346,12 +1346,12 @@ pub enum StaticStrings {
     Hours,
     /// `math.hypot()` function.
     Hypot,
-    /// `decimal.IEEE_CONTEXT_MAX_BITS` constant.
-    #[strum(serialize = "IEEE_CONTEXT_MAX_BITS")]
-    IeeeContextMaxBits,
     /// `decimal.IEEEContext()` function.
     #[strum(serialize = "IEEEContext")]
     IeeeContext,
+    /// `decimal.IEEE_CONTEXT_MAX_BITS` constant.
+    #[strum(serialize = "IEEE_CONTEXT_MAX_BITS")]
+    IeeeContextMaxBits,
     /// `sys.flags.ignore_environment` field.
     IgnoreEnvironment,
     /// `re.IGNORECASE` flag
@@ -1395,12 +1395,12 @@ pub enum StaticStrings {
     Interactive,
     /// `set.intersection()` method.
     Intersection,
-    /// `decimal.InvalidOperation` signal.
-    #[strum(serialize = "InvalidOperation")]
-    InvalidOperation,
     /// `decimal.InvalidContext` condition.
     #[strum(serialize = "InvalidContext")]
     InvalidContext,
+    /// `decimal.InvalidOperation` signal.
+    #[strum(serialize = "InvalidOperation")]
+    InvalidOperation,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
     /// `dataclasses.is_dataclass()` function.
@@ -1673,12 +1673,12 @@ pub enum StaticStrings {
     /// `sys.float_info.min_10_exp` field.
     #[strum(serialize = "min_10_exp")]
     Min10Exp,
-    /// `decimal.MIN_ETINY` constant.
-    #[strum(serialize = "MIN_ETINY")]
-    MinEtiny,
     /// `decimal.MIN_EMIN` constant.
     #[strum(serialize = "MIN_EMIN")]
     MinEmin,
+    /// `decimal.MIN_ETINY` constant.
+    #[strum(serialize = "MIN_ETINY")]
+    MinEtiny,
     /// `sys.float_info.min_exp` field.
     MinExp,
     /// `sys.version_info.minor` field.
@@ -1823,13 +1823,13 @@ pub enum StaticStrings {
     /// Named-tuple type name of the `os.stat()` result.
     #[strum(serialize = "StatResult")]
     OsStatResult,
-    /// Kwarg name `override` — `Decimal.__format__()`.
-    Override,
+    /// Kwarg name `other` — the binary `Decimal` methods.
+    Other,
     /// `decimal.Overflow` signal.
     #[strum(serialize = "Overflow")]
     Overflow,
-    /// Kwarg name `other` — the binary `Decimal` methods.
-    Other,
+    /// Kwarg name `override` — `Decimal.__format__()`.
+    Override,
     /// `pad` parameter of `base64.b85encode()`.
     #[strum(serialize = "pad")]
     Pad,
@@ -1846,10 +1846,10 @@ pub enum StaticStrings {
     Parents,
     /// `random.paretovariate()` function.
     Paretovariate,
-    /// Kwarg name `parse_int` — `json.loads()`.
-    ParseInt,
     /// Kwarg name `parse_float` — `json.loads()`.
     ParseFloat,
+    /// Kwarg name `parse_int` — `json.loads()`.
+    ParseInt,
     /// `functools.partial` type.
     Partial,
     /// `partition()` method, shared by `str` and `bytes`.
@@ -2055,35 +2055,35 @@ pub enum StaticStrings {
     Rmdir,
     /// `deque.rotate()` method.
     Rotate,
-    /// Kwarg name `rounding` — `Decimal.quantize()` and friends.
-    Rounding,
-    /// `decimal.Rounded` signal.
-    #[strum(serialize = "Rounded")]
-    Rounded,
-    /// `decimal.ROUND_UP` rounding mode.
-    #[strum(serialize = "ROUND_UP")]
-    RoundUp,
-    /// `decimal.ROUND_HALF_UP` rounding mode.
-    #[strum(serialize = "ROUND_HALF_UP")]
-    RoundHalfUp,
-    /// `decimal.ROUND_HALF_EVEN` rounding mode.
-    #[strum(serialize = "ROUND_HALF_EVEN")]
-    RoundHalfEven,
-    /// `decimal.ROUND_HALF_DOWN` rounding mode.
-    #[strum(serialize = "ROUND_HALF_DOWN")]
-    RoundHalfDown,
-    /// `decimal.ROUND_FLOOR` rounding mode.
-    #[strum(serialize = "ROUND_FLOOR")]
-    RoundFloor,
-    /// `decimal.ROUND_DOWN` rounding mode.
-    #[strum(serialize = "ROUND_DOWN")]
-    RoundDown,
-    /// `decimal.ROUND_CEILING` rounding mode.
-    #[strum(serialize = "ROUND_CEILING")]
-    RoundCeiling,
     /// `decimal.ROUND_05UP` rounding mode.
     #[strum(serialize = "ROUND_05UP")]
     Round05up,
+    /// `decimal.ROUND_CEILING` rounding mode.
+    #[strum(serialize = "ROUND_CEILING")]
+    RoundCeiling,
+    /// `decimal.ROUND_DOWN` rounding mode.
+    #[strum(serialize = "ROUND_DOWN")]
+    RoundDown,
+    /// `decimal.ROUND_FLOOR` rounding mode.
+    #[strum(serialize = "ROUND_FLOOR")]
+    RoundFloor,
+    /// `decimal.ROUND_HALF_DOWN` rounding mode.
+    #[strum(serialize = "ROUND_HALF_DOWN")]
+    RoundHalfDown,
+    /// `decimal.ROUND_HALF_EVEN` rounding mode.
+    #[strum(serialize = "ROUND_HALF_EVEN")]
+    RoundHalfEven,
+    /// `decimal.ROUND_HALF_UP` rounding mode.
+    #[strum(serialize = "ROUND_HALF_UP")]
+    RoundHalfUp,
+    /// `decimal.ROUND_UP` rounding mode.
+    #[strum(serialize = "ROUND_UP")]
+    RoundUp,
+    /// `decimal.Rounded` signal.
+    #[strum(serialize = "Rounded")]
+    Rounded,
+    /// Kwarg name `rounding` — `Decimal.quantize()` and friends.
+    Rounding,
     /// `sys.float_info.rounds` field.
     Rounds,
     /// `rpartition()` method, shared by `str` and `bytes`.

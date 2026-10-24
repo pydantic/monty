@@ -115,7 +115,8 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 | builtin functions   | `{ __monty_type__: 'BuiltinFunction', value }`  |
 | file handles        | `MontyFileHandle`                               |
 
-A `Decimal` marker's `value` is the exact string `str(d)` gives (`'1.20'`, `'1E+5'`, `'NaN'`), never a `number`.
+A `Decimal` marker's `value` is its exact canonical string (`'1.20'`, `'1E+5'`, `'NaN'`), never a `number`.
+That is `str(d)` under the default context; the exponent is always an uppercase `E`, whatever the context's `capitals`.
 
 Builtin type and function markers carry the builtin's name, never a JavaScript callable.
 Passing a marker back resolves it to that builtin; unrecognized names are rejected with `unknown type name` or

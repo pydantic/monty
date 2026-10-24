@@ -8,7 +8,7 @@
 //! are session state ([`SessionDecimal`]), carried across REPL feeds and dumps like
 //! `random`'s generator; each `import decimal` sees the same template objects.
 
-use std::fmt::Write;
+use std::{fmt::Write, iter};
 
 use smallvec::smallvec;
 
@@ -24,7 +24,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    types::{Dict, LazyHeapSet, List, PyTrait, Type, allocate_string, tuple::allocate_tuple},
+    types::{Dict, LazyHeapSet, List, PyTrait, Type, allocate_string, iter::collect_iterable, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -448,7 +448,6 @@ fn signal_set_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<Conditions> {
     };
     let items: Option<Vec<Value>> = match vm.heap.get(*id) {
         HeapData::List(list) => Some(list.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect()),
-        HeapData::Tuple(tuple) => Some(tuple.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect()),
         _ => None,
     };
     if let Some(items) = items {
@@ -616,6 +615,11 @@ pub(crate) struct SignalDict {
 }
 
 impl SignalDict {
+    /// The context this mapping owns a reference to, for the heap's child walkers.
+    pub(crate) fn context_id(&self) -> HeapId {
+        self.context
+    }
+
     /// The viewed set.
     fn read(&self, vm: &VM<'_>) -> Conditions {
         let settings = settings_of(vm, self.context);
@@ -637,6 +641,47 @@ fn signal_keys() -> impl Iterator<Item = (Signal, Value)> {
 }
 
 impl<'h> HeapObjectRead<'h, SignalDict> {
+    /// `update(other)`, as `MutableMapping.update`: another signal dict, a dict, or an
+    /// iterable of `(signal, value)` pairs, applied in order.
+    fn update(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let pairs: Option<Vec<(Value, Value)>> = match other {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::DecimalSignalDict(dict) => {
+                    let set = dict.read(vm);
+                    for signal in Signal::ALL {
+                        self.set(signal, set.has_signal(signal), vm);
+                    }
+                    return Ok(());
+                }
+                HeapData::Dict(dict) => Some(
+                    dict.iter()
+                        .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
+                        .collect(),
+                ),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(pairs) = pairs {
+            defer_drop!(pairs, vm);
+            for (key, flag) in pairs {
+                self.set(signal_key(key)?, flag.py_bool(vm)?, vm);
+            }
+        } else {
+            let items = collect_iterable(other, vm)?;
+            defer_drop!(items, vm);
+            for item in items {
+                let pair = collect_iterable(item, vm)?;
+                defer_drop!(pair, vm);
+                let [key, flag] = pair.as_slice() else {
+                    return Err(ExcType::unpack_size_error(2, pair.len()));
+                };
+                self.set(signal_key(key)?, flag.py_bool(vm)?, vm);
+            }
+        }
+        Ok(())
+    }
+
     /// Writes one signal through to the context.
     fn set(&self, signal: Signal, on: bool, vm: &mut VM<'h>) {
         let SignalDict { context, traps } = *self.get(vm.heap);
@@ -694,15 +739,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
     }
 
     /// Equal to another signal dict, or to a dict holding all nine signals, with the
-    /// same truth values; any other dict raises `ValueError` as in CPython.
+    /// same truth values; any other non-empty dict is unequal, and `{}` raises
+    /// `ValueError` as in CPython.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Value::Ref(id) = other else { return Ok(None) };
         let mine = self.get(vm.heap).read(vm);
         let theirs = match vm.heap.get(*id) {
             HeapData::DecimalSignalDict(dict) => dict.read(vm),
+            HeapData::Dict(dict) if dict.is_empty() => return Err(ExcType::value_error("invalid signal dict")),
             HeapData::Dict(_) => match signal_dict_arg(other, vm) {
                 Ok(set) => set,
-                Err(_) => return Err(ExcType::value_error("invalid signal dict")),
+                Err(_) => return Ok(Some(false)),
             },
             _ => return Ok(None),
         };
@@ -789,23 +836,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
                 }
             }
             "update" => {
-                let other = args.get_one_arg("update", vm.heap)?;
-                defer_drop!(other, vm);
-                let Value::Ref(id) = other else {
-                    return Err(ExcType::type_error("argument must be a signal dict"));
-                };
-                let pairs: Vec<(Value, Value)> = match vm.heap.get(*id) {
-                    HeapData::Dict(dict) => dict
-                        .iter()
-                        .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                        .collect(),
-                    _ => return Err(ExcType::type_error("argument must be a signal dict")),
-                };
-                defer_drop!(pairs, vm);
-                for (key, flag) in pairs {
-                    let signal = signal_key(key)?;
-                    let on = flag.py_bool(vm)?;
-                    self.set(signal, on, vm);
+                if let Some(other) = args.get_zero_one_arg("update", vm.heap)? {
+                    defer_drop!(other, vm);
+                    self.update(other, vm)?;
                 }
                 Value::None
             }
@@ -829,10 +862,16 @@ pub(crate) struct ContextManager {
     saved: Option<HeapId>,
 }
 
+impl ContextManager {
+    /// The contexts this manager owns references to, for the heap's child walkers.
+    pub(crate) fn context_ids(&self) -> impl Iterator<Item = HeapId> {
+        iter::once(self.local).chain(self.saved)
+    }
+}
+
 impl HeapItem for ContextManager {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        stack.push(self.local);
-        stack.extend(self.saved);
+        stack.extend(self.context_ids());
     }
 }
 

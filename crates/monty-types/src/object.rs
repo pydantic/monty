@@ -1822,8 +1822,9 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
 /// Whether a `Decimal` string form is a (signed) zero: every mantissa digit is `0`.
 ///
 /// NaNs and infinities contain letters before any exponent, so they are never zero.
+/// Surrounding whitespace and underscores are ignored, as `Decimal(text)` ignores them.
 fn decimal_is_zero(text: &str) -> bool {
-    let unsigned = text.trim_start_matches(['+', '-']);
+    let unsigned = text.trim().trim_start_matches(['+', '-']);
     let mantissa = unsigned.split(['e', 'E']).next().unwrap_or_default();
-    !mantissa.is_empty() && mantissa.bytes().all(|b| b == b'0' || b == b'.')
+    mantissa.bytes().any(|b| b == b'0') && mantissa.bytes().all(|b| matches!(b, b'0' | b'.' | b'_'))
 }

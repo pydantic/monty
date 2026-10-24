@@ -11,7 +11,7 @@ use num_traits::{Pow, Zero};
 use super::{
     Ctx, Decimal,
     context::{Condition, DecContext, Rounding},
-    increment_digits, len_i64,
+    increment_digits,
 };
 use crate::exception_private::{ExcType, ExcTypeExt, RunResult};
 
@@ -37,7 +37,7 @@ impl Decimal {
             return Ok(ctx.invalid(Condition::InvalidOperation));
         }
         if self.is_zero() {
-            return Ok(Self::zero(self.sign(), target).fix(ctx));
+            return Self::zero(self.sign(), target).fix(ctx);
         }
         let self_adjusted = self.adjusted();
         if self_adjusted > settings.emax || self_adjusted - target + 1 > settings.prec {
@@ -57,7 +57,7 @@ impl Decimal {
             ctx.raise(Condition::Rounded);
         }
         // `fix` folds the exponent down under `clamp` and signals `Clamped`.
-        Ok(answer.fix(ctx))
+        answer.fix(ctx)
     }
 
     /// `same_quantum(other)`: equal exponents, or both NaNs, or both infinities.
@@ -149,18 +149,18 @@ impl Decimal {
     }
 
     /// `normalize()`: rounds to the context and strips trailing zeros.
-    pub(crate) fn normalize(&self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn normalize(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if self.is_special()
             && let Some(answer) = self.check_nans(None, ctx)
         {
-            return answer;
+            return Ok(answer);
         }
-        let dup = self.fix(ctx);
+        let dup = self.fix(ctx)?;
         if dup.is_infinite() {
-            return dup;
+            return Ok(dup);
         }
         if dup.is_zero() {
-            return Self::zero(dup.sign(), 0);
+            return Ok(Self::zero(dup.sign(), 0));
         }
         let exp_max = if ctx.settings.clamp {
             ctx.settings.etop()
@@ -174,7 +174,7 @@ impl Decimal {
             exp += 1;
             end -= 1;
         }
-        Self::from_triple(dup.sign(), &dup.coeff()[..end], exp)
+        Ok(Self::from_triple(dup.sign(), &dup.coeff()[..end], exp))
     }
 
     /// `next_minus()`: the largest representable number below this one.
@@ -196,15 +196,12 @@ impl Decimal {
         let settings = ctx.settings;
         match (self.infinity_sign(), down) {
             (-1, true) | (1, false) => return Ok(self.clone()),
-            (1, true) | (-1, false) => {
-                let nines = "9".repeat(usize::try_from(settings.prec).unwrap_or(0));
-                return Ok(Self::from_triple(!down, nines, settings.etop()));
-            }
+            (1, true) | (-1, false) => return Self::largest_finite(!down, ctx),
             _ => {}
         }
         // `_pydecimal` works on a flag-ignoring copy of the context.
         let mut quiet = ctx.with_rounding(if down { Rounding::Floor } else { Rounding::Ceiling });
-        let new_self = self.fix(&mut quiet);
+        let new_self = self.fix(&mut quiet)?;
         // A numeric comparison: `1.0` rounding to `1` is no step at all.
         if new_self.cmp_numeric(self).is_ne() {
             return Ok(new_self);
@@ -264,30 +261,30 @@ impl Decimal {
 
     /// `logb()`: the adjusted exponent as a `Decimal`; `logb(0)` is `-Infinity`
     /// with `DivisionByZero`.
-    pub(crate) fn logb(&self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn logb(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if let Some(answer) = self.check_nans(None, ctx) {
-            return answer;
+            return Ok(answer);
         }
         if self.is_infinite() {
-            Self::infinity(false)
+            Ok(Self::infinity(false))
         } else if self.is_zero() {
-            ctx.division_by_zero(true)
+            Ok(ctx.division_by_zero(true))
         } else {
             Self::from_i64(self.adjusted()).fix(ctx)
         }
     }
 
     /// `scaleb(other)`: adds the integer `other` to the exponent.
-    pub(crate) fn scaleb(&self, other: &Self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn scaleb(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if let Some(answer) = self.check_nans(Some(other), ctx) {
-            return answer;
+            return Ok(answer);
         }
         let limit = 2 * (ctx.settings.emax + ctx.settings.prec);
         let Some(shift) = integer_operand(other).filter(|n| (-limit..=limit).contains(n)) else {
-            return ctx.invalid(Condition::InvalidOperation);
+            return Ok(ctx.invalid(Condition::InvalidOperation));
         };
         if self.is_infinite() {
-            return self.clone();
+            return Ok(self.clone());
         }
         Self::from_triple(self.sign(), self.coeff(), self.exponent() + shift).fix(ctx)
     }
@@ -353,6 +350,9 @@ impl Decimal {
 
     /// `logical_invert()`: `logical_xor` with `prec` ones.
     pub(crate) fn logical_invert(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
+        if !self.is_logical() {
+            return Ok(ctx.invalid(Condition::InvalidOperation));
+        }
         ctx.check_digits(u64::try_from(ctx.settings.prec).unwrap_or(u64::MAX))?;
         let ones = Self::from_triple(false, "1".repeat(usize::try_from(ctx.settings.prec).unwrap_or(0)), 0);
         self.logical_xor(&ones, ctx)
@@ -435,11 +435,15 @@ impl Decimal {
 /// The value of an integral operand with exponent zero, as `rotate`, `shift` and
 /// `scaleb` take; `None` for anything else or a value outside `i64`.
 fn integer_operand(value: &Decimal) -> Option<i64> {
-    if !value.is_finite() || value.exponent() != 0 || len_i64(value.coeff()) > 18 {
+    if !value.is_finite() || value.exponent() != 0 {
         return None;
     }
-    let magnitude: i64 = value.coeff().parse().ok()?;
-    Some(if value.sign() { -magnitude } else { magnitude })
+    let magnitude: u64 = value.coeff().parse().ok()?;
+    if value.sign() {
+        0i64.checked_sub_unsigned(magnitude)
+    } else {
+        i64::try_from(magnitude).ok()
+    }
 }
 
 /// Left-pads with zeros, or keeps the last `prec` digits (`_fill_logical`).

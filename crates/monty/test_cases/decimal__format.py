@@ -1,4 +1,4 @@
-from decimal import ROUND_DOWN, ROUND_UP, Decimal, localcontext
+from decimal import ROUND_DOWN, ROUND_UP, Context, Decimal, localcontext
 
 
 def format_error(value, spec):
@@ -158,6 +158,11 @@ assert '{0!r}'.format(y) == "Decimal('1234.5')"
 assert '{:^12}'.format(y) == '   1234.5   '
 assert format(y) == '1234.5'
 assert y.__format__('.1f') == '1234.5'
+try:
+    y.__format__('.1f', Context())
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'optional argument must be a dict'
 
 # === percent formatting converts through float and int ===
 assert '%.2f' % Decimal('2.675') == '2.67'
@@ -184,6 +189,14 @@ assert format_error(x, 'd') == 'ValueError: invalid format string'
 assert format_error(x, 's') == 'ValueError: invalid format string'
 assert format_error(x, ',_') == 'ValueError: invalid format string'
 assert format_error(x, '<020') == 'ValueError: invalid format string'
+try:
+    f'{x:<020}'
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'invalid format string'
+assert f'{Decimal(1):001}' == '1'
+assert f'{Decimal(1): <5}' == '1    '
+assert f'{x:<20}' == '1234567.891         '
 assert format_error(x, ',n') == 'ValueError: invalid format string'
 assert format_error(x, 'ff') == 'ValueError: invalid format string'
 assert format_error(x, '99999999999999999999') == "OverflowError: cannot fit 'int' into an index-sized integer"

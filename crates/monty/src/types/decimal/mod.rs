@@ -77,6 +77,14 @@ pub(crate) struct Decimal {
 }
 
 impl Decimal {
+    /// The largest finite magnitude the context allows, `prec` nines at `Etop`:
+    /// the overflow result when rounding towards zero, and `next_*` from an infinity.
+    pub(crate) fn largest_finite(sign: bool, ctx: &Ctx<'_>) -> RunResult<Self> {
+        ctx.check_digits(u64::try_from(ctx.settings.prec).unwrap_or(u64::MAX))?;
+        let nines = "9".repeat(usize::try_from(ctx.settings.prec).unwrap_or(0));
+        Ok(Self::from_triple(sign, nines, ctx.settings.etop()))
+    }
+
     /// A finite value from its parts, `_pydecimal`'s `_dec_from_triple`.
     ///
     /// The coefficient must already be normalized (no leading zeros).
@@ -344,9 +352,9 @@ impl Decimal {
 
     /// `_fix`: rounds to the context precision and brings the exponent into range,
     /// raising `Clamped`, `Overflow`, `Underflow`, `Subnormal`, `Inexact` and `Rounded`.
-    pub(crate) fn fix(&self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn fix(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if self.is_special() {
-            return if self.is_nan() { self.fix_nan(ctx) } else { self.clone() };
+            return Ok(if self.is_nan() { self.fix_nan(ctx) } else { self.clone() });
         }
 
         let settings = ctx.settings;
@@ -355,21 +363,21 @@ impl Decimal {
         if self.is_zero() {
             let exp_max = if settings.clamp { etop } else { settings.emax };
             let new_exp = self.exp.max(etiny).min(exp_max);
-            return if new_exp == self.exp {
+            return Ok(if new_exp == self.exp {
                 self.clone()
             } else {
                 ctx.raise(Condition::Clamped);
                 Self::zero(self.sign, new_exp)
-            };
+            });
         }
 
         // The smallest allowable exponent of the result.
         let mut exp_min = self.digits() + self.exp - settings.prec;
         if exp_min > etop {
-            let answer = ctx.overflow(self.sign);
+            let answer = ctx.overflow(self.sign)?;
             ctx.raise(Condition::Inexact);
             ctx.raise(Condition::Rounded);
-            return answer;
+            return Ok(answer);
         }
 
         let is_subnormal = exp_min < etiny;
@@ -402,7 +410,7 @@ impl Decimal {
             }
 
             let answer = if exp_min > etop {
-                ctx.overflow(self.sign)
+                ctx.overflow(self.sign)?
             } else {
                 Self::from_triple(self.sign, coeff.into_owned(), exp_min)
             };
@@ -422,7 +430,7 @@ impl Decimal {
                 // Underflow to zero.
                 ctx.raise(Condition::Clamped);
             }
-            return answer;
+            return Ok(answer);
         }
 
         if is_subnormal {
@@ -433,13 +441,14 @@ impl Decimal {
             // Fold the exponent down into the coefficient.
             ctx.raise(Condition::Clamped);
             let pad = usize::try_from(self.exp - etop).expect("exp is above etop");
+            ctx.check_digits(u64::try_from(self.coeff.len() + pad).unwrap_or(u64::MAX))?;
             let mut padded = String::with_capacity(self.coeff.len() + pad);
             padded.push_str(&self.coeff);
             padded.extend(iter::repeat_n('0', pad));
-            return Self::from_triple(self.sign, padded, etop);
+            return Ok(Self::from_triple(self.sign, padded, etop));
         }
 
-        self.clone()
+        Ok(self.clone())
     }
 
     /// The `_round_*` functions: whether truncating the coefficient to `prec` digits
@@ -499,11 +508,11 @@ impl Decimal {
     }
 
     /// `-x`, rounded to the context (`__neg__`).
-    pub(crate) fn neg(&self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn neg(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if self.is_special()
             && let Some(answer) = self.check_nans(None, ctx)
         {
-            return answer;
+            return Ok(answer);
         }
         // `-Decimal('0')` is `0`, not `-0`, except when rounding towards -inf.
         let answer = if self.is_zero() && ctx.settings.rounding != Rounding::Floor {
@@ -515,11 +524,11 @@ impl Decimal {
     }
 
     /// `+x`, rounded to the context (`__pos__`).
-    pub(crate) fn plus(&self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn plus(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if self.is_special()
             && let Some(answer) = self.check_nans(None, ctx)
         {
-            return answer;
+            return Ok(answer);
         }
         let answer = if self.is_zero() && ctx.settings.rounding != Rounding::Floor {
             self.copy_abs()
@@ -530,11 +539,11 @@ impl Decimal {
     }
 
     /// `abs(x)`, rounded to the context (`__abs__`).
-    pub(crate) fn abs(&self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn abs(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if self.is_special()
             && let Some(answer) = self.check_nans(None, ctx)
         {
-            return answer;
+            return Ok(answer);
         }
         if self.sign { self.neg(ctx) } else { self.plus(ctx) }
     }
@@ -620,7 +629,7 @@ impl Ctx<'_> {
 
     /// Raises `Overflow` and returns its default result, which depends on the rounding:
     /// an infinity, or the largest finite value when rounding towards zero.
-    pub(crate) fn overflow(&mut self, sign: bool) -> Decimal {
+    pub(crate) fn overflow(&mut self, sign: bool) -> RunResult<Decimal> {
         self.raise(Condition::Overflow);
         let to_infinity = match self.settings.rounding {
             Rounding::HalfUp | Rounding::HalfEven | Rounding::HalfDown | Rounding::Up => true,
@@ -629,10 +638,9 @@ impl Ctx<'_> {
             Rounding::Down | Rounding::Up05 => false,
         };
         if to_infinity {
-            Decimal::infinity(sign)
+            Ok(Decimal::infinity(sign))
         } else {
-            let nines = "9".repeat(usize::try_from(self.settings.prec).unwrap_or(0));
-            Decimal::from_triple(sign, nines, self.settings.etop())
+            Decimal::largest_finite(sign, self)
         }
     }
 }

@@ -568,12 +568,15 @@ impl ParsedFormatSpec {
     /// Renders the spec back into source form, for types such as `Decimal` that parse
     /// their own spec grammar.
     ///
-    /// The parse is lossy only where `0` meets an explicit alignment: `<020` and `0<20`
-    /// both render as `0<20`.
+    /// The parse is lossy where `0` meets an explicit alignment (`<020` and `0<20` both
+    /// render as `0<20`) and in redundant spellings (`001`, ` <5`), so the compiler keeps
+    /// a static spec that does not round-trip as its source text instead.
     pub(crate) fn to_spec_string(&self) -> String {
         let mut out = String::new();
         if let Some(align) = self.align {
-            out.push(self.fill);
+            if self.fill != ' ' {
+                out.push(self.fill);
+            }
             out.push(match align {
                 Align::Left => '<',
                 Align::Right => '>',

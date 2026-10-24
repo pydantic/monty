@@ -83,7 +83,8 @@ pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     parse_json_input(s, &hooks, vm)
 }
 
-/// Callables `json.loads` converts number tokens with instead of `float()` / `int()`.
+/// The `parse_float` / `parse_int` callables `json.loads` converts number tokens with,
+/// in place of `float()` / `int()`.
 #[derive(Default)]
 struct NumberHooks<'a> {
     parse_float: Option<&'a Value>,

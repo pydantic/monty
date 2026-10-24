@@ -1517,6 +1517,17 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::KeyError, "invalid signal dict").into()
     }
 
+    /// Unpacking a sequence of the wrong length: `not enough values to unpack
+    /// (expected 2, got 1)` or `too many values to unpack (expected 2, got 3)`.
+    fn unpack_size_error(expected: usize, actual: usize) -> RunError {
+        let message = if actual < expected {
+            format!("not enough values to unpack (expected {expected}, got {actual})")
+        } else {
+            format!("too many values to unpack (expected {expected}, got {actual})")
+        };
+        SimpleException::new_msg(ExcType::ValueError, message).into()
+    }
+
     /// C's `PyArg_ParseTuple` arity error for a fixed-arity method: `function takes
     /// exactly 2 arguments (1 given)`.
     fn type_error_function_exact(expected: usize, actual: usize) -> RunError {

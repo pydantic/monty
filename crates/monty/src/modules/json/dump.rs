@@ -16,7 +16,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead},
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
-    types::{Dict, PyTrait, str::allocate_string},
+    types::{Dict, PyTrait, Type, str::allocate_string},
     value::Value,
 };
 
@@ -551,8 +551,13 @@ impl<'h> Encoder<'_, 'h> {
             }
             _ => {
                 // CPython names the class by `__name__`: `Decimal`, not `decimal.Decimal`.
+                // A user class's name is its `__name__` already, dots and all.
                 let type_name = value.py_type_name(self.vm);
-                let bare = type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare);
+                let bare = if matches!(value.py_type(self.vm), Type::Instance(_)) {
+                    &*type_name
+                } else {
+                    type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare)
+                };
                 Err(ExcType::json_not_serializable_error(bare))
             }
         }

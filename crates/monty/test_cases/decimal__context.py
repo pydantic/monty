@@ -263,6 +263,39 @@ assert flags.get(Rounded) is False
 assert flags.get('x', 'default') == 'default'
 assert flags.copy() == {s: False for s in all_signals}
 assert flags == flags.copy()
+assert (flags == {Rounded: False}) is False
+assert (flags == {1: 2}) is False
+assert flags != {Rounded: False}
+try:
+    flags == {}
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'invalid signal dict'
+other = Context(traps=[Rounded])
+other.flags.update(other.traps)
+assert other.flags[Rounded]
+assert not other.flags[Inexact]
+other.flags.update([(Inexact, 1), (Rounded, 0)])
+assert other.flags[Inexact]
+assert not other.flags[Rounded]
+other.flags.update({Clamped: True})
+other.flags.update()
+assert other.flags[Clamped]
+try:
+    other.flags.update([(Inexact,)])
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'not enough values to unpack (expected 2, got 1)'
+try:
+    other.flags.update(5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'int' object is not iterable"
+try:
+    Context(flags=(Inexact,))
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'argument must be a signal dict'
 try:
     flags[ConversionSyntax]
     assert False, 'expected KeyError'
@@ -511,7 +544,8 @@ d.prec = 3
 assert c.prec == 12
 assert copy.copy(c) is not c
 assert copy.copy(c).prec == 12
-assert copy.deepcopy(c).flags[Inexact]
+deep = copy.deepcopy(c)
+assert deep.flags[Inexact]
 assert c == c
 assert c != d
 assert hash(c) == hash(c)

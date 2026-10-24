@@ -4,6 +4,7 @@
 use std::cmp::Ordering;
 
 use super::{Ctx, Decimal};
+use crate::exception_private::RunResult;
 
 /// `_cmp`: numeric order of two non-NaN values, `-0 == 0`.
 pub(super) fn cmp_numeric(a: &Decimal, b: &Decimal) -> Ordering {
@@ -101,28 +102,28 @@ impl Decimal {
     }
 
     /// `max(other)`: the larger operand, a quiet NaN losing to a number. Rounds.
-    pub(crate) fn max(&self, other: &Self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn max(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         self.pick(other, ctx, false, Ordering::Less)
     }
 
     /// `min(other)`.
-    pub(crate) fn min(&self, other: &Self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn min(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         self.pick(other, ctx, false, Ordering::Greater)
     }
 
     /// `max_mag(other)`: `max` on the absolute values.
-    pub(crate) fn max_mag(&self, other: &Self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn max_mag(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         self.pick(other, ctx, true, Ordering::Less)
     }
 
     /// `min_mag(other)`.
-    pub(crate) fn min_mag(&self, other: &Self, ctx: &mut Ctx<'_>) -> Self {
+    pub(crate) fn min_mag(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         self.pick(other, ctx, true, Ordering::Greater)
     }
 
     /// The shared body of the `max`/`min` family: `other` wins when the comparison
     /// of `self` against it is `other_wins`; numeric ties fall back on the total order.
-    fn pick(&self, other: &Self, ctx: &mut Ctx<'_>, magnitude: bool, other_wins: Ordering) -> Self {
+    fn pick(&self, other: &Self, ctx: &mut Ctx<'_>, magnitude: bool, other_wins: Ordering) -> RunResult<Self> {
         if self.is_special() || other.is_special() {
             let (sn, on) = (self.nan_kind(), other.nan_kind());
             if sn != 0 || on != 0 {
@@ -131,7 +132,7 @@ impl Decimal {
                 } else if sn == 1 && on == 0 {
                     other.fix(ctx)
                 } else {
-                    self.check_nans(Some(other), ctx).expect("an operand is a NaN")
+                    Ok(self.check_nans(Some(other), ctx).expect("an operand is a NaN"))
                 };
             }
         }

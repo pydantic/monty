@@ -1251,8 +1251,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             1_079_568,
         ),
         // `decimal` preflights results whose size scales with an exponent or the
-        // precision: an integer conversion, `f` formatting, and division, `sqrt` and
-        // `quantize` under a large `prec`.
+        // precision: an integer conversion, `f` formatting, and division, `sqrt`,
+        // `quantize` and the largest finite value (`next_minus` from infinity) under
+        // a large `prec`.
         ("import decimal\nint(decimal.Decimal('1e3000000'))", 3_046_935),
         ("import decimal\nf'{decimal.Decimal(\"1e3000000\"):f}'", 3_047_203),
         (
@@ -1266,6 +1267,10 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         (
             "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(1).quantize(decimal.Decimal('1e-2500000'))",
             2_547_363,
+        ),
+        (
+            "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal('Infinity').next_minus()",
+            3_047_327,
         ),
     ];
 

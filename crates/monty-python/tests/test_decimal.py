@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import decimal
-from decimal import Decimal
+from decimal import Decimal, DecimalTuple
 from typing import Any
 
 import pytest
@@ -31,7 +31,10 @@ def test_decimal_round_trip(monty_run: RunMonty, value: Decimal):
 
 def test_decimal_nan_round_trip(monty_run: RunMonty):
     result = monty_run('[x, y]', inputs={'x': Decimal('-NaN12'), 'y': Decimal('sNaN')})
-    assert [str(d) for d in result] == snapshot(['-NaN12', 'sNaN'])
+    assert [type(d) for d in result] == [Decimal, Decimal]
+    assert [d.as_tuple() for d in result] == snapshot(
+        [DecimalTuple(sign=1, digits=(1, 2), exponent='n'), DecimalTuple(sign=0, digits=(), exponent='N')]
+    )
 
 
 def test_decimal_output(monty_run: RunMonty):
@@ -39,7 +42,10 @@ def test_decimal_output(monty_run: RunMonty):
 from decimal import Decimal
 [Decimal('19.99'), Decimal('0.10'), Decimal(10) ** 30]
 """
-    assert monty_run(code) == snapshot([Decimal('19.99'), Decimal('0.10'), Decimal('1000000000000000000000000000000')])
+    result = monty_run(code)
+    assert [type(d) for d in result] == [Decimal, Decimal, Decimal]
+    # `==` ignores trailing zeros, so the exact digits are compared too.
+    assert [str(d) for d in result] == snapshot(['19.99', '0.10', '1.000000000000000000000000000E+30'])
 
 
 def test_decimal_input_used_in_sandbox(monty_run: RunMonty):

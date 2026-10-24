@@ -2414,11 +2414,15 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
             match static_spec.parse::<ParsedFormatSpec>() {
                 Ok(parsed) => {
-                    if let Some(encoded) = encode_format_spec(&parsed) {
+                    // A spec that does not round-trip stays text: `Decimal` parses its
+                    // own grammar from `to_spec_string`, which would see `0<5` for `<05`.
+                    if let Some(encoded) = encode_format_spec(&parsed)
+                        && parsed.to_spec_string() == static_spec
+                    {
                         Ok(Some(FormatSpec::Static(encoded)))
                     } else {
-                        // Valid but too large for the compact encoding — re-parse
-                        // the literal at runtime.
+                        // Valid but too large for the compact encoding, or not in
+                        // canonical form — re-parse the literal at runtime.
                         let string_id = self.interner.intern(&static_spec);
                         Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
                     }

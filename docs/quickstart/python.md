@@ -128,18 +128,18 @@ are always POSIX.
 Anything else is rejected with [`MontyConversionError`][pydantic_monty.MontyConversionError] before it reaches the sandbox:
 
 ```python
-from decimal import Decimal
+from fractions import Fraction
 
 from pydantic_monty import Monty, MontyConversionError
 
 with Monty() as pool:
     with pool.checkout() as session:
         try:
-            session.feed_run('v', inputs={'v': Decimal('1.5')})
+            session.feed_run('v', inputs={'v': Fraction(3, 2)})
         except MontyConversionError as exc:
             print(exc)
             """
-            Cannot convert decimal.Decimal to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)
+            Cannot convert fractions.Fraction to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)
             """
 ```
 

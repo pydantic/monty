@@ -533,15 +533,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
     }
 
     fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.unary_operator(vm, |d, ctx| Ok(d.abs(ctx))).map(Some)
+        self.unary_operator(vm, Decimal::abs).map(Some)
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.unary_operator(vm, |d, ctx| Ok(d.neg(ctx))).map(Some)
+        self.unary_operator(vm, Decimal::neg).map(Some)
     }
 
     fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.unary_operator(vm, |d, ctx| Ok(d.plus(ctx))).map(Some)
+        self.unary_operator(vm, Decimal::plus).map(Some)
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -875,7 +875,14 @@ impl<'h> HeapObjectRead<'h, Decimal> {
             DecimalMethod::DunderFormat => {
                 let (spec, override_) = format_args(args, vm)?;
                 defer_drop!(spec, vm);
-                override_.drop_with(vm);
+                defer_drop!(override_, vm);
+                // C `_decimal`'s locale override (`thousands_sep`, `decimal_point`,
+                // `grouping`) is checked but not applied: see limitations/decimal.md.
+                if let Some(override_) = override_
+                    && !matches!(override_, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)))
+                {
+                    return Err(ExcType::type_error("optional argument must be a dict"));
+                }
                 let Some(spec) = spec.as_either_str(vm.heap) else {
                     return Err(ExcType::type_error("format arg must be str"));
                 };
@@ -1060,21 +1067,21 @@ pub(crate) enum UnaryOp {
 /// Runs a one-operand operation.
 fn unary_op(op: UnaryOp, a: &Decimal, ctx: &mut Ctx<'_>) -> RunResult<OpResult> {
     Ok(OpResult::Decimal(match op {
-        UnaryOp::Abs => a.abs(ctx),
+        UnaryOp::Abs => a.abs(ctx)?,
         UnaryOp::Canonical | UnaryOp::CopyDecimal => a.clone(),
         UnaryOp::CopyAbs => a.copy_abs(),
         UnaryOp::CopyNegate => a.copy_negate(),
         UnaryOp::Exp => a.exp(ctx)?,
         UnaryOp::Ln => a.ln(ctx)?,
         UnaryOp::Log10 => a.log10(ctx)?,
-        UnaryOp::Logb => a.logb(ctx),
+        UnaryOp::Logb => a.logb(ctx)?,
         UnaryOp::LogicalInvert => a.logical_invert(ctx)?,
-        UnaryOp::Minus => a.neg(ctx),
+        UnaryOp::Minus => a.neg(ctx)?,
         UnaryOp::NextMinus => a.next_minus(ctx)?,
         UnaryOp::NextPlus => a.next_plus(ctx)?,
-        UnaryOp::Normalize => a.normalize(ctx),
-        UnaryOp::Plus => a.plus(ctx),
-        UnaryOp::Apply => a.fix(ctx),
+        UnaryOp::Normalize => a.normalize(ctx)?,
+        UnaryOp::Plus => a.plus(ctx)?,
+        UnaryOp::Apply => a.fix(ctx)?,
         UnaryOp::Sqrt => a.sqrt(ctx)?,
         UnaryOp::ToIntegral | UnaryOp::ToIntegralValue => a.to_integral_value(None, ctx)?,
         UnaryOp::ToIntegralExact => a.to_integral_exact(None, ctx)?,
@@ -1148,15 +1155,15 @@ fn binary_op(op: BinaryOp, a: &Decimal, b: &Decimal, ctx: &mut Ctx<'_>) -> RunRe
         BinaryOp::LogicalAnd => a.logical_and(b, ctx)?,
         BinaryOp::LogicalOr => a.logical_or(b, ctx)?,
         BinaryOp::LogicalXor => a.logical_xor(b, ctx)?,
-        BinaryOp::Max => a.max(b, ctx),
-        BinaryOp::MaxMag => a.max_mag(b, ctx),
-        BinaryOp::Min => a.min(b, ctx),
-        BinaryOp::MinMag => a.min_mag(b, ctx),
+        BinaryOp::Max => a.max(b, ctx)?,
+        BinaryOp::MaxMag => a.max_mag(b, ctx)?,
+        BinaryOp::Min => a.min(b, ctx)?,
+        BinaryOp::MinMag => a.min_mag(b, ctx)?,
         BinaryOp::NextToward => a.next_toward(b, ctx)?,
         BinaryOp::Quantize => a.quantize(b, None, ctx)?,
         BinaryOp::Rotate => a.rotate(b, ctx)?,
         BinaryOp::SameQuantum => return Ok(OpResult::Bool(a.same_quantum(b))),
-        BinaryOp::Scaleb => a.scaleb(b, ctx),
+        BinaryOp::Scaleb => a.scaleb(b, ctx)?,
         BinaryOp::Shift => a.shift(b, ctx)?,
     }))
 }
@@ -1445,7 +1452,7 @@ pub(crate) fn call_context_method(
                 None => Decimal::zero(false, 0),
             };
             // Unlike `Decimal()`, the result is rounded to the context.
-            let result = with_ctx(vm, ctx_id, |ctx, _| Ok(create_fix(&exact, ctx)))?;
+            let result = with_ctx(vm, ctx_id, |ctx, _| create_fix(&exact, ctx))?;
             Ok(decimal_value(result, vm))
         }
         ContextMethod::CreateDecimalFromFloat => {
@@ -1453,7 +1460,7 @@ pub(crate) fn call_context_method(
             let f = f.get_one_arg("Context.create_decimal_from_float", vm.heap)?;
             defer_drop!(f, vm);
             let exact = from_float_arg(f, vm)?;
-            let result = with_ctx(vm, ctx_id, |ctx, _| Ok(create_fix(&exact, ctx)))?;
+            let result = with_ctx(vm, ctx_id, |ctx, _| create_fix(&exact, ctx))?;
             Ok(decimal_value(result, vm))
         }
         ContextMethod::Radix => {
@@ -1465,10 +1472,10 @@ pub(crate) fn call_context_method(
 
 /// `create_decimal`'s rounding: `_fix`, except that a NaN payload longer than the
 /// precision is invalid rather than truncated.
-fn create_fix(value: &Decimal, ctx: &mut Ctx<'_>) -> Decimal {
+fn create_fix(value: &Decimal, ctx: &mut Ctx<'_>) -> RunResult<Decimal> {
     let max_payload = ctx.settings.prec - i64::from(ctx.settings.clamp);
     if value.is_nan() && value.digits() > max_payload {
-        ctx.invalid(Condition::ConversionSyntax)
+        Ok(ctx.invalid(Condition::ConversionSyntax))
     } else {
         value.fix(ctx)
     }

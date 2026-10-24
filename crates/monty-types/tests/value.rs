@@ -16,7 +16,7 @@ fn is_truthy_none_is_falsy() {
 
 #[test]
 fn is_truthy_decimal_zero_is_falsy() {
-    for zero in ["0", "-0", "0.00", "0E+5", "-0E-3"] {
+    for zero in ["0", "-0", "0.00", "0E+5", "-0E-3", " 0 ", "0_0", "+.0"] {
         assert!(!MontyObject::decimal(zero).is_truthy(), "{zero}");
     }
     for nonzero in ["1", "0.01", "NaN", "-sNaN", "Infinity", "1E-30"] {

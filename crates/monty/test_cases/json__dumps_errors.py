@@ -19,6 +19,11 @@ try:
     assert False, 'set should not be serializable'
 except TypeError as exc:
     assert str(exc) == 'Object of type set is not JSON serializable'
+try:
+    json.dumps(type('a.b', (), {})())
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'Object of type a.b is not JSON serializable'
 
 # === separators errors ===
 try:
