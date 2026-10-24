@@ -140,7 +140,11 @@ impl VM<'_> {
         spec: &ParsedFormatSpec,
     ) -> Result<String, RunError> {
         if conversion == 0 {
-            if let Some(formatted) = self.try_format_decimal(value, &spec.to_spec_string())? {
+            // Only a `Decimal` needs the spec back as text; checking first keeps the
+            // render off every other value's path.
+            if decimal::py::as_decimal(value, self).is_some()
+                && let Some(formatted) = self.try_format_decimal(value, &spec.to_spec_string())?
+            {
                 return Ok(formatted);
             }
             format_with_spec(value, spec, self)
