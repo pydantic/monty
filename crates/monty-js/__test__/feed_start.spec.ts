@@ -2,7 +2,14 @@ import { ROOT_CONTEXT, context, createContextKey, propagation } from '@opentelem
 import { test, vi } from 'vitest'
 import { t } from './assertions.js'
 
-import { FunctionSnapshot, FutureSnapshot, MontyComplete, MontyRuntimeError, NameLookupSnapshot } from '@pydantic/monty'
+import {
+  FunctionSnapshot,
+  FutureSnapshot,
+  MontyComplete,
+  MontyRuntimeError,
+  NameLookupSnapshot,
+  ProtocolError,
+} from '@pydantic/monty'
 import { MountDir } from '@pydantic/monty/node'
 import { isWasm } from './env.js'
 import { setupPool } from './helpers.js'
@@ -498,6 +505,159 @@ test('resumeAuto drives multiple pending promises via gather', async () => {
       snap = await snap.resumeAuto()
     }
     t.deepEqual(snap.output, [10, 20])
+  } finally {
+    await session.close()
+  }
+})
+
+test.each([false, true])('future auto rejection preserves manual recovery (restored=%s)', async (restored) => {
+  const original = await pool().checkout()
+  const session = restored ? await pool().checkout() : original
+  try {
+    const call = (await original.feedStart('await go()')) as FunctionSnapshot
+    const fresh = (await call.resumeFuture()) as FutureSnapshot
+    const futures = restored ? ((await session.loadSnapshot(await fresh.dump())) as FutureSnapshot) : fresh
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await t.throwsAsync(() => futures.resumeAuto(), {
+        message: 'no pending host promises to resume; use resume([...])',
+      })
+      t.notThrows(() => futures.traceContext())
+    }
+    const dump = await futures.dump()
+    const rejected = futures.resumeAuto()
+    const manual = futures.resume([{ callId: futures.pendingCallIds[0]!, value: 42 }])
+    await t.throwsAsync(rejected, { message: 'no pending host promises to resume; use resume([...])' })
+    const done = (await manual) as MontyComplete
+    t.is(done.output, 42)
+    t.is(await session.feedRun('1 + 1'), 2)
+    t.throws(() => futures.resumeAuto(), { message: 'snapshot has already been resumed' })
+    t.throws(() => futures.resume([]), { message: 'snapshot has already been resumed' })
+
+    const copy = await pool().checkout()
+    try {
+      const loaded = (await copy.loadSnapshot(dump)) as FutureSnapshot
+      t.is(((await loaded.resume([{ callId: loaded.pendingCallIds[0]!, value: 43 }])) as MontyComplete).output, 43)
+    } finally {
+      await copy.close()
+    }
+  } finally {
+    await session.close()
+    if (restored) await original.close()
+  }
+})
+
+test.each([false, true])('future auto and manual resumes consume once (manual first=%s)', async (manualFirst) => {
+  const session = await pool().checkout()
+  let settle!: (value: number) => void
+  const answer = new Promise<number>((resolve) => {
+    settle = resolve
+  })
+  try {
+    const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(), go())\nasyncio.run(main())'
+    let snap = await session.feedStart(code, { externalLookup: { go: () => answer } })
+    while (snap instanceof FunctionSnapshot) snap = await snap.resumeAuto()
+    t.true(snap instanceof FutureSnapshot)
+    const futures = snap as FutureSnapshot
+    const manual = () => futures.resume(futures.pendingCallIds.map((callId) => ({ callId, value: 7 })))
+    const pending = manualFirst ? manual() : futures.resumeAuto()
+    t.throws(() => futures.resumeAuto(), { message: 'snapshot has already been resumed' })
+    t.throws(manual, { message: 'snapshot has already been resumed' })
+    settle(5)
+    const done = (await pending) as MontyComplete
+    t.deepEqual(done.output, manualFirst ? [7, 7] : [5, 5])
+    t.is(await session.feedRun('1 + 1'), 2)
+  } finally {
+    settle(5)
+    await session.close()
+  }
+})
+
+test('manual resolution of automatic futures preserves later manual recovery', async () => {
+  const session = await pool().checkout()
+  try {
+    const code = [
+      'import asyncio',
+      'async def main():',
+      '    await asyncio.gather(go(), go())',
+      '    return await later()',
+      'asyncio.run(main())',
+    ].join('\n')
+    let snap = await session.feedStart(code, { externalLookup: { go: async () => 5 } })
+    while (snap instanceof FunctionSnapshot) snap = await snap.resumeAuto()
+    const automatic = snap as FutureSnapshot
+    const later = (await automatic.resume(
+      automatic.pendingCallIds.map((callId) => ({ callId, value: 7 })),
+    )) as FunctionSnapshot
+    t.is(later.functionName, 'later')
+    const manual = (await later.resumeFuture()) as FutureSnapshot
+    const error = await t.throwsAsync(() => manual.resumeAuto())
+    t.is(((await manual.resume([{ callId: manual.pendingCallIds[0]!, value: 42 }])) as MontyComplete).output, 42)
+    t.is(error.message, 'no pending host promises to resume; use resume([...])')
+    t.is(await session.feedRun('1 + 1'), 2)
+  } finally {
+    await session.close()
+  }
+})
+
+test('partial manual resolution retains other automatic futures', async () => {
+  const session = await pool().checkout()
+  try {
+    const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(), go())\nasyncio.run(main())'
+    let snap = await session.feedStart(code, { externalLookup: { go: async () => 5 } })
+    while (snap instanceof FunctionSnapshot) snap = await snap.resumeAuto()
+    const futures = snap as FutureSnapshot
+    const remaining = (await futures.resume([{ callId: futures.pendingCallIds[0]!, value: 7 }])) as FutureSnapshot
+    const done = (await remaining.resumeAuto()) as MontyComplete
+    // Pending IDs need not follow gather's result order.
+    t.deepEqual((done.output as number[]).sort(), [5, 7])
+  } finally {
+    await session.close()
+  }
+})
+
+test.each([{ pendingIds: [] }, { pendingIds: [999] }])(
+  'invalid pending future ids still invalidate the session: $pendingIds',
+  async ({ pendingIds }) => {
+    const session = await pool().checkout()
+    try {
+      const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(), go())\nasyncio.run(main())'
+      let snap = await session.feedStart(code, { externalLookup: { go: async () => 5 } })
+      while (snap instanceof FunctionSnapshot) snap = await snap.resumeAuto()
+      t.true(snap instanceof FutureSnapshot)
+      const futures = snap as FutureSnapshot
+      futures.pendingCallIds.splice(0, futures.pendingCallIds.length, ...pendingIds)
+      const error = await t.throwsAsync(() => futures.resumeAuto(), {
+        instanceOf: ProtocolError,
+        message: pendingIds.length
+          ? 'worker reported unknown pending call id 999'
+          : 'worker reported ResolveFutures with no pending call ids',
+      })
+      t.throws(() => futures.resumeAuto(), { message: 'snapshot has already been resumed' })
+      t.is(await t.throwsAsync(() => session.feedRun('1 + 1')), error)
+    } finally {
+      await session.close()
+    }
+  },
+)
+
+test('a rejected host promise still consumes its future snapshot', async () => {
+  const session = await pool().checkout()
+  try {
+    const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(), go())\nasyncio.run(main())'
+    let snap = await session.feedStart(code, {
+      externalLookup: {
+        go: async () => {
+          throw new Error('host failed')
+        },
+      },
+    })
+    while (snap instanceof FunctionSnapshot) snap = await snap.resumeAuto()
+    t.true(snap instanceof FutureSnapshot)
+    const futures = snap as FutureSnapshot
+    const error = await t.throwsAsync(() => futures.resumeAuto(), { instanceOf: MontyRuntimeError })
+    t.is(error.display('msg'), 'host failed')
+    t.throws(() => futures.resumeAuto(), { message: 'snapshot has already been resumed' })
+    t.is(await session.feedRun('1 + 1'), 2)
   } finally {
     await session.close()
   }
