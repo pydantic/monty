@@ -28,8 +28,8 @@ impl Decimal {
     /// `sqrt()`: Newton's method on an integer scaled to one digit beyond the precision.
     pub(crate) fn sqrt(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if self.is_special() {
-            if let Some(ans) = self.check_nans(None, ctx) {
-                return Ok(ans);
+            if let Some(answer) = self.check_nans(None, ctx) {
+                return Ok(answer);
             }
             if self.is_infinite() && !self.sign() {
                 return Ok(self.clone());
@@ -93,8 +93,8 @@ impl Decimal {
 
     /// `exp()`.
     pub(crate) fn exp(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(None, ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(None, ctx) {
+            return Ok(answer);
         }
         if self.infinity_sign() == -1 {
             return Ok(Self::from_i64(0));
@@ -111,7 +111,7 @@ impl Decimal {
         ctx.check_digits(u64::try_from(p).unwrap_or(u64::MAX).saturating_add(8))?;
         let adj = self.adjusted();
         let settings = ctx.settings;
-        let ans = if !self.sign() && adj > dec_len_i64((settings.emax + 1) * 3) {
+        let answer = if !self.sign() && adj > dec_len_i64((settings.emax + 1) * 3) {
             // Overflow.
             Self::from_triple(false, "1", settings.emax + 1)
         } else if self.sign() && adj > dec_len_i64((-settings.etiny() + 1) * 3) {
@@ -141,13 +141,13 @@ impl Decimal {
                 extra += 3;
             }
         };
-        Ok(round_half_even(&ans, ctx))
+        Ok(round_half_even(&answer, ctx))
     }
 
     /// `ln()`.
     pub(crate) fn ln(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(None, ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(None, ctx) {
+            return Ok(answer);
         }
         if self.is_zero() {
             return Ok(Self::infinity(true));
@@ -174,14 +174,14 @@ impl Decimal {
             }
             places += 3;
         };
-        let ans = Self::from_bigint_triple(coeff.is_negative(), &coeff.abs(), -places);
-        Ok(round_half_even(&ans, ctx))
+        let answer = Self::from_bigint_triple(coeff.is_negative(), &coeff.abs(), -places);
+        Ok(round_half_even(&answer, ctx))
     }
 
     /// `log10()`.
     pub(crate) fn log10(&self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(None, ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(None, ctx) {
+            return Ok(answer);
         }
         if self.is_zero() {
             return Ok(Self::infinity(true));
@@ -193,7 +193,7 @@ impl Decimal {
             return Ok(ctx.invalid(Condition::InvalidOperation));
         }
 
-        let ans = if self.coeff().starts_with('1') && self.coeff()[1..].bytes().all(|b| b == b'0') {
+        let answer = if self.coeff().starts_with('1') && self.coeff()[1..].bytes().all(|b| b == b'0') {
             // log10(10**n) = n exactly (though it may still need rounding).
             Self::from_i64(self.adjusted())
         } else {
@@ -211,7 +211,7 @@ impl Decimal {
             };
             Self::from_bigint_triple(coeff.is_negative(), &coeff.abs(), -places)
         };
-        Ok(round_half_even(&ans, ctx))
+        Ok(round_half_even(&answer, ctx))
     }
 
     /// Whether this is a finite value numerically equal to one (`self == _One`).
@@ -270,9 +270,9 @@ impl Decimal {
 fn round_half_even(value: &Decimal, ctx: &mut Ctx<'_>) -> Decimal {
     let rounding = ctx.settings.rounding;
     ctx.settings.rounding = Rounding::HalfEven;
-    let ans = value.fix(ctx);
+    let answer = value.fix(ctx);
     ctx.settings.rounding = rounding;
-    ans
+    answer
 }
 
 /// Whether an approximation with an error below one unit in its last place rounds

@@ -366,10 +366,10 @@ impl Decimal {
         // The smallest allowable exponent of the result.
         let mut exp_min = self.digits() + self.exp - settings.prec;
         if exp_min > etop {
-            let ans = ctx.overflow(self.sign);
+            let answer = ctx.overflow(self.sign);
             ctx.raise(Condition::Inexact);
             ctx.raise(Condition::Rounded);
-            return ans;
+            return answer;
         }
 
         let is_subnormal = exp_min < etiny;
@@ -401,7 +401,7 @@ impl Decimal {
                 coeff = Cow::Owned(incremented);
             }
 
-            let ans = if exp_min > etop {
+            let answer = if exp_min > etop {
                 ctx.overflow(self.sign)
             } else {
                 Self::from_triple(self.sign, coeff.into_owned(), exp_min)
@@ -418,11 +418,11 @@ impl Decimal {
                 ctx.raise(Condition::Inexact);
             }
             ctx.raise(Condition::Rounded);
-            if ans.is_zero() {
+            if answer.is_zero() {
                 // Underflow to zero.
                 ctx.raise(Condition::Clamped);
             }
-            return ans;
+            return answer;
         }
 
         if is_subnormal {
@@ -501,40 +501,40 @@ impl Decimal {
     /// `-x`, rounded to the context (`__neg__`).
     pub(crate) fn neg(&self, ctx: &mut Ctx<'_>) -> Self {
         if self.is_special()
-            && let Some(ans) = self.check_nans(None, ctx)
+            && let Some(answer) = self.check_nans(None, ctx)
         {
-            return ans;
+            return answer;
         }
         // `-Decimal('0')` is `0`, not `-0`, except when rounding towards -inf.
-        let ans = if self.is_zero() && ctx.settings.rounding != Rounding::Floor {
+        let answer = if self.is_zero() && ctx.settings.rounding != Rounding::Floor {
             self.copy_abs()
         } else {
             self.copy_negate()
         };
-        ans.fix(ctx)
+        answer.fix(ctx)
     }
 
     /// `+x`, rounded to the context (`__pos__`).
     pub(crate) fn plus(&self, ctx: &mut Ctx<'_>) -> Self {
         if self.is_special()
-            && let Some(ans) = self.check_nans(None, ctx)
+            && let Some(answer) = self.check_nans(None, ctx)
         {
-            return ans;
+            return answer;
         }
-        let ans = if self.is_zero() && ctx.settings.rounding != Rounding::Floor {
+        let answer = if self.is_zero() && ctx.settings.rounding != Rounding::Floor {
             self.copy_abs()
         } else {
             self.clone()
         };
-        ans.fix(ctx)
+        answer.fix(ctx)
     }
 
     /// `abs(x)`, rounded to the context (`__abs__`).
     pub(crate) fn abs(&self, ctx: &mut Ctx<'_>) -> Self {
         if self.is_special()
-            && let Some(ans) = self.check_nans(None, ctx)
+            && let Some(answer) = self.check_nans(None, ctx)
         {
-            return ans;
+            return answer;
         }
         if self.sign { self.neg(ctx) } else { self.plus(ctx) }
     }

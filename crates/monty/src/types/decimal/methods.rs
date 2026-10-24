@@ -20,8 +20,8 @@ impl Decimal {
     pub(crate) fn quantize(&self, exp: &Self, rounding: Option<Rounding>, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         let rounding = rounding.unwrap_or(ctx.settings.rounding);
         if self.is_special() || exp.is_special() {
-            if let Some(ans) = self.check_nans(Some(exp), ctx) {
-                return Ok(ans);
+            if let Some(answer) = self.check_nans(Some(exp), ctx) {
+                return Ok(answer);
             }
             if exp.is_infinite() || self.is_infinite() {
                 return Ok(if exp.is_infinite() && self.is_infinite() {
@@ -43,21 +43,21 @@ impl Decimal {
         if self_adjusted > settings.emax || self_adjusted - target + 1 > settings.prec {
             return Ok(ctx.invalid(Condition::InvalidOperation));
         }
-        let ans = self.rescale(target, rounding, ctx)?;
-        if ans.adjusted() > settings.emax || ans.digits() > settings.prec {
+        let answer = self.rescale(target, rounding, ctx)?;
+        if answer.adjusted() > settings.emax || answer.digits() > settings.prec {
             return Ok(ctx.invalid(Condition::InvalidOperation));
         }
-        if !ans.is_zero() && ans.adjusted() < settings.emin {
+        if !answer.is_zero() && answer.adjusted() < settings.emin {
             ctx.raise(Condition::Subnormal);
         }
-        if ans.exponent() > self.exponent() {
-            if ans.cmp_numeric(self).is_ne() {
+        if answer.exponent() > self.exponent() {
+            if answer.cmp_numeric(self).is_ne() {
                 ctx.raise(Condition::Inexact);
             }
             ctx.raise(Condition::Rounded);
         }
         // `fix` folds the exponent down under `clamp` and signals `Clamped`.
-        Ok(ans.fix(ctx))
+        Ok(answer.fix(ctx))
     }
 
     /// `same_quantum(other)`: equal exponents, or both NaNs, or both infinities.
@@ -121,12 +121,12 @@ impl Decimal {
             return Ok(Self::zero(self.sign(), 0));
         }
         let rounding = rounding.unwrap_or(ctx.settings.rounding);
-        let ans = self.rescale(0, rounding, ctx)?;
-        if ans.cmp_numeric(self).is_ne() {
+        let answer = self.rescale(0, rounding, ctx)?;
+        if answer.cmp_numeric(self).is_ne() {
             ctx.raise(Condition::Inexact);
         }
         ctx.raise(Condition::Rounded);
-        Ok(ans)
+        Ok(answer)
     }
 
     /// `to_integral_value(rounding)` (also `to_integral`): rounds to an integer
@@ -151,9 +151,9 @@ impl Decimal {
     /// `normalize()`: rounds to the context and strips trailing zeros.
     pub(crate) fn normalize(&self, ctx: &mut Ctx<'_>) -> Self {
         if self.is_special()
-            && let Some(ans) = self.check_nans(None, ctx)
+            && let Some(answer) = self.check_nans(None, ctx)
         {
-            return ans;
+            return answer;
         }
         let dup = self.fix(ctx);
         if dup.is_infinite() {
@@ -190,8 +190,8 @@ impl Decimal {
     /// The shared body of `next_minus` / `next_plus`: round towards the neighbour,
     /// or step by less than one unit of the smallest exponent. Raises no flags.
     fn next(&self, ctx: &mut Ctx<'_>, down: bool) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(None, ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(None, ctx) {
+            return Ok(answer);
         }
         let settings = ctx.settings;
         match (self.infinity_sign(), down) {
@@ -219,28 +219,28 @@ impl Decimal {
 
     /// `next_toward(other)`: the neighbour of this number in the direction of `other`.
     pub(crate) fn next_toward(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(Some(other), ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(Some(other), ctx) {
+            return Ok(answer);
         }
-        let ans = match self.cmp_numeric(other) {
+        let answer = match self.cmp_numeric(other) {
             Ordering::Equal => return Ok(self.copy_sign(other)),
             Ordering::Less => self.next_plus(ctx)?,
             Ordering::Greater => self.next_minus(ctx)?,
         };
-        if ans.is_infinite() {
+        if answer.is_infinite() {
             ctx.raise(Condition::Overflow);
             ctx.raise(Condition::Inexact);
             ctx.raise(Condition::Rounded);
-        } else if ans.adjusted() < ctx.settings.emin {
+        } else if answer.adjusted() < ctx.settings.emin {
             ctx.raise(Condition::Underflow);
             ctx.raise(Condition::Subnormal);
             ctx.raise(Condition::Inexact);
             ctx.raise(Condition::Rounded);
-            if ans.is_zero() {
+            if answer.is_zero() {
                 ctx.raise(Condition::Clamped);
             }
         }
-        Ok(ans)
+        Ok(answer)
     }
 
     /// `number_class()`: `'+Normal'`, `'-Zero'`, `'sNaN'`, ...
@@ -265,8 +265,8 @@ impl Decimal {
     /// `logb()`: the adjusted exponent as a `Decimal`; `logb(0)` is `-Infinity`
     /// with `DivisionByZero`.
     pub(crate) fn logb(&self, ctx: &mut Ctx<'_>) -> Self {
-        if let Some(ans) = self.check_nans(None, ctx) {
-            return ans;
+        if let Some(answer) = self.check_nans(None, ctx) {
+            return answer;
         }
         if self.is_infinite() {
             Self::infinity(false)
@@ -279,8 +279,8 @@ impl Decimal {
 
     /// `scaleb(other)`: adds the integer `other` to the exponent.
     pub(crate) fn scaleb(&self, other: &Self, ctx: &mut Ctx<'_>) -> Self {
-        if let Some(ans) = self.check_nans(Some(other), ctx) {
-            return ans;
+        if let Some(answer) = self.check_nans(Some(other), ctx) {
+            return answer;
         }
         let limit = 2 * (ctx.settings.emax + ctx.settings.prec);
         let Some(shift) = integer_operand(other).filter(|n| (-limit..=limit).contains(n)) else {
@@ -304,8 +304,8 @@ impl Decimal {
 
     /// The shared body of `rotate` and `shift`.
     fn digit_shift(&self, other: &Self, ctx: &mut Ctx<'_>, rotate: bool) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(Some(other), ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(Some(other), ctx) {
+            return Ok(answer);
         }
         let prec = ctx.settings.prec;
         let Some(places) = integer_operand(other).filter(|n| (-prec..=prec).contains(n)) else {

@@ -42,9 +42,9 @@ impl Decimal {
     /// `compare(other)`: `Decimal(-1)`, `0` or `1`, or a NaN for a NaN operand.
     pub(crate) fn compare(&self, other: &Self, ctx: &mut Ctx<'_>) -> Self {
         if (self.is_special() || other.is_special())
-            && let Some(ans) = self.check_nans(Some(other), ctx)
+            && let Some(answer) = self.check_nans(Some(other), ctx)
         {
-            return ans;
+            return answer;
         }
         ordering_value(self.cmp_numeric(other))
     }
@@ -52,7 +52,7 @@ impl Decimal {
     /// `compare_signal(other)`: `compare`, but any NaN raises `InvalidOperation`.
     pub(crate) fn compare_signal(&self, other: &Self, ctx: &mut Ctx<'_>) -> Self {
         match self.compare_check_nans(other, ctx) {
-            Some(ans) => ans,
+            Some(answer) => answer,
             None => self.compare(other, ctx),
         }
     }
@@ -144,8 +144,8 @@ impl Decimal {
             c = self.total_order(other);
         }
         // `_pydecimal` keeps `self` unless the comparison is exactly `-1` (or `1` for min).
-        let ans = if c == other_wins { other } else { self };
-        ans.fix(ctx)
+        let answer = if c == other_wins { other } else { self };
+        answer.fix(ctx)
     }
 }
 

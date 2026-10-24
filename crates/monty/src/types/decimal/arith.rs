@@ -23,8 +23,8 @@ impl Decimal {
     /// `self + other` (`__add__`).
     pub(crate) fn add(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if self.is_special() || other.is_special() {
-            if let Some(ans) = self.check_nans(Some(other), ctx) {
-                return Ok(ans);
+            if let Some(answer) = self.check_nans(Some(other), ctx) {
+                return Ok(answer);
             }
             if self.is_infinite() {
                 // Both infinite: same sign is that infinity, opposite signs are invalid.
@@ -49,13 +49,13 @@ impl Decimal {
         }
         if self.is_zero() {
             exp = exp.max(other.exponent() - ctx.settings.prec - 1);
-            let ans = other.rescale(exp, ctx.settings.rounding, ctx)?;
-            return Ok(ans.fix(ctx));
+            let answer = other.rescale(exp, ctx.settings.rounding, ctx)?;
+            return Ok(answer.fix(ctx));
         }
         if other.is_zero() {
             exp = exp.max(self.exponent() - ctx.settings.prec - 1);
-            let ans = self.rescale(exp, ctx.settings.rounding, ctx)?;
-            return Ok(ans.fix(ctx));
+            let answer = self.rescale(exp, ctx.settings.rounding, ctx)?;
+            return Ok(answer.fix(ctx));
         }
 
         let (mut op1, mut op2) = normalize(WorkRep::of(self), WorkRep::of(other), ctx)?;
@@ -87,9 +87,9 @@ impl Decimal {
     /// `self - other` (`__sub__`).
     pub(crate) fn sub(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         if (self.is_special() || other.is_special())
-            && let Some(ans) = self.check_nans(Some(other), ctx)
+            && let Some(answer) = self.check_nans(Some(other), ctx)
         {
-            return Ok(ans);
+            return Ok(answer);
         }
         self.add(&other.copy_negate(), ctx)
     }
@@ -99,8 +99,8 @@ impl Decimal {
     pub(crate) fn mul(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         let sign = self.sign() != other.sign();
         if self.is_special() || other.is_special() {
-            if let Some(ans) = self.check_nans(Some(other), ctx) {
-                return Ok(ans);
+            if let Some(answer) = self.check_nans(Some(other), ctx) {
+                return Ok(answer);
             }
             if self.is_infinite() {
                 return Ok(if other.is_zero() {
@@ -119,7 +119,7 @@ impl Decimal {
         }
 
         let exp = self.exponent() + other.exponent();
-        let ans = if self.is_zero() || other.is_zero() {
+        let answer = if self.is_zero() || other.is_zero() {
             Self::zero(sign, exp)
         } else if self.coeff() == "1" {
             // Multiplying by a power of ten only moves the exponent.
@@ -129,15 +129,15 @@ impl Decimal {
         } else {
             Self::from_bigint_triple(sign, &(self.int() * other.int()), exp)
         };
-        Ok(ans.fix(ctx))
+        Ok(answer.fix(ctx))
     }
 
     /// `self / other` (`__truediv__`, `Context.divide`).
     pub(crate) fn div(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
         let sign = self.sign() != other.sign();
         if self.is_special() || other.is_special() {
-            if let Some(ans) = self.check_nans(Some(other), ctx) {
-                return Ok(ans);
+            if let Some(answer) = self.check_nans(Some(other), ctx) {
+                return Ok(answer);
             }
             if self.is_infinite() && other.is_infinite() {
                 return Ok(ctx.invalid(Condition::InvalidOperation));
@@ -191,8 +191,8 @@ impl Decimal {
 
     /// `self // other` (`__floordiv__`, `Context.divide_int`).
     pub(crate) fn div_int(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(Some(other), ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(Some(other), ctx) {
+            return Ok(answer);
         }
         let sign = self.sign() != other.sign();
         if self.is_infinite() {
@@ -215,8 +215,8 @@ impl Decimal {
     /// `self % other` (`__mod__`, `Context.remainder`): the remainder takes the
     /// dividend's sign, unlike `int`'s.
     pub(crate) fn rem(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(Some(other), ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(Some(other), ctx) {
+            return Ok(answer);
         }
         if self.is_infinite() {
             return Ok(ctx.invalid(Condition::InvalidOperation));
@@ -234,22 +234,22 @@ impl Decimal {
 
     /// `divmod(self, other)` (`__divmod__`, `Context.divmod`).
     pub(crate) fn divmod(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<(Self, Self)> {
-        if let Some(ans) = self.check_nans(Some(other), ctx) {
-            return Ok((ans.clone(), ans));
+        if let Some(answer) = self.check_nans(Some(other), ctx) {
+            return Ok((answer.clone(), answer));
         }
         let sign = self.sign() != other.sign();
         if self.is_infinite() {
             return Ok(if other.is_infinite() {
-                let ans = ctx.invalid(Condition::InvalidOperation);
-                (ans.clone(), ans)
+                let answer = ctx.invalid(Condition::InvalidOperation);
+                (answer.clone(), answer)
             } else {
                 (Self::infinity(sign), ctx.invalid(Condition::InvalidOperation))
             });
         }
         if other.is_zero() {
             return Ok(if self.is_zero() {
-                let ans = ctx.invalid(Condition::DivisionUndefined);
-                (ans.clone(), ans)
+                let answer = ctx.invalid(Condition::DivisionUndefined);
+                (answer.clone(), answer)
             } else {
                 (ctx.division_by_zero(sign), ctx.invalid(Condition::InvalidOperation))
             });
@@ -261,8 +261,8 @@ impl Decimal {
     /// `remainder_near(other)`: the remainder of rounding the quotient to the
     /// nearest integer (ties to even), so `abs(result) <= abs(other) / 2`.
     pub(crate) fn remainder_near(&self, other: &Self, ctx: &mut Ctx<'_>) -> RunResult<Self> {
-        if let Some(ans) = self.check_nans(Some(other), ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(Some(other), ctx) {
+            return Ok(answer);
         }
         if self.is_infinite() {
             return Ok(ctx.invalid(Condition::InvalidOperation));
@@ -290,8 +290,8 @@ impl Decimal {
         }
         if expdiff <= -2 {
             // `abs(self / other) < 0.1`.
-            let ans = self.rescale(ideal_exponent, ctx.settings.rounding, ctx)?;
-            return Ok(ans.fix(ctx));
+            let answer = self.rescale(ideal_exponent, ctx.settings.rounding, ctx)?;
+            return Ok(answer.fix(ctx));
         }
 
         let (op1, op2) = aligned_ints(self, other, ctx)?;
@@ -369,8 +369,8 @@ impl Decimal {
                 ));
             }
         }
-        let ans = ctx.invalid(Condition::DivisionImpossible);
-        Ok((ans.clone(), ans))
+        let answer = ctx.invalid(Condition::DivisionImpossible);
+        Ok((answer.clone(), answer))
     }
 }
 

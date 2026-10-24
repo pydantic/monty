@@ -38,8 +38,8 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string, str::allocate_string_no_interning,
-        tuple::allocate_tuple,
+        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
+        str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };

@@ -413,9 +413,7 @@ fn integer_arg(value: &Value, vm: &VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Value::Int(n) => Ok(Some(*n)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        _ if is_long_int(value, vm) => {
-            Err(ExcType::overflow_error("Python int too large to convert to C ssize_t"))
-        }
+        _ if is_long_int(value, vm) => Err(ExcType::overflow_error("Python int too large to convert to C ssize_t")),
         _ => Err(ExcType::type_error("an integer is required")),
     }
 }

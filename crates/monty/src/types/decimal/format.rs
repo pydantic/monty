@@ -153,13 +153,13 @@ impl Parts {
             return Ok(self);
         }
         let adjusted = self.adjusted();
-        let ans = self.rescale(adjusted + 1 - places, rounding, ctx)?;
+        let answer = self.rescale(adjusted + 1 - places, rounding, ctx)?;
         // Rounding up can add a digit (99.97 to three places); rescale once more.
-        if ans.adjusted() == adjusted {
-            Ok(ans)
+        if answer.adjusted() == adjusted {
+            Ok(answer)
         } else {
-            let adjusted = ans.adjusted();
-            ans.rescale(adjusted + 1 - places, rounding, ctx)
+            let adjusted = answer.adjusted();
+            answer.rescale(adjusted + 1 - places, rounding, ctx)
         }
     }
 

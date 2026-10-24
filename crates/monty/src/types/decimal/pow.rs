@@ -35,8 +35,8 @@ impl Decimal {
         if let Some(modulo) = modulo {
             return self.power_modulo(other, modulo, ctx);
         }
-        if let Some(ans) = self.check_nans(Some(other), ctx) {
-            return Ok(ans);
+        if let Some(answer) = self.check_nans(Some(other), ctx) {
+            return Ok(answer);
         }
 
         // 0**0 is NaN; x**0 is 1 for any other x, infinities included.
@@ -102,7 +102,7 @@ impl Decimal {
         let bound = i128::from(base.log10_exp_bound(ctx)?) + i128::from(other.adjusted());
         let settings = ctx.settings;
         // Underflow is possible for x > 1 with y < 0 or x < 1 with y > 0, overflow otherwise.
-        let ans = if (self_adj >= 0) == other.sign() {
+        let answer = if (self_adj >= 0) == other.sign() {
             let etiny = settings.etiny();
             (bound >= i128::from(dec_len_i64(-etiny))).then(|| Self::from_triple(result_sign, "1", etiny - 1))
         } else {
@@ -110,8 +110,8 @@ impl Decimal {
                 .then(|| Self::from_triple(result_sign, "1", settings.emax + 1))
         };
 
-        if let Some(ans) = ans {
-            return Ok(ans.fix(ctx));
+        if let Some(answer) = answer {
+            return Ok(answer.fix(ctx));
         }
         if !other.is_integer() {
             return base.power_real(other, ctx);
@@ -120,7 +120,7 @@ impl Decimal {
         // An integer power: exact when it fits in one more digit than the precision,
         // otherwise exp(y*ln(x)) with the working precision raised until the result is
         // unambiguously roundable.
-        let ans = if let Some(exact) = base.power_exact(other, p + 1, ctx)? {
+        let answer = if let Some(exact) = base.power_exact(other, p + 1, ctx)? {
             exact.copy_with_sign(result_sign)
         } else {
             let (xc, xe) = (base.int(), base.exponent());
@@ -136,7 +136,7 @@ impl Decimal {
                 extra += 3;
             }
         };
-        Ok(ans.fix(ctx))
+        Ok(answer.fix(ctx))
     }
 
     /// A non-integer power of a positive finite value other than one, computed as
