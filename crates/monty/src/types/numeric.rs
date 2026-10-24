@@ -2,9 +2,15 @@
 
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::Pow;
+use num_traits::{Pow, ToPrimitive, float::FloatCore};
 
-use crate::{bytecode::VM, exception_private::RunResult, heap::Heap, types::LongInt, value::Value};
+use crate::{
+    bytecode::VM,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    heap::Heap,
+    types::{LongInt, long_int::bigint_true_divide},
+    value::Value,
+};
 
 /// Resolves numeric rounding precision through `__index__`, clamping huge integers.
 /// User `__round__` methods receive the original argument instead of using this helper.
@@ -61,7 +67,7 @@ pub(crate) fn round_bigint(n: &BigInt, k: u64, heap: &Heap) -> Value {
 /// Rounds a float, returning an integer only when precision is omitted or `None`.
 pub(crate) fn round_float(value: f64, digits: Option<i64>, heap: &Heap) -> RunResult<Value> {
     if let Some(digits) = digits {
-        Ok(Value::Float(round_float_to_digits(value, digits)))
+        round_float_to_digits(value, digits, heap).map(Value::Float)
     } else {
         LongInt::value_from_f64(bankers_round(value), heap)
     }
@@ -82,37 +88,90 @@ fn bankers_round(value: f64) -> f64 {
     }
 }
 
-/// Rounds decimal places, saturating extreme precisions and preserving signed zero.
-fn round_float_to_digits(value: f64, digits: i64) -> f64 {
-    if !value.is_finite() {
-        return value;
+/// Rounds the exact binary value on a decimal grid before converting back to `f64`.
+fn round_float_to_digits(value: f64, digits: i64, heap: &Heap) -> RunResult<f64> {
+    // Beyond binary64's decimal precision bounds, rounding cannot change a finite value
+    // or must produce zero. Bound the powers before handling arbitrary-sized precision.
+    if !value.is_finite() || value == 0.0 || digits > 323 {
+        return Ok(value);
+    }
+    if digits < -308 {
+        return Ok(0.0_f64.copysign(value));
+    }
+
+    let (mantissa, exponent, _) = value.integer_decode();
+    if let Some(rounded) = round_float_to_digits_u128(mantissa, exponent, digits) {
+        return Ok(rounded.copysign(value));
+    }
+
+    let mut numerator = BigInt::from(mantissa);
+    let mut denominator = BigInt::from(1u8);
+    if exponent >= 0 {
+        numerator <<= u32::from(exponent.unsigned_abs());
+    } else {
+        denominator <<= u32::from(exponent.unsigned_abs());
+    }
+    let precision = u32::try_from(digits.unsigned_abs()).expect("rounding precision is bounded");
+    let factor = BigInt::from(10u8).pow(precision);
+    if digits >= 0 {
+        numerator *= &factor;
+    } else {
+        denominator *= &factor;
+    }
+
+    // Scaling binary floats first can turn a below-half value into an exact tie.
+    // These exact operands stay below 2100 bits for every finite binary64 input.
+    let (mut quotient, remainder) = numerator.div_rem(&denominator);
+    let twice_remainder = remainder << 1u32;
+    if twice_remainder > denominator || (twice_remainder == denominator && quotient.is_odd()) {
+        quotient += 1u8;
     }
     let rounded = if digits >= 0 {
-        let Ok(exp) = i32::try_from(digits) else {
-            return value;
-        };
-        let multiplier = 10_f64.powi(exp);
-        if !multiplier.is_finite() {
-            return value;
-        }
-        let scaled = value * multiplier;
-        if !scaled.is_finite() {
-            return value;
-        }
-        bankers_round(scaled) / multiplier
+        bigint_true_divide(&quotient, &factor, &heap.tracker)?
     } else {
-        let Ok(exp) = i32::try_from(digits) else {
-            return 0.0_f64.copysign(value);
-        };
-        let multiplier = 10_f64.powi(exp);
-        if multiplier == 0.0 {
-            return 0.0_f64.copysign(value);
-        }
-        bankers_round(value * multiplier) / multiplier
+        (quotient * factor)
+            .to_f64()
+            .filter(|result| result.is_finite())
+            .ok_or_else(|| ExcType::overflow_error("rounded value too large to represent"))?
     };
-    if rounded == 0.0 {
-        0.0_f64.copysign(value)
+    Ok(rounded.copysign(value))
+}
+
+/// Uses fixed-width integers when the result needs at most one floating-point rounding.
+fn round_float_to_digits_u128(mantissa: u64, exponent: i16, digits: i64) -> Option<f64> {
+    let factor = 10_u128.checked_pow(u32::try_from(digits.unsigned_abs()).ok()?)?;
+    let binary_scale = 1_u128.checked_shl(u32::from(exponent.unsigned_abs()))?;
+    let mut numerator = u128::from(mantissa);
+    let mut denominator = 1_u128;
+    if exponent >= 0 {
+        numerator = numerator.checked_mul(binary_scale)?;
     } else {
-        rounded
+        denominator = binary_scale;
     }
+    if digits >= 0 {
+        numerator = numerator.checked_mul(factor)?;
+    } else {
+        denominator = denominator.checked_mul(factor)?;
+    }
+
+    let mut quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    // Compare with one half without doubling the remainder.
+    let complement = denominator - remainder;
+    if remainder > complement || (remainder == complement && quotient.is_odd()) {
+        quotient = quotient.checked_add(1)?;
+    }
+    if digits < 0 {
+        return Some(quotient.checked_mul(factor)? as f64);
+    }
+
+    let common = quotient.gcd(&factor);
+    let numerator = quotient / common;
+    let denominator = factor / common;
+    // Both operands must be exact floats so only division rounds the result.
+    let exact_float = |integer: u128| {
+        (integer.leading_zeros() + integer.trailing_zeros() >= u128::BITS - f64::MANTISSA_DIGITS)
+            .then_some(integer as f64)
+    };
+    Some(exact_float(numerator)? / exact_float(denominator)?)
 }
