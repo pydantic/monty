@@ -2183,6 +2183,11 @@ mod tests {
         types::LongInt,
     };
 
+    #[test]
+    fn value_fits_in_sixteen_bytes() {
+        const { assert!(VALUE_SIZE <= 16, "Value must fit in 16 bytes") };
+    }
+
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
     /// This bypasses `LongInt::into_value()` which would demote i64-fitting values.

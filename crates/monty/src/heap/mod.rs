@@ -43,19 +43,19 @@ pub(crate) use stable_heap::StableHeap;
 /// wrapped immediately in `Value::Ref`; owned fields must document and release
 /// their reference through `HeapItem` or `DropWithContext` cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct HeapId(usize);
+pub struct HeapId(u32);
 
 impl HeapId {
-    /// Creates a `HeapId` from a raw index.
+    /// Creates a `HeapId`, panicking if the index exceeds `u32::MAX`.
     #[inline]
     pub(crate) fn from_index(index: usize) -> Self {
-        Self(index)
+        Self(u32::try_from(index).expect("heap index exceeds u32::MAX"))
     }
 
     /// Returns the raw index value.
     #[inline]
     pub fn index(self) -> usize {
-        self.0
+        self.0 as usize
     }
 }
 
@@ -1621,7 +1621,7 @@ impl<'a> HeapReader<'a> {
         //    The linear scan may legitimately encounter freed slots, so we use
         //    `try_entry` to skip them rather than panicking.
         for i in 0..self.heap.entries.len() {
-            let id = HeapId(i);
+            let id = HeapId::from_index(i);
             let ptr = self.read_ptr(id);
             let Some(entry) = ptr.try_entry(self) else {
                 continue;
@@ -2336,6 +2336,13 @@ mod tests {
         types::{List, callable_iterator::CallableIterator},
         value::Value,
     };
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    #[should_panic(expected = "heap index exceeds u32::MAX")]
+    fn heap_id_rejects_overflow() {
+        HeapId::from_index(u32::MAX as usize + 1);
+    }
 
     /// Returns whether a heap entry is still allocated at `id`.
     fn is_alive(heap: &Heap, id: HeapId) -> bool {
