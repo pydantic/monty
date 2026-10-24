@@ -18,6 +18,7 @@ use crate::{
         PyTrait, Type,
         date::format_date_strftime,
         datetime::format_datetime_strftime,
+        decimal,
         str::allocate_string,
         time::{attached_timezone, format_time_strftime},
     },
@@ -111,7 +112,9 @@ impl VM<'_> {
                 Ok(converted)
             }
         } else if let Some(format_spec) = format_spec {
-            if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
+            if let Some(formatted) = self.try_format_decimal(value, format_spec)? {
+                Ok(formatted)
+            } else if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
                 Ok(formatted)
             } else {
                 let value_type = value.py_type_name(self);
@@ -137,6 +140,9 @@ impl VM<'_> {
         spec: &ParsedFormatSpec,
     ) -> Result<String, RunError> {
         if conversion == 0 {
+            if let Some(formatted) = self.try_format_decimal(value, &spec.to_spec_string())? {
+                return Ok(formatted);
+            }
             format_with_spec(value, spec, self)
         } else {
             let s = self.convert_value(value, conversion)?;
@@ -181,6 +187,21 @@ impl VM<'_> {
             // No conversion and `!s` both use `str()`.
             _ => str_value_into_string(value.py_str(self)?, self),
         }
+    }
+
+    /// Formats a `Decimal` with its own spec grammar (`Decimal.__format__`), under the
+    /// current context's rounding and capitals; `None` for any other value.
+    fn try_format_decimal(&mut self, value: &Value, spec: &str) -> Result<Option<String>, RunError> {
+        if decimal::py::as_decimal(value, self).is_none() {
+            return Ok(None);
+        }
+        let ctx_id = decimal::py_context::current_context(self);
+        decimal::py::with_ctx(self, ctx_id, |ctx, vm| {
+            decimal::py::as_decimal(value, vm)
+                .expect("checked above")
+                .format_spec(spec, ctx)
+        })
+        .map(Some)
     }
 
     /// Keeps temporal strftime specs out of generic mini-language parsing.

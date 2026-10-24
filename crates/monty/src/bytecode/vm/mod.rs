@@ -58,7 +58,7 @@ use crate::{
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
     types::{
-        Dict, PyTrait, SessionRandom,
+        Dict, PyTrait, SessionRandom, decimal::py_context::SessionDecimal,
         file::{apply_buffer_load, apply_buffer_store, apply_file_next, apply_open_name, apply_write_position},
         random::SEED_BYTES,
         str::allocate_string,
@@ -684,16 +684,19 @@ pub struct VMSnapshot {
     cwd: String,
     /// The session's `random` state at the pause.
     random: SessionRandom,
+    /// The session's `decimal` contexts at the pause.
+    #[serde(default)]
+    decimal: SessionDecimal,
 }
 
 impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
     /// stacks, scheduler tasks, pending resume effects), and returns the
-    /// globals, working directory and `random` generator so an abandoned REPL
-    /// snippet keeps its namespace, any `os.chdir` it made and any seed it
-    /// set. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom) {
+    /// globals, working directory, `random` generator and `decimal` contexts so an
+    /// abandoned REPL snippet keeps its namespace, any `os.chdir` it made, any seed
+    /// it set and any context change. Mirrors `VM::drop`.
+    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom, SessionDecimal) {
         let Self {
             stack,
             globals,
@@ -704,6 +707,7 @@ impl VMSnapshot {
             pending_lookup_effect,
             cwd,
             random,
+            decimal,
             ..
         } = self;
         HeapReader::with(heap, &mut (), |heap, ()| {
@@ -716,7 +720,7 @@ impl VMSnapshot {
             }
             scheduler.cleanup(heap);
         });
-        (globals, cwd, random)
+        (globals, cwd, random, decimal)
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -858,6 +862,10 @@ pub struct VM<'h> {
     /// Preserved across snapshots and REPL feeds, including `random.seed()` changes.
     pub(crate) random: SessionRandom,
 
+    /// The current `decimal` context and the module's template contexts, preserved
+    /// across snapshots and REPL feeds like [`random`](Self::random).
+    pub(crate) decimal: SessionDecimal,
+
     /// Working directory, `__file__` inputs and the assert-repr cap for this
     /// run. Rebuilt from the executor on restore, except the working
     /// directory, which travels in the snapshot because `os.chdir` may have
@@ -900,6 +908,7 @@ impl<'h> VM<'h> {
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
             random: SessionRandom::default(),
+            decimal: SessionDecimal::default(),
             env: program.vm_env(),
         }
     }
@@ -971,6 +980,7 @@ impl<'h> VM<'h> {
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
             random: snapshot.random,
+            decimal: snapshot.decimal,
             env: {
                 let mut env = program.vm_env();
                 env.cwd = Cow::Owned(snapshot.cwd);
@@ -1027,6 +1037,7 @@ impl<'h> VM<'h> {
             // string), so a later `take_changed_cwd` on this VM stays honest.
             cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
             random: mem::take(&mut self.random),
+            decimal: mem::take(&mut self.decimal),
         }
     }
 
@@ -2485,6 +2496,8 @@ impl<'h> VM<'h> {
     pub(crate) fn __finalize_tasks_for_tests(&mut self) {
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
+        // The session's decimal contexts are not named by any variable either.
+        mem::take(&mut self.decimal).drop_with(self.heap);
     }
 
     /// Returns surviving tasks' pending calls when every task is blocked
@@ -2906,6 +2919,7 @@ impl Drop for VM<'_> {
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
         self.globals.drain(..).drop_with(self.heap);
+        mem::take(&mut self.decimal).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
     }
 }

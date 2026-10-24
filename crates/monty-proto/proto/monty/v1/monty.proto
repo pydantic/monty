@@ -104,6 +104,10 @@ message MontyNode {
     // A host module: imports as a `module` object whose attributes are its
     // attrs, and exports back with the same id.
     ModuleNode module = 32;
+    // A decimal.Decimal as its canonical string, str(d): "1.20", "1E+5",
+    // "-NaN12", "Infinity". Parsed as Decimal(text) on import; malformed text
+    // is rejected.
+    string decimal = 33;
   }
 }
 

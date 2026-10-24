@@ -67,6 +67,7 @@ nav:
       - copy: 'limitations/copy.md'
       - csv: 'limitations/csv.md'
       - datetime: 'limitations/datetime.md'
+      - decimal: 'limitations/decimal.md'
       - functools: 'limitations/functools.md'
       - hashlib: 'limitations/hashlib.md'
       - itertools: 'limitations/itertools.md'

@@ -14,11 +14,10 @@ keyword is rejected.
 - Accepts `str` or `bytes` as input.
     `bytes` are always decoded as UTF-8 (a leading BOM is skipped, as CPython's `utf-8-sig` does):
     CPython also detects UTF-16 and UTF-32 input, which Monty rejects with `json.JSONDecodeError`.
-- **No keyword arguments are accepted.** Passing any of `cls`,
-    `object_hook`, `parse_float`, `parse_int`, `parse_constant`, or
-    `object_pairs_hook` raises
+- `parse_float` and `parse_int` are the only keyword arguments accepted (`parse_float=Decimal` works).
+    Passing any of `cls`, `object_hook`, `parse_constant`, or `object_pairs_hook` raises
     `TypeError: JSONDecoder.__init__() got an unexpected keyword argument '...'`.
-    CPython accepts all six and uses this message only for a keyword the decoder does not know.
+    CPython accepts all four and uses this message only for a keyword the decoder does not know.
 - `NaN`, `Infinity`, `-Infinity` are *always* accepted, with no toggle to
     reject them.
 - Nesting depth is capped at 200 levels; deeper inputs raise
@@ -29,8 +28,8 @@ keyword is rejected.
 
 ## `json.load(fp, **kwargs)`
 
-`json.load(fp)` is `json.loads(fp.read())` and takes the same keyword policy as
-`loads`. A file from `open()` or `Path.open()` is read to EOF through the file's
+`json.load(fp)` is `json.loads(fp.read())`, but accepts no keyword arguments at all:
+`parse_float` and `parse_int` raise the same `TypeError` as the other keywords. A file from `open()` or `Path.open()` is read to EOF through the file's
 own buffering, so `load` suspends to the host only when the buffer has not
 been loaded yet by a read, `seek()` or iteration step (see [open.md](open.md)).
 It sees the same errors as `fp.read()` (`ValueError` on a closed file,

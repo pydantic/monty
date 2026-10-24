@@ -61,6 +61,8 @@ fn corpus() -> Vec<MontyObject> {
         MontyObject::complex(-0.0, -0.0),
         MontyObject::complex(1.5, -2.0),
         MontyObject::complex(f64::NAN, f64::NEG_INFINITY),
+        MontyObject::decimal("0"),
+        MontyObject::decimal("-1.2345E-30"),
         MontyObject::string(String::new()),
         MontyObject::string("héllo \u{1F40D}".to_owned()),
         MontyObject::bytes(vec![]),
@@ -375,6 +377,7 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
         MontyNode::ClassType(class) => Kind::Type(oracle_class_type(class)),
         MontyNode::BuiltinFunction(bf) => Kind::BuiltinFunction(bf.to_string()),
         MontyNode::Path(p) => Kind::Path(p.clone()),
+        MontyNode::Decimal(d) => Kind::Decimal(d.clone()),
         MontyNode::FileHandle(fh) => Kind::FileHandle(oracle::FileHandle {
             path: fh.path.clone(),
             mode: fh.mode.as_str().to_owned(),

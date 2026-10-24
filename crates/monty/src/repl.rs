@@ -36,7 +36,7 @@ use crate::{
         resume_lookup, resume_with_result,
     },
     source_nesting::source_within_nesting_bound,
-    types::{SessionRandom, tuple::allocate_tuple},
+    types::{SessionRandom, decimal::py_context::SessionDecimal, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
 };
@@ -89,6 +89,9 @@ pub struct MontyRepl {
     /// The session's `random` state, carried between snippets like the
     /// globals so a `random.seed()` in one feed governs the draws of the next.
     random: SessionRandom,
+    /// The session's `decimal` contexts, carried between snippets like `random`.
+    #[serde(default)]
+    decimal: SessionDecimal,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -124,6 +127,7 @@ impl MontyRepl {
             os_policy: Arc::new(OsPolicy::default()),
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
+            decimal: SessionDecimal::default(),
             heap,
             globals: Vec::new(),
         }
@@ -289,9 +293,11 @@ impl MontyRepl {
 
                 vm.random = mem::take(&mut this.random);
 
+                vm.decimal = mem::take(&mut this.decimal);
+
                 // Inject inputs with VM alive
                 if let Err(error) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
-                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
+                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut this.decimal, &mut vm);
                     return Err(error);
                 }
 
@@ -302,7 +308,7 @@ impl MontyRepl {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
+                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut this.decimal, &mut vm);
                     None
                 };
                 Ok((converted, vm_state))
@@ -381,15 +387,17 @@ impl MontyRepl {
 
                 vm.random = mem::take(&mut self.random);
 
+                vm.decimal = mem::take(&mut self.decimal);
+
                 if let Err(e) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
-                    reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
+                    reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut self.decimal, &mut vm);
                     return Err(e);
                 }
 
                 let result = Program::run_to_completion(&mut vm);
 
                 // Reclaim globals (and any directory change or seed) before cleanup.
-                reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
+                reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut self.decimal, &mut vm);
                 Ok(result)
             },
         );
@@ -476,6 +484,8 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+
+                vm.decimal = mem::take(&mut self.decimal);
                 let result = match convert_args(args, vm) {
                     Ok(args) => {
                         let (args, kwargs) = args.into_parts();
@@ -521,6 +531,7 @@ impl MontyRepl {
                 let args_slot = executor.program.input_slots[0].index();
                 mem::replace(&mut globals[args_slot], Value::Undefined).drop_with(vm);
                 self.random = mem::take(&mut vm.random);
+                self.decimal = mem::take(&mut vm.decimal);
                 self.globals = globals;
                 if let Some(cwd) = vm.take_changed_cwd() {
                     self.cwd = Arc::from(cwd);
@@ -626,6 +637,7 @@ impl<'a> CheckedSource<'a> {
 impl Drop for MontyRepl {
     fn drop(&mut self) {
         self.globals.drain(..).drop_with(&mut self.heap);
+        mem::take(&mut self.decimal).drop_with(&mut self.heap);
     }
 }
 
@@ -1005,7 +1017,7 @@ impl ReplNameLookup {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut repl.decimal, &mut vm);
                     None
                 };
                 (converted, vm_state)
@@ -1054,10 +1066,11 @@ impl ReplResolveFutures {
             vm_state,
             ..
         } = self;
-        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
+        let (globals, cwd, random, decimal) = vm_state.abandon(&mut repl.heap);
         repl.globals = globals;
         repl.cwd = Arc::from(cwd);
         repl.random = random;
+        mem::replace(&mut repl.decimal, decimal).drop_with(&mut repl.heap);
         repl.commit_executor(executor);
         repl
     }
@@ -1125,7 +1138,7 @@ impl ReplResolveFutures {
                 );
 
                 if let Some(call_id) = invalid_call_id {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut repl.decimal, &mut vm);
                     return Err(MontyException::runtime_error(format!(
                         "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                     )));
@@ -1138,7 +1151,7 @@ impl ReplResolveFutures {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut repl.decimal, &mut vm);
                     None
                 };
                 Ok((converted, vm_state))
@@ -1269,7 +1282,7 @@ fn abort_restored(
             let vm_result = vm.abort(exc);
             let converted = convert_frame_exit(vm_result, &mut vm);
             // Uncatchable exceptions cannot suspend, so no snapshot is needed.
-            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut repl.decimal, &mut vm);
             converted
         },
     );
@@ -1313,10 +1326,11 @@ impl ReplSnapshot {
             executor,
             vm_state,
         } = self;
-        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
+        let (globals, cwd, random, decimal) = vm_state.abandon(&mut repl.heap);
         repl.globals = globals;
         repl.cwd = Arc::from(cwd);
         repl.random = random;
+        mem::replace(&mut repl.decimal, decimal).drop_with(&mut repl.heap);
         repl.commit_executor(executor);
         repl
     }
@@ -1364,7 +1378,7 @@ impl ReplSnapshot {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut repl.decimal, &mut vm);
                     None
                 };
                 (converted, vm_state)
@@ -1379,15 +1393,22 @@ impl ReplSnapshot {
 // ---------------------------------------------------------------------------
 
 /// Reclaims what outlives a snippet from its finished VM: the globals, the
-/// `random` generator, and the working directory when the snippet (or the
+/// `random` generator, the `decimal` contexts, and the working directory when the snippet (or the
 /// snapshot it resumed from) owns one, so an `os.chdir` or a `random.seed()`
 /// persists into later feeds like the globals do.
-fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, random: &mut SessionRandom, vm: &mut VM<'_>) {
+fn reclaim_vm_state(
+    globals: &mut Vec<Value>,
+    cwd: &mut Arc<str>,
+    random: &mut SessionRandom,
+    decimal: &mut SessionDecimal,
+    vm: &mut VM<'_>,
+) {
     *globals = vm.take_globals();
     if let Some(changed) = vm.take_changed_cwd() {
         *cwd = Arc::from(changed);
     }
     *random = mem::take(&mut vm.random);
+    *decimal = mem::take(&mut vm.decimal);
 }
 
 /// Injects input values into the VM's global namespace slots.

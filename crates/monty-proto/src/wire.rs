@@ -340,6 +340,7 @@ mod tag {
     pub const CYCLE: u32 = 30;
     pub const COMPLEX: u32 = 31;
     pub const MODULE: u32 = 32;
+    pub const DECIMAL: u32 = 33;
 }
 
 // ============================================================================
@@ -466,6 +467,7 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
         }
         MontyNode::BuiltinFunction(bf) => encoding::string::encode(tag::BUILTIN_FUNCTION, &bf.to_string(), buf),
         MontyNode::Path(p) => encoding::string::encode(tag::PATH, p, buf),
+        MontyNode::Decimal(d) => encoding::string::encode(tag::DECIMAL, d, buf),
         MontyNode::FileHandle(fh) => {
             encode_message_key(tag::FILE_HANDLE, file_handle_len(fh), buf);
             encode_str(1, &fh.path, buf);
@@ -532,6 +534,7 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Module { name, id, attrs } => submessage_len(tag::MODULE, module_len(name, &uuid_to_pb(id), attrs)),
         MontyNode::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyNode::Path(p) => encoding::string::encoded_len(tag::PATH, p),
+        MontyNode::Decimal(d) => encoding::string::encoded_len(tag::DECIMAL, d),
         MontyNode::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
         MontyNode::Function { name, docstring } => {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
@@ -855,6 +858,9 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         },
         Kind::Dict(value) => MontyNode::Dict(value.0.into_inner()),
         Kind::Path(value) => MontyNode::Path(value),
+        // Validated by whoever turns the text into a `Decimal`: the sandbox parses
+        // it, the bindings call their own `Decimal` constructor.
+        Kind::Decimal(value) => MontyNode::Decimal(value),
         Kind::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,

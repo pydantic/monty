@@ -63,13 +63,31 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// Unlike CPython, `NaN`, `Infinity`, and `-Infinity` are always accepted
 /// (there is no `parse_constant` parameter).
 ///
-/// CPython kwargs `cls`, `object_hook`, `parse_float`, `parse_int`,
-/// `parse_constant`, and `object_pairs_hook` are intentionally unsupported
-/// and will raise `TypeError` if passed.
+/// `parse_float` and `parse_int` are called with each number's source text, as in
+/// CPython (`json.loads(s, parse_float=Decimal)`). The kwargs `cls`, `object_hook`,
+/// `parse_constant`, and `object_pairs_hook` are unsupported and raise `TypeError`.
 pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm)?;
+    let JsonLoadsArgs {
+        s,
+        parse_float,
+        parse_int,
+    } = JsonLoadsArgs::from_args(args, vm)?;
+    let hooks = [parse_float, parse_int];
+    defer_drop!(hooks, vm);
     defer_drop_mut!(s, vm);
-    parse_json_input(s, vm)
+    let [parse_float, parse_int] = hooks;
+    let hooks = NumberHooks {
+        parse_float: (!matches!(parse_float, Value::None)).then_some(parse_float),
+        parse_int: (!matches!(parse_int, Value::None)).then_some(parse_int),
+    };
+    parse_json_input(s, &hooks, vm)
+}
+
+/// Callables `json.loads` converts number tokens with instead of `float()` / `int()`.
+#[derive(Default)]
+struct NumberHooks<'a> {
+    parse_float: Option<&'a Value>,
+    parse_int: Option<&'a Value>,
 }
 
 /// Argument shape for `json.loads(s)`.
@@ -84,6 +102,10 @@ pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 #[from_args(name = "loads", style = def, kwarg_error_name = "JSONDecoder.__init__")]
 struct JsonLoadsArgs {
     s: Value,
+    #[from_args(kw_only, default = Value::None)]
+    parse_float: Value,
+    #[from_args(kw_only, default = Value::None)]
+    parse_int: Value,
 }
 
 /// Implements `json.load(fp)`: `fp.read()`, then [`call_loads`] on the result.
@@ -123,7 +145,7 @@ pub(crate) fn apply_json_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -
 /// Parses what `fp.read()` returned, releasing it afterwards.
 fn parse_owned(text: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(text, vm);
-    parse_json_input(text, vm)
+    parse_json_input(text, &NumberHooks::default(), vm)
 }
 
 /// Argument shape for `json.load(fp)`, a pure-Python `def` like [`JsonLoadsArgs`]
@@ -139,7 +161,7 @@ struct JsonLoadArgs {
 /// The parser works directly on the underlying byte slice. Decoded strings from
 /// `jiter` are copied into Monty's heap immediately before any further parser
 /// movement so borrowed tape-backed data never escapes.
-fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn parse_json_input(value: &Value, hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> RunResult<Value> {
     let (bytes, is_str): (Cow<'_, [u8]>, bool) = match value {
         Value::InternString(string_id) => (Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()), true),
         Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.interns.get_bytes(*bytes_id)), false),
@@ -159,8 +181,8 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             1,
             0,
         )),
-        Some(rest) => parse_json_bytes(rest, vm),
-        None => parse_json_bytes(&bytes, vm),
+        Some(rest) => parse_json_bytes(rest, hooks, vm),
+        None => parse_json_bytes(&bytes, hooks, vm),
     }
 }
 
@@ -175,12 +197,12 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 ///
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
-fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_>) -> RunResult<Value> {
+fn parse_json_bytes(bytes: &[u8], hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
     // Take the cache out of the VM so we can pass it alongside &mut VM
     // without conflicting borrows. `mem::take` leaves `Default` in its place.
     let mut cache = mem::take(&mut vm.json_string_cache);
-    let result = parse_json_value(&mut jiter, 0, &mut cache, vm);
+    let result = parse_json_value(&mut jiter, 0, &mut cache, hooks, vm);
     // Always restore the cache before returning, regardless of success/failure.
     vm.json_string_cache = cache;
     let value = result.map_err(|error| match error {
@@ -205,10 +227,11 @@ fn parse_json_value(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
+    hooks: &NumberHooks<'_>,
     vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
     let peek = jiter.peek()?;
-    parse_json_value_from_peek(peek, jiter, depth, cache, vm)
+    parse_json_value_from_peek(peek, jiter, depth, cache, hooks, vm)
 }
 
 /// Converts a peeked JSON token into a Monty value.
@@ -220,6 +243,7 @@ fn parse_json_value_from_peek(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
+    hooks: &NumberHooks<'_>,
     vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
     match peek {
@@ -229,9 +253,9 @@ fn parse_json_value_from_peek(
         }
         Peek::True | Peek::False => jiter.known_bool(peek).map(Value::Bool).map_err(Into::into),
         Peek::String => Ok(allocate_cached_string(parse_json_string(jiter)?, cache, vm.heap)),
-        Peek::Array => parse_json_array(jiter, depth, cache, vm),
-        Peek::Object => parse_json_object(jiter, depth, cache, vm),
-        _ if peek.is_num() => parse_json_number(peek, jiter, vm),
+        Peek::Array => parse_json_array(jiter, depth, cache, hooks, vm),
+        Peek::Object => parse_json_object(jiter, depth, cache, hooks, vm),
+        _ if peek.is_num() => parse_json_number(peek, jiter, hooks, vm),
         _ => Err(JsonLoadError::Parse(JiterError {
             error_type: JiterErrorType::JsonError(JsonErrorType::ExpectedSomeValue),
             index: jiter.current_index(),
@@ -253,12 +277,22 @@ fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapRea
 
 /// Parses a JSON number into the corresponding Monty numeric value.
 ///
-/// Oversized integers that exceed Monty's digit limit are rejected with a `ValueError`
-fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_>) -> ParseResult<Value> {
+/// Oversized integers that exceed Monty's digit limit are rejected with a `ValueError`.
+/// A `parse_float` / `parse_int` hook receives the token text instead; the
+/// constants `NaN` and `Infinity` always become floats.
+fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> ParseResult<Value> {
     let start = jiter.current_index();
     // Parse to bytes so that we can check the digit count before any BigInt allocation occurs.
     let token = jiter.known_number_bytes(peek)?;
-    if is_json_integer_token(token) {
+    let is_integer = is_json_integer_token(token);
+    let is_constant = matches!(token.first(), Some(b'N' | b'I')) || token.starts_with(b"-I");
+    let hook = if is_integer { hooks.parse_int } else { hooks.parse_float };
+    if let Some(hook) = hook.filter(|_| !is_constant) {
+        let text = String::from_utf8_lossy(token).into_owned();
+        let text = allocate_string(text, vm.heap);
+        return Ok(vm.evaluate_function(hook, ArgValues::One(text))?);
+    }
+    if is_integer {
         let digit_count = decimal_digit_count_ascii(token);
         check_decimal_digit_count(digit_count).map_err(JsonLoadError::Run)?;
     }
@@ -287,6 +321,7 @@ fn parse_json_array(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
+    hooks: &NumberHooks<'_>,
     vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
     check_json_recursion_limit(jiter, depth)?;
@@ -306,7 +341,7 @@ fn parse_json_array(
             .tracker
             .check_memory_time_every(values.len())
             .map_err(RunError::from)?;
-        let value = parse_json_value_from_peek(next, jiter, depth + 1, cache, vm)?;
+        let value = parse_json_value_from_peek(next, jiter, depth + 1, cache, hooks, vm)?;
         // The whole parse runs inside one native call, so this doubling is the only
         // thing between a graceful `MemoryError` and an allocation past the allocator's
         // hard-limit headroom. Checked behind the element so it is weighed against
@@ -346,6 +381,7 @@ fn parse_json_object(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
+    hooks: &NumberHooks<'_>,
     vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
     check_json_recursion_limit(jiter, depth)?;
@@ -360,7 +396,7 @@ fn parse_json_object(
         let (dict, vm) = dict_guard.as_parts_mut();
         loop {
             let mut key_guard = DropGuard::new(allocate_cached_string(key, cache, vm.heap), &mut *vm);
-            let value = parse_json_value(jiter, depth + 1, cache, key_guard.ctx())?;
+            let value = parse_json_value(jiter, depth + 1, cache, hooks, key_guard.ctx())?;
             let (key_value, vm) = key_guard.into_parts();
             if let Some(old_value) = dict.set_json_string_key(key_value, value, vm)? {
                 old_value.drop_with(vm);

@@ -564,6 +564,61 @@ impl ParsedFormatSpec {
     }
 }
 
+impl ParsedFormatSpec {
+    /// Renders the spec back into source form, for types such as `Decimal` that parse
+    /// their own spec grammar.
+    ///
+    /// The parse is lossy only where `0` meets an explicit alignment: `<020` and `0<20`
+    /// both render as `0<20`.
+    pub(crate) fn to_spec_string(&self) -> String {
+        let mut out = String::new();
+        if let Some(align) = self.align {
+            out.push(self.fill);
+            out.push(match align {
+                Align::Left => '<',
+                Align::Right => '>',
+                Align::Center => '^',
+                Align::SignAware => '=',
+            });
+        }
+        if let Some(sign) = self.sign {
+            out.push(match sign {
+                Sign::Plus => '+',
+                Sign::Minus => '-',
+                Sign::Space => ' ',
+            });
+        }
+        if self.z {
+            out.push('z');
+        }
+        if self.alternate {
+            out.push('#');
+        }
+        if self.zero_pad {
+            out.push('0');
+        }
+        if self.width > 0 {
+            out.push_str(&self.width.to_string());
+        }
+        if let Some(grouping) = self.grouping {
+            out.push(grouping.separator());
+        }
+        if self.precision.is_some() || self.frac_grouping.is_some() {
+            out.push('.');
+            if let Some(precision) = self.precision {
+                out.push_str(&precision.to_string());
+            }
+            if let Some(grouping) = self.frac_grouping {
+                out.push(grouping.separator());
+            }
+        }
+        if let Some(type_char) = self.type_char {
+            out.push(type_char.as_char());
+        }
+        out
+    }
+}
+
 impl FromStr for ParsedFormatSpec {
     type Err = ParseFormatSpecError;
 

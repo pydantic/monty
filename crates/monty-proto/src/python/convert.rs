@@ -112,6 +112,7 @@ pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<
         MontyType::Time => cached!("datetime", "time"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
+        MontyType::Decimal => cached!("decimal", "Decimal"),
         MontyType::Deque => cached!("collections", "deque"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
@@ -360,6 +361,13 @@ fn timezone_offset_seconds(delta: &MontyTimeDelta) -> PyResult<i32> {
 }
 
 /// Returns the Python `datetime.timezone` type object.
+pub(super) fn get_decimal_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DECIMAL.import(py, "decimal", "Decimal")
+}
+
+/// Returns Python's `datetime.timezone` class.
 pub(super) fn get_datetime_timezone_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static TIMEZONE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 

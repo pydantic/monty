@@ -771,6 +771,8 @@ fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<
     match value.py_value(vm) {
         PyValue::Int(_) | PyValue::Bool(_) => Ok(value.clone_with_heap(vm.heap)),
         PyValue::Float(value) if decimal => LongInt::value_from_f64(value, vm.heap),
+        // The decimal directives convert any real number through `__int__` (`Decimal`).
+        _ if decimal && let Some(int) = value.py_int_impl(vm)? => Ok(int),
         _ => {
             let requirement = if decimal { "a real number" } else { "an integer" };
             value.py_index_impl(vm)?.ok_or_else(|| {
@@ -903,7 +905,10 @@ fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
             _ => Err(T::float_overflow_error()),
         },
         _ => {
-            if let Some(index) = value.py_index_impl(vm)? {
+            // `__float__` first (`Decimal`), then `__index__`, as `PyFloat_AsDouble` does.
+            if let Some(f) = value.py_float_impl(vm)? {
+                Ok(f)
+            } else if let Some(index) = value.py_index_impl(vm)? {
                 defer_drop!(index, vm);
                 float_operand::<T>(index, vm)
             } else {
