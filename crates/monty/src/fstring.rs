@@ -1578,12 +1578,17 @@ fn format_complex_part(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracke
 /// Right-aligned by default. NaN and infinity are formatted as `nan`/`inf` (or `NAN`/`INF` for `F`).
 pub fn format_float_f(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let is_negative = f.is_sign_negative() && !f.is_nan();
+    let precision = spec.precision.unwrap_or(6);
+    let abs_val = f.abs();
+    if let Some(digits) = short_float_digits(abs_val, precision, spec, |out| write!(out, "{abs_val:.precision$}")) {
+        let sign = numeric_sign(is_negative, digits.as_str(), spec);
+        return pad_signed_numeric(sign, "", digits.as_str(), spec, tracker);
+    }
     let uppercase = spec.type_char == Some(TypeChar::FUpper);
     let abs_str = if let Some(word) = non_finite_repr(f, uppercase) {
         word.to_owned()
     } else {
-        let abs_val = f.abs();
-        let abs_str = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6), tracker)?;
+        let abs_str = fmt_float_fixed(abs_val, precision, tracker)?;
         maybe_alternate_point(abs_str, abs_val, spec)
     };
     let sign = numeric_sign(is_negative, &abs_str, spec);
@@ -1779,18 +1784,21 @@ pub fn ascii_escape(s: &str) -> String {
 pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let percent_val = f * 100.0;
     let is_negative = percent_val.is_sign_negative() && !percent_val.is_nan();
+    let precision = spec.precision.unwrap_or(6);
+    let abs_val = percent_val.abs();
+    if let Some(digits) = short_float_digits(abs_val, precision, spec, |out| write!(out, "{abs_val:.precision$}%")) {
+        let sign = numeric_sign(is_negative, digits.as_str(), spec);
+        return pad_signed_numeric(sign, "", digits.as_str(), spec, tracker);
+    }
     // The `%` presentation has no uppercase variant, so `inf`/`nan` stay lower.
     let abs_str = if let Some(word) = non_finite_repr(percent_val, false) {
         format!("{word}%")
     } else {
-        let abs_val = percent_val.abs();
-        let digits = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6), tracker)?;
-        let mut output = format_builder(digits.len().saturating_add(1), tracker)?;
-        push_format_str(&mut output, &digits, tracker)?;
-        output.push('%')?;
-        let abs_str = output.finish_raw()?;
+        let mut digits = fmt_float_fixed(abs_val, precision, tracker)?;
+        // `fmt_float_fixed` leaves room for the `%`, so this never reallocates for ordinary values.
+        digits.push('%');
         // `#` forces the point before the `%` (`#.0%` → `50.%`).
-        maybe_alternate_point(abs_str, abs_val, spec)
+        maybe_alternate_point(digits, abs_val, spec)
     };
     let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec, tracker)
@@ -2233,7 +2241,7 @@ const MAX_FMT_PRECISION_EXP: usize = (u16::MAX as usize) - 1;
 /// every additional digit Python would emit is a zero anyway.
 fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION || !abs_val.is_finite() {
-        return Ok(format!("{abs_val:.precision$}"));
+        return Ok(write_float(abs_val, precision, format_args!("{abs_val:.precision$}")));
     }
     let base = format!("{abs_val:.MAX_FMT_PRECISION$}");
     let extra = precision - MAX_FMT_PRECISION;
@@ -2254,9 +2262,9 @@ fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) ->
 fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION_EXP || !abs_val.is_finite() {
         return Ok(if uppercase {
-            format!("{abs_val:.precision$E}")
+            write_float(abs_val, precision, format_args!("{abs_val:.precision$E}"))
         } else {
-            format!("{abs_val:.precision$e}")
+            write_float(abs_val, precision, format_args!("{abs_val:.precision$e}"))
         });
     }
     let base = if uppercase {
@@ -2279,6 +2287,78 @@ fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool, tracker: &Reso
     } else {
         Ok(base)
     }
+}
+
+/// Formats a finite float's digits on the stack when they are short and need no `#` point.
+///
+/// This skips a heap allocation per float in the common case; `None` sends the caller to
+/// its general path, which handles non-finite values, `#` and long results. `write` runs only
+/// once `precision` is known to be small, since `fmt` panics on one above `u16::MAX`.
+fn short_float_digits(
+    abs_val: f64,
+    precision: usize,
+    spec: &ParsedFormatSpec,
+    write: impl FnOnce(&mut StackDigits) -> fmt::Result,
+) -> Option<StackDigits> {
+    if abs_val.is_finite() && !spec.alternate && precision < StackDigits::CAPACITY {
+        let mut digits = StackDigits::new();
+        write(&mut digits).ok().map(|()| digits)
+    } else {
+        None
+    }
+}
+
+/// A fixed-size stack buffer for a short formatted number; writes past its capacity fail.
+struct StackDigits {
+    buf: [u8; Self::CAPACITY],
+    len: usize,
+}
+
+impl StackDigits {
+    /// Bytes held; a longer result makes the write fail and the caller fall back to a `String`.
+    const CAPACITY: usize = 64;
+
+    fn new() -> Self {
+        Self {
+            buf: [0; Self::CAPACITY],
+            len: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        str::from_utf8(&self.buf[..self.len]).expect("only whole `str` fragments are written")
+    }
+}
+
+impl Write for StackDigits {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len + s.len();
+        self.buf
+            .get_mut(self.len..end)
+            .ok_or(fmt::Error)?
+            .copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Room beyond `precision` reserved by [`write_float`]: a 21-digit integer part, the point and a suffix.
+const FLOAT_DIGITS_SLACK: usize = 24;
+
+/// Writes formatted float `args` into a buffer sized for the result.
+///
+/// `format!` sizes its buffer from the literal text, which is empty for a bare float, so its
+/// buffer would grow through several reallocations. The slack also lets `%` be appended in place.
+/// `precision` only sizes finite values: non-finite ones ignore it, and it may be huge.
+fn write_float(abs_val: f64, precision: usize, args: fmt::Arguments<'_>) -> String {
+    let capacity = if abs_val.is_finite() {
+        precision.saturating_add(FLOAT_DIGITS_SLACK)
+    } else {
+        3
+    };
+    let mut output = String::with_capacity(capacity);
+    output.write_fmt(args).expect("writing to a String cannot fail");
+    output
 }
 
 /// Pads a string to a given width with alignment.
