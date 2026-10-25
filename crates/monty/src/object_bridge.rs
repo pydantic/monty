@@ -24,8 +24,8 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
-        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
-        allocate_tuple,
+        Complex, ExtHint, ExtHints, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait,
+        TimeZone, Type, allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type, decimal as decimal_type,
         decimal::py as py_decimal,
@@ -488,9 +488,11 @@ impl GraphExporter {
                     position: file.position(),
                 })
             }
+            // Hints only flow inbound: the host already holds the function's own.
             HeapReadOutput::ExtFunction(function) => MontyNode::Function {
                 name: function.get(vm.heap).as_str().to_owned(),
                 docstring: None,
+                annotations: Box::default(),
             },
             _ => repr_node(value, vm),
         }
@@ -1059,10 +1061,47 @@ fn import_node(
             t.to_internal().try_into().expect("host types are static"),
         ))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-        MontyNode::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
+        MontyNode::Function { name, annotations, .. } => {
+            let hints = ext_hints(&annotations, built, vm)?;
+            let function = vm.heap.get_ext_function(&name);
+            // Hints are per name: the latest non-empty set the host sends wins.
+            if !hints.is_empty()
+                && let Some(id) = function.ref_id()
+                && let HeapReadOutput::ExtFunction(entry) = vm.heap.read(id)
+            {
+                entry.get_mut(vm.heap).set_hints(hints);
+            }
+            Ok(function)
+        }
         MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
         MontyNode::Cycle(_) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
     }
+}
+
+/// Converts a host function's imported `(name, hint)` children: each name a
+/// `str`, each hint a builtin type or a `str`.
+fn ext_hints(annotations: &[(NodeId, NodeId)], built: &[Value], vm: &VM<'_>) -> Result<ExtHints, InvalidInputError> {
+    annotations
+        .iter()
+        .map(|(name, hint)| {
+            let name = built[name.index()]
+                .as_either_str(vm.heap)
+                .ok_or_else(|| InvalidInputError::invalid_type("function annotation names must be strings"))?;
+            let hint = match &built[hint.index()] {
+                Value::Builtin(Builtins::Type(t)) => ExtHint::Type(*t),
+                value => ExtHint::Text(
+                    value
+                        .as_either_str(vm.heap)
+                        .ok_or_else(|| {
+                            InvalidInputError::invalid_type("function annotations must be builtin types or strings")
+                        })?
+                        .as_str(vm.interns)
+                        .into(),
+                ),
+            };
+            Ok((name.as_str(vm.interns).into(), hint))
+        })
+        .collect()
 }
 
 /// Owned clones of already-imported children.

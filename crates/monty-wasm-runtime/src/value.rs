@@ -241,9 +241,11 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
             instance_id: parse_uuid(&value.instance_id)?,
             attrs: id_pairs(value.attrs),
         },
+        // The WIT value arena carries no type hints; JS hosts send none.
         ValueNode::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            annotations: Box::default(),
         },
         ValueNode::Repr(value) => MontyNode::Repr(value),
         ValueNode::Cycle(value) => MontyNode::Cycle(value),
@@ -348,7 +350,7 @@ fn node_into_component(node: MontyNode) -> ValueNode {
             instance_id: instance_id.to_string(),
             attrs: raw_pairs(attrs),
         }),
-        MontyNode::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
+        MontyNode::Function { name, docstring, .. } => ValueNode::Function(FunctionNode { name, docstring }),
         MontyNode::Repr(value) => ValueNode::Repr(value),
         MontyNode::Cycle(placeholder) => ValueNode::Cycle(placeholder),
         MontyNode::Module { name, id, attrs } => ValueNode::Module(ModuleNode {

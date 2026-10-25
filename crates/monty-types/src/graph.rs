@@ -112,6 +112,10 @@ pub enum MontyNode {
         name: String,
         /// Optional docstring.
         docstring: Option<String>,
+        /// Type hints as `(name, hint)` ids, read by `typing.get_type_hints()`:
+        /// each name a `String` node, each hint a `Type` or `String` node.
+        /// Boxed so the variant does not grow `MontyNode`.
+        annotations: Box<[(NodeId, NodeId)]>,
     },
     /// Output-only fallback: the `repr()` of a value with no other representation.
     Repr(String),
@@ -189,6 +193,10 @@ impl MontyNode {
                 f(*key);
                 f(*value);
             }),
+            Self::Function { annotations, .. } => annotations.iter().for_each(|(key, value)| {
+                f(*key);
+                f(*value);
+            }),
             _ => {}
         }
     }
@@ -215,6 +223,10 @@ impl MontyNode {
                 }
             }
             Self::Module { attrs, .. } => attrs.iter_mut().for_each(|(key, value)| {
+                f(key);
+                f(value);
+            }),
+            Self::Function { annotations, .. } => annotations.iter_mut().for_each(|(key, value)| {
                 f(key);
                 f(value);
             }),
@@ -267,7 +279,14 @@ impl MontyNode {
             Self::BigInt(bi) => usize::try_from(bi.bits().div_ceil(8)).unwrap_or(usize::MAX),
             Self::Exception { arg, .. } => name_len(arg),
             Self::FileHandle(fh) => fh.path.len(),
-            Self::Function { name, docstring } => name.len().saturating_add(name_len(docstring)),
+            Self::Function {
+                name,
+                docstring,
+                annotations,
+            } => name
+                .len()
+                .saturating_add(name_len(docstring))
+                .saturating_add(pairs(annotations)),
             Self::DateTime(dt) => name_len(&dt.timezone_name),
             Self::Time(t) => name_len(&t.timezone_name),
             Self::TimeZone(tz) => name_len(&tz.name),
@@ -352,12 +371,14 @@ impl PartialEq for MontyNode {
                 Self::Function {
                     name: a_name,
                     docstring: a_doc,
+                    annotations: a_annotations,
                 },
                 Self::Function {
                     name: b_name,
                     docstring: b_doc,
+                    annotations: b_annotations,
                 },
-            ) => a_name == b_name && a_doc == b_doc,
+            ) => a_name == b_name && a_doc == b_doc && a_annotations == b_annotations,
             (Self::List(a), Self::List(b))
             | (Self::Tuple(a), Self::Tuple(b))
             | (Self::Set(a), Self::Set(b))

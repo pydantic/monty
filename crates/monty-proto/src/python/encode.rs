@@ -4,7 +4,7 @@
 use std::{collections::HashMap, vec::IntoIter};
 
 use monty_types::{
-    MontyComplex, MontyDate, MontyException, MontyObject, MontyUuid,
+    MontyComplex, MontyDate, MontyException, MontyObject, MontyType, MontyUuid,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -278,11 +278,11 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             // works in the sandbox); any other host class crosses as a callable.
             match py_type_object_to_monty(ty)? {
                 Some(t) => Ok(self.leaf(MontyNode::Type(t))),
-                None => Ok(self.leaf(callable_node(obj))),
+                None => self.callable(obj),
             }
         } else if obj.is_callable() {
             // a callable class instance ends here too, as a host function
-            Ok(self.leaf(callable_node(obj)))
+            self.callable(obj)
         } else if let Ok(name) = obj.get_type().qualname() {
             let msg = match obj.get_type().module() {
                 Ok(module) => format!(
@@ -299,6 +299,29 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
     /// Pushes a leaf node.
     fn leaf(&mut self, node: MontyNode) -> Step<'py> {
         Step::Done(self.graph.push(node))
+    }
+
+    /// Pushes a host callable with no richer Monty mapping (plain callables and
+    /// host classes Monty does not model), carrying its `__name__`, docstring
+    /// and type hints. Hints bypass the general encoder, which would turn a
+    /// host class into a fake function and reject `int | None`.
+    fn callable(&mut self, obj: &Bound<'py, PyAny>) -> PyResult<Step<'py>> {
+        let mut annotations = Vec::new();
+        for (name, hint) in &host_type_hints(obj) {
+            let Ok(name) = name.extract::<String>() else {
+                continue;
+            };
+            let hint = match hint_node(&hint_value(&hint)?)? {
+                HintNode::Type(t) => MontyNode::Type(t),
+                HintNode::Text(text) => MontyNode::String(text),
+            };
+            annotations.push((self.graph.push(MontyNode::String(name)), self.graph.push(hint)));
+        }
+        Ok(self.leaf(MontyNode::Function {
+            name: get_name(obj),
+            docstring: get_docstring(obj),
+            annotations: annotations.into_boxed_slice(),
+        }))
     }
 
     /// Opens a frame for a container, unless it is memoized: a finished one
@@ -504,6 +527,17 @@ impl<'py> ClassTypeSource<'py> {
         let attrs = wrapper
             .call_method0(intern!(py, "get_eager_attrs"))?
             .cast_into::<PyDict>()?;
+        // Hints cross as the `__annotations__` attr, past the eager-attr `_` filter.
+        let hints = wrapper
+            .call_method0(intern!(py, "get_type_hints"))?
+            .cast_into::<PyDict>()?;
+        if !hints.is_empty() {
+            let annotations = PyDict::new(py);
+            for (name, hint) in &hints {
+                annotations.set_item(name, hint_value(&hint)?)?;
+            }
+            attrs.set_item(intern!(py, "__annotations__"), annotations)?;
+        }
         Ok(Self {
             class_type: ClassHeader {
                 name: class.getattr(intern!(py, "__name__"))?.extract()?,
@@ -568,11 +602,56 @@ fn namedtuple_type_name(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     })
 }
 
-/// A host callable with no richer Monty mapping, carrying its `__name__` and
-/// docstring: plain callables and host classes Monty does not model.
-fn callable_node(obj: &Bound<'_, PyAny>) -> MontyNode {
-    MontyNode::Function {
-        name: get_name(obj),
-        docstring: get_docstring(obj),
+/// `typing.get_type_hints(obj)`, falling back to `obj.__annotations__` (an
+/// unresolvable forward reference makes the former raise), then to `{}`.
+fn host_type_hints<'py>(obj: &Bound<'py, PyAny>) -> Bound<'py, PyDict> {
+    let py = obj.py();
+    py.import(intern!(py, "typing"))
+        .and_then(|typing| typing.call_method1(intern!(py, "get_type_hints"), (obj,)))
+        .or_else(|_| obj.getattr(intern!(py, "__annotations__")))
+        .and_then(|hints| hints.cast_into::<PyDict>()?.copy())
+        .unwrap_or_else(|_| PyDict::new(py))
+}
+
+/// A type hint as a value the sandbox can hold: a builtin type object Monty
+/// models, or text. `None` stands for `NoneType`, as in a hint; a host class
+/// becomes its dotted name and anything else (aliases, unions) its `repr()`.
+fn hint_value<'py>(hint: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    let py = hint.py();
+    if hint.is_none() {
+        return Ok(hint.get_type().into_any());
+    }
+    if hint.is_instance_of::<PyString>() {
+        return Ok(hint.clone());
+    }
+    let text = match hint.cast::<PyType>() {
+        Ok(ty) if py_type_object_to_monty(ty)?.is_some() => return Ok(hint.clone()),
+        Ok(ty) => {
+            let module: String = ty.module()?.extract()?;
+            let name = ty.qualname()?.to_string();
+            if module == "builtins" {
+                name
+            } else {
+                format!("{module}.{name}")
+            }
+        }
+        Err(_) => hint.repr()?.to_string(),
+    };
+    Ok(PyString::new(py, &text).into_any())
+}
+
+/// A [`hint_value`] result as the node it crosses as.
+enum HintNode {
+    Type(MontyType),
+    Text(String),
+}
+
+/// Classifies a [`hint_value`] result.
+fn hint_node(hint: &Bound<'_, PyAny>) -> PyResult<HintNode> {
+    match hint.cast::<PyType>() {
+        Ok(ty) => Ok(HintNode::Type(
+            py_type_object_to_monty(ty)?.expect("hint_value keeps only types Monty models"),
+        )),
+        Err(_) => Ok(HintNode::Text(hint.extract()?)),
     }
 }

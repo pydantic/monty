@@ -25,8 +25,9 @@ from collections.abc import Coroutine, Iterable
 from dataclasses import KW_ONLY, dataclass, field, fields, is_dataclass
 from inspect import iscoroutine
 from types import FunctionType
-from typing import Any, Literal, TypeAlias, cast
+from typing import Any, Literal, TypeAlias, cast, get_type_hints
 from uuid import UUID, uuid4
+from weakref import WeakKeyDictionary
 
 __all__ = 'ClassInstance', 'ClassType'
 
@@ -203,6 +204,9 @@ class ClassInstance(BaseWrapper):
         return cast(ClassType, self.class_type).convert_value(name, value)
 
 
+_type_hints_cache: WeakKeyDictionary[type[Any], dict[str, Any]] = WeakKeyDictionary()
+"""`ClassType.get_type_hints` results by class, so instance crossings don't re-evaluate them."""
+
 type_id_cache: dict[str, UUID] = {}
 """Process-wide default class ids keyed by `module.qualname`, never evicted,
 so instances keep a stable type identity across sessions. Pre-seed it (or
@@ -291,6 +295,27 @@ class ClassType(BaseWrapper):
         else:
             eager_attrs = [(name, getattr(self.value, name)) for name in self.eager_attrs]
         return {name: self.convert_value(name, value) for name, value in eager_attrs}
+
+    def get_type_hints(self) -> dict[str, Any]:
+        """The class's type hints, sent into the sandbox as its `__annotations__`
+        for `typing.get_type_hints()` there. Evaluated once per class: falls back
+        to the raw `__annotations__` when a forward reference cannot resolve.
+
+        Override to send different hints, or `{}` to send none.
+        """
+        try:
+            return _type_hints_cache[self.value]
+        except (KeyError, TypeError):
+            pass
+        try:
+            hints = get_type_hints(self.value)
+        except Exception:
+            hints = dict(getattr(self.value, '__annotations__', {}))
+        try:
+            _type_hints_cache[self.value] = hints
+        except TypeError:
+            pass
+        return hints
 
     def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         """Routes `__call__` (construction) to `construct`; every other name

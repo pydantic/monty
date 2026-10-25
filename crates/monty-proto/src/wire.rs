@@ -474,14 +474,22 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyNode::Function { name, docstring } => {
+        MontyNode::Function {
+            name,
+            docstring,
+            annotations,
+        } => {
             encode_message_key(
                 tag::FUNCTION,
-                str_len(1, name) + opt_str_len(2, docstring.as_deref()),
+                function_len(name, docstring.as_deref(), annotations),
                 buf,
             );
             encode_str(1, name, buf);
             encode_opt_str(2, docstring.as_deref(), buf);
+            if !annotations.is_empty() {
+                encode_message_key(3, node_pairs_len(1, annotations), buf);
+                encode_node_pairs(1, annotations, buf);
+            }
         }
         MontyNode::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
         MontyNode::Cycle(placeholder) => encoding::string::encode(tag::CYCLE, placeholder, buf),
@@ -536,9 +544,11 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyNode::Decimal(d) => encoding::string::encoded_len(tag::DECIMAL, d),
         MontyNode::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyNode::Function { name, docstring } => {
-            submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
-        }
+        MontyNode::Function {
+            name,
+            docstring,
+            annotations,
+        } => submessage_len(tag::FUNCTION, function_len(name, docstring.as_deref(), annotations)),
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
@@ -670,6 +680,17 @@ fn class_origin(class: &ClassTypeNode) -> pb::TypeOrigin {
 /// NodePairs attrs = 3`.
 fn class_instance_len(class_type: NodeId, id: &pb::Uuid, attrs: &[(NodeId, NodeId)]) -> usize {
     uint32_len(1, class_type.0) + encoding::message::encoded_len(2, id) + submessage_len(3, node_pairs_len(1, attrs))
+}
+
+/// `Function` body: `name = 1`, `docstring = 2`, and `annotations = 3` only when non-empty.
+fn function_len(name: &str, docstring: Option<&str>, annotations: &[(NodeId, NodeId)]) -> usize {
+    str_len(1, name)
+        + opt_str_len(2, docstring)
+        + if annotations.is_empty() {
+            0
+        } else {
+            submessage_len(3, node_pairs_len(1, annotations))
+        }
 }
 
 /// `ModuleNode` body: `name = 1`, `id = 2`, `attrs = 3`.
@@ -864,6 +885,10 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         Kind::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            annotations: value
+                .annotations
+                .map(|annotations| annotations.0.into_inner().into_boxed_slice())
+                .unwrap_or_default(),
         },
         Kind::Repr(value) => MontyNode::Repr(value),
         Kind::Cycle(value) => MontyNode::Cycle(value),

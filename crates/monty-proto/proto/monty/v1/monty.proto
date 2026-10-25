@@ -294,6 +294,9 @@ message ModuleNode {
 message Function {
   string name = 1;
   optional string docstring = 2;
+  // Type hints as `(name, hint)` node indexes, in order; absent when there are none.
+  // Each name is a `str` node and each hint a builtin `Type` or `str` node.
+  NodePairs annotations = 3;
 }
 
 // ============================================================================

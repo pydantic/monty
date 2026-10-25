@@ -323,13 +323,17 @@ pub struct ModuleNode {
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
-#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Function {
     #[prost(string, tag = "1")]
     pub name: crate::budgeted_prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
+    /// Type hints as `(name, hint)` node indexes, in order; absent when there are none.
+    /// Each name is a `str` node and each hint a builtin `Type` or `str` node.
+    #[prost(message, optional, tag = "3")]
+    pub annotations: ::core::option::Option<crate::WireNodePairs>,
 }
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.

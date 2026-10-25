@@ -289,6 +289,14 @@ fn class_instance_and_function_values_round_trip() {
         Some("fetches a url".to_owned()),
     ));
     assert_value_round_trip(&MontyObject::function("f".to_owned(), None));
+    assert_value_round_trip(&MontyObject::function_with_annotations(
+        "typed",
+        None,
+        [
+            ("x", MontyObject::type_object(MontyType::Int)),
+            ("return", MontyObject::string("Foo | None")),
+        ],
+    ));
 }
 
 #[test]
@@ -927,6 +935,18 @@ fn invalid_arenas_are_rejected() {
     assert_eq!(
         decode(vec![MontyNode::Int(1), MontyNode::List(vec![NodeId(7)])]).unwrap_err(),
         "invalid value for Arena: value node 1 references node 7, which is not below it"
+    );
+    assert_eq!(
+        decode(vec![
+            MontyNode::String("x".to_owned()),
+            MontyNode::Function {
+                name: "f".to_owned(),
+                docstring: None,
+                annotations: Box::new([(NodeId(0), NodeId(1))]),
+            },
+        ])
+        .unwrap_err(),
+        "invalid value for Arena: value node 1 references node 1, which is not below it"
     );
     assert_eq!(
         decode(vec![
