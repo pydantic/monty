@@ -40,7 +40,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::{check_mult_size, check_product_size},
-    types::{LongInt, Module, PyTrait, allocate_tuple, long_int::bigint_to_f64_checked},
+    types::{LongInt, Module, PyTrait, allocate_tuple, decimal, long_int::bigint_to_f64_checked},
     value::Value,
 };
 
@@ -1385,9 +1385,9 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Converts a `Value` to `f64`, raising `TypeError` if the value is not numeric.
 ///
-/// Accepts `Float`, `Int`, `Bool` and long ints, which convert like `float()` and so
-/// raise `OverflowError` beyond the float range. Other types raise a `TypeError`
-/// with a message matching CPython's format: "must be real number, not <type>".
+/// Accepts `Float`, `Int`, `Bool`, long ints and `Decimal`, which convert like `float()`,
+/// so long ints raise `OverflowError` beyond the float range. Other types raise a
+/// `TypeError` with a message matching CPython's format: "must be real number, not <type>".
 #[expect(
     clippy::cast_precision_loss,
     reason = "i64-to-f64 can lose precision for large integers (beyond 2^53), but this matches CPython's conversion semantics"
@@ -1399,7 +1399,11 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => match value.as_long_int(vm) {
             Some(n) => bigint_to_f64_checked(n),
-            None => Err(ExcType::type_error_not_real_number(&value.py_type_name(vm))),
+            // `Decimal.__float__`, as `PyFloat_AsDouble` calls it.
+            None => match decimal::py::as_decimal(value, vm) {
+                Some(d) => d.to_f64(),
+                None => Err(ExcType::type_error_not_real_number(&value.py_type_name(vm))),
+            },
         },
     }
 }

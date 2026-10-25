@@ -150,9 +150,6 @@ COPY_FILES = [
     # the host-backed functions from `genericpath`
     'posixpath.pyi',
     'genericpath.pyi',
-    # `decimal` re-exports its constants and context functions from `_decimal`
-    'decimal.pyi',
-    '_decimal.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
@@ -162,7 +159,6 @@ VERSIONS = """\
 # which monty's minimimal typeshed includes
 
 _collections_abc: 3.3-
-_decimal: 3.3-  # not importable at runtime, only for type checking (decimal re-exports from it)
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
 asyncio: 3.4-

@@ -329,12 +329,8 @@ impl<'h> PyTrait<'h> for Value {
         // `CmpOrder::Unordered` (only `NaN` yields `None` there), while
         // `from_total` maps `None` from a total-order comparison to
         // `CmpOrder::Incomparable`. Any operand pair with no comparison at all
-        // falls through to the `Incomparable` catch-alls below.
-        if (matches!(self, Self::Ref(_)) || matches!(other, Self::Ref(_)))
-            && let Some(order) = decimal::py::cmp_order(self, other, vm)?
-        {
-            return Ok(order);
-        }
+        // falls through to the catch-alls below, which try a `Decimal` operand last so
+        // the common types never pay for that check.
         match (self, other) {
             (Self::Int(s), Self::Int(o)) => Ok(CmpOrder::Ordered(s.cmp(o))),
             (Self::Float(s), Self::Float(o)) => Ok(CmpOrder::from_numeric(s.partial_cmp(o))),
@@ -382,46 +378,15 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Ref(id), Self::Float(o)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
                 Ok(CmpOrder::from_numeric(li.partial_cmp_f64(*o)))
             }
-            // Ref vs Ref comparison: handles LongInt, Str, Tuple, and List
-            (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.read(*id1), vm.heap.read(*id2)) {
-                (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                    Ok(CmpOrder::Ordered(a.get(vm.heap).inner().cmp(b.get(vm.heap).inner())))
+            // Ref vs Ref comparison: same-kind heap values, then a `Decimal` operand
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let order = cmp_heap_pair(*id1, *id2, vm)?;
+                if order == CmpOrder::Incomparable {
+                    decimal_cmp_or_incomparable(self, other, vm)
+                } else {
+                    Ok(order)
                 }
-                (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-                    Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
-                }
-                (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
-                    a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
-                )),
-                (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
-                // A namedtuple orders like the tuple it subclasses, including
-                // against a plain tuple in either direction. Both sides are
-                // cloned first because the comparison needs `&mut VM`, which
-                // cannot coexist with two live `HeapRead`s.
-                (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => {
-                    let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-                    cmp_item_seqs(a, b, vm)
-                }
-                (HeapReadOutput::NamedTuple(a), HeapReadOutput::Tuple(b)) => {
-                    let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-                    cmp_item_seqs(a, b, vm)
-                }
-                (HeapReadOutput::Tuple(a), HeapReadOutput::NamedTuple(b)) => {
-                    let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-                    cmp_item_seqs(a, b, vm)
-                }
-                (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
-                (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
-                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
-                    Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
-                }
-                (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_cmp(&b, vm),
-                (HeapReadOutput::Time(a), HeapReadOutput::Time(b)) => a.py_cmp(&b, vm),
-                (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
-                    Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
-                }
-                _ => Ok(CmpOrder::Incomparable),
-            },
+            }
             // Interned string comparisons
             (Self::InternString(s1), Self::InternString(s2)) => {
                 Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(interns.get_str(*s2))))
@@ -443,7 +408,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Ref(id1), Self::InternBytes(b2)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
                 Ok(CmpOrder::Ordered(b1.as_slice().cmp(interns.get_bytes(*b2))))
             }
-            _ => Ok(CmpOrder::Incomparable),
+            _ => decimal_cmp_or_incomparable(self, other, vm),
         }
     }
 
@@ -788,6 +753,60 @@ impl<'h> PyTrait<'h> for Value {
             Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
         }
     }
+}
+
+/// Orders two heap values of the same kind: long ints, strings, bytes, sequences and
+/// temporal values; `Incomparable` for any other pair.
+///
+/// Separate from `py_cmp` so its read guards are released before the caller's
+/// `Decimal` fallback, which needs the heap mutably.
+fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
+    match (vm.heap.read(id1), vm.heap.read(id2)) {
+        (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
+            Ok(CmpOrder::Ordered(a.get(vm.heap).inner().cmp(b.get(vm.heap).inner())))
+        }
+        (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
+            Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
+        }
+        (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
+            a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
+        )),
+        (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
+        // A namedtuple orders like the tuple it subclasses, including
+        // against a plain tuple in either direction. Both sides are
+        // cloned first because the comparison needs `&mut VM`, which
+        // cannot coexist with two live `HeapRead`s.
+        (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => {
+            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
+            cmp_item_seqs(a, b, vm)
+        }
+        (HeapReadOutput::NamedTuple(a), HeapReadOutput::Tuple(b)) => {
+            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
+            cmp_item_seqs(a, b, vm)
+        }
+        (HeapReadOutput::Tuple(a), HeapReadOutput::NamedTuple(b)) => {
+            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
+            cmp_item_seqs(a, b, vm)
+        }
+        (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
+        (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
+        (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
+            Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
+        }
+        (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_cmp(&b, vm),
+        (HeapReadOutput::Time(a), HeapReadOutput::Time(b)) => a.py_cmp(&b, vm),
+        (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
+            Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
+        }
+        _ => Ok(CmpOrder::Incomparable),
+    }
+}
+
+/// The ordering of a pair with a `Decimal` operand, `Incomparable` for any other pair.
+///
+/// Tried only once the common types have missed, keeping them off this check.
+fn decimal_cmp_or_incomparable(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
+    Ok(decimal::py::cmp_order(lhs, rhs, vm)?.unwrap_or(CmpOrder::Incomparable))
 }
 
 /// `Value` releases its (possible) heap reference through any [`ContainsHeap`]

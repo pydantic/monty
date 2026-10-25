@@ -1,3 +1,4 @@
+import math
 from decimal import (
     ROUND_CEILING,
     ROUND_DOWN,
@@ -369,3 +370,25 @@ with localcontext(prec=60):
     assert repr(Decimal(10).ln()) == "Decimal('2.30258509299404568401799145468436420760110148862877297603333')"
     assert repr(Decimal(2).sqrt()) == "Decimal('1.41421356237309504880168872420969807856967187537694807317668')"
     assert repr(Decimal(1).exp()) == "Decimal('2.71828182845904523536028747135266249775724709369995957496697')"
+
+# === The math module converts a Decimal through __float__ ===
+assert math.sqrt(Decimal('2.25')) == 1.5
+assert math.isclose(Decimal(1), 1)
+assert math.log(Decimal(100), 10) == 2.0
+assert math.log10(Decimal(1000)) == 3.0
+assert math.hypot(Decimal(3), Decimal(4)) == 5.0
+assert math.fsum([Decimal('0.1')] * 10) == 1.0
+assert math.isnan(Decimal('NaN'))
+assert math.isinf(Decimal('-Infinity'))
+assert math.copysign(Decimal(1), Decimal(-2)) == -1.0
+assert math.sqrt(Decimal('1e999999')) == math.inf
+try:
+    math.sqrt(Decimal('sNaN'))
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'cannot convert signaling NaN to float'
+try:
+    math.log(Decimal(-1))
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'expected a positive input, got -1.0'

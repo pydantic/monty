@@ -227,7 +227,6 @@ pub const CHECKER_MODULE_NAMES: &[&str] = &[
     "__future__",
     "__main__",
     "_collections_abc",
-    "_decimal",
     "_typeshed",
     "abc",
     "builtins",

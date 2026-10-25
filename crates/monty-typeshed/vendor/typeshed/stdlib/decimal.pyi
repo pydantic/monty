@@ -1,41 +1,16 @@
-import numbers
+# Monty's `decimal`: the upstream typeshed `decimal.pyi` with the names it
+# re-exports from `_decimal` defined inline, since `_decimal` is not importable.
+# Context.__reduce__ is omitted (pickling is unsupported).
 import sys
-from _decimal import (
-    HAVE_CONTEXTVAR as HAVE_CONTEXTVAR,
-    HAVE_THREADS as HAVE_THREADS,
-    MAX_EMAX as MAX_EMAX,
-    MAX_PREC as MAX_PREC,
-    MIN_EMIN as MIN_EMIN,
-    MIN_ETINY as MIN_ETINY,
-    ROUND_05UP as ROUND_05UP,
-    ROUND_CEILING as ROUND_CEILING,
-    ROUND_DOWN as ROUND_DOWN,
-    ROUND_FLOOR as ROUND_FLOOR,
-    ROUND_HALF_DOWN as ROUND_HALF_DOWN,
-    ROUND_HALF_EVEN as ROUND_HALF_EVEN,
-    ROUND_HALF_UP as ROUND_HALF_UP,
-    ROUND_UP as ROUND_UP,
-    BasicContext as BasicContext,
-    DefaultContext as DefaultContext,
-    ExtendedContext as ExtendedContext,
-    __libmpdec_version__ as __libmpdec_version__,
-    __version__ as __version__,
-    getcontext as getcontext,
-    localcontext as localcontext,
-    setcontext as setcontext,
-)
 from collections.abc import Container, Sequence
 from types import TracebackType
-from typing import Any, ClassVar, Literal, NamedTuple, final, overload, type_check_only
+from typing import Any, Final, Literal, NamedTuple, TypeAlias, final, overload, type_check_only
 
-from typing_extensions import Self, TypeAlias, disjoint_base
-
-if sys.version_info >= (3, 14):
-    from _decimal import IEEE_CONTEXT_MAX_BITS as IEEE_CONTEXT_MAX_BITS, IEEEContext as IEEEContext
+from typing_extensions import Self, disjoint_base
 
 _Decimal: TypeAlias = Decimal | int
 _DecimalNew: TypeAlias = Decimal | float | str | tuple[int, Sequence[int], int]
-_ComparableNum: TypeAlias = Decimal | float | numbers.Rational
+_ComparableNum: TypeAlias = Decimal | float
 _TrapType: TypeAlias = type[DecimalException]
 
 # At runtime, these classes are implemented in C as part of "_decimal".
@@ -124,7 +99,7 @@ class Decimal:
     def __floor__(self) -> int: ...
     def __ceil__(self) -> int: ...
     def fma(self, other: _Decimal, third: _Decimal, context: Context | None = None) -> Decimal: ...
-    def __rpow__(self, value: _Decimal, mod: Context | None = None, /) -> Decimal: ...
+    def __rpow__(self, value: _Decimal, mod: _Decimal | None = None, /) -> Decimal: ...
     def normalize(self, context: Context | None = None) -> Decimal: ...
     def quantize(self, exp: _Decimal, rounding: str | None = None, context: Context | None = None) -> Decimal: ...
     def same_quantum(self, other: _Decimal, context: Context | None = None) -> bool: ...
@@ -181,7 +156,7 @@ class Context:
     # even settable attributes like `prec` and `rounding`,
     # but that's inexpressible in the stub.
     # Type checkers either ignore it or misinterpret it
-    # if you add a `def __delattr__(self, name: str, /) -> NoReturn` method to the stub
+    # if you add a `def __delattr__(self, name: str, /) -> Never` method to the stub
     prec: int
     rounding: str
     Emin: int
@@ -201,13 +176,12 @@ class Context:
         flags: dict[_TrapType, bool] | Container[_TrapType] | None = None,
         traps: dict[_TrapType, bool] | Container[_TrapType] | None = None,
     ) -> None: ...
-    def __reduce__(self) -> tuple[type[Self], tuple[Any, ...]]: ...
     def clear_flags(self) -> None: ...
     def clear_traps(self) -> None: ...
     def copy(self) -> Context: ...
     def __copy__(self) -> Context: ...
-    # see https://github.com/python/cpython/issues/94107
-    __hash__: ClassVar[None]  # type: ignore[assignment]
+    # hashable by identity, as C `_decimal` is (see https://github.com/python/cpython/issues/94107)
+    def __hash__(self) -> int: ...
     def Etiny(self) -> int: ...
     def Etop(self) -> int: ...
     def create_decimal(self, num: _DecimalNew = '0', /) -> Decimal: ...
@@ -273,3 +247,52 @@ class Context:
     def to_integral_exact(self, x: _Decimal, /) -> Decimal: ...
     def to_integral_value(self, x: _Decimal, /) -> Decimal: ...
     def to_integral(self, x: _Decimal, /) -> Decimal: ...
+
+__version__: Final[str]
+__libmpdec_version__: Final[str]
+if sys.version_info >= (3, 15):
+    SPEC_VERSION: Final[str]
+
+ROUND_DOWN: Final = 'ROUND_DOWN'
+ROUND_HALF_UP: Final = 'ROUND_HALF_UP'
+ROUND_HALF_EVEN: Final = 'ROUND_HALF_EVEN'
+ROUND_CEILING: Final = 'ROUND_CEILING'
+ROUND_FLOOR: Final = 'ROUND_FLOOR'
+ROUND_UP: Final = 'ROUND_UP'
+ROUND_HALF_DOWN: Final = 'ROUND_HALF_DOWN'
+ROUND_05UP: Final = 'ROUND_05UP'
+HAVE_CONTEXTVAR: Final[bool]
+HAVE_THREADS: Final[bool]
+MAX_EMAX: Final[int]
+MAX_PREC: Final[int]
+MIN_EMIN: Final[int]
+MIN_ETINY: Final[int]
+if sys.version_info >= (3, 14):
+    IEEE_CONTEXT_MAX_BITS: Final[int]
+
+def setcontext(context: Context, /) -> None: ...
+def getcontext() -> Context: ...
+
+if sys.version_info >= (3, 11):
+    def localcontext(
+        ctx: Context | None = None,
+        *,
+        prec: int | None = None,
+        rounding: str | None = None,
+        Emin: int | None = None,
+        Emax: int | None = None,
+        capitals: int | None = None,
+        clamp: int | None = None,
+        traps: dict[_TrapType, bool] | None = None,
+        flags: dict[_TrapType, bool] | None = None,
+    ) -> _ContextManager: ...
+
+else:
+    def localcontext(ctx: Context | None = None) -> _ContextManager: ...
+
+if sys.version_info >= (3, 14):
+    def IEEEContext(bits: int, /) -> Context: ...
+
+DefaultContext: Context
+BasicContext: Context
+ExtendedContext: Context
