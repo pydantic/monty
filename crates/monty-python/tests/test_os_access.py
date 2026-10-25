@@ -497,13 +497,38 @@ def test_append_text_non_ascii_returns_char_count():
     assert fs.path_read_text(P('/test/file.txt')) == snapshot('start αβγ')
 
 
-def test_append_bytes_returns_byte_count():
-    """path_append_bytes returns the byte length (no UTF-8 transcoding involved)."""
-    fs = OSAccess([MemoryFile('/test/file.bin', content=b'start ')])
+@pytest.mark.parametrize('content', ['start ', b'start '])
+def test_append_bytes_returns_byte_count(content: str | bytes):
+    """Binary appends return the appended byte count for either storage type."""
+    fs = OSAccess([MemoryFile('/test/file.bin', content=content)])
 
     # 6 UTF-8 bytes of 'αβγ' — byte count, as documented.
     assert fs.path_append_bytes(P('/test/file.bin'), 'αβγ'.encode()) == snapshot(6)
     assert fs.path_read_bytes(P('/test/file.bin')) == snapshot('start αβγ'.encode())
+
+
+@pytest.mark.parametrize('callback', [False, True], ids=['memory', 'callback'])
+@pytest.mark.parametrize(
+    ('content', 'expected'),
+    [
+        ('start ', snapshot('start αβγ')),
+        (b'start ', snapshot(b'start \xce\xb1\xce\xb2\xce\xb3')),
+        (b'\xff', snapshot(b'\xff\xce\xb1\xce\xb2\xce\xb3')),
+    ],
+    ids=['text', 'utf8-bytes', 'non-utf8-bytes'],
+)
+def test_append_text_preserves_storage_type(callback: bool, content: str | bytes, expected: str | bytes):
+    """Text appends preserve stored bytes and the type passed to write callbacks."""
+    stored = MemoryFile('/test/file.txt', content=content)
+    file = (
+        CallbackFile(stored.path, read=lambda _: stored.content, write=lambda _, value: stored.write_content(value))
+        if callback
+        else stored
+    )
+    fs = OSAccess([file])
+
+    assert fs.path_append_text(stored.path, 'αβγ') == snapshot(3)
+    assert stored.content == expected
 
 
 # =============================================================================

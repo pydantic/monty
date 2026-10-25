@@ -187,7 +187,7 @@ Everything else raises `AttributeError`, including: `truncate()`,
     `bytes`. The error messages match CPython
     (`a bytes-like object is required, not '<type>'` /
     `write() argument must be str, not <type>`).
-- Text I/O is whole-file UTF-8 with no error handlers; newline handling
+- Text reads decode the whole file as UTF-8 with no error handlers; newline handling
     follows the `newline` argument (see above).
 - `io.UnsupportedOperation` (raised by `read()` on `'w'` files, `write()`
     on `'r'` files, etc.) inherits from both `OSError` and `ValueError` for
