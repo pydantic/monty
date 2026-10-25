@@ -124,9 +124,13 @@ pub(crate) static RESERVED_STRS: [&str; 129] = const {
 /// touch the same line; nothing reads those discriminants. Interner entries
 /// serialize as text and recover a tag only when the loading build recognizes
 /// that text, so reordering them does not invalidate a dump.
+///
+/// `use_phf` makes the derived `FromStr` (run for every string interned, compiled
+/// or loaded from a dump) a compile-time perfect-hash lookup. strum's default is
+/// a `match` that LLVM turns into a chain of comparisons per text length.
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
-#[strum(serialize_all = "snake_case")]
+#[strum(serialize_all = "snake_case", use_phf)]
 pub enum StaticStrings {
     /// ASCII character 0x00.
     #[strum(serialize = "\x00")]

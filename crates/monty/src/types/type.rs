@@ -53,7 +53,7 @@ use crate::{
     strum::IntoStaticStr,
     strum::VariantNames,
 )]
-#[strum(serialize_all = "lowercase")]
+#[strum(serialize_all = "lowercase", use_phf)]
 #[expect(
     clippy::enum_variant_names,
     reason = "`Type` and `NoneType` mirror the Python type names"

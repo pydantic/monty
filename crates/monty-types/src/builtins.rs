@@ -26,7 +26,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
     serde::Serialize,
     serde::Deserialize,
 )]
-#[strum(serialize_all = "lowercase")]
+#[strum(serialize_all = "lowercase", use_phf)]
 #[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum BuiltinsFunctions {
