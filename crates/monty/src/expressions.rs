@@ -975,6 +975,8 @@ pub struct PreparedFunctionDef {
     /// When true, calling this function creates a `Coroutine` object instead of
     /// immediately pushing a frame.
     pub is_async: bool,
+    /// Stringized `(name, annotation)` pairs, copied onto the compiled [`Function`](crate::function::Function).
+    pub annotations: Vec<(StringId, StringId)>,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

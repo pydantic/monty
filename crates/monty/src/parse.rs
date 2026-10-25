@@ -148,6 +148,9 @@ pub struct RawFunctionDef {
     pub body: Vec<ParseNode>,
     /// Whether this is an async function (`async def`).
     pub is_async: bool,
+    /// `(parameter or "return", stringized annotation)` pairs in CPython's order,
+    /// read back by `typing.get_type_hints()`.
+    pub annotations: Vec<(StringId, StringId)>,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -1002,9 +1005,10 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// before calling here, so it always receives an empty list.
     fn parse_function_def(
         &mut self,
-        function: ast::StmtFunctionDef,
+        mut function: ast::StmtFunctionDef,
     ) -> Result<(RawFunctionDef, Vec<ExprLoc>), ParseError> {
         let decorators = self.parse_decorators(function.decorator_list)?;
+        let annotations = self.parse_function_annotations(&mut function.parameters, function.returns.as_deref_mut())?;
 
         let params = &function.parameters;
 
@@ -1042,9 +1046,44 @@ impl<'a, 'i> Parser<'a, 'i> {
                 signature,
                 body,
                 is_async,
+                annotations,
             },
             decorators,
         ))
+    }
+
+    /// Stringizes a `def`'s parameter and return annotations, in the order
+    /// CPython stores them: regular parameters before positional-only ones,
+    /// then `*args`, keyword-only, `**kwargs` and `return`.
+    fn parse_function_annotations(
+        &mut self,
+        params: &mut ast::Parameters,
+        returns: Option<&mut AstExpr>,
+    ) -> Result<Vec<(StringId, StringId)>, ParseError> {
+        let ast::Parameters {
+            posonlyargs,
+            args,
+            vararg,
+            kwonlyargs,
+            kwarg,
+            ..
+        } = params;
+        let annotated = args
+            .iter_mut()
+            .chain(posonlyargs.iter_mut())
+            .map(|p| &mut p.parameter)
+            .chain(vararg.as_deref_mut())
+            .chain(kwonlyargs.iter_mut().map(|p| &mut p.parameter))
+            .chain(kwarg.as_deref_mut())
+            .filter_map(|p| Some((p.name.id.as_str(), p.annotation.as_deref_mut()?)))
+            .chain(returns.map(|r| ("return", r)));
+        let mut annotations = Vec::new();
+        for (name, annotation) in annotated {
+            self.check_expression_depth(annotation)?;
+            let text = stringize_annotation(annotation);
+            annotations.push((self.interner.intern(name), self.interner.intern(&text)));
+        }
+        Ok(annotations)
     }
 
     /// Parses decorator expressions in source order.
@@ -1257,6 +1296,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             signature: ParsedSignature::default(),
             body,
             is_async: false,
+            annotations: Vec::new(),
         };
 
         Ok(Node::ClassDef {
