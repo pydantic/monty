@@ -5,6 +5,63 @@ assert 'test' + '' == 'test'
 assert '' + '' == ''
 assert 'a' + 'b' + 'c' + 'd' == 'abcd'
 
+# === Interned and computed operands ===
+# Joining forces runtime allocation even when the text matches a literal.
+for left in ['café', ''.join(['ca', 'fé'])]:
+    for right in ['日本', ''.join(['日', '本'])]:
+        assert left + right == 'café日本'
+    assert left + left == 'cafécafé'
+    assert left + '' == 'café'
+    assert '' + left == 'café'
+    assert left[0] == 'c'
+    assert left[-1] == 'é'
+    assert left[True] == 'a'
+    assert left[1:3] == 'af'
+    assert left[::-1] == 'éfac'
+    assert left[::2] == 'cf'
+    assert left[20:] == ''
+    assert len(left) == 4
+    assert bool(left) is True
+    assert bool(left[20:]) is False
+    assert repr(left) == "'café'"
+    assert repr([left, left]) == "['café', 'café']"
+    assert '' in left
+    assert left in left
+    assert '日本' not in left
+    for probe in ['fé', ''.join(['f', 'é'])]:
+        assert probe in left
+    for count, expected in [(-2, ''), (0, ''), (False, ''), (1, 'café'), (True, 'café'), (2, 'cafécafé')]:
+        assert left * count == expected
+        assert count * left == expected
+        repeated = left
+        repeated *= count
+        assert repeated == expected
+    try:
+        1 in left
+        assert False, 'expected a non-string probe to raise'
+    except TypeError as exc:
+        assert str(exc) == "'in <string>' requires string as left operand, not int"
+    try:
+        left * 2**100
+        assert False, 'expected an oversized repetition count to raise'
+    except OverflowError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    try:
+        2**100 * left
+        assert False, 'expected an oversized reflected repetition count to raise'
+    except OverflowError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    try:
+        left[4]
+        assert False, 'expected string index out of range'
+    except IndexError as exc:
+        assert str(exc) == 'string index out of range'
+    try:
+        left[::0]
+        assert False, 'expected a zero slice step to raise'
+    except ValueError as exc:
+        assert str(exc) == 'slice step cannot be zero'
+
 # === Augmented assignment (+=) ===
 s = 'hello'
 s += ' world'

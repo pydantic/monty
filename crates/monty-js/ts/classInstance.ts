@@ -15,6 +15,8 @@
 // sandbox, optionally letting sandbox code instantiate it (`init: true`).
 
 import { notCallableMessage } from './errors.js'
+import { ExternalModule } from './externalModule.js'
+import { generateUuid, normalizeId } from './uuid.js'
 
 /**
  * Which names a wrapper exposes: an explicit collection, or `'all'` for every
@@ -116,24 +118,18 @@ export abstract class BaseWrapper {
   }
 
   /**
-   * Calls a method on the wrapped instance for the sandbox. Throws
-   * [`AttrNotExposed`] when `name` is outside `allowedMethods` or absent.
-   * Under `'all'` the name must also resolve to a method the class defines
-   * (see [`isMethodUnderAll`](BaseWrapper.isMethodUnderAll)); an explicit
-   * list calls whatever the named property holds.
-   *
-   * JS functions have no keyword arguments, so a non-empty `kwargs` is
-   * appended as a final options-bag argument — the way JS hosts typically
-   * take named options. The return value passes through `convertValue`
-   * (after settling, for a promise-returning method).
-   *
-   * `__call__` is always rejected on instances — only [`ClassType`] accepts
-   * it (as construction) — so even `allowedMethods: 'all'` cannot invoke the
-   * instance itself.
+   * Throws [`AttrNotExposed`] for absent or disallowed names. `'all'` requires a class-defined
+   * method (see [`isMethodUnderAll`](BaseWrapper.isMethodUnderAll)); explicit lists allow any named callable.
+   * Appends non-empty `kwargs` as an options object and applies `convertValue` after the result settles.
+   * `__call__` throws `TypeError` even with `allowedMethods: 'all'`.
+   * Only [`ClassType`] accepts it, for construction.
    */
   callMethod(name: string, args: unknown[], kwargs: Record<string, unknown>): unknown {
+    if (name === '__call__') {
+      throw new TypeError(`'${this.getName()}' object is not callable`)
+    }
     const policy = this.options.allowedMethods
-    if (name === '__call__' || !policyAllows(policy, name)) {
+    if (!policyAllows(policy, name)) {
       throw this.attrError(name)
     }
     const owner = findMemberOwner(this.instance, name)
@@ -631,6 +627,13 @@ function prepareObject(value: object, store: InstanceStore): unknown {
   if (value instanceof ClassInstance) {
     return wrapperFrame(value, store)
   }
+  if (value instanceof HostModuleValue) {
+    return moduleFrame(value)
+  }
+  if (value instanceof ExternalModule) {
+    // a module is named by its `externalModules` path, which a value has none of
+    throw new TypeError('an ExternalModule enters the sandbox only through externalModules, not as a value')
+  }
   if (value instanceof MontyClassProxy) {
     // crosses back with the ids it arrived with, so the sandbox resolves it
     // to its original object
@@ -658,6 +661,9 @@ function prepareObject(value: object, store: InstanceStore): unknown {
     // Same reasoning for a host-class marker; builtin `Type` markers
     // (`{ value: 'int' }`) carry no identity and pass through.
     throw new TypeError('raw Type markers are not accepted — pass the class through ClassType(...)')
+  }
+  if (marker === 'Module') {
+    throw new TypeError('raw Module markers are not accepted — supply the module through externalModules')
   }
   if (marker !== undefined) {
     return value
@@ -704,6 +710,30 @@ function instanceMarkerFrame(
   }
   const children = classType instanceof ClassTypeRef ? [...values, classType] : values
   return new Frame(children, put, () => marker)
+}
+
+/** The module an import answers with, opened by [`prepare`] as a `Module` marker.
+ *  @internal */
+export class HostModuleValue {
+  constructor(
+    readonly name: string,
+    readonly id: string,
+    readonly attrs: Array<[string, unknown]>,
+  ) {}
+}
+
+/** Opens a module's marker: its attrs are walked so wrappers among them register. */
+function moduleFrame(module: HostModuleValue): Frame {
+  const attrs = module.attrs.map(([name]): [string, unknown] => [name, undefined])
+  const marker: Record<string, unknown> = { __monty_type__: 'Module', name: module.name, id: module.id, attrs }
+  const put = (index: number, walked: unknown): void => {
+    attrs[index]![1] = walked
+  }
+  return new Frame(
+    module.attrs.map(([, value]) => value),
+    put,
+    () => marker,
+  )
 }
 
 /**
@@ -779,10 +809,37 @@ function restoreObject(value: object, store: InstanceStore): unknown {
   if (marker === 'Type') {
     return markerToClass(value as Record<string, unknown>, store)
   }
+  if (marker === 'Module') {
+    return markerToModule(value as Record<string, unknown>)
+  }
   if (marker === undefined && isPlainObject(value)) {
     return plainObjectFrame(value as Record<string, unknown>)
   }
   return value
+}
+
+/** Maps an inbound `Module` marker to an `ExternalModule` with the id the module imported with. */
+function markerToModule(marker: Record<string, unknown>): Frame {
+  if (typeof marker.id !== 'string') {
+    throw new TypeError('Module marker id must be a uuid string')
+  }
+  const id = marker.id
+  const names: string[] = []
+  const values: unknown[] = []
+  if (Array.isArray(marker.attrs)) {
+    for (const pair of marker.attrs as unknown[]) {
+      if (Array.isArray(pair) && typeof pair[0] === 'string') {
+        names.push(pair[0])
+        values.push(pair[1])
+      }
+    }
+  }
+  // a null prototype, so an attribute named `__proto__` lands as an own key
+  const attrs: Record<string, unknown> = Object.create(null) as Record<string, unknown>
+  const put = (index: number, walked: unknown): void => {
+    attrs[names[index]!] = walked
+  }
+  return new Frame(values, put, () => new ExternalModule(attrs, { id }))
 }
 
 /** Maps an inbound `ClassInstance` marker to the original instance, or opens
@@ -892,28 +949,6 @@ function classIdFor(classObject: object): string {
     classIds.set(classObject, id)
   }
   return id
-}
-
-/** Generates a canonical lowercase uuid4 string. `getRandomValues` rather than
- *  `randomUUID` so insecure browser contexts work too. */
-function generateUuid(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
-  bytes[6] = (bytes[6] & 0x0f) | 0x40 // version 4
-  bytes[8] = (bytes[8] & 0x3f) | 0x80 // RFC 4122 variant
-  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
-
-/** Canonical 8-4-4-4-12 hex uuid; case-insensitive since `normalizeId` lowercases. */
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/** Validates a caller-supplied wrapper id and lowercases it, so the id the
- *  sandbox reports back (always lowercase) is the key the store holds. */
-function normalizeId(wrapperKind: string, id: string): string {
-  if (typeof id !== 'string' || !UUID_PATTERN.test(id)) {
-    throw new TypeError(`${wrapperKind} id must be a canonical uuid string, got ${JSON.stringify(id)}`)
-  }
-  return id.toLowerCase()
 }
 
 /** Rejects a string policy other than `'all'`: a bare `'greet'` would

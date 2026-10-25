@@ -186,6 +186,22 @@ impl PushValue for u64 {
     }
 }
 
+impl PushValue for u32 {
+    fn push_into(self, graph: &mut MontyGraph) -> NodeId {
+        graph.push(MontyNode::Int(i64::from(self)))
+    }
+}
+
+/// `None` crosses as Python `None`.
+impl<T: PushValue> PushValue for Option<T> {
+    fn push_into(self, graph: &mut MontyGraph) -> NodeId {
+        match self {
+            Some(value) => value.push_into(graph),
+            None => graph.push(MontyNode::None),
+        }
+    }
+}
+
 impl PushValue for bool {
     fn push_into(self, graph: &mut MontyGraph) -> NodeId {
         graph.push(MontyNode::Bool(self))

@@ -1,3 +1,5 @@
+import functools
+
 # A user class implementing the iterator protocol is iterable everywhere:
 # `for`, `list()`, `sum()`, comprehensions, `in`, unpacking and `next()`.
 #
@@ -348,3 +350,82 @@ try:
     assert False, 'expected TypeError for reversed(user iterator)'
 except TypeError as e:
     assert str(e) == "'CD' object is not reversible"
+
+
+# === Class-only lookup and descriptor binding ===
+c = Countdown(2)
+c.__iter__ = lambda: iter([])
+c.__next__ = lambda: 99
+assert iter(c) is c
+assert next(c) == 2
+assert next(c, None) == 1
+assert next(c, None) is None
+
+
+def acquire_partial(prefix, instance):
+    assert prefix == 'iter'
+    return instance
+
+
+def advance_partial(prefix, instance):
+    assert prefix == 'next'
+    return 17
+
+
+class PartialProtocol:
+    __iter__ = functools.partial(acquire_partial, 'iter')
+    __next__ = functools.partial(advance_partial, 'next')
+
+
+partial_protocol = PartialProtocol()
+assert iter(partial_protocol) is partial_protocol
+assert next(partial_protocol) == 17
+assert next(partial_protocol, None) == 17
+
+
+class Delegate:
+    def acquire(self):
+        return iter([23])
+
+    def advance(self):
+        return 29
+
+
+delegate = Delegate()
+
+
+class BoundProtocol:
+    __iter__ = delegate.acquire
+    __next__ = delegate.advance
+
+
+assert list(BoundProtocol()) == [23]
+assert next(BoundProtocol()) == 29
+assert next(BoundProtocol(), None) == 29
+
+
+# === Internal continuations do not expose their locals ===
+class CallerLocals:
+    __next__ = locals
+
+
+def inspect_caller():
+    marker = 42
+    return next(CallerLocals(), None)
+
+
+assert inspect_caller() == {'marker': 42}
+
+
+# === Invalid results are checked by native consumers too ===
+class InvalidResult:
+    def __iter__(self):
+        return []
+
+
+for consume in [iter, list, tuple, sum]:
+    try:
+        consume(InvalidResult())
+        assert False, 'expected invalid iterator rejection'
+    except TypeError as exc:
+        assert str(exc) == "iter() returned non-iterator of type 'list'"

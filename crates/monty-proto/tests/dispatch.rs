@@ -5,13 +5,16 @@
 //! `Child` state machine over the message-based transport without any wasm
 //! toolchain.
 
-use monty::{MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
+use monty::{Dump, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
     FrameReader, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, MONTY_VERSION, MontyObject, NamedValues, PrintWriter, ResourceTracker, unstable};
+use monty_types::{
+    CompileOptions, ExcType, IMPORT_STUBS_CALL_ID, MONTY_VERSION, MontyException, MontyObject, MontyUuid, NamedValues,
+    PrintWriter, ResourceLimits, ResourceTracker, unstable,
+};
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
 fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
@@ -231,12 +234,17 @@ fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: O
 }
 
 fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    feed_with_cwd(child, code, "/")
+}
+
+/// [`feed`] with the wire `cwd`, where `""` keeps the session's working directory.
+fn feed_with_cwd(child: &mut Child, code: &str, cwd: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
         inputs: vec![].into(),
         values: None,
         skip_type_check: false,
-        cwd: "/".to_owned(),
+        cwd: cwd.to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -420,7 +428,7 @@ fn shutdown_request_reports_shutdown() {
 fn load_rejects_old_dump_version() {
     // a real dump rewound to the previous version, so only the version is wrong
     let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
-    let mut state = dump("main.py", None, SessionRef::Idle(&repl)).expect("dumping an idle repl succeeds");
+    let mut state = dump("main.py", None, &[], SessionRef::Idle(&repl)).expect("dumping an idle repl succeeds");
     state[6..8].copy_from_slice(&(MIN_SUPPORTED_DUMP_VERSION - 1).to_le_bytes());
 
     let mut child = Child::default();
@@ -456,7 +464,7 @@ fn load_re_announces_deep_suspension_args() {
         matches!(progress, ReplProgress::FunctionCall(_)),
         "expected a FunctionCall suspension"
     );
-    let state = dump("main.py", None, SessionRef::Suspended(&progress)).expect("suspended dump");
+    let state = dump("main.py", None, &[], SessionRef::Suspended(&progress)).expect("suspended dump");
 
     let mut child = Child::default();
     create_repl(&mut child);
@@ -470,6 +478,63 @@ fn load_re_announces_deep_suspension_args() {
     assert_eq!(call.function_name, "f");
     // the empty innermost list, 100 wrappers, and nothing else
     assert_eq!(call.values.0.len(), 101);
+}
+
+/// Restore caps both idle and suspended trackers before reporting the session budget.
+#[test]
+fn restore_caps_idle_and_suspended_resource_limits() {
+    for suspended in [false, true] {
+        let repl = MontyRepl::new(
+            "saved.py",
+            ResourceTracker::new(
+                ResourceLimits::default()
+                    .max_memory(64 * 1024 * 1024)
+                    .max_suspensions(20),
+            ),
+            CompileOptions::default(),
+        );
+        let progress = repl
+            .feed_start(
+                if suspended { "x = 42\nf(x)" } else { "x = 42" },
+                vec![("f".to_owned(), MontyObject::function("f".to_owned(), None))],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        let session = match &progress {
+            ReplProgress::Complete { repl, .. } => SessionRef::Idle(repl),
+            progress => SessionRef::Suspended(progress),
+        };
+        let state = dump("saved.py", None, &[], session).unwrap();
+        let mut child = Child::default();
+        let configure = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+            protocol_version: PROTOCOL_VERSION,
+            monty_version: MONTY_VERSION.to_owned(),
+            limits: Some(
+                (&ResourceLimits::default()
+                    .max_memory(10 * 1024 * 1024)
+                    .max_suspensions(3))
+                    .into(),
+            ),
+            ..Default::default()
+        }));
+        dispatch_frame(&mut child, &configure);
+        let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
+        let (bytes, outcome) = dispatch_frame(&mut child, &request);
+        assert_eq!(outcome, HandleOutcome::Continue);
+        let events = decode_full_events(&bytes);
+        assert_eq!(child.session_budget().max_memory, Some(10 * 1024 * 1024));
+        assert_eq!(child.session_budget().max_suspensions, Some(3));
+        assert_eq!(events.last().unwrap().max_suspensions, Some(3));
+        assert_eq!(events.last().unwrap().restored_script_name.as_deref(), Some("saved.py"));
+        if suspended {
+            assert!(matches!(
+                events.last().unwrap().kind,
+                Some(pb::child_event::Kind::FunctionCall(_))
+            ));
+        } else {
+            assert_eq!(expect_complete(feed(&mut child, "x").1), MontyObject::int(42));
+        }
+    }
 }
 
 /// Decodes complete events, including their session budget fields.
@@ -576,4 +641,372 @@ fn turn_events_carry_the_suspension_budget() {
     let events = decode_full_events(&bytes);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].max_suspensions, Some(3));
+}
+
+// ---------------------------------------------------------------------------
+// Host modules: `import` and `import_stubs`
+// ---------------------------------------------------------------------------
+
+fn configure(child: &mut Child, type_check: bool) {
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: "main.py".to_owned(),
+        type_check,
+        type_check_format: pb::TypeCheckFormat::Concise.into(),
+        monty_version: MONTY_VERSION.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        ..Default::default()
+    }));
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+}
+
+fn expect_error_message(event: pb::child_event::Kind) -> String {
+    let pb::child_event::Kind::Error(error) = event else {
+        panic!("expected an Error event, got {event:?}");
+    };
+    error.exception.unwrap().message.unwrap()
+}
+
+fn expect_typing_error(event: pb::child_event::Kind) -> String {
+    let pb::child_event::Kind::TypingError(typing) = event else {
+        panic!("expected a TypingError event, got {event:?}");
+    };
+    typing.diagnostics
+}
+
+fn expect_import_stubs(event: pb::child_event::Kind, position: (&str, u32, u32)) -> Vec<String> {
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected an import_stubs ask, got {event:?}");
+    };
+    assert_eq!(call.call_id, IMPORT_STUBS_CALL_ID);
+    assert!(!call.allow_eager_await);
+    let range = call.position.expect("the ask names the first import");
+    assert_eq!((range.filename.as_str(), range.start, range.end), position);
+    let Some(pb::os_call::Call::ImportStubs(ask)) = call.call else {
+        panic!("expected an import_stubs ask, got {:?}", call.call);
+    };
+    ask.modules.into_iter().collect()
+}
+
+fn expect_import(event: pb::child_event::Kind) -> String {
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected an import, got {event:?}");
+    };
+    let Some(pb::os_call::Call::Import(import)) = call.call else {
+        panic!("expected an import, got {:?}", call.call);
+    };
+    import.module
+}
+
+fn answer_stubs(
+    child: &mut Child,
+    result: pb::ext_function_result::Kind,
+    values: Option<WireArena>,
+) -> pb::child_event::Kind {
+    let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        call_id: IMPORT_STUBS_CALL_ID,
+        result: Some(pb::ExtFunctionResult { kind: Some(result) }),
+        values,
+    }));
+    let (bytes, _) = dispatch_frame(child, &request);
+    split_turn(&bytes).1
+}
+
+fn answer_stubs_with(child: &mut Child, stubs: &[(&str, Option<&str>)]) -> pb::child_event::Kind {
+    let answer = MontyObject::dict(stubs.iter().map(|(module, source)| {
+        (
+            MontyObject::string(*module),
+            source.map_or_else(MontyObject::none, MontyObject::string),
+        )
+    }));
+    let (graph, root) = unstable::into_graph_parts(answer);
+    answer_stubs(
+        child,
+        pb::ext_function_result::Kind::ReturnValue(root.0),
+        Some(WireArena::new(graph)),
+    )
+}
+
+/// The request names the first import; dotted answer keys define package stubs.
+#[test]
+fn a_type_checked_feed_asks_for_module_stubs_once() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let (_, event) = feed(
+        &mut child,
+        "x = 1\nimport tools\nfrom tools.sub import add, VERSION\nadd('x', 2)",
+    );
+    assert_eq!(
+        expect_import_stubs(event, ("<python-input-0>", 6, 18)),
+        vec!["tools".to_owned()]
+    );
+    let event = answer_stubs_with(
+        &mut child,
+        &[
+            ("tools", Some("x: int\n")),
+            ("tools.sub", Some("VERSION: int\ndef add(a: int, b: int) -> int: ...\n")),
+        ],
+    );
+    insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:4:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+    // the stubs are kept, so the retry asks nothing and the import suspends
+    let (_, event) = feed(&mut child, "import tools\ntools.x");
+    assert_eq!(expect_import(event), "tools");
+}
+
+/// Missing stubs leave imports unresolved for the rest of the session.
+#[test]
+fn a_module_without_a_stub_is_asked_for_once() {
+    for answer in [
+        None,
+        Some(pb::ext_function_result::Kind::NotFound("import_stubs".to_owned())),
+        Some(pb::ext_function_result::Kind::NotHandled(pb::Unit {})),
+    ] {
+        let mut child = Child::default();
+        configure(&mut child, true);
+        let (_, event) = feed(&mut child, "import tools, other");
+        assert_eq!(
+            expect_import_stubs(event, ("<python-input-0>", 0, 19)),
+            vec!["tools".to_owned(), "other".to_owned()]
+        );
+        let event = match answer {
+            None => answer_stubs_with(&mut child, &[("tools", None)]),
+            Some(kind) => answer_stubs(&mut child, kind, None),
+        };
+        assert_eq!(
+            expect_typing_error(event),
+            "main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`\n\
+             main.py:1:15: error[unresolved-import] Cannot resolve imported module `other`\n"
+        );
+        let (_, event) = feed(&mut child, "import tools");
+        assert_eq!(
+            expect_typing_error(event),
+            "main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`\n"
+        );
+    }
+}
+
+/// Built-in and checker-provided modules need no host stubs; unchecked feeds request none.
+#[test]
+fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let (_, event) = feed(&mut child, "import json, abc\nimport tools");
+    assert_eq!(
+        expect_import_stubs(event, ("<python-input-0>", 17, 29)),
+        vec!["tools".to_owned()]
+    );
+    let event = answer_stubs_with(&mut child, &[("tools", Some(""))]);
+    assert_eq!(expect_import(event), "abc");
+
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: "import tools".to_owned(),
+        inputs: vec![].into(),
+        values: None,
+        skip_type_check: true,
+        cwd: String::new(),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_import(split_turn(&bytes).1), "tools");
+
+    let mut child = Child::default();
+    configure(&mut child, false);
+    let (_, event) = feed(&mut child, "import tools");
+    assert_eq!(expect_import(event), "tools");
+}
+
+/// The parent counts a sent directory as adopted, so the worker must switch
+/// before the stubs ask, even when the resumed check then rejects the feed.
+#[test]
+fn a_directory_switch_survives_a_typing_rejection_after_the_stubs_ask() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let (_, event) = feed_with_cwd(&mut child, "import tools\ntools.add('x', 2)", "/work");
+    assert_eq!(
+        expect_import_stubs(event, ("<python-input-0>", 0, 12)),
+        vec!["tools".to_owned()]
+    );
+    let event = answer_stubs_with(&mut child, &[("tools", Some("def add(a: int, b: int) -> int: ...\n"))]);
+    insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+    let (_, event) = feed_with_cwd(&mut child, "import os\nos.getcwd()", "");
+    assert_eq!(expect_complete(event), MontyObject::string("/work"));
+}
+
+/// Malformed answers leave the request pending; exception answers end it before execution.
+#[test]
+fn a_bad_stubs_answer_is_refused_and_an_exception_ends_the_feed() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let (_, event) = feed(&mut child, "import tools");
+    assert_eq!(
+        expect_import_stubs(event, ("<python-input-0>", 0, 12)),
+        vec!["tools".to_owned()]
+    );
+    let (graph, root) = unstable::into_graph_parts(MontyObject::int(1));
+    let event = answer_stubs(
+        &mut child,
+        pb::ext_function_result::Kind::ReturnValue(root.0),
+        Some(WireArena::new(graph)),
+    );
+    insta::assert_snapshot!(expect_error_message(event), @"protocol violation: import_stubs must be answered with a dict of module to stub source");
+    let event = answer_stubs_with(&mut child, &[("other", Some(""))]);
+    insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: import_stubs answered for "other", which was not asked for"#);
+    let event = answer_stubs_with(&mut child, &[("tools.1sub", Some(""))]);
+    insta::assert_snapshot!(expect_error_message(event), @r#"protocol violation: import_stubs: module name "tools.1sub" is not a valid identifier"#);
+    let event = answer_stubs(
+        &mut child,
+        pb::ext_function_result::Kind::Future(IMPORT_STUBS_CALL_ID),
+        None,
+    );
+    insta::assert_snapshot!(expect_error_message(event), @"protocol violation: import_stubs cannot be answered with a future");
+    // a dump cannot carry the held feed
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    insta::assert_snapshot!(expect_error_message(split_turn(&bytes).1), @"cannot dump while a feed awaits its module stubs");
+    let boom = MontyException::new(ExcType::ImportError, Some("boom".to_owned()));
+    let event = answer_stubs(&mut child, pb::ext_function_result::Kind::Error((&boom).into()), None);
+    insta::assert_snapshot!(expect_error_message(event), @"boom");
+    // the session is ready, and the feed never became type-check context
+    let (_, event) = feed(&mut child, "import tools");
+    assert_eq!(
+        expect_import_stubs(event, ("<python-input-0>", 0, 12)),
+        vec!["tools".to_owned()]
+    );
+}
+
+#[test]
+fn abort_during_the_stubs_ask_ends_the_feed() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let (_, event) = feed(&mut child, "import tools");
+    assert_eq!(
+        expect_import_stubs(event, ("<python-input-0>", 0, 12)),
+        vec!["tools".to_owned()]
+    );
+    let stop = MontyException::new(ExcType::RuntimeError, Some("stopped".to_owned()));
+    let request = frame_request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+        exception: Some((&stop).into()),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    insta::assert_snapshot!(expect_error_message(split_turn(&bytes).1), @"stopped");
+    let (_, event) = feed(&mut child, "1 + 1");
+    assert_eq!(expect_complete(event), MontyObject::int(2));
+}
+
+/// Restoring a suspended import re-announces it and accepts a module value.
+#[test]
+fn load_restores_a_suspended_import() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let (_, event) = feed(&mut child, "import tools\ntools.x");
+    assert_eq!(expect_import(event), "tools");
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: result.state }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::OsCall(call) = split_turn(&bytes).1 else {
+        panic!("expected the re-announced import");
+    };
+    let call_id = call.call_id;
+    assert!(matches!(call.call, Some(pb::os_call::Call::Import(pb::os_call::Import { module })) if module == "tools"));
+
+    let tools = MontyObject::class_instance(
+        MontyObject::class_type("tools", MontyUuid::from_u128(1), true, true, []),
+        MontyUuid::from_u128(2),
+        [(MontyObject::string("x"), MontyObject::int(41))],
+    );
+    // post-order: the root is the last node, not index 0
+    let (graph, root) = unstable::into_graph_parts(tools);
+    let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        call_id,
+        result: Some(pb::ExtFunctionResult {
+            kind: Some(pb::ext_function_result::Kind::ReturnValue(root.0)),
+        }),
+        values: Some(WireArena::new(graph)),
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(41));
+}
+
+/// Dumps preserve both received stubs and modules answered without stubs.
+#[test]
+fn load_restores_the_received_module_stubs() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let (_, event) = feed(&mut child, "import tools, other");
+    assert_eq!(
+        expect_import_stubs(event, ("<python-input-0>", 0, 19)),
+        vec!["tools".to_owned(), "other".to_owned()]
+    );
+    let event = answer_stubs_with(&mut child, &[("tools", Some("x: int\n"))]);
+    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:15: error[unresolved-import] Cannot resolve imported module `other`");
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: result.state }));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+    let (_, event) = feed(&mut child, "import other");
+    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `other`");
+    let (_, event) = feed(&mut child, "import tools\ntools.x");
+    assert_eq!(expect_import(event), "tools");
+}
+
+/// Deduplication bounds the prelude across repeated feeds while preserving import order.
+#[test]
+fn a_repeated_import_is_carried_once() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    for code in ["import math", "import math\nimport json", "import math"] {
+        let (_, event) = feed(&mut child, code);
+        assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    }
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+    let state = Dump::load(&result.state.into_inner()).expect("a dump this build wrote loads");
+    assert_eq!(
+        state.type_check.unwrap().committed_imports,
+        "import json\nimport math\n"
+    );
+}
+
+/// The latest import binding determines the type seen by later feeds.
+#[test]
+fn a_repeated_import_rebinds_its_name() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    for code in ["import math as m", "import json as m", "import math as m"] {
+        let (_, event) = feed(&mut child, code);
+        assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    }
+    let (_, event) = feed(&mut child, "m.sqrt(4)");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    let (_, event) = feed(&mut child, "m.loads('4')");
+    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:1: error[unresolved-attribute] Module `math` has no member `loads`");
+}
+
+#[test]
+fn a_committed_import_carries_into_the_next_feed() {
+    let mut child = Child::default();
+    configure(&mut child, true);
+    let (_, event) = feed(&mut child, "import math as m");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
+    let (_, event) = feed(&mut child, "m.sqrt('4')");
+    insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:1:8: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
 }

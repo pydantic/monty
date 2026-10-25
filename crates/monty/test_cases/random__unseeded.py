@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # Unseeded `random`: the generator seeds itself from OS entropy (on the first
 # draw in Monty, at import in CPython), so only invariants can be asserted here.
 import random

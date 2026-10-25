@@ -54,7 +54,7 @@ Building to a payoff is an essay move. Docs do not need one.
 "dramatically". Replace with a number, a mechanism, or nothing.
 
 - ✗ "Overlays are capped at a reasonable size."
-- ✓ "`memory_usage_limit` caps retained overlay data at 100 MB by default;
+- ✓ "`memory_usage_limit` caps retained overlay data at `DEFAULT_MEMORY_USAGE_LIMIT` bytes by default;
     exceeding it raises `MemoryError` in the sandbox."
 
 ### Restating what the reader can see

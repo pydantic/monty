@@ -901,7 +901,8 @@ async def test_async_resume_auto_name_lookup():
             assert done.output == snapshot(42)
 
 
-async def test_async_restored_future_snapshot_resume_auto_errors():
+@pytest.mark.parametrize('restore', [False, True])
+async def test_async_future_snapshot_resume_auto_rejection_preserves_manual_resume(restore: bool):
     # a restored FutureSnapshot's coroutines lived in the previous process, so
     # resume_auto has nothing to await and errors — resolve it manually instead
     code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
@@ -914,8 +915,78 @@ async def test_async_restored_future_snapshot_resume_auto_errors():
             blob = fut.dump()
 
         async with pool.checkout() as session:
-            loaded = await session.load_snapshot(blob)
+            if restore:
+                loaded = await session.load_snapshot(blob)
+            else:
+                snap = await session.feed_start(code)
+                assert isinstance(snap, AsyncFunctionSnapshot)
+                loaded = await snap.resume({'future': ...})
             assert isinstance(loaded, AsyncFutureSnapshot)
+            (call_id,) = loaded.pending_call_ids
+            retry_blob = loaded.dump()
+            for _ in range(2):
+                with pytest.raises(RuntimeError) as exc_info:
+                    await loaded.resume_auto()
+                assert str(exc_info.value) == snapshot('No pending async tasks but ResolveFutures requested')
+                retry_blob = loaded.dump()
+
+            # Claiming manual resume takes effect before awaiting its result.
+            pending = loaded.resume({call_id: {'return_value': 40}})
             with pytest.raises(RuntimeError) as exc_info:
                 await loaded.resume_auto()
-            assert str(exc_info.value) == snapshot('No pending async tasks but ResolveFutures requested')
+            assert str(exc_info.value) == snapshot('snapshot has already been resumed')
+            done = await pending
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot(40)
+            with pytest.raises(RuntimeError) as exc_info:
+                await loaded.resume({call_id: {'return_value': 41}})
+            assert str(exc_info.value) == snapshot('snapshot has already been resumed')
+            with pytest.raises(RuntimeError) as exc_info:
+                loaded.dump()
+            assert str(exc_info.value) == snapshot('cannot dump a snapshot that has already been resumed')
+            assert await session.feed_run('1 + 1') == snapshot(2)
+
+        async with pool.checkout() as session:
+            retry = await session.load_snapshot(retry_blob)
+            assert isinstance(retry, AsyncFutureSnapshot)
+            done = await retry.resume({call_id: {'return_value': 42}})
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot(42)
+
+
+@pytest.mark.parametrize('competing_auto', [False, True])
+async def test_async_future_snapshot_resume_auto_claims_once(competing_auto: bool):
+    release = asyncio.Event()
+    calls: list[int] = []
+
+    async def go(n: int) -> int:
+        calls.append(n)
+        await release.wait()
+        return n * 10
+
+    code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(1), go(2))\nasyncio.run(main())'
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code, external_lookup={'go': go})
+            while isinstance(snap, AsyncFunctionSnapshot):
+                snap = await asyncio.wait_for(snap.resume_auto(), timeout=10)
+            assert isinstance(snap, AsyncFutureSnapshot)
+            pending = snap.resume_auto()
+            try:
+                with pytest.raises(RuntimeError) as exc_info:
+                    if competing_auto:
+                        await asyncio.wait_for(snap.resume_auto(), timeout=10)
+                    else:
+                        await asyncio.wait_for(
+                            snap.resume({snap.pending_call_ids[0]: {'return_value': 99}}), timeout=10
+                        )
+                assert str(exc_info.value) == snapshot('snapshot has already been resumed')
+            finally:
+                release.set()
+            result = await asyncio.wait_for(pending, timeout=10)
+            while isinstance(result, AsyncFutureSnapshot):
+                result = await asyncio.wait_for(result.resume_auto(), timeout=10)
+            assert isinstance(result, MontyComplete)
+            assert result.output == snapshot([10, 20])
+            assert sorted(calls) == snapshot([1, 2])
+            assert await session.feed_run('1 + 1') == snapshot(2)

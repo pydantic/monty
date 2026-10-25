@@ -139,7 +139,7 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 pub(super) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let args = args.reject_kwargs("math.fsum", vm.heap)?;
     let iterable = args.get_one_arg("math.fsum", vm.heap)?;
-    let iterator = iterable.into_py_iter(vm)?;
+    let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
     let mut partials = SmallVec::<[f64; 32]>::new();
@@ -234,7 +234,7 @@ pub(super) fn prod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let mut result = DropGuard::new(start, vm);
     {
         let (total, vm) = result.as_parts_mut();
-        let iterator = iterable.into_py_iter(vm)?;
+        let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         let mut iterator = iterator.read(vm);
         while let Some(item) = iterator.py_next(vm)? {
@@ -293,9 +293,9 @@ pub(super) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let SumprodArgs { p, q } = SumprodArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     defer_drop!(q, vm);
-    let p = p.py_iter(vm)?;
+    let p = p.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(p, vm);
-    let q = q.py_iter(vm)?;
+    let q = q.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(q, vm);
     let mut p = p.read(vm);
     let mut q = q.read(vm);

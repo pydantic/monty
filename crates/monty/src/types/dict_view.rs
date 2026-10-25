@@ -173,13 +173,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
         Type::DictKeys
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let dict_id = self.get(vm.heap).dict_id();
-        Ok(DictKeyIterator::allocate(
+        Ok(CallResult::Value(DictKeyIterator::allocate(
             dict_id,
             self.get(vm.heap).dict(vm.heap).len(),
             vm,
-        ))
+        )))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -455,13 +455,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
         Type::DictItems
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let dict_id = self.get(vm.heap).dict_id();
-        Ok(DictItemIterator::allocate(
+        Ok(CallResult::Value(DictItemIterator::allocate(
             dict_id,
             self.get(vm.heap).dict(vm.heap).len(),
             vm,
-        ))
+        )))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -605,13 +605,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictValuesView> {
         Type::DictValues
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let dict_id = self.get(vm.heap).dict_id();
-        Ok(DictValueIterator::allocate(
+        Ok(CallResult::Value(DictValueIterator::allocate(
             dict_id,
             self.get(vm.heap).dict(vm.heap).len(),
             vm,
-        ))
+        )))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -828,7 +828,7 @@ fn apply_dict_view_sub(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> 
 /// binary operators and `isdisjoint(...)` consistent with each other.
 pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<Set, RunError> {
     defer_drop!(value, vm);
-    let iter = value.py_iter(vm)?;
+    let iter = value.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
     let cap = checked_preallocation_hint(iter.iter_size_hint(vm), mem::size_of::<Value>() * 2, &vm.heap.tracker)?;

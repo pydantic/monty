@@ -15,7 +15,7 @@ impl VM<'_> {
     /// Shared by fused asserts and comparison helpers that need truth rather
     /// than the arbitrary value a direct `==` expression may produce.
     #[inline]
-    pub(super) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+    pub(crate) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
         match op {
             CmpOperator::Eq | CmpOperator::NotEq => {
                 let result = lhs.py_rich_eq(rhs, self)?;
@@ -72,6 +72,20 @@ impl VM<'_> {
         if let Some(result) = lhs.py_cmp_op(rhs, op, self)? {
             return Ok(result);
         }
+
+        // The right operand may handle a comparison the left declines:
+        // dict_keys <= set is answered by set >= dict_keys.
+        let reflected_op = match op {
+            CmpOperator::Lt => CmpOperator::Gt,
+            CmpOperator::LtE => CmpOperator::GtE,
+            CmpOperator::Gt => CmpOperator::Lt,
+            CmpOperator::GtE => CmpOperator::LtE,
+            _ => unreachable!("cmp_ordering reached with a non-ordering operator"),
+        };
+        if let Some(result) = rhs.py_cmp_op(lhs, reflected_op, self)? {
+            return Ok(result);
+        }
+
         match lhs.py_cmp(rhs, self)? {
             CmpOrder::Ordered(ordering) => Ok(match op {
                 CmpOperator::Lt => ordering.is_lt(),

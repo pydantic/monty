@@ -1,7 +1,7 @@
 // An elastic pool of real workers sharing the native pool's checkout and shutdown contract.
 
 import { validateMaxCheckouts } from '../options.js'
-import { MontySession } from '../session.js'
+import { HostModules, MontySession } from '../session.js'
 import { deadlineTimer, timeoutOption, type DeadlineTimer } from './deadline.js'
 import type { Dispatcher } from './host.js'
 import { WorkerTransport, prepareSession, type WorkerSessionConfig, type DurationGraces } from './transport.js'
@@ -89,6 +89,7 @@ export class WorkerPool {
   async checkout(config: WorkerSessionConfig = {}): Promise<MontySession> {
     if (this.closed) throw closedError()
     const configuration = prepareSession(config)
+    const modules = new HostModules(config.externalModules)
     const slot = await this.acquire()
     if (this.closed) {
       await this.discard(slot)
@@ -108,7 +109,7 @@ export class WorkerPool {
       throw closedError()
     }
     transport.onFinish = (reusable) => this.release(slot, reusable)
-    return new MontySession(transport as unknown as SessionNative)
+    return new MontySession(transport as unknown as SessionNative, modules)
   }
 
   /** Rejects new/waiting checkouts and reaps idle workers; active sessions retain their workers. */
@@ -164,7 +165,7 @@ export class WorkerPool {
         waiter.timer = deadlineTimer(this.options.checkoutTimeoutMs, () => {
           const index = this.waiters.indexOf(waiter)
           if (index >= 0) this.waiters.splice(index, 1)
-          reject(new Error('no monty worker became available within the checkout timeout'))
+          reject(new DOMException('no monty worker became available within the checkout timeout', 'TimeoutError'))
         })
       }
       this.waiters.push(waiter)

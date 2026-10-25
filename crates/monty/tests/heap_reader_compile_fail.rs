@@ -2,7 +2,7 @@
 //!
 //! Each test invokes `cargo rustc` with specific `cfg` flags that enable known-bad code
 //! inside `crates/monty/tests/heap_reader_compile_fail_cases/cases.rs`, then asserts that
-//! compilation fails with the expected borrow-checker error stored in a `.stderr` file.
+//! compilation fails with the expected borrow-checker error stored in an `insta` snapshot.
 //!
 //! Using `cargo rustc -p monty` instead of `cargo check` with `RUSTFLAGS` ensures the cfg
 //! flags are only passed to the monty crate itself, not to its dependencies. This avoids
@@ -18,11 +18,8 @@
 //! ## Updating expected output
 //!
 //! When the compiler output changes (e.g., after modifying the test cases or upgrading rustc),
-//! run with `UPDATE_EXPECT=1` to overwrite the `.stderr` files with the actual output:
-//!
-//! ```sh
-//! UPDATE_EXPECT=1 cargo test -p monty --test heap_reader_compile_fail
-//! ```
+//! run `INSTA_UPDATE=always cargo test -p monty --test heap_reader_compile_fail`
+//! and review the updated external snapshots.
 
 // Gated to the default feature config, and off Windows.
 //
@@ -30,27 +27,22 @@
 // features of the crate under test, so `memory-model-checks` and
 // `ref-count-return` produce byte-identical diagnostics — they only repeat the
 // cost. That cost is not small: each case compiles `monty` under a different
-// `--cfg`, so the seven of them evict each other from the shared target dir and
-// re-run the whole set (~50s, ~65s cold). CI runs all three configs, so without
-// this gate it pays for the same seven compilations three times.
+// `--cfg`, so they evict each other from the shared target dir and re-run the
+// whole set. CI runs all three configs, so without this gate it pays for the
+// same compilations three times.
 //
 // Windows is excluded because rustc writes backslashes in diagnostic paths
-// (`crates\monty\src\..`) while the `.stderr` files use forward slashes. The
+// (`crates\monty\src\..`) while the snapshots use forward slashes. The
 // borrow-checker guarantees under test are platform-independent.
 #![cfg(not(any(target_os = "windows", feature = "memory-model-checks", feature = "ref-count-return")))]
 
 use std::{
-    env, fs,
+    env,
     path::{Path, PathBuf},
     process::Command,
 };
 
-/// Directory containing the compile-fail test cases and `.stderr` expectation files.
-fn cases_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("heap_reader_compile_fail_cases")
-}
+use insta::assert_snapshot;
 
 /// Dedicated target directory for the `cargo rustc` invocations below.
 ///
@@ -92,16 +84,13 @@ fn normalize_stderr(stderr: &str) -> String {
 
 /// Runs `cargo rustc -p monty` with the given cfg flag and asserts that:
 /// 1. Compilation fails (non-zero exit code)
-/// 2. The normalized error output matches the corresponding `.stderr` file
+/// 2. The normalized error output matches the corresponding snapshot
 ///
 /// Using `cargo rustc --profile=check` instead of `cargo check` with `RUSTFLAGS` passes
 /// the cfg flags only to the monty crate, so dependencies are compiled once and cached
 /// across test runs.
-///
-/// When `UPDATE_EXPECT=1` is set, overwrites the `.stderr` file instead of asserting.
 fn check_compile_fail(test_name: &str) {
     let test_cfg = format!("heap_reader_compile_fail_test_{test_name}");
-    let stderr_path = cases_dir().join(format!("{test_name}.stderr"));
 
     let target_dir = isolated_target_dir();
     let output = Command::new(env!("CARGO"))
@@ -129,23 +118,7 @@ fn check_compile_fail(test_name: &str) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let actual = normalize_stderr(&stderr);
 
-    if env::var("UPDATE_EXPECT").is_ok() {
-        fs::write(&stderr_path, format!("{actual}\n"))
-            .unwrap_or_else(|e| panic!("failed to write {}: {e}", stderr_path.display()));
-        eprintln!("updated {}", stderr_path.display());
-        return;
-    }
-
-    let expected = fs::read_to_string(&stderr_path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", stderr_path.display()))
-        .trim()
-        .to_owned();
-
-    assert!(
-        actual == expected,
-        "{test_name}: stderr mismatch (run with UPDATE_EXPECT=1 to update)\n\n--- expected ({}) ---\n{expected}\n\n--- actual ---\n{actual}\n",
-        stderr_path.display(),
-    );
+    assert_snapshot!(test_name, actual);
 }
 
 #[test]
@@ -181,4 +154,106 @@ fn smuggle_vm() {
 #[test]
 fn smuggle_and_swap_reader() {
     check_compile_fail("smuggle_and_swap_reader");
+}
+
+/// Protected shared access cannot outlive its source, even after deref coercion.
+#[test]
+fn protected_get_escape() {
+    check_compile_fail("protected_get_escape");
+}
+
+/// Shared access through a mutable wrapper preserves the source lifetime.
+#[test]
+fn protected_mut_get_escape() {
+    check_compile_fail("protected_mut_get_escape");
+}
+
+/// Protected mutable access cannot outlive its source, even after deref coercion.
+#[test]
+fn protected_get_mut_escape() {
+    check_compile_fail("protected_get_mut_escape");
+}
+
+/// Protected shared access keeps the source immutably borrowed.
+#[test]
+fn protected_get_alias() {
+    check_compile_fail("protected_get_alias");
+}
+
+/// Shared access through a mutable wrapper keeps the source borrowed.
+#[test]
+fn protected_mut_get_alias() {
+    check_compile_fail("protected_mut_get_alias");
+}
+
+/// Protected mutable access keeps the source exclusively borrowed.
+#[test]
+fn protected_get_mut_alias() {
+    check_compile_fail("protected_get_mut_alias");
+}
+
+/// Field projections preserve the original source's lifetime.
+#[test]
+fn projected_get_escape() {
+    check_compile_fail("projected_get_escape");
+}
+
+/// Slice projections preserve the vector's lifetime.
+#[test]
+fn slice_get_escape() {
+    check_compile_fail("slice_get_escape");
+}
+
+/// Box projections preserve the allocation's lifetime.
+#[test]
+fn box_get_escape() {
+    check_compile_fail("box_get_escape");
+}
+
+/// Mutable capabilities cannot be swapped independently of their owners.
+#[test]
+fn mutable_inner_swap() {
+    check_compile_fail("mutable_inner_swap");
+}
+
+/// Read-only capabilities cannot be swapped independently of their owners.
+#[test]
+fn shared_inner_swap() {
+    check_compile_fail("shared_inner_swap");
+}
+
+/// Counted and uncounted capabilities cannot be exchanged.
+#[test]
+fn counted_inner_swap() {
+    check_compile_fail("counted_inner_swap");
+}
+
+/// Shared source borrows expose no mutable capability.
+#[test]
+fn readonly_mutation() {
+    check_compile_fail("readonly_mutation");
+}
+
+/// Field projection cannot upgrade a read-only capability.
+#[test]
+fn readonly_mutable_projection() {
+    check_compile_fail("readonly_mutable_projection");
+}
+
+/// Capability aliases cannot overlap their payload borrows.
+#[test]
+fn aliased_payload_borrows() {
+    check_compile_fail("aliased_payload_borrows");
+}
+
+/// Mutable field projections preserve their source lifetime.
+#[test]
+fn projected_get_mut_escape() {
+    check_compile_fail("projected_get_mut_escape");
+}
+
+/// A live projected reference excludes parent mutation.
+#[test]
+fn projection_live_borrow() {
+    check_compile_fail("projection_live_borrow");
 }

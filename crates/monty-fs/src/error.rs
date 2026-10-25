@@ -91,6 +91,10 @@ pub enum MountError {
     /// An operation would exceed the mount's aggregate memory budget.
     /// The configured byte limit that was exceeded.
     MemoryUsageLimitExceeded(u64),
+
+    /// A directory scan examined more entries than its cap (the payload),
+    /// which a glob pattern can multiply far beyond the size of the tree.
+    ScanLimitExceeded(u64),
 }
 
 impl MountError {
@@ -199,6 +203,12 @@ impl MountError {
                     format_bytes_pretty(limit)
                 )),
             ),
+            // Not an `OSError`: glob swallows those, and the caller must learn
+            // that the result was cut short rather than see an empty match.
+            Self::ScanLimitExceeded(limit) => MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!("directory scan examined more than {limit} entries")),
+            ),
         }
     }
 
@@ -247,6 +257,7 @@ impl fmt::Display for MountError {
                     format_bytes_pretty(*limit)
                 )
             }
+            Self::ScanLimitExceeded(limit) => write!(f, "directory scan examined more than {limit} entries"),
         }
     }
 }

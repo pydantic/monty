@@ -818,6 +818,32 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
         Some(Call::AsyncSleep(s)) => os_call!("async_sleep", args.delay = s.delay),
         Some(Call::SystemSleep(s)) => os_call!("system_sleep", args.seconds = s.seconds),
         Some(Call::AsyncSystemSleep(s)) => os_call!("async_system_sleep", args.delay = s.delay),
+        Some(Call::Import(i)) => os_call!("import", args.module = string_arg!(&i.module)),
+        Some(Call::ImportStubs(i)) => {
+            let (modules, cut) = render_str_list(&i.modules);
+            args_cut |= cut;
+            os_call!("import_stubs", args.modules = modules)
+        }
+        // the pattern is recorded joined, as the user wrote it, built only up to the cap
+        Some(Call::Scan(s)) => os_call!(
+            "scan",
+            args.path = string_arg!(&s.path),
+            args.max_depth = s.max_depth,
+            args.follow_symlinks = s.follow_symlinks,
+            args.pattern = (!s.pattern.is_empty()).then(|| {
+                let (joined, cut) = capped_text(|text| {
+                    for (index, part) in s.pattern.iter().enumerate() {
+                        if index > 0 {
+                            text.write_str("/")?;
+                        }
+                        text.write_str(part)?;
+                    }
+                    Ok(())
+                });
+                args_cut |= cut;
+                joined
+            })
+        ),
         None => os_call!(MISSING),
     });
     if args_cut {

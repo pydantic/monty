@@ -321,7 +321,7 @@ assert with_nested() == 'nested'
 
 
 # === Decorated async functions define and bind like any other ===
-# Awaiting one is covered by decorator__function_async.py, which needs `# run-async`.
+# Awaiting one is covered by decorator__function_async.py, which needs `run-async`.
 @replace_with_number
 async def async_replaced():
     return 'never runs'

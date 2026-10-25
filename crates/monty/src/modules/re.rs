@@ -45,7 +45,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         BoundedCompileError, Module, RePattern, Type,
-        re_pattern::{extract_count, extract_maxsplit},
+        re_pattern::{extract_count, extract_maxsplit, translate_replacement},
         str::allocate_string,
     },
     value::Value,
@@ -280,17 +280,17 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let count = extract_count(count.take(), vm)?;
 
-    // Check that repl is a string — callable replacement is not supported.
-    // CPython processes the replacement template *before* its match loop, so
-    // this check must precede the negative-count early return below: a bad
-    // repl raises even when zero substitutions will run.
-    if !repl.is_str(vm.heap) {
+    // CPython parses the replacement template before its match loop, so a bad
+    // replacement raises even when a negative count skips matching.
+    let Ok(repl) = repl.to_str(vm) else {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
-    }
+    };
 
     let Some(count) = count else {
+        // Reject out-of-range octal escapes even when the negative count skips matching.
+        translate_replacement(repl)?;
         // Negative count — re.sub returns the input string unchanged.
         // CPython still type-checks the subject before its (empty) match
         // loop, so validate first, then just bump the refcount; no need to
@@ -302,7 +302,7 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     resolved
         .get(vm.heap)
-        .sub(repl.to_str(vm)?, subject_str(string, vm)?, count, vm.heap)
+        .sub(repl, subject_str(string, vm)?, count, vm.heap)
 }
 
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split on pattern occurrences.

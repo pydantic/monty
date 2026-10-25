@@ -1,16 +1,111 @@
-//! Tests for `PrintWriter::CollectString` — the output capture mode used by
-//! hosts that need to intercept `print()` rather than pass it through to
-//! stdout.
-//!
-//! Expected output is asserted via [`insta::assert_snapshot!`] with inline
-//! snapshots — multi-line print output renders naturally in the snapshot
-//! literal, which is substantially clearer than an escaped `"a\nb\n"` string.
-//! To update after an intentional change, run `cargo insta review` (or set
-//! `INSTA_UPDATE=always`).
+//! Tests for captured print output and callback errors.
+
+use std::{borrow::Cow, mem};
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CollectedStreams, CompileOptions, PrintStream, PrintWriter, ResourceTracker};
+use monty_types::{
+    CollectedStreams, CompileOptions, ExcType, MontyException, MontyObject, PrintStream, PrintWriter,
+    PrintWriterCallback, ResourceTracker,
+};
+
+/// Checkpoint errors must reach handlers inside a synchronously evaluated callback.
+#[test]
+fn checkpoint_error_caught_inside_synchronous_callback() {
+    let code = r"
+seen = []
+
+def key(value):
+    try:
+        print('arm')
+        for _ in range(1000):
+            pass
+    except ValueError as exc:
+        assert str(exc) == 'checkpoint failed'
+        seen.append(value)
+    return -value
+
+def outer():
+    result = sorted([1, 2], key=key)
+    assert result == [2, 1]
+    assert seen == [1]
+    return 42
+
+outer()
+";
+    assert_eq!(run_with_checkpoint_failure(code), MontyObject::int(42));
+}
+
+/// A checkpoint failure must unwind nested frames before a native caller returns to its outer handler.
+#[test]
+fn checkpoint_error_unwinds_synchronous_callback() {
+    let code = r"
+def leaf(value):
+    print('arm')
+    for _ in range(1000):
+        pass
+    return value
+
+def key(value):
+    return sorted([value], key=leaf)[0]
+
+def outer():
+    kept = ['alive']
+    try:
+        sorted([1], key=key)
+        assert False, 'expected checkpoint failure'
+    except ValueError as exc:
+        assert str(exc) == 'checkpoint failed'
+    assert kept == ['alive']
+    assert sorted([3, 1, 2], key=lambda value: -value) == [3, 2, 1]
+    return 42
+
+outer()
+";
+    assert_eq!(run_with_checkpoint_failure(code), MontyObject::int(42));
+}
+
+/// Arms a single failure from Python so setup cannot consume it before synchronous re-entry.
+fn run_with_checkpoint_failure(code: &str) -> MontyObject {
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut writer = FailCheckpoint::default();
+    let result = runner
+        .run(vec![], ResourceTracker::default(), PrintWriter::Callback(&mut writer))
+        .unwrap();
+    assert_eq!(writer.failures, 1);
+    result
+}
+
+/// Fails the first flush poll after `print('arm')`, without relying on elapsed time.
+#[derive(Default)]
+struct FailCheckpoint {
+    armed: bool,
+    failures: usize,
+}
+
+impl PrintWriterCallback for FailCheckpoint {
+    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        assert_eq!(output, "arm");
+        self.armed = self.failures == 0;
+        Ok(())
+    }
+
+    fn stdout_push(&mut self, _end: char) -> Result<(), MontyException> {
+        Ok(())
+    }
+
+    fn poll_flush(&mut self) -> Result<(), MontyException> {
+        if mem::take(&mut self.armed) {
+            self.failures += 1;
+            Err(MontyException::new(
+                ExcType::ValueError,
+                Some("checkpoint failed".to_owned()),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// Run `code` under Monty with a string-collecting `PrintWriter` and return
 /// whatever was printed. Panics on parse/runtime errors — callers only care

@@ -96,7 +96,8 @@ def test_mount_directory_attributes(test_dir: Path):
     md = MountDir(host_path=str(test_dir), virtual_path='/data', mode='read-only')
     assert md.virtual_path == '/data'
     assert md.mode == 'read-only'
-    assert md.memory_usage_limit == 100_000_000
+    # the default lives in monty-fs alone, so only its shape is checked here
+    assert md.memory_usage_limit > 0
 
     limited = MountDir(host_path=str(test_dir), virtual_path='/limited', memory_usage_limit=1234)
     assert limited.memory_usage_limit == 1234
@@ -795,8 +796,8 @@ def test_chdir_normalizes_after_mount_validation(session: MontySession, test_dir
 
 
 def test_first_feed_failure_keeps_the_mount_default_cwd(pool: Monty, test_dir: Path):
-    """A first feed that fails after parsing still adopts the mount default; a
-    typing rejection never reaches the worker, so nothing is adopted."""
+    """A first feed that fails, by parsing or by type checking, still adopts the
+    mount default: the worker switches directory as the feed arrives."""
     md = MountDir(host_path=test_dir, virtual_path='/data', mode='read-only')
     with pool.checkout() as session:
         with pytest.raises(MontySyntaxError):
@@ -805,7 +806,7 @@ def test_first_feed_failure_keeps_the_mount_default_cwd(pool: Monty, test_dir: P
     with pool.checkout(type_check=True) as session:
         with pytest.raises(MontyTypingError):
             session.feed_run("x: int = 'a'", mount=md)
-        assert session.feed_run('import os\nos.getcwd()') == '/'
+        assert session.feed_run('import os\nos.getcwd()') == '/data'
 
 
 def test_path_length_limits_are_mount_policy(monty_run: RunMonty, test_dir: Path):

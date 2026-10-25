@@ -63,6 +63,54 @@ item = d.popitem()
 assert item == ('x', 10)
 assert d == {}
 
+# popitem removes only the popped key's slot from the index, so every remaining
+# key must still be found, and the popped one must be insertable again
+d = {'a': 1, 'b': 2, 'c': 3}
+assert d.popitem() == ('c', 3)
+assert 'a' in d
+assert 'b' in d
+assert 'c' not in d
+assert d.get('c') is None
+d['c'] = 30
+assert d == {'a': 1, 'b': 2, 'c': 30}
+assert list(d) == ['a', 'b', 'c']
+
+# repeated pops down to empty, then refilled, keep lookups exact
+d = {i: i * 2 for i in range(8)}
+while d:
+    key, value = d.popitem()
+    assert value == key * 2
+    assert key not in d
+    assert all(k in d for k in d)
+assert d == {}
+for i in range(8):
+    d[i] = i
+assert d == {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7}
+
+
+# colliding keys: popping the tail must not unindex the one that shares its bucket
+class Collide:
+    def __init__(self, n):
+        self.n = n
+
+    def __hash__(self):
+        return 0
+
+    def __eq__(self, other):
+        return isinstance(other, Collide) and self.n == other.n
+
+
+first = Collide(1)
+second = Collide(2)
+d = {first: 'first', second: 'second'}
+assert d.popitem() == (second, 'second')
+assert d[first] == 'first'
+assert second not in d
+d[second] = 'again'
+assert d[first] == 'first'
+assert d[second] == 'again'
+assert len(d) == 2
+
 # === dict.fromkeys() ===
 d = dict.fromkeys(['a', 'b', 'c'])
 assert d == {'a': None, 'b': None, 'c': None}

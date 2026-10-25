@@ -388,6 +388,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-buffer"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "boxcar"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -596,7 +605,7 @@ version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
- "crypto-common",
+ "crypto-common 0.1.7",
  "inout",
 ]
 
@@ -669,14 +678,14 @@ dependencies = [
 
 [[package]]
 name = "codspeed"
-version = "4.7.0"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57af92d1db7f6871b7e82c79cd87f2501db66f36b0eab924be6ea83dd6b2f3f3"
+checksum = "1cade51e6e6e30e7ea2cd9599fa5d5d5f48255a6b221bbd0cab1cf32f3c23c65"
 dependencies = [
  "anyhow",
  "cc",
- "colored 2.2.0",
- "getrandom 0.2.17",
+ "colored",
+ "getrandom 0.4.3",
  "glob",
  "libc",
  "nix 0.31.3",
@@ -687,14 +696,14 @@ dependencies = [
 
 [[package]]
 name = "codspeed-criterion-compat"
-version = "4.7.0"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d31ae2e9ab23c29fa13bdfa06d012524176f5c0f4e25ec262cd829d947ebc5e"
+checksum = "b5d1640d31b122c8d754939c6ae4040709a9602f289d11e43075476a21285020"
 dependencies = [
  "clap",
  "codspeed",
  "codspeed-criterion-compat-walltime",
- "colored 2.2.0",
+ "colored",
  "futures",
  "regex",
  "tokio",
@@ -702,9 +711,9 @@ dependencies = [
 
 [[package]]
 name = "codspeed-criterion-compat-walltime"
-version = "4.7.0"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc8605e40bab5114dcb0f76268e18880082b5798dec10757b5b58d2c3bbc7a1c"
+checksum = "2a83eed387b8f84aad4cb29607758bec3ab3f53b1734af934ddae7fee626d8ce"
 dependencies = [
  "anes",
  "cast",
@@ -740,16 +749,6 @@ name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
-
-[[package]]
-name = "colored"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
-dependencies = [
- "lazy_static",
- "windows-sys 0.59.0",
-]
 
 [[package]]
 name = "colored"
@@ -956,6 +955,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-common"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "ctor"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1073,9 +1081,19 @@ version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
- "block-buffer",
- "crypto-common",
+ "block-buffer 0.10.4",
+ "crypto-common 0.1.7",
  "subtle",
+]
+
+[[package]]
+name = "digest"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
+dependencies = [
+ "block-buffer 0.12.1",
+ "crypto-common 0.2.2",
 ]
 
 [[package]]
@@ -1604,7 +1622,7 @@ version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
- "digest",
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -1654,6 +1672,15 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "hybrid-array"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
+dependencies = [
+ "typenum",
+]
 
 [[package]]
 name = "hyper"
@@ -2476,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "ahash",
  "chrono",
@@ -2506,7 +2533,8 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
- "sha2",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
  "smallvec",
  "speedate",
  "strum 0.27.2",
@@ -2518,14 +2546,14 @@ dependencies = [
 
 [[package]]
 name = "monty-alloc"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "monty-types",
 ]
 
 [[package]]
 name = "monty-apidoc"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "insta",
  "rustdoc-types",
@@ -2534,28 +2562,32 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
  "monty",
  "monty-alloc",
+ "monty-fixture",
+ "monty-fs",
  "monty-pool",
  "monty-proto",
  "monty-types",
  "pprof",
  "pyo3",
  "pyo3-build-config",
+ "tempfile",
  "tokio",
 ]
 
 [[package]]
 name = "monty-datatest"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "ahash",
  "datatest-stable",
  "monty",
+ "monty-fixture",
  "monty-fs",
  "monty-pool",
  "monty-types",
@@ -2568,7 +2600,7 @@ dependencies = [
 
 [[package]]
 name = "monty-doctest"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "monty",
  "monty-pool",
@@ -2577,8 +2609,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monty-fixture"
+version = "1.3.0"
+dependencies = [
+ "insta",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "monty-fs"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "ahash",
  "cap-std",
@@ -2590,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2600,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "monty-pool",
  "monty-types",
@@ -2617,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2627,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "futures-util",
  "insta",
@@ -2653,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "allocation-counter",
  "heck",
@@ -2673,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "monty-runtime"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2692,7 +2733,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2703,6 +2744,8 @@ dependencies = [
  "pretty_assertions",
  "ruff_db",
  "ruff_python_ast",
+ "ruff_python_parser",
+ "ruff_python_stdlib",
  "ruff_text_size",
  "salsa",
  "ty_module_resolver",
@@ -2712,7 +2755,7 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "chrono",
  "jiff",
@@ -2720,6 +2763,7 @@ dependencies = [
  "monty-macros",
  "num-bigint",
  "num-traits",
+ "ruff_python_stdlib",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -2730,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2740,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "monty-wasm-runtime"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "monty-alloc",
  "monty-proto",
@@ -3092,10 +3136,10 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83a0692ec44e4cf1ef28ca317f14f8f07da2d95ec3fa01f86e4467b725e60917"
 dependencies = [
- "digest",
+ "digest 0.10.7",
  "hmac",
  "password-hash",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -3410,10 +3454,11 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty-client"
-version = "1.0.1"
+version = "1.3.0"
 dependencies = [
  "ahash",
  "chrono",
+ "futures-util",
  "monty-fs",
  "monty-pool",
  "monty-proto",
@@ -4428,7 +4473,18 @@ checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
- "digest",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -4439,7 +4495,18 @@ checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
- "digest",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -5089,7 +5156,7 @@ dependencies = [
  "rand 0.9.5",
  "rustls",
  "rustls-pki-types",
- "sha1",
+ "sha1 0.10.7",
  "thiserror",
  "utf-8",
  "webpki-roots 0.26.11",
@@ -5214,7 +5281,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1ac21186f9bd5a853e7f5447900081e0e46bf5288f63a35c37cab7b79c237b0"
 dependencies = [
  "camino",
- "colored 3.1.1",
+ "colored",
  "get-size2",
  "indexmap",
  "ruff_annotate_snippets",
@@ -5539,9 +5606,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -5552,14 +5619,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.9",
+ "webpki-roots 1.0.10",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -6071,7 +6138,7 @@ dependencies = [
  "flate2",
  "hmac",
  "pbkdf2",
- "sha1",
+ "sha1 0.10.7",
  "time",
  "zstd",
 ]

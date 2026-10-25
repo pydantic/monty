@@ -3,6 +3,8 @@ import json
 # === indent edge cases ===
 assert json.dumps([1, 2], indent=False) == '[\n1,\n2\n]'
 assert json.dumps({'a': 1}, indent=False) == '{\n"a": 1\n}'
+assert json.dumps([[1]], indent=True) == '[\n [\n  1\n ]\n]'
+assert json.dumps([[1]], indent=-3) == '[\n[\n1\n]\n]'
 
 # === empty containers with indent ===
 assert json.dumps([], indent=2) == '[]'

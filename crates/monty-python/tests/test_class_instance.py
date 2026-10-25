@@ -320,18 +320,28 @@ def test_private_method_not_dispatched(monty_run: RunMonty):
 
 
 def test_instance_call_method_dunder_call_rejected():
-    """`__call__` routes only to `ClassType` construction; on an instance
-    wrapper a (necessarily forged) `__call__` frame is denied even under
-    `allowed_methods='all'`, so the wrapped instance can never be invoked."""
+    """Only `ClassType` permits `__call__`, even with `allowed_methods='all'`."""
 
     class Invocable:
         def __call__(self) -> str:
             return 'invoked'
 
     wrapper = ClassInstance(Invocable(), allowed_methods='all')
-    with pytest.raises(AttributeError) as exc_info:
+    with pytest.raises(TypeError) as exc_info:
         wrapper.call_method('__call__', (), {})
-    assert str(exc_info.value) == snapshot("'Invocable' object has no attribute '__call__'")
+    assert str(exc_info.value) == snapshot("'Invocable' object is not callable")
+
+
+def test_calling_an_instance_in_the_sandbox_is_not_callable(monty_run: RunMonty):
+    """The wrapper rejects `__call__` requests from the sandbox."""
+
+    class Invocable:
+        def __call__(self) -> str:
+            return 'invoked'
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('c()', inputs={'c': ClassInstance(Invocable(), allowed_methods='all')})
+    assert str(exc_info.value) == snapshot("TypeError: 'Invocable' object is not callable")
 
 
 # === Policy validation and the scope of 'all' ===

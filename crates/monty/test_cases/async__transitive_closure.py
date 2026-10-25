@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 # Async coroutines capturing variables more than one level up. Calling an async
 # function builds a coroutine (a separate frame-setup path from a sync call), so
 # this exercises transitive cell threading on the coroutine path too.

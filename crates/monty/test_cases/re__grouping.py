@@ -30,6 +30,34 @@ assert result == ['1', '22', '333']
 result = re.findall(r'(\w+)=(\w+)', 'a=1 b=2')
 assert result == [('a', '1'), ('b', '2')]
 
+# === re.split() with groups ===
+# the text each group matched goes after the piece before the match
+assert re.split(r'(,)', 'a,b,c') == ['a', ',', 'b', ',', 'c']
+assert re.split(r'(\d+)', 'file10page2') == ['file', '10', 'page', '2', '']
+assert re.split(r'([.!?])\s*', 'Hi. How are you? Fine!') == ['Hi', '.', 'How are you', '?', 'Fine', '!', '']
+assert re.split(r'(?P<sign>[-+])', '1-2+3') == ['1', '-', '2', '+', '3']
+assert re.split(r'(x)', 'xax') == ['', 'x', 'a', 'x', '']
+assert re.split(r'(x)', '') == ['']
+# every group gets an entry, None if it didn't take part in the match
+assert re.split(r'(a)|b', 'xaybz') == ['x', 'a', 'y', None, 'z']
+assert re.split(r'((a)(b)?)', 'xaby a') == ['x', 'ab', 'a', 'b', 'y ', 'a', 'a', None, '']
+# a non-capturing group adds nothing
+assert re.split(r'(?:,)', 'a,b') == ['a', 'b']
+# maxsplit counts splits, not entries
+assert re.split(r'(,)', 'a,b,c', maxsplit=1) == ['a', ',', 'b,c']
+assert re.split(r'(,)', 'a,b,c', maxsplit=-1) == ['a,b,c']
+assert re.split(r'(b)', 'abcABC', flags=re.IGNORECASE) == ['a', 'b', 'cA', 'B', 'C']
+p = re.compile(r'(\s+)')
+assert p.split('a  b c') == ['a', '  ', 'b', ' ', 'c']
+assert p.split('a  b c', maxsplit=1) == ['a', '  ', 'b c']
+
+
+def natural_key(s):
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r'(\d+)', s)]
+
+
+assert sorted(['file10', 'file2', 'File1'], key=natural_key) == ['File1', 'file2', 'file10']
+
 # === No groups: groups() returns empty tuple ===
 m = re.search(r'\d+', '42')
 assert m is not None

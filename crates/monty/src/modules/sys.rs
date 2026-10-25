@@ -58,6 +58,7 @@ const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
     StaticStrings::Asyncio,
     StaticStrings::Base64,
     StaticStrings::Binascii,
+    StaticStrings::Bisect,
     StaticStrings::Collections,
     StaticStrings::Dataclasses,
     StaticStrings::Datetime,

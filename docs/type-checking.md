@@ -48,6 +48,9 @@ It checks against [`monty-typeshed`](https://crates.io/crates/monty-typeshed), a
 runtime surface: unsupported modules, builtins and methods are filtered out of the stubs entirely.
 Code reaching for something Monty does not implement usually fails the check up front, instead of failing at runtime
 halfway through.
+The exceptions are stubs vendored verbatim from upstream, such as `os.path`, which describe CPython's surface:
+`os.path.ALLOW_MISSING`, `sameopenfile` or a `bytes` path pass the check and fail at runtime, as
+[limitations/os.md](limitations/os.md) records.
 
 For an LLM writing code, that turns a whole class of runtime failures into a diagnostic you can hand straight back to
 the model as a retry prompt.
@@ -109,6 +112,72 @@ back to the original snippet — so an error points at the line the model wrote,
 Stubs are scoped to the checkout.
 A later session does not see them.
 
+Global stubs declare names at the top level of the snippet.
+For imported host modules, supply `.pyi` source in the `stubs` of each `external_modules` entry of the `checkout()`
+(`externalModules` in JavaScript).
+The worker requests it on the first type-checked import, running the entry's factory if needed.
+The checker writes `<module>.pyi` beside the snippet so imports resolve against its declarations.
+Module stubs are not star-imported.
+A module with neither `stubs` nor a typeshed entry fails a type-checked import as unresolved:
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import ExternalModule, Monty, MontyTypingError
+
+
+    def add(a: int, b: int) -> int:
+        return a + b
+
+
+    tools = ExternalModule({'add': add}, stubs='def add(a: int, b: int) -> int: ...\n')
+    modules = {'tools': tools}
+
+    with Monty() as pool:
+        with pool.checkout(type_check=True, external_modules=modules) as session:
+            try:
+                session.feed_run("from tools import add\nadd('x', 2)")
+            except MontyTypingError as exc:
+                print('invalid-argument-type' in exc.display())
+                #> True
+            print(session.feed_run('from tools import add\nadd(1, 2)'))
+            #> 3
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { ExternalModule, Monty, MontyTypingError } from '@pydantic/monty'
+
+    const tools = new ExternalModule(
+      { add: (a: number, b: number) => a + b },
+      { stubs: 'def add(a: int, b: int) -> int: ...\n' },
+    )
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout({ typeCheck: true, externalModules: { tools } })
+    try {
+      await session.feedRun("from tools import add\nadd('x', 2)")
+    } catch (err) {
+      if (!(err instanceof MontyTypingError)) throw err
+      console.log(err.display().includes('invalid-argument-type')) // true
+    }
+    console.log(await session.feedRun('from tools import add\nadd(1, 2)')) // 3
+    ```
+
+The session requests each module's stub once and retains the answer in its dumps.
+Later feeds use that first answer even if they supply a different stub or none.
+A submodule's `stubs` is laid out as a package beside its parent's (`pkg/__init__.pyi`, `pkg/sub.pyi`), so
+`import pkg.sub` and `from pkg import sub` resolve; a parent with no `stubs` of its own becomes an empty package.
+A module name that is not an identifier, or that the sandbox provides itself (`json`, `math`, and `gc` in a test
+build), raises `ValueError` (throws in JavaScript), since an import of it never reaches the host.
+Hosts can supply modules such as `abc` and `enum` that the checker resolves but the runtime does not.
+The checker retains its own stubs and never requests host stubs for vendored typeshed modules, including `__future__`
+and `__main__`, or for `ty_extensions`.
+See [modules](limitations/modules.md#modules-the-type-checker-resolves-but-the-runtime-does-not).
+The runtime side of a host module is the entry's `module`; see
+[importing host modules](host-functions.md#importing-host-modules).
+
 Passing the same declarations to the model in its prompt, and to `type_check_stubs` here, is the pattern the
 [`examples/`](https://github.com/pydantic/monty/tree/main/examples) directory uses: the model sees the tool signatures,
 the checker enforces them.
@@ -150,6 +219,14 @@ checks as one growing program:
     ```
 
 A snippet that fails the check never runs, so it never enters the accumulated context.
+Committed module-level imports are retained for later checks, including imports inside module-level `if` and `try`
+blocks.
+They precede committed definitions, so later rebindings override them; deleting an imported name leaves it bound in the
+checker.
+Conditional imports are retained even if their branch never ran, so a later use can pass checking but raise `NameError`.
+Retained imports lose their comments, including `# type: ignore`.
+The checker suppresses their diagnostics because the earlier feed accepted them; unresolved names retain an unknown
+type.
 
 Set `skip_type_check=True` on an individual `feed_run` or `feed_start` (`skipTypeCheck` in JavaScript) to bypass
 checking for that feed only.
@@ -195,7 +272,7 @@ the flag is `--type-check-format`.
 - **Code compiled at runtime is not checked.** `eval()` and `exec()` compile their source strings inside the sandbox,
     where no checker runs.
     See [`limitations/eval_exec.md`](limitations/eval_exec.md).
-- **Passing the type check does not mean the code runs.** Parser-rejected constructs (`match`, `yield`) are not
+- **Passing the type check does not mean the code runs.** Parser-rejected constructs (`yield`, `del`) are not
     modelled.
     Five stub-only modules (`abc`, `types`, `typing_extensions`, `_collections_abc`, `_typeshed`) resolve during checking
     because the stubs need them, then raise `ModuleNotFoundError` at runtime.

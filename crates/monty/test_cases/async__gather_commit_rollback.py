@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 """Gather failure must clean up committed siblings and nested failures."""
 
 import asyncio

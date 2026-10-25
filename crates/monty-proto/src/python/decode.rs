@@ -19,6 +19,7 @@ use super::{
         monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
+    external_module::PyExternalModule,
     std_type_proxy::{PyMontyStdTypeProxy, StdTypeRef},
 };
 
@@ -175,6 +176,12 @@ impl Decoder<'_, '_> {
                     };
                     Ok(Py::new(py, proxy)?.into_any())
                 }
+            }
+            // a host module comes back as an `ExternalModule` with the id it imported with
+            MontyNode::Module { id, attrs, .. } => {
+                let attrs = self.attrs_dict(attrs)?;
+                let module = PyExternalModule::new(py, attrs.bind(py), None, *id)?;
+                Ok(Py::new(py, module)?.into_any())
             }
             MontyNode::Path(p) => Ok(get_pure_posix_path(py)?.call1((p,))?.into_any().unbind()),
             // a sandbox file is not an OS file, so it decodes to a

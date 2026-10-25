@@ -14,6 +14,7 @@ use crate::{
     heap::{DropWithContext, HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
+    py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
     types::{
         PyTrait, Type, allocate_tuple,
@@ -202,6 +203,13 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn cannot_reuse_already_awaited_coroutine() -> RunError {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into()
+    }
+
+    /// `ValueError: generator already executing` — a generator advanced from
+    /// inside its own step, e.g. by an `os.walk` `onerror` callback.
+    #[must_use]
+    fn generator_already_executing() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "generator already executing").into()
     }
 
     /// Creates a TypeError for item assignment on types that don't support it.
@@ -746,16 +754,19 @@ pub(crate) trait ExcTypeExt: Sized {
     /// Named positional-overflow wording used by clinic functions with
     /// keyword-only slots (e.g. `os.stat`/`os.mkdir`): `{name}() takes
     /// {exactly|at most} {max} positional argument{s} ({actual} given)` —
-    /// "exactly" when every positional param is required.
+    /// "exactly" when every positional param is required, and `takes no
+    /// positional arguments` when there are none (`DirEntry.is_dir`).
     #[must_use]
     fn type_error_named_positional(name: &str, max: usize, actual: usize, exact: bool) -> RunError {
-        let qualifier = if exact { "exactly" } else { "at most" };
-        let plural = if max == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() takes {qualifier} {max} positional argument{plural} ({actual} given)"),
-        )
-        .into()
+        let message = if max == 0 {
+            // `_PyArg_UnpackKeywords` drops the count for keyword-only signatures.
+            format!("{name}() takes no positional arguments")
+        } else {
+            let qualifier = if exact { "exactly" } else { "at most" };
+            let plural = if max == 1 { "" } else { "s" };
+            format!("{name}() takes {qualifier} {max} positional argument{plural} ({actual} given)")
+        };
+        SimpleException::new_msg(ExcType::TypeError, message).into()
     }
 
     /// Creates a TypeError matching the `os` module's `path_t` converter:
@@ -792,14 +803,40 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates `genericpath._check_arg_types`'s TypeError for an `os.path`
+    /// argument that is neither `str` nor `bytes`:
+    /// `{func}() argument must be str, bytes, or os.PathLike object, not '{type}'`
+    #[must_use]
+    fn type_error_path_argument(func: &str, type_name: &str) -> RunError {
+        Self::type_error(format!(
+            "{func}() argument must be str, bytes, or os.PathLike object, not '{type_name}'"
+        ))
+    }
+
+    /// Creates `genericpath._check_arg_types`'s TypeError for `os.path`
+    /// arguments mixing `str` and `bytes`:
+    /// `Can't mix strings and bytes in path components`
+    #[must_use]
+    fn type_error_mixed_path_components() -> RunError {
+        Self::type_error("Can't mix strings and bytes in path components")
+    }
+
     /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
     /// functions that call `fspath` internally (e.g. `os.makedirs`):
-    /// `expected str, bytes or os.PathLike object, not {type}`
+    /// `expected str, bytes or os.PathLike object, not {type}`.
+    ///
+    /// `bytes`, which CPython accepts and Monty refuses, gets the phrase
+    /// narrowed to what Monty takes, as the `os` path converter does.
     #[must_use]
     fn type_error_fspath(type_name: &str) -> RunError {
+        let accepted = if type_name == "bytes" {
+            "str or os.PathLike"
+        } else {
+            "str, bytes or os.PathLike"
+        };
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("expected str, bytes or os.PathLike object, not {type_name}"),
+            format!("expected {accepted} object, not {type_name}"),
         )
         .into()
     }
@@ -827,6 +864,18 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_fd_minimum() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "fd is less than minimum").into()
+    }
+
+    /// Creates `OSError: [Errno 9] Bad file descriptor`, naming the fd when
+    /// the call does (`os.stat(fd)` does, `os.listdir(fd)` does not). Every
+    /// fd is closed in the sandbox, so this is what an int path fails with.
+    #[must_use]
+    fn bad_file_descriptor(fd: Option<&str>) -> RunError {
+        let msg = match fd {
+            Some(fd) => format!("[Errno 9] Bad file descriptor: {fd}"),
+            None => "[Errno 9] Bad file descriptor".to_owned(),
+        };
+        SimpleException::new_msg(ExcType::OSError, msg).into()
     }
 
     /// Creates the NotImplementedError CPython raises when an `os` argument is
@@ -984,6 +1033,26 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(
             ExcType::TypeError,
             format!("__init__() should return None, not '{type_name}'"),
+        )
+        .into()
+    }
+
+    /// `ValueError: mapping pattern checks duplicate key (<repr>)`: two keys of
+    /// one mapping pattern compared equal at run time (`case {A: x, B: y}` with
+    /// `A == B`), as CPython's `MATCH_KEYS` reports it.
+    fn value_error_duplicate_mapping_key(key: &Value, vm: &mut VM<'_>) -> RunError {
+        let repr = match key.py_repr(vm) {
+            Ok(repr_value) => {
+                defer_drop!(repr_value, vm);
+                repr_value
+                    .to_str(vm)
+                    .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
+            }
+            Err(err) => return err,
+        };
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("mapping pattern checks duplicate key ({repr})"),
         )
         .into()
     }
@@ -1149,20 +1218,6 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::value_error("Step for islice() must be a positive integer or None.")
     }
 
-    /// Creates the TypeError `functools.reduce` raises when the iterable is
-    /// empty and no `initial` was given, so there is nothing to return.
-    #[must_use]
-    fn reduce_empty_iterable() -> RunError {
-        Self::type_error("reduce() of empty iterable with no initial value")
-    }
-
-    /// Creates the TypeError `functools.reduce` raises for a second argument
-    /// that cannot be iterated, replacing the generic not-iterable wording.
-    #[must_use]
-    fn reduce_not_iterable() -> RunError {
-        Self::type_error("reduce() arg 2 must support iteration")
-    }
-
     /// Creates the TypeError `functools.partial()` raises when called with no
     /// positional argument, so there is no callable to wrap.
     #[must_use]
@@ -1258,6 +1313,24 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Reports an absent rounding or truncation hook without coercing the operand.
+    #[must_use]
+    fn type_error_missing_numeric_dunder(type_: &str, dunder: &str) -> RunError {
+        Self::type_error(format!("type {type_} doesn't define {dunder} method"))
+    }
+
+    /// Reports an invalid result from an integer conversion hook.
+    #[must_use]
+    fn type_error_non_int_return(dunder: &str, type_: &str) -> RunError {
+        Self::type_error(format!("{dunder} returned non-int (type {type_})"))
+    }
+
+    /// Reports a non-numeric argument to a real-valued math function.
+    #[must_use]
+    fn type_error_not_real_number(type_: &str) -> RunError {
+        Self::type_error(format!("must be real number, not {type_}"))
+    }
+
     /// Creates a TypeError for float() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: float() argument must be a string or a real number, not '{type}'`
@@ -1276,6 +1349,15 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn value_error_negative_bytes_count() -> RunError {
         SimpleException::new_msg(ExcType::ValueError, "negative count").into()
+    }
+
+    /// Creates the `ValueError` CPython's float-to-string conversion raises for a
+    /// precision above `MAX_FLOAT_PRECISION` (`INT_MAX - 1024`).
+    ///
+    /// Matches CPython's format: `ValueError: precision too big`
+    #[must_use]
+    fn value_error_precision_too_big() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "precision too big").into()
     }
 
     /// Creates a TypeError for isinstance() arg 2.
@@ -1338,6 +1420,17 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "dictionary changed size during iteration").into()
     }
 
+    /// Creates a RuntimeError for a dict whose keys were replaced mid-iteration.
+    ///
+    /// CPython's second iteration guard: the size never changed, but a delete
+    /// plus an insert renumbered the table under the cursor.
+    ///
+    /// Matches CPython's format: `RuntimeError: dictionary keys changed during iteration`
+    #[must_use]
+    fn runtime_error_dict_changed_keys() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "dictionary keys changed during iteration").into()
+    }
+
     /// Creates a TypeError for `reversed()` on a non-reversible object.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not reversible`
@@ -1373,6 +1466,16 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("{name}() does not yet support keyword arguments"),
         )
         .into()
+    }
+
+    /// A `_csv.Error` with the given message.
+    fn csv_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::CsvError, msg).into()
+    }
+
+    /// The `_csv.Error` for a dialect name that is not registered.
+    fn csv_unknown_dialect() -> RunError {
+        Self::csv_error("unknown dialect")
     }
 
     /// Creates an IndexError for list index out of range (getitem).
@@ -1482,13 +1585,17 @@ pub(crate) trait ExcTypeExt: Sized {
         )
     }
 
-    /// Creates a ModuleNotFoundError for when a module cannot be found.
-    ///
-    /// Matches CPython's format: `ModuleNotFoundError: No module named 'name'`
+    /// Creates `ModuleNotFoundError: No module named 'name'`, with
+    /// `; 'parent' is not a package` when a dotted import failed below a
+    /// module (see `StandardLib::missing_module`).
     /// Sets `hide_caret: true` because CPython doesn't show carets for module not found errors.
     #[must_use]
-    fn module_not_found_error(module_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, format!("No module named '{module_name}'"));
+    fn module_not_found_error(module_name: &str, parent: Option<&str>) -> RunError {
+        let msg = match parent {
+            Some(parent) => format!("{}; '{parent}' is not a package", no_module_named(module_name)),
+            None => no_module_named(module_name),
+        };
+        let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
@@ -1506,6 +1613,12 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn not_implemented(msg: impl fmt::Display) -> SimpleException {
         SimpleException::new_msg(ExcType::NotImplementedError, msg)
+    }
+
+    /// Reports a host call rejected by a synchronous VM boundary; the traceback identifies the caller.
+    #[must_use]
+    fn not_implemented_synchronous_call(kind: &str, name: &str) -> SimpleException {
+        Self::not_implemented(format!("{kind} '{name}' cannot suspend in this synchronous context"))
     }
 
     /// Creates a ZeroDivisionError for division by zero.
@@ -1678,6 +1791,20 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
     }
 
+    /// `OverflowError: Python int too large for C unsigned long`, from Argument
+    /// Clinic's `unsigned_long` converter on an int beyond `u64`.
+    #[must_use]
+    fn overflow_c_unsigned_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "Python int too large for C unsigned long").into()
+    }
+
+    /// `ValueError: Cannot convert negative int`, which the unsigned Argument
+    /// Clinic converters raise before checking an int's width.
+    #[must_use]
+    fn value_error_negative_int() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Cannot convert negative int").into()
+    }
+
     /// Creates the TypeError for three-argument `pow()` with a non-integer operand and no
     /// float among them: `unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'`.
     #[must_use]
@@ -1706,6 +1833,18 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
         };
         SimpleException::new_msg(ExcType::TypeError, message).into()
+    }
+
+    /// Reports an invalid repetition count after both multiplication implementations decline.
+    #[must_use]
+    fn type_error_sequence_repeat(type_name: impl Display) -> RunError {
+        Self::type_error(format!("can't multiply sequence by non-int of type '{type_name}'"))
+    }
+
+    /// Float power slots reject a modulus before coercing the other operands.
+    #[must_use]
+    fn type_error_pow_modulo() -> RunError {
+        Self::type_error("pow() 3rd argument not allowed unless all arguments are integers")
     }
 
     /// Creates a TypeError for unsupported unary operations.
@@ -2145,6 +2284,46 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates a `tomllib.TOMLDecodeError`, formatted as CPython does:
+    /// `{message} (at line {line}, column {column})`, or `(at end of document)`
+    /// when `at_end` (the caller knows from the byte offset whether `index`
+    /// reached the end of `doc`, so the document is not rescanned).
+    ///
+    /// `doc` is the `\r\n`-normalised source and `index` a character offset into
+    /// it; the five fields travel in the same [`JsonErrorData`] payload as
+    /// `json.JSONDecodeError`, since the two exceptions define the same attributes.
+    #[must_use]
+    fn toml_decode_error(message: &str, doc: &str, index: usize, line: usize, column: usize, at_end: bool) -> RunError {
+        let location = if at_end {
+            "end of document".to_owned()
+        } else {
+            format!("line {line}, column {column}")
+        };
+        SimpleException::new_msg(ExcType::TomlDecodeError, format!("{message} (at {location})"))
+            .with_data(JsonErrorData::build(message, doc.as_bytes(), index, line, column))
+            .into()
+    }
+
+    /// Creates the `TypeError` used by `tomllib.loads()` for non-`str` input.
+    ///
+    /// Matches CPython's format: `Expected str object, not '{type}'`
+    #[must_use]
+    fn toml_loads_type_error(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("Expected str object, not '{type_}'")).into()
+    }
+
+    /// Creates the `TypeError` used by `tomllib.load()` for a text-mode file.
+    ///
+    /// Matches CPython's message: ``File must be opened in binary mode, e.g. use `open('foo.toml', 'rb')` ``
+    #[must_use]
+    fn toml_load_text_mode_error() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "File must be opened in binary mode, e.g. use `open('foo.toml', 'rb')`",
+        )
+        .into()
+    }
+
     /// Creates the `TypeError` used by `json.loads()` for unsupported input types.
     ///
     /// Matches CPython's format:
@@ -2329,31 +2508,14 @@ pub(crate) trait ExcTypeExt: Sized {
 }
 
 impl ExcTypeExt for ExcType {
-    /// Creates an exception instance from an exception type and arguments.
-    ///
-    /// Handles exception constructors like `ValueError('message')`.
+    /// Allocates an exception for constructors like `ValueError('message')`.
     /// Currently supports zero or one string argument.
-    ///
-    /// The `interns` parameter provides access to interned string content.
-    /// Returns a heap-allocated exception value.
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
-            ArgValues::One(value) => match value {
-                Value::InternString(string_id) => Ok(SimpleException::new_msg(
-                    self,
-                    vm.interns.get_str(*string_id).to_owned(),
-                )),
-                Value::Ref(heap_id) => {
-                    if let HeapData::Str(s) = vm.heap.get(*heap_id) {
-                        Ok(SimpleException::new_msg(self, s.as_str().to_owned()))
-                    } else {
-                        Err(RunError::internal(
-                            "exceptions can only be called with zero or one string argument",
-                        ))
-                    }
-                }
+            ArgValues::One(value) => match value.py_value(vm) {
+                PyValue::Str(string) => Ok(SimpleException::new_msg(self, string.as_str(vm))),
                 _ => Err(RunError::internal(
                     "exceptions can only be called with zero or one string argument",
                 )),
@@ -2779,6 +2941,12 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
+    /// Whether this is a catchable `exc_type`, matching only `Exc` so an uncatchable
+    /// host or resource error is never swallowed by a guard that expects one.
+    pub(crate) fn is_catchable(&self, exc_type: ExcType) -> bool {
+        matches!(self, Self::Exc(raise) if raise.exc.exc_type() == exc_type)
+    }
+
     /// Whether this is a catchable `StopIteration` from `__next__`.
     ///
     /// Matching only `Exc` prevents uncatchable errors being mistaken for exhaustion.
@@ -2814,6 +2982,11 @@ impl RunError {
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
     }
+}
+
+/// CPython's `ModuleNotFoundError` message for `module_name`.
+fn no_module_named(module_name: &str) -> String {
+    format!("No module named '{module_name}'")
 }
 
 /// Formats a list of parameter names for error messages, matching CPython's

@@ -17,9 +17,11 @@
 //!
 //! Every suspension surfaces, OS calls included — `feed_start` never answers
 //! one for you, so a mounted file read comes back as a `FunctionSnapshot` with
-//! `is_os_function` set. The captured `external_lookup=` / `os=` and the feed's
-//! mounts are consulted only by `resume_auto`, which offers an OS call to the
-//! mounts first and falls back to `os=`. Mounts are fixed for the whole feed
+//! `is_os_function` set. The captured `external_lookup=` / `os=`, the
+//! session's `external_modules=` and the feed's mounts are consulted only by
+//! `resume_auto`, which answers a host module's OS call (`import`,
+//! `import_stubs`) from `external_modules=` and offers any other to the mounts
+//! first, falling back to `os=`. Mounts are fixed for the whole feed
 //! (passed to `feed_start`), so `resume` takes no `mount=`. Restoring a
 //! suspended feed with `load_snapshot` re-establishes those mounts — the caller
 //! re-supplies them, as they are never part of the dump.
@@ -50,10 +52,16 @@ use tokio::{sync::Mutex, task::JoinSet};
 mod tests;
 
 use crate::{
-    async_dispatch::{CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, wait_for_futures},
+    async_dispatch::{
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
+        dispatch_module_coroutine, wait_for_futures,
+    },
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
-    external::{CallResult, ExternalLookup, resolve_object_attr, wire_call_arguments},
+    external::{
+        CallResult, ExternalLookup, HostNames, is_module_call, resolve_object_attr, sync_module_coroutines_error,
+        wire_call_arguments,
+    },
     pool::{
         FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
@@ -81,9 +89,10 @@ pub(crate) struct DriveContext {
     script_name: String,
     /// Host OTel context captured at feed/load entry; never serialized with the worker.
     trace_context: Option<Py<PyAny>>,
-    /// `external_lookup=` captured at `feed_start` / `load_snapshot`; consulted
-    /// only by `resume_auto` (plain `resume` never looks names up here).
-    external_lookup: Option<Py<PyDict>>,
+    /// `external_lookup=` captured at `feed_start` / `load_snapshot` and the
+    /// session's `external_modules=`; consulted only by `resume_auto` (plain
+    /// `resume` never looks names up here).
+    names: HostNames,
     /// `os=` captured at `feed_start` / `load_snapshot`; consulted only by
     /// `resume_auto`, and only for OS calls this feed's mounts don't cover.
     os: Option<Py<PyAny>>,
@@ -101,7 +110,7 @@ impl DriveContext {
         instances: InstanceStore,
         print_target: PrintTarget,
         script_name: String,
-        external_lookup: Option<Py<PyDict>>,
+        names: HostNames,
         os: Option<Py<PyAny>>,
         trace_context: Option<Py<PyAny>>,
     ) -> Self {
@@ -111,7 +120,7 @@ impl DriveContext {
             print_target,
             script_name,
             trace_context,
-            external_lookup,
+            names,
             os,
             pending_futures: Arc::new(Mutex::new(JoinSet::new())),
         }
@@ -124,7 +133,7 @@ impl DriveContext {
             print_target: self.print_target.clone_handle(py),
             script_name: self.script_name.clone(),
             trace_context: self.trace_context.as_ref().map(|ctx| ctx.clone_ref(py)),
-            external_lookup: self.external_lookup.as_ref().map(|d| d.clone_ref(py)),
+            names: self.names.clone_ref(py),
             os: self.os.as_ref().map(|o| o.clone_ref(py)),
             pending_futures: Arc::clone(&self.pending_futures),
         }
@@ -142,7 +151,7 @@ impl DriveContext {
 pub(crate) fn feed_start_sync(
     py: Python<'_>,
     args: FeedArgs,
-    external_lookup: Option<Py<PyDict>>,
+    names: HostNames,
     script_name: String,
 ) -> PyResult<Py<PyAny>> {
     let FeedArgs {
@@ -162,7 +171,7 @@ pub(crate) fn feed_start_sync(
         instances,
         print_target,
         script_name,
-        external_lookup,
+        names,
         os,
         capture_otel_context(py),
     );
@@ -184,7 +193,7 @@ pub(crate) fn feed_start_sync(
 pub(crate) fn feed_start_async(
     py: Python<'_>,
     args: FeedArgs,
-    external_lookup: Option<Py<PyDict>>,
+    names: HostNames,
     script_name: String,
 ) -> PyResult<Bound<'_, PyAny>> {
     let FeedArgs {
@@ -204,7 +213,7 @@ pub(crate) fn feed_start_async(
         instances,
         print_target,
         script_name,
-        external_lookup,
+        names,
         os,
         capture_otel_context(py),
     );
@@ -498,7 +507,7 @@ fn resolve_captured_name(
     if let Some(object_id) = object_id {
         Ok(resolve_object_attr(py, name, &object_id, &ctx.instances))
     } else {
-        ExternalLookup::new(py, ctx.external_lookup.as_ref().map(|d| d.bind(py)), &ctx.instances)
+        ExternalLookup::new(py, &ctx.names, &ctx.instances)
             .resolve_name(name)
             .map(NameLookupResult::from)
     }
@@ -711,9 +720,11 @@ impl PyFunctionSnapshot {
     }
 
     /// Answers this call automatically, then drives to the next snapshot (or
-    /// [`MontyComplete`]). An OS call is offered to the feed's mounts first and
-    /// falls back to the `os=` captured at `feed_start` / `load_snapshot`; an
-    /// external call is resolved through `external_lookup=`, and a name absent
+    /// [`MontyComplete`]). A host module's OS call (`import`, `import_stubs`)
+    /// is answered from the session's `external_modules=`; any other OS call is
+    /// offered to the feed's mounts first and falls back to the `os=` captured at
+    /// `feed_start` / `load_snapshot`; an external call is resolved through
+    /// `external_lookup=`, and a name absent
     /// from it resolves to `NotFound` so the sandbox raises `NameError` —
     /// matching `feed_run`. A coroutine external raises `RuntimeError` (async
     /// externals need `AsyncMonty`). Consumes the snapshot.
@@ -733,7 +744,9 @@ impl PyFunctionSnapshot {
             context.enter(py, &native)
         })?;
         let call = &self.0.call;
-        let value = if call.is_os_function {
+        // the host's modules answer their own OS calls, ahead of mounts and `os=`
+        let module_call = call.is_os_function && is_module_call(&call.function_name);
+        let value = if call.is_os_function && !module_call {
             if let Some(event) = try_mounts_sync(py, &ctx)? {
                 return build_snapshot(py, ctx, event, false);
             }
@@ -754,13 +767,18 @@ impl PyFunctionSnapshot {
                 }
             }
         } else {
-            match dispatch_function_call(
-                &call.function_name,
-                call.object_id,
-                &call.args,
-                ctx.external_lookup.as_ref(),
-                &ctx.instances,
-            ) {
+            let result = if module_call {
+                dispatch_module_call(&call.function_name, &call.args, &ctx.names, &ctx.instances)
+            } else {
+                dispatch_function_call(
+                    &call.function_name,
+                    call.object_id,
+                    &call.args,
+                    &ctx.names,
+                    &ctx.instances,
+                )
+            };
+            match result {
                 CallResult::Sync(result) => ext_result_to_resume(result),
                 CallResult::Coroutine(coro) => {
                     // Close the un-awaited coroutine so it doesn't leak a
@@ -770,6 +788,10 @@ impl PyFunctionSnapshot {
                     discard_checkout_sync(py, &ctx.checkout);
                     return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
                 }
+                // raised at the import, as the sync `feed_run` raises it
+                CallResult::ModuleCoroutine { names, coros, .. } => ext_result_to_resume(ExtFunctionResult::Error(
+                    exc_py_to_monty(py, &sync_module_coroutines_error(py, &names, &coros)),
+                )),
             }
         };
         drop(guard);
@@ -883,7 +905,9 @@ impl PyAsyncFunctionSnapshot {
             // asyncio task-locals that `future_into_py`'s scope establishes.
             // Dispatch (and convert any coroutine) under the callback context;
             // only a handed-back await runs outside it.
-            let dispatched = if call.is_os_function {
+            // the host's modules answer their own OS calls, ahead of mounts and `os=`
+            let module_call = call.is_os_function && is_module_call(&call.function_name);
+            let dispatched = if call.is_os_function && !module_call {
                 // mounts get first refusal, then the captured `os=`
                 let mounted = run_turn_async(
                     &ctx.checkout,
@@ -916,23 +940,46 @@ impl PyAsyncFunctionSnapshot {
                 let mut join_set = ctx.pending_futures.lock().await;
                 Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
-                    match dispatch_function_call(
-                        &call.function_name,
-                        call.object_id,
-                        &call.args,
-                        ctx.external_lookup.as_ref(),
-                        &ctx.instances,
-                    ) {
+                    let result = if module_call {
+                        dispatch_module_call(&call.function_name, &call.args, &ctx.names, &ctx.instances)
+                    } else {
+                        dispatch_function_call(
+                            &call.function_name,
+                            call.object_id,
+                            &call.args,
+                            &ctx.names,
+                            &ctx.instances,
+                        )
+                    };
+                    match result {
                         CallResult::Sync(result) => Ok(Dispatched::Done(ext_result_to_resume(result))),
                         CallResult::Coroutine(coro) => {
                             let mode = CoroutineMode::for_function_call(call.allow_eager_await);
                             dispatch_coroutine(coro, call.call_id, mode, &mut join_set, &ctx.instances)
                         }
+                        CallResult::ModuleCoroutine { names, coros, then } => {
+                            dispatch_module_coroutine(names, coros, then)
+                        }
                     }
                 })
             };
+            // a module factory settles outside the callback context; the answer
+            // it unblocks is made back inside it
+            let dispatched = match dispatched {
+                Ok(Dispatched::Module(pending)) => {
+                    let settled = pending.settle().await;
+                    let mut join_set = ctx.pending_futures.lock().await;
+                    Python::attach(|py| {
+                        let _guard = context.enter(py, &native)?;
+                        let mode = CoroutineMode::for_function_call(call.allow_eager_await);
+                        settled.dispatch(py, call.call_id, mode, &mut join_set, &ctx.names, &ctx.instances)
+                    })
+                }
+                other => other,
+            };
             let answer = match dispatched {
                 Ok(Dispatched::Done(value)) => Ok(value),
+                Ok(Dispatched::Module(_)) => unreachable!("a pending module is settled above"),
                 Ok(Dispatched::Eager(future)) => {
                     eager = true;
                     Ok(ext_result_to_resume(future.await))
@@ -1319,20 +1366,28 @@ impl PyAsyncFutureSnapshot {
     /// `resume_auto` calls to settle, delivers them, and drives to the next
     /// snapshot. Raises if there are no pending coroutines to await — e.g. on a
     /// snapshot restored via `load_snapshot`, whose spawned coroutines lived in
-    /// the previous process (resolve those manually with `resume({...})`).
+    /// the previous process — without consuming it; resolve those manually.
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let ctx = self.0.snapshot.claim(py)?;
-        future_into_py(py, async move {
-            let resolved = {
-                let mut join_set = ctx.pending_futures.lock().await;
-                wait_for_futures(&mut join_set).await
+        let (ctx, mut join_set) = self.0.snapshot.claim_with(py, |ctx| {
+            let join_set = Arc::clone(&ctx.pending_futures)
+                .try_lock_owned()
+                .map_err(|_| PyRuntimeError::new_err("snapshot session is busy"))?;
+            if join_set.is_empty() {
+                Err(PyRuntimeError::new_err(
+                    "No pending async tasks but ResolveFutures requested",
+                ))
+            } else {
+                Ok(join_set)
             }
-            .and_then(|results| {
+        })?;
+        future_into_py(py, async move {
+            let resolved = wait_for_futures(&mut join_set).await.and_then(|results| {
                 results
                     .into_iter()
                     .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
                     .collect::<PyResult<Vec<_>>>()
             });
+            drop(join_set);
             let results = match resolved {
                 Ok(results) => results,
                 Err(err) => {

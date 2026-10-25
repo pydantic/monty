@@ -221,6 +221,16 @@ fn corpus() -> Vec<MontyObject> {
         ),
         MontyObject::function("f".to_owned(), None),
         MontyObject::function("fetch".to_owned(), Some(String::new())),
+        // an empty name is an implicit-presence default; id and attrs always encode
+        MontyObject::module(String::new(), MontyUuid::from_u128(0), []),
+        MontyObject::module(
+            "pkg.sub",
+            MontyUuid::from_u128(0xF20),
+            vec![(
+                MontyObject::string("f".to_owned()),
+                MontyObject::function("pkg.sub.f".to_owned(), None),
+            )],
+        ),
         MontyObject::repr(String::new()),
         MontyObject::repr("<unrepresentable>".to_owned()),
         MontyObject::cycle("[...]".to_owned()),
@@ -382,6 +392,11 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
         MontyNode::Function { name, docstring } => Kind::Function(oracle::Function {
             name: name.clone(),
             docstring: docstring.clone(),
+        }),
+        MontyNode::Module { name, id, attrs } => Kind::Module(oracle::ModuleNode {
+            name: name.clone(),
+            id: Some(oracle_uuid(id)),
+            attrs: Some(oracle_pairs(attrs)),
         }),
         MontyNode::Repr(r) => Kind::Repr(r.clone()),
         MontyNode::Cycle(placeholder) => Kind::Cycle(placeholder.clone()),
@@ -774,6 +789,29 @@ fn invalid_values_are_rejected_during_decode() {
             ),
         ]),
         "frame decode error: failed to decode Protobuf message: invalid value for ClassInstanceNode.instance_id: uuid must be 16 bytes, got 17"
+    );
+    // a module's id and attrs are required too
+    let module = |id: Option<oracle::Uuid>, attrs: Option<oracle::NodePairs>| {
+        Kind::Module(oracle::ModuleNode {
+            name: "tools".to_owned(),
+            id,
+            attrs,
+        })
+    };
+    assert_eq!(
+        rejected(module(None, Some(oracle::NodePairs::default()))),
+        "frame decode error: failed to decode Protobuf message: missing required field ModuleNode.id"
+    );
+    assert_eq!(
+        rejected(module(Some(oracle::Uuid { data: vec![7; 16] }), None)),
+        "frame decode error: failed to decode Protobuf message: missing required field ModuleNode.attrs"
+    );
+    assert_eq!(
+        rejected(module(
+            Some(oracle::Uuid { data: vec![7; 3] }),
+            Some(oracle::NodePairs::default())
+        )),
+        "frame decode error: failed to decode Protobuf message: invalid value for ModuleNode.id: uuid must be 16 bytes, got 3"
     );
     // an origin outside the enum is rejected rather than defaulted
     assert_eq!(

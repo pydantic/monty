@@ -100,6 +100,11 @@ pub struct MontyRepl {
 }
 
 impl MontyRepl {
+    /// The session heap and interns, for a dump upgrade of an idle session.
+    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
+        (&mut self.heap, &self.interns)
+    }
+
     /// Creates an empty REPL session with no code parsed or executed.
     ///
     /// All code execution is driven through [`feed_run`](Self::feed_run) or [`feed_start`](Self::feed_start). This separates
@@ -496,7 +501,7 @@ impl MontyRepl {
                                     vm.run_external()
                                 }
                                 Ok(exit) => {
-                                    let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
+                                    let error = vm.unsupported_frame_exit(exit);
                                     vm.resume_with_exception(error)
                                 }
                                 Err(error) => {
@@ -583,15 +588,22 @@ impl MontyRepl {
         }
     }
 
-    /// Returns the generated filename for the next interactive execution.
+    /// The filename the next snippet will run as, which a host can name in a
+    /// [`SourceRange`] it reports ahead of that snippet.
     ///
     /// CPython labels interactive inputs as `<python-input-N>`. Snippets and
     /// host function calls share this sequence so every traceback call site
     /// can be correlated with the session's execution history.
+    #[must_use]
+    pub fn next_script_name(&self) -> String {
+        format!("<python-input-{}>", self.next_input_id)
+    }
+
+    /// Takes the next interactive execution's filename; see [`Self::next_script_name`].
     fn next_input_script_name(&mut self) -> String {
-        let input_id = self.next_input_id;
+        let name = self.next_script_name();
         self.next_input_id += 1;
-        format!("<python-input-{input_id}>")
+        name
     }
 }
 
@@ -602,6 +614,14 @@ impl MontyRepl {
 /// to that REPL (or one configured alike), as the worker does.
 #[derive(Debug, Clone, Copy)]
 pub struct CheckedSource<'a>(&'a str);
+
+impl<'a> CheckedSource<'a> {
+    /// The checked snippet, for the type checker and import scan that run before the feed.
+    #[must_use]
+    pub fn code(&self) -> &'a str {
+        self.0
+    }
+}
 
 impl Drop for MontyRepl {
     fn drop(&mut self) {
@@ -653,6 +673,22 @@ pub struct ReplStartError {
 }
 
 impl ReplProgress {
+    /// The session heap and the interns its values refer to, for a dump upgrade.
+    /// While a snippet is in flight the executor holds the session's interns.
+    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
+        match self {
+            Self::FunctionCall(ReplFunctionCall { snapshot, .. })
+            | Self::OsCall(ReplOsCall { snapshot, .. })
+            | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
+                (&mut snapshot.repl.heap, &snapshot.executor.tables.interns)
+            }
+            Self::ResolveFutures(ReplResolveFutures { repl, executor, .. }) => {
+                (&mut repl.heap, &executor.tables.interns)
+            }
+            Self::Complete { repl, .. } => repl.heap_and_interns(),
+        }
+    }
+
     /// Consumes the progress and returns the [`ReplFunctionCall`] struct.
     #[must_use]
     pub fn into_function_call(self) -> Option<ReplFunctionCall> {
@@ -721,6 +757,17 @@ impl ReplProgress {
             Self::Complete { repl, .. } => repl.tracker(),
         }
     }
+
+    /// Returns the mutable tracker so hosts can tighten restored limits before resuming execution.
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
+        match self {
+            Self::FunctionCall(call) => call.snapshot.repl.tracker_mut(),
+            Self::OsCall(call) => call.snapshot.repl.tracker_mut(),
+            Self::ResolveFutures(state) => state.repl.tracker_mut(),
+            Self::NameLookup(lookup) => lookup.snapshot.repl.tracker_mut(),
+            Self::Complete { repl, .. } => repl.tracker_mut(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -766,7 +813,7 @@ impl ReplFunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.run(result, print)
+        self.snapshot.run(result.into(), print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` for async resolution.

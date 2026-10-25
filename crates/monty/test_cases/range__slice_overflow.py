@@ -1,4 +1,6 @@
-# xfail=cpython
+# /// monty
+# xfail = ['cpython']
+# ///
 # CPython represents range parameters as arbitrary-precision integers, so a
 # slice whose computed start/stop/step exceeds i64 simply produces a bigint
 # range and succeeds. Monty's Range stores i64 and cannot represent those

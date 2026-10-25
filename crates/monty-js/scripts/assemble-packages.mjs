@@ -1,4 +1,15 @@
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { deepStrictEqual } from 'node:assert'
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
@@ -68,6 +79,14 @@ rmSync(output, { recursive: true, force: true })
 mkdirSync(output, { recursive: true })
 
 execFileSync('npx', ['napi', 'create-npm-dirs'], { cwd: root, stdio: 'inherit' })
+deepStrictEqual(
+  readdirSync(join(root, 'npm'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort(),
+  [...triples].sort(),
+  'napi.targets must match runtimeArtifacts',
+)
 execFileSync('node', ['scripts/create-platform-packages.mjs'], { cwd: root, stdio: 'inherit' })
 
 for (const triple of triples) {
@@ -83,7 +102,9 @@ for (const triple of triples) {
 
 const component = join(root, 'dist', 'worker', 'component', 'monty.component.js')
 if (!existsSync(component)) throw new Error(`missing wasm component bindings: ${component}`)
-packAndValidate(root, 'monty-main.tgz', [
+const mainDirectory = join(root, 'npm', 'main')
+stageMainPackage(mainDirectory)
+packAndValidate(mainDirectory, 'monty-main.tgz', [
   'dist/index.js',
   'dist/node.js',
   'dist/shared.js',
@@ -97,3 +118,27 @@ packAndValidate(root, 'monty-main.tgz', [
   'native-addon.js',
   'native-addon.d.ts',
 ])
+
+/** Stages npm's publishable files with exact platform pins, leaving the development manifest unchanged. */
+function stageMainPackage(destination) {
+  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  manifest.optionalDependencies = Object.fromEntries(
+    triples.map((triple) => {
+      const platform = JSON.parse(readFileSync(join(root, 'npm', triple, 'package.json'), 'utf8'))
+      if (platform.name !== `${manifest.name}-${triple}` || platform.version !== manifest.version) {
+        throw new Error(`npm/${triple}/package.json must identify ${manifest.name}-${triple}@${manifest.version}`)
+      }
+      return [platform.name, platform.version]
+    }),
+  )
+
+  const [pack] = JSON.parse(
+    execFileSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], { cwd: root, encoding: 'utf8' }),
+  )
+  for (const { path } of pack.files) {
+    const target = join(destination, path)
+    mkdirSync(dirname(target), { recursive: true })
+    cpSync(join(root, path), target)
+  }
+  writeFileSync(join(destination, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+}

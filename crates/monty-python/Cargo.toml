@@ -31,6 +31,7 @@ monty-fs = { workspace = true }
 pyo3 = { workspace = true, features = ["indexmap", "generate-import-lib", "num-bigint"] }
 num-bigint = { workspace = true }
 pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
+futures-util = { workspace = true }
 # just enough to host the runtime pyo3-async-runtimes drives
 # (rt-multi-thread is needed for `block_in_place` in `block_on_sync`)
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }

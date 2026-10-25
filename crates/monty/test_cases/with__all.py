@@ -1,4 +1,6 @@
-# mount-fs
+# /// monty
+# mount-fs = true
+# ///
 
 # === Basic with + open ===
 with open(root / 'open_with.txt', 'w') as f:

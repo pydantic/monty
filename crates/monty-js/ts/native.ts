@@ -137,6 +137,22 @@ export interface ProtocolTurn {
   message: string
 }
 
+/** A remote worker's connection closed mid-session; the session is lost.
+ *  WebSocket pools only. */
+export interface DisconnectedTurn {
+  kind: 'disconnected'
+  message: string
+}
+
+/** A draining server declined the request, which did not run; the session is
+ *  lost. `dump` restores it on a fresh session, when the server stored it.
+ *  WebSocket pools only. */
+export interface ShutdownTurn {
+  kind: 'shutdown'
+  message: string
+  dump?: Uint8Array
+}
+
 /** A restore of an idle (between-feeds) dump — no suspension to resume. Only
  *  produced by `NativeSession.restore`, surfaced by `MontySession.loadSession`. */
 export interface LoadedTurn {
@@ -144,9 +160,34 @@ export interface LoadedTurn {
 }
 
 /** A non-feed request succeeded with no value or suspension. Only produced by
- *  `NativeSession.installDependencies`. */
+ *  `NativeSession.installDependencies` and `NativeSession.enter`. */
 export interface OkTurn {
   kind: 'ok'
+}
+
+/** No worker became available within the checkout timeout. Only produced by
+ *  `NativeSession.enter`. */
+export interface ExhaustedTurn {
+  kind: 'exhausted'
+  message: string
+}
+
+/** What `NativeSession.enter` resolves to: entered, or why not. */
+export type EnterTurn =
+  | OkTurn
+  | ExhaustedTurn
+  | ErrorTurn
+  | TypingErrorTurn
+  | CrashedTurn
+  | ProtocolTurn
+  | DisconnectedTurn
+  | ShutdownTurn
+
+/** The session's dump, or a storing server's record ID. Only produced by
+ *  `NativeSession.dump`. */
+export interface DumpedTurn {
+  kind: 'dumped'
+  state: Uint8Array
 }
 
 /** No mount covered the pending OS call, which stays suspended for the caller
@@ -166,6 +207,8 @@ export type NativeTurn =
   | TypingErrorTurn
   | CrashedTurn
   | ProtocolTurn
+  | DisconnectedTurn
+  | ShutdownTurn
 
 /** One settled promise outcome delivered to `resolveFutures`. */
 export interface NativeFutureResult {

@@ -40,8 +40,19 @@ if __name__ == '__main__':
 
 ## Usage with a local monty worker
 
+`AsyncFutureSnapshot.resume_auto()` raises without consuming the snapshot when no host coroutines remain to await,
+including after `load_snapshot()`.
+Resolve the pending calls manually with `await snapshot.resume({call_id: {'return_value': value}})` instead.
+
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.
+`external_modules` on `checkout()` maps import names to entries for every feed of the session, each either an
+`ExternalModule` or a zero-argument factory returning one; the mapping is read live and each entry validated at its
+first import, and a factory runs once, when a feed first needs it, and may be async under `AsyncMonty`.
+An `ExternalModule` copies its `attrs` dict at construction and imports as a `module` object: callables become host
+functions, nested `ExternalModule` values become importable submodules, and other values are converted normally.
+Its `id` identifies the module when it crosses back out of the sandbox.
+The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.

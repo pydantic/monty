@@ -11,9 +11,6 @@
 import type { NativeMountDir } from '../native-addon.js'
 import type { MountDir } from './mountDir.js'
 
-// Mirrors monty-fs's DEFAULT_MEMORY_USAGE_LIMIT (100 MB in decimal bytes).
-export const DEFAULT_MEMORY_USAGE_LIMIT = 100_000_000
-
 /** Sandbox access mode for a mounted directory. */
 export type MountDirMode = 'read-only' | 'read-write' | 'overlay'
 
@@ -44,7 +41,7 @@ export interface MountDirOptions {
   mode?: MountDirMode
   /** Cap on total bytes written through this mount. */
   writeBytesLimit?: number
-  /** Aggregate mount memory budget in bytes (default 100 MB). */
+  /** Aggregate mount memory budget in bytes (default: monty-fs's `DEFAULT_MEMORY_USAGE_LIMIT`). */
   memoryUsageLimit?: number
 }
 

@@ -59,7 +59,7 @@ pub(crate) use zip_longest::ZipLongest;
 #[cfg(target_pointer_width = "64")]
 use crate::types::Dict;
 use crate::{
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     exception_private::RunResult,
     heap::{HeapId, HeapItem, HeapObjectRead},
     types::{LazyHeapSet, PyTrait, Type},
@@ -345,8 +345,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     /// Recursion is charged by [`step::next_source`], not here: the level is

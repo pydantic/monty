@@ -20,9 +20,9 @@ use monty_proto::{
     os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
-    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
-    ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
+    MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy,
+    PrintStream, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -197,7 +197,7 @@ pub struct MountSpec {
 
 impl MountSpec {
     /// Opens `host_path` and creates mount configuration with the default
-    /// 100 MB memory budget and no cumulative write limit.
+    /// memory budget ([`monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`]) and no cumulative write limit.
     ///
     /// Build this once and reuse it; each call resolves the path afresh. The
     /// open is blocking filesystem I/O, so an async caller opening a directory
@@ -282,6 +282,11 @@ pub enum TurnEvent {
     /// [`Checkout::resume`]. A caller with no handler should resume with
     /// [`ResumeValue::NotHandled`]; the sandbox then raises the call's own
     /// no-handler default.
+    ///
+    /// Answer host imports from the caller's modules before other handlers.
+    /// [`OsFunctionCall::Import`] takes a module value; `NotFound` / `NotHandled` raise
+    /// `ModuleNotFoundError`. [`OsFunctionCall::ImportStubs`] takes a dict of dotted
+    /// module paths to `.pyi` source or `None`, or `NotHandled` for no stubs.
     OsCall {
         function_name: String,
         /// One arena holding every positional and keyword argument.
@@ -334,7 +339,7 @@ pub enum ResumeValue {
     /// other tasks; resolve later via [`Checkout::resume_futures`].
     Future,
     /// No handler exists for the called name — the sandbox raises
-    /// `NameError`.
+    /// `NameError` (`ModuleNotFoundError` for an `import`).
     NotFound,
     /// No handler accepted this OS call — the sandbox raises the call's own
     /// no-handler default (`PermissionError` naming the path for filesystem
@@ -449,9 +454,8 @@ pub struct Checkout {
 }
 
 /// Parent-enforced limits from `Configure` or the first reply after `Load`.
-/// Restoring resets suspension and sleep totals, but keeps their limits as ceilings:
-/// untrusted worker replies can only tighten them. Duration budgets backstop the
-/// child's enforcement, so restoring adopts the dump's duration limits.
+/// Restoring resets suspension and sleep totals, but keeps every limit as a ceiling:
+/// untrusted worker replies, including the `Load` reply, can only tighten them.
 #[derive(Clone, Copy)]
 struct SessionBudget {
     /// The session's `max_feed_duration`, when configured.
@@ -498,12 +502,12 @@ impl SessionBudget {
         }
     }
 
-    /// Clears `Configure` state before adopting a dump's budget. The
-    /// suspension and sleep limits stay: they are the ceilings on the dump's.
+    /// Clears consumption before adopting a dump's budget. The limits stay:
+    /// they are the ceilings on the dump's.
     fn forget(&mut self) {
         *self = Self {
-            feed_budget: None,
-            turn_budget: None,
+            feed_budget: self.feed_budget,
+            turn_budget: self.turn_budget,
             reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
@@ -513,22 +517,16 @@ impl SessionBudget {
         };
     }
 
-    /// Adopts unknown limits and records consumption, counting suspensions in the parent.
-    /// Untrusted replies can only increase reported time and tighten suspension or sleep limits.
+    /// Tightens limits and records consumption, counting suspensions in the parent.
+    /// Untrusted replies can only increase reported time and tighten limits.
     /// Ordinary replies echo limits; a `Load` reply reports the dump's.
     fn update_from(&mut self, event: &pb::ChildEvent) {
         self.reported_feed_execution = self
             .reported_feed_execution
             .max(Duration::from_micros(event.feed_execution_micros));
-        if self.feed_budget.is_none() {
-            self.feed_budget = event.max_feed_duration_micros.map(Duration::from_micros);
-        }
-        if self.turn_budget.is_none() {
-            self.turn_budget = event.max_turn_duration_micros.map(Duration::from_micros);
-        }
-        if let Some(reported) = event.max_total_sleep_micros.map(Duration::from_micros) {
-            self.sleep_limit = Some(self.sleep_limit.map_or(reported, |limit| limit.min(reported)));
-        }
+        self.feed_budget = tighter(self.feed_budget, event.max_feed_duration_micros);
+        self.turn_budget = tighter(self.turn_budget, event.max_turn_duration_micros);
+        self.sleep_limit = tighter(self.sleep_limit, event.max_total_sleep_micros);
         if let Some(reported) = event.max_suspensions {
             self.suspension_limit = self.suspension_limit.min(reported);
         }
@@ -591,6 +589,14 @@ impl SessionBudget {
         .into_iter()
         .flatten()
         .min()
+    }
+}
+
+/// The stricter of a limit and a worker-reported one, in microseconds; `None` is unlimited.
+fn tighter(limit: Option<Duration>, reported_micros: Option<u64>) -> Option<Duration> {
+    match (limit, reported_micros.map(Duration::from_micros)) {
+        (Some(limit), Some(reported)) => Some(limit.min(reported)),
+        (limit, reported) => limit.or(reported),
     }
 }
 
@@ -792,10 +798,11 @@ impl Checkout {
     /// calls can still be answered by [`Checkout::resume_from_mounts`]. A dump
     /// taken mid-OS-call re-announces the call in full, so the returned event
     /// is that same [`TurnEvent::OsCall`] — restoring never answers it here.
-    /// The session's resource budget is taken from the dump, so the prior
-    /// `Configure` limits are dropped here and re-adopted from the worker's
-    /// reply — except that this checkout's configured `max_suspensions` stays
-    /// as a ceiling on the re-adopted one; the count restarts at zero.
+    /// The worker caps snapshot resource limits at the checkout's configured limits.
+    /// Stricter snapshot limits and elapsed execution time remain in effect.
+    /// The parent adopts these effective limits from the worker's reply, but keeps
+    /// its configured ones as ceilings, so a lying worker cannot loosen them.
+    /// The suspension count restarts at zero.
     ///
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
@@ -920,11 +927,10 @@ impl Checkout {
             cwd,
         }));
         let outcome = self.expect_turn(&request, on_print).await;
-        // The worker adopts the directory after type checking and before it
-        // parses or runs the snippet, so once the request reached it every
-        // reply but a typing rejection (a `SyntaxError` included) means it
-        // took effect; a lost worker takes the session with it.
-        if self.request_sent && !matches!(outcome, Err(PoolError::Typing(_))) {
+        // The worker adopts the directory as the request arrives, before the
+        // stubs ask and type checking, so once the request reached it every
+        // reply means it took effect; a lost worker takes the session with it.
+        if self.request_sent {
             self.cwd_set = true;
         }
         outcome
@@ -1852,6 +1858,18 @@ impl Checkout {
                     };
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
+                    // TypingError can only end a checked feed or its pending import_stubs call.
+                    // Accepting it elsewhere would falsely mark a suspended feed complete.
+                    let type_checked = match &request.kind {
+                        Some(pb::parent_request::Kind::Feed(feed)) => !feed.skip_type_check,
+                        Some(pb::parent_request::Kind::ResumeCall(resume)) => resume.call_id == IMPORT_STUBS_CALL_ID,
+                        _ => false,
+                    };
+                    if !type_checked {
+                        return Err(
+                            self.protocol_violation("TypingError reply to a request that is not a type-checked Feed")
+                        );
+                    }
                     self.pending = None;
                     self.feed_mounts = None;
                     return Err(PoolError::Typing(typing.diagnostics));

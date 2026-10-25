@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 """Locks in the exception type, message, and frame layout for the canonical
 cross-gather coroutine reuse case (the reachable-on-live-server repro from
 `01-gather-double-spawn.md`)."""
@@ -17,7 +19,7 @@ await asyncio.gather(g1, g2)  # pyright: ignore
 """
 TRACEBACK:
 Traceback (most recent call last):
-  File "async__gather_double_spawn_traceback.py", line 16, in <module>
+  File "async__gather_double_spawn_traceback.py", line 18, in <module>
     await asyncio.gather(g1, g2)  # pyright: ignore
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 RuntimeError: cannot reuse already awaited coroutine

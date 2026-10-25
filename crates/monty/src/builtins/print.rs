@@ -7,8 +7,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
     intern::StaticStrings,
+    py_value::PyValue,
     types::PyTrait,
     value::{Marker, Value},
 };
@@ -115,19 +115,9 @@ struct PrintArgs {
 /// The kwarg can be None (returns None) or a string (returns Some).
 /// Raises TypeError for other types.
 fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<Option<String>> {
-    match value {
-        Value::None => Ok(None),
-        Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
-        Value::Ref(id) => {
-            if let HeapData::Str(s) = vm.heap.get(*id) {
-                return Ok(Some(s.as_str().to_owned()));
-            }
-            Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("{} must be None or a string, not {}", name, value.py_type_name(vm)),
-            )
-            .into())
-        }
+    match value.py_value(vm) {
+        PyValue::None => Ok(None),
+        PyValue::Str(string) => Ok(Some(string.as_str(vm).to_owned())),
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("{} must be None or a string, not {}", name, value.py_type_name(vm)),

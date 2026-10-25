@@ -17,6 +17,9 @@
 
 use std::borrow::Cow;
 
+use num_bigint::{BigInt, Sign};
+use num_traits::ToPrimitive;
+
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -143,10 +146,16 @@ pub(crate) trait FromValue: Sized {
     /// CPython does in the function body belongs in the body (see
     /// `NormForm::parse` in `unicodedata.rs`).
     fn extract_into(value: Value, slot: &mut Option<Self>, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<()> {
-        // Capture the name before conversion can free the instance's class.
-        // The result borrows only the interner, never the heap.
-        let got_name =
-            Self::EXPECTED_TYPE_NAME.map(|_| value.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns));
+        // Capture both names before conversion can free the instance's class;
+        // they borrow only the interner, never the heap. `_PyArg_BadArgument`
+        // names `None` by value, the plain `type_error` fallback by type.
+        let got = Self::EXPECTED_TYPE_NAME.map(|_| {
+            let got_type = value.py_type_heap(vm.heap);
+            (
+                got_type.cpython_arg_name(vm.heap, vm.interns),
+                got_type.name(vm.heap, vm.interns),
+            )
+        });
         match Self::from_value(value, vm) {
             Ok(extracted) => {
                 *slot = Some(extracted);
@@ -157,14 +166,18 @@ pub(crate) trait FromValue: Sized {
                 // `WrongType` is only reported by impls with an
                 // `EXPECTED_TYPE_NAME`, so the snapshot is always present;
                 // "object" keeps that unreachable arm honest without a panic.
-                let got = got_name.unwrap_or(Cow::Borrowed("object"));
+                let (arg_name, got) = got.unwrap_or((Cow::Borrowed("object"), Cow::Borrowed("object")));
                 Err(match (ctx, Self::EXPECTED_TYPE_NAME) {
                     (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
-                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, got)
+                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, arg_name)
                     }
-                    (ArgErrCtx::BadArgNamed { func_name, arg_name }, Some(expected)) => {
-                        ExcType::type_error_bad_arg_named(func_name, arg_name, expected, got)
-                    }
+                    (
+                        ArgErrCtx::BadArgNamed {
+                            func_name,
+                            arg_name: name,
+                        },
+                        Some(expected),
+                    ) => ExcType::type_error_bad_arg_named(func_name, name, expected, arg_name),
                     _ => Self::type_error(&got),
                 })
             }
@@ -259,10 +272,48 @@ fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValu
 /// rewrite would produce the absurd "must be int, not int". Also used by
 /// consumer-specific int impls (e.g. `timedelta`'s component extraction).
 pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
+    long_int(value, vm).is_some()
+}
+
+/// The big integer behind an `int` too wide for `Value::Int`, if that is
+/// what `value` is; the one lookup for every C-width converter.
+pub(crate) fn long_int<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a BigInt> {
     match value {
-        Value::InternLongInt(_) => true,
-        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
-        _ => false,
+        Value::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::LongInt(big) => Some(big.inner()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+impl FromValue for u64 {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
+    /// Argument Clinic's `unsigned_long` converter with a 64-bit `long`: a
+    /// negative int is a `ValueError` before the width is checked.
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let value = resolve_index_dunder(value, vm)?;
+        let result = match value {
+            Value::Bool(b) => Ok(Self::from(b)),
+            Value::Int(i) => Self::try_from(i).map_err(|_| FromValueFail::Raise(ExcType::value_error_negative_int())),
+            _ => match long_int(&value, vm) {
+                Some(big) if big.sign() == Sign::Minus => {
+                    Err(FromValueFail::Raise(ExcType::value_error_negative_int()))
+                }
+                Some(big) => big
+                    .to_u64()
+                    .ok_or_else(|| FromValueFail::Raise(ExcType::overflow_c_unsigned_long())),
+                None => Err(FromValueFail::WrongType),
+            },
+        };
+        value.drop_with(vm);
+        result
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_integer(got)
     }
 }
 

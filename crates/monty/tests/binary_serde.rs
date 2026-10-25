@@ -24,7 +24,7 @@ fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
 /// Round-trips a paused run through the dump format, asserting it comes back on
 /// the arm it went out on.
 fn round_trip_progress(progress: &RunProgress) -> RunProgress {
-    let bytes = dump("test.py", None, SessionRef::Running(progress)).unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(progress)).unwrap();
     match Dump::load(&bytes).unwrap().state {
         Session::Running(progress) => *progress,
         _ => panic!("dumped a running session, loaded something else"),
@@ -339,6 +339,70 @@ fn run_progress_round_trip_at_external_call() {
     // Resume execution with a return value
     let result = call.resume(MontyObject::int(100), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::int(101)); // 100 + 1
+}
+
+/// Interned integer roots retain their identities and interner references across suspension and restore.
+#[test]
+fn run_progress_round_trip_interned_integers() {
+    let code = "
+def literal():
+    return 18446744073709551616
+n = literal()
+identity = id(n)
+d = {n: 'value'}
+ext_fn(n)
+assert literal() is n
+assert id(n) == identity
+assert d[1 << 64] == 'value'
+assert 2 * n == 1 << 65
+n
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded = round_trip_progress(&progress);
+    for progress in [progress, loaded] {
+        let call = progress.into_function_call().expect("should be at function call");
+        let expected = call.args.args().next().unwrap().to_owned();
+        let result = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
+        assert_eq!(result.into_complete().unwrap(), expected);
+    }
+}
+
+/// A dump keeps a deleted entry's tombstone, so an iterator dumped past one
+/// resumes on the entry it would have read next. Compacting the table would
+/// renumber its slots and skip `2`.
+#[test]
+fn run_progress_round_trip_iterators_past_a_tombstone() {
+    let code = "
+d = {i: i for i in range(4)}
+d.pop(0)
+di = iter(d)
+next(di)
+s = {0, 1, 2, 3}
+s.discard(0)
+si = iter(s)
+next(si)
+ext_fn()
+str((list(di), list(si)))
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded = round_trip_progress(&progress);
+
+    // Both are resumed, as in the itertools test below: an unresumed
+    // `RunProgress` leaves its globals' refs unreleased.
+    let expected = MontyObject::string("([2, 3], [2, 3])");
+    for progress in [progress, loaded] {
+        let call = progress.into_function_call().expect("should be at function call");
+        let result = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+        assert_eq!(result.into_complete().unwrap(), expected);
+    }
 }
 
 #[test]

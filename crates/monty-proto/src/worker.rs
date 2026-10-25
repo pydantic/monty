@@ -22,11 +22,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump, source_within_nesting_bound};
-use monty_type_checking::{SourceFile, TypeChecker};
+use monty::{
+    CheckedSource, Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump,
+    type_check_nesting_exception,
+};
+use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
-    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
+    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
+    ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
+    PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD, SourceRange,
     TypeCheckState, TypeCheckingConfig, allocate_into_baseline,
 };
 
@@ -186,6 +190,17 @@ enum SessionState {
     /// Mid-feed, waiting for a resume request. Never holds
     /// `ReplProgress::Complete` — completion ends the turn immediately.
     Suspended(Box<ReplProgress>),
+    /// A feed awaiting host stubs before type checking.
+    AwaitingStubs(Box<PendingFeed>),
+}
+
+/// A feed held until the parent answers `import_stubs`.
+struct PendingFeed {
+    repl: Box<MontyRepl>,
+    code: String,
+    inputs: NamedValues,
+    /// Requested modules, in source order.
+    asked: Vec<String>,
 }
 
 /// All state of one protocol child: the current REPL session plus the
@@ -216,6 +231,8 @@ pub struct Child {
     print_flush_interval: Duration,
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
     os_policy: OsPolicy,
+    /// Host module stubs received through `import_stubs` or restored by `Load`.
+    module_stubs: Vec<ModuleStub>,
 }
 
 impl Default for Child {
@@ -227,6 +244,7 @@ impl Default for Child {
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
+            module_stubs: Vec::new(),
         }
     }
 }
@@ -340,8 +358,7 @@ impl Child {
     /// A host that bounds the worker process from outside the interpreter (the
     /// subprocess shell caps its own allocator) sizes that bound from this,
     /// after every request: the budget changes when a session is configured,
-    /// restored from a dump — which brings its own limits, not the
-    /// `Configure`'s — or ended by `Reset`.
+    /// restored from a dump with limits capped by `Configure`, or ended by `Reset`.
     #[must_use]
     pub fn session_budget(&self) -> SessionBudget {
         match &self.state {
@@ -363,6 +380,7 @@ impl Child {
             SessionState::Configured(None) => SessionBudget::default(),
             SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
             SessionState::Suspended(progress) => self.tracker_budget(progress.tracker()),
+            SessionState::AwaitingStubs(pending) => self.tracker_budget(pending.repl.tracker()),
         }
     }
 
@@ -433,6 +451,7 @@ impl Child {
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
             SessionState::Suspended(progress) => progress.tracker(),
+            SessionState::AwaitingStubs(pending) => pending.repl.tracker(),
             // no repl materialized yet → no tracker to report
             SessionState::Configured(_) => return,
         };
@@ -458,9 +477,9 @@ impl Child {
                 Some(Ok(os_policy)) => os_policy,
                 Some(Err(err)) => return protocol_violation(&format!("invalid os_policy: {err}")),
             };
-            // ty parses the stubs with every feed, unguarded.
+            // ty walks the stubs with every feed, unguarded.
             if let Some(stubs) = &configure.type_check_stubs
-                && !source_within_nesting_bound(stubs, SOURCE_SCAN_THRESHOLD)
+                && type_check_nesting_exception(stubs, "repl_type_stubs.pyi", SOURCE_SCAN_THRESHOLD).is_err()
             {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
@@ -480,7 +499,7 @@ impl Child {
         let config = match &mut self.state {
             SessionState::Configured(config) => config.take(),
             // already materialized (or mid-feed) — nothing to do here
-            SessionState::Ready(_) | SessionState::Suspended(_) => return Ok(()),
+            SessionState::Ready(_) | SessionState::Suspended(_) | SessionState::AwaitingStubs(_) => return Ok(()),
         };
         let Some(config) = config else {
             return Err(Box::new(protocol_violation("session has not been configured")));
@@ -516,6 +535,9 @@ impl Child {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
             config: type_check_config,
+            committed_imports: String::new(),
+            pending_imports: String::new(),
+            asked_modules: Vec::new(),
         });
         // Missing field means an older parent; the feature defaults to on.
         let options = CompileOptions {
@@ -532,30 +554,13 @@ impl Child {
         Ok(())
     }
 
-    /// Runs a `Feed` on the ready session: scans the snippet for nesting,
-    /// type-checks it (unless skipped), injects inputs, and drives execution to
-    /// the turn-ending event.
+    /// Checks source nesting and requests missing host stubs before starting a feed.
     fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::ChildEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
-        let SessionState::Ready(repl) = &self.state else {
-            // ensure_repl left it un-Ready only when mid-suspension
+        if !matches!(self.state, SessionState::Ready(_)) {
             return protocol_violation("Feed without a session ready for input");
-        };
-        // Before anything parses the snippet: neither ty nor the compile scan again.
-        let code = match repl.check_source(&feed.code) {
-            Ok(code) => code,
-            Err(error) => {
-                return event(pb::child_event::Kind::Error(pb::Error {
-                    exception: Some((&error).into()),
-                }));
-            }
-        };
-        if !feed.skip_type_check
-            && let Some(event) = self.type_check_feed(&feed.code)
-        {
-            return event;
         }
         let inputs = match named_values_from_proto(feed.inputs, feed.values) {
             Ok(inputs) => inputs,
@@ -564,29 +569,176 @@ impl Child {
         let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
-        // The working directory persists in the REPL (including `os.chdir`);
-        // the parent sends one only to switch it, and an older parent never does.
+        // Check nesting before the import scan, ty or the compiler parses the snippet.
+        let code = feed.code;
+        let checked = match repl.check_source(&code) {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.state = SessionState::Ready(repl);
+                return error_event_from(&error);
+            }
+        };
+        // The working directory persists in the REPL (including `os.chdir`); the parent
+        // sends one only to switch it, and the switch holds whatever the feed's outcome.
         if !feed.cwd.is_empty() {
             repl.set_cwd(&feed.cwd);
         }
         // snippets fed with skip_type_check never become type-check context:
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either
-        if !feed.skip_type_check
-            && let Some(state) = &mut self.type_check
-        {
-            state.pending_snippet = Some(feed.code.clone());
+        let type_checked = !feed.skip_type_check && self.type_check.is_some();
+        if type_checked && let Some(state) = &mut self.type_check {
+            let imports = scan_imports(&code);
+            state.pending_snippet = Some(code.clone());
+            state.pending_imports = imports.prelude;
+            // Each answer is final for the session, even if it contains no stub.
+            let unasked = |name: &str| {
+                !SANDBOX_MODULE_NAMES.contains(&name)
+                    && !CHECKER_MODULE_NAMES.contains(&name)
+                    && !state.asked_modules.iter().any(|asked| asked == name)
+            };
+            if let Some(first) = imports.modules.iter().find(|module| unasked(&module.name)) {
+                let asked: Vec<String> = imports
+                    .modules
+                    .iter()
+                    .filter(|module| unasked(&module.name))
+                    .map(|module| module.name.clone())
+                    .collect();
+                let position = SourceRange::new(
+                    &repl.next_script_name(),
+                    first.range.start().to_u32(),
+                    first.range.end().to_u32(),
+                );
+                let ask = OsFunctionCall::ImportStubs(asked.clone());
+                self.state = SessionState::AwaitingStubs(Box::new(PendingFeed {
+                    repl,
+                    code,
+                    inputs,
+                    asked,
+                }));
+                return event(pb::child_event::Kind::OsCall(os_call_to_proto(
+                    IMPORT_STUBS_CALL_ID,
+                    ask,
+                    false,
+                    &position,
+                )));
+            }
+        }
+        self.start_feed(repl, checked, inputs, type_checked, sink)
+    }
+
+    /// Optionally type-checks, injects inputs and executes to the turn-ending event.
+    fn start_feed(
+        &mut self,
+        repl: Box<MontyRepl>,
+        checked: CheckedSource<'_>,
+        inputs: NamedValues,
+        type_checked: bool,
+        sink: &mut dyn EventSink,
+    ) -> pb::ChildEvent {
+        if type_checked && let Some(event) = self.type_check_feed(checked.code()) {
+            self.state = SessionState::Ready(repl);
+            self.discard_pending_snippet();
+            return event;
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
-        let result = repl.feed_start_checked(code, inputs, PrintWriter::Callback(&mut print));
+        let result = repl.feed_start_checked(checked, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result);
         print.drain();
         event
     }
 
+    /// Records the stubs and starts the pending feed; an exception answer ends it before execution.
+    fn handle_resume_stubs(&mut self, resume: pb::ResumeCall, sink: &mut dyn EventSink) -> pb::ChildEvent {
+        if resume.call_id != IMPORT_STUBS_CALL_ID {
+            return protocol_violation(&format!(
+                "ResumeCall call_id {} does not match {IMPORT_STUBS_CALL_ID}",
+                resume.call_id
+            ));
+        }
+        let Some(wire_result) = resume.result else {
+            return protocol_violation("ResumeCall has no result");
+        };
+        let SessionState::AwaitingStubs(pending) = &self.state else {
+            unreachable!("checked by the caller");
+        };
+        let not_handled = matches!(wire_result.kind, Some(pb::ext_function_result::Kind::NotHandled(_)));
+        let result = if not_handled {
+            ExtFunctionResult::NotFound(String::new())
+        } else {
+            match ext_result_from_proto(wire_result, resume.values) {
+                Ok(result) => result,
+                Err(err) => return protocol_violation(&format!("invalid result: {err}")),
+            }
+        };
+        let stubs = match result {
+            ExtFunctionResult::Return(answer) => match stubs_from_answer(&answer, &pending.asked) {
+                Ok(stubs) => stubs,
+                Err(message) => return protocol_violation(&message),
+            },
+            ExtFunctionResult::NotFound(_) => Vec::new(),
+            ExtFunctionResult::Future(_) => {
+                return protocol_violation("import_stubs cannot be answered with a future");
+            }
+            ExtFunctionResult::Error(exc) => {
+                let SessionState::AwaitingStubs(pending) =
+                    mem::replace(&mut self.state, SessionState::Configured(None))
+                else {
+                    unreachable!("checked above");
+                };
+                return self.fail_pending_feed(*pending, &exc);
+            }
+        };
+        let SessionState::AwaitingStubs(pending) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
+            unreachable!("checked above");
+        };
+        for stub in stubs {
+            if !self.module_stubs.iter().any(|known| known.module() == stub.module()) {
+                self.module_stubs.push(stub);
+            }
+        }
+        let PendingFeed {
+            repl,
+            code,
+            inputs,
+            asked,
+        } = *pending;
+        if let Some(state) = &mut self.type_check {
+            state.asked_modules.extend(asked);
+        }
+        // already found within the bound on arrival, so this cannot fail
+        let checked = match repl.check_source(&code) {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.state = SessionState::Ready(repl);
+                self.discard_pending_snippet();
+                return error_event_from(&error);
+            }
+        };
+        self.start_feed(repl, checked, inputs, true, sink)
+    }
+
+    /// Returns the exception and readies the session after a feed fails before execution.
+    fn fail_pending_feed(&mut self, pending: PendingFeed, exc: &MontyException) -> pb::ChildEvent {
+        self.state = SessionState::Ready(pending.repl);
+        self.discard_pending_snippet();
+        error_event_from(exc)
+    }
+
+    /// Excludes a failed feed from later type checks.
+    fn discard_pending_snippet(&mut self) {
+        if let Some(state) = &mut self.type_check {
+            state.pending_snippet = None;
+            state.pending_imports.clear();
+        }
+    }
+
     /// Answers a suspended external function or OS call with the parent's
     /// result, checking the `call_id` matches, then resumes execution.
     fn handle_resume_call(&mut self, resume: pb::ResumeCall, sink: &mut dyn EventSink) -> pb::ChildEvent {
+        if matches!(self.state, SessionState::AwaitingStubs(_)) {
+            return self.handle_resume_stubs(resume, sink);
+        }
         let expected_call_id = match &self.state {
             SessionState::Suspended(progress) => match progress.as_ref() {
                 ReplProgress::FunctionCall(call) => Some(call.call_id),
@@ -671,7 +823,7 @@ impl Child {
         // Guard against a corrupt `Complete` state instead of crashing.
         let suspended = matches!(&self.state, SessionState::Suspended(progress)
             if !matches!(progress.as_ref(), ReplProgress::Complete { .. }));
-        if !suspended {
+        if !suspended && !matches!(self.state, SessionState::AwaitingStubs(_)) {
             return protocol_violation("AbortFeed without a suspended feed");
         }
         let Some(exception) = abort.exception else {
@@ -681,8 +833,11 @@ impl Child {
             Ok(exc) => exc,
             Err(err) => return protocol_violation(&format!("invalid exception: {err}")),
         };
-        let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
-            unreachable!("checked above");
+        let progress = match mem::replace(&mut self.state, SessionState::Configured(None)) {
+            SessionState::Suspended(progress) => progress,
+            // a feed held for its stubs never started, so there is nothing to unwind
+            SessionState::AwaitingStubs(pending) => return self.fail_pending_feed(*pending, &exc),
+            _ => unreachable!("checked above"),
         };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = match *progress {
@@ -752,9 +907,16 @@ impl Child {
         let session = match &self.state {
             SessionState::Ready(repl) => SessionRef::Idle(repl),
             SessionState::Suspended(progress) => SessionRef::Suspended(progress),
+            // the feed is not yet part of the session, so the dump could not carry it
+            SessionState::AwaitingStubs(_) => {
+                return error_event(
+                    ExcType::RuntimeError,
+                    "cannot dump while a feed awaits its module stubs",
+                );
+            }
             SessionState::Configured(_) => unreachable!("ensure_repl materialized the repl or errored"),
         };
-        match dump(&self.script_name, self.type_check.as_ref(), session) {
+        match dump(&self.script_name, self.type_check.as_ref(), &self.module_stubs, session) {
             Ok(state) => event(pb::child_event::Kind::DumpResult(pb::DumpResult {
                 state: state.into(),
             })),
@@ -772,9 +934,12 @@ impl Child {
     /// session), the repl exists and `Load` is rejected rather than silently
     /// discarding it.
     fn handle_load(&mut self, load: &pb::Load) -> pb::ChildEvent {
-        if !matches!(self.state, SessionState::Configured(_)) {
-            return protocol_violation("Load requires a session that has not started (a feed has already run)");
-        }
+        let limits = match &self.state {
+            SessionState::Configured(config) => {
+                ResourceLimits::from(config.as_ref().and_then(|config| config.limits).unwrap_or_default())
+            }
+            _ => return protocol_violation("Load requires a session that has not started (a feed has already run)"),
+        };
         let restored = match Dump::load(&load.state) {
             Ok(restored) => restored,
             Err(err) => return protocol_violation(&format!("failed to load session: {err}")),
@@ -782,8 +947,15 @@ impl Child {
         let Dump {
             script_name,
             type_check,
-            state,
+            module_stubs,
+            mut state,
         } = restored;
+        // Retain snapshot clocks and stricter limits across both idle and suspended restores.
+        match &mut state {
+            Session::Idle(repl) => repl.tracker_mut().tighten_limits(&limits),
+            Session::Suspended(progress) => progress.tracker_mut().tighten_limits(&limits),
+            Session::Running(_) => {}
+        }
         // In-process Rust producers can dump suspensions exceeding the wire size limit;
         // check transport compatibility even though snapshot integrity is the host's responsibility.
         let mut event = match state {
@@ -820,6 +992,8 @@ impl Child {
         // name so the parent can report it without parsing the opaque dump.
         if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
             self.script_name = script_name;
+            // the dump's stubs, not this worker's `Configure`: the session was checked against them
+            self.module_stubs = module_stubs;
             self.type_check = type_check;
             event.restored_script_name = Some(self.script_name.clone());
         }
@@ -835,6 +1009,19 @@ impl Child {
                 if let Some(state) = &mut self.type_check
                     && let Some(snippet) = state.pending_snippet.take()
                 {
+                    // The stubs' star import does not re-export imports. Keep them separately,
+                    // deduplicated and ordered so the latest binding wins.
+                    let imports = mem::take(&mut state.pending_imports);
+                    let mut committed: Vec<&str> = state.committed_imports.lines().collect();
+                    for import in imports.lines() {
+                        committed.retain(|line| *line != import);
+                        committed.push(import);
+                    }
+                    let mut joined = committed.join("\n");
+                    if !joined.is_empty() {
+                        joined.push('\n');
+                    }
+                    state.committed_imports = joined;
                     state.committed_stubs.push('\n');
                     state.committed_stubs.push_str(&snippet);
                 }
@@ -872,12 +1059,8 @@ impl Child {
             Err(err) => {
                 // Python-level failure: the session always survives
                 self.state = SessionState::Ready(Box::new(err.repl));
-                if let Some(state) = &mut self.type_check {
-                    state.pending_snippet = None;
-                }
-                event(pb::child_event::Kind::Error(pb::Error {
-                    exception: Some((&err.error).into()),
-                }))
+                self.discard_pending_snippet();
+                error_event_from(&err.error)
             }
         }
     }
@@ -885,23 +1068,30 @@ impl Child {
     /// Ends the current feed with a runtime error while keeping the REPL usable.
     fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl, message: &str) -> pb::ChildEvent {
         self.state = SessionState::Ready(Box::new(repl));
-        if let Some(state) = &mut self.type_check {
-            state.pending_snippet = None;
-        }
+        self.discard_pending_snippet();
         error_event(ExcType::RuntimeError, message)
     }
 
-    /// Type-checks a snippet against the accumulated session stubs. Returns
-    /// the turn-ending event if the check fails (or errors), `None` to
-    /// proceed with execution.
+    /// Checks against accumulated stubs and imports, returning an event on failure.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
+        // `check_source` already ran the lexer scan, so only the AST walk is left.
+        if let Err(error) = type_check_nesting_exception(code, &self.script_name, usize::MAX) {
+            return Some(event(pb::child_event::Kind::Error(pb::Error {
+                exception: Some((&error).into()),
+            })));
+        }
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
+        let context = TypeCheckContext {
+            stubs: stubs.as_ref(),
+            module_stubs: &self.module_stubs,
+            prelude: &state.committed_imports,
+        };
         let type_checker = self
             .type_checker
             .get_or_insert_with(|| allocate_into_baseline(TypeChecker::default));
-        match type_checker.run(&SourceFile::new(code, &self.script_name), stubs.as_ref(), state.config) {
+        match type_checker.run_with(&SourceFile::new(code, &self.script_name), &context, state.config) {
             Ok(None) => None,
             Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
                 diagnostics: diagnostics.to_string(),
@@ -921,6 +1111,7 @@ impl Child {
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.os_policy = OsPolicy::default();
+        self.module_stubs = Vec::new();
         self.type_checker.as_mut().map_or(Ok(()), TypeChecker::reset)
     }
 }
@@ -979,6 +1170,39 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
             data: None,
         }),
     }))
+}
+
+/// Preserves the exception's traceback in the error event.
+fn error_event_from(exc: &MontyException) -> pb::ChildEvent {
+    event(pb::child_event::Kind::Error(pb::Error {
+        exception: Some(exc.into()),
+    }))
+}
+
+/// Validates a dict of dotted module paths to `.pyi` source or `None`.
+/// Paths must belong to a requested module; errors are protocol-violation messages.
+fn stubs_from_answer(answer: &MontyObject, asked: &[String]) -> Result<Vec<ModuleStub>, String> {
+    let answer = answer.as_ref();
+    let pairs = match answer.pairs() {
+        Some(pairs) if answer.type_name() == "dict" => pairs,
+        _ => return Err("import_stubs must be answered with a dict of module to stub source".to_owned()),
+    };
+    let mut stubs = Vec::new();
+    for (key, value) in pairs {
+        let Some(module) = key.as_str() else {
+            return Err("import_stubs answer keys must be module names".to_owned());
+        };
+        let top_level = module.split('.').next().unwrap_or_default();
+        if !asked.iter().any(|name| name == top_level) {
+            return Err(format!("import_stubs answered for {module:?}, which was not asked for"));
+        }
+        if let Some(source) = value.as_str() {
+            stubs.push(ModuleStub::new(module, source).map_err(|err| format!("import_stubs: {err}"))?);
+        } else if value.type_name() != "NoneType" {
+            return Err(format!("import_stubs answer for {module:?} must be a str or None"));
+        }
+    }
+    Ok(stubs)
 }
 
 /// Stamps `tracker`'s timing and parent-enforced limits onto an event. Called

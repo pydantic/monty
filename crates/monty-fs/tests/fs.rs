@@ -553,9 +553,10 @@ fn rw_rename() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    call(&mut mt, &rename("/mnt/hello.txt", "/mnt/renamed.txt"))
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/renamed.txt")),
+        MontyObject::none()
+    );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
         MontyObject::bool(false)
@@ -1097,9 +1098,10 @@ fn ovl_mem_rename() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
-    call(&mut mt, &rename("/mnt/hello.txt", "/mnt/moved.txt"))
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/moved.txt")),
+        MontyObject::none()
+    );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
         MontyObject::bool(false)
@@ -1332,9 +1334,10 @@ fn ovl_mem_rename_to_same_path() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
-    call(&mut mt, &rename("/mnt/hello.txt", "/mnt/hello.txt"))
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        call_ok(&mut mt, &rename("/mnt/hello.txt", "/mnt/hello.txt")),
+        MontyObject::none()
+    );
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/hello.txt".into())),
         MontyObject::bool(true)
@@ -1743,11 +1746,10 @@ fn mount_at_mnt_with_memory_limit(tmpdir: &TempDir, mode: MountMode, limit: u64)
 }
 
 #[test]
-fn mount_memory_usage_limit_defaults_to_100_mb() {
+fn mount_memory_usage_limit_defaults_to_the_constant() {
     let dir = create_test_dir();
     let mount = Mount::new("/mnt", dir.path(), MountMode::ReadOnly, None).unwrap();
 
-    assert_eq!(DEFAULT_MEMORY_USAGE_LIMIT, 100_000_000);
     assert_eq!(mount.memory_usage_limit(), DEFAULT_MEMORY_USAGE_LIMIT);
     assert_eq!(mount.memory_usage(), 0);
 }

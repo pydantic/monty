@@ -213,7 +213,7 @@ fn operand_kind(value: &Value, vm: &VM<'_>) -> Option<Operand> {
             Some(Operand::TypeLike)
         }
         // `typing.Any`, `typing.List` and the other forms all define `__or__`.
-        Value::Marker(marker) if marker.py_type() != Type::TextIOWrapper => Some(Operand::TypeLike),
+        Value::Marker(marker) if marker.py_type() == Type::SpecialForm => Some(Operand::TypeLike),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Union(_) => Some(Operand::Union),
             HeapData::Class(_)

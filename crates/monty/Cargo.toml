@@ -42,14 +42,18 @@ unicode-general-category = { workspace = true }
 unicode_names2 = "1"
 unicode-normalization = "0.1"
 memchr = { workspace = true }
-smallvec = { version = "1.13", features = ["serde"] }
+# `union` keeps `Tuple` within `HeapData`'s 56-byte 32-bit limit (heap_data.rs);
+# without it wasm32 builds that do not also link ty fail that assert
+smallvec = { version = "1.13", features = ["serde", "union"] }
 fancy-regex = "0.17.0"
 # worker-side uuid generation for sandbox-defined classes/instances crossing the
 # boundary; supports native and wasm32-wasip1 (WASI random)
 getrandom = "0.3"
 libm = "0.2"
-# `random.seed(str | bytes)` extends the seed with its SHA-512 digest, as CPython does
-sha2 = { version = "0.10", default-features = false }
+# `hashlib`'s SHA-1 and SHA-2, for their hardware-accelerated compression; `sha2` also backs
+# `random.seed(str | bytes)`, which extends the seed with a SHA-512 digest as CPython does
+sha1 = { version = "0.11", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 chrono = { workspace = true }
 speedate = "0.17.0"
 itertools = "0.14.0"

@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 # Nested async function calls
 
 
