@@ -1794,11 +1794,15 @@ pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceT
     let abs_str = if let Some(word) = non_finite_repr(percent_val, false) {
         format!("{word}%")
     } else {
-        let mut digits = fmt_float_fixed(abs_val, precision, tracker)?;
-        // `fmt_float_fixed` leaves room for the `%`, so this never reallocates for ordinary values.
-        digits.push('%');
+        let digits = fmt_float_fixed(abs_val, precision, tracker)?;
+        // A builder rather than `push`: digits past `u16::MAX` precision fill their buffer exactly,
+        // so growing it in place would skip the soft memory check.
+        let mut output = format_builder(digits.len().saturating_add(1), tracker)?;
+        push_format_str(&mut output, &digits, tracker)?;
+        output.push('%')?;
+        let abs_str = output.finish_raw()?;
         // `#` forces the point before the `%` (`#.0%` → `50.%`).
-        maybe_alternate_point(digits, abs_val, spec)
+        maybe_alternate_point(abs_str, abs_val, spec)
     };
     let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec, tracker)
@@ -2241,7 +2245,23 @@ const MAX_FMT_PRECISION_EXP: usize = (u16::MAX as usize) - 1;
 /// every additional digit Python would emit is a zero anyway.
 fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION || !abs_val.is_finite() {
-        return Ok(write_float(abs_val, precision, format_args!("{abs_val:.precision$}")));
+        let int_digits = if abs_val >= 1.0 && abs_val.is_finite() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "`log10` of a finite value >= 1 is in 0..309"
+            )]
+            let digits = abs_val.log10() as usize;
+            digits + 1
+        } else {
+            1
+        };
+        return Ok(write_float(
+            abs_val,
+            int_digits,
+            precision,
+            format_args!("{abs_val:.precision$}"),
+        ));
     }
     let base = format!("{abs_val:.MAX_FMT_PRECISION$}");
     let extra = precision - MAX_FMT_PRECISION;
@@ -2262,9 +2282,9 @@ fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) ->
 fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION_EXP || !abs_val.is_finite() {
         return Ok(if uppercase {
-            write_float(abs_val, precision, format_args!("{abs_val:.precision$E}"))
+            write_float(abs_val, 1, precision, format_args!("{abs_val:.precision$E}"))
         } else {
-            write_float(abs_val, precision, format_args!("{abs_val:.precision$e}"))
+            write_float(abs_val, 1, precision, format_args!("{abs_val:.precision$e}"))
         });
     }
     let base = if uppercase {
@@ -2342,17 +2362,19 @@ impl Write for StackDigits {
     }
 }
 
-/// Room beyond `precision` reserved by [`write_float`]: a 21-digit integer part, the point and a suffix.
-const FLOAT_DIGITS_SLACK: usize = 24;
+/// Room [`write_float`] reserves beyond the digits: the point, an exponent like `e+308`,
+/// a rounding carry and an estimate of the integer digits that is off by one.
+const FLOAT_DIGITS_SLACK: usize = 9;
 
-/// Writes formatted float `args` into a buffer sized for the result.
+/// Writes formatted float `args` into a buffer sized for `int_digits` before the point and
+/// `precision` after it.
 ///
 /// `format!` sizes its buffer from the literal text, which is empty for a bare float, so its
-/// buffer would grow through several reallocations. The slack also lets `%` be appended in place.
-/// `precision` only sizes finite values: non-finite ones ignore it, and it may be huge.
-fn write_float(abs_val: f64, precision: usize, args: fmt::Arguments<'_>) -> String {
+/// buffer would grow through several reallocations. The sizes only apply to finite values:
+/// non-finite ones ignore precision, which may be huge.
+fn write_float(abs_val: f64, int_digits: usize, precision: usize, args: fmt::Arguments<'_>) -> String {
     let capacity = if abs_val.is_finite() {
-        precision.saturating_add(FLOAT_DIGITS_SLACK)
+        int_digits.saturating_add(precision).saturating_add(FLOAT_DIGITS_SLACK)
     } else {
         3
     };

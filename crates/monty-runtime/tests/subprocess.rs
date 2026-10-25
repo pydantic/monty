@@ -1138,6 +1138,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
         ("'%*d' % (2_000_000, 1)", 2_042_087),
         ("'%.*f' % (1_000_000, 1.0)", 1_171_127),
+        // A `%` presentation copies its digits into a builder to add the suffix, refused there.
+        ("f'{0.5:.700000%}'", 1_442_609),
         ("'%.*d' % (2_000_000, 1)", 2_042_091),
         ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_547),
         ("b'%*d' % (2_000_000, 1)", 2_050_309),
