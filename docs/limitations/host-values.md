@@ -66,6 +66,23 @@ A host `Decimal` whose coefficient exceeds 4300 digits is rejected as an invalid
 A trapped decimal signal reaching a Python host is the real `decimal` exception class, but its `args` hold the
 message string rather than CPython's list of condition classes.
 
+## Type hints
+
+A host function or class carries its type hints in, for `typing.get_type_hints()` in the sandbox (see [typing.md](typing.md#get_type_hints)).
+The sandbox returns them as sent and never evaluates them.
+
+- **Hints other than builtin types become text.**
+    A type outside the allowlist above crosses as its dotted name (`'mymod.User'`), and an alias or union as its repr (`'list[str]'`, `'int | None'`); `None` crosses as `NoneType`.
+    The sandbox cannot resolve the text back to an object.
+- **Python resolves hints with `typing.get_type_hints`** on the host.
+    If that raises (an unresolvable forward reference), the raw `__annotations__` are sent instead, so resolved and unresolved hints can mix; if both fail, no hints are sent.
+- **A host class's hints are its `__annotations__` attribute** in the sandbox, so `HostCls.__annotations__` holds the converted hints, and a host class proxy's `attributes` include them.
+    [`ClassType.get_type_hints`][pydantic_monty.ClassType.get_type_hints] supplies them, evaluated once per class.
+- **Hints are shared per function name.**
+    Host functions with the same name are one sandbox object, so the latest non-empty set of hints sent for that name applies to every reference.
+- **JavaScript hosts send no hints**, so `get_type_hints` of a JavaScript function is `{}`.
+- **Hints only flow in.** A host function returned to the host carries none.
+
 ## Conversion failures
 
 An unsupported host-function or `os` callback result raises a catchable `TypeError` inside the sandbox.

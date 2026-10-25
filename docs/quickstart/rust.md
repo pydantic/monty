@@ -317,6 +317,23 @@ let RunProgress::Complete(result) = progress else { panic!("expected completion"
 assert_eq!(result, MontyObject::int(42));
 ```
 
+A host function can also carry type hints, which `typing.get_type_hints()` returns unevaluated in the sandbox:
+
+```rust
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject, MontyType};
+
+let fetch = MontyObject::function_with_annotations(
+    "fetch",
+    None,
+    [("url", MontyObject::type_object(MontyType::Str)), ("return", MontyObject::string("Page"))],
+);
+let code = "import typing
+typing.get_type_hints(fetch)['return']";
+let mut runner = MontyRun::new(code.to_owned(), "main.py", vec!["fetch".to_owned()], CompileOptions::default()).unwrap();
+assert_eq!(runner.run_no_limits(vec![fetch]).unwrap(), MontyObject::string("Page"));
+```
+
 Async host functions work the same way: [`FunctionCall::resume_pending`](../api/rust/monty.md#functioncall) continues with a pending future the sandboxed
 code can `await`, and when every task is blocked the run yields [`RunProgress::ResolveFutures`](../api/rust/monty.md#runprogress) for the host to settle.
 When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the

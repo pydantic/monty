@@ -174,6 +174,10 @@ Not every value crosses unchanged: unsupported sandbox values become strings, an
 are truncated.
 See [host-value limitations](limitations/host-values.md) for conversion failures, identity rules and size caps.
 
+A Python host function also carries its type hints, so `typing.get_type_hints(f)` in the sandbox returns them.
+Builtin types arrive as type objects and anything else as text; JavaScript functions carry none.
+See [type hints](limitations/host-values.md#type-hints) for the conversion rules.
+
 ## Raising into the sandbox
 
 An exception raised by a host function crosses the boundary and behaves like an ordinary Python exception inside the

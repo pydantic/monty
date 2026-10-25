@@ -171,6 +171,9 @@ The construction runs on the host, and the new instance crosses back governed by
 A constructed instance keeps the [`ClassType`][pydantic_monty.ClassType] that built it, so `type(p)` is the class the sandbox was given.
 On a `ClassType` itself, `eager_attrs`, `lazy_attrs` and `allowed_methods` expose class constants, classmethods and
 staticmethods.
+The class's type hints, from [`ClassType.get_type_hints()`][pydantic_monty.ClassType.get_type_hints], become its
+`__annotations__` in the sandbox, so `typing.get_type_hints(Person)` works there; see
+[type hints](limitations/host-values.md#type-hints).
 
 ## Values returned by methods
 
