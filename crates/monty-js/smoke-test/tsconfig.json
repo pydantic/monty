@@ -5,8 +5,8 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "outDir": "dist",
-    "skipLibCheck": true,
-    "lib": ["ES2022", "DOM"]
+    "skipLibCheck": false,
+    "lib": ["ES2022", "ESNext.Disposable", "DOM"]
   },
-  "include": ["test.ts", "node.ts"]
+  "include": ["test.ts", "node.ts", "wasm-types.ts"]
 }

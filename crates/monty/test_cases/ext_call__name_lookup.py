@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # Tests for NameLookup resolution with various value types.
 # Verifies that the host can inject non-function values (constants)
 # into the sandbox namespace via the NameLookup mechanism.

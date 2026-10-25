@@ -11,8 +11,8 @@ use monty_types::{
     MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
     MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues,
     OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
-    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, SleepMode, SourceRange, StackFrame, TimeCaller,
-    UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
+    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode, SourceRange, StackFrame,
+    TimeCaller, UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -289,6 +289,27 @@ fn class_instance_and_function_values_round_trip() {
 }
 
 #[test]
+fn module_values_round_trip() {
+    assert_value_round_trip(&MontyObject::module("tools", MontyUuid::from_u128(7), []));
+    // a submodule is a module attr of its parent, functions are named by their dotted path
+    assert_value_round_trip(&MontyObject::module(
+        "pkg",
+        MontyUuid::from_u128(8),
+        vec![
+            (
+                MontyObject::string("add".to_owned()),
+                MontyObject::function("pkg.add".to_owned(), None),
+            ),
+            (MontyObject::string("VERSION".to_owned()), MontyObject::int(3)),
+            (
+                MontyObject::string("sub".to_owned()),
+                MontyObject::module("pkg.sub", MontyUuid::from_u128(9), []),
+            ),
+        ],
+    ));
+}
+
+#[test]
 fn repr_and_cycle_round_trip() {
     assert_value_round_trip(&MontyObject::repr("<unrepresentable>".to_owned()));
 
@@ -498,25 +519,27 @@ fn json_error_payload_round_trips() {
     assert_eq!(back, exc);
 
     // A payload without a document (dropped for oversized inputs) also survives.
-    let exc = MontyException::new(ExcType::JsonDecodeError, Some("boom".to_owned())).with_data(ExcData::Json(
-        Box::new(JsonErrorData {
+    let message = "Expecting value: line 5 column 2 (char 100000)".to_owned();
+    let exc = MontyException::new(ExcType::JsonDecodeError, Some(message)).with_data(ExcData::Json(Box::new(
+        JsonErrorData {
             msg: "Expecting value".to_owned(),
             doc: None,
             pos: 100_000,
             lineno: 5,
             colno: 2,
-        }),
-    ));
+        },
+    )));
     let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
     assert_eq!(back, exc);
 }
 
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
 /// child controls, for probing the receive-side sanitizer.
+/// The message is `msg` with a location suffix, as both decode errors format it.
 fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno: u64) -> pb::RaisedException {
     pb::RaisedException {
         exc_type: "json.JSONDecodeError".to_owned(),
-        message: Some("boom".to_owned()),
+        message: Some(format!("{msg}: line {lineno} column {colno} (char {pos})")),
         traceback: vec![].into(),
         data: Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData {
@@ -534,14 +557,17 @@ fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno
 fn bogus_json_payloads_are_dropped_not_trusted() {
     let oversized = "x".repeat(JsonErrorData::MAX_DOC_LEN + 1);
     // As with unicode payloads, rejected data must not block conversion.
+    // `msg` longer than the message it should prefix
+    let mut longer_msg = json_exception("Expecting value".to_owned(), None, 0, 1, 1);
+    longer_msg.message = Some("boom".to_owned());
     let bogus = [
-        json_exception(oversized.clone(), None, 0, 1, 1),
-        json_exception("msg".to_owned(), Some(oversized), 0, 1, 1),
+        longer_msg,
+        json_exception("msg".to_owned(), Some(oversized.clone()), 0, 1, 1),
         // 0 is not a valid 1-based line/column
         json_exception("msg".to_owned(), None, 0, 0, 1),
         json_exception("msg".to_owned(), None, 0, 1, 0),
-        // pos beyond the document
-        json_exception("msg".to_owned(), Some("[]".to_owned()), 3, 1, 1),
+        // pos more than one past the end of the document
+        json_exception("msg".to_owned(), Some("[]".to_owned()), 4, 1, 1),
     ];
     for proto in bogus {
         let back = MontyException::try_from(proto).expect("malformed payload must not block conversion");
@@ -559,6 +585,31 @@ fn bogus_json_payloads_are_dropped_not_trusted() {
     ))
     .unwrap();
     assert!(matches!(back.data(), ExcData::Json(data) if data.pos == 3 && data.colno == 4));
+
+    // `tomllib` reports an escape cut off by the end of input one past it.
+    let back = MontyException::try_from(json_exception(
+        "Unescaped '\\' in a string".to_owned(),
+        Some("a = \"\\".to_owned()),
+        7,
+        1,
+        8,
+    ))
+    .unwrap();
+    assert!(matches!(back.data(), ExcData::Json(data) if data.pos == 7));
+
+    // A `msg` past the document cap survives while its message carries it
+    // (a `tomllib` error naming a very long key).
+    let back = MontyException::try_from(json_exception(oversized.clone(), None, 0, 1, 1)).unwrap();
+    assert!(matches!(back.data(), ExcData::Json(data) if data.msg.len() == JsonErrorData::MAX_DOC_LEN + 1));
+
+    // Without a message, `msg` falls back to the document cap.
+    let mut no_message = json_exception("Expecting value".to_owned(), None, 0, 1, 1);
+    no_message.message = None;
+    let back = MontyException::try_from(no_message).unwrap();
+    assert!(matches!(back.data(), ExcData::Json(data) if data.msg == "Expecting value"));
+    let mut no_message = json_exception(oversized, None, 0, 1, 1);
+    no_message.message = None;
+    assert_eq!(MontyException::try_from(no_message).unwrap().data(), &ExcData::None);
 }
 
 #[test]
@@ -980,6 +1031,14 @@ fn os_calls_round_trip_all_variants() {
             name: Some("CET".to_owned()),
         })),
         OsFunctionCall::Urandom(UrandomArgs { size: 2496 }),
+        OsFunctionCall::Scan(ScanArgs::listing(p(), Some(1), false)),
+        OsFunctionCall::Scan(ScanArgs::listing(p(), None, true)),
+        OsFunctionCall::Scan(ScanArgs::glob(
+            p(),
+            vec!["**".to_owned(), "*.py".to_owned(), String::new()],
+            Some(false),
+            true,
+        )),
         OsFunctionCall::Sleep(Duration::ZERO),
         OsFunctionCall::Sleep(Duration::from_nanos(1)),
         OsFunctionCall::Sleep(Duration::from_millis(1_500)),
@@ -1119,6 +1178,19 @@ fn shutdown_event_round_trips() {
     };
     let back = decode_frame::<pb::ChildEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
     assert_eq!(back, bare);
+}
+
+/// A stubs ask naming a module twice is refused: a host runs one factory per
+/// name, and a compromised child must not multiply that work.
+#[test]
+fn a_stubs_ask_repeating_a_module_is_rejected() {
+    let call = pb::os_call::Call::ImportStubs(pb::os_call::ImportStubs {
+        modules: ["tools", "other", "tools"].map(str::to_owned).into_iter().collect(),
+    });
+    assert_eq!(
+        OsFunctionCall::try_from(call).unwrap_err().to_string(),
+        "invalid value for ImportStubs.modules: module \"tools\" is asked about twice"
+    );
 }
 
 /// A child-supplied fixed offset outside `datetime.timezone`'s range is refused

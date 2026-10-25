@@ -152,3 +152,32 @@ fn invalid_write_limit_is_rejected_during_mount_parsing() {
         "error: invalid write limit 'abc' in '".to_owned() + &mount + "': expected a non-negative integer"
     );
 }
+
+#[test]
+fn path_and_os_mutation_contracts_on_native_mounts() {
+    let code = r"
+from pathlib import Path
+import os
+source = Path('before.txt')
+source.write_text('hello')
+target = source.rename(target='after.txt')
+assert target == Path('after.txt')
+assert target.read_text() == 'hello'
+assert target.replace(target=Path('final.txt')) == Path('final.txt')
+assert Path('final.txt').read_text() == 'hello'
+assert os.rename('final.txt', 'before.txt') is None
+assert os.replace('before.txt', 'after.txt') is None
+assert Path('after.txt').stat(follow_symlinks=True).st_size == 5
+assert Path('after.txt').unlink(missing_ok=False) is None
+assert Path('after.txt').unlink(missing_ok=True) is None
+assert list(Path('.').iterdir()) == []
+";
+    let script_dir = script_dir(code);
+    let script = script_dir.path().join("script.py");
+    for mode in ["rw", "overlay"] {
+        let host_dir = TempDir::new().unwrap();
+        let mount = format!("{}::/data::{mode}", host_dir.path().display());
+        let (success, stderr) = run_monty(&["--mount", &mount, "--cwd", "/data", script.to_str().unwrap()]);
+        assert!(success, "{mode}: {stderr}");
+    }
+}

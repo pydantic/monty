@@ -1,4 +1,6 @@
-# gc-interval=200
+# /// monty
+# gc-interval = 200
+# ///
 
 # Test that isinstance() with deeply-nested classinfo tuples raises
 # RecursionError instead of overflowing the Rust stack.

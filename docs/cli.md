@@ -61,7 +61,7 @@ before running anything.
 Without a mount, the sandbox has no filesystem at all.
 See [filesystem access](filesystem.md).
 
-CLI mounts always use the default per-mount memory limit of 100 MB; there is no flag to change it.
+CLI mounts always use the default per-mount memory limit, [`DEFAULT_MEMORY_USAGE_LIMIT`](api/rust/monty-fs.md#default_memory_usage_limit); there is no flag to change it.
 
 The sandbox's [working directory](filesystem.md#working-directory) defaults to the first mount's virtual path, so
 `monty -m ./data::/data script.py` runs with `os.getcwd() == '/data'` and `__file__ == '/data/script.py'`; `--cwd`

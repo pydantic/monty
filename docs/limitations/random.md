@@ -46,7 +46,7 @@ it is included in a dump, as is the session's `random_start`.
 - **No `SystemRandom`**, and `random.Random` cannot be subclassed (Monty has no class inheritance, see
     [classes.md](classes.md)).
     `random.Random.VERSION` on the class raises `AttributeError`; on an instance it is `3`.
-    Instances have no `gauss_next` attribute.
+    Reading an instance's `gauss_next` raises `AttributeError: 'Random' object has no attribute 'gauss_next'`.
 - **Copying an unseeded generator gives two independent streams.** `copy.copy(rng)` and `copy.deepcopy(rng)` rebuild
     a generator at the same point in the same sequence, but one that has never been seeded has no state to carry, so
     each copy takes its own first state on its first draw.

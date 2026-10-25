@@ -87,6 +87,8 @@ mod _monty {
     // fresh session); `MontyStdTypeProxy` stands in for builtin functions and
     // type objects the host never materialises from sandbox output.
     #[pymodule_export]
+    use monty_proto::python::PyExternalModule as ExternalModule;
+    #[pymodule_export]
     use monty_proto::python::PyMontyClassProxy as MontyClassProxy;
     #[pymodule_export]
     use monty_proto::python::PyMontyClassTypeProxy as MontyClassTypeProxy;
@@ -148,13 +150,15 @@ mod _monty {
     use super::PySourceRange as SourceRange;
     #[pymodule_export]
     use super::telemetry::_install_telemetry;
-    use super::{get_not_handled, get_version};
+    use super::{get_not_handled, get_version, pool::binary_finder};
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         let py = m.py();
         m.add("__version__", get_version())?;
         m.add("NOT_HANDLED", get_not_handled(py)?.clone_ref(py))?;
+        // cache the binary resolver now so pool construction never imports
+        binary_finder(py)?;
         Ok(())
     }
 }

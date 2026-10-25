@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # `os.urandom(size)` asks the host for `size` bytes.
 import os
 

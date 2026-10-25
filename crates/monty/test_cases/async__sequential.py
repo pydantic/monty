@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 # Multiple sequential awaits
 
 

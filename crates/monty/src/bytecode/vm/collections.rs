@@ -4,13 +4,13 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
     intern::StringId,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
         instance::instance_defines_iter, slice::value_to_option_i64,
     },
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 impl VM<'_> {
@@ -143,7 +143,7 @@ impl VM<'_> {
 
             // Extend the list
             if let Value::Ref(id) = list_ref {
-                let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
+                let HeapReadOutput::List(list) = this.heap.read(*id) else {
                     panic!("list_extend: expected List on heap");
                 };
                 let list = list.get_mut(this.heap);
@@ -273,7 +273,7 @@ impl VM<'_> {
                     _ => "<unknown>".to_string(),
                 };
 
-                let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+                let HeapReadOutput::Dict(dict) = this.heap.read(dict_id) else {
                     unreachable!("DictMerge: entry is not a Dict")
                 };
 
@@ -339,7 +339,7 @@ impl VM<'_> {
         let copied_items = copied_items.into_iter();
         defer_drop_mut!(copied_items, this);
         for (key, value) in copied_items {
-            let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+            let HeapReadOutput::Dict(dict) = this.heap.read(dict_id) else {
                 unreachable!("DictUpdate: heap entry is always a Dict — compiler invariant")
             };
             let old = dict.set(key, value, this)?;
@@ -388,7 +388,7 @@ impl VM<'_> {
         let copied_items = copied_items.into_iter();
         defer_drop_mut!(copied_items, this);
         for item in copied_items {
-            let HeapReadOutput::Set(mut set) = this.heap.read(set_id) else {
+            let HeapReadOutput::Set(set) = this.heap.read(set_id) else {
                 unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
             };
             set.add(item, this)?;
@@ -417,7 +417,7 @@ impl VM<'_> {
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
 
-        let HeapReadOutput::List(mut list) = self.heap.read(list_id) else {
+        let HeapReadOutput::List(list) = self.heap.read(list_id) else {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
@@ -440,7 +440,7 @@ impl VM<'_> {
             return Err(RunError::internal("SetAdd: expected set ref on stack"));
         };
 
-        let HeapReadOutput::Set(mut set) = self.heap.read(set_id) else {
+        let HeapReadOutput::Set(set) = self.heap.read(set_id) else {
             value.drop_with(self);
             return Err(RunError::internal("SetAdd: expected set on heap"));
         };
@@ -467,7 +467,7 @@ impl VM<'_> {
             return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
         };
 
-        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
+        let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             key.drop_with(self);
             value.drop_with(self);
             return Err(RunError::internal("DictSetItem: expected dict on heap"));
@@ -495,6 +495,23 @@ impl VM<'_> {
 
         let value = this.pop();
         defer_drop!(value, this);
+
+        // Fast path: tuple, list, push onto stack without a temporary vector.
+        if let Some(items) = exact_sequence_items(value, this.heap) {
+            if items.len() != count {
+                return Err(unpack_size_error(count, items.len()));
+            }
+            if count > this.stack.capacity() - this.stack.len() {
+                let capacity = this.stack.len().saturating_add(count);
+                this.heap
+                    .tracker
+                    .check_allocation(capacity.saturating_mul(VALUE_SIZE))?;
+                this.stack.reserve_exact(count);
+            }
+            this.stack
+                .extend(items.iter().rev().map(|item| item.clone_with_heap(this.heap)));
+            return Ok(());
+        }
         let items = unpack_exact(value, count, this)?;
         // Push items in reverse order so first item is on top
         for item in items.into_iter().rev() {
@@ -582,18 +599,21 @@ fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
 /// Python unpack (`random.setstate`). Consumes at most `count + 1` items, so an
 /// endless iterable still fails.
 pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+    // Fast path: tuple, list; unpack without iterator.
+    if let Some(items) = exact_sequence_items(value, vm.heap) {
+        if items.len() != count {
+            return Err(unpack_size_error(count, items.len()));
+        }
+        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
+        return Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
+    }
     if !value.py_is_iterable(vm) {
         return Err(unpack_type_error(value, vm));
     }
-    // CPython's `UNPACK_SEQUENCE` special-cases exactly these three, so only
-    // they can report a total in the "too many" message. It is deliberately
-    // a local match rather than a `PyTrait` method: the set is a quirk of
-    // one CPython error message, not a property types should declare, and
-    // nothing may branch on it to decide *how* to iterate.
+    // Dicts also report their total size in the "too many" error; other
+    // iterables stop at the first surplus item without reporting a total.
     let total = match value {
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::List(list) => Some(list.len()),
-            HeapData::Tuple(tuple) => Some(tuple.as_slice().len()),
             HeapData::Dict(dict) => Some(dict.len()),
             _ => None,
         },
@@ -618,6 +638,18 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
         };
         items.drop_with(vm);
         Err(err)
+    }
+}
+
+/// Returns borrowed items for built-in tuples and lists so unpacking can bypass the iterator protocol.
+fn exact_sequence_items<'a>(value: &Value, heap: &'a Heap) -> Option<&'a [Value]> {
+    let Value::Ref(id) = value else {
+        return None;
+    };
+    match heap.get(*id) {
+        HeapData::Tuple(tuple) => Some(tuple.as_slice()),
+        HeapData::List(list) => Some(list.as_slice()),
+        _ => None,
     }
 }
 

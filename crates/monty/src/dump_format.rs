@@ -25,10 +25,13 @@ use minicbor_serde::{
     Deserializer, Serializer,
     error::{DecodeError, EncodeError},
 };
-use monty_types::TypeCheckState;
+use monty_types::{ModuleStub, TypeCheckState};
 use serde::{Deserialize, Serialize, de::Error as _};
 
 use crate::{
+    dump_upgrade,
+    heap::Heap,
+    intern::Interns,
     repl::{MontyRepl, ReplProgress},
     run_progress::RunProgress,
 };
@@ -45,14 +48,19 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// `BuiltinsFunctions` order (its discriminants are bytecode operands),
 /// `CmpOperator` values, the compiler's constant layout, how a dict or set key
 /// hashes (entries persist their hash), or a semantic change to a stored value.
-/// Older dumps are then rejected instead of misexecuting.
+/// Frozen code is persisted too: incompatible changes to its Rust entry arguments or
+/// private native helper contracts need compatibility handling or a bump. Compatible
+/// source-body changes do not require one; restored sessions retain their captured code.
+/// Older builds then reject the new dumps instead of misexecuting them, and this
+/// build rejects dumps below [`MIN_SUPPORTED_DUMP_VERSION`].
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 13;
+pub const DUMP_VERSION: u16 = 14;
 
-/// Set to [`DUMP_VERSION`], the current dump version, until this crate can load older dumps.
-pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
+/// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
+/// over an older dump, rebuilding what the newer versions changed.
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 13;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);
@@ -77,6 +85,7 @@ const MIN_PAYLOAD_CAPACITY: usize = 1024;
 pub fn dump(
     script_name: &str,
     type_check: Option<&TypeCheckState>,
+    module_stubs: &[ModuleStub],
     state: SessionRef<'_>,
 ) -> Result<Vec<u8>, DumpEncodeError> {
     /// Borrowed mirror of [`Dump`]; serde encodes it identically.
@@ -84,6 +93,7 @@ pub fn dump(
     struct DumpRef<'a> {
         script_name: &'a str,
         type_check: Option<&'a TypeCheckState>,
+        module_stubs: &'a [ModuleStub],
         state: SessionRef<'a>,
     }
 
@@ -94,6 +104,7 @@ pub fn dump(
     let dump = DumpRef {
         script_name,
         type_check,
+        module_stubs,
         state,
     };
     dump.serialize(&mut Serializer::new(&mut bytes))
@@ -113,6 +124,10 @@ pub struct Dump {
     pub script_name: String,
     /// `Some` when the session was created with type checking enabled.
     pub type_check: Option<TypeCheckState>,
+    /// The stubs of the session's host-provided modules, whether or not it
+    /// type-checks, so a restored session checks against the same ones.
+    #[serde(default)]
+    pub module_stubs: Vec<ModuleStub>,
     /// The interpreter state, and where it was paused.
     pub state: Session,
 }
@@ -128,8 +143,8 @@ impl Dump {
     /// Successful decoding does not authenticate or fully validate a snapshot.
     /// The same contract applies to direct serde deserialization.
     ///
-    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], which is one
-    /// version wide until a compatibility mechanism lowers the floor.
+    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], upgrading a
+    /// dump older than [`DUMP_VERSION`] before returning it.
     ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read. The version
@@ -155,10 +170,16 @@ impl Dump {
         } else {
             let payload = &bytes[HEADER_LEN..];
             let mut deserializer = Deserializer::new(payload);
-            let value = Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
+            let mut value =
+                Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
             // trailing bytes are rejected rather than ignored, so a padded dump
             // cannot decode as the shorter valid one it starts with
             if deserializer.into_decoder().position() == payload.len() {
+                if version < DUMP_VERSION
+                    && let Some((heap, interns)) = value.state.heap_and_interns()
+                {
+                    dump_upgrade::upgrade(version, heap, interns);
+                }
                 Ok(value)
             } else {
                 Err(DumpError::Payload(DumpDecodeError::custom(
@@ -183,6 +204,17 @@ pub enum Session {
     /// A one-shot [`crate::MontyRun`] execution paused at a suspension. Not a
     /// repl, so it cannot be fed further — only resumed to completion.
     Running(Box<RunProgress>),
+}
+
+impl Session {
+    /// The session heap and its interns, or `None` for a one-shot run that has completed.
+    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &Interns)> {
+        match self {
+            Self::Idle(repl) => Some(repl.heap_and_interns()),
+            Self::Suspended(progress) => Some(progress.heap_and_interns()),
+            Self::Running(progress) => progress.heap_and_interns(),
+        }
+    }
 }
 
 /// Borrowed counterpart of [`Session`] used when dumping, so a live session can
@@ -335,7 +367,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xa05b_38e4_12c3_61f8,
+            0xa78a_9e6c_3fab_abed,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );
@@ -361,14 +393,14 @@ mod tests {
         );
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0xe58f_b60f_0485_8b7d,
+            0x482e_2879_5906_a694,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
         let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
         assert_eq!(
             variant_name_fingerprint(&monty_type_names),
-            0x628c_e5c5_6b25_e2c2,
+            0x83d0_7660_e7c8_86bd,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&monty_type_names))
         );

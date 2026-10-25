@@ -19,9 +19,11 @@ use crate::{
     hash::{HashValue, hash_f64},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},
+        r#type::strip_underscores,
     },
     value::{EitherStr, Value, eq_f64},
 };
@@ -318,15 +320,11 @@ enum Operand {
 /// `OverflowError`); `None` for a non-number so the operation reports
 /// `NotImplemented` and the reflected form gets its turn.
 fn operand(value: &Value, vm: &VM<'_>) -> RunResult<Option<Operand>> {
-    Ok(match value {
-        Value::Float(f) => Some(Operand::Real(*f)),
-        Value::Int(i) => Some(Operand::Real(*i as f64)),
-        Value::Bool(b) => Some(Operand::Real(f64::from(*b))),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Complex(c) => Some(Operand::Complex(*c)),
-            HeapData::LongInt(li) => Some(Operand::Real(li.to_f64_checked()?)),
-            _ => None,
-        },
+    Ok(match value.py_value(vm) {
+        PyValue::Float(value) => Some(Operand::Real(value)),
+        PyValue::Int(integer) => Some(Operand::Real(integer.to_f64_checked(vm)?)),
+        PyValue::Bool(value) => Some(Operand::Real(f64::from(value))),
+        PyValue::Complex(value) => Some(Operand::Complex(*value.get(vm.heap))),
         _ => None,
     })
 }
@@ -515,25 +513,6 @@ fn parse(text: &str) -> RunResult<Complex> {
     }
 }
 
-/// Removes digit-separator underscores, or returns `None` when one is not
-/// strictly between two digits (CPython's `_Py_string_to_number_with_underscores`).
-fn strip_underscores(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    for (i, c) in text.char_indices() {
-        if c == '_' {
-            let before = i.checked_sub(1).map(|j| bytes[j]);
-            let after = bytes.get(i + 1);
-            if !(before.is_some_and(|b| b.is_ascii_digit()) && after.is_some_and(u8::is_ascii_digit)) {
-                return None;
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
-}
-
 /// The longest float literal at the start of `s`, as CPython's
 /// `PyOS_string_to_double` consumes it: an optional sign, then `inf`,
 /// `infinity`, `nan` (any case) or decimal digits with an optional fraction
@@ -633,6 +612,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         }
         .to_string();
         Ok(allocate_string(text, vm.heap))
+    }
+
+    fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(Some(Value::Float(self.get(vm.heap).abs()?)))
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

@@ -1,6 +1,7 @@
 //! The `__dataclass_fields__` mapping `@dataclass` writes and the `Field`
-//! objects in it, where the behaviour cannot be dual-run against CPython —
-//! Monty stringizes annotations and has no `MISSING` sentinel to render.
+//! objects in it, where the behaviour cannot be dual-run against CPython
+//! because Monty stringizes annotations — plus a cycle-collection check that
+//! needs the `test-hooks`-only `gc` module.
 //!
 //! Everything the two interpreters agree on lives in
 //! `test_cases/dataclass__is_dataclass.py` instead.
@@ -43,37 +44,31 @@ fn expect_error(expr: &str) -> String {
     }
 }
 
-/// CPython's `Field.__repr__` attribute for attribute, bar the two spellings
-/// Monty cannot produce: `type` is annotation text (CPython evaluates it to
-/// `<class 'int'>`) and the `MISSING` sentinel has no object of its own
-/// (CPython renders `<dataclasses._MISSING_TYPE object at 0x..>`).
+/// CPython's `Field.__repr__` attribute for attribute, bar `type`: annotation
+/// text where CPython evaluates it to `<class 'int'>`. The `MISSING` repr is
+/// swapped for its name, since it carries the sentinel's `id()`.
 #[test]
-fn field_repr_renders_missing_as_a_bare_name() {
+fn field_repr_renders_type_as_annotation_text() {
+    let repr = |name: &str| {
+        eval_str(&format!(
+            "from dataclasses import MISSING\nrepr(Point.__dataclass_fields__['{name}']).replace(repr(MISSING), 'MISSING')"
+        ))
+    };
     assert_snapshot!(
-        eval_str("repr(Point.__dataclass_fields__['y'])"),
+        repr("y"),
         @"Field(name='y',type='int',default=5,default_factory=MISSING,init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=False,doc=None,_field_type=_FIELD)"
     );
     assert_snapshot!(
-        eval_str("repr(Point.__dataclass_fields__['x'])"),
+        repr("x"),
         @"Field(name='x',type='int',default=MISSING,default_factory=MISSING,init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=False,doc=None,_field_type=_FIELD)"
     );
 }
 
-/// A required field's default *is* `MISSING` in CPython; with no such object,
-/// Monty reports the gap rather than inventing a value.
-#[test]
-fn missing_default_is_not_implemented() {
-    assert_snapshot!(
-        expect_error("Point.__dataclass_fields__['x'].default"),
-        @"Field.default is not yet supported, dataclasses.MISSING is not implemented"
-    );
-}
-
 /// The `Field` attributes whose values need an object Monty does not have.
+/// `default`/`default_factory` are no longer among them: `MISSING` exists.
 #[test]
 fn unmodelled_field_attributes_are_not_implemented() {
     for (attr, missing) in [
-        ("default_factory", "dataclasses.MISSING"),
         ("metadata", "types.MappingProxyType"),
         ("_field_type", "dataclasses._FIELD"),
     ] {
@@ -90,4 +85,45 @@ fn unmodelled_field_attributes_are_not_implemented() {
 #[test]
 fn classvars_are_absent_from_the_mapping() {
     assert_snapshot!(eval_str("repr(list(Point.__dataclass_fields__))"), @"['x', 'y']");
+}
+
+/// A cycle closed only by a generated `__init__`'s captured default must be
+/// collectable, which needs the collector to trace the method's children.
+///
+/// Emptying `__dataclass_fields__` and rebinding the class attribute leaves the
+/// `__init__` as the sole holder of `box`, so `C -> __init__ -> box -> C` is the
+/// whole cycle; under-tracing it leaves `gc.collect()` with nothing to free.
+#[test]
+#[cfg(feature = "test-hooks")]
+fn generated_init_default_cycle_is_collected() {
+    let code = r"
+import gc
+from dataclasses import dataclass
+
+class Box:
+    owner = None
+
+def build():
+    box = Box()
+
+    @dataclass
+    class C:
+        b: object = box
+
+    box.owner = C
+    C.__dataclass_fields__ = {}
+    C.b = None
+
+build()
+gc.collect()
+";
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let freed = run.run_no_limits(vec![]).expect("should run");
+    let Some(freed) = freed.as_ref().as_int() else {
+        panic!("gc.collect() should return an int, got {freed:?}");
+    };
+    assert!(
+        freed > 0,
+        "the class -> __init__ -> default cycle should be collected, but gc.collect() freed {freed} entries",
+    );
 }

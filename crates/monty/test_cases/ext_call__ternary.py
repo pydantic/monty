@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # External calls in ternary expressions (if/else expressions)
 
 # External call in true branch

@@ -366,6 +366,11 @@ assert capture_error('%*d', (10**30, 3)) == ('OverflowError', 'Python int too la
 assert capture_error('%.*s', (10**30, 'x')) == ('OverflowError', 'Python int too large to convert to C int')
 assert capture_error('%.*s', (2**31, 'x')) == ('OverflowError', 'Python int too large to convert to C int')
 assert '%.*s' % (2**31 - 1, 'x') == 'x'
+# the float conversion caps the precision at INT_MAX - 1024, finite or not
+assert '%.2147482623g' % 1.0 == '1'
+assert capture_error('%.2147482624g', 1.0) == ('ValueError', 'precision too big')
+assert capture_error('%.*f', (2147482624, float('inf'))) == ('ValueError', 'precision too big')
+assert capture_error('%.2147483647e', float('nan')) == ('ValueError', 'precision too big')
 assert capture_error('%.3000000000d', 1) == ('ValueError', 'precision too big')
 assert capture_error('%.2147483645d', 1) == ('OverflowError', 'precision too large')
 assert capture_error('%.2147483647x', -1) == ('OverflowError', 'precision too large')

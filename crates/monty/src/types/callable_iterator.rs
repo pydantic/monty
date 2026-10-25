@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapId, HeapItem, HeapObjectRead},
@@ -83,8 +83,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     /// Calls `callable()` and yields the result unless it `==` `sentinel`.
@@ -138,7 +138,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
 fn callable_next(callable: Value, sentinel: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     defer_drop!(callable, vm);
     defer_drop!(sentinel, vm);
-    let result = match vm.evaluate_function("iter(callable, sentinel)", callable, ArgValues::Empty) {
+    let result = match vm.evaluate_function(callable, ArgValues::Empty) {
         Ok(result) => result,
         // CPython's `calliter_iternext` swallows `StopIteration` from the
         // callable and reports exhaustion, exactly as for a `__next__`.

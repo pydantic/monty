@@ -234,6 +234,9 @@ if the new session is not in the state the old one was in at the shutdown.
 The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
 A bare disconnect is never resumed, since the request may have run.
 
+Before type checking a feed, `import_stubs` requests host module stubs once per module per session.
+Answer with a dict of dotted module paths to `.pyi` source or `None`, or `NotHandled` for no stubs.
+
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.

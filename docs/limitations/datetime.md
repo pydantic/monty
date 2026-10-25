@@ -143,7 +143,7 @@ The `time` module's wall clocks share the `datetime` source, and its conversion 
     Non-suspending Rust execution instead raises `NotImplementedError`.
     `run` and `feed_run` report `OS function 'datetime.now' not implemented with standard execution`;
     `call_function` reports
-    `MontyRepl::call_function: OS function 'datetime.now' is not yet supported in this context`.
+    `OS function 'datetime.now' cannot suspend in this synchronous context`.
 
 `timezone`:
 

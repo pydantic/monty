@@ -19,7 +19,7 @@ these built-ins; `raise MyClass()` on a plain user class raises
 `AssertionError`, `MemoryError`, `StopIteration`, `SyntaxError`,
 `TimeoutError`, `TypeError`.
 
-Module-specific: `json.JSONDecodeError` (subclass of `ValueError`),
+Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
 `re.PatternError` / `re.error`, `io.UnsupportedOperation` (catchable as
 both `OSError` and `ValueError`, matching CPython's dual parentage).
 
@@ -57,8 +57,8 @@ not supported; passing more than one argument raises an internal error.
     real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty
     doesn't track, so Monty's
     `repr()` uses the generic single-message form instead.
-- The dotted exception classes — `json.JSONDecodeError`, `re.PatternError`,
-    `binascii.Error`, `binascii.Incomplete` — repr under their qualified name:
+- The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
+    `binascii.Error`, `binascii.Incomplete`, `_csv.Error` — repr under their qualified name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 
@@ -118,12 +118,3 @@ Monty never emits CPython's `Did you mean: '...'?` suggestions on
 `NameError`/`AttributeError`. This divergence is invisible to the test
 suite: `scripts/run_traceback.py` strips the suggestions from CPython's output
 before comparison, so traceback tests cannot catch it.
-
-An exception raised inside a Python callable that native code invokes
-*synchronously* — the `key=`/predicate/function argument of `map`, `filter`,
-`sorted`/`min`/`max`, and a user-defined
-`__iter__`/`__next__`/`__contains__`/`__repr__`/`__str__` — omits the **calling**
-frame from its traceback; the callee frame is present.
-CPython shows both. The re-entrant call path (`evaluate_function`) does not
-splice the host call site into the traceback. The exception type and message
-are unaffected.

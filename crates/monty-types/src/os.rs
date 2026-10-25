@@ -18,12 +18,22 @@ use crate::{
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
     object::{CallArgs, MontyObject, MontyTimeZone},
+    scan::ScanArgs,
     unstable::{self, PushValue},
     virtual_path::normalize_virtual_path,
 };
 // =============================================================================
 // OsFunctionCall — the central public dispatch value.
 // =============================================================================
+
+/// [`OsFunctionCall::Import`]'s dispatch name. Hosts resolve it from their modules before other OS handlers.
+pub const IMPORT_CALL: &str = "import";
+
+/// [`OsFunctionCall::ImportStubs`]'s dispatch name, handled like [`IMPORT_CALL`].
+pub const IMPORT_STUBS_CALL: &str = "import_stubs";
+
+/// Reserved pre-feed [`OsFunctionCall::ImportStubs`] ID, outside the interpreter's IDs counted from zero.
+pub const IMPORT_STUBS_CALL_ID: u32 = u32::MAX;
 
 /// Tagged dispatch value for OS-level operations.
 ///
@@ -60,6 +70,10 @@ pub enum OsFunctionCall {
     /// List directory contents.
     #[strum(serialize = "Path.iterdir")]
     Iterdir(MontyPath),
+    /// Read a bounded subtree in one call, for `os.scandir`, `os.walk`,
+    /// `Path.walk`, `Path.glob` and `Path.rglob` (see [`crate::scan`]).
+    #[strum(serialize = "Path.scan")]
+    Scan(ScanArgs),
     /// Resolve symlinks and return absolute path.
     #[strum(serialize = "Path.resolve")]
     Resolve(MontyPath),
@@ -147,6 +161,18 @@ pub enum OsFunctionCall {
     /// answers with a future it resolves once the delay elapses.
     #[strum(serialize = "system.async_sleep")]
     AsyncSystemSleep(Duration),
+
+    // ---- Host modules ------------------------------------------------------
+    /// Requests a missing module by top-level name. The host returns its value, an exception,
+    /// or `not_found` / `not_handled` to raise `ModuleNotFoundError`.
+    /// `from m import a` and `import m.sub` then load attributes from that value.
+    #[strum(serialize = "import")] // IMPORT_CALL
+    Import(String),
+    /// Requests stubs for previously unrequested top-level imports before type-checking a feed.
+    /// The host returns a dict of dotted module paths to stub source (or `None`),
+    /// or `not_found` / `not_handled` for no stubs.
+    #[strum(serialize = "import_stubs")] // IMPORT_STUBS_CALL
+    ImportStubs(Vec<String>),
 }
 
 impl OsFunctionCall {
@@ -200,6 +226,7 @@ impl OsFunctionCall {
             Self::Open(a) => a.to_args(),
             Self::Mkdir(a) => a.to_args(),
             Self::Rename(a) => a.to_args(),
+            Self::Scan(a) => a.to_args(),
             Self::Getenv(a) => a.to_args(),
             Self::Urandom(a) => a.to_args(),
             // Unit & single-value non-FS variants.
@@ -209,6 +236,8 @@ impl OsFunctionCall {
             Self::Sleep(delay) | Self::SystemSleep(delay) | Self::AsyncSleep(delay) | Self::AsyncSystemSleep(delay) => {
                 single_arg(MontyNode::Float(delay.as_secs_f64()))
             }
+            Self::Import(name) => single_arg(MontyObject::string(name)),
+            Self::ImportStubs(names) => single_arg(MontyObject::list(names.into_iter().map(MontyObject::string))),
         }
     }
 
@@ -270,7 +299,7 @@ impl OsFunctionCall {
             Self::Rmdir(_) => "rmdir: embedded null character in path",
             Self::Stat(_) => "stat: embedded null character in path",
             // `pathlib.Path.iterdir` reaches `os.scandir`, not `os.listdir`.
-            Self::Iterdir(_) => "scandir: embedded null character in path",
+            Self::Iterdir(_) | Self::Scan(_) => "scandir: embedded null character in path",
             Self::Rename(_) if for_destination => "rename: embedded null character in dst",
             Self::Rename(_) => "rename: embedded null character in src",
             // `resolve()` lstats each component before returning.
@@ -306,6 +335,7 @@ impl OsFunctionCall {
             Self::WriteBytes(a) | Self::AppendBytes(a) => Some(a.path.as_str()),
             Self::Open(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
+            Self::Scan(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
             Self::Getenv(_)
             | Self::GetEnviron
@@ -316,7 +346,9 @@ impl OsFunctionCall {
             | Self::Sleep(_)
             | Self::SystemSleep(_)
             | Self::AsyncSleep(_)
-            | Self::AsyncSystemSleep(_) => None,
+            | Self::AsyncSystemSleep(_)
+            | Self::Import(_)
+            | Self::ImportStubs(_) => None,
         }
     }
 
@@ -353,6 +385,7 @@ impl OsFunctionCall {
             Self::WriteBytes(a) | Self::AppendBytes(a) => (Some(&mut a.path), None),
             Self::Open(a) => (Some(&mut a.path), None),
             Self::Mkdir(a) => (Some(&mut a.path), None),
+            Self::Scan(a) => (Some(&mut a.path), None),
             Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
             Self::Getenv(_)
             | Self::GetEnviron
@@ -363,16 +396,24 @@ impl OsFunctionCall {
             | Self::Sleep(_)
             | Self::SystemSleep(_)
             | Self::AsyncSleep(_)
-            | Self::AsyncSystemSleep(_) => (None, None),
+            | Self::AsyncSystemSleep(_)
+            | Self::Import(_)
+            | Self::ImportStubs(_) => (None, None),
         };
         primary.into_iter().chain(dst)
     }
 
     /// Exception to raise when no handler accepted this call: `PermissionError`
-    /// for FS ops (with the path), `RuntimeError` for non-FS ops.
+    /// for FS ops (with the path), `ModuleNotFoundError` for an import,
+    /// `RuntimeError` for the other non-FS ops.
     #[must_use]
     pub fn on_no_handler(&self) -> MontyException {
-        if let Some(path) = self.fs_primary_path() {
+        if let Self::Import(name) = self {
+            MontyException::new(
+                ExcType::ModuleNotFoundError,
+                Some(format!("No module named {}", StringRepr(name))),
+            )
+        } else if let Some(path) = self.fs_primary_path() {
             let path = if path.is_empty() {
                 Cow::Borrowed(path)
             } else {

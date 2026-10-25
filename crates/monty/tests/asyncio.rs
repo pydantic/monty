@@ -939,7 +939,7 @@ sorted(log)
         .unwrap();
 
     // Both handlers continue through a host suspension, preserving any queued exception.
-    let dumped = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+    let dumped = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
     let Session::Running(loaded) = Dump::load(&dumped).unwrap().state else {
         panic!("expected a running session");
     };

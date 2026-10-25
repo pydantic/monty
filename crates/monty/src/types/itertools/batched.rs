@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapId, HeapRead},
+    heap::{DropGuard, DropWithContext, HeapId, HeapReadMut},
     resource_checks::check_estimated_size,
     types::{
         TupleVec, allocate_tuple,
@@ -56,7 +56,7 @@ impl Batched {
 }
 
 /// Fills one batch, latching only when it comes back empty or `strict` rejects it.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let ItertoolsIter::Batched(batched) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Batched")
     };
@@ -114,7 +114,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 }
 
 /// Latches the adaptor, releasing the source as soon as it stops being reachable.
-fn finish<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) {
+fn finish<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) {
     let ItertoolsIter::Batched(batched) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Batched")
     };

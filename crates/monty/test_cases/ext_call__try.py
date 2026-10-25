@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # === External calls in try blocks ===
 
 # Basic external call in try body

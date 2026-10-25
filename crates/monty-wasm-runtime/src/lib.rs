@@ -537,6 +537,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
         Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
+
         None => invalid_event("ChildEvent carried no kind"),
     }
 }

@@ -13,14 +13,17 @@ use std::ops::Range;
 
 use memchr::memchr;
 use monty_types::ResourceTracker;
+use num_bigint::BigInt;
+use num_traits::Signed;
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    fstring::{ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
+    fstring::{MAX_FLOAT_PRECISION, ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    py_value::PyValue,
     resource_checks::check_repeat_size,
     str_format::value_error,
     string_builder::{BytesBuilder, StringBuilder},
@@ -701,10 +704,9 @@ fn star_operand(
 ) -> RunResult<i64> {
     let value = next_argument(arguments, cursor, vm)?;
     defer_drop!(value, vm);
-    match value {
-        Value::Int(n) => Ok(*n),
-        Value::Bool(b) => Ok(i64::from(*b)),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Err(on_overflow()),
+    match value.py_value(vm) {
+        PyValue::Int(integer) => integer.to_i64(vm).ok_or_else(on_overflow),
+        PyValue::Bool(value) => Ok(i64::from(value)),
         _ => Err(ExcType::type_error("* wants int")),
     }
 }
@@ -766,10 +768,9 @@ fn format_integer<T: Target>(
 /// truncated for the decimal directives only, anything else through `__index__`.
 fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<Value> {
     let decimal = matches!(conversion, b'd' | b'i' | b'u');
-    match value {
-        Value::Int(_) | Value::Bool(_) => Ok(value.clone_with_heap(vm.heap)),
-        Value::Float(f) if decimal => LongInt::value_from_f64(*f, vm.heap),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Ok(value.clone_with_heap(vm.heap)),
+    match value.py_value(vm) {
+        PyValue::Int(_) | PyValue::Bool(_) => Ok(value.clone_with_heap(vm.heap)),
+        PyValue::Float(value) if decimal => LongInt::value_from_f64(value, vm.heap),
         _ => {
             let requirement = if decimal { "a real number" } else { "an integer" };
             value.py_index_impl(vm)?.ok_or_else(|| {
@@ -785,12 +786,13 @@ fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<
 
 /// Renders an integer operand's magnitude in `base`, reporting whether it was negative.
 fn magnitude_digits(operand: &Value, base: u32, uppercase: bool, vm: &VM<'_>) -> RunResult<(bool, String)> {
-    match operand {
-        Value::Int(n) => Ok((*n < 0, small_digits(n.unsigned_abs(), base, uppercase))),
-        Value::Bool(b) => Ok((false, u64::from(*b).to_string())),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-            long_digits(li, base, uppercase, &vm.heap.tracker)
-        }
+    match operand.py_value(vm) {
+        PyValue::Int(integer) => integer.with_value(
+            vm,
+            |value| Ok((value < 0, small_digits(value.unsigned_abs(), base, uppercase))),
+            |value| long_digits(value, base, uppercase, &vm.heap.tracker),
+        ),
+        PyValue::Bool(value) => Ok((false, u64::from(value).to_string())),
         _ => Err(ExcType::type_error(format!(
             "__index__ returned non-int (type {})",
             operand.py_type_name(vm)
@@ -810,7 +812,7 @@ fn small_digits(magnitude: u64, base: u32, uppercase: bool) -> String {
 
 /// Digits of a big integer's magnitude, budgeted before the render like
 /// `format_long_int`; only decimal is bounded by CPython's digit limit.
-fn long_digits(li: &LongInt, base: u32, uppercase: bool, tracker: &ResourceTracker) -> RunResult<(bool, String)> {
+fn long_digits(li: &BigInt, base: u32, uppercase: bool, tracker: &ResourceTracker) -> RunResult<(bool, String)> {
     if base == 10 {
         check_bits_str_digits_limit(li.bits())?;
     }
@@ -820,7 +822,7 @@ fn long_digits(li: &LongInt, base: u32, uppercase: bool, tracker: &ResourceTrack
         usize::try_from(max_digits).unwrap_or(usize::MAX).saturating_add(2),
         tracker,
     )?;
-    let mut digits = li.abs().inner().to_str_radix(base);
+    let mut digits = li.magnitude().to_str_radix(base);
     if uppercase {
         digits.make_ascii_uppercase();
     }
@@ -850,6 +852,11 @@ fn format_float<T: Target>(
 ) -> RunResult<T::Output> {
     let number = float_operand::<T>(value, vm)?;
     let precision = spec.precision.unwrap_or(6);
+    // CPython bounds the precision by `INT_MAX - 1024` before looking at the
+    // value, so `inf`/`nan` are rejected too.
+    if precision > MAX_FLOAT_PRECISION {
+        return Err(ExcType::value_error_precision_too_big());
+    }
     // The precision may come from an argument (`%.*f`), and the fixed and
     // exponent formatters synthesise that many digits; `inf`/`nan` print as is.
     let tracker = &vm.heap.tracker;
@@ -888,11 +895,10 @@ fn format_float<T: Target>(
 /// Coerces a float directive's operand: floats and ints directly, big ints
 /// when they fit a float, anything else through `__index__`.
 fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
-    match value {
-        Value::Float(f) => Ok(*f),
-        Value::Int(n) => Ok(*n as f64),
-        Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => match li.to_f64() {
+    match value.py_value(vm) {
+        PyValue::Float(value) => Ok(value),
+        PyValue::Bool(value) => Ok(f64::from(value)),
+        PyValue::Int(integer) => match integer.to_f64(vm) {
             Some(f) if f.is_finite() => Ok(f),
             _ => Err(T::float_overflow_error()),
         },
@@ -910,12 +916,11 @@ fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 /// Renders a `str` `%c`: a one-character string as itself, otherwise an
 /// integer code point.
 fn char_text(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
-    match value {
-        Value::Int(n) => char_from_code(*n),
-        Value::Bool(b) => char_from_code(i64::from(*b)),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Err(char_range_error()),
-        _ if value.py_type(vm) == Type::Str => {
-            let text = value.to_str(vm)?;
+    match value.py_value(vm) {
+        PyValue::Int(integer) => char_from_code(integer.to_i64(vm).ok_or_else(char_range_error)?),
+        PyValue::Bool(value) => char_from_code(i64::from(value)),
+        PyValue::Str(value) => {
+            let text = value.as_str(vm);
             let mut chars = text.chars();
             match (chars.next(), chars.next()) {
                 (Some(c), None) => Ok(c.to_string()),
@@ -957,12 +962,12 @@ fn char_range_error() -> RunError {
 /// Renders a `bytes` `%c`: a one-byte `bytes` as itself, otherwise an
 /// integer in `range(256)`.
 fn byte_char(value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
-    match value {
-        Value::Int(n) => u8::try_from(*n).map_err(|_| byte_range_error()),
-        Value::Bool(b) => Ok(u8::from(*b)),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Err(byte_range_error()),
-        Value::InternBytes(id) => single_byte(vm.interns.get_bytes(*id)),
-        Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => single_byte(bytes.as_slice()),
+    match value.py_value(vm) {
+        PyValue::Int(integer) => {
+            u8::try_from(integer.to_i64(vm).ok_or_else(byte_range_error)?).map_err(|_| byte_range_error())
+        }
+        PyValue::Bool(value) => Ok(u8::from(value)),
+        PyValue::Bytes(value) => single_byte(value.as_slice(vm)),
         _ => match value.py_index_impl(vm)? {
             Some(index) => {
                 defer_drop!(index, vm);

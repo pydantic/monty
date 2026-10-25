@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
@@ -28,6 +28,7 @@ __all__ = [
     'AsyncMontyWebsocket',
     'CollectStreams',
     'CollectString',
+    'ExternalModule',
     'Frame',
     'SourceRange',
     'Monty',
@@ -152,7 +153,7 @@ class MountDir:
         virtual_path: str,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
-        memory_usage_limit: int = 100_000_000,
+        memory_usage_limit: int = ...,
     ) -> MountDir:
         """Configure a mount point; validation happens here, not at feed time.
 
@@ -183,8 +184,8 @@ class MountDir:
             write_bytes_limit: Cap on cumulative bytes written through the
                 mount within one feed; exceeding it raises `OSError` in the
                 sandbox. `None` (default) means unlimited.
-            memory_usage_limit: Per-mount budget in bytes (default 100 MB,
-                matches DEFAULT_MEMORY_USAGE_LIMIT in rust) shared by retained
+            memory_usage_limit: Per-mount budget in bytes (default: monty-fs's
+                `DEFAULT_MEMORY_USAGE_LIMIT`) shared by retained
                 overlay data and transient filesystem results; an operation that
                 would exceed it raises `MemoryError` in the sandbox.
         """
@@ -404,6 +405,35 @@ class MontyFileHandle:
         """`True` if the mode permits `write()` (`'w'`, `'a'`, `'r+'`, `'w+'`, `'a+'`, and binary variants)."""
 
 @final
+class ExternalModule:
+    """A host module for `external_modules`: its attributes, optional `.pyi` stubs and id.
+
+    `attrs` is copied at construction: callables cross as host functions, nested
+    `ExternalModule`s as submodules (`import pkg.sub`), other values as attributes;
+    keys starting with `_` are not exposed. A module returned from the sandbox decodes
+    to an `ExternalModule` with the id it imported with.
+    """
+
+    def __new__(
+        cls, attrs: dict[str, Any], *, stubs: str | None = None, id: uuid.UUID | None = None
+    ) -> ExternalModule: ...
+    @property
+    def attrs(self) -> dict[str, Any]:
+        """A copy of the module's attributes."""
+
+    @property
+    def stubs(self) -> str | None:
+        """The module's `.pyi` source; needed for type checking unless the checker supplies it.
+        Submodule stubs form a package tree."""
+
+    @property
+    def id(self) -> uuid.UUID:
+        """Identity of the module, carried by every import of it."""
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+
+@final
 class MontyClassProxy:
     """Read-only proxy for a class instance the host has no original object for:
     a sandbox-defined instance, or a host-sent one after a session restore (the
@@ -612,6 +642,7 @@ class Monty:
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
+        external_modules: Mapping[str, ExternalModule | Callable[[], ExternalModule]] | None = None,
     ) -> MontySession:
         """
         Prepare a REPL session served by a dedicated worker.
@@ -630,6 +661,8 @@ class Monty:
                 successfully executed snippet is appended to the accumulated
                 context used for type-checking subsequent snippets.
             type_check_stubs: Stub declarations made available to type checking.
+                A host module's own stub is the `stubs` of its `ExternalModule`
+                in `external_modules`.
             type_check_format: How `MontyTypingError` diagnostics are rendered;
                 `None` (the default) means `'full'`. Chosen here rather than on
                 the error because the checker's structured diagnostics never
@@ -653,6 +686,11 @@ class Monty:
             os_policy: Session clock, sleep and random initialization policies;
                 see `OSPolicy`. Defaults to the worker's clock in UTC and its
                 entropy, with sleeps handled by the pool and capped at ten seconds.
+            external_modules: Modules the session may import, keyed by name: an
+                `ExternalModule` or a zero-argument factory returning one, called
+                once per session when first needed. The mapping is read live and
+                each entry validated when first imported, so modules may be
+                added later.
         """
 
 @final
@@ -758,9 +796,9 @@ class MontySession:
             snapshot = snapshot.resume_auto()
         ```
 
-        Unlike `feed_run`, `external_lookup` is *not* consulted during this
-        initial drive — external calls and name lookups are still surfaced as
-        snapshots; it is only captured for later `resume_auto()` calls.
+        External calls, imports and name lookups return snapshots.
+        `external_lookup` is captured for `resume_auto()`, which also answers
+        imports from the session's `external_modules`.
 
         Use `snapshot.dump()` to checkpoint the worker mid-execution and
         `load_snapshot` to restore it.
@@ -838,18 +876,25 @@ class MontySession:
         limits / type-check state (the `checkout()` config for those is not
         applied). The class-instance store starts empty — it is host state and
         never part of a dump, so restored `ClassInstance` values fall back to
-        `MontyClassProxy` stand-ins and method calls on them fail. `mount`
-        re-establishes the suspended feed's mounts, which are never part of the
-        dump — pass the same mounts the original feed used, or its filesystem
-        calls degrade into unhandled OS calls. `'overlay'` writes made before
-        the dump are not preserved (the restored overlay starts empty). Raises
-        if the dump is actually an idle session.
+        `MontyClassProxy` stand-ins and method calls on them fail. Raises if
+        the dump is actually an idle session.
 
-        `external_lookup` / `os` are captured for `resume_auto()`, exactly as on
-        `feed_start`. One caveat applies to a *restored* snapshot: a restored
-        `FutureSnapshot`'s pending coroutines are gone (they lived in the
-        previous process), so `resume_auto()` on it raises — resolve it manually
-        with `resume({call_id: ...})`.
+        Arguments:
+            state: Bytes from `snapshot.dump()`.
+            mount: The suspended feed's mounts, never part of the dump — pass
+                the same mounts the original feed used, or its filesystem
+                calls degrade into unhandled OS calls. `'overlay'` writes made
+                before the dump are not preserved (the restored overlay starts
+                empty).
+            print_callback: Receives the resumed feed's `print()` output, as
+                on `feed_run`.
+            external_lookup: Captured for `resume_auto()`, exactly as on
+                `feed_start`; host state, never part of a dump, so a restored
+                snapshot needs it again. A restored `FutureSnapshot`'s pending
+                coroutines are gone (they lived in the previous process), so
+                `resume_auto()` on it raises — resolve it manually with
+                `resume({call_id: ...})`.
+            os: Captured for `resume_auto()`, as above.
         """
 
     def dump(self) -> bytes:
@@ -930,13 +975,16 @@ class AsyncMonty:
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
+        external_modules: Mapping[str, ExternalModule | Callable[[], Awaitable[ExternalModule]]] | None = None,
     ) -> AsyncMontySession:
         """
         Prepare a REPL session served by a dedicated worker.
 
         The worker is checked out of the pool by `async with` on the returned
         session and returned to the pool when the `async with` block exits.
-        Arguments are identical to `Monty.checkout`.
+        Arguments are identical to `Monty.checkout`, except that an
+        `external_modules` factory returns an awaitable of the `ExternalModule`;
+        the factories a feed needs at once are awaited concurrently.
         """
 
 @final
@@ -1046,6 +1094,7 @@ class AsyncMontyWebsocket:
         assert_message_annotations: bool | int = ...,
         print_flush_interval: float | None = None,
         os_policy: OSPolicy | None = None,
+        external_modules: Mapping[str, ExternalModule | Callable[[], Awaitable[ExternalModule]]] | None = None,
         ephemeral: bool | None = None,
         profile: str | None = None,
     ) -> AsyncMontySession:
@@ -1158,9 +1207,9 @@ class AsyncMontySession:
         (whose `resume(...)` / `resume_auto()` is awaitable) or a
         `MontyComplete`.
 
-        As in the sync version, `external_lookup` (and `os`) are captured for
-        `await snapshot.resume_auto()` rather than consulted during this initial
-        drive. A coroutine external answered by `resume_auto()` is awaited
+        As in the sync version, `external_lookup` and `os` are captured for
+        `await snapshot.resume_auto()` rather than consulted during this
+        initial drive. A coroutine external answered by `resume_auto()` is awaited
         directly when the snapshot's `allow_eager_await` is true; otherwise it
         is awaited concurrently and yields an `AsyncFutureSnapshot` whose
         `resume_auto()` settles the pending coroutines.
@@ -1227,10 +1276,16 @@ class AsyncMontySession:
         Restore a snapshot generated while a block of code is running (e.g.
         after `feed_start`) and return the re-announced snapshot to resume.
 
-        `external_lookup` / `os` are captured for `resume_auto()`, with the same
-        restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
-        cannot be driven with `resume_auto()` — its pending coroutines are gone).
-        `state` may be an ID, as in `load_session`.
+        Arguments:
+            state: Bytes from `snapshot.dump()`, or an ID as in `load_session`.
+            mount: The suspended feed's mounts, as on `MontySession.load_snapshot`.
+            print_callback: Receives the resumed feed's `print()` output.
+            external_lookup: Captured for `resume_auto()`, with the same
+                restored-snapshot caveats as the sync method: host state is not
+                in the dump, so pass it again, and a restored `FutureSnapshot`
+                cannot be driven with `resume_auto()` — its pending coroutines
+                are gone.
+            os: Captured for `resume_auto()`, as above.
         """
 
     async def dump(self) -> bytes:
@@ -1349,12 +1404,10 @@ class FunctionSnapshot:
         """Answer this call automatically, then return the next snapshot (or
         `MontyComplete`). Resumes at most once.
 
-        An OS call is offered to the feed's mounts first, falling back to the
-        `os=` captured at `feed_start` / `load_snapshot` and then to monty's
-        unhandled default. An external call is resolved through
-        `external_lookup=`; a name absent from it makes the sandbox raise
-        `NameError` (as in `feed_run`). A coroutine external raises
-        `RuntimeError` — use `AsyncMonty` for async externals."""
+        Imports and stub requests use the session's `external_modules`. Other OS calls
+        try mounts, then `os`, then Monty's unhandled default. External calls use
+        `external_lookup`; missing names raise `NameError`. Coroutine results raise
+        `RuntimeError`; use `AsyncMonty` for async externals."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
@@ -1513,7 +1566,8 @@ class AsyncFutureSnapshot:
         """Wait for one or more coroutine externals spawned by earlier
         `resume_auto` calls to settle, deliver them, and return the next
         snapshot. Raises if there are no pending coroutines to await (e.g. a
-        snapshot restored via `load_snapshot`)."""
+        snapshot restored via `load_snapshot`) without consuming the snapshot;
+        resolve it manually with `resume({call_id: ...})`."""
 
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...

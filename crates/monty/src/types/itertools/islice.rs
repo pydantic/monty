@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapRead},
+    heap::{DropWithContext, HeapId, HeapReadMut},
     types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
@@ -60,7 +60,7 @@ impl Islice {
 
 /// Discards items up to `next_index`, yields the one there, then advances by
 /// `step` — the shape of CPython's `islice_next`.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let mut steps = 0usize;
     loop {
         // Native loop: the VM's dispatch checkpoint is per-`run()`, so a
@@ -116,7 +116,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 /// source holds be reclaimed now rather than at destruction.
 ///
 /// Idempotent, so the two exits in `next` can share it.
-fn finish<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) {
+fn finish<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) {
     let ItertoolsIter::Islice(islice) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Islice")
     };

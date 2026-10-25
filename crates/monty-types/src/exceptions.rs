@@ -315,6 +315,9 @@ pub enum ExcType {
     /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
     #[strum(serialize = "json.JSONDecodeError")]
     JsonDecodeError,
+    /// Subclass of ValueError for invalid TOML in `tomllib.loads()` / `tomllib.load()`.
+    #[strum(serialize = "tomllib.TOMLDecodeError")]
+    TomlDecodeError,
 
     // --- ImportError hierarchy ---
     /// Import-related errors (module not found, name not in module).
@@ -385,6 +388,14 @@ pub enum ExcType {
     /// older code. Monty exposes it for the same reason.
     #[strum(serialize = "binascii.Incomplete")]
     BinasciiIncomplete,
+
+    // --- csv module ---
+    /// `csv.Error` - raised by the `csv` readers and writers for malformed data
+    /// and unknown dialect names.
+    ///
+    /// A direct `Exception` subclass, named `_csv.Error` as in CPython.
+    #[strum(serialize = "_csv.Error")]
+    CsvError,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -423,6 +434,7 @@ impl ExcType {
                 Self::UnicodeDecodeError
                     | Self::UnicodeEncodeError
                     | Self::JsonDecodeError
+                    | Self::TomlDecodeError
                     | Self::BinasciiError
                     | Self::UnsupportedOperation
             ),
@@ -567,7 +579,8 @@ impl UnicodeErrorData {
 }
 
 /// Structured fields of a `json.JSONDecodeError`, mirroring CPython's `msg` /
-/// `doc` / `pos` / `lineno` / `colno` exception attributes.
+/// `doc` / `pos` / `lineno` / `colno` exception attributes. `tomllib.TOMLDecodeError`
+/// defines the same five attributes, so it carries this payload too.
 ///
 /// As with [`UnicodeErrorData`], the payload exists so host bindings can
 /// construct a real `json.JSONDecodeError` instead of falling back to a plain

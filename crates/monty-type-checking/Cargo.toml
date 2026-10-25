@@ -20,6 +20,8 @@ path = "src/lib.rs"
 monty-types = { workspace = true }
 monty-typeshed = { workspace = true }
 ruff_python_ast = { workspace = true }
+ruff_python_parser = { workspace = true }
+ruff_python_stdlib = { workspace = true }
 ruff_db = { workspace = true }
 ruff_text_size = { workspace = true }
 ty_python_semantic = { workspace = true }
@@ -31,7 +33,7 @@ salsa = { workspace = true }
 pretty_assertions = { workspace = true }
 insta = { workspace = true }
 # Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
-codspeed-criterion-compat = "4.2.1"
+codspeed-criterion-compat = "5.0.1"
 criterion = "0.5"
 
 [target.'cfg(unix)'.dev-dependencies]

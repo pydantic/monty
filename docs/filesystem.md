@@ -160,13 +160,13 @@ Each feed starts with a fresh overlay.
 
 ### Options
 
-| Argument             | Default       | Meaning                                                                                  |
-| -------------------- | ------------- | ---------------------------------------------------------------------------------------- |
-| `host_path`          | required      | Real host directory; canonicalized at construction, raises if missing or not a directory |
-| `virtual_path`       | required      | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS                |
-| `mode`               | `'overlay'`   | One of the three above                                                                   |
-| `write_bytes_limit`  | `None`        | Cap on bytes written through the mount per feed; exceeding it raises `OSError`           |
-| `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
+| Argument             | Default                                                                         | Meaning                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `host_path`          | required                                                                        | Real host directory; canonicalized at construction, raises if missing or not a directory |
+| `virtual_path`       | required                                                                        | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS                |
+| `mode`               | `'overlay'`                                                                     | One of the three above                                                                   |
+| `write_bytes_limit`  | `None`                                                                          | Cap on bytes written through the mount per feed; exceeding it raises `OSError`           |
+| `memory_usage_limit` | [`DEFAULT_MEMORY_USAGE_LIMIT`](api/rust/monty-fs.md#default_memory_usage_limit) | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
 
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
 Mounts are serviced by the host, including for remote workers; the worker never receives host paths.
@@ -195,7 +195,8 @@ Relative symlinks that stay inside the mount are followed in the non-overlay mod
 - **No live file descriptors.** `open()` keeps no OS handle between calls; each read or write is a separate one-shot
     host operation.
     This is what makes mid-execution [snapshots](snapshots.md) safe.
-    It also means `for line in f` is not supported.
+    It also means a file's whole content is loaded into the sandbox on its first read, `seek()` or iteration step;
+    [limitations/open.md](limitations/open.md) lists the iterator consumers that cannot issue that load.
 - **Only regular files** can be read, written or opened.
     FIFOs, sockets and device nodes raise `PermissionError`, because mount I/O must never block on sandbox-reachable
     input.
@@ -219,6 +220,8 @@ Use host storage whose availability and side effects are acceptable for the work
 ## The `os` callback
 
 Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
+[Host module](host-functions.md#importing-host-modules) calls (`import` and `import_stubs`) use the checkout's
+`external_modules` and never reach this handler.
 It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
 Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 
@@ -260,8 +263,22 @@ handler at all.
 
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
-`Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ` and `os.urandom`.
+`Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.scan`, `Path.stat`, `Path.rename`, `Path.resolve`,
+`Path.absolute`, `os.getenv`, `os.environ` and `os.urandom`.
+
+`Path.scan` answers `os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and `Path.rglob` with one call for a whole subtree.
+Its keyword arguments are `max_depth` (`None` for the whole tree), `follow_symlinks`, and a glob's `pattern` parts,
+`case_sensitive` and `recurse_symlinks`.
+The reply is a list of `(path, is_dir, is_file, is_symlink)` tuples, one for the scanned directory itself (`''`) and
+one per entry below it, with paths relative to the scanned directory.
+The pattern is only a hint: a handler may return entries it cannot match, because the sandbox filters the reply itself.
+A glob's handler may instead reply `{'matches': [path, ...]}`: the matches already selected, relative to the scanned directory, which the sandbox uses as they are.
+A directory matched before the pattern's last part keeps a trailing `/` there.
+Mounts reply that way unless the matches outnumber the entries they read.
+[`AbstractOS.path_scan()`][pydantic_monty.AbstractOS.path_scan] does this by default from `path_iterdir()` and the
+predicates, returning [`ScanEntry`][pydantic_monty.ScanEntry] tuples.
+A handler that declines `Path.scan` makes `glob()` return nothing and `walk()` report a `PermissionError`, since both
+treat a directory they cannot read as CPython does.
 With `os_policy` configured to call the host, the handler also receives clock and sleep calls
 (see [the clock](security.md#the-clock)).
 Unseeded random generators and `random.seed()` call `os.urandom` only under `random_start='call_host'`
@@ -287,6 +304,7 @@ Plain `resume(...)` bypasses both mounts and the handler, using only the supplie
 
 `pydantic_monty` ships a ready-made [`AbstractOS`][pydantic_monty.AbstractOS] implementation for when you want a filesystem with no host directory
 behind it at all.
+
 JavaScript has no equivalent class, so the TypeScript tab answers the same operations from a `Map` in an `os` callback:
 
 === "Python"

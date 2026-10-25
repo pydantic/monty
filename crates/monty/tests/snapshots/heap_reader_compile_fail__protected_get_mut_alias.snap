@@ -1,0 +1,15 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: actual
+---
+error[E0502]: cannot borrow `*source` as immutable because it is also borrowed as mutable
+  --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:80:9
+   |
+78 |         let protected = heap.protect_mut(&mut *source);
+   |                                          ------------ mutable borrow occurs here
+79 |         let borrowed = protected.get_mut(heap);
+80 |         assert_eq!(*source, 123);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^ immutable borrow occurs here
+81 |         *borrowed = 456;
+   |         --------------- mutable borrow later used here
+For more information about this error, try `rustc --explain E0502`.

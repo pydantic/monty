@@ -1,8 +1,10 @@
 use std::thread;
 
 use insta::assert_snapshot;
-use monty_type_checking::{SourceFile, TypeChecker};
-use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
+use monty_type_checking::{ImportedModule, SnippetImports, SourceFile, TypeCheckContext, TypeChecker, scan_imports};
+use monty_types::{
+    CHECKER_MODULE_NAMES, ModuleStub, ModuleStubError, SANDBOX_MODULE_NAMES, TypeCheckingConfig, TypeCheckingFormat,
+};
 
 /// Type-checks one snippet with a throwaway checker, rendered in `Full`.
 fn check(code: &str, path: &str) -> Option<String> {
@@ -392,8 +394,8 @@ fn test_reveal_types() {
 }
 
 /// ruff grows its parser stack on demand, so the type checker accepts nesting
-/// the interpreter rejects; hosts skip it for such sources
-/// (`monty::source_within_nesting_bound`) rather than rely on a limit here.
+/// the interpreter rejects; hosts reject such sources before type checking
+/// (`monty::type_check_nesting_exception`) rather than rely on a limit here.
 #[test]
 fn deeply_nested_parentheses_type_check_without_overflow() {
     let depth = 500;
@@ -512,4 +514,259 @@ fn script_colliding_with_stubs_is_rejected() {
             format!("script `{script_name}` collides with the type stubs file `type_stubs.pyi`"),
         );
     }
+}
+
+// Host module stubs and the import prelude
+
+/// The `Concise` rendering of one snippet checked with `context`.
+fn render_with(checker: &mut TypeChecker, code: &str, context: &TypeCheckContext<'_>) -> Option<String> {
+    checker
+        .run_with(&SourceFile::new(code, "main.py"), context, concise())
+        .expect("type check should not fail internally")
+        .map(|diagnostics| diagnostics.to_string())
+}
+
+fn tools_stub() -> ModuleStub {
+    ModuleStub::new("tools", "async def add(*, a: int, b: int) -> int: ...\n").unwrap()
+}
+
+#[test]
+fn a_module_stub_resolves_the_module_import() {
+    let stubs = [tools_stub()];
+    let context = TypeCheckContext {
+        module_stubs: &stubs,
+        ..TypeCheckContext::default()
+    };
+    let mut checker = TypeChecker::default();
+    let ok = render_with(&mut checker, "import tools\nawait tools.add(a=1, b=2)\n", &context);
+    assert!(ok.is_none(), "the stubbed module should resolve: {ok:#?}");
+    let wrong = render_with(&mut checker, "from tools import add\nawait add(a='x', b=2)\n", &context);
+    assert_snapshot!(wrong.unwrap(), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+}
+
+#[test]
+fn a_module_stub_is_not_star_imported() {
+    let stubs = [tools_stub()];
+    let context = TypeCheckContext {
+        module_stubs: &stubs,
+        ..TypeCheckContext::default()
+    };
+    let mut checker = TypeChecker::default();
+    let unresolved = render_with(&mut checker, "add(a=1, b=2)\n", &context);
+    assert_snapshot!(unresolved.unwrap(), @"main.py:1:1: error[unresolved-reference] Name `add` used when not defined");
+}
+
+/// A `.pyi` re-exports an import only as `import x as x`, so the committed
+/// snippets' star import loses `import math`; the prelude restores it.
+#[test]
+fn the_prelude_carries_a_committed_import_into_the_next_snippet() {
+    let committed = SourceFile::new("import math\nfrom tools import add as plus\n", "repl_type_stubs.pyi");
+    let stubs = [tools_stub()];
+    let mut checker = TypeChecker::default();
+
+    let without = TypeCheckContext {
+        stubs: Some(&committed),
+        module_stubs: &stubs,
+        prelude: "",
+    };
+    let lost = render_with(&mut checker, "math.sqrt(4)\n", &without);
+    assert_snapshot!(lost.unwrap(), @"main.py:1:1: error[unresolved-reference] Name `math` used when not defined");
+
+    let prelude = scan_imports(committed.source_code).prelude;
+    let with = TypeCheckContext {
+        prelude: &prelude,
+        ..without
+    };
+    let ok = render_with(&mut checker, "math.sqrt(4)\nawait plus(a=1, b=2)\n", &with);
+    assert!(ok.is_none(), "the prelude should bind `math` and `plus`: {ok:#?}");
+    // Diagnostics retain the snippet's original line numbers.
+    let wrong = render_with(&mut checker, "x = 1\nmath.sqrt('4')\n", &with);
+    assert_snapshot!(wrong.unwrap(), @r#"main.py:2:11: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
+}
+
+/// Replaying imports drops `# type: ignore`; suppress the resulting diagnostics while keeping names bound.
+/// Imports committed with type checking skipped also remain accepted.
+#[test]
+fn an_unresolved_import_in_the_prelude_is_not_reported_again() {
+    let committed = SourceFile::new("import requests\n", "repl_type_stubs.pyi");
+    let prelude = scan_imports("import requests  # type: ignore\n").prelude;
+    assert_eq!(prelude, "import requests\n");
+    let context = TypeCheckContext {
+        stubs: Some(&committed),
+        module_stubs: &[],
+        prelude: &prelude,
+    };
+    let mut checker = TypeChecker::default();
+    let ok = render_with(&mut checker, "x = 1\nrequests.get('/')\n", &context);
+    assert!(ok.is_none(), "the prelude's own diagnostics must not surface: {ok:#?}");
+    // The snippet's own unresolved imports must still be reported.
+    let wrong = render_with(&mut checker, "x = 1\nimport requests\n", &context);
+    assert_snapshot!(wrong.unwrap(), @"main.py:2:8: error[unresolved-import] Cannot resolve imported module `requests`");
+}
+
+/// Module-level branches may bind globals; function and class imports only bind locally.
+#[test]
+fn scan_imports_keeps_aliases_and_drops_the_rest() {
+    let source = "\
+from __future__ import annotations
+import math, json as j
+from tools import add, sub as minus
+from . import sibling
+x = 1
+def f():
+    import re
+    return re
+class C:
+    import re as class_re
+if x:
+    import os
+else:
+    import sys
+for _ in ():
+    import time
+try:
+    import fast
+except ImportError:
+    import slow as fast
+finally:
+    import datetime
+with open('f'):
+    import random
+match x:
+    case 1:
+        import asyncio
+";
+    let imports = scan_imports(source);
+    assert_snapshot!(imports.prelude, @r"
+    import math, json as j
+    from tools import add, sub as minus
+    import os
+    import sys
+    import time
+    import fast
+    import slow as fast
+    import datetime
+    import random
+    import asyncio
+    ");
+    let modules: Vec<_> = imports.modules.iter().map(|module| module.name.as_str()).collect();
+    assert_eq!(
+        modules,
+        [
+            "math", "json", "tools", "os", "sys", "time", "fast", "slow", "datetime", "random", "asyncio"
+        ]
+    );
+    assert_eq!(scan_imports("x = (\n"), SnippetImports::default());
+
+    // Dotted imports share their top-level module's first import location.
+    let imports = scan_imports("import a.b\nfrom a.c import d\nimport a\n");
+    assert_eq!(imports.modules.len(), 1);
+    let ImportedModule { name, range } = &imports.modules[0];
+    assert_eq!(name, "a");
+    assert_eq!(&"import a.b\nfrom a.c import d\nimport a\n"[*range], "import a.b");
+}
+
+#[test]
+fn module_stub_names_are_validated() {
+    let stub = |name: &str| ModuleStub::new(name, "").map(|_| ()).unwrap_err();
+    assert_eq!(stub("1tools"), ModuleStubError::InvalidName("1tools".to_owned()));
+    assert_eq!(stub("class"), ModuleStubError::InvalidName("class".to_owned()));
+    assert_eq!(stub("a.1b"), ModuleStubError::InvalidName("a.1b".to_owned()));
+    assert_eq!(stub("a."), ModuleStubError::InvalidName("a.".to_owned()));
+    assert_eq!(stub("json"), ModuleStubError::ReservedName("json".to_owned()));
+    assert_eq!(stub("json.decoder"), ModuleStubError::ReservedName("json".to_owned()));
+    assert_eq!(stub("builtins"), ModuleStubError::ReservedName("builtins".to_owned()));
+    assert_snapshot!(stub("a.1b").to_string(), @r#"module name "a.1b" is not a valid identifier"#);
+    assert_snapshot!(stub("json").to_string(), @r#"module "json" is provided by the sandbox or its type checker and cannot be replaced"#);
+    assert_eq!(ModuleStub::new("stripe", "x: int\n").unwrap().module(), "stripe");
+    // Only top-level names are reserved.
+    assert_eq!(ModuleStub::new("stripe.json", "").unwrap().module(), "stripe.json");
+}
+
+/// Missing ancestors become empty packages; submodule members stay separate from parent members.
+#[test]
+fn dotted_module_stubs_form_a_package() {
+    let stubs = [
+        ModuleStub::new("pkg", "VERSION: int\n").unwrap(),
+        ModuleStub::new("pkg.tools", "def add(a: int, b: int) -> int: ...\n").unwrap(),
+        ModuleStub::new("bare.sub", "x: str\n").unwrap(),
+    ];
+    let context = TypeCheckContext {
+        module_stubs: &stubs,
+        ..TypeCheckContext::default()
+    };
+    let mut checker = TypeChecker::default();
+    let code = "import pkg.tools\nfrom pkg.tools import add\nfrom pkg import tools, VERSION\nimport bare.sub\n[pkg.tools.add(1, 2), add(3, 4), tools.add(5, 6), VERSION, bare.sub.x]\n";
+    let ok = render_with(&mut checker, code, &context);
+    assert!(ok.is_none(), "the package stubs should resolve: {ok:#?}");
+    let wrong = render_with(&mut checker, "from pkg.tools import add\nadd('x', 2)\n", &context);
+    assert_snapshot!(wrong.unwrap(), @r#"main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+    let unresolved = render_with(&mut checker, "from pkg import add\n", &context);
+    assert_snapshot!(unresolved.unwrap(), @"main.py:1:17: error[unresolved-import] Module `pkg` has no member `add`");
+    checker.reset().unwrap();
+    let gone = render_with(&mut checker, "import pkg.tools\n", &TypeCheckContext::default());
+    assert_snapshot!(gone.unwrap(), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `pkg.tools`");
+}
+
+/// Host stubs must not shadow the checker's vendored typeshed definitions.
+#[test]
+fn reserved_names_cover_the_vendored_typeshed() {
+    let versions = monty_typeshed::file_system()
+        .read_to_string("stdlib/VERSIONS")
+        .expect("the vendored typeshed lists its modules");
+    for line in versions.lines() {
+        let entry = line.split('#').next().unwrap_or_default().trim();
+        let Some((module, _)) = entry.split_once(':') else {
+            continue;
+        };
+        let top_level = module.split('.').next().unwrap_or_default();
+        assert!(
+            SANDBOX_MODULE_NAMES.contains(&top_level) || CHECKER_MODULE_NAMES.contains(&top_level),
+            "typeshed module {top_level} is missing from SANDBOX_MODULE_NAMES and CHECKER_MODULE_NAMES"
+        );
+    }
+    // Keep runtime and checker-only reservations separate.
+    for name in CHECKER_MODULE_NAMES {
+        assert!(!SANDBOX_MODULE_NAMES.contains(name), "{name} is in both lists");
+    }
+}
+
+/// Reset must remove module stubs to prevent reuse across sessions.
+#[test]
+fn reset_removes_module_stubs() {
+    let stubs = [tools_stub()];
+    let context = TypeCheckContext {
+        module_stubs: &stubs,
+        ..TypeCheckContext::default()
+    };
+    let mut checker = TypeChecker::default();
+    let first = render_with(&mut checker, "import tools\n", &context);
+    assert!(
+        first.is_none(),
+        "first run with a module stub should succeed: {first:#?}"
+    );
+    checker.reset().expect("reset");
+
+    let second = render_with(&mut checker, "import tools\n", &TypeCheckContext::default());
+    assert_snapshot!(second.unwrap(), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
+}
+
+#[test]
+fn bisect_star_import_exports_the_public_functions() {
+    let code = "\
+from bisect import *
+assert bisect_left([1, 2], 2) == 1
+assert bisect_right([1, 2], 2) == 2
+assert bisect([1, 2], 2) == 2
+insort_left([1, 2], 2)
+insort_right([1, 2], 2)
+insort([1, 2], 2)
+";
+    assert!(check(code, "main.py").is_none());
+}
+
+#[test]
+fn bisect_does_not_declare_runtime_all_metadata() {
+    let diagnostics = check_concise("import bisect\nbisect.__all__", "main.py").expect("__all__ is absent at runtime");
+    assert_snapshot!(diagnostics, @"main.py:2:1: error[unresolved-attribute] Module `bisect` has no member `__all__`");
 }

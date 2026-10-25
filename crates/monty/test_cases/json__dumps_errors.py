@@ -51,6 +51,42 @@ try:
 except TypeError as exc:
     assert str(exc) == 'make_encoder() argument 5 must be str, not int'
 
+# === indent errors ===
+# the heap-backed kwargs after `indent` are released when it fails
+try:
+    json.dumps({'a': 1}, indent=10**30, sort_keys=[1], allow_nan=[2], separators=[',', ':'])
+    assert False, 'huge indent should raise OverflowError'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+
+# any other indent goes through `' ' * indent`
+for bad, name in [(0.5, 'float'), ([1], 'list'), (b'  ', 'bytes')]:
+    try:
+        json.dumps([1], indent=bad)
+        assert False, 'non-int indent should raise TypeError'
+    except TypeError as exc:
+        assert str(exc) == f"can't multiply sequence by non-int of type '{name}'"
+
+# `separators` is unpacked before `indent` is used, but its types are checked after
+try:
+    json.dumps([1], indent=0.5, separators=[1])
+    assert False, 'short separators should raise ValueError'
+except ValueError as exc:
+    assert str(exc) == 'not enough values to unpack (expected 2, got 1)'
+try:
+    json.dumps([1], indent=0.5, separators=[1, ':'])
+    assert False, 'float indent should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == "can't multiply sequence by non-int of type 'float'"
+
+# a `str` document skips the encoder, so only the unpacking is checked
+assert json.dumps('x', indent=0.5, separators=[1, 2]) == '"x"'
+try:
+    json.dumps('x', separators=[1])
+    assert False, 'short separators should raise ValueError'
+except ValueError as exc:
+    assert str(exc) == 'not enough values to unpack (expected 2, got 1)'
+
 # === unexpected keyword argument ===
 try:
     json.dumps(None, foobar_not_static=True)

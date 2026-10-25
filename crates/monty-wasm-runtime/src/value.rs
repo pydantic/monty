@@ -18,7 +18,7 @@ use monty_types::{
 
 use crate::bindings::exports::pydantic::monty::worker::{
     Arena, ClassInstanceNode, ClassTypeNode, ComplexNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode,
-    FunctionNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
+    FunctionNode, ModuleNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
 };
 
 /// Remaining expanded-value allowance for one request's arena.
@@ -98,6 +98,7 @@ fn node_decoded_size(node: &ValueNode) -> usize {
         ValueNode::Exception(value) => value.message.as_ref().map_or(0, String::len),
         ValueNode::FileHandle(value) => value.path.len(),
         ValueNode::ClassInstance(value) => pairs(value.attrs.len()),
+        ValueNode::Module(value) => value.name.len().saturating_add(pairs(value.attrs.len())),
         ValueNode::ClassType(value) => size_of::<MontyClassTypeNode>()
             .saturating_add(value.name.len())
             .saturating_add(pairs(value.attrs.len())),
@@ -243,6 +244,11 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
         },
         ValueNode::Repr(value) => MontyNode::Repr(value),
         ValueNode::Cycle(value) => MontyNode::Cycle(value),
+        ValueNode::Module(value) => MontyNode::Module {
+            name: value.name,
+            id: parse_uuid(&value.id)?,
+            attrs: id_pairs(value.attrs),
+        },
     })
 }
 
@@ -341,6 +347,11 @@ fn node_into_component(node: MontyNode) -> ValueNode {
         MontyNode::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
         MontyNode::Repr(value) => ValueNode::Repr(value),
         MontyNode::Cycle(placeholder) => ValueNode::Cycle(placeholder),
+        MontyNode::Module { name, id, attrs } => ValueNode::Module(ModuleNode {
+            name,
+            id: id.to_string(),
+            attrs: raw_pairs(attrs),
+        }),
     }
 }
 

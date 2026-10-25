@@ -244,8 +244,19 @@ or variant on them takes an unused letter.
 `DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
 set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
-`FunctionId`, never by discriminant), or a semantic change to a stored value. `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
+`FunctionId`, never by discriminant), a semantic change to a stored value, or a `sha1` / `sha2` crate upgrade that
+changes their `SerializableState` layout (`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim). `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
 change that breaks it decides between an alias, a default, or a bump plus `UPDATE_DUMP_FIXTURE=1` to regenerate.
+Frozen function code is also persisted: Rust calls its captured entry signature, and that code calls private native helpers.
+Incompatible changes to either calling convention require compatibility handling or a version bump, including changes
+to argument order or meaning.
+Compatible source-body changes do not require a bump; restored sessions retain their captured implementations.
+When the old data still holds everything the new meaning needs, bump `DUMP_VERSION` but keep
+`MIN_SUPPORTED_DUMP_VERSION`, and convert in one of two places so the live heap never carries a legacy form:
+a `#[serde(from = "Dumped…")]` shim when one value's stored shape changed (see `TableCursor`), or an upgrade in
+`dump_upgrade.rs`, which `Dump::load` runs over an older dump's heap and interns; its module docs list the rules.
+The first upgrade is `modules/dataclasses/legacy.rs` (version 13), tested against the `dataclasses_v13*.bin` fixtures
+the 1.1.0 release wrote, which must never be regenerated.
 
 ### Compilation overlays and stable intern entries
 
@@ -279,9 +290,11 @@ Changes to this module require careful review of the safety invariants documente
 
 #### Core concepts
 
-- **`HeapReader<'a, T>`** — A scoped borrow of the heap that produces `HeapRead` handles. Created exclusively via `HeapReader::with`, which takes a `for<'a>` closure bound makes the lifetime `'a` universally quantified, so `HeapRead` pointers cannot escape the closure.
-- **`HeapRead<'a, T>`** — A typed handle to a specific heap entry. Created by `heap.read(id)` which returns a `HeapReadOutput<'a>` enum that you match on. Tracks a reader count that prevents the entry from being freed while the handle exists.
-- **`HeapReadOutput<'a>`** — Enum over all `HeapRead<'a, T>` variants (one per `HeapData` variant). Pattern match to get the typed handle.
+- **`HeapReader<'a>`** — A scoped borrow created exclusively by `HeapReader::with`. Its `for<'a>` closure gives handles an invariant brand that cannot escape the closure.
+- **`HeapObjectRead<'a, T>`** — A typed heap-object guard holding its identity and reader count. `heap.read(id)` returns a `HeapReadOutput<'a>` variant containing one.
+- **`HeapReadMut<'a, T>`** — A mutable-access capability exposed only by shared reference from object guards and `protect_mut` wrappers. Its `get_mut(&self, &mut HeapReader)` serializes payload access through the reader.
+- **`HeapRead<'a, T>`** — A read-only capability exposed by shared dereference from mutable capabilities and `protect` wrappers. Capabilities must never be extracted, cloned or exposed via `DerefMut`: swapping them would detach their pointers from their owners.
+- **`HeapView<'a, T>`** — Shared payload access for generic helpers. Slice and box projections resolve their current storage on each access rather than cache pointers invalidated by parent mutation.
 
 #### Reading and mutating heap data
 
@@ -307,25 +320,27 @@ HeapReader::with(heap, &mut (), |heap, ()| {
 Key borrowing rules:
 
 - `get(&self, &HeapReader)` → `&T` — immutable access, prevents heap mutation while reference lives
-- `get_mut(&mut self, &mut HeapReader)` → `&mut T` — mutable access, exclusive
-- Multiple `HeapRead` handles can coexist, but only one can be accessed via `get_mut` at a time
+- `get_mut(&self, &mut HeapReader)` → `&mut T` — mutable access through `HeapReadMut`, exclusive via the reader
+- Both accessors borrow the capability and reader for the returned reference's lifetime, retaining the owner or protected source
+- Multiple capability aliases can coexist; their payload borrows cannot conflict
 - `dec_ref()` panics if any reader is active — prevents use-after-free
 
 #### Implementing type methods with HeapRead
 
-Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<'h>` trait provides the common interface:
+Read-only helpers live on `HeapRead`; mutation helpers live on `HeapReadMut` and take `&self`.
+`PyTrait` remains implemented once per type on `HeapObjectRead`, which also supplies Python identity:
 
 ```rust
 // Methods on a heap type
-impl<'h> HeapRead<'h, List> {
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+impl<'h> HeapReadMut<'h, List> {
+    pub fn append(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         self.get_mut(vm.heap).items.push(item);
         Ok(())
     }
 }
 
 // PyTrait implementation
-impl<'h> PyTrait<'h> for HeapRead<'h, List> {
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     fn py_type(&self, vm: &VM<'h>) -> Type { Type::List }
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).items.len())
@@ -793,30 +808,45 @@ stop and report the problem!
 
 Only use `# Raise=` when you only care about the exception type/message and not the traceback and you can't use a try/except block.
 
-### Python fixture markers
+### Python fixture headers
 
-You may mark python files with:
+Configure a case with a `# /// monty` header: a [PEP 723](https://peps.python.org/pep-0723/) comment block of TOML,
+on the first lines of the file.
+`monty_fixture::Header` (`crates/monty-fixture`) parses it for both the datatest harness and `monty-bench`.
+Unknown keys, wrong types and malformed blocks are errors, and every key defaults to off:
 
-- `# call-external` to support calling external functions
-- `# run-async` to support running async code
-- `# timezone=Europe/London` to run the case in an IANA zone rather than the UTC default:
+```python
+# /// monty
+# call-external = true
+# run-async = true
+# ///
+```
+
+- `call-external = true` to support calling external functions
+- `run-async = true` to support running async code
+- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both
+- `skip-cpython-windows = true` to skip the CPython side on Windows (POSIX path semantics)
+- `cpython-main-module = true` to set `__name__ = '__main__'` on CPython only
+- `gc-interval = <N>` to override the GC interval
+- `timezone = 'Europe/London'` to run the case in an IANA zone rather than the UTC default:
     it sets `OsPolicy::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
     a naive `timestamp()`, `%Z`/`%z` and the `time` zone constants can be compared.
     The CPython side is skipped on Windows, which has no `time.tzset`.
-    Without the marker both sides run in UTC — except on Windows, where the harness
-    cannot move CPython, so a case asserting zone values needs `# skip-cpython-windows`
+    Without the key both sides run in UTC — except on Windows, where the harness
+    cannot move CPython, so a case asserting zone values needs `skip-cpython-windows`
     (see `datetime__zone_default.py`).
+- `[bench]` table: options for `bench__*.py` cases and `monty-bench` scripts (see `crates/monty-bench/benches/main.rs`)
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
 Never mark tests as:
 
-- `# xfail=cpython` - Test is required to fail on CPython
-- `# xfail=monty` - Test is required to fail on Monty
+- `xfail = ['cpython']` - Test is required to fail on CPython
+- `xfail = ['monty']` - Test is required to fail on Monty
 
 NEVER MARK TESTS AS XFAIL UNDER ANY CIRCUMSTANCES!!! INSTEAD FIX THE BEHAVIOR SO THAT THE TEST PASSES.
 
-All these markers must be at the start of comment lines to be recognized.
+The header shifts line numbers, so `TRACEBACK` expectations count its lines.
 
 ### Other Notes
 
@@ -1009,9 +1039,11 @@ where they are. Change one and you must change all of them:
 - **The start-latency numbers** — `ROWS` in `scripts/startup_latency_chart.py` (which renders
     `docs/img/startup-latency.svg`), `docs/index.md`, `docs/alternatives.md`, `README.md`.
     Re-measure with `scripts/startup_performance.py`, then update all four.
-- **Default resource limits** (1000 recursion frames, 1000 suspensions, 100 MB per-mount memory, 10 MiB
+- **Default resource limits** (1000 recursion frames, 1000 suspensions, 10 MiB
     print collectors, 1s duration grace) — `limitations/resource_limits.md`,
     `docs/resource-limits.md`, and the binding docstrings.
+    The per-mount memory default is the exception: its value is stated only in
+    `monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`, and everything else refers to that name.
 - **`OsPolicy` defaults** (system clock, UTC zone, host-serviced sleeps capped at 10 s, a zero `process_time`,
     OS entropy for `random`)
     and `call_host` — `limitations/time.md`, `limitations/datetime.md`,

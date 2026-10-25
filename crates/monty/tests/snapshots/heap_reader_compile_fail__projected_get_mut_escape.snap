@@ -1,0 +1,38 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: actual
+---
+error[E0597]: `source` does not live long enough
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:215:46
+    |
+214 |             let mut source = (123_u64,);
+    |                 ---------- binding `source` declared here
+215 |             let protected = heap.protect_mut(&mut source);
+    |                                              ^^^^^^^^^^^ borrowed value does not live long enough
+...
+218 |             field.get_mut(heap)
+    |             ------------------- borrow later used here
+219 |         };
+    |         - `source` dropped here while still borrowed
+error[E0597]: `protected` does not live long enough
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:216:50
+    |
+215 |             let protected = heap.protect_mut(&mut source);
+    |                 --------- binding `protected` declared here
+216 |             let read: &HeapReadMut<'_, (u64,)> = &protected;
+    |                                                  ^^^^^^^^^^ borrowed value does not live long enough
+217 |             let field = heap_read_ref_as_field_mut!(read, (u64,), 0);
+218 |             field.get_mut(heap)
+    |             ------------------- borrow later used here
+219 |         };
+    |         - `protected` dropped here while still borrowed
+error[E0597]: `field` does not live long enough
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:218:13
+    |
+217 |             let field = heap_read_ref_as_field_mut!(read, (u64,), 0);
+    |                 ----- binding `field` declared here
+218 |             field.get_mut(heap)
+    |             ^^^^^ borrowed value does not live long enough
+219 |         };
+    |         - `field` dropped here while still borrowed
+For more information about this error, try `rustc --explain E0597`.

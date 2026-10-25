@@ -1,5 +1,7 @@
-# skip-cpython-windows
-# A case with no `# timezone=` marker: Monty's default session zone is UTC, and the
+# /// monty
+# skip-cpython-windows = true
+# ///
+# A case with no `timezone` header key: Monty's default session zone is UTC, and the
 # harness puts the CPython side in UTC to match. Windows has no `time.tzset`, so the
 # harness cannot move CPython there and only the Monty side of this case runs.
 # Every expectation is CPython 3.14 under `TZ=UTC`.

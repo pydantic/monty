@@ -42,6 +42,10 @@ These raise `NameError`:
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
+- **Large integer literal identity** — separate occurrences of the same literal outside the `i64` range are not
+    deduplicated, so `a = 18446744073709551616; b = 18446744073709551616; a is b` is `False` where CPython may reuse a
+    single constant and return `True`.
+    Repeated loads of one literal share its identity; use `==` to compare numeric values.
 - **`hash(x)`** — Monty hashes `str`, `bytes`, `float`, `complex` and every container with
     its own algorithm, so the values differ from CPython's. Only `bool`,
     small `int`, and a `float` or `complex` equal to one of them agree: an `int` hashes to itself, which is what CPython does
@@ -52,15 +56,15 @@ These raise `NameError`:
     no hash randomisation), but never persist one or compare one against a
     CPython hash. `sys.hash_info` is not exposed, so the parameters CPython
     publishes are unavailable (see [sys.md](sys.md)).
-- **`repr` of a dict being mutated by its own elements** — Monty iterates the
-    live entries like CPython, but deletion compacts Monty's dense entry storage
-    where CPython leaves a tombstone in place: a key deleted from inside a user
-    `__repr__` running *during that dict's repr* shifts later entries down, so
-    the entry after the deleted one can be skipped from the output where CPython
-    would still print it. Insertions during repr match CPython (appended and
-    printed), as do list (live length, mid-repr pops truncate / appends extend),
-    `set`, `collections.deque` and `collections.Counter` (all snapshot, like
-    CPython).
+- **a set iterated while it is mutated may yield a newly added element** —
+    Monty's sets keep insertion order, so an element added during iteration is
+    appended after the cursor and gets yielded. CPython places it by hash, which
+    can put it behind the cursor and out of that walk's reach. Both engines raise
+    `RuntimeError: Set changed size during iteration` when the size changes; this
+    is only about which walk sees a same-size replacement.
+    Monty also stops a set walk once it has yielded the set's starting length,
+    where CPython keeps going: replacing each element as it is visited yields
+    every replacement in CPython but only the original elements in Monty.
 - **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
     hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
     `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.
@@ -155,9 +159,8 @@ These raise `NameError`:
     or a tuple of those. Passing a host-supplied dataclass / namedtuple as the
     second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
-- **`pow(base, exp, mod)`** — the three-argument form requires all integers and
-    rejects negative exponents with `ValueError` instead of computing a modular
-    inverse. Non-modular exponents whose result cannot be materialized raise
+- **`pow(base, exp, mod)` with integer operands** rejects negative exponents with `ValueError`
+    instead of computing a modular inverse. Non-modular exponents whose result cannot be materialized raise
     `OverflowError` (see [resource_limits.md](resource_limits.md)).
 - **`pow(base, exp)` and `**` with float operands and a real result** — overflow raises
     `OverflowError` like CPython, always worded

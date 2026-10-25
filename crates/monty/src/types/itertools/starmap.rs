@@ -49,7 +49,7 @@ impl StarMap {
 }
 
 /// Pulls one item, spreads it into an argument list, and calls the function.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let ItertoolsIter::StarMap(starmap) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::StarMap")
     };
@@ -64,7 +64,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
     // `collect_owned_iterable` consumes `item` on both paths, raising here for
     // a non-iterable one, so the arguments never outlive a failed spread.
     let args: Vec<Value> = collect_owned_iterable(item, vm)?;
-    vm.evaluate_function("starmap()", function, pack_args(args)).map(Some)
+    vm.evaluate_function(function, pack_args(args)).map(Some)
 }
 
 /// Packs the spread item into the arity-specific [`ArgValues`] shape.

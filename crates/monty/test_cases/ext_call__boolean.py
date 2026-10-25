@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # External calls in boolean short-circuit expressions
 
 # === Basic boolean operations ===

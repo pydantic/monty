@@ -89,6 +89,7 @@ fn corpus() -> Vec<MontyObject> {
             [pair("x", MontyObject::int(1))],
         ),
         MontyObject::function("fetch".to_owned(), Some("doc".to_owned())),
+        MontyObject::module("tools", MontyUuid::from_u128(3), [pair("VERSION", MontyObject::int(3))]),
         MontyObject::repr("<object>".to_owned()),
         MontyObject::cycle("[...]".to_owned()),
     ]
@@ -166,6 +167,14 @@ fn shared_nodes_equal_their_copies() {
         ])
     );
     assert_eq!(value.to_string(), "[[1], [1]]");
+}
+
+#[test]
+fn module_repr_quotes_its_name() {
+    let module = |name: &str| MontyObject::module(name, MontyUuid::from_u128(3), []).to_string();
+    assert_eq!(module("pkg.sub"), "<module 'pkg.sub'>");
+    // a worker-supplied name is untrusted, so it is quoted as a Python str
+    assert_eq!(module("it's"), "<module \"it's\">");
 }
 
 #[test]

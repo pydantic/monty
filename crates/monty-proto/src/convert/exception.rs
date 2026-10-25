@@ -42,7 +42,9 @@ impl TryFrom<pb::RaisedException> for MontyException {
             Some(pb::exc_data::Kind::Unicode(unicode)) => {
                 sanitize_unicode_data(unicode).map_or(ExcData::None, ExcData::Unicode)
             }
-            Some(pb::exc_data::Kind::Json(json)) => sanitize_json_data(json).map_or(ExcData::None, ExcData::Json),
+            Some(pb::exc_data::Kind::Json(json)) => {
+                sanitize_json_data(json, err.message.as_deref()).map_or(ExcData::None, ExcData::Json)
+            }
             None => ExcData::None,
         };
         Ok(Self::with_traceback(exc_type, err.message, traceback).with_data(data))
@@ -79,11 +81,12 @@ impl From<&JsonErrorData> for pb::JsonErrorData {
 
 /// Validates an untrusted wire `JsonErrorData`, returning `None` when any
 /// field is out of range. As with [`sanitize_unicode_data`], size caps stop a
-/// compromised child pinning large amounts of parent memory: legitimate `msg`
-/// values are short static phrases, and legitimate senders drop `doc` above
-/// [`JsonErrorData::MAX_DOC_LEN`].
-fn sanitize_json_data(data: pb::JsonErrorData) -> Option<Box<JsonErrorData>> {
-    if data.msg.len() > JsonErrorData::MAX_DOC_LEN {
+/// compromised child pinning large amounts of parent memory: `msg` normally
+/// prefixes the exception's `message`, so it may be no longer (a TOML key can make
+/// both long), or [`JsonErrorData::MAX_DOC_LEN`] without a message; legitimate
+/// senders drop `doc` above that cap.
+fn sanitize_json_data(data: pb::JsonErrorData, message: Option<&str>) -> Option<Box<JsonErrorData>> {
+    if data.msg.len() > message.map_or(JsonErrorData::MAX_DOC_LEN, str::len) {
         return None;
     }
     if data
@@ -97,12 +100,13 @@ fn sanitize_json_data(data: pb::JsonErrorData) -> Option<Box<JsonErrorData>> {
     let lineno = usize::try_from(data.lineno).ok()?;
     let colno = usize::try_from(data.colno).ok()?;
     // CPython's lineno/colno are 1-based; pos is a character index into doc
-    // and may equal its length (errors at end of input).
+    // and may equal its length (errors at end of input) or exceed it by one
+    // (`tomllib` reports an escape cut off by the end of input one past it).
     if lineno == 0 || colno == 0 {
         return None;
     }
     if let Some(doc) = &data.doc
-        && pos > doc.chars().count()
+        && pos > doc.chars().count() + 1
     {
         return None;
     }

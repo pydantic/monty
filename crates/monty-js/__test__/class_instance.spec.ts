@@ -159,12 +159,22 @@ test('method call allowed by "all"', async () => {
 })
 
 test('instance callMethod rejects __call__ even under allowedMethods "all"', () => {
-  // `__call__` routes only to ClassType construction; on an instance wrapper
-  // a (necessarily forged) `__call__` frame must never invoke the instance.
+  // Even a callable host value must not run through an instance wrapper.
   const invocable = Object.assign(() => 'invoked', { add: (n: number) => n })
   const wrapper = new ClassInstance(invocable, { allowedMethods: 'all' })
   const error = t.throws(() => wrapper.callMethod('__call__', [], {}))
-  t.is(error.message, "'Function' object has no attribute '__call__'")
+  t.is(error.message, "'Function' object is not callable")
+})
+
+test('calling an instance in the sandbox is not callable', async () => {
+  const c = new Calculator(5)
+  const error = await t.throwsAsync(
+    () => run('c()', { inputs: { c: new ClassInstance(c, { allowedMethods: 'all' }) } }),
+    {
+      instanceOf: MontyRuntimeError,
+    },
+  )
+  t.is(error.message, "TypeError: 'Calculator' object is not callable")
 })
 
 test('kwargs are delivered as a trailing options bag', async () => {

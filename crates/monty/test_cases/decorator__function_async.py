@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 # A decorated `async def` is awaited like any other coroutine — both when the
 # decorator returns the function untouched and when it wraps it in another
 # coroutine function.

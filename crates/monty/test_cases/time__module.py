@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # The `time` stdlib module's clocks and `sleep()`. The conversion functions are in
 # time__struct_time.py; the zone-dependent ones in datetime__zone_*.py.
 import time

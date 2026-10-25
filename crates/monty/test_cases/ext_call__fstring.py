@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # External calls in f-strings
 
 s = f'result is {add_ints(10, 20)}'

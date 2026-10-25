@@ -16,8 +16,10 @@ use monty_proto::{
     WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, DateTimeSource, ExtFunctionResult, MontyDate, MontyDateTime, MontyObject, NameLookupResult, NamedValues,
-    OsPolicy, RandomSeed, RandomStart, SandboxTimeZone, SleepMode, SourceRange,
+    CallArgs, DateTimeSource, ExtFunctionResult, FileMode, IMPORT_STUBS_CALL_ID, MontyDate, MontyDateTime,
+    MontyFileHandle, MontyObject, NameLookupResult, NamedValues, OsPolicy, RandomSeed, RandomStart, SandboxTimeZone,
+    SleepMode, SourceRange,
+    scan::{EntryInfo, ScanEntry, scan_reply},
     unstable::{self, MontyNode},
 };
 
@@ -1195,6 +1197,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_042_653,
         ),
+        // The json encoder preflights each doubling of its output buffer.
+        ("import json\njson.dumps(['x' * 1000] * 2000)", 1_167_196),
         // `randbytes` charges its word buffer and the byte buffer it fills.
         ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_167),
         // A `range` population can be as long as `i64::MAX` while costing nothing,
@@ -1219,6 +1223,33 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
             24_044_628,
         ),
+        // A SHAKE digest preflights its output; `hexdigest` also counts the raw
+        // digest it keeps live while encoding, so a length whose hex alone
+        // would fit is still refused.
+        ("import hashlib\nhashlib.shake_128().digest(2_000_000)", 2_045_903),
+        ("import hashlib\nhashlib.shake_128().hexdigest(400_000)", 1_245_904),
+        // A csv record copies its fields' text into the line, refused at a capacity
+        // doubling like the formatter cases above.
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\ns = 'x' * 400_000\ncsv.writer(S()).writerow([s, s])",
+            1_250_723,
+        ),
+        // A `DictReader` row's dict is sized from `fieldnames` up front, preflighted like a
+        // dict copy.
+        (
+            "import csv\nnames = list(range(30_000))\nnext(csv.DictReader(['x'], fieldnames=names))",
+            1_965_832,
+        ),
+        // A list `fieldnames` is copied per row, and the keys of a row dict are copied for
+        // the `extrasaction='raise'` check: both bulk copies are preflighted.
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\nnames = [None] * 40_000\ncsv.DictWriter(S(), names).writerow({})",
+            1_331_169,
+        ),
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\nrow = {i: None for i in range(10_000)}\ncsv.DictWriter(S(), []).writerow(row)",
+            1_079_568,
+        ),
     ];
 
     for (code, expected) in cases {
@@ -1232,6 +1263,116 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
+}
+
+/// `DictWriter.writerows()` on a file keeps one list per row until its single
+/// write, so wide `fieldnames` over many sparse dicts amplify the input: each
+/// row's list is preflighted against the usage so far.
+#[test]
+fn dict_writer_rows_are_rejected_before_the_hard_limit() {
+    let code = "import csv\nf = open('/out.csv', 'w')\ncsv.DictWriter(f, range(20_000)).writerows([{}] * 100)";
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed(code);
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let handle = MontyFileHandle {
+        path: "/out.csv".to_owned(),
+        mode: "w".parse::<FileMode>().unwrap(),
+        position: 0,
+    };
+    let (_, event) = child.resume_return(call.call_id, MontyObject::file_handle(handle));
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError", "{code}");
+    let message = error.message.expect("MemoryError should have a message");
+    assert_reported_usage(&message, 1_206_975, code);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+    child.shutdown();
+}
+
+/// `os.path.expandvars` amplifies its input by the length of the values it
+/// substitutes, so the result's growth is charged like a `StringBuilder`'s:
+/// refused at a capacity doubling, before the worker reaches its hard ceiling.
+#[test]
+fn expandvars_growth_is_rejected_before_the_hard_limit() {
+    let code = "import os\nos.path.expandvars('$V' * 20_000)";
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed(code);
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let environ = MontyObject::dict([(MontyObject::string("V"), MontyObject::string("x".repeat(1000)))]);
+    let (_, event) = child.resume_return(call.call_id, environ);
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError", "{code}");
+    let message = error.message.expect("MemoryError should have a message");
+    assert_reported_usage(&message, 1_370_472, code);
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+    child.shutdown();
+}
+
+/// Results built from a `Path.scan` reply are charged before they can grow
+/// past the hard ceiling: a walk's `dirnames` repeating one long name, and a
+/// glob whose matches dwarf the tree they are drawn from.
+#[test]
+fn scan_results_are_charged_before_the_hard_limit() {
+    let entry = |path: &str, is_dir: bool| ScanEntry {
+        path: path.to_owned(),
+        info: EntryInfo {
+            is_dir,
+            is_file: !is_dir,
+            is_symlink: false,
+        },
+    };
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed("import os\nwalk = os.walk('/d')");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let (_, event) = child.resume_return(call.call_id, scan_reply([entry("", true), entry("sub", true)]));
+    expect_complete(event);
+    // every name is copied and joined before the next step; charged as one allocation
+    let (_, event) = child.feed(
+        "dirpath, dirnames, filenames = next(walk)\ndirnames.clear()\ndirnames.extend(['x' * 10_000] * 10_000)\nnext(walk)",
+    );
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+
+    // `**/*/**` yields every entry once per ancestor: a chain of 200 directories
+    // is a few hundred reply entries but tens of thousands of matches
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed("from pathlib import Path\nmatches = Path('/d').glob('**/*/**')");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    let mut entries = vec![entry("", true)];
+    let mut path = String::new();
+    for _ in 0..200 {
+        path = if path.is_empty() {
+            "d".to_owned()
+        } else {
+            format!("{path}/d")
+        };
+        entries.push(entry(&path, true));
+        entries.push(entry(&format!("{path}/f"), false));
+    }
+    let (_, event) = child.resume_return(call.call_id, scan_reply(entries));
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    // raised as the matches grew, not by a preflight of the finished list
+    let message = error.message.expect("MemoryError should have a message");
+    assert!(
+        reported_usage(&message, "glob") < 1_300_000,
+        "usage reported after collecting every match: {message}"
+    );
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
 }
 
 /// A merge charges the pairs it copies out, but not room for every one of them
@@ -1678,6 +1819,65 @@ fn batched_without_a_size_hint_is_refused_before_the_hard_limit() {
     child.shutdown();
 }
 
+/// `tomllib` turns a couple of source bytes into a tree node (`[[a]]` into a
+/// whole table), so a document that fits can build a tree that does not. Only
+/// the parser's per-element / per-statement poll stops it, and where that
+/// lands depends on the tree's growth, so this pins the property rather than
+/// a byte figure.
+#[test]
+fn tomllib_documents_are_refused_before_the_hard_limit() {
+    const SOFT_LIMIT: u64 = 1024 * 1024;
+    const HARD_CEILING: u64 = SOFT_LIMIT + 4 * 1024 * 1024;
+
+    for code in [
+        "import tomllib\ntomllib.loads('x = [' + '1,' * 200_000 + ']')",
+        "import tomllib\ntomllib.loads('[[a]]\\n' * 100_000)",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(SOFT_LIMIT));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        let message = error.message.expect("MemoryError should have a message");
+        let used = reported_usage(&message, code);
+        assert!(
+            (SOFT_LIMIT..HARD_CEILING).contains(&used),
+            "{code}: reported {used} bytes, expected a refusal between {SOFT_LIMIT} and {HARD_CEILING}"
+        );
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
+}
+
+/// A document of many keys or tables fits under these soft limits until one
+/// insertion doubles a table's (or its namespace flags') buffers by more than
+/// the 4 MiB headroom, which only a growth preflight can refuse softly.
+#[test]
+fn tomllib_table_growth_is_refused_before_the_hard_limit() {
+    for (mib, source) in [
+        (16, "'\\n'.join(f'k{i} = 1' for i in range(100_000))"),
+        (16, "'x = {' + ', '.join(f'k{i} = 1' for i in range(100_000)) + '}'"),
+        (24, "'\\n'.join(f'[t{i}]' for i in range(100_000))"),
+        // Refused deep into a wide table, whose cleanup must not allocate in proportion to it.
+        (64, "'\\n'.join(f'k{i} = 1' for i in range(400_000))"),
+        // Each dotted part queues a namespace flag until the next header.
+        (96, "'\\n'.join(f'a.b.c.d.e.k{i} = 1' for i in range(200_000))"),
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(mib * 1024 * 1024));
+        // Built in its own feed so a `MemoryError` can only come from parsing.
+        let (_, event) = child.feed(&format!("import tomllib\ns = {source}\nNone"));
+        assert!(
+            matches!(event, pb::child_event::Kind::Complete(_)),
+            "{source}: {event:?}"
+        );
+        let (_, event) = child.feed("tomllib.loads(s)");
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{source}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{source}");
+        child.shutdown();
+    }
+}
+
 /// A small `n` caps a batch however long the source, so batching a huge
 /// exact-hint iterable must not trip the `batched` preflight — the memory
 /// really is bounded by `n`, not by the source.
@@ -2038,6 +2238,115 @@ fn loading_a_dump_applies_its_own_memory_limit() {
     );
 }
 
+/// Every `binascii`/`base64` conversion whose output is larger than its input
+/// can be handed a buffer that fits under the soft limit and encodes to one
+/// that clears the allocator's hard ceiling, which kills the worker rather
+/// than raising. Each preflights its output, so the session survives.
+///
+/// The sizes matter: the input must fit under the soft limit while the
+/// expansion clears soft + `BASE_HEADROOM`, which needs a limit above 2 MiB.
+/// `a85decode` is here rather than among the decoders because Ascii85's `z`
+/// stands for a whole zero word, so a buffer of them quadruples.
+#[test]
+fn expanding_codecs_fail_softly() {
+    const LIMIT: u64 = 8 * 1024 * 1024;
+    // smallest expansion here is base64's 4/3, so 5 MB covers every case
+    const SETUP: &str = "import binascii, base64\nsrc = {FILL} * 5_000_000\n";
+    let cases = [
+        ("b'\\xff'", "binascii.hexlify(src)"),
+        ("b'\\xff'", "binascii.b2a_base64(src)"),
+        ("b'\\xff'", "binascii.b2a_qp(src)"),
+        ("b'\\xff'", "base64.b64encode(src)"),
+        ("b'\\xff'", "base64.b32encode(src)"),
+        ("b'\\xff'", "base64.b16encode(src)"),
+        ("b'\\xff'", "base64.b85encode(src)"),
+        ("b'\\xff'", "base64.a85encode(src)"),
+        ("b'\\xff'", "base64.encodebytes(src)"),
+        ("b'z'", "base64.a85decode(src)"),
+    ];
+
+    for (fill, call) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(LIMIT));
+        let (_, event) = child.feed(&format!("{}{call}", SETUP.replace("{FILL}", fill)));
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{call}");
+        // the worker raised rather than exiting, so it is still serving
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{call}");
+        child.shutdown();
+    }
+}
+
+/// A conversion that appends to, or frames, a buffer it filled exactly must
+/// reserve that room before filling it. `Vec` doubles when it grows, so one
+/// appended byte charges the session a second copy of the encoded output —
+/// a burst the preflight never accounted for, and past the allocator's hard
+/// ceiling with it.
+///
+/// Each size sits in the window where the preflight passes but the doubling
+/// would not, so before the reservations every case exited the worker and the
+/// parent saw EOF instead of a turn-ending event.
+#[test]
+fn expanding_codecs_reserve_what_they_preflight() {
+    // (max_memory, code, the length CPython gives for the same call)
+    let cases = [
+        // the Ascii85 `z` word, which is sized from the input's content
+        (
+            30 * 1024 * 1024,
+            "import base64\nsrc = b'z' * 5_000_000\nlen(base64.a85decode(src))",
+            20_000_000,
+        ),
+        // the trailing newline appended to an exactly filled base64 buffer
+        (
+            32 * 1024 * 1024,
+            "import binascii\nsrc = b'\\xff' * 12_000_000\nlen(binascii.b2a_base64(src))",
+            16_000_001,
+        ),
+        // quoted-printable, whose bound is not a fixed ratio of its input
+        (
+            48 * 1024 * 1024,
+            "import binascii\nsrc = b'\\xff' * 11_000_000\nlen(binascii.b2a_qp(src))",
+            33_879_998,
+        ),
+        // the `<~` / `~>` framing spliced onto both ends of the encoded output
+        (
+            32 * 1024 * 1024,
+            "import base64\nsrc = b'\\xff' * 9_000_000\nlen(base64.a85encode(src, adobe=True))",
+            11_250_004,
+        ),
+    ];
+
+    for (limit, code, encoded_len) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(limit));
+        assert_eq!(child.feed_complete(code), MontyObject::int(encoded_len), "{code}");
+        child.shutdown();
+    }
+}
+
+/// `b2a_qp`'s buffer is sized from what the input actually quotes, not from
+/// the worst case every byte escaping.
+///
+/// Plain text encodes to a little over its own length, so bounding it at the
+/// 3.125 bytes per byte that `b'\xff'` reaches would reject, at a third of the
+/// budget it needs, an input the session has ample room for. Dots and newlines
+/// expand only in position, so text full of them must not be charged as if
+/// every one did.
+#[test]
+fn quoted_printable_is_sized_from_what_it_quotes() {
+    let cases = [
+        ("b'a' * 10_000_000", 10_266_666),
+        // every dot starts a line and escapes; no newline expands
+        ("b'.\\n' * 4_000_000", 16_000_000),
+    ];
+    for (src, encoded_len) in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(32 * 1024 * 1024));
+        let code = format!("import binascii\nsrc = {src}\nlen(binascii.b2a_qp(src))");
+        assert_eq!(child.feed_complete(&code), MontyObject::int(encoded_len), "{src}");
+        child.shutdown();
+    }
+}
+
 /// A `Configure` carrying `max_memory`, which is what limits the worker.
 fn configure_with_max_memory(bytes: u64) -> pb::Configure {
     pb::Configure {
@@ -2080,20 +2389,26 @@ fn install_dependencies_is_rejected_but_session_survives() {
 // =============================================================================
 
 /// Stubs reach ty with every feed and nothing else scans them, so a
-/// `Configure` carrying deeply nested stubs is refused up front.
+/// `Configure` carrying deeply nested stubs is refused up front — whether the
+/// parser would recurse on them or they merely build a deep AST.
 #[test]
 fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
     let mut child = ChildProc::spawn();
-    child.send(pb::parent_request::Kind::Configure(pb::Configure {
-        type_check: true,
-        type_check_stubs: Some(format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000))),
-        ..configure()
-    }));
-    let error = expect_error(child.recv());
-    assert_eq!(
-        error.message.as_deref(),
-        Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
-    );
+    for stubs in [
+        format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000)),
+        format!("x: {}", vec!["int"; 5000].join(" | ")),
+    ] {
+        child.send(pb::parent_request::Kind::Configure(pb::Configure {
+            type_check: true,
+            type_check_stubs: Some(stubs),
+            ..configure()
+        }));
+        let error = expect_error(child.recv());
+        assert_eq!(
+            error.message.as_deref(),
+            Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
+        );
+    }
     child.create_repl();
     child.feed_complete("1 + 1");
     child.shutdown();
@@ -2143,6 +2458,34 @@ fn type_checked_session_skips_the_checker_for_deeply_nested_source() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "SyntaxError");
     assert_eq!(error.message.as_deref(), Some("Source is too deeply nested"));
+
+    assert_eq!(child.feed_complete("1"), MontyObject::int(1));
+    child.shutdown();
+}
+
+/// ty recurses once per AST level, and ruff builds arbitrarily deep ASTs from
+/// flat source without recursing itself — annotations the compiler drops and
+/// string annotations included. Each such feed ends in a SyntaxError before ty
+/// runs, and the session survives.
+#[test]
+fn type_checked_session_rejects_deep_asts_from_flat_source() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        type_check: true,
+        ..configure()
+    });
+
+    for source in [
+        format!("x = {}", vec!["1"; 20_000].join("+")),
+        format!("y = a{}", ".x".repeat(20_000)),
+        format!("def f(a: {}) -> None: ...", vec!["int"; 5000].join(" | ")),
+        format!("x: '{}' = 1", vec!["int"; 5000].join(" | ")),
+    ] {
+        let (_, event) = child.feed(&source);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "SyntaxError");
+        assert_eq!(error.message.as_deref(), Some("Source is too deeply nested"));
+    }
 
     assert_eq!(child.feed_complete("1"), MontyObject::int(1));
     child.shutdown();
@@ -2257,7 +2600,12 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
             ..Default::default()
         });
         let mut probe = |code: String| {
-            let (_, event) = child.feed(&code);
+            let (_, mut event) = child.feed(&code);
+            // a host module name is asked about once; the stubs are declined here
+            if matches!(&event, pb::child_event::Kind::OsCall(call) if call.call_id == IMPORT_STUBS_CALL_ID) {
+                let reply = pb::ext_function_result::Kind::NotHandled(pb::Unit {});
+                event = child.resume_call(IMPORT_STUBS_CALL_ID, reply).1;
+            }
             let pb::child_event::Kind::TypingError(typing) = event else {
                 panic!("expected TypingError for {code:?} after {script_name:?}, got {event:?}");
             };
@@ -2718,4 +3066,16 @@ fn reset_returns_child_to_idle_for_reuse() {
 fn drop_stdin(_child: &mut ChildProc) {
     // ChildProc owns ChildStdin; nothing to do — the test just stops
     // writing. Present for readability at call sites.
+}
+
+#[test]
+fn slice_assignment_rejects_large_replacement_without_killing_worker() {
+    for code in ["a = []\na[:] = range(1_000_000)", "a = [None] * 40_000\na[:0] = a"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(1024 * 1024));
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+        child.shutdown();
+    }
 }
