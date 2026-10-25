@@ -17,6 +17,8 @@ use std::{
 };
 
 use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::{Pow, ToPrimitive, Zero};
 use smallvec::smallvec;
 use strum::{EnumString, IntoStaticStr};
 
@@ -474,12 +476,10 @@ fn hash_decimal(decimal: &Decimal, id: HeapId) -> RunResult<HashValue> {
         let value = if decimal.sign() { -magnitude } else { magnitude };
         return Ok(hash_python_long_int(&value));
     }
-    if (-400..=400).contains(&decimal.adjusted())
-        && let Ok(f) = decimal.to_sci_string(false, true).parse::<f64>()
-        && f.is_finite()
-        && parse::from_float(f).cmp_numeric(decimal) == Ordering::Equal
+    if exp < 0
+        && let Some(f) = exact_fraction_float(digits, exp)
     {
-        return Ok(hash_f64(f));
+        return Ok(hash_f64(if decimal.sign() { -f } else { f }));
     }
     let mut hasher = DefaultHasher::new();
     (decimal.sign(), digits, exp).hash(&mut hasher);
@@ -488,6 +488,47 @@ fn hash_decimal(decimal: &Decimal, id: HeapId) -> RunResult<HashValue> {
 
 /// Integral values up to this many digits hash exactly like the equal `int`.
 const HASH_INTEGER_DIGITS: i64 = 5000;
+
+/// The float exactly equal to `digits * 10**exp` for `exp < 0` and digits without
+/// trailing zeros, or `None` when no float is.
+///
+/// A non-integral float is `m * 2**-k` with `m` odd and below `2**53`, which is
+/// `m * 5**k * 10**-k`: the digits must end in `5` and divide by `5**k`, so most
+/// values are rejected by their last digit alone.
+#[expect(clippy::cast_precision_loss, reason = "m is below 2**53, so the cast is exact")]
+fn exact_fraction_float(digits: &str, exp: i64) -> Option<f64> {
+    // The smallest positive float is `2**-1074`.
+    const MAX_K: u64 = 1074;
+    let k = exp.unsigned_abs();
+    if !digits.ends_with('5') || k > MAX_K {
+        return None;
+    }
+    // `m * 5**k` has between `len(5**k)` and `len(5**k) + 16` digits; the window is
+    // padded by one on each side for the integer estimate of `k * log10(5)`.
+    let five_len = k * 69_897 / 100_000 + 1;
+    let len = super::len_i64(digits).unsigned_abs();
+    if len + 1 < five_len || len > five_len + 17 {
+        return None;
+    }
+    let m = if k <= 55 && len <= 38 {
+        // `5**55` and any 38-digit coefficient fit a `u128`.
+        let c: u128 = digits.parse().ok()?;
+        let five_pow = 5u128.pow(u32::try_from(k).ok()?);
+        if !c.is_multiple_of(five_pow) {
+            return None;
+        }
+        u64::try_from(c / five_pow).ok()?
+    } else {
+        let (m, remainder) = super::coeff_to_int(digits).div_rem(&Pow::pow(BigInt::from(5u8), k));
+        if !remainder.is_zero() {
+            return None;
+        }
+        m.to_u64()?
+    };
+    // `ldexp` is exact here: `m` fits the mantissa and `k` stays within the subnormals.
+    let shift = -i32::try_from(k).ok()?;
+    (m < 1 << 53).then(|| libm::ldexp(m as f64, shift))
+}
 
 // ============================================================================
 // PyTrait

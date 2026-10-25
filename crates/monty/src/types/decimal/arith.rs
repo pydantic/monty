@@ -159,33 +159,58 @@ impl Decimal {
         }
 
         let (coeff, exp) = if self.is_zero() {
-            (BigInt::zero(), self.exponent() - other.exponent())
+            (String::from("0"), self.exponent() - other.exponent())
         } else {
             // Enough quotient digits for the precision plus one guard digit.
             let shift = other.digits() - self.digits() + ctx.settings.prec + 1;
             let mut exp = self.exponent() - other.exponent() - shift;
-            let (mut coeff, remainder) = if shift >= 0 {
-                ctx.check_digits(shift.unsigned_abs() + self.digits().unsigned_abs())?;
-                (self.int() * super::pow10(shift.unsigned_abs())).div_rem(&other.int())
-            } else {
-                ctx.check_digits(shift.unsigned_abs() + other.digits().unsigned_abs())?;
-                self.int().div_rem(&(other.int() * super::pow10(shift.unsigned_abs())))
-            };
-            if remainder.is_zero() {
+            let (mut coeff, exact) = self.shifted_quotient(other, shift, ctx)?;
+            if exact {
                 // Exact: strip trailing zeros back towards the ideal exponent.
                 let ideal_exp = self.exponent() - other.exponent();
-                let ten = BigInt::from(10u8);
-                while exp < ideal_exp && (&coeff % &ten).is_zero() {
-                    coeff /= &ten;
-                    exp += 1;
-                }
-            } else if (&coeff % 5u8).is_zero() {
+                let zeros = coeff.len() - coeff.trim_end_matches('0').len();
+                let strip = usize::try_from(ideal_exp - exp).map_or(0, |gap| gap.min(zeros));
+                coeff.truncate(coeff.len() - strip);
+                exp += i64::try_from(strip).expect("strip is at most the coefficient length");
+            } else if coeff.ends_with(['0', '5']) {
                 // Inexact: nudge a trailing 0 or 5 so rounding sees the remainder.
-                coeff += 1u8;
+                let last = coeff.pop();
+                coeff.push(if last == Some('0') { '1' } else { '6' });
             }
             (coeff, exp)
         };
-        Self::from_bigint_triple(sign, &coeff, exp).fix(ctx)
+        Self::from_triple(sign, coeff, exp).fix(ctx)
+    }
+
+    /// The digits of `self * 10**shift // other` (for a negative `shift`,
+    /// `self // (other * 10**-shift)`) and whether the division is exact.
+    ///
+    /// Both sides fit a `u128` for the default precision and ordinary operands, which
+    /// avoids `BigInt` division and its allocations; anything longer falls back to it.
+    fn shifted_quotient(&self, other: &Self, shift: i64, ctx: &Ctx<'_>) -> RunResult<(String, bool)> {
+        // A `u128` holds every 38-digit number.
+        const U128_DIGITS: i64 = 38;
+        let scale = shift.unsigned_abs();
+        let (num_digits, den_digits) = if shift >= 0 {
+            (self.digits() + shift, other.digits())
+        } else {
+            (self.digits(), other.digits() - shift)
+        };
+        if num_digits <= U128_DIGITS && den_digits <= U128_DIGITS {
+            let pow = 10u128.pow(u32::try_from(scale).expect("scale is below 38"));
+            let (lhs, rhs) = (coeff_u128(self), coeff_u128(other));
+            let (num, den) = if shift >= 0 { (lhs * pow, rhs) } else { (lhs, rhs * pow) };
+            Ok(((num / den).to_string(), num.is_multiple_of(den)))
+        } else {
+            let (quotient, remainder) = if shift >= 0 {
+                ctx.check_digits(scale + self.digits().unsigned_abs())?;
+                (self.int() * super::pow10(scale)).div_rem(&other.int())
+            } else {
+                ctx.check_digits(scale + other.digits().unsigned_abs())?;
+                self.int().div_rem(&(other.int() * super::pow10(scale)))
+            };
+            Ok((int_to_coeff(&quotient), remainder.is_zero()))
+        }
     }
 
     /// `self // other` (`__floordiv__`, `Context.divide_int`).
@@ -371,6 +396,14 @@ impl Decimal {
         let answer = ctx.invalid(Condition::DivisionImpossible);
         Ok((answer.clone(), answer))
     }
+}
+
+/// The coefficient of a finite value with at most 38 digits, as a `u128`.
+fn coeff_u128(value: &Decimal) -> u128 {
+    value
+        .coeff()
+        .parse()
+        .expect("a coefficient of at most 38 digits fits a u128")
 }
 
 /// The coefficients of two finite values scaled to their common (smaller) exponent.

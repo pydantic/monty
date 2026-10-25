@@ -427,6 +427,12 @@ assert hash(D('-0')) == hash(0)
 assert hash(D('1e3')) == hash(1000)
 assert hash(D('inf')) == hash(float('inf'))
 assert hash(D('0.1')) == hash(D('0.10'))
+# values a float holds exactly hash like it, down to the subnormals
+assert hash(D('-12.500')) == hash(-12.5)
+assert hash(D(2**-60)) == hash(2**-60)
+assert hash(D(0.1)) == hash(0.1)
+assert hash(D(5e-324)) == hash(5e-324)
+assert hash(D(2.2250738585072014e-308)) == hash(2.2250738585072014e-308)
 assert {D('1.0'): 'a'}[1] == 'a'
 assert {D(2), 2, 2.0} == {2}
 assert sorted([D(3), D('1.2'), 2, 0.5]) == [0.5, D('1.2'), 2, D(3)]

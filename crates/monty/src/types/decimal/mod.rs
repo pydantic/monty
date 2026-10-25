@@ -717,7 +717,11 @@ pub(crate) fn push_zeros(out: &mut String, count: i64) {
 
 /// `10**n` for a non-negative `n` already bounded by the caller.
 pub(crate) fn pow10(n: u64) -> BigInt {
-    num_traits::Pow::pow(BigInt::from(10u8), n)
+    // `10**38` is the largest power of ten a `u128` holds.
+    match u32::try_from(n) {
+        Ok(small) if small <= 38 => BigInt::from(10u128.pow(small)),
+        _ => num_traits::Pow::pow(BigInt::from(10u8), n),
+    }
 }
 
 /// Checks the size of `10**n` against the memory limit, then computes it.
