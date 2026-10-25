@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import re
 import sys
+import weakref
 from dataclasses import FrozenInstanceError, dataclass
 from fractions import Fraction
 from functools import cached_property
@@ -1341,3 +1343,23 @@ def test_class_hints_unresolvable_at_runtime(monty_run: RunMonty):
     x = ClassInstance(ns['Price'](1, 'USD'), eager_attrs='all')
     code = 'from typing import get_type_hints\n(x.currency, get_type_hints(type(x)))'
     assert monty_run(code, inputs={'x': x}) == snapshot(('USD', {}))
+
+
+def test_class_type_hints_do_not_pin_the_class():
+    # a hint referring back to its own class must not keep the class alive
+    # once its wrapper is gone (a process-wide cache keyed by class would)
+    def make_class() -> type[Any]:
+        class Node:
+            pass
+
+        Node.__annotations__ = {'parent': Node}
+        return Node
+
+    node_class = make_class()
+    ref = weakref.ref(node_class)
+    wrapper = ClassType(node_class)
+    assert wrapper.get_type_hints() == {'parent': node_class}
+    assert wrapper.get_type_hints() is wrapper.get_type_hints()
+    del node_class, wrapper
+    gc.collect()
+    assert ref() is None

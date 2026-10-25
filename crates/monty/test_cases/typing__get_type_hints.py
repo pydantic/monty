@@ -261,3 +261,36 @@ for source, message in rejected:
 
 exec('def f(x: lambda: (y := 1)): pass')
 exec('def f(x: [(y := 1) for _ in z]): pass')
+
+
+# === Class opt-outs and malformed __annotations__ ===
+class NoTypeCheck:
+    __no_type_check__ = True
+    x: 'Missing'
+
+
+assert get_type_hints(NoTypeCheck) == {}
+
+
+class FalsyNoTypeCheck:
+    __no_type_check__ = 0
+    x: int
+
+
+assert get_type_hints(FalsyNoTypeCheck) == {'x': int}
+
+
+class NotADict:
+    __annotations__ = 5
+
+
+class NoneAnnotations:
+    __annotations__ = None
+
+
+for cls in [NotADict, NoneAnnotations]:
+    try:
+        get_type_hints(cls)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == f'{cls!r}.__annotations__ is neither a dict nor None'

@@ -79,7 +79,7 @@ sandbox boundary.
 
 ## `get_type_hints`
 
-`get_type_hints(obj, globalns=None, localns=None, include_extras=False)` evaluates the annotations Monty stores.
+`get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)` evaluates the annotations Monty stores.
 It follows CPython 3.14's algorithm: a plain annotation evaluates where it was written, a string (forward reference) in `globalns` / `localns`, and `list['Foo']` / `Optional['Foo']` arguments are resolved at any depth.
 Divergences:
 

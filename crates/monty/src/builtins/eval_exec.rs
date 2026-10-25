@@ -112,6 +112,7 @@ fn run_snippet(
     locals: Option<HeapId>,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
+    reject_null_bytes(source)?;
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
@@ -140,6 +141,7 @@ pub(crate) fn eval_hint(
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
     let text = snippet_source("eval", source, vm)?;
+    reject_null_bytes(&text)?;
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
@@ -187,17 +189,34 @@ pub(crate) fn compile_and_push(
     let globals_len = vm.global_names.len();
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
-    let compiled = compile_snippet(kind, source, names, vm);
-    let (namespace, vm) = namespace_guard.into_parts();
-    let result = compiled.and_then(|(func_id, overlay)| {
-        vm.push_snippet_frame(func_id, Some(overlay), namespace)?;
-        vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
-        Ok(func_id)
-    });
-    if result.is_err() {
-        vm.global_names.truncate(globals_len);
+    match compile_snippet(kind, source, names, vm) {
+        Ok((func_id, overlay)) => {
+            // `push_snippet_frame` owns the namespace from here, on every path.
+            let (namespace, vm) = namespace_guard.into_parts();
+            let pushed = vm.push_snippet_frame(func_id, Some(overlay), namespace);
+            if pushed.is_ok() {
+                vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
+            } else {
+                vm.global_names.truncate(globals_len);
+            }
+            pushed.map(|()| func_id)
+        }
+        // The guard releases the namespace's dict references.
+        Err(err) => {
+            let (_, vm) = namespace_guard.as_parts_mut();
+            vm.global_names.truncate(globals_len);
+            Err(err)
+        }
     }
-    result
+}
+
+/// The `SyntaxError` for snippet source holding a NUL, checked before any namespace is built.
+fn reject_null_bytes(source: &str) -> RunResult<()> {
+    if source.contains('\0') {
+        Err(SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into())
+    } else {
+        Ok(())
+    }
 }
 
 /// Parses, prepares and compiles `source` into an unpublished overlay, returning
@@ -208,11 +227,6 @@ fn compile_snippet<'h>(
     names: SnippetNames,
     vm: &mut VM<'h>,
 ) -> RunResult<(FunctionId, CompileInterns<'h>)> {
-    if !matches!(kind, SnippetSource::File { .. }) && source.contains('\0') {
-        return Err(
-            SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
-        );
-    }
     let mut overlay = CompileInterns::new(vm.interns);
     let filename_id = match kind {
         SnippetSource::File { path } => overlay.add_file_source(Arc::from(path), Arc::clone(source)),

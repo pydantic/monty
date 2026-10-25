@@ -18,12 +18,12 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions, eval_exec},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{HeapData, HeapId},
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
-    types::{BuiltinType, Dict, ExtHint, List, Module, allocate_tuple, str::allocate_string},
+    types::{BuiltinType, Dict, ExtHint, List, Module, PyTrait, allocate_tuple, str::allocate_string},
     value::{Marker, Value},
 };
 
@@ -346,11 +346,19 @@ fn class_entries(
     localns: Option<HeapId>,
     vm: &mut VM<'_>,
 ) -> RunResult<Vec<Value>> {
+    if class_attr_is_true(class_id, "__no_type_check__", vm)? {
+        return Ok(Vec::new());
+    }
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("hint_source classified a class");
     };
-    let Some(annotations) = class.annotations(vm.heap, vm.interns) else {
-        return Ok(Vec::new());
+    let annotations = match class.namespace().get_by_str("__annotations__", vm.heap, vm.interns) {
+        None => return Ok(Vec::new()),
+        Some(value) => match value.ref_id().map(|id| vm.heap.get(id)) {
+            Some(HeapData::Dict(annotations)) => annotations,
+            // CPython's `annotationlib` rejects `None` here too.
+            _ => return Err(not_a_dict_error(class_id, vm)),
+        },
     };
     let pairs: Vec<(Value, Value)> = annotations
         .iter()
@@ -381,6 +389,35 @@ fn class_entries(
             )
         })
         .collect())
+}
+
+/// Whether the class namespace binds `name` to a truthy value; `typing.no_type_check`
+/// classes set `__no_type_check__`, which makes `get_type_hints` return `{}`.
+fn class_attr_is_true(class_id: HeapId, name: &str, vm: &mut VM<'_>) -> RunResult<bool> {
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        unreachable!("hint_source classified a class");
+    };
+    let Some(value) = class.namespace().get_by_str(name, vm.heap, vm.interns) else {
+        return Ok(false);
+    };
+    let value = value.clone_with_heap(vm.heap);
+    defer_drop!(value, vm);
+    value.py_bool(vm)
+}
+
+/// The `ValueError` for a class whose `__annotations__` is bound to a non-dict.
+fn not_a_dict_error(class_id: HeapId, vm: &mut VM<'_>) -> RunError {
+    vm.heap.inc_ref(class_id);
+    let class = Value::Ref(class_id);
+    defer_drop!(class, vm);
+    let repr = match class.py_repr(vm) {
+        Ok(repr) => {
+            defer_drop!(repr, vm);
+            repr.to_str(vm).map(str::to_owned).unwrap_or_default()
+        }
+        Err(err) => return err,
+    };
+    ExcType::value_error(format!("{repr}.__annotations__ is neither a dict nor None"))
 }
 
 /// A fresh heap dict holding the class namespace's entries.

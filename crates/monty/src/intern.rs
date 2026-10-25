@@ -1299,10 +1299,10 @@ pub enum StaticStrings {
     Getstate,
     /// `Path.glob()` method — yields a host scan.
     Glob,
-    /// `globals` parameter of eval/exec.
-    Globals,
     /// `globalns` parameter of `typing.get_type_hints()`.
     Globalns,
+    /// `globals` parameter of eval/exec.
+    Globals,
     /// `time.gmtime()` function.
     Gmtime,
     /// `match.group()` method
@@ -1580,10 +1580,10 @@ pub enum StaticStrings {
     Loads,
     /// `decimal.localcontext()` function.
     Localcontext,
-    /// `locals` parameter of eval/exec.
-    Locals,
     /// `localns` parameter of `typing.get_type_hints()`.
     Localns,
+    /// `locals` parameter of eval/exec.
+    Locals,
     /// `time.localtime()` function.
     Localtime,
     /// `math.log()` function.

@@ -27,7 +27,6 @@ from inspect import iscoroutine
 from types import FunctionType
 from typing import Any, Literal, TypeAlias, cast, get_type_hints
 from uuid import UUID, uuid4
-from weakref import WeakKeyDictionary
 
 __all__ = 'ClassInstance', 'ClassType'
 
@@ -204,9 +203,6 @@ class ClassInstance(BaseWrapper):
         return cast(ClassType, self.class_type).convert_value(name, value)
 
 
-_type_hints_cache: WeakKeyDictionary[type[Any], dict[str, Any]] = WeakKeyDictionary()
-"""`ClassType.get_type_hints` results by class, so instance crossings don't re-evaluate them."""
-
 type_id_cache: dict[str, UUID] = {}
 """Process-wide default class ids keyed by `module.qualname`, never evicted,
 so instances keep a stable type identity across sessions. Pre-seed it (or
@@ -264,6 +260,10 @@ class ClassType(BaseWrapper):
     instance_allowed_methods: Policy = None
     """Policy applied to constructed instances (see `ClassInstance`)."""
 
+    _type_hints: dict[str, Any] | None = field(default=None, init=False, repr=False, compare=False)
+    """`get_type_hints` result, cached on the wrapper: a process-wide cache keyed
+    by class could never evict a class whose hints refer back to it."""
+
     def __post_init__(self) -> None:
         super().__post_init__()
         self.instance_eager_attrs = _normalize_policy('instance_eager_attrs', self.instance_eager_attrs, tuple)
@@ -298,16 +298,15 @@ class ClassType(BaseWrapper):
 
     def get_type_hints(self) -> dict[str, Any]:
         """The class's type hints, sent into the sandbox as its `__annotations__`
-        for `typing.get_type_hints()` there. Evaluated once per class: falls back
-        to the raw `__annotations__` when a forward reference cannot resolve, and
-        to `{}` when those cannot be evaluated either (a `TYPE_CHECKING`-only name).
+        for `typing.get_type_hints()` there. Evaluated once per wrapper (and read
+        once per class in each message): falls back to the raw `__annotations__`
+        when a forward reference cannot resolve, and to `{}` when those cannot be
+        evaluated either (a `TYPE_CHECKING`-only name).
 
         Override to send different hints, or `{}` to send none.
         """
-        try:
-            return _type_hints_cache[self.value]
-        except (KeyError, TypeError):
-            pass
+        if self._type_hints is not None:
+            return self._type_hints
         try:
             hints = get_type_hints(self.value)
         except Exception:
@@ -315,10 +314,7 @@ class ClassType(BaseWrapper):
                 hints = dict(getattr(self.value, '__annotations__', {}))
             except Exception:
                 hints = {}
-        try:
-            _type_hints_cache[self.value] = hints
-        except TypeError:
-            pass
+        self._type_hints = hints
         return hints
 
     def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
