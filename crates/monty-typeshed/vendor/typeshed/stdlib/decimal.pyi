@@ -2,7 +2,7 @@
 # re-exports from `_decimal` defined inline, since `_decimal` is not importable.
 # Context.__reduce__ is omitted (pickling is unsupported).
 import sys
-from collections.abc import Container, Sequence
+from collections.abc import Sequence
 from types import TracebackType
 from typing import Any, Final, Literal, NamedTuple, TypeAlias, final, overload, type_check_only
 
@@ -173,8 +173,8 @@ class Context:
         Emax: int | None = None,
         capitals: int | None = None,
         clamp: int | None = None,
-        flags: dict[_TrapType, bool] | Container[_TrapType] | None = None,
-        traps: dict[_TrapType, bool] | Container[_TrapType] | None = None,
+        flags: dict[_TrapType, bool] | list[_TrapType] | None = None,
+        traps: dict[_TrapType, bool] | list[_TrapType] | None = None,
     ) -> None: ...
     def clear_flags(self) -> None: ...
     def clear_traps(self) -> None: ...
@@ -283,8 +283,8 @@ if sys.version_info >= (3, 11):
         Emax: int | None = None,
         capitals: int | None = None,
         clamp: int | None = None,
-        traps: dict[_TrapType, bool] | None = None,
-        flags: dict[_TrapType, bool] | None = None,
+        traps: dict[_TrapType, bool] | list[_TrapType] | None = None,
+        flags: dict[_TrapType, bool] | list[_TrapType] | None = None,
     ) -> _ContextManager: ...
 
 else:

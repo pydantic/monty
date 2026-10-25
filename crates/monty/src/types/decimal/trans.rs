@@ -440,8 +440,8 @@ pub(super) fn dlog(c: &BigInt, e: i64, p: i64, ctx: &Ctx<'_>) -> RunResult<BigIn
 
 /// The first 1000 digits of `ln(10)`, truncated (not rounded).
 ///
-/// Far more than `_pydecimal`'s 47 built-in digits: fractional powers work at the
-/// precision plus 23 digits, so a short table recomputes `ln(10)` on every call.
+/// Far more than `_pydecimal`'s 47 built-in digits, because fractional powers work at
+/// the precision plus 23 digits: [`log10_digits`] only recomputes beyond 1000 digits.
 const LOG10_DIGITS: &str = concat!(
     "2302585092994045684017991454684364207601101488628772976033327900967572609677352480235997205089598298",
     "3419677840422862486334095254650828067566662873690987816894829072083255546808437998948262331985283935",

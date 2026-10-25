@@ -654,6 +654,8 @@ assert_type(decimal.getcontext().prec, int)
 assert_type(decimal.getcontext().flags[decimal.Inexact], bool)
 with decimal.localcontext(prec=50) as decimal_ctx:
     assert_type(decimal_ctx, decimal.Context)
+# `traps` and `flags` take a list of signals as well as a signal dict
+assert_type(decimal.Context(traps=[decimal.InvalidOperation], flags=[]), decimal.Context)
 try:
     decimal.Decimal('abc')
 except decimal.InvalidOperation as decimal_exc:

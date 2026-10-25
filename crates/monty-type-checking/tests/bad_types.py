@@ -2,6 +2,7 @@
 # Each section demonstrates a different category of type error.
 # ===
 
+import decimal
 import functools
 import hashlib
 import sys
@@ -159,3 +160,7 @@ def cached_takes_int(n: int) -> int:
 cached_takes_int('nope')
 cached_takes_int(1, 2)
 cached_takes_int(n='nope')
+
+# === decimal: traps and flags take a list or a signal dict, not a tuple ===
+decimal.Context(traps=(decimal.Inexact,))
+decimal.localcontext(flags=(decimal.Rounded,))
