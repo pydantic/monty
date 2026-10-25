@@ -456,7 +456,6 @@ impl fmt::Display for OsFunctionCall {
     strum::EnumString,
     strum::IntoStaticStr,
 )]
-#[strum(use_phf)]
 pub enum TimeCaller {
     /// `time.time()`.
     #[strum(serialize = "time.time")]

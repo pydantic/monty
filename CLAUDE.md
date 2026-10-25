@@ -414,6 +414,13 @@ iter.drop_with(self); // single path, no branching
 - The explicit call to `drop_with` produces more lines of code than `defer_drop!` or `DropGuard` would. The latter often avoid rightward drift and make the cleanup logic easier.
 - The value is part of a container (e.g. `Vec<Value>`). Ideally the container itself implements `DropWithContext` and so `defer_drop` or `DropGuard` can be used on the whole container. Consider if a `DropWithContext` implementation for the container might be missing.
 
+### `#[strum(use_phf)]` only on large `EnumString` enums
+
+Add `use_phf` only to `EnumString` enums with more than ~100 variants, or ones that will clearly grow past that.
+Its SipHash costs ~11 ns per lookup however small the enum, while strum's default `match` costs 3–6 ns on enums of
+40–80 variants, and less still on misses whose length no variant shares.
+At ~970 variants (`StaticStrings`), `match` costs ~100 ns and PHF wins about 7×.
+
 ### Resource-tracked string construction (`StringBuilder`)
 
 Any code that builds a `String` whose final size is not already bounded by an existing input **must** use `StringBuilder` (in `crates/monty/src/string_builder.rs`) rather than `String::with_capacity(...).push(...)`. A loop-built string can otherwise jump past both allocator limits before an execution checkpoint — this is exactly the class of bug that hit `str.expandtabs` (huge `tabsize` amplifying a single tab into a multi-gigabyte allocation).

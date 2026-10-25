@@ -113,7 +113,7 @@ pyo3-build-config = { version = "0.29.2", features = ["resolve-config"] }
 chrono = { version = "0.4", features = ["serde"] }
 # The zone rules for `SandboxTimeZone::Named`; database features are enabled per binary.
 jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
-# `phf` backs `#[strum(use_phf)]`: `EnumString` derives use it so `FromStr` is a perfect-hash lookup.
+# `phf` backs `#[strum(use_phf)]`, used only on large `EnumString` enums (see CLAUDE.md).
 strum = { version = "0.27", features = ["derive", "phf"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }

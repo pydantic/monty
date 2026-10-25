@@ -258,7 +258,6 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
     Serialize,
     Deserialize,
 )]
-#[strum(use_phf)]
 pub enum ExcType {
     /// primary exception class - matches any exception in isinstance checks.
     ///

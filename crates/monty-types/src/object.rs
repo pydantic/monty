@@ -1239,7 +1239,7 @@ fn push_pairs(
     strum::IntoStaticStr,
     strum::VariantNames,
 )]
-#[strum(serialize_all = "lowercase", use_phf)]
+#[strum(serialize_all = "lowercase")]
 pub enum MontyType {
     Ellipsis,
     Type,

@@ -30,8 +30,6 @@ use strum::VariantNames;
     strum::EnumString,
     strum::VariantNames,
 )]
-// No `use_phf`, unlike the other `EnumString` enums: with `ascii_case_insensitive` strum keeps its
-// fallback `match` anyway, and a format is parsed once per CLI call.
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum TypeCheckingFormat {
     /// Human-readable diagnostics with a source snippet and carets.
