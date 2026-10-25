@@ -299,7 +299,8 @@ class ClassType(BaseWrapper):
     def get_type_hints(self) -> dict[str, Any]:
         """The class's type hints, sent into the sandbox as its `__annotations__`
         for `typing.get_type_hints()` there. Evaluated once per class: falls back
-        to the raw `__annotations__` when a forward reference cannot resolve.
+        to the raw `__annotations__` when a forward reference cannot resolve, and
+        to `{}` when those cannot be evaluated either (a `TYPE_CHECKING`-only name).
 
         Override to send different hints, or `{}` to send none.
         """
@@ -310,7 +311,10 @@ class ClassType(BaseWrapper):
         try:
             hints = get_type_hints(self.value)
         except Exception:
-            hints = dict(getattr(self.value, '__annotations__', {}))
+            try:
+                hints = dict(getattr(self.value, '__annotations__', {}))
+            except Exception:
+                hints = {}
         try:
             _type_hints_cache[self.value] = hints
         except TypeError:

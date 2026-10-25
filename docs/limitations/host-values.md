@@ -76,6 +76,7 @@ The sandbox returns them as sent and never evaluates them.
     The sandbox cannot resolve the text back to an object.
 - **Python resolves hints with `typing.get_type_hints`** on the host.
     If that raises (an unresolvable forward reference), the raw `__annotations__` are sent instead, so resolved and unresolved hints can mix; if both fail, no hints are sent.
+    A hint that cannot be converted (its `repr()` raises, say) is left out.
 - **A host class's hints are its `__annotations__` attribute** in the sandbox, so `HostCls.__annotations__` holds the converted hints, and a host class proxy's `attributes` include them.
     [`ClassType.get_type_hints`][pydantic_monty.ClassType.get_type_hints] supplies them, evaluated once per class.
 - **Hints are shared per function name.**

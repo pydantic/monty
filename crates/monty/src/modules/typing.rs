@@ -104,8 +104,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 
 /// Evaluates stringized annotations, mirroring CPython 3.14's `typing._eval_type`.
 ///
-/// `entries` holds `(name, hint, globals, locals, fwd_globals, fwd_locals)` tuples:
-/// a `str` hint is evaluated in `globals` / `locals`, and any string it yields,
+/// `entries` holds `(name, hint, globals, locals, fwd_globals, fwd_locals, fwd_globals_first)`
+/// tuples: a `str` hint is evaluated in `globals` / `locals`, and any string it yields,
 /// or that appears in a `GenericAlias` / `Union` argument, is a forward reference
 /// evaluated in the `fwd_*` namespaces. Strings already seen in one chain are left
 /// as they are, so `a = 'a'` cannot loop. The walk keeps an explicit stack because
@@ -113,9 +113,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 pub(crate) const GET_TYPE_HINTS_SOURCE: &str = r"
 def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, tuple_, generic_alias, union, none_type):
     hints = {}
-    for name, hint, globalns, localns, fwd_globalns, fwd_localns in entries:
+    for name, hint, globalns, localns, fwd_globalns, fwd_localns, fwd_globals_first in entries:
         if isinstance_(hint, str_):
-            hint = eval_hint(hint, globalns, localns)
+            hint = eval_hint(hint, globalns, localns, False)
         # Each frame is [hint, resolved args or None, forward refs seen, next arg index].
         stack = [[hint, None, (), 0]]
         while stack:
@@ -125,7 +125,7 @@ def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, t
                 seen = frame[2]
                 while isinstance_(hint, str_) and hint not in seen:
                     seen = seen + (hint,)
-                    hint = eval_hint(hint, fwd_globalns, fwd_localns)
+                    hint = eval_hint(hint, fwd_globalns, fwd_localns, fwd_globals_first)
                 if isinstance_(hint, generic_alias) or isinstance_(hint, union):
                     frame[0] = hint
                     frame[1] = []
@@ -326,6 +326,7 @@ fn function_entries(
                 Value::InternString(name),
                 Value::InternString(hint),
                 [globals, None, fwd_globals, localns],
+                false,
                 vm,
             )
         })
@@ -336,10 +337,9 @@ fn function_entries(
 ///
 /// An annotation evaluates with the class namespace over the module globals,
 /// as its `__annotate__` would. Without explicit namespaces a forward reference
-/// looks in the module globals first (CPython's `get_type_hints` swaps them),
-/// so only then is a globals snapshot taken, and only if some annotation holds
-/// a string literal. The class namespace is copied, as CPython's `dict(vars(cls))`
-/// is, because the evaluator needs a heap dict.
+/// looks in the module globals first (CPython's `get_type_hints` swaps them).
+/// The class namespace is copied, as CPython's `dict(vars(cls))` is, because
+/// the evaluator needs a heap dict.
 fn class_entries(
     class_id: HeapId,
     globalns: Option<HeapId>,
@@ -356,33 +356,30 @@ fn class_entries(
         .iter()
         .map(|(name, hint)| (name.clone_with_heap(vm.heap), hint.clone_with_heap(vm.heap)))
         .collect();
-    let has_string_literals = pairs.iter().any(|(_, hint)| {
-        hint.as_either_str(vm.heap)
-            .is_some_and(|text| text.as_str(vm.interns).contains(['\'', '"']))
-    });
     defer_drop!(pairs, vm);
-    // Owned by guards until every entry holds its own references.
+    // Owned by the guard until every entry holds its own reference.
     let namespace = class_namespace_copy(class_id, vm)?;
     defer_drop!(namespace, vm);
-    let module = match (globalns, localns, has_string_literals) {
-        (None, None, true) => Some(Value::Ref(vm.snapshot_globals()?)),
-        _ => None,
-    };
-    defer_drop!(module, vm);
 
     let namespace_id = namespace.ref_id();
     let (fwd_globals, fwd_locals) = match (globalns, localns) {
-        (None, None) => match module.as_ref().and_then(Value::ref_id) {
-            Some(module_id) => (namespace_id, Some(module_id)),
-            None => (None, namespace_id),
-        },
+        (None, None) => (None, namespace_id),
         (Some(_), None) => (globalns, namespace_id),
         (_, Some(_)) => (globalns, localns),
     };
+    let fwd_globals_first = globalns.is_none() && localns.is_none();
     let scopes = [None, namespace_id, fwd_globals, fwd_locals];
     Ok(pairs
         .iter()
-        .map(|(name, hint)| hint_entry(name.clone_with_heap(vm.heap), hint.clone_with_heap(vm.heap), scopes, vm))
+        .map(|(name, hint)| {
+            hint_entry(
+                name.clone_with_heap(vm.heap),
+                hint.clone_with_heap(vm.heap),
+                scopes,
+                fwd_globals_first,
+                vm,
+            )
+        })
         .collect())
 }
 
@@ -400,9 +397,9 @@ fn class_namespace_copy(class_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
 }
 
-/// One evaluator entry: `(name, hint, globals, locals, fwd_globals, fwd_locals)`,
+/// One evaluator entry: `(name, hint, globals, locals, fwd_globals, fwd_locals, fwd_globals_first)`,
 /// each namespace a new reference to a dict or `None`.
-fn hint_entry(name: Value, hint: Value, scopes: [Option<HeapId>; 4], vm: &VM<'_>) -> Value {
+fn hint_entry(name: Value, hint: Value, scopes: [Option<HeapId>; 4], fwd_globals_first: bool, vm: &VM<'_>) -> Value {
     let mut items = SmallVec::new();
     items.push(name);
     items.push(hint);
@@ -412,6 +409,7 @@ fn hint_entry(name: Value, hint: Value, scopes: [Option<HeapId>; 4], vm: &VM<'_>
             Value::Ref(id)
         }));
     }
+    items.push(Value::Bool(fwd_globals_first));
     allocate_tuple(items, vm.heap)
 }
 
@@ -437,6 +435,8 @@ struct EvalHintArgs {
     globals: Value,
     #[from_args(pos_only)]
     locals: Value,
+    #[from_args(pos_only)]
+    globals_first: Value,
 }
 
 /// Frozen helper: evaluates one annotation string; the namespaces are dicts or
@@ -446,9 +446,11 @@ pub(crate) fn call_eval_hint(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Call
         source,
         globals,
         locals,
+        globals_first,
     } = EvalHintArgs::from_args(args, vm)?;
     defer_drop!(source, vm);
     defer_drop!(globals, vm);
     defer_drop!(locals, vm);
-    eval_exec::eval_hint(source, globals.ref_id(), locals.ref_id(), vm)
+    let globals_first = matches!(globals_first, Value::Bool(true));
+    eval_exec::eval_hint(source, globals.ref_id(), locals.ref_id(), globals_first, vm)
 }

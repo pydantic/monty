@@ -154,3 +154,28 @@ fn resume_gate(progress: RunProgress) -> MontyObject {
         .into_complete()
         .unwrap()
 }
+
+/// Without namespaces, a class's plain annotations see the class namespace
+/// first and its forward references the module globals first, as in CPython.
+/// The CPython side of the datatest harness cannot reach module globals from a
+/// class, so this lives here; the expected values are CPython 3.14's.
+#[test]
+fn class_forward_refs_search_module_globals_first() {
+    let code = "\
+from typing import get_type_hints
+X = int
+class A:
+    X = str
+    Y = bytes
+    a: 'X'
+    b: 'Y'
+    c: list['X']
+    d: X
+h = get_type_hints(A)
+(h['a'] is int, h['b'] is bytes, h['c'] == list[int], h['d'] is str)";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::tuple((0..4).map(|_| MontyObject::bool(true))),
+    );
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import FrozenInstanceError, dataclass
 from fractions import Fraction
 from functools import cached_property
@@ -1327,3 +1328,16 @@ def test_class_type_hints(monty_run: RunMonty):
     expected = {'name': str, 'tags': 'list[str]', 'parent': 'test_class_instance.Typed | None'}
     assert monty_run(code, inputs={'T': ClassType(Typed)}) == expected
     assert monty_run('T.__annotations__', inputs={'T': ClassType(Typed)}) == expected
+
+
+@pytest.mark.skipif(sys.version_info < (3, 14), reason='earlier versions evaluate annotations at class creation')
+def test_class_hints_unresolvable_at_runtime(monty_run: RunMonty):
+    # without `from __future__ import annotations`, a name imported only for type
+    # checkers makes `__annotations__` itself raise; the class still crosses, hint-less
+    ns: dict[str, Any] = {}
+    source = 'from dataclasses import dataclass\n@dataclass\nclass Price:\n    amount: Decimal\n    currency: str'
+    # `dont_inherit` drops this module's `from __future__ import annotations`
+    exec(compile(source, '<price>', 'exec', dont_inherit=True), ns)
+    x = ClassInstance(ns['Price'](1, 'USD'), eager_attrs='all')
+    code = 'from typing import get_type_hints\n(x.currency, get_type_hints(type(x)))'
+    assert monty_run(code, inputs={'x': x}) == snapshot(('USD', {}))

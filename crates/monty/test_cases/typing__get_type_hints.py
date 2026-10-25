@@ -229,3 +229,35 @@ assert get_type_hints(ns['exec_defined']) == {'x': float, 'return': int}
 for _ in range(1000):
     hints = get_type_hints(kinds)
 assert hints['return'] is Foo
+
+# === Expressions CPython rejects in annotations ===
+# lambda bodies and comprehensions are their own scopes, so they are not checked
+rejected = [
+    ('def f(x: (y := int)): pass', 'named expression cannot be used within an annotation (<string>, line 1)'),
+    ('def f() -> (y := int): pass', 'named expression cannot be used within an annotation (<string>, line 1)'),
+    ('def f(*a: (y := int)): pass', 'named expression cannot be used within an annotation (<string>, line 1)'),
+    ('class C:\n    x: (y := int)', 'named expression cannot be used within an annotation (<string>, line 2)'),
+    ('x: (y := int) = 1', 'named expression cannot be used within an annotation (<string>, line 1)'),
+    (
+        'def g():\n    def f(x: (yield)): pass',
+        'yield expression cannot be used within an annotation (<string>, line 2)',
+    ),
+    (
+        'def g():\n    def f(x: (yield from z)): pass',
+        'yield expression cannot be used within an annotation (<string>, line 2)',
+    ),
+    (
+        'async def g():\n    def f(x: await z): pass',
+        'await expression cannot be used within an annotation (<string>, line 2)',
+    ),
+    ('def f(x: (yield) | (y := 1)): pass', 'yield expression cannot be used within an annotation (<string>, line 1)'),
+]
+for source, message in rejected:
+    try:
+        exec(source)
+        assert False, 'expected SyntaxError'
+    except SyntaxError as exc:
+        assert str(exc) == message
+
+exec('def f(x: lambda: (y := 1)): pass')
+exec('def f(x: [(y := 1) for _ in z]): pass')

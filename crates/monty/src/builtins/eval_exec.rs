@@ -127,7 +127,8 @@ fn run_snippet(
 /// Evaluates one stringized annotation for `typing.get_type_hints()`.
 ///
 /// Takes borrowed `globals` / `locals` dict ids (`None` globals means the
-/// module slots). The namespace is built here rather than by
+/// module slots); `globals_first` makes bound slot globals shadow `locals`.
+/// The namespace is built here rather than by
 /// `snippet_namespace`, which would inherit the calling frame's: the caller is
 /// frozen code. Each distinct text and mode compiles once per session, so a
 /// decorator calling `get_type_hints` on every call publishes no new functions.
@@ -135,6 +136,7 @@ pub(crate) fn eval_hint(
     source: &Value,
     globals: Option<HeapId>,
     locals: Option<HeapId>,
+    globals_first: bool,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
     let text = snippet_source("eval", source, vm)?;
@@ -146,7 +148,11 @@ pub(crate) fn eval_hint(
         (None, Some(_)) => (FrameGlobals::Slots, SnippetNames::NameOverSlots),
         (None, None) => (FrameGlobals::Slots, SnippetNames::Slots),
     };
-    let namespace = Box::new(FrameNamespace::Snippet { globals, locals });
+    let namespace = Box::new(FrameNamespace::Snippet {
+        globals,
+        locals,
+        globals_first,
+    });
     if let Some(func_id) = vm.interns.hint_snippet(names, &text) {
         vm.push_snippet_frame(func_id, None, namespace)?;
     } else {

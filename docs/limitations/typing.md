@@ -88,15 +88,13 @@ Divergences:
 - **A class created by `exec()` uses the session globals**, not the `exec` globals dict.
     A function created by `exec()` uses its dict, as in CPython.
 - **Unsubscriptable `typing` forms fail on evaluation.**
-    `x: List[int]`, `Annotated[int, 'meta']` and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm' object is not subscriptable` from `get_type_hints`, since they are inert markers (see above).
+    `x: List[int]`, `ClassVar[int]` (common in dataclasses), `Annotated[int, 'meta']` and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm' object is not subscriptable` from `get_type_hints`, since they are inert markers (see above).
 - **`include_extras` has no effect**: there is no `Annotated` metadata to keep or strip.
 - **`format=` other than `None` raises `NotImplementedError`.**
 - **`globalns` / `localns` must be a dict or `None`.**
     Anything else raises `TypeError: get_type_hints() globalns must be a dict, not int`, where CPython fails later with an unrelated message.
 - **A self-referential string stays a `str`.**
     With `a = 'a'`, `def f(x: 'a')` gives `{'x': 'a'}` where CPython returns `ForwardRef('a', ...)`; there is no `ForwardRef`.
-- **A class forward reference looks in the module globals first only if some annotation of that class contains a string literal.**
-    A string reached another way (`Alias = 'Target'; x: Alias`) is looked up in the class namespace first.
 - **Annotations are re-evaluated on every call**, including any side effects, where CPython evaluates a non-string annotation once.
 - **Modules record no annotations**, so `get_type_hints(module)` is `{}`.
 - **Evaluation errors show a `<string>` frame** in the traceback, where CPython shows its `typing` / `annotationlib` frames.

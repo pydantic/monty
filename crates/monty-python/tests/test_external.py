@@ -789,3 +789,18 @@ def unresolvable_hints(url: str, target: 'Unresolvable') -> None:
 def test_external_function_type_hints(monty_run: RunMonty, func: Any, expected: Any):
     code = 'from typing import get_type_hints\nget_type_hints(f)'
     assert monty_run(code, inputs={'f': func}) == expected
+
+
+class UnreprableHint:
+    def __repr__(self) -> str:
+        raise RuntimeError('no repr')
+
+
+def test_external_function_unconvertible_hint_is_dropped(monty_run: RunMonty):
+    def f(a: int, b: Any) -> None:
+        pass
+
+    f.__annotations__['b'] = UnreprableHint()
+    code = 'from typing import get_type_hints\nget_type_hints(f)'
+    # not a `snapshot()`: inline-snapshot cannot render `NoneType`
+    assert monty_run(code, inputs={'f': f}) == {'a': int, 'return': type(None)}

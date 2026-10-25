@@ -887,7 +887,8 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
             docstring: value.docstring,
             annotations: value
                 .annotations
-                .map(|annotations| annotations.0.into_inner().into_boxed_slice())
+                .map(|annotations| boxed_pairs(annotations.0.into_inner()))
+                .transpose()?
                 .unwrap_or_default(),
         },
         Kind::Repr(value) => MontyNode::Repr(value),
@@ -997,6 +998,19 @@ fn merge_ids(
         encoding::uint32::merge(wire_type, &mut id, buf, ctx)?;
         push_charged(ids, NodeId(id))
     }
+}
+
+/// Converts decoded pairs to a boxed slice, charging the exact-size buffer
+/// that dropping spare capacity may allocate.
+fn boxed_pairs(pairs: Vec<(NodeId, NodeId)>) -> Result<Box<[(NodeId, NodeId)]>, DecodeError> {
+    if pairs.len() < pairs.capacity() {
+        let bytes = pairs
+            .len()
+            .checked_mul(size_of::<(NodeId, NodeId)>())
+            .ok_or_else(decode_budget::exhausted)?;
+        decode_budget::charge(bytes)?;
+    }
+    Ok(pairs.into_boxed_slice())
 }
 
 /// Bytes charged per reference to a node. A host binding turns each reference

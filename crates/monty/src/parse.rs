@@ -691,10 +691,18 @@ impl<'a, 'i> Parser<'a, 'i> {
                     }),
                 }
             }
-            Stmt::AnnAssign(ast::StmtAnnAssign { target, value, .. }) => match value {
-                Some(value) => self.parse_assignment(*target, *value),
-                None => Ok(Node::Pass),
-            },
+            Stmt::AnnAssign(ast::StmtAnnAssign {
+                target,
+                annotation,
+                value,
+                ..
+            }) => {
+                self.check_annotation(&annotation)?;
+                match value {
+                    Some(value) => self.parse_assignment(*target, *value),
+                    None => Ok(Node::Pass),
+                }
+            }
             Stmt::For(ast::StmtFor {
                 is_async,
                 target,
@@ -1079,7 +1087,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             .chain(returns.map(|r| ("return", r)));
         let mut annotations = Vec::new();
         for (name, annotation) in annotated {
-            self.check_expression_depth(annotation)?;
+            self.check_annotation(annotation)?;
             let text = stringize_annotation(annotation);
             annotations.push((self.interner.intern(name), self.interner.intern(&text)));
         }
@@ -1349,7 +1357,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// The annotation never reaches [`Parser::parse_expression`], so the depth
     /// check guarding stringization's two recursive passes is made here.
     fn parse_class_annotation(&mut self, ident: Identifier, annotation: &mut AstExpr) -> Result<DictItem, ParseError> {
-        self.check_expression_depth(annotation)?;
+        self.check_annotation(annotation)?;
         let ann_range = annotation.range();
         let ann_id = self.interner.intern(&stringize_annotation(annotation));
         Ok(DictItem::Pair(
@@ -1395,6 +1403,19 @@ impl<'a, 'i> Parser<'a, 'i> {
             ))
         } else {
             Ok(())
+        }
+    }
+
+    /// Depth-checks an annotation and rejects what CPython's compiler refuses in
+    /// one: a walrus, `yield` or `await` outside any lambda or comprehension.
+    fn check_annotation(&self, annotation: &AstExpr) -> Result<(), ParseError> {
+        self.check_expression_depth(annotation)?;
+        match forbidden_in_annotation(annotation) {
+            Some((kind, range)) => Err(ParseError::syntax(
+                format!("{kind} cannot be used within an annotation"),
+                self.convert_range(range),
+            )),
+            None => Ok(()),
         }
     }
 
@@ -2658,6 +2679,38 @@ fn contains_class_scope_walrus(expr: &AstExpr) -> bool {
 
     let mut finder = Finder { found: false };
     finder.visit_expr(expr);
+    finder.found
+}
+
+/// The first expression CPython rejects in an annotation, in source order, as
+/// its error's noun and range. Lambda bodies and comprehensions are their own
+/// scopes, so CPython does not look inside them.
+fn forbidden_in_annotation(annotation: &AstExpr) -> Option<(&'static str, TextRange)> {
+    /// Expression visitor recording the first forbidden expression.
+    struct Finder {
+        found: Option<(&'static str, TextRange)>,
+    }
+    impl<'a> Visitor<'a> for Finder {
+        fn visit_expr(&mut self, expr: &'a AstExpr) {
+            match expr {
+                _ if self.found.is_some() => {}
+                AstExpr::Named(e) => self.found = Some(("named expression", e.range)),
+                AstExpr::Yield(ast::ExprYield { range, .. }) | AstExpr::YieldFrom(ast::ExprYieldFrom { range, .. }) => {
+                    self.found = Some(("yield expression", *range));
+                }
+                AstExpr::Await(e) => self.found = Some(("await expression", e.range)),
+                AstExpr::Lambda(_)
+                | AstExpr::ListComp(_)
+                | AstExpr::SetComp(_)
+                | AstExpr::DictComp(_)
+                | AstExpr::Generator(_) => {}
+                _ => walk_expr(self, expr),
+            }
+        }
+    }
+
+    let mut finder = Finder { found: None };
+    finder.visit_expr(annotation);
     finder.found
 }
 
