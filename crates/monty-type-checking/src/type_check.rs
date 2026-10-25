@@ -93,7 +93,8 @@ impl TypeChecker {
         config: TypeCheckingConfig,
     ) -> Result<Option<TypeCheckingDiagnostics<'a>>, String> {
         let src_root = SystemPathBuf::from(SRC_ROOT);
-        let main_path = src_root.join(python_source.path);
+        // Track the same normalized paths as the in-memory filesystem for reset.
+        let main_path = SystemPath::absolute(python_source.path, &src_root);
         let main_source = python_source.source_code;
 
         for (path, source) in stub_files(context.module_stubs)? {
@@ -105,7 +106,7 @@ impl TypeChecker {
             prefix.push('\n');
         }
         if let Some(stubs_file) = context.stubs {
-            let stubs_path = src_root.join(stubs_file.path);
+            let stubs_path = SystemPath::absolute(stubs_file.path, &src_root);
             let stubs = self.write_root_file(&stubs_path, stubs_file.source_code)?;
             // Writing the script over its own stubs would drop them and make it import
             // itself; compare interned files, not strings, since the db normalises paths.
