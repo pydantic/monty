@@ -19,7 +19,7 @@ use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use super::{
-    Ctx, Decimal, checked_pow10,
+    Coeff, Ctx, Decimal, checked_pow10,
     context::{Condition, Rounding},
 };
 use crate::exception_private::RunResult;
@@ -113,19 +113,18 @@ impl Decimal {
         let settings = ctx.settings;
         let answer = if !self.sign() && adj > dec_len_i64((settings.emax + 1) * 3) {
             // Overflow.
-            Self::from_triple(false, "1", settings.emax + 1)
+            Self::from_triple(false, Coeff::one(), settings.emax + 1)
         } else if self.sign() && adj > dec_len_i64((-settings.etiny() + 1) * 3) {
             // Underflow to zero.
-            Self::from_triple(false, "1", settings.etiny() - 1)
+            Self::from_triple(false, Coeff::one(), settings.etiny() - 1)
         } else if !self.sign() && adj < -p {
             // p+1 digits just above one; the final round raises the right flags.
-            let mut coeff = String::from("1");
-            super::push_zeros(&mut coeff, p - 1);
-            coeff.push('1');
+            let mut coeff = Coeff::pow10(p.unsigned_abs());
+            coeff.increment();
             Self::from_triple(false, coeff, -p)
         } else if self.sign() && adj < -p - 1 {
             // p+1 nines, just below one.
-            Self::from_triple(false, "9".repeat(usize::try_from(p + 1).unwrap_or(0)), -p - 1)
+            Self::from_triple(false, Coeff::repeat_digit(9, (p + 1).unsigned_abs()), -p - 1)
         } else {
             let c = if self.sign() { -self.int() } else { self.int() };
             let e = self.exponent();
@@ -193,7 +192,7 @@ impl Decimal {
             return Ok(ctx.invalid(Condition::InvalidOperation));
         }
 
-        let answer = if self.coeff().starts_with('1') && self.coeff()[1..].bytes().all(|b| b == b'0') {
+        let answer = if self.coeff().is_power_of_ten() {
             // log10(10**n) = n exactly (though it may still need rounding).
             Self::from_i64(self.adjusted())
         } else {
@@ -462,7 +461,7 @@ const LOG10_DIGITS: &str = concat!(
 fn log10_digits(p: i64, ctx: &Ctx<'_>) -> RunResult<BigInt> {
     let take = usize::try_from(p + 1).expect("p is non-negative");
     if take <= LOG10_DIGITS.len() {
-        return Ok(super::coeff_to_int(&LOG10_DIGITS[..take]));
+        return Ok(digits_to_int(&LOG10_DIGITS[..take]));
     }
     // Compute p+3, p+6, ... digits until one of the extra digits is non-zero.
     let mut extra = 3;
@@ -479,7 +478,12 @@ fn log10_digits(p: i64, ctx: &Ctx<'_>) -> RunResult<BigInt> {
     // Keep the reliable digits: drop trailing zeros and the next (possibly off) digit.
     let trimmed = digits.trim_end_matches('0');
     let reliable = &trimmed[..trimmed.len() - 1];
-    Ok(super::coeff_to_int(&reliable[..take]))
+    Ok(digits_to_int(&reliable[..take]))
+}
+
+/// Parses a string of decimal digits into an integer.
+fn digits_to_int(digits: &str) -> BigInt {
+    Coeff::from_digits(digits).to_bigint()
 }
 
 /// `_iexp(x, M)`: an integer approximation to `M * exp(x / M)` for small

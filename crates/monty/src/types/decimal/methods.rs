@@ -9,9 +9,9 @@ use num_integer::Integer;
 use num_traits::{Pow, Zero};
 
 use super::{
-    Ctx, Decimal,
+    Coeff, Ctx, Decimal,
     context::{Condition, DecContext, Rounding},
-    increment_digits,
+    round_direction,
 };
 use crate::exception_private::{ExcType, ExcTypeExt, RunResult};
 
@@ -80,31 +80,15 @@ impl Decimal {
         }
         if self.exponent() >= exp {
             // Pad the coefficient with zeros.
-            let pad = self.exponent() - exp;
-            ctx.check_digits(
-                u64::try_from(pad)
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(self.coeff().len() as u64),
-            )?;
-            let mut coeff = String::with_capacity(self.coeff().len() + usize::try_from(pad).unwrap_or(0));
-            coeff.push_str(self.coeff());
-            super::push_zeros(&mut coeff, pad);
-            return Ok(Self::from_triple(self.sign(), coeff, exp));
+            let pad = self.exponent().abs_diff(exp);
+            ctx.check_digits(pad.saturating_add(self.coeff().digits()))?;
+            return Ok(Self::from_triple(self.sign(), self.coeff().shl(pad), exp));
         }
-        // Too many digits: round them away. Below one digit, round `10**(exp-1)`.
-        let digits = self.digits() + self.exponent() - exp;
-        let (base, digits) = if digits < 0 {
-            (Self::from_triple(self.sign(), "1", exp - 1), 0)
-        } else {
-            (self.clone(), usize::try_from(digits).expect("digits is non-negative"))
-        };
-        let changed = base.round_direction(digits, rounding);
-        let kept = if digits == 0 { "0" } else { &base.coeff()[..digits] };
-        let coeff = if changed == 1 {
-            increment_digits(kept)
-        } else {
-            kept.to_owned()
-        };
+        // Too many digits: round them away.
+        let (mut coeff, discarded) = self.coeff().shr(exp.abs_diff(self.exponent()));
+        if round_direction(&coeff, discarded, self.sign(), rounding) == 1 {
+            coeff.increment();
+        }
         Ok(Self::from_triple(self.sign(), coeff, exp))
     }
 
@@ -144,7 +128,7 @@ impl Decimal {
 
     /// `round(d, n)`: quantize to `10**-n` under the context.
     pub(crate) fn round_digits(&self, n: i64, ctx: &mut Ctx<'_>) -> RunResult<Self> {
-        let exp = Self::from_triple(false, "1", n.checked_neg().unwrap_or(i64::MAX));
+        let exp = Self::from_triple(false, Coeff::one(), n.checked_neg().unwrap_or(i64::MAX));
         self.quantize(&exp, None, ctx)
     }
 
@@ -167,14 +151,11 @@ impl Decimal {
         } else {
             ctx.settings.emax
         };
-        let digits = dup.coeff().as_bytes();
-        let mut end = digits.len();
-        let mut exp = dup.exponent();
-        while digits[end - 1] == b'0' && exp < exp_max {
-            exp += 1;
-            end -= 1;
-        }
-        Ok(Self::from_triple(dup.sign(), &dup.coeff()[..end], exp))
+        // Strip trailing zeros, but not past the largest exponent.
+        let room = u64::try_from(exp_max - dup.exponent()).unwrap_or(0);
+        let strip = dup.coeff().trailing_zeros().min(room);
+        let exp = dup.exponent() + i64::try_from(strip).expect("bounded by the coefficient length");
+        Ok(Self::from_triple(dup.sign(), dup.coeff().shr(strip).0, exp))
     }
 
     /// `next_minus()`: the largest representable number below this one.
@@ -206,7 +187,7 @@ impl Decimal {
         if new_self.cmp_numeric(self).is_ne() {
             return Ok(new_self);
         }
-        let tiny = Self::from_triple(false, "1", settings.etiny() - 1);
+        let tiny = Self::from_triple(false, Coeff::one(), settings.etiny() - 1);
         if down {
             self.sub(&tiny, &mut quiet)
         } else {
@@ -286,7 +267,7 @@ impl Decimal {
         if self.is_infinite() {
             return Ok(self.clone());
         }
-        Self::from_triple(self.sign(), self.coeff(), self.exponent() + shift).fix(ctx)
+        Self::from_triple(self.sign(), self.coeff().clone(), self.exponent() + shift).fix(ctx)
     }
 
     /// `rotate(other)`: rotates the coefficient, padded to `prec` digits, by `other` places.
@@ -312,7 +293,7 @@ impl Decimal {
             return Ok(self.clone());
         }
         ctx.check_digits(u64::try_from(prec).unwrap_or(u64::MAX))?;
-        let padded = pad_to_prec(self.coeff(), prec);
+        let padded = pad_to_prec(&self.coeff().to_string(), prec);
         let len = padded.len();
         let places_abs = usize::try_from(places.unsigned_abs()).expect("bounded by the precision");
         let moved = if rotate {
@@ -328,7 +309,7 @@ impl Decimal {
         };
         Ok(Self::from_triple(
             self.sign(),
-            strip_leading_zeros(&moved),
+            Coeff::from_digits(&moved),
             self.exponent(),
         ))
     }
@@ -354,7 +335,7 @@ impl Decimal {
             return Ok(ctx.invalid(Condition::InvalidOperation));
         }
         ctx.check_digits(u64::try_from(ctx.settings.prec).unwrap_or(u64::MAX))?;
-        let ones = Self::from_triple(false, "1".repeat(usize::try_from(ctx.settings.prec).unwrap_or(0)), 0);
+        let ones = Self::from_triple(false, Coeff::repeat_digit(1, ctx.settings.prec.unsigned_abs()), 0);
         self.logical_xor(&ones, ctx)
     }
 
@@ -365,19 +346,22 @@ impl Decimal {
         }
         let prec = ctx.settings.prec;
         ctx.check_digits(u64::try_from(prec).unwrap_or(u64::MAX))?;
-        let a = pad_to_prec(self.coeff(), prec);
-        let b = pad_to_prec(other.coeff(), prec);
+        let a = pad_to_prec(&self.coeff().to_string(), prec);
+        let b = pad_to_prec(&other.coeff().to_string(), prec);
         let result: String = a
             .bytes()
             .zip(b.bytes())
             .map(|(x, y)| char::from(b'0' + op(x - b'0', y - b'0')))
             .collect();
-        Ok(Self::from_triple(false, strip_leading_zeros(&result), 0))
+        Ok(Self::from_triple(false, Coeff::from_digits(&result), 0))
     }
 
     /// `_islogical`: finite, positive, exponent zero and only the digits 0 and 1.
     fn is_logical(&self) -> bool {
-        self.is_finite() && !self.sign() && self.exponent() == 0 && self.coeff().bytes().all(|b| b == b'0' || b == b'1')
+        self.is_finite()
+            && !self.sign()
+            && self.exponent() == 0
+            && self.coeff().to_string().bytes().all(|b| b == b'0' || b == b'1')
     }
 
     /// `as_integer_ratio()` in lowest terms, with C `_decimal`'s errors for NaNs and
@@ -438,7 +422,7 @@ fn integer_operand(value: &Decimal) -> Option<i64> {
     if !value.is_finite() || value.exponent() != 0 {
         return None;
     }
-    let magnitude: u64 = value.coeff().parse().ok()?;
+    let magnitude = value.coeff().to_u64()?;
     if value.sign() {
         0i64.checked_sub_unsigned(magnitude)
     } else {
@@ -455,13 +439,5 @@ fn pad_to_prec(digits: &str, prec: i64) -> String {
         let mut padded = "0".repeat(prec - digits.len());
         padded.push_str(digits);
         padded
-    }
-}
-
-/// `s.lstrip('0') or '0'`.
-fn strip_leading_zeros(digits: &str) -> &str {
-    match digits.trim_start_matches('0') {
-        "" => "0",
-        trimmed => trimmed,
     }
 }

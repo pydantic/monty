@@ -7,7 +7,7 @@
 use num_bigint::BigInt;
 
 use super::{
-    Ctx, Decimal, MAX_DIGITS, Special,
+    Coeff, Ctx, Decimal, MAX_DIGITS, Special,
     context::{Condition, MAX_EMAX, MIN_ETINY},
 };
 use crate::{
@@ -55,7 +55,7 @@ pub(crate) fn parse_str(text: &str) -> RunResult<Result<Decimal, Condition>> {
         return Ok(if diag.bytes().all(|b| b.is_ascii_digit()) {
             let payload = diag.trim_start_matches('0');
             check_digit_count(payload.len())?;
-            Ok(Decimal::special_nan(sign, payload, kind))
+            Ok(Decimal::special_nan(sign, Coeff::from_digits(payload), kind))
         } else {
             Err(Condition::ConversionSyntax)
         });
@@ -98,7 +98,7 @@ fn parse_finite(sign: bool, text: &str) -> RunResult<Result<Decimal, Condition>>
     };
     check_digit_count(coeff.len())?;
     let exp = exp - i128::try_from(frac_part.len()).expect("length fits in i128");
-    Ok(checked_exponent(exp, coeff.len()).map(|exp| Decimal::from_triple(sign, coeff, exp)))
+    Ok(checked_exponent(exp, coeff.len()).map(|exp| Decimal::from_triple(sign, Coeff::from_digits(coeff), exp)))
 }
 
 /// Validates a literal exponent against C `_decimal`'s range: the exponent must be at
@@ -125,18 +125,18 @@ pub(crate) fn check_digit_count(digits: usize) -> RunResult<()> {
 
 /// `Decimal(int)`: exact.
 pub(crate) fn from_int(value: &BigInt) -> RunResult<Decimal> {
-    // `bits * log10(2)` slightly overestimates the digit count; check before printing.
+    // `bits * log10(2)` slightly overestimates the digit count; check before converting.
     let approx_digits = value.bits().saturating_mul(30_103) / 100_000;
     check_digit_count(usize::try_from(approx_digits).unwrap_or(usize::MAX).saturating_sub(1))?;
     let decimal = Decimal::from_bigint(value);
-    check_digit_count(decimal.coeff().len())?;
+    check_digit_count(usize::try_from(decimal.coeff().digits()).unwrap_or(usize::MAX))?;
     Ok(decimal)
 }
 
 /// `Decimal.from_float(f)`: the exact value of the double, `n * 5**k / 10**k`.
 pub(crate) fn from_float(value: f64) -> Decimal {
     if value.is_nan() {
-        Decimal::special_nan(value.is_sign_negative(), "", Special::QuietNan)
+        Decimal::special_nan(value.is_sign_negative(), Coeff::zero(), Special::QuietNan)
     } else if value.is_infinite() {
         Decimal::infinity(value < 0.0)
     } else {

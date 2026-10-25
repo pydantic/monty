@@ -1,10 +1,11 @@
 //! Python's `decimal.Decimal`: a port of CPython's `_pydecimal.py`.
 //!
-//! The representation mirrors `_pydecimal` field for field so its algorithms port
-//! line for line: a finite value is `(-1)**sign * coeff * 10**exp`, with the
-//! coefficient kept as its decimal digit string (`_pydecimal`'s `_int`), which makes
-//! the digit-level rounding in [`Decimal::fix`] and the string forms direct.
-//! Arithmetic converts the digits to a `BigInt` as `_pydecimal` does with `int()`.
+//! The representation mirrors `_pydecimal` so its algorithms port line for line: a
+//! finite value is `(-1)**sign * coeff * 10**exp`. The coefficient is a [`Coeff`],
+//! stored in base `10**19` as libmpdec stores it, so the digit-level work that
+//! dominates decimal arithmetic (rounding in [`Decimal::fix`], aligning exponents,
+//! counting digits, printing) is word moves rather than binary multiplications.
+//! The transcendental kernels work on `BigInt`s, as `_pydecimal` does with `int()`.
 //!
 //! Every operation takes a [`Ctx`]: the settings of the `decimal.Context` it runs
 //! under plus the conditions it raises. CPython's default `decimal` is the C
@@ -19,6 +20,7 @@
 
 mod arith;
 mod cmp;
+pub(crate) mod coeff;
 pub(crate) mod context;
 mod format;
 mod methods;
@@ -28,11 +30,11 @@ pub(crate) mod py;
 pub(crate) mod py_context;
 mod trans;
 
-use std::{borrow::Cow, cmp::Ordering, iter};
+use std::{cmp::Ordering, iter};
 
+pub(crate) use coeff::{Coeff, Discarded};
 pub(crate) use context::{Ctx, DecContext};
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
 
 use crate::{
     exception_private::RunResult,
@@ -42,8 +44,9 @@ use crate::{
 
 /// Largest coefficient (or NaN payload) a constructor accepts, in digits.
 ///
-/// The same bound as `int`'s string conversion limit: converting a digit string to a
-/// binary integer is quadratic, and every operation does so. CPython has no such cap.
+/// The same bound as `int`'s string conversion limit: `int` operands and the
+/// transcendental kernels convert coefficients to binary, which is quadratic in the
+/// digit count. CPython has no such cap.
 pub(crate) const MAX_DIGITS: usize = 4300;
 
 /// The kinds of value a [`Decimal`] can be.
@@ -51,9 +54,9 @@ pub(crate) const MAX_DIGITS: usize = 4300;
 pub(crate) enum Special {
     /// A finite number, zero included.
     Finite,
-    /// `Infinity`: the coefficient is `"0"` and the exponent `0`.
+    /// `Infinity`: the coefficient is zero and the exponent `0`.
     Infinite,
-    /// A quiet NaN; the coefficient is the diagnostic payload (`""` for none).
+    /// A quiet NaN; the coefficient is the diagnostic payload (zero for none).
     QuietNan,
     /// A signaling NaN; any arithmetic use raises `InvalidOperation`.
     SignalingNan,
@@ -63,14 +66,14 @@ pub(crate) enum Special {
 ///
 /// Immutable, holds no heap references, and the derived equality is structural
 /// (`1.0` and `1.00` differ); Python comparison goes through `cmp.rs`.
-/// Invariants: a finite coefficient has no leading zeros unless it is `"0"`; a NaN
-/// payload has none at all; an infinity's coefficient is `"0"` and its exponent `0`.
+/// Invariants: an infinity's coefficient is zero and its exponent `0`; a NaN's
+/// exponent is `0` and a zero payload means none.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Decimal {
     /// `true` for negative values (`_pydecimal`'s `_sign == 1`).
     sign: bool,
-    /// The coefficient's decimal digits, most significant first.
-    coeff: Box<str>,
+    /// The coefficient (the payload of a NaN).
+    coeff: Coeff,
     /// The exponent of a finite value; `0` for the specials.
     exp: i64,
     special: Special,
@@ -80,20 +83,17 @@ impl Decimal {
     /// The largest finite magnitude the context allows, `prec` nines at `Etop`:
     /// the overflow result when rounding towards zero, and `next_*` from an infinity.
     pub(crate) fn largest_finite(sign: bool, ctx: &Ctx<'_>) -> RunResult<Self> {
-        ctx.check_digits(u64::try_from(ctx.settings.prec).unwrap_or(u64::MAX))?;
-        let nines = "9".repeat(usize::try_from(ctx.settings.prec).unwrap_or(0));
-        Ok(Self::from_triple(sign, nines, ctx.settings.etop()))
+        let prec = ctx.settings.prec.unsigned_abs();
+        ctx.check_digits(prec)?;
+        Ok(Self::from_triple(
+            sign,
+            Coeff::repeat_digit(9, prec),
+            ctx.settings.etop(),
+        ))
     }
 
     /// A finite value from its parts, `_pydecimal`'s `_dec_from_triple`.
-    ///
-    /// The coefficient must already be normalized (no leading zeros).
-    pub(crate) fn from_triple(sign: bool, coeff: impl Into<Box<str>>, exp: i64) -> Self {
-        let coeff = coeff.into();
-        debug_assert!(
-            coeff.as_ref() == "0" || (!coeff.is_empty() && !coeff.starts_with('0')),
-            "unnormalized coefficient {coeff:?}"
-        );
+    pub(crate) fn from_triple(sign: bool, coeff: Coeff, exp: i64) -> Self {
         Self {
             sign,
             coeff,
@@ -102,31 +102,31 @@ impl Decimal {
         }
     }
 
-    /// A finite value from an integer coefficient.
+    /// A finite value from an integer coefficient; its sign is ignored.
     pub(crate) fn from_bigint_triple(sign: bool, coeff: &BigInt, exp: i64) -> Self {
-        Self::from_triple(sign, int_to_coeff(coeff), exp)
+        Self::from_triple(sign, Coeff::from_bigint(coeff), exp)
     }
 
     /// An exact integer.
     pub(crate) fn from_bigint(value: &BigInt) -> Self {
-        Self::from_triple(value.sign() == num_bigint::Sign::Minus, int_to_coeff(value), 0)
+        Self::from_bigint_triple(value.sign() == num_bigint::Sign::Minus, value, 0)
     }
 
     /// An exact small integer.
     pub(crate) fn from_i64(value: i64) -> Self {
-        Self::from_triple(value < 0, value.unsigned_abs().to_string(), 0)
+        Self::from_triple(value < 0, Coeff::from_u64(value.unsigned_abs()), 0)
     }
 
     /// A signed zero with the given exponent.
     pub(crate) fn zero(sign: bool, exp: i64) -> Self {
-        Self::from_triple(sign, "0", exp)
+        Self::from_triple(sign, Coeff::zero(), exp)
     }
 
     /// `±Infinity`.
     pub(crate) fn infinity(sign: bool) -> Self {
         Self {
             sign,
-            coeff: "0".into(),
+            coeff: Coeff::zero(),
             exp: 0,
             special: Special::Infinite,
         }
@@ -134,15 +134,15 @@ impl Decimal {
 
     /// A quiet NaN with no payload (`_pydecimal`'s `_NaN`).
     pub(crate) fn nan() -> Self {
-        Self::special_nan(false, "", Special::QuietNan)
+        Self::special_nan(false, Coeff::zero(), Special::QuietNan)
     }
 
-    /// A NaN of the given kind with a normalized payload.
-    pub(crate) fn special_nan(sign: bool, payload: impl Into<Box<str>>, kind: Special) -> Self {
+    /// A NaN of the given kind; a zero payload means none.
+    pub(crate) fn special_nan(sign: bool, payload: Coeff, kind: Special) -> Self {
         debug_assert!(matches!(kind, Special::QuietNan | Special::SignalingNan));
         Self {
             sign,
-            coeff: payload.into(),
+            coeff: payload,
             exp: 0,
             special: kind,
         }
@@ -153,9 +153,19 @@ impl Decimal {
         self.sign
     }
 
-    /// The coefficient digits (the payload of a NaN).
-    pub(crate) fn coeff(&self) -> &str {
+    /// The coefficient (the payload of a NaN).
+    pub(crate) fn coeff(&self) -> &Coeff {
         &self.coeff
+    }
+
+    /// The coefficient's digits as `_pydecimal`'s `_int` holds them: a NaN without a
+    /// payload has none.
+    pub(crate) fn coeff_digits(&self) -> String {
+        if self.is_nan() && self.coeff.is_zero() {
+            String::new()
+        } else {
+            self.coeff.to_string()
+        }
     }
 
     /// The exponent; `0` for specials.
@@ -170,15 +180,17 @@ impl Decimal {
 
     /// The coefficient as an integer (the payload of a NaN, zero for none).
     pub(crate) fn int(&self) -> BigInt {
-        coeff_to_int(&self.coeff)
+        self.coeff.to_bigint()
     }
 
     /// Whether this is a NaN or an infinity (`_is_special`).
+    #[inline]
     pub(crate) fn is_special(&self) -> bool {
         self.special != Special::Finite
     }
 
     /// Whether this is a NaN of either kind.
+    #[inline]
     pub(crate) fn is_nan(&self) -> bool {
         matches!(self.special, Special::QuietNan | Special::SignalingNan)
     }
@@ -204,8 +216,9 @@ impl Decimal {
     }
 
     /// Whether this is a (signed) zero.
+    #[inline]
     pub(crate) fn is_zero(&self) -> bool {
-        self.special == Special::Finite && &*self.coeff == "0"
+        self.special == Special::Finite && self.coeff.is_zero()
     }
 
     /// Python truthiness: everything but zero is true, NaNs and infinities included.
@@ -231,12 +244,18 @@ impl Decimal {
         }
     }
 
-    /// The number of coefficient digits.
+    /// The number of coefficient digits; none for a NaN without a payload.
+    #[inline]
     pub(crate) fn digits(&self) -> i64 {
-        len_i64(&self.coeff)
+        if self.is_nan() && self.coeff.is_zero() {
+            0
+        } else {
+            i64::try_from(self.coeff.digits()).expect("digit count fits in i64")
+        }
     }
 
     /// `adjusted()`: the exponent of the most significant digit; `0` for specials.
+    #[inline]
     pub(crate) fn adjusted(&self) -> i64 {
         if self.is_special() {
             0
@@ -249,21 +268,14 @@ impl Decimal {
     pub(crate) fn is_integer(&self) -> bool {
         if self.is_special() {
             false
-        } else if self.exp >= 0 {
-            true
         } else {
-            all_zeros(&self.coeff, offset_from_end(&self.coeff, self.exp))
+            self.exp >= 0 || self.coeff.is_zero() || self.coeff.trailing_zeros() >= self.exp.unsigned_abs()
         }
     }
 
     /// `_iseven`: for an integral value, whether it is even.
     pub(crate) fn is_even(&self) -> bool {
-        if self.is_zero() || self.exp > 0 {
-            true
-        } else {
-            let index = offset_from_end(&self.coeff, self.exp - 1);
-            matches!(self.coeff.as_bytes()[index], b'0' | b'2' | b'4' | b'6' | b'8')
-        }
+        self.is_zero() || self.exp > 0 || self.coeff.digit_at(self.exp.unsigned_abs()).is_multiple_of(2)
     }
 
     /// `copy_abs()`.
@@ -304,9 +316,8 @@ impl Decimal {
     pub(crate) fn fix_nan(&self, ctx: &Ctx<'_>) -> Self {
         let max_payload = ctx.settings.prec - i64::from(ctx.settings.clamp);
         if self.digits() > max_payload {
-            let keep = usize::try_from(max_payload).unwrap_or(0);
-            let tail = &self.coeff[self.coeff.len() - keep..];
-            Self::special_nan(self.sign, tail.trim_start_matches('0'), self.special)
+            let tail = self.coeff.low_digits(max_payload.unsigned_abs());
+            Self::special_nan(self.sign, tail, self.special)
         } else {
             self.clone()
         }
@@ -387,32 +398,21 @@ impl Decimal {
 
         if self.exp < exp_min {
             // Round away the digits below `exp_min`.
-            let digits = self.digits() + self.exp - exp_min;
-            let (rounded, digits) = if digits < 0 {
-                (Cow::Owned(Self::from_triple(self.sign, "1", exp_min - 1)), 0)
-            } else {
-                (Cow::Borrowed(self), digits)
-            };
-            let digits = usize::try_from(digits).expect("digits is non-negative");
-            let changed = rounded.round_direction(digits, settings.rounding);
-            let mut coeff: Cow<'_, str> = if digits == 0 {
-                Cow::Borrowed("0")
-            } else {
-                Cow::Borrowed(&rounded.coeff[..digits])
-            };
+            let (mut coeff, discarded) = self.coeff.shr(exp_min.abs_diff(self.exp));
+            let changed = round_direction(&coeff, discarded, self.sign, settings.rounding);
             if changed > 0 {
-                let mut incremented = increment_digits(&coeff);
-                if len_i64(&incremented) > settings.prec {
-                    incremented.pop();
+                coeff.increment();
+                if i64::try_from(coeff.digits()).is_ok_and(|digits| digits > settings.prec) {
+                    // `99..9` rounded up to `10..0`: drop the extra zero.
+                    coeff = coeff.shr(1).0;
                     exp_min += 1;
                 }
-                coeff = Cow::Owned(incremented);
             }
 
             let answer = if exp_min > etop {
                 ctx.overflow(self.sign)?
             } else {
-                Self::from_triple(self.sign, coeff.into_owned(), exp_min)
+                Self::from_triple(self.sign, coeff, exp_min)
             };
 
             // Raise the signals in the specification's order of precedence.
@@ -440,71 +440,12 @@ impl Decimal {
         if settings.clamp && self.exp > etop {
             // Fold the exponent down into the coefficient.
             ctx.raise(Condition::Clamped);
-            let pad = usize::try_from(self.exp - etop).expect("exp is above etop");
-            ctx.check_digits(u64::try_from(self.coeff.len() + pad).unwrap_or(u64::MAX))?;
-            let mut padded = String::with_capacity(self.coeff.len() + pad);
-            padded.push_str(&self.coeff);
-            padded.extend(iter::repeat_n('0', pad));
-            return Ok(Self::from_triple(self.sign, padded, etop));
+            let pad = self.exp.abs_diff(etop);
+            ctx.check_digits(self.coeff.digits().saturating_add(pad))?;
+            return Ok(Self::from_triple(self.sign, self.coeff.shl(pad), etop));
         }
 
         Ok(self.clone())
-    }
-
-    /// The `_round_*` functions: whether truncating the coefficient to `prec` digits
-    /// (`0 <= prec < digits`) should round away from zero (`1`), drops only zeros
-    /// (`0`), or drops non-zero digits towards zero (`-1`).
-    pub(crate) fn round_direction(&self, prec: usize, rounding: Rounding) -> i8 {
-        let digits = self.coeff.as_bytes();
-        let round_down = || if all_zeros(&self.coeff, prec) { 0 } else { -1 };
-        let half_up = || {
-            if matches!(digits[prec], b'5'..=b'9') {
-                1
-            } else {
-                round_down()
-            }
-        };
-        match rounding {
-            Rounding::Down => round_down(),
-            Rounding::Up => -round_down(),
-            Rounding::HalfUp => half_up(),
-            Rounding::HalfDown => {
-                if exact_half(&self.coeff, prec) {
-                    -1
-                } else {
-                    half_up()
-                }
-            }
-            Rounding::HalfEven => {
-                let even_before = prec == 0 || matches!(digits[prec - 1], b'0' | b'2' | b'4' | b'6' | b'8');
-                if exact_half(&self.coeff, prec) && even_before {
-                    -1
-                } else {
-                    half_up()
-                }
-            }
-            Rounding::Ceiling => {
-                if self.sign {
-                    round_down()
-                } else {
-                    -round_down()
-                }
-            }
-            Rounding::Floor => {
-                if self.sign {
-                    -round_down()
-                } else {
-                    round_down()
-                }
-            }
-            Rounding::Up05 => {
-                if prec > 0 && !matches!(digits[prec - 1], b'0' | b'5') {
-                    round_down()
-                } else {
-                    -round_down()
-                }
-            }
-        }
     }
 
     /// `-x`, rounded to the context (`__neg__`).
@@ -553,8 +494,8 @@ impl Decimal {
         let sign = if self.sign { "-" } else { "" };
         match self.special {
             Special::Infinite => return format!("{sign}Infinity"),
-            Special::QuietNan => return format!("{sign}NaN{}", self.coeff),
-            Special::SignalingNan => return format!("{sign}sNaN{}", self.coeff),
+            Special::QuietNan => return format!("{sign}NaN{}", self.coeff_digits()),
+            Special::SignalingNan => return format!("{sign}sNaN{}", self.coeff_digits()),
             Special::Finite => {}
         }
 
@@ -572,20 +513,20 @@ impl Decimal {
         };
 
         let len = self.digits();
-        let mut out = String::with_capacity(self.coeff.len() + 8);
+        let mut out = String::with_capacity(usize::try_from(len).unwrap_or(0) + 8);
         out.push_str(sign);
         if dotplace <= 0 {
             out.push_str("0.");
             push_zeros(&mut out, -dotplace);
-            out.push_str(&self.coeff);
+            self.coeff.write_digits(&mut out);
         } else if dotplace >= len {
-            out.push_str(&self.coeff);
+            self.coeff.write_digits(&mut out);
             push_zeros(&mut out, dotplace - len);
         } else {
             let split = usize::try_from(dotplace).expect("dotplace is positive");
-            out.push_str(&self.coeff[..split]);
-            out.push('.');
-            out.push_str(&self.coeff[split..]);
+            let start = out.len();
+            self.coeff.write_digits(&mut out);
+            out.insert(start + split, '.');
         }
         if leftdigits != dotplace {
             out.push(if capitals { 'E' } else { 'e' });
@@ -645,67 +586,57 @@ impl Ctx<'_> {
     }
 }
 
-/// Parses a coefficient digit string into an integer.
-pub(crate) fn coeff_to_int(coeff: &str) -> BigInt {
-    if coeff.is_empty() {
-        BigInt::zero()
-    } else if coeff.len() <= 19 {
-        BigInt::from(coeff.parse::<u64>().expect("coefficient is decimal digits"))
-    } else {
-        BigInt::parse_bytes(coeff.as_bytes(), 10).expect("coefficient is decimal digits")
+/// The `_round_*` functions: whether rounding the kept digits `kept` of a value with
+/// sign `sign`, given what was discarded, rounds away from zero (`1`), was exact (`0`)
+/// or truncates towards zero (`-1`).
+pub(crate) fn round_direction(kept: &Coeff, discarded: Discarded, sign: bool, rounding: Rounding) -> i8 {
+    let round_down = if discarded.is_zero() { 0 } else { -1 };
+    let half_up = if discarded.first >= 5 { 1 } else { round_down };
+    match rounding {
+        Rounding::Down => round_down,
+        Rounding::Up => -round_down,
+        Rounding::HalfUp => half_up,
+        Rounding::HalfDown => {
+            if discarded.is_half() {
+                -1
+            } else {
+                half_up
+            }
+        }
+        Rounding::HalfEven => {
+            if discarded.is_half() && kept.last_digit().is_multiple_of(2) {
+                -1
+            } else {
+                half_up
+            }
+        }
+        Rounding::Ceiling => {
+            if sign {
+                round_down
+            } else {
+                -round_down
+            }
+        }
+        Rounding::Floor => {
+            if sign {
+                -round_down
+            } else {
+                round_down
+            }
+        }
+        Rounding::Up05 => {
+            if matches!(kept.last_digit(), 0 | 5) {
+                -round_down
+            } else {
+                round_down
+            }
+        }
     }
 }
 
-/// Formats a non-negative integer as a coefficient digit string.
-pub(crate) fn int_to_coeff(value: &BigInt) -> String {
-    match value.to_u64() {
-        Some(small) => small.to_string(),
-        None => value.magnitude().to_string(),
-    }
-}
-
-/// `str` length as `i64`; coefficients are far shorter than `i64::MAX`.
+/// `str` length as `i64`.
 pub(crate) fn len_i64(s: &str) -> i64 {
-    i64::try_from(s.len()).expect("coefficient length fits in i64")
-}
-
-/// `_all_zeros(s, start)`: whether every digit from `start` on is `0`.
-pub(crate) fn all_zeros(s: &str, start: usize) -> bool {
-    s.as_bytes()
-        .get(start..)
-        .is_none_or(|rest| rest.iter().all(|&b| b == b'0'))
-}
-
-/// `_exact_half(s, start)`: whether the digits from `start` on are `5` then zeros.
-pub(crate) fn exact_half(s: &str, start: usize) -> bool {
-    s.as_bytes().get(start) == Some(&b'5') && all_zeros(s, start + 1)
-}
-
-/// Resolves a Python-style negative index (`s[exp:]` with `exp < 0`) to an offset,
-/// clamping to the start as slicing does.
-fn offset_from_end(s: &str, negative: i64) -> usize {
-    let back = usize::try_from(negative.unsigned_abs()).unwrap_or(usize::MAX);
-    s.len().saturating_sub(back)
-}
-
-/// Adds one to a digit string, `str(int(coeff) + 1)`.
-fn increment_digits(coeff: &str) -> String {
-    let mut digits = coeff.as_bytes().to_vec();
-    let mut i = digits.len();
-    loop {
-        if i == 0 {
-            digits.insert(0, b'1');
-            break;
-        }
-        i -= 1;
-        if digits[i] == b'9' {
-            digits[i] = b'0';
-        } else {
-            digits[i] += 1;
-            break;
-        }
-    }
-    String::from_utf8(digits).expect("digits are ASCII")
+    i64::try_from(s.len()).expect("string length fits in i64")
 }
 
 /// Appends `count` zeros (none if `count <= 0`).

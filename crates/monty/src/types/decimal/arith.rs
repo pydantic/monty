@@ -1,21 +1,15 @@
 //! Arithmetic: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`,
 //! `__mod__`, `__divmod__`, `remainder_near` and `fma`.
 //!
-//! Each function follows the `_pydecimal` method of the same name. Operands are
-//! converted to `BigInt` coefficients ([`WorkRep`], `_pydecimal`'s `_WorkRep`) only
-//! once the specials and zeros are out of the way; the result goes through
-//! [`Decimal::fix`].
+//! Each function follows the `_pydecimal` method of the same name, on [`Coeff`]
+//! magnitudes ([`WorkRep`] is `_pydecimal`'s `_WorkRep`) once the specials and zeros
+//! are out of the way; the result goes through [`Decimal::fix`].
 
-use std::mem;
-
-use num_bigint::BigInt;
-use num_integer::Integer;
-use num_traits::{Signed, Zero};
+use std::{borrow::Cow, cmp::Ordering};
 
 use super::{
-    Ctx, Decimal,
+    Coeff, Ctx, Decimal,
     context::{Condition, Rounding},
-    int_to_coeff, len_i64,
 };
 use crate::exception_private::RunResult;
 
@@ -58,30 +52,19 @@ impl Decimal {
             return answer.fix(ctx);
         }
 
-        let (mut op1, mut op2) = normalize(WorkRep::of(self), WorkRep::of(other), ctx)?;
-        let result_sign = if op1.sign != op2.sign {
-            if op1.int == op2.int {
-                // Equal and opposite.
-                return Self::zero(negative_zero, exp).fix(ctx);
-            }
-            if op1.int < op2.int {
-                mem::swap(&mut op1, &mut op2);
-            }
-            // Now `abs(op1) > abs(op2)`; the result takes `op1`'s sign.
-            let sign = op1.sign;
-            if sign {
-                mem::swap(&mut op1.sign, &mut op2.sign);
-            }
-            sign
-        } else if op1.sign {
-            op1.sign = false;
-            op2.sign = false;
-            true
+        let (op1, op2) = normalize(WorkRep::of(self), WorkRep::of(other), ctx)?;
+        // Opposite signs subtract the smaller magnitude; the result takes the larger's sign.
+        let (sign, coeff) = if op1.sign == op2.sign {
+            (op1.sign, op1.coeff.add(&op2.coeff))
         } else {
-            false
+            match op1.coeff.cmp(&op2.coeff) {
+                // Equal and opposite.
+                Ordering::Equal => return Self::zero(negative_zero, exp).fix(ctx),
+                Ordering::Greater => (op1.sign, op1.coeff.sub(&op2.coeff)),
+                Ordering::Less => (op2.sign, op2.coeff.sub(&op1.coeff)),
+            }
         };
-        let int = if op2.sign { op1.int - op2.int } else { op1.int + op2.int };
-        Self::from_bigint_triple(result_sign, &int, op1.exp).fix(ctx)
+        Self::from_triple(sign, coeff, op1.exp).fix(ctx)
     }
 
     /// `self - other` (`__sub__`).
@@ -120,13 +103,8 @@ impl Decimal {
         let exp = self.exponent() + other.exponent();
         let answer = if self.is_zero() || other.is_zero() {
             Self::zero(sign, exp)
-        } else if self.coeff() == "1" {
-            // Multiplying by a power of ten only moves the exponent.
-            Self::from_triple(sign, other.coeff(), exp)
-        } else if other.coeff() == "1" {
-            Self::from_triple(sign, self.coeff(), exp)
         } else {
-            Self::from_bigint_triple(sign, &(self.int() * other.int()), exp)
+            Self::from_triple(sign, self.coeff().mul(other.coeff()), exp)
         };
         answer.fix(ctx)
     }
@@ -159,58 +137,38 @@ impl Decimal {
         }
 
         let (coeff, exp) = if self.is_zero() {
-            (String::from("0"), self.exponent() - other.exponent())
+            (Coeff::zero(), self.exponent() - other.exponent())
         } else {
             // Enough quotient digits for the precision plus one guard digit.
             let shift = other.digits() - self.digits() + ctx.settings.prec + 1;
             let mut exp = self.exponent() - other.exponent() - shift;
-            let (mut coeff, exact) = self.shifted_quotient(other, shift, ctx)?;
-            if exact {
+            let (num, den) = if shift >= 0 {
+                ctx.check_digits(shift.unsigned_abs() + self.coeff().digits())?;
+                (
+                    Cow::Owned(self.coeff().shl(shift.unsigned_abs())),
+                    Cow::Borrowed(other.coeff()),
+                )
+            } else {
+                ctx.check_digits(shift.unsigned_abs() + other.coeff().digits())?;
+                (
+                    Cow::Borrowed(self.coeff()),
+                    Cow::Owned(other.coeff().shl(shift.unsigned_abs())),
+                )
+            };
+            let (mut coeff, remainder) = num.div_rem(&den);
+            if remainder.is_zero() {
                 // Exact: strip trailing zeros back towards the ideal exponent.
                 let ideal_exp = self.exponent() - other.exponent();
-                let zeros = coeff.len() - coeff.trim_end_matches('0').len();
-                let strip = usize::try_from(ideal_exp - exp).map_or(0, |gap| gap.min(zeros));
-                coeff.truncate(coeff.len() - strip);
+                let strip = u64::try_from(ideal_exp - exp).map_or(0, |gap| gap.min(coeff.trailing_zeros()));
+                coeff = coeff.shr(strip).0;
                 exp += i64::try_from(strip).expect("strip is at most the coefficient length");
-            } else if coeff.ends_with(['0', '5']) {
+            } else if matches!(coeff.last_digit(), 0 | 5) {
                 // Inexact: nudge a trailing 0 or 5 so rounding sees the remainder.
-                let last = coeff.pop();
-                coeff.push(if last == Some('0') { '1' } else { '6' });
+                coeff.increment();
             }
             (coeff, exp)
         };
         Self::from_triple(sign, coeff, exp).fix(ctx)
-    }
-
-    /// The digits of `self * 10**shift // other` (for a negative `shift`,
-    /// `self // (other * 10**-shift)`) and whether the division is exact.
-    ///
-    /// Both sides fit a `u128` for the default precision and ordinary operands, which
-    /// avoids `BigInt` division and its allocations; anything longer falls back to it.
-    fn shifted_quotient(&self, other: &Self, shift: i64, ctx: &Ctx<'_>) -> RunResult<(String, bool)> {
-        // A `u128` holds every 38-digit number.
-        const U128_DIGITS: i64 = 38;
-        let scale = shift.unsigned_abs();
-        let (num_digits, den_digits) = if shift >= 0 {
-            (self.digits() + shift, other.digits())
-        } else {
-            (self.digits(), other.digits() - shift)
-        };
-        if num_digits <= U128_DIGITS && den_digits <= U128_DIGITS {
-            let pow = 10u128.pow(u32::try_from(scale).expect("scale is below 38"));
-            let (lhs, rhs) = (coeff_u128(self), coeff_u128(other));
-            let (num, den) = if shift >= 0 { (lhs * pow, rhs) } else { (lhs, rhs * pow) };
-            Ok(((num / den).to_string(), num.is_multiple_of(den)))
-        } else {
-            let (quotient, remainder) = if shift >= 0 {
-                ctx.check_digits(scale + self.digits().unsigned_abs())?;
-                (self.int() * super::pow10(scale)).div_rem(&other.int())
-            } else {
-                ctx.check_digits(scale + other.digits().unsigned_abs())?;
-                self.int().div_rem(&(other.int() * super::pow10(scale)))
-            };
-            Ok((int_to_coeff(&quotient), remainder.is_zero()))
-        }
     }
 
     /// `self // other` (`__floordiv__`, `Context.divide_int`).
@@ -318,20 +276,24 @@ impl Decimal {
             return answer.fix(ctx);
         }
 
-        let (op1, op2) = aligned_ints(self, other, ctx)?;
-        let (mut q, mut r) = op1.div_rem(&op2);
-        // Round the quotient to nearest, ties to even, adjusting the remainder.
-        let q_odd = u8::from(q.is_odd());
-        if BigInt::from(2u8) * &r + q_odd > op2 {
-            r -= &op2;
-            q += 1u8;
+        let (op1, op2) = aligned_coeffs(self, other, ctx)?;
+        let (mut q, r) = op1.div_rem(&op2);
+        // Round the quotient to nearest, ties to even: past half, the remainder becomes
+        // `r - op2`, negative, so the result takes the opposite of the dividend's sign.
+        let mut twice = r.add(&r);
+        if q.last_digit() % 2 == 1 {
+            twice.increment();
         }
+        let (sign, r) = if twice > *op2 {
+            q.increment();
+            (!self.sign(), op2.sub(&r))
+        } else {
+            (self.sign(), r)
+        };
         if digit_count(&q) > ctx.settings.prec {
             return Ok(ctx.invalid(Condition::DivisionImpossible));
         }
-        // The result has the dividend's sign unless the adjustment made it negative.
-        let sign = if r.is_negative() { !self.sign() } else { self.sign() };
-        Self::from_bigint_triple(sign, &r.abs(), ideal_exponent).fix(ctx)
+        Self::from_triple(sign, r, ideal_exponent).fix(ctx)
     }
 
     /// `fma(other, third)`: `self * other + third` with a single rounding.
@@ -362,7 +324,7 @@ impl Decimal {
         } else {
             // The exact, unrounded product.
             let exp = self.exponent() + other.exponent();
-            Self::from_bigint_triple(sign, &(self.int() * other.int()), exp)
+            Self::from_triple(sign, self.coeff().mul(other.coeff()), exp)
         };
         product.add(third, ctx)
     }
@@ -384,12 +346,12 @@ impl Decimal {
             return Ok((Self::zero(sign, 0), remainder));
         }
         if expdiff <= ctx.settings.prec {
-            let (op1, op2) = aligned_ints(self, other, ctx)?;
+            let (op1, op2) = aligned_coeffs(self, other, ctx)?;
             let (q, r) = op1.div_rem(&op2);
             if digit_count(&q) <= ctx.settings.prec {
                 return Ok((
-                    Self::from_bigint_triple(sign, &q, 0),
-                    Self::from_bigint_triple(self.sign(), &r, ideal_exp),
+                    Self::from_triple(sign, q, 0),
+                    Self::from_triple(self.sign(), r, ideal_exp),
                 ));
             }
         }
@@ -398,35 +360,25 @@ impl Decimal {
     }
 }
 
-/// The coefficient of a finite value with at most 38 digits, as a `u128`.
-fn coeff_u128(value: &Decimal) -> u128 {
-    value
-        .coeff()
-        .parse()
-        .expect("a coefficient of at most 38 digits fits a u128")
-}
-
 /// The coefficients of two finite values scaled to their common (smaller) exponent.
 ///
 /// Callers have bounded the adjusted-exponent difference by the precision, so the
 /// scaling factor is bounded too; it is still checked against the memory limit.
-fn aligned_ints(a: &Decimal, b: &Decimal, ctx: &Ctx<'_>) -> RunResult<(BigInt, BigInt)> {
-    let (mut op1, mut op2) = (a.int(), b.int());
-    let shift = a.exponent() - b.exponent();
-    if shift >= 0 {
-        ctx.check_digits(shift.unsigned_abs() + a.digits().unsigned_abs())?;
-        op1 *= super::pow10(shift.unsigned_abs());
+fn aligned_coeffs<'a>(a: &'a Decimal, b: &'a Decimal, ctx: &Ctx<'_>) -> RunResult<(Cow<'a, Coeff>, Cow<'a, Coeff>)> {
+    let shift = a.exponent().abs_diff(b.exponent());
+    Ok(if a.exponent() >= b.exponent() {
+        ctx.check_digits(shift + a.coeff().digits())?;
+        (Cow::Owned(a.coeff().shl(shift)), Cow::Borrowed(b.coeff()))
     } else {
-        ctx.check_digits(shift.unsigned_abs() + b.digits().unsigned_abs())?;
-        op2 *= super::pow10(shift.unsigned_abs());
-    }
-    Ok((op1, op2))
+        ctx.check_digits(shift + b.coeff().digits())?;
+        (Cow::Borrowed(a.coeff()), Cow::Owned(b.coeff().shl(shift)))
+    })
 }
 
-/// A finite operand as a sign, integer coefficient and exponent (`_WorkRep`).
+/// A finite operand as a sign, coefficient and exponent (`_WorkRep`).
 struct WorkRep {
     sign: bool,
-    int: BigInt,
+    coeff: Coeff,
     exp: i64,
 }
 
@@ -435,20 +387,20 @@ impl WorkRep {
     fn of(decimal: &Decimal) -> Self {
         Self {
             sign: decimal.sign(),
-            int: decimal.int(),
+            coeff: decimal.coeff().clone(),
             exp: decimal.exponent(),
         }
     }
 
     /// The number of decimal digits in the coefficient.
     fn digits(&self) -> i64 {
-        digit_count(&self.int)
+        digit_count(&self.coeff)
     }
 }
 
-/// The number of decimal digits of a non-negative integer (`len(str(n))`).
-fn digit_count(n: &BigInt) -> i64 {
-    len_i64(&int_to_coeff(n))
+/// The number of decimal digits of a coefficient (`len(str(n))`).
+fn digit_count(n: &Coeff) -> i64 {
+    i64::try_from(n.digits()).expect("digit count fits in i64")
 }
 
 /// `_normalize`: brings two non-zero operands of an addition to a common exponent.
@@ -461,12 +413,12 @@ fn normalize(op1: WorkRep, op2: WorkRep, ctx: &Ctx<'_>) -> RunResult<(WorkRep, W
     let (mut tmp, mut other) = if swapped { (op2, op1) } else { (op1, op2) };
     let exp = tmp.exp + (-1i64).min(tmp.digits() - ctx.settings.prec - 2);
     if other.digits() + other.exp - 1 < exp {
-        other.int = BigInt::from(1u8);
+        other.coeff = Coeff::one();
         other.exp = exp;
     }
-    let shift = (tmp.exp - other.exp).unsigned_abs();
-    ctx.check_digits(shift + tmp.digits().unsigned_abs())?;
-    tmp.int *= super::pow10(shift);
+    let shift = tmp.exp.abs_diff(other.exp);
+    ctx.check_digits(shift + tmp.coeff.digits())?;
+    tmp.coeff = tmp.coeff.shl(shift);
     tmp.exp = other.exp;
     Ok(if swapped { (other, tmp) } else { (tmp, other) })
 }

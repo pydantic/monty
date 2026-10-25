@@ -10,7 +10,7 @@ use num_integer::Integer;
 use num_traits::{One, Pow, ToPrimitive, Zero};
 
 use super::{
-    Ctx, Decimal, coeff_to_int,
+    Coeff, Ctx, Decimal,
     context::{Condition, DecContext, MAX_EMAX, MIN_EMIN, Rounding},
     trans::{dec_len, dec_len_i64, decimal_lshift_exact, dpower, log10_lb, roundable, ten},
 };
@@ -104,10 +104,10 @@ impl Decimal {
         // Underflow is possible for x > 1 with y < 0 or x < 1 with y > 0, overflow otherwise.
         let answer = if (self_adj >= 0) == other.sign() {
             let etiny = settings.etiny();
-            (bound >= i128::from(dec_len_i64(-etiny))).then(|| Self::from_triple(result_sign, "1", etiny - 1))
+            (bound >= i128::from(dec_len_i64(-etiny))).then(|| Self::from_triple(result_sign, Coeff::one(), etiny - 1))
         } else {
             (bound >= i128::from(dec_len_i64(settings.emax)))
-                .then(|| Self::from_triple(result_sign, "1", settings.emax + 1))
+                .then(|| Self::from_triple(result_sign, Coeff::one(), settings.emax + 1))
         };
 
         if let Some(answer) = answer {
@@ -173,12 +173,10 @@ impl Decimal {
         ctx.status.merge(exp_ctx.status);
         if result.is_finite() && result.is_numerically_one() {
             // libmpdec widens an exact one to the full precision.
-            let mut coeff = String::from("1");
-            super::push_zeros(&mut coeff, prec - 1);
-            result = Self::from_triple(false, coeff, 1 - prec);
+            result = Self::from_triple(false, Coeff::pow10((prec - 1).unsigned_abs()), 1 - prec);
         } else if result.is_infinite() {
             // So that rounding towards zero yields the largest finite value.
-            result = Self::from_triple(false, "1", LIBMPDEC_EXP_INF);
+            result = Self::from_triple(false, Coeff::one(), LIBMPDEC_EXP_INF);
         }
         result.fix(ctx)
     }
@@ -210,9 +208,7 @@ impl Decimal {
             1 - prec
         };
         ctx.check_digits(exp.unsigned_abs())?;
-        let mut coeff = String::from("1");
-        super::push_zeros(&mut coeff, -exp);
-        Ok(Self::from_triple(result_sign, coeff, exp))
+        Ok(Self::from_triple(result_sign, Coeff::pow10(exp.unsigned_abs()), exp))
     }
 
     /// `_power_exact(other, p)`: `self**other` if it is exactly representable in `p`
@@ -251,8 +247,8 @@ impl Decimal {
             };
             let zeros_i64 = zeros.to_i64().expect("at most the precision");
             ctx.check_digits(zeros_i64.unsigned_abs())?;
-            let mut coeff = String::from("1");
-            super::push_zeros(&mut coeff, zeros_i64);
+            // `'1' + '0' * zeros`, where a negative count (as in Python) adds none.
+            let coeff = Coeff::pow10(u64::try_from(zeros_i64).unwrap_or(0));
             return Ok(Some(Self::from_triple(
                 false,
                 coeff,
@@ -263,9 +259,10 @@ impl Decimal {
         if other.sign() {
             // A negative power: xc must be a power of 2 (the result a power of 5) or
             // of 5 (the result a power of 2).
-            let last_digit = self.coeff().trim_end_matches('0').as_bytes().last().copied();
+            // The last non-zero digit.
+            let last_digit = self.coeff().digit_at(self.coeff().trailing_zeros());
             let (e, result_base) = match last_digit {
-                Some(b'2' | b'4' | b'6' | b'8') => {
+                2 | 4 | 6 | 8 => {
                     if xc.magnitude().count_ones() != 1 {
                         return Ok(None);
                     }
@@ -277,7 +274,7 @@ impl Decimal {
                     };
                     (e, 5u8)
                 }
-                Some(b'5') => {
+                5 => {
                     // e >= log_5(xc) when xc is a power of 5.
                     let mut e = i64::try_from(xc.bits() * 28 / 65).expect("bit count fits");
                     ctx.check_digits(e.unsigned_abs())?;
@@ -300,13 +297,12 @@ impl Decimal {
             };
             let e_u64 = e.to_u64().expect("bounded by emax");
             ctx.check_digits(e_u64)?;
-            let result = Pow::pow(BigInt::from(result_base), e_u64);
-            let digits = result.to_string();
-            if super::len_i64(&digits) > p {
+            let result = Coeff::from_bigint(&Pow::pow(BigInt::from(result_base), e_u64));
+            if i128::from(result.digits()) > i128::from(p) {
                 return Ok(None);
             }
             let exp = -e - xe;
-            return Ok(Some(Self::from_triple(false, digits, clamp_exponent(&exp))));
+            return Ok(Some(Self::from_triple(false, result, clamp_exponent(&exp))));
         }
 
         // A positive integer power m: stripping an integer's zeros leaves `ye >= 0`.
@@ -319,10 +315,9 @@ impl Decimal {
         }
         let m_u64 = m.to_u64().expect("bounded by the precision");
         ctx.check_digits(m_u64.saturating_mul(xc.bits()) / 3)?;
-        let xc = Pow::pow(xc, m_u64);
+        let xc = Coeff::from_bigint(&Pow::pow(xc, m_u64));
         let xe = xe * &m;
-        let digits = xc.to_string();
-        let len = super::len_i64(&digits);
+        let len = i64::try_from(xc.digits()).expect("bounded by the memory check");
         if len > p {
             return Ok(None);
         }
@@ -335,8 +330,8 @@ impl Decimal {
             BigInt::zero()
         };
         let zeros_i64 = zeros.to_i64().expect("at most the precision");
-        let mut coeff = digits;
-        super::push_zeros(&mut coeff, zeros_i64);
+        // As in Python, a negative count adds no zeros.
+        let coeff = xc.shl(u64::try_from(zeros_i64).unwrap_or(0));
         Ok(Some(Self::from_triple(false, coeff, clamp_exponent(&(xe - zeros)))))
     }
 
@@ -396,9 +391,9 @@ impl Decimal {
 /// The coefficient and exponent of a finite value with trailing zeros moved into the
 /// exponent (`_WorkRep` plus the `while xc % 10 == 0` loops of `_power_exact`).
 fn strip_tens(value: &Decimal) -> (BigInt, i64) {
-    let trimmed = value.coeff().trim_end_matches('0');
-    let zeros = super::len_i64(value.coeff()) - super::len_i64(trimmed);
-    (coeff_to_int(trimmed), value.exponent() + zeros)
+    let zeros = value.coeff().trailing_zeros();
+    let exp = value.exponent() + i64::try_from(zeros).expect("bounded by the coefficient length");
+    (value.coeff().shr(zeros).0.to_bigint(), exp)
 }
 
 /// An integral value as `(c, e)` with `e >= 0`: `to_integral_value()`'s `_WorkRep`.

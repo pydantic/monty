@@ -7,14 +7,7 @@
 //! Implicit operands follow C `_decimal`: `int` converts exactly, anything else makes
 //! an operator return `NotImplemented` and a method raise `TypeError`.
 
-use std::{
-    borrow::Cow,
-    cmp::Ordering,
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem,
-};
+use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
 
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -23,7 +16,7 @@ use smallvec::smallvec;
 use strum::{EnumString, IntoStaticStr};
 
 use super::{
-    Ctx, Decimal, Special,
+    Coeff, Ctx, Decimal, Special,
     context::{Condition, DecContext, Rounding},
     parse,
     py_context::{apply_status, as_context, current_context, settings_of},
@@ -261,8 +254,16 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
     if let Some(text) = exponent.as_either_str(vm.heap) {
         return match text.as_str(vm.interns) {
             "F" => Ok(Decimal::infinity(sign)),
-            "n" => Ok(Decimal::special_nan(sign, coeff, Special::QuietNan)),
-            "N" => Ok(Decimal::special_nan(sign, coeff, Special::SignalingNan)),
+            "n" => Ok(Decimal::special_nan(
+                sign,
+                Coeff::from_digits(&coeff),
+                Special::QuietNan,
+            )),
+            "N" => Ok(Decimal::special_nan(
+                sign,
+                Coeff::from_digits(&coeff),
+                Special::SignalingNan,
+            )),
             _ => Err(ExcType::value_error(
                 "string argument in the third position must be 'F', 'n' or 'N'",
             )),
@@ -279,7 +280,7 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
         coeff.push('0');
     }
     match parse::checked_exponent(i128::from(exp), coeff.len()) {
-        Ok(exp) => Ok(Decimal::from_triple(sign, coeff, exp)),
+        Ok(exp) => Ok(Decimal::from_triple(sign, Coeff::from_digits(&coeff), exp)),
         Err(condition) => with_ctx(vm, ctx_id, |ctx, _| Ok(ctx.invalid(condition))),
     }
 }
@@ -469,57 +470,63 @@ fn hash_decimal(decimal: &Decimal, id: HeapId) -> RunResult<HashValue> {
         return Ok(HashValue::new(0));
     }
     // Strip trailing zeros so equal values with different exponents hash alike.
-    let digits = decimal.coeff().trim_end_matches('0');
-    let exp = decimal.exponent() + super::len_i64(decimal.coeff()) - super::len_i64(digits);
-    if exp >= 0 && super::len_i64(digits) + exp <= HASH_INTEGER_DIGITS {
-        let magnitude = super::coeff_to_int(digits) * super::pow10(exp.unsigned_abs());
+    let zeros = decimal.coeff().trailing_zeros();
+    let coeff = if zeros == 0 {
+        Cow::Borrowed(decimal.coeff())
+    } else {
+        Cow::Owned(decimal.coeff().shr(zeros).0)
+    };
+    let exp = decimal.exponent() + i64::try_from(zeros).expect("bounded by the coefficient length");
+    let digits = i64::try_from(coeff.digits()).expect("digit count fits in i64");
+    if exp >= 0 && digits + exp <= HASH_INTEGER_DIGITS {
+        let magnitude = coeff.to_bigint() * super::pow10(exp.unsigned_abs());
         let value = if decimal.sign() { -magnitude } else { magnitude };
         return Ok(hash_python_long_int(&value));
     }
     if exp < 0
-        && let Some(f) = exact_fraction_float(digits, exp)
+        && let Some(f) = exact_fraction_float(&coeff, exp)
     {
         return Ok(hash_f64(if decimal.sign() { -f } else { f }));
     }
-    let mut hasher = DefaultHasher::new();
-    (decimal.sign(), digits, exp).hash(&mut hasher);
-    Ok(HashValue::new(hasher.finish()))
+    let seed = exp.cast_unsigned() ^ (u64::from(decimal.sign()) << 63);
+    Ok(HashValue::new(coeff.digest(seed)))
 }
 
 /// Integral values up to this many digits hash exactly like the equal `int`.
 const HASH_INTEGER_DIGITS: i64 = 5000;
 
-/// The float exactly equal to `digits * 10**exp` for `exp < 0` and digits without
-/// trailing zeros, or `None` when no float is.
+/// The float exactly equal to `coeff * 10**exp` for `exp < 0` and a coefficient
+/// without trailing zeros, or `None` when no float is.
 ///
 /// A non-integral float is `m * 2**-k` with `m` odd and below `2**53`, which is
 /// `m * 5**k * 10**-k`: the digits must end in `5` and divide by `5**k`, so most
 /// values are rejected by their last digit alone.
 #[expect(clippy::cast_precision_loss, reason = "m is below 2**53, so the cast is exact")]
-fn exact_fraction_float(digits: &str, exp: i64) -> Option<f64> {
+fn exact_fraction_float(coeff: &Coeff, exp: i64) -> Option<f64> {
     // The smallest positive float is `2**-1074`.
     const MAX_K: u64 = 1074;
     let k = exp.unsigned_abs();
-    if !digits.ends_with('5') || k > MAX_K {
+    if coeff.last_digit() != 5 || k > MAX_K {
         return None;
     }
     // `m * 5**k` has between `len(5**k)` and `len(5**k) + 16` digits; the window is
     // padded by one on each side for the integer estimate of `k * log10(5)`.
     let five_len = k * 69_897 / 100_000 + 1;
-    let len = super::len_i64(digits).unsigned_abs();
+    let len = coeff.digits();
     if len + 1 < five_len || len > five_len + 17 {
         return None;
     }
-    let m = if k <= 55 && len <= 38 {
-        // `5**55` and any 38-digit coefficient fit a `u128`.
-        let c: u128 = digits.parse().ok()?;
+    let m = if k <= 55
+        && let Some(c) = coeff.to_u128()
+    {
+        // `5**55` fits a `u128`.
         let five_pow = 5u128.pow(u32::try_from(k).ok()?);
         if !c.is_multiple_of(five_pow) {
             return None;
         }
         u64::try_from(c / five_pow).ok()?
     } else {
-        let (m, remainder) = super::coeff_to_int(digits).div_rem(&Pow::pow(BigInt::from(5u8), k));
+        let (m, remainder) = coeff.to_bigint().div_rem(&Pow::pow(BigInt::from(5u8), k));
         if !remainder.is_zero() {
             return None;
         }
@@ -975,7 +982,11 @@ fn format_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Value, Option<Val
 
 /// `as_tuple()`: `DecimalTuple(sign, digits, exponent)`.
 fn as_tuple(d: &Decimal, vm: &VM<'_>) -> Value {
-    let digits: smallvec::SmallVec<[Value; 3]> = d.coeff().bytes().map(|b| Value::Int(i64::from(b - b'0'))).collect();
+    let digits: smallvec::SmallVec<[Value; 3]> = d
+        .coeff_digits()
+        .bytes()
+        .map(|b| Value::Int(i64::from(b - b'0')))
+        .collect();
     let digits = allocate_tuple(digits.into_iter().collect(), vm.heap);
     let exponent = match d.special() {
         Special::Finite => Value::Int(d.exponent()),

@@ -1,9 +1,9 @@
 //! Comparisons: `_cmp`, `compare`, `compare_signal`, `compare_total(_mag)` and the
 //! `max`/`min` family.
 
-use std::cmp::Ordering;
+use std::{borrow::Cow, cmp::Ordering};
 
-use super::{Ctx, Decimal};
+use super::{Coeff, Ctx, Decimal};
 use crate::exception_private::RunResult;
 
 /// `_cmp`: numeric order of two non-NaN values, `-0 == 0`.
@@ -23,16 +23,12 @@ pub(super) fn cmp_numeric(a: &Decimal, b: &Decimal) -> Ordering {
         return if a.sign() { Ordering::Less } else { Ordering::Greater };
     }
     let magnitude = match a.adjusted().cmp(&b.adjusted()) {
-        // Equal adjusted exponents: compare the digits aligned to a common exponent.
-        // The padding is bounded by the coefficient lengths.
+        // Equal adjusted exponents: compare the coefficients aligned to a common
+        // exponent. The shift is bounded by the coefficient lengths.
         Ordering::Equal => {
-            let (a_digits, b_digits) = (a.coeff().as_bytes(), b.coeff().as_bytes());
-            let len = a_digits.len().max(b_digits.len());
-            let digit = |digits: &[u8], i: usize| digits.get(i).copied().unwrap_or(b'0');
-            (0..len)
-                .map(|i| digit(a_digits, i).cmp(&digit(b_digits, i)))
-                .find(|ord| ord.is_ne())
-                .unwrap_or(Ordering::Equal)
+            let (a_digits, b_digits) = (a.coeff().digits(), b.coeff().digits());
+            let width = a_digits.max(b_digits);
+            aligned(a.coeff(), width - a_digits).cmp(&aligned(b.coeff(), width - b_digits))
         }
         other => other,
     };
@@ -83,8 +79,7 @@ impl Decimal {
         if self_nan != 0 || other_nan != 0 {
             return if self_nan == other_nan {
                 // Payloads compare as integers.
-                let key = |d: &Self| (d.coeff().len(), d.coeff().to_owned());
-                signed(key(self).cmp(&key(other)))
+                signed(self.coeff().cmp(other.coeff()))
             } else {
                 // A quiet NaN orders above a signaling one, both above every number.
                 let rank = |kind: u8| match kind {
@@ -157,4 +152,13 @@ fn ordering_value(ord: Ordering) -> Decimal {
         Ordering::Equal => 0,
         Ordering::Greater => 1,
     })
+}
+
+/// `coeff * 10**shift`, borrowed when there is nothing to shift.
+fn aligned(coeff: &Coeff, shift: u64) -> Cow<'_, Coeff> {
+    if shift == 0 {
+        Cow::Borrowed(coeff)
+    } else {
+        Cow::Owned(coeff.shl(shift))
+    }
 }

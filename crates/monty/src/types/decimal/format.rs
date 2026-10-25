@@ -9,7 +9,7 @@
 
 use std::str;
 
-use super::{Ctx, Decimal, context::Rounding};
+use super::{Coeff, Ctx, Decimal, context::Rounding, round_direction};
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     string_builder::StringBuilder,
@@ -34,7 +34,7 @@ impl Decimal {
         let kind = spec.kind.unwrap_or(if ctx.settings.capitals { 'G' } else { 'g' });
         let mut value = Parts {
             sign: self.sign(),
-            coeff: self.coeff().to_owned(),
+            coeff: self.coeff().clone(),
             exp: i128::from(self.exponent()),
         };
         if kind == '%' {
@@ -47,7 +47,7 @@ impl Decimal {
             value = match kind {
                 'e' | 'E' => value.round(precision + 1, rounding, ctx)?,
                 'f' | 'F' | '%' => value.rescale(-precision, rounding, ctx)?,
-                'g' | 'G' if len_i128(&value.coeff) > precision => value.round(precision, rounding, ctx)?,
+                'g' | 'G' if value.digits() > precision => value.round(precision, rounding, ctx)?,
                 _ => value,
             };
         }
@@ -58,7 +58,8 @@ impl Decimal {
         let negative = value.sign && !(value.is_zero() && spec.no_neg_0);
 
         // Where the decimal point goes.
-        let len = len_i128(&value.coeff);
+        let coeff = value.coeff.to_string();
+        let len = len_i128(&coeff);
         let leftdigits = value.exp + len;
         let dotplace = match kind {
             'e' | 'E' => match spec.precision {
@@ -78,34 +79,39 @@ impl Decimal {
         // The digits before and after the point, and the exponent.
         let (intpart, fracpart) = if dotplace < 0 {
             let mut frac = zeros(-dotplace, ctx)?;
-            frac.push_str(&value.coeff);
+            frac.push_str(&coeff);
             ("0".to_owned(), frac)
         } else if dotplace > len {
-            let mut int = value.coeff;
+            let mut int = coeff;
             int.push_str(&zeros(dotplace - len, ctx)?);
             (int, String::new())
         } else {
             let split = usize::try_from(dotplace).expect("dotplace is within the coefficient");
-            let int = if split == 0 { "0" } else { &value.coeff[..split] };
-            (int.to_owned(), value.coeff[split..].to_owned())
+            let int = if split == 0 { "0" } else { &coeff[..split] };
+            (int.to_owned(), coeff[split..].to_owned())
         };
         let exp = leftdigits - dotplace;
         format_number(negative, &intpart, &fracpart, exp, kind, &spec, ctx)
     }
 }
 
-/// A finite value as `(sign, coefficient digits, exponent)`, with an exponent wide
-/// enough for a spec's precision to shift it without overflow.
+/// A finite value as `(sign, coefficient, exponent)`, with an exponent wide enough
+/// for a spec's precision to shift it without overflow.
 struct Parts {
     sign: bool,
-    coeff: String,
+    coeff: Coeff,
     exp: i128,
 }
 
 impl Parts {
     /// Whether the value is zero.
     fn is_zero(&self) -> bool {
-        self.coeff == "0"
+        self.coeff.is_zero()
+    }
+
+    /// The number of coefficient digits.
+    fn digits(&self) -> i128 {
+        i128::from(self.coeff.digits())
     }
 
     /// `_rescale(exp, rounding)`: the same value with exponent `exp`, padded with
@@ -115,30 +121,19 @@ impl Parts {
             return Ok(Self { exp, ..self });
         }
         if self.exp >= exp {
-            let mut coeff = self.coeff;
-            coeff.push_str(&zeros(self.exp - exp, ctx)?);
+            let pad = pad_count(self.exp - exp, ctx)?;
+            ctx.check_digits(pad.saturating_add(self.coeff.digits()))?;
             return Ok(Self {
                 sign: self.sign,
-                coeff,
+                coeff: self.coeff.shl(pad),
                 exp,
             });
         }
-        // Too many digits: round. Below `exp - 1` the value rounds like `10**(exp-1)`.
-        let mut digits = len_i128(&self.coeff) + self.exp - exp;
-        let mut coeff = self.coeff;
-        if digits < 0 {
-            "1".clone_into(&mut coeff);
-            digits = 0;
-        }
-        let digits = usize::try_from(digits).expect("digits fit the coefficient");
-        let changed = Decimal::from_triple(self.sign, coeff.as_str(), 0).round_direction(digits, rounding);
-        let mut kept = if digits == 0 {
-            "0".to_owned()
-        } else {
-            coeff[..digits].to_owned()
-        };
-        if changed == 1 {
-            kept = increment(&kept);
+        // Too many digits: round them away. A shift past `u64` drops every digit either way.
+        let shift = u64::try_from(exp - self.exp).unwrap_or(u64::MAX);
+        let (mut kept, discarded) = self.coeff.shr(shift);
+        if round_direction(&kept, discarded, self.sign, rounding) == 1 {
+            kept.increment();
         }
         Ok(Self {
             sign: self.sign,
@@ -165,7 +160,7 @@ impl Parts {
 
     /// The exponent of the most significant digit.
     fn adjusted(&self) -> i128 {
-        self.exp + len_i128(&self.coeff) - 1
+        self.exp + self.digits() - 1
     }
 }
 
@@ -446,27 +441,17 @@ fn zeros(count: i128, ctx: &Ctx<'_>) -> RunResult<String> {
     out.finish_raw()
 }
 
+/// A zero-padding length, failing with `MemoryError` for one no coefficient could hold.
+fn pad_count(count: i128, ctx: &Ctx<'_>) -> RunResult<u64> {
+    u64::try_from(count.max(0)).map_err(|_| capacity_error(ctx))
+}
+
 /// The `MemoryError` for a result longer than any string can be.
 fn capacity_error(ctx: &Ctx<'_>) -> RunError {
     match ctx.tracker.check_allocation(usize::MAX) {
         Err(err) => err.into(),
         Ok(()) => SimpleException::new_none(ExcType::MemoryError).into(),
     }
-}
-
-/// `str(int(digits) + 1)` for a digit string.
-fn increment(digits: &str) -> String {
-    let mut bytes = digits.as_bytes().to_vec();
-    for b in bytes.iter_mut().rev() {
-        if *b == b'9' {
-            *b = b'0';
-        } else {
-            *b += 1;
-            return String::from_utf8(bytes).expect("digits are ASCII");
-        }
-    }
-    bytes.insert(0, b'1');
-    String::from_utf8(bytes).expect("digits are ASCII")
 }
 
 /// A string's byte length as `i128`.
