@@ -8,7 +8,7 @@ use std::{str, sync::Arc};
 
 use crate::{
     args::{ArgValues, FromArgs, Signature},
-    bytecode::{CallResult, Compiler, FrameNamespace, VM},
+    bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::{Identifier, Node},
@@ -112,25 +112,48 @@ fn run_snippet(
     locals: Option<HeapId>,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
-    if source.contains('\0') {
-        return Err(
-            SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
-        );
-    }
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
     let (names, namespace) = vm.snippet_namespace(globals, locals)?;
-    let globals_len = vm.global_names.len();
     let kind = match builtin {
         Builtin::Eval => SnippetSource::Eval,
         Builtin::Exec => SnippetSource::Exec,
     };
-    let result = compile_and_push(kind, source, names, namespace, vm);
-    if result.is_err() {
-        vm.global_names.truncate(globals_len);
+    compile_and_push(kind, source, names, namespace, vm)?;
+    Ok(CallResult::FramePushed)
+}
+
+/// Evaluates one stringized annotation for `typing.get_type_hints()`.
+///
+/// Takes borrowed `globals` / `locals` dict ids (`None` globals means the
+/// module slots). The namespace is built here rather than by
+/// `snippet_namespace`, which would inherit the calling frame's: the caller is
+/// frozen code. Each distinct text and mode compiles once per session, so a
+/// decorator calling `get_type_hints` on every call publishes no new functions.
+pub(crate) fn eval_hint(
+    source: &Value,
+    globals: Option<HeapId>,
+    locals: Option<HeapId>,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let text = snippet_source("eval", source, vm)?;
+    for dict in globals.into_iter().chain(locals) {
+        vm.heap.inc_ref(dict);
     }
-    result
+    let (globals, names) = match (globals, locals) {
+        (Some(dict), _) => (FrameGlobals::Dict(dict), SnippetNames::NameOverDict),
+        (None, Some(_)) => (FrameGlobals::Slots, SnippetNames::NameOverSlots),
+        (None, None) => (FrameGlobals::Slots, SnippetNames::Slots),
+    };
+    let namespace = Box::new(FrameNamespace::Snippet { globals, locals });
+    if let Some(func_id) = vm.interns.hint_snippet(names, &text) {
+        vm.push_snippet_frame(func_id, None, namespace)?;
+    } else {
+        let func_id = compile_and_push(SnippetSource::Eval, &text, names, namespace, vm)?;
+        vm.interns.set_hint_snippet(names, text, func_id);
+    }
+    Ok(CallResult::FramePushed)
 }
 
 /// What runtime-compiled source is: it decides how the source parses, the
@@ -146,15 +169,44 @@ pub(crate) enum SnippetSource<'a> {
 }
 
 /// Compiles privately and publishes only after the snippet's frame is admitted.
+///
+/// Provisional global slots are released if compilation or admission fails.
 pub(crate) fn compile_and_push(
     kind: SnippetSource<'_>,
     source: &Arc<str>,
     names: SnippetNames,
     namespace: Box<FrameNamespace>,
     vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+) -> RunResult<FunctionId> {
+    let globals_len = vm.global_names.len();
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
+    let compiled = compile_snippet(kind, source, names, vm);
+    let (namespace, vm) = namespace_guard.into_parts();
+    let result = compiled.and_then(|(func_id, overlay)| {
+        vm.push_snippet_frame(func_id, Some(overlay), namespace)?;
+        vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
+        Ok(func_id)
+    });
+    if result.is_err() {
+        vm.global_names.truncate(globals_len);
+    }
+    result
+}
+
+/// Parses, prepares and compiles `source` into an unpublished overlay, returning
+/// the snippet function's ID within it.
+fn compile_snippet<'h>(
+    kind: SnippetSource<'_>,
+    source: &Arc<str>,
+    names: SnippetNames,
+    vm: &mut VM<'h>,
+) -> RunResult<(FunctionId, CompileInterns<'h>)> {
+    if !matches!(kind, SnippetSource::File { .. }) && source.contains('\0') {
+        return Err(
+            SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
+        );
+    }
     let mut overlay = CompileInterns::new(vm.interns);
     let filename_id = match kind {
         SnippetSource::File { path } => overlay.add_file_source(Arc::from(path), Arc::clone(source)),
@@ -219,10 +271,7 @@ pub(crate) fn compile_and_push(
     })?;
 
     overlay.push_function(function);
-    let (namespace, vm) = namespace_guard.into_parts();
-    vm.push_snippet_frame(func_id, overlay, namespace)?;
-    vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
-    Ok(CallResult::FramePushed)
+    Ok((func_id, overlay))
 }
 
 /// The snippet's text: a `str`, or `bytes` decoded as UTF-8.

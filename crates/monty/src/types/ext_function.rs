@@ -6,7 +6,7 @@ use crate::{
     exception_private::RunResult,
     hash::{HashValue, identity_hash},
     heap::HeapObjectRead,
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{BuiltinType, LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -29,7 +29,7 @@ pub(crate) type ExtHints = Box<[(Box<str>, ExtHint)]>;
 /// One host type hint: a builtin type, or the text of anything else.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ExtHint {
-    Type(Type),
+    Type(BuiltinType),
     Text(Box<str>),
 }
 

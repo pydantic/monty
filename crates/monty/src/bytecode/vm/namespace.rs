@@ -166,10 +166,11 @@ impl<'h> VM<'h> {
 
     /// Admits a snippet before publishing its compilation and installing its frame.
     /// A recursion-limit rejection discards both the overlay and the owned namespace.
+    /// `overlay` is `None` when `func_id` is already committed (a cached hint snippet).
     pub(crate) fn push_snippet_frame(
         &mut self,
         func_id: FunctionId,
-        overlay: CompileInterns<'_>,
+        overlay: Option<CompileInterns<'_>>,
         namespace: Box<FrameNamespace>,
     ) -> RunResult<()> {
         let mut namespace_guard = DropGuard::new(namespace, self);
@@ -178,7 +179,9 @@ impl<'h> VM<'h> {
         vm.incr_recursion()?;
         // Publication makes the code borrowable for the run. Nothing fallible or
         // re-entrant may intervene between admission and installing the frame.
-        overlay.commit();
+        if let Some(overlay) = overlay {
+            overlay.commit();
+        }
         let (namespace, vm) = namespace_guard.into_parts();
         let code = &vm.interns.get_function(func_id).code;
         let frame = CallFrame::new_function(
@@ -224,7 +227,7 @@ impl<'h> VM<'h> {
     }
 
     /// A fresh dict of the bound module globals, for `locals()` at module scope.
-    fn snapshot_globals(&mut self) -> RunResult<HeapId> {
+    pub(crate) fn snapshot_globals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         // Owned by the guard until every entry is in, so a failed insert frees it.
         let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);

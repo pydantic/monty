@@ -948,8 +948,11 @@ def test_type_after_restore_is_class_type_proxy(pool: Monty):
         assert proxy.name == snapshot('Person')
         assert proxy.is_dataclass is True
         assert isinstance(proxy.id, UUID)
-        assert proxy.attributes == snapshot({})
-        assert repr(proxy) == snapshot("MontyClassTypeProxy(name='Person', attributes={})")
+        # the class's type hints travel as its `__annotations__` attr
+        assert proxy.attributes == snapshot({'__annotations__': {'name': str, 'age': int}})
+        assert repr(proxy) == snapshot(
+            "MontyClassTypeProxy(name='Person', attributes={'__annotations__': {'name': <class 'str'>, 'age': <class 'int'>}})"
+        )
         assert proxy == session.feed_run('type(x)')
         assert proxy != session.feed_run('class Other:\n    pass\nOther')
         code = '(t is type(x), isinstance(x, t), t.__name__)'
@@ -1309,3 +1312,18 @@ def test_same_qualname_distinct_classes(monty_run: RunMonty):
         'b': ClassInstance(second(), eager_attrs='all', class_type=pydantic_monty.ClassType(second, id=uuid4())),
     }
     assert monty_run('(type(a) == type(b), a == b)', inputs=inputs) == snapshot((False, False))
+
+
+@dataclass
+class Typed:
+    name: str
+    tags: list[str]
+    parent: Typed | None = None
+
+
+def test_class_type_hints(monty_run: RunMonty):
+    code = 'from typing import get_type_hints\nget_type_hints(T)'
+    # builtin types cross as themselves, anything else as text
+    expected = {'name': str, 'tags': 'list[str]', 'parent': 'test_class_instance.Typed | None'}
+    assert monty_run(code, inputs={'T': ClassType(Typed)}) == expected
+    assert monty_run('T.__annotations__', inputs={'T': ClassType(Typed)}) == expected

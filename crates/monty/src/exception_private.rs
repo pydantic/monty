@@ -175,6 +175,21 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `typing.get_type_hints()` raises for an object that
+    /// is neither annotated nor callable: `5 does not have annotations`.
+    fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {
+        let repr = match obj.py_repr(vm) {
+            Ok(repr_value) => {
+                defer_drop!(repr_value, vm);
+                repr_value
+                    .to_str(vm)
+                    .map_or_else(|_| format!("<{}>", obj.py_type_name(vm)), str::to_owned)
+            }
+            Err(err) => return err,
+        };
+        Self::type_error(format!("{repr} does not have annotations"))
+    }
+
     /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
     /// between values whose types define no ordering, e.g. `1 < 'a'` or two
     /// instances of a user class without comparison dunders.

@@ -4,7 +4,7 @@ import io
 import json
 import pathlib
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from conftest import RunMonty
@@ -751,3 +751,41 @@ def test_external_lookup_name_conversion_error_discards_session(session: MontySe
     with pytest.raises(RuntimeError) as exc_info2:
         session.feed_run('1 + 1')
     assert str(exc_info2.value) == snapshot('this checkout has already been finished')
+
+
+class HintTarget:
+    pass
+
+
+def resolvable_hints(a: int, b: list[str], c: HintTarget, d: int | None) -> str:
+    return ''
+
+
+if TYPE_CHECKING:
+    # only importable for type checkers, so `get_type_hints` cannot resolve it at runtime
+    from decimal import Decimal as Unresolvable
+
+
+def unresolvable_hints(url: str, target: 'Unresolvable') -> None:
+    pass
+
+
+@pytest.mark.parametrize(
+    'func,expected',
+    [
+        pytest.param(
+            resolvable_hints,
+            snapshot({'a': int, 'b': 'list[str]', 'c': 'test_external.HintTarget', 'd': 'int | None', 'return': str}),
+            id='resolvable',
+        ),
+        pytest.param(
+            unresolvable_hints,
+            # not a `snapshot()`: inline-snapshot cannot render `NoneType`
+            {'url': str, 'target': 'Unresolvable', 'return': type(None)},
+            id='unresolvable',
+        ),
+    ],
+)
+def test_external_function_type_hints(monty_run: RunMonty, func: Any, expected: Any):
+    code = 'from typing import get_type_hints\nget_type_hints(f)'
+    assert monty_run(code, inputs={'f': func}) == expected

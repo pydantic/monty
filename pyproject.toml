@@ -177,6 +177,9 @@ exclude = [
     # annotation quote-normalization test: `e: "it's"` is a string literal under
     # test, which pyright reads as a malformed forward reference
     "crates/monty/test_cases/class__annotations.py",
+    # annotations that are not type expressions (`x: 1`, a string naming a
+    # variable) are evaluated by `get_type_hints` under test
+    "crates/monty/test_cases/typing__get_type_hints.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally
     "crates/monty/test_cases/async__control_flow.py",

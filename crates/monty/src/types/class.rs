@@ -11,8 +11,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReader,
-        heap_read_ref_as_field_mut,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
+        HeapReader, heap_read_ref_as_field_mut,
     },
     intern::{Interns, StringId},
     types::{Union, str::allocate_string},
@@ -79,6 +79,17 @@ impl Class {
     #[must_use]
     pub fn namespace(&self) -> &Dict {
         &self.namespace
+    }
+
+    /// The class's own `__annotations__` dict, or `None` for a class body with none.
+    pub(crate) fn annotations<'a>(&self, heap: &'a Heap, interns: &Interns) -> Option<&'a Dict> {
+        match self.namespace.get_by_str("__annotations__", heap, interns)?.ref_id() {
+            Some(id) => match heap.get(id) {
+                HeapData::Dict(annotations) => Some(annotations),
+                _ => None,
+            },
+            None => None,
+        }
     }
 }
 

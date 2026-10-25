@@ -28,7 +28,7 @@ use exceptions::CaughtException;
 pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
-pub(crate) use namespace::{FrameNamespace, function_namespace};
+pub(crate) use namespace::{FrameGlobals, FrameNamespace, function_namespace};
 use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
