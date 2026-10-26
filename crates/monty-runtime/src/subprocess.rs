@@ -36,25 +36,32 @@ const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 /// Runs [`serve`] on a thread with [`WORKER_STACK_SIZE`] of stack and returns
 /// its exit code. A panic there has already written its `FatalError` frame in
 /// the panic hook, so it exits with 101 like an unwound main thread.
-pub(crate) fn run() -> ExitCode {
+///
+/// `prewarm_type_checker` selects [`Worker::with_prewarmed_type_checker`].
+pub(crate) fn run(prewarm_type_checker: bool) -> ExitCode {
     thread::Builder::new()
         .name("monty-worker".to_owned())
         .stack_size(WORKER_STACK_SIZE)
-        .spawn(serve)
+        .spawn(move || serve(prewarm_type_checker))
         .expect("failed to spawn the worker thread")
         .join()
         .unwrap_or(ExitCode::from(101))
 }
 
 /// The worker loop: one request in, its events out, until EOF, `Shutdown` or a fatal error.
-fn serve() -> ExitCode {
+fn serve(prewarm_type_checker: bool) -> ExitCode {
     install_panic_hook();
     let mut reader = FrameReader::new(io::stdin().lock());
-    let mut worker = Worker::default();
+    let mut worker = if prewarm_type_checker {
+        Worker::with_prewarmed_type_checker()
+    } else {
+        Worker::default()
+    };
     let mut sink = StdoutSink;
     // set the memory baseline on the pristine worker: a session's first request
     // is decoded before its ceiling is armed, and must not count as overhead
     apply_memory_limit(&worker);
+    worker.warm_up();
 
     loop {
         match reader.read::<pb::ClientRequest>() {
@@ -62,7 +69,9 @@ fn serve() -> ExitCode {
                 let outcome = worker.handle(request, &mut sink);
                 apply_memory_limit(&worker);
                 match outcome {
-                    Ok(HandleOutcome::Continue) => {}
+                    // after the re-arm, so a `Reset` that dropped the checker has
+                    // lowered the baseline before the new one is added to it
+                    Ok(HandleOutcome::Continue) => worker.warm_up(),
                     Ok(HandleOutcome::Shutdown) => return ExitCode::SUCCESS,
                     // the worker emitted a FatalError (e.g. version skew) and cannot
                     // keep serving — exit non-zero so the client sees a clean cause

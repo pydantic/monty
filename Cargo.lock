@@ -2887,6 +2887,7 @@ dependencies = [
  "heck",
  "insta",
  "monty",
+ "monty-alloc",
  "monty-proto",
  "monty-type-checking",
  "monty-types",

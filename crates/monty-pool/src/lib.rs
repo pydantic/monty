@@ -137,6 +137,12 @@ pub struct PoolConfig {
     /// Saves a round trip per call, which matters most over the network, but moves
     /// call-time errors to the `await`. On by default for [`Self::remote`], off for [`Self::subprocess`].
     pub stream_async_calls: bool,
+    /// Have each worker build a type checker that has already resolved the builtins
+    /// between checkouts, so a session's first type-checked feed skips that work
+    /// (a checkout arriving mid-build waits for it). Costs about 6 MiB per worker,
+    /// outside every session's `max_memory`, wasted if sessions do not type-check.
+    /// Subprocess transport only; off by default.
+    pub prewarm_type_checker: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -181,6 +187,7 @@ impl PoolConfig {
             auto_resume: true,
             stream_async_calls: false,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
+            prewarm_type_checker: false,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
