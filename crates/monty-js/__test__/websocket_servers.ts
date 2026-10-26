@@ -12,7 +12,7 @@ import type { AddressInfo } from 'node:net'
 import { type RawData, type WebSocket, WebSocketServer } from 'ws'
 
 // not `@pydantic/monty/node`: the wasm and browser configs alias that entry to stubs
-import { findMontyBinary } from '../dist/binary.js'
+import { findMontyBinary } from '../ts/binary.js'
 
 /** A listening test server. */
 export interface TestServer {

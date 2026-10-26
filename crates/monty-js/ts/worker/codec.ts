@@ -2,7 +2,6 @@
 // no interpreter and no state, so unlike the worker component it needs no
 // Web Worker to isolate or preempt it.
 
-import { instantiate } from './component/monty-codec.component.js'
 import type { DecodedFrame, Request } from './component/monty-codec.component.js'
 import { getModule } from './componentModules.js'
 import type { ComponentModules } from './host.js'
@@ -26,6 +25,9 @@ export class CodecError extends Error {
 
 /** Instantiates the codec from its precompiled core modules. */
 export async function instantiateCodec(modules: ComponentModules): Promise<Codec> {
+  // imported here, not at the top: the bindings exist only after `build:wasm`,
+  // and the entries that re-export `MontyWebsocket` must load without them
+  const { instantiate } = await import('./component/monty-codec.component.js')
   const { codec } = await instantiate((path) => getModule(modules, path), wasiImports())
   return {
     encodeRequest: (request) => unwrap(() => codec.encodeRequest(request)),
