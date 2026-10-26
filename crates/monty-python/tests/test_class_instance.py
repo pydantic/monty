@@ -1332,6 +1332,18 @@ def test_class_type_hints(monty_run: RunMonty):
     assert monty_run('T.__annotations__', inputs={'T': ClassType(Typed)}) == expected
 
 
+def test_class_type_hints_latest_wrapper_wins(monty_run: RunMonty):
+    # wrappers sharing an id are one sandbox class: the last one sent supplies its hints
+    class Renamed(ClassType):
+        def get_type_hints(self) -> dict[str, Any]:
+            return {'renamed': int}
+
+    class_id = uuid4()
+    code = 'from typing import get_type_hints\n(a is b, get_type_hints(b))'
+    inputs = {'a': ClassType(Typed, id=class_id), 'b': Renamed(Typed, id=class_id)}
+    assert monty_run(code, inputs=inputs) == snapshot((True, {'renamed': int}))
+
+
 @pytest.mark.skipif(sys.version_info < (3, 14), reason='earlier versions evaluate annotations at class creation')
 def test_class_hints_unresolvable_at_runtime(monty_run: RunMonty):
     # without `from __future__ import annotations`, a name imported only for type

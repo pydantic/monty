@@ -251,6 +251,18 @@ rejected = [
         'await expression cannot be used within an annotation (<string>, line 2)',
     ),
     ('def f(x: (yield) | (y := 1)): pass', 'yield expression cannot be used within an annotation (<string>, line 1)'),
+    # a comprehension's first iterable and lambda defaults run in the annotation's scope
+    ('x: [a for a in (y := z)]', 'named expression cannot be used within an annotation (<string>, line 1)'),
+    ('x: {a: 1 for a in (y := z)}', 'named expression cannot be used within an annotation (<string>, line 1)'),
+    (
+        'def f(x: (a for a in (y := z))): pass',
+        'named expression cannot be used within an annotation (<string>, line 1)',
+    ),
+    ('def f(x: lambda a=(y := 1): a): pass', 'named expression cannot be used within an annotation (<string>, line 1)'),
+    (
+        'def g():\n    def f(x: lambda *, a=(yield): a): pass',
+        'yield expression cannot be used within an annotation (<string>, line 2)',
+    ),
 ]
 for source, message in rejected:
     try:
@@ -261,6 +273,7 @@ for source, message in rejected:
 
 exec('def f(x: lambda: (y := 1)): pass')
 exec('def f(x: [(y := 1) for _ in z]): pass')
+exec('def f(x: [a for a in z if (y := a)]): pass')
 
 
 # === Class opt-outs and malformed __annotations__ ===

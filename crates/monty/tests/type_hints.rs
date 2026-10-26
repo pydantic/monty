@@ -3,8 +3,6 @@
 //! Sandbox-only behaviour is covered by `test_cases/typing__get_type_hints.py`;
 //! these cases need a host to send hints or a dump to round-trip them.
 
-use std::mem;
-
 use insta::assert_snapshot;
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
@@ -130,19 +128,20 @@ gate()
         .start(vec![hinted_function()], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
-    mem::drop(progress);
-
-    let Session::Running(progress) = Dump::load(&bytes).unwrap().state else {
+    let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
         panic!("dumped a running session")
     };
-    assert_eq!(
-        resume_gate(*progress),
-        MontyObject::tuple([
-            MontyObject::bool(true),
-            MontyObject::bool(true),
-            hinted_function_hints(),
-        ]),
-    );
+    // Both sessions run to completion, so their heaps are released properly.
+    for progress in [progress, *loaded] {
+        assert_eq!(
+            resume_gate(progress),
+            MontyObject::tuple([
+                MontyObject::bool(true),
+                MontyObject::bool(true),
+                hinted_function_hints(),
+            ]),
+        );
+    }
 }
 
 /// Resumes the `gate()` call and runs to completion.

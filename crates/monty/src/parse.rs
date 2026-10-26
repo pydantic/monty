@@ -1407,7 +1407,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     }
 
     /// Depth-checks an annotation and rejects what CPython's compiler refuses in
-    /// one: a walrus, `yield` or `await` outside any lambda or comprehension.
+    /// one: a walrus, `yield` or `await` evaluated in the annotation's own scope.
     fn check_annotation(&self, annotation: &AstExpr) -> Result<(), ParseError> {
         self.check_expression_depth(annotation)?;
         match forbidden_in_annotation(annotation) {
@@ -2684,11 +2684,19 @@ fn contains_class_scope_walrus(expr: &AstExpr) -> bool {
 
 /// The first expression CPython rejects in an annotation, in source order, as
 /// its error's noun and range. Lambda bodies and comprehensions are their own
-/// scopes, so CPython does not look inside them.
+/// scopes, so only lambda defaults and a comprehension's first iterable are checked.
 fn forbidden_in_annotation(annotation: &AstExpr) -> Option<(&'static str, TextRange)> {
     /// Expression visitor recording the first forbidden expression.
     struct Finder {
         found: Option<(&'static str, TextRange)>,
+    }
+    impl Finder {
+        /// Visits a comprehension's first iterable, the only part evaluated in the annotation's scope.
+        fn visit_first_iter(&mut self, generators: &[ast::Comprehension]) {
+            if let Some(first) = generators.first() {
+                self.visit_expr(&first.iter);
+            }
+        }
     }
     impl<'a> Visitor<'a> for Finder {
         fn visit_expr(&mut self, expr: &'a AstExpr) {
@@ -2699,11 +2707,22 @@ fn forbidden_in_annotation(annotation: &AstExpr) -> Option<(&'static str, TextRa
                     self.found = Some(("yield expression", *range));
                 }
                 AstExpr::Await(e) => self.found = Some(("await expression", e.range)),
-                AstExpr::Lambda(_)
-                | AstExpr::ListComp(_)
-                | AstExpr::SetComp(_)
-                | AstExpr::DictComp(_)
-                | AstExpr::Generator(_) => {}
+                // Defaults are evaluated in the annotation's scope, the body is not.
+                AstExpr::Lambda(lambda) => {
+                    for param in lambda
+                        .parameters
+                        .iter()
+                        .flat_map(|params| params.iter_non_variadic_params())
+                    {
+                        if let Some(default) = &param.default {
+                            self.visit_expr(default);
+                        }
+                    }
+                }
+                AstExpr::ListComp(ast::ExprListComp { generators, .. })
+                | AstExpr::SetComp(ast::ExprSetComp { generators, .. })
+                | AstExpr::Generator(ast::ExprGenerator { generators, .. }) => self.visit_first_iter(generators),
+                AstExpr::DictComp(ast::ExprDictComp { generators, .. }) => self.visit_first_iter(generators),
                 _ => walk_expr(self, expr),
             }
         }

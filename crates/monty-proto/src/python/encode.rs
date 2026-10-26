@@ -392,7 +392,11 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                 }
             }
         }
-        if only_hint_attrs(&source.attrs)
+        // An explicit `ClassType` replaces its id's registered wrapper, so its
+        // hints must cross too rather than reuse an earlier wrapper's node.
+        let replaces_wrapper = matches!(source.register, Some((_, true)));
+        if !replaces_wrapper
+            && only_hint_attrs(&source.attrs)
             && let Some(id) = self.class_types.get(&source.class_type.id)
         {
             let id = *id;
