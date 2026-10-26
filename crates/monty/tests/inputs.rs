@@ -4,7 +4,7 @@
 //! and can be used in Python code execution.
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject, MontyUuid};
+use monty_types::{CompileOptions, ExcType, MontyObject, MontyType, MontyUuid};
 
 // === Immediate Value Tests ===
 
@@ -338,6 +338,28 @@ fn empty_string_input() {
 }
 
 // === Exception Input Tests ===
+
+/// Imported exception classes must work in handlers and class raises, and retain
+/// the identity of the corresponding builtin class.
+#[test]
+fn input_exception_type() {
+    for exc_type in [ExcType::ValueError, ExcType::BaseException] {
+        let code = format!(
+            "\
+assert x is {exc_type}
+try:
+    raise x
+except x as exc:
+    assert str(exc) == ''
+x
+"
+        );
+        let mut ex = MontyRun::new(code, "test.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
+        let input = MontyObject::type_object(MontyType::Exception(exc_type));
+        let result = ex.run_no_limits(vec![input.clone()]).unwrap();
+        assert_eq!(result, input);
+    }
+}
 
 #[test]
 fn input_exception() {

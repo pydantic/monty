@@ -130,7 +130,7 @@ with Monty() as pool:
 
 `external_modules` on `checkout()` maps import names to `ExternalModule` values containing the module's public items
 and a `.pyi` stub, for every feed of the session.
-Callables become host functions.
+Supported Python types remain types; other callables become host functions.
 Type checking fetches the stub when a feed first imports the module.
 
 ```python
