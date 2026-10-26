@@ -1,0 +1,44 @@
+name: branch diff
+
+on:
+  # `pull_request` tokens are read-only on PRs from forks, so commenting needs the base repo's context
+  pull_request_target: {} # zizmor: ignore[dangerous-triggers] -- PR code is never checked out or run: its commits are fetched as git objects and only read with `git log` / `git diff --numstat` by the base branch's script
+
+permissions: {}
+
+concurrency:
+  group: branch-diff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  branch-diff:
+    name: Comment branch diff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      # checks out the base branch, so the script that runs is the trusted one
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+
+      - name: Fetch PR commits
+        run: git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      # fails naming any tracked file on the base branch that no rule classifies
+      - name: Check every file is classified
+        run: uv run scripts/branch_diff.py --check
+
+      - name: Post branch diff
+        run: uv run scripts/branch_diff.py --head refs/remotes/pull/head
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -1,16 +1,20 @@
 import asyncio
+import bisect
 import datetime
+import decimal
 import functools
+import hashlib
 import itertools
 import json
 import os
 import random
 import re
 import sys
+import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, assert_type
+from typing import Any, LiteralString, assert_type
 
 # === Type checking helper functions ===
 
@@ -443,6 +447,29 @@ assert_type(y, str | int)
 x2 = os.environ.get('foobar')
 assert_type(x2, str | None)
 
+joined = os.path.join('a', 'b')
+assert_type(joined, LiteralString)
+assert_type(os.path.join(str(1), 'b'), str)
+assert_type(os.path.join(Path('a'), 'b'), str)
+assert_type(os.path.join(b'a', b'b'), bytes)
+assert_type(os.path.splitext(str(1)), tuple[str, str])
+assert_type(os.path.split(Path('a/b')), tuple[str, str])
+assert_type(os.path.exists('a'), bool)
+assert_type(os.path.exists(3), bool)
+assert_type(os.path.getsize(Path('a')), int)
+assert_type(os.path.getmtime('a'), float)
+assert_type(os.path.realpath('a'), str)
+assert_type(os.path.relpath('/a/b', '/a'), LiteralString)
+assert_type(os.path.relpath(Path('/a/b'), '/a'), str)
+assert_type(os.path.commonpath(['/a/b', '/a/c']), LiteralString)
+assert_type(os.path.commonpath([Path('/a/b'), '/a/c']), str)
+assert_type(os.path.commonprefix(['ab', 'ac']), LiteralString)
+assert_type(os.path.commonprefix([Path('ab'), 'ac']), str)
+assert_type(os.path.normpath(b'a//b'), bytes)
+assert_type(os.path.samestat(os.stat('a'), os.stat('b')), bool)
+assert_type(os.path.sep + str(1), str)
+assert_type(os.pathsep, str)
+
 
 # === re module ===
 
@@ -601,6 +628,39 @@ assert_type(tz, datetime.timezone)
 assert_type(json.loads('null'), Any)
 assert_type(json.dumps(None), str)
 
+# === tomllib ===
+assert_type(tomllib.loads('a = 1'), dict[str, Any])
+with Path('pyproject.toml').open('rb') as toml_file:
+    assert_type(tomllib.load(toml_file), dict[str, Any])
+try:
+    tomllib.loads('?')
+except tomllib.TOMLDecodeError as toml_exc:
+    check_str(str(toml_exc))
+
+# === decimal ===
+price = decimal.Decimal('19.99')
+assert_type(price * 3, decimal.Decimal)
+assert_type(price + 1, decimal.Decimal)
+assert_type(1 - price, decimal.Decimal)
+assert_type(price.quantize(decimal.Decimal('0.1'), rounding=decimal.ROUND_HALF_UP), decimal.Decimal)
+assert_type(round(price), int)
+assert_type(round(price, 1), decimal.Decimal)
+assert_type(int(price), int)
+check_float(float(price))
+assert_type(price < 20, bool)
+assert_type(price.as_tuple(), decimal.DecimalTuple)
+assert_type(price.sqrt(), decimal.Decimal)
+assert_type(decimal.getcontext().prec, int)
+assert_type(decimal.getcontext().flags[decimal.Inexact], bool)
+with decimal.localcontext(prec=50) as decimal_ctx:
+    assert_type(decimal_ctx, decimal.Context)
+# `traps` and `flags` take a list of signals as well as a signal dict
+assert_type(decimal.Context(traps=[decimal.InvalidOperation], flags=[]), decimal.Context)
+try:
+    decimal.Decimal('abc')
+except decimal.InvalidOperation as decimal_exc:
+    check_str(str(decimal_exc))
+
 # === iter() / next() ===
 # Element types must survive the `Iterator` protocol: `Iterator.__next__` is
 # decorated `@abstractmethod`, so a stub tree missing `abc` degrades every one
@@ -620,6 +680,32 @@ assert_type(list(iter(lambda: 0, 0)), list[int])
 # this annotation is a `not-subscriptable` error. ty models `partial` calls
 # itself, so the return type is not the stub's to get wrong.
 partial_ann: functools.partial[list[int]] = functools.partial(get_list_int)
+
+
+# The cached wrapper's return type comes from the wrapped function, and
+# `cache_info()` from the stub's `_CacheInfo`.
+@functools.cache
+def cached_double(n: int) -> int:
+    return n * 2
+
+
+assert_type(cached_double(2), int)
+assert_type(cached_double.cache_info().hits, int)
+assert_type(cached_double.cache_info().currsize, int)
+assert_type(cached_double.__wrapped__(2), int)
+
+
+# Keyword arguments and defaults come through the wrapper too, in every
+# decorator form.
+@functools.lru_cache(maxsize=2)
+def cached_repeat(a: int, b: str = 'x') -> str:
+    return b * a
+
+
+assert_type(cached_repeat(2), str)
+assert_type(cached_repeat(2, 'y'), str)
+assert_type(cached_repeat(2, b='y'), str)
+assert_type(functools.lru_cache(get_list_int)(), list[int])
 
 # Loop variables keep their element type for every iterable, not just lists
 for x_list in get_list_int():
@@ -648,6 +734,23 @@ for key_fn, group_fn in itertools.groupby([1, 1, 2], key=lambda i: i > 1):
     assert_type(key_fn, bool)
     assert_type(list(group_fn), list[int])
 
+# === hashlib ===
+assert_type(hashlib.sha256(b'abc').hexdigest(), str)
+assert_type(hashlib.md5(b'abc').digest(), bytes)
+assert_type(hashlib.new('sha1', b'abc').digest_size, int)
+# Monty's stub overloads `new()` by name; upstream typeshed (which basedpyright uses) returns `HASH` for every name
+assert_type(hashlib.new('shake_256', b'abc').hexdigest(8), str)  # pyright: ignore
+assert_type(hashlib.new('blake2b', b'abc', digest_size=16).hexdigest(), str)  # pyright: ignore
+check_int(hashlib.new('blake2s').MAX_KEY_SIZE)  # pyright: ignore
+assert_type(hashlib.shake_128(b'abc').hexdigest(8), str)
+assert_type(hashlib.blake2b(b'abc', digest_size=16, key=b'k').hexdigest(), str)
+assert_type(hashlib.blake2s().copy().name, str)
+check_int(hashlib.blake2b.MAX_DIGEST_SIZE)
+assert_type(hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1000), bytes)
+for algorithm in hashlib.algorithms_guaranteed:
+    check_str(algorithm)
+hashlib.sha256().update(b'more')
+
 # === random ===
 assert_type(random.random(), float)
 assert_type(random.randint(1, 6), int)
@@ -657,3 +760,14 @@ assert_type(random.choices('abc', k=2), list[str])
 assert_type(random.Random(42).uniform(1, 2), float)
 assert_type(random.Random().getrandbits(8), int)
 assert_type(os.urandom(4), bytes)
+
+
+# === bisect ===
+
+assert_type(bisect.bisect_left([1, 2, 3], 2), int)
+assert_type(bisect.bisect_right((1, 2), 2, hi=None), int)
+assert_type(bisect.bisect([1, 2], 2, lo=False), int)
+assert_type(bisect.bisect_left([(1, 'a')], 1, key=lambda row: row[0]), int)
+assert_type(bisect.insort_left([1, 2], 2), None)
+assert_type(bisect.insort_right([(1, 'a')], (2, 'b'), key=lambda row: row[0]), None)
+assert_type(bisect.insort([1, 2], 3), None)

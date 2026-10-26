@@ -265,8 +265,15 @@ function encodeRandomSeed(start: RandomStart): EncodedRandomSeed {
     return Number.isInteger(seed) ? { int: bigintToSignedLeBytes(BigInt(seed)) } : { float: seed }
   }
   if (typeof seed === 'string') return { str: seed }
-  if (seed instanceof Uint8Array) return { bytes: seed }
+  if (seed instanceof Uint8Array) return { bytes: Uint8Array.from(seed) }
   throw new TypeError("randomStart must be 'system', 'call_host' or { seed: number | bigint | string | Uint8Array }")
+}
+
+/** Rejects recycle counts that native integer conversion would truncate or wrap. */
+export function validateMaxCheckouts(value: number | undefined): void {
+  if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 0xffffffff)) {
+    throw new TypeError('maxCheckoutsPerWorker must be an integer between 0 and 4294967295')
+  }
 }
 
 /** Two's-complement little-endian bytes of `n`, as `BigInt::from_signed_bytes_le` reads them. */

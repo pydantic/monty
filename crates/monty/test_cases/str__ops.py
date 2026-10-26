@@ -5,6 +5,63 @@ assert 'test' + '' == 'test'
 assert '' + '' == ''
 assert 'a' + 'b' + 'c' + 'd' == 'abcd'
 
+# === Interned and computed operands ===
+# Joining forces runtime allocation even when the text matches a literal.
+for left in ['café', ''.join(['ca', 'fé'])]:
+    for right in ['日本', ''.join(['日', '本'])]:
+        assert left + right == 'café日本'
+    assert left + left == 'cafécafé'
+    assert left + '' == 'café'
+    assert '' + left == 'café'
+    assert left[0] == 'c'
+    assert left[-1] == 'é'
+    assert left[True] == 'a'
+    assert left[1:3] == 'af'
+    assert left[::-1] == 'éfac'
+    assert left[::2] == 'cf'
+    assert left[20:] == ''
+    assert len(left) == 4
+    assert bool(left) is True
+    assert bool(left[20:]) is False
+    assert repr(left) == "'café'"
+    assert repr([left, left]) == "['café', 'café']"
+    assert '' in left
+    assert left in left
+    assert '日本' not in left
+    for probe in ['fé', ''.join(['f', 'é'])]:
+        assert probe in left
+    for count, expected in [(-2, ''), (0, ''), (False, ''), (1, 'café'), (True, 'café'), (2, 'cafécafé')]:
+        assert left * count == expected
+        assert count * left == expected
+        repeated = left
+        repeated *= count
+        assert repeated == expected
+    try:
+        1 in left
+        assert False, 'expected a non-string probe to raise'
+    except TypeError as exc:
+        assert str(exc) == "'in <string>' requires string as left operand, not int"
+    try:
+        left * 2**100
+        assert False, 'expected an oversized repetition count to raise'
+    except OverflowError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    try:
+        2**100 * left
+        assert False, 'expected an oversized reflected repetition count to raise'
+    except OverflowError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    try:
+        left[4]
+        assert False, 'expected string index out of range'
+    except IndexError as exc:
+        assert str(exc) == 'string index out of range'
+    try:
+        left[::0]
+        assert False, 'expected a zero slice step to raise'
+    except ValueError as exc:
+        assert str(exc) == 'slice step cannot be zero'
+
 # === Augmented assignment (+=) ===
 s = 'hello'
 s += ' world'
@@ -141,6 +198,47 @@ assert s[i] == 'b'
 s = 'abc'
 assert s[False] == 'a'
 assert s[True] == 'b'
+
+# === Computed heap strings: ASCII and non-ASCII ===
+# ASCII heap strings index by byte; non-ASCII ones must still count code points
+a = ''.join(['ab', 'cd', 'ef'])
+assert len(a) == 6
+assert a[0] == 'a'
+assert a[5] == 'f'
+assert a[-6] == 'a'
+assert a[1:4] == 'bcd'
+assert a[::2] == 'ace'
+assert a[::-1] == 'fedcba'
+assert a[4:1:-2] == 'ec'
+assert a[-100:100] == 'abcdef'
+assert a[5:2] == ''
+assert a.find('cd', 1) == 2
+assert a.find('cd', 3) == -1
+assert a.find('ef', 1, 6) == 4
+assert a.rfind('b', -10, 100) == 1
+assert a.index('e', 2) == 4
+assert a.count('c', 1, 3) == 1
+
+u = ''.join(['a\xe9', '日b', '🎉c'])
+assert len(u) == 6
+assert u[1] == '\xe9'
+assert u[2] == '日'
+assert u[4] == '🎉'
+assert u[-1] == 'c'
+assert u[1:5] == '\xe9日b🎉'
+assert u[::-1] == 'c🎉b日\xe9a'
+assert u[::2] == 'a日🎉'
+assert u.find('b', 1) == 3
+assert u.find('c', 2, 6) == 5
+assert u.rfind('\xe9', 0, 2) == 1
+assert u.index('🎉', 2) == 4
+
+# The same text is ASCII or not depending on the character appended
+base = 'x' * 50
+assert len(base + 'y') == 51
+assert len(base + '\xe9') == 51
+assert (base + '\xe9')[50] == '\xe9'
+assert (base + '\xe9')[-2] == 'x'
 
 # === Sorting and comparisons ===
 assert 'a' < 'b'

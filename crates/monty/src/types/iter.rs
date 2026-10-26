@@ -1,52 +1,47 @@
 //! Shared helpers for Python's iteration protocol.
 //!
 //! Concrete iterator state lives beside its iterable type. This module only
-//! implements the `iter`/`next` builtins and common collection machinery.
+//! provides suspendable iterator validation and synchronous collection machinery.
 
 use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
-    args::{ArgValues, FromArgs},
-    bytecode::VM,
+    args::ArgValues,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData},
+    heap::{DropGuard, DropWithContext, HeapReadOutput},
     resource_checks::check_estimated_size,
-    types::{PyTrait, callable_iterator::CallableIterator},
+    types::PyTrait,
     value::{VALUE_SIZE, Value, ValueRead},
 };
 
-/// Creates an iterator from the `iter()` constructor call.
-///
-/// The one-argument form enters the ordinary iteration protocol; the
-/// two-argument form creates a callable iterator which stops at its sentinel.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let IterArgs { object, sentinel } = IterArgs::from_args(args, vm)?;
+/// Validates a user `__iter__` result after any suspension in the method.
+pub(crate) const ITER_SOURCE: &str = r"
+def __monty_iter(object, get_iter, validate):
+    return validate(get_iter(object))
+";
 
-    if let Some(sentinel) = sentinel {
-        if object.is_callable(vm.heap) {
-            let iter = CallableIterator::new(object, sentinel);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::CallableIterator(iter))))
-        } else {
-            object.drop_with(vm);
-            sentinel.drop_with(vm);
-            Err(ExcType::type_error("iter(v, w): v must be callable"))
-        }
-    } else {
-        let iterator = object.py_iter(vm);
-        object.drop_with(vm);
-        iterator
-    }
+/// Invokes the user protocol without re-entering the instance's validation frame.
+pub(crate) fn call_get_iter(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let object = args.get_one_arg("get_iter", vm.heap)?;
+    defer_drop!(object, vm);
+    let Some(HeapReadOutput::Instance(instance)) = object.read_heap(vm) else {
+        unreachable!("only instances need frozen iterator validation")
+    };
+    instance.call_iter(vm)
 }
 
-/// Argument shape for `iter(object, /)` and `iter(object, sentinel, /)`.
-#[derive(FromArgs)]
-#[from_args(name = "iter", style = unpack)]
-struct IterArgs {
-    #[from_args(pos_only)]
-    object: Value,
-    #[from_args(pos_only, default)]
-    sentinel: Option<Value>,
+/// Returns an owned iterator unchanged, rejecting invalid user `__iter__` results.
+pub(crate) fn call_validate_iterator(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+    let iterator = args.get_one_arg("validate_iterator", vm.heap)?;
+    if iterator.py_is_iterator(vm) {
+        Ok(iterator)
+    } else {
+        let error = ExcType::type_error_iter_returned_non_iterator(&iterator.py_type_name(vm));
+        iterator.drop_with(vm);
+        Err(error)
+    }
 }
 
 /// Largest iterator hint used to preallocate a native collection.
@@ -129,7 +124,7 @@ impl<'h> CollectIter<'h> for ValueRead<'h, '_> {
 
 /// Collects every item yielded by an iterable into a `Vec`.
 pub fn collect_iterable(value: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    let iterator = value.py_iter(vm)?;
+    let iterator = value.py_iter(vm)?.require_synchronous(vm)?;
     collect_python_iterator(iterator, vm)
 }
 
@@ -138,12 +133,12 @@ pub(crate) fn collect_owned_iterable<'h, T>(value: Value, vm: &mut VM<'h>) -> Ru
 where
     T: Default + Extend<Value> + DropWithContext<VM<'h>>,
 {
-    let iterator = value.into_py_iter(vm)?;
+    let iterator = value.into_py_iter(vm)?.require_synchronous(vm)?;
     collect_python_iterator(iterator, vm)
 }
 
 /// Drains an owned Python iterator with incremental allocation checks.
-fn collect_python_iterator<'h, T>(iterator: Value, vm: &mut VM<'h>) -> RunResult<T>
+pub(crate) fn collect_python_iterator<'h, T>(iterator: Value, vm: &mut VM<'h>) -> RunResult<T>
 where
     T: Default + Extend<Value> + DropWithContext<VM<'h>>,
 {
@@ -169,7 +164,7 @@ where
 
 /// Pulls at most `limit` items from an iterable, stopping early.
 pub fn collect_iterable_bounded(value: &Value, limit: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    let iterator = value.py_iter(vm)?;
+    let iterator = value.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
     let mut items_guard = DropGuard::new(Vec::new(), vm);
@@ -181,21 +176,4 @@ pub fn collect_iterable_bounded(value: &Value, limit: usize, vm: &mut VM<'_>) ->
         }
     }
     Ok(items_guard.into_inner())
-}
-
-/// Implements Python's `next(iterator[, default])` semantics.
-pub fn iterator_next(iter_value: &Value, default: Option<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
-    let mut default_guard = DropGuard::new(default, vm);
-    let vm = default_guard.ctx();
-
-    let Value::Ref(iter_id) = iter_value else {
-        return Err(ExcType::type_error_not_iterator(&iter_value.py_type_name(vm)));
-    };
-    match vm.heap.read(*iter_id).py_next(vm)? {
-        Some(item) => Ok(item),
-        None => match default_guard.into_inner() {
-            Some(default) => Ok(default),
-            None => Err(ExcType::stop_iteration()),
-        },
-    }
 }

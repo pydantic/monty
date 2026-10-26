@@ -158,14 +158,25 @@ test('type check stubs invalid', async () => {
 })
 
 test('failing snippet does not execute and session survives', async () => {
-  const session = await pool().checkout({ typeCheck: true })
-  try {
+  // Repeated attempts cover WASM's millisecond-granular clock: rejected source must not stay cached.
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await using session = await pool().checkout({ typeCheck: true })
     await session.feedRun('x = 1')
-    await t.throwsAsync(() => session.feedRun('x = 2\n"hello" + 1'), { instanceOf: MontyTypingError })
-    // The rejected snippet did not run: x is unchanged.
+    const error = await t.throwsAsync(() => session.feedRun('x = 2\n"hello" + 1'), { instanceOf: MontyTypingError })
+    t.is(
+      error.message,
+      'TypeError: error[invalid-assignment]: Object of type `Literal[2]` is not assignable to `Literal[1]`',
+    )
     t.is(await session.feedRun('x'), 1)
-  } finally {
-    await session.close()
+  }
+})
+
+test('repeated failing feeds render fresh source each time', async () => {
+  await using session = await pool().checkout({ typeCheck: true })
+  await session.feedRun('x = 1')
+  for (let attempt = 0; attempt < 15; attempt++) {
+    const error = await t.throwsAsync(() => session.feedRun('"hello" + 1'), { instanceOf: MontyTypingError })
+    t.is(error.display(), unsupportedOperatorDiagnostics('main.py'))
   }
 })
 

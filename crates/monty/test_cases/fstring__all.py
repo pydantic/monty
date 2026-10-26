@@ -232,7 +232,37 @@ assert f'{0.5:.{10**6}%}' == '50.' + '0' * 10**6 + '%'
 # underlying format call still uses the full precision internally.
 assert f'{1.5:.{10**6}g}' == '1.5'
 assert f'{1e-10:.{10**6}g}' == '1.0000000000000000364321973154977415791655470655996396089904010295867919921875e-10'
-assert f'{0.0001:.{2**31 - 1}g}' == ('0.000100000000000000004792173602385929598312941379845142364501953125')
+assert f'{0.0001:.{2**31 - 1025}g}' == ('0.000100000000000000004792173602385929598312941379845142364501953125')
+# CPython's float-to-string conversion caps the precision at INT_MAX - 1024
+# before looking at the value, so inf/nan, ints formatted as floats and complex
+# values all hit it; a str precision is a plain truncation and is unbounded.
+_p = 2**31 - 1024
+for _value, _spec in (
+    (0.0001, f'.{_p}g'),
+    (1.5, f'.{_p}G'),
+    (1.5, f'.{_p}n'),
+    (1.5, f'.{_p}'),
+    (float('inf'), f'.{_p}f'),
+    (float('nan'), f'.{_p}e'),
+    (float('-inf'), f'.{_p}%'),
+    (float('inf'), f'#.{_p}g'),
+    (float('inf'), f'.{_p}_f'),
+    (1, f'.{_p}g'),
+    (True, f'.{_p}G'),
+    (10**30, f'.{_p}g'),
+    (1 + 2j, f'.{_p}g'),
+):
+    try:
+        format(_value, _spec)
+        assert False, f'expected precision too big for {_value!r} with {_spec!r}'
+    except ValueError as _e:
+        assert str(_e) == 'precision too big', f'{_spec}: {_e}'
+try:
+    f'{1.5:.{2**31}g}'
+    assert False, 'expected precision too big'
+except ValueError as _e:
+    assert str(_e) == 'precision too big'
+assert f'{"x":.{2**31 - 1}}' == 'x'
 
 # === Large static width/precision ===
 # Static format specs are parsed at parse time and packed into a compact
@@ -704,3 +734,19 @@ try:
     assert False, 'expected #s on int to fail'
 except ValueError as _e:
     assert str(_e) == "Unknown format code 's' for object of type 'int'", f'#s int: {_e}'
+
+# === Float f/% results around the 64-byte stack buffer ===
+# short results format on the stack; longer ones, `#`, nan and inf take the String path
+assert f'{1e50:.20f}' == '100000000000000007629769841091887003294964970946560.00000000000000000000'
+assert f'{-1e50:,.20f}' == '-100,000,000,000,000,007,629,769,841,091,887,003,294,964,970,946,560.00000000000000000000'
+assert f'{1e40:.2%}' == '1000000000000000044885712678075916785549312.00%'
+assert f'{1.5:.62f}' == '1.50000000000000000000000000000000000000000000000000000000000000'
+assert f'{1.5:.63f}' == '1.500000000000000000000000000000000000000000000000000000000000000'
+assert f'{0.5:.60%}' == '50.000000000000000000000000000000000000000000000000000000000000%'
+assert f'{0.5:.61%}' == '50.0000000000000000000000000000000000000000000000000000000000000%'
+assert f'{12.5:>20.2f}' == '               12.50'
+assert f'{-2.5:=+10.1%}' == '-   250.0%'
+assert f'{float("nan"):08.2f}' == '00000nan'
+assert f'{float("-inf"):.1%}' == '-inf%'
+assert f'{float("-inf"):.100f}' == '-inf'
+assert len(f'{1e308:.2f}') == 312

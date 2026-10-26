@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use monty_fs::{MountMode, MountRoot};
+use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, MountMode, MountRoot};
 use monty_pool::{MountSpec, MountSpecMode};
 use monty_proto::python::exc_monty_to_py;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
@@ -20,7 +20,7 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
 /// Passing one instance to multiple feeds reuses only its configuration;
 /// `'overlay'` writes live in each feed's parent-side mount table.
 /// Retained overlay data and filesystem results share a configurable memory
-/// budget, which defaults to 100 MB.
+/// budget, which defaults to `monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`.
 ///
 /// Mounts passed to one feed must have distinct virtual paths and cover
 /// disjoint host directories: overlap (the same directory, or one inside the
@@ -79,10 +79,9 @@ impl PyMountDir {
         host_path,
         virtual_path,
         mode = "overlay",
-        // must stay a literal mirroring monty_fs::DEFAULT_MEMORY_USAGE_LIMIT: a
-        // const default renders as `...` in the text signature, breaking stubtest
         write_bytes_limit = None,
-        memory_usage_limit = 100_000_000,
+        // renders as `...` in the text signature, as the stub spells it
+        memory_usage_limit = DEFAULT_MEMORY_USAGE_LIMIT,
     ))]
     #[expect(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf for conversion from Python str/Path
     fn new(

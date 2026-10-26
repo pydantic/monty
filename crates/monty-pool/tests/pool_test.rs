@@ -23,8 +23,6 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
-// only the unix-gated exit-code test snapshots a message
-#[cfg(unix)]
 use insta::assert_snapshot;
 use monty_pool::{
     MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
@@ -33,9 +31,12 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
+#[cfg(unix)]
+use monty_types::SourceRange;
 use monty_types::{
-    CallArgs, DateTimeSource, ExcType, MontyException, MontyObject, NameLookupResult, OsPolicy, PrintStream,
-    RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
+    CallArgs, DateTimeSource, ExcType, IMPORT_CALL, IMPORT_STUBS_CALL, MontyException, MontyObject, MontyUuid,
+    NameLookupResult, OsPolicy, PrintStream, RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig,
+    TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
@@ -232,6 +233,7 @@ async fn feed_and_finish_reuses_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let first_pid = session.pid().unwrap();
+    let first_id = session.worker_id().unwrap();
 
     let event = session
         .feed("x = 40\nx + 2", vec![], vec![], false, &mut no_print)
@@ -252,6 +254,7 @@ async fn feed_and_finish_reuses_the_worker() {
     // at NameLookup and resolving it as undefined raises NameError
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_eq!(session.pid().unwrap(), first_pid);
+    assert_eq!(session.worker_id(), Some(first_id));
     let event = session.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
     assert!(matches!(event, TurnEvent::NameLookup { name, .. } if name == "x"));
     let err = session
@@ -2116,6 +2119,81 @@ async fn loaded_session_keeps_its_duration_budget() {
     restored.finish().await.unwrap();
 }
 
+/// A real subprocess cannot import a larger snapshot budget into a stricter checkout.
+#[tokio::test]
+async fn restored_session_cannot_raise_the_destination_memory_budget() {
+    let pool = Pool::new(config()).await.unwrap();
+    let destination = ReplConfig {
+        limits: Some(ResourceLimits::default().max_memory(10 * 1024 * 1024)),
+        ..ReplConfig::default()
+    };
+    let allocation = "large = b'a' * (12 * 1024 * 1024)\nlen(large)";
+    let mut fresh = pool.checkout(&destination).await.unwrap();
+    assert_eq!(
+        expect_complete(fresh.feed("6 * 7", vec![], vec![], false, &mut no_print).await.unwrap()),
+        MontyObject::int(42)
+    );
+    let error = fresh
+        .feed(allocation, vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PoolError::Runtime(ref exc) if exc.exc_type() == ExcType::MemoryError));
+    drop(fresh);
+    for suspended in [false, true] {
+        let mut source = pool
+            .checkout(&ReplConfig {
+                limits: Some(ResourceLimits::default().max_memory(64 * 1024 * 1024)),
+                ..ReplConfig::default()
+            })
+            .await
+            .unwrap();
+        source
+            .feed(
+                if suspended { "x = 42\nfetch('x')" } else { "x = 42" },
+                vec![],
+                vec![],
+                false,
+                &mut no_print,
+            )
+            .await
+            .unwrap();
+        let state = source.dump().await.unwrap();
+        drop(source);
+        let mut restored = pool.checkout(&destination).await.unwrap();
+        let (event, _) = restored.restore(state, vec![], &mut no_print).await.unwrap();
+        if suspended {
+            assert!(matches!(event, Some(TurnEvent::FunctionCall { .. })));
+            restored
+                .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+                .await
+                .unwrap();
+        } else {
+            assert!(event.is_none());
+        }
+        assert_eq!(
+            expect_complete(restored.feed("x", vec![], vec![], false, &mut no_print).await.unwrap()),
+            MontyObject::int(42)
+        );
+        let error = restored
+            .feed(allocation, vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PoolError::Runtime(ref exc) if exc.exc_type() == ExcType::MemoryError));
+        drop(restored);
+    }
+    let mut sibling = pool.checkout(&destination).await.unwrap();
+    assert_eq!(
+        expect_complete(
+            sibling
+                .feed("6 * 7", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap()
+        ),
+        MontyObject::int(42)
+    );
+    sibling.finish().await.unwrap();
+}
+
 // =============================================================================
 // Lifecycle
 // =============================================================================
@@ -2179,6 +2257,7 @@ async fn workers_are_recycled_after_max_checkouts() {
 
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let first_pid = session.pid().unwrap();
+    let first_id = session.worker_id().unwrap();
     session.finish().await.unwrap();
     // retired, not pooled: the idle worker is a background replacement
     wait_for_idle(&pool, 1).await;
@@ -2186,6 +2265,7 @@ async fn workers_are_recycled_after_max_checkouts() {
 
     let session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_ne!(session.pid().unwrap(), first_pid);
+    assert_ne!(session.worker_id().unwrap(), first_id);
     session.finish().await.unwrap();
 }
 
@@ -2405,9 +2485,18 @@ async fn type_check_state_is_scrubbed_between_checkouts_on_the_same_worker() {
         "worker was not reused — test is vacuous"
     );
 
-    let mut probe = async |code: &str| match session.feed(code, vec![], vec![], false, &mut no_print).await {
-        Err(PoolError::Typing(diagnostics)) => diagnostics,
-        other => panic!("expected a typing rejection for {code:?}, got {other:?}"),
+    let mut probe = async |code: &str| {
+        let fed = match session.feed(code, vec![], vec![], false, &mut no_print).await {
+            // a host module's stubs are asked for first; this host offers none
+            Ok(TurnEvent::OsCall { function_name, .. }) if function_name == IMPORT_STUBS_CALL => {
+                session.resume(ResumeValue::NotHandled, &mut no_print).await
+            }
+            other => other,
+        };
+        match fed {
+            Err(PoolError::Typing(diagnostics)) => diagnostics,
+            other => panic!("expected a typing rejection for {code:?}, got {other:?}"),
+        }
     };
     assert_eq!(
         probe("from a import SECRET").await,
@@ -2758,6 +2847,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
         ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
+            position: Some(position()),
         }))
     };
     // `Ok` answers Configure, then the honest suspension and the rewound one.
@@ -2816,6 +2906,40 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
     assert_eq!(timeout, grace);
 }
 
+/// A child that predates the position field announces suspensions without
+/// it; the parent reports an unknown range rather than rejecting them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_suspension_without_a_position_reads_as_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&child_event(pb::child_event::Kind::NameLookup(
+        pb::NameLookup {
+            name: "x".to_owned(),
+            object_id: None,
+            position: None,
+        },
+    ))));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let event = checkout.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::NameLookup { name, position, .. } = event else {
+        panic!("expected a name lookup, got {event:?}");
+    };
+    assert_eq!(name, "x");
+    assert_eq!(position, SourceRange::unknown());
+}
+
 /// A second raw `Feed` restarts the parent's feed clock, as `Checkout::feed`
 /// does — the previous feed's total must not shorten the new feed's backstop.
 ///
@@ -2836,6 +2960,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
         ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
+            position: Some(position()),
         }))
     }));
     let replies_path = dir.path().join("replies.bin");
@@ -2879,6 +3004,54 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     assert_eq!(timeout, budget + grace);
 }
 
+/// A `Load` reply claiming a looser feed budget than the checkout's cannot
+/// loosen the parent's feed backstop: the configured budget stays the ceiling.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_load_reply_cannot_loosen_the_feed_backstop() {
+    let dir = tempfile::tempdir().unwrap();
+    let budget = Duration::from_millis(300);
+    let grace = Duration::from_millis(100);
+    // `Ok` answers Configure, then the Load, claiming an hour's feed budget.
+    // The feed after it goes unanswered.
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&pb::ChildEvent {
+        max_feed_duration_micros: Some(3_600_000_000),
+        ..child_event(pb::child_event::Kind::Ok(pb::Ok {}))
+    }));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+
+    let mut config = PoolConfig::subprocess(&fake);
+    config.feed_duration_limit_grace = Some(grace);
+    config.request_timeout = None;
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(budget)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("the stand-in answers Configure with Ok");
+    let (event, _) = checkout.restore(vec![0], vec![], &mut no_print).await.unwrap();
+    assert!(event.is_none());
+
+    // Bounded so a regression fails here rather than waiting out the stand-in.
+    let outcome = timeout(
+        Duration::from_secs(5),
+        checkout.feed("x", vec![], vec![], false, &mut no_print),
+    )
+    .await;
+    let Ok(Err(PoolError::Timeout { timeout })) = outcome else {
+        panic!("the configured feed budget must backstop the restored feed, got {outcome:?}");
+    };
+    assert_eq!(timeout, budget + grace);
+}
+
 /// With the grace turned off the parent does not backstop that budget at all,
 /// so the sandbox's own `TimeoutError` is what ends the feed — the worker must
 /// still come back alive.
@@ -2905,4 +3078,209 @@ async fn a_disabled_grace_leaves_the_sandbox_limit_in_charge() {
     assert_eq!(exc.exc_type().to_string(), "TimeoutError");
     session.finish().await.unwrap();
     assert_eq!(pool.idle_workers(), 1);
+}
+
+/// The suspension position every hand-built event carries; only the
+/// unix-gated forged-frame tests build events.
+#[cfg(unix)]
+fn position() -> pb::SourceRange {
+    pb::SourceRange {
+        filename: "main.py".to_owned(),
+        start: 0,
+        end: 1,
+    }
+}
+
+// ---- host-provided modules ---------------------------------------------------
+
+/// The host module an import is answered with, under a fixed id.
+fn host_module(name: &str, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
+    MontyObject::module(
+        name,
+        MontyUuid::from_u128(2),
+        attrs.into_iter().map(|(k, v)| (MontyObject::string(k), v)),
+    )
+}
+
+fn expect_import(event: TurnEvent) -> String {
+    let TurnEvent::OsCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected the import to suspend, got {event:?}");
+    };
+    assert_eq!(function_name, IMPORT_CALL);
+    let module: Vec<_> = args.args().map(|arg| arg.to_owned()).collect();
+    let [module] = module.as_slice() else {
+        panic!("expected one module name, got {module:?}");
+    };
+    module.as_ref().as_str().expect("a module name").to_owned()
+}
+
+fn expect_import_stubs(event: TurnEvent) -> Vec<String> {
+    let TurnEvent::OsCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected the stubs ask, got {event:?}");
+    };
+    assert_eq!(function_name, IMPORT_STUBS_CALL);
+    let names: Vec<_> = args.args().map(|arg| arg.to_owned()).collect();
+    let [names] = names.as_slice() else {
+        panic!("expected one list of names, got {names:?}");
+    };
+    names
+        .as_ref()
+        .items()
+        .expect("a list")
+        .iter()
+        .map(|name| name.as_str().expect("a module name").to_owned())
+        .collect()
+}
+
+fn tools_stubs(source: &str) -> ResumeValue {
+    ResumeValue::Return(MontyObject::dict([(
+        MontyObject::string("tools"),
+        MontyObject::string(source),
+    )]))
+}
+
+/// Functions on the returned module dispatch as ordinary host functions.
+#[tokio::test]
+async fn an_import_is_answered_by_the_host() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed("import tools\ntools.add(1, 2)", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_import(event), "tools");
+    let tools = host_module("tools", vec![("add", MontyObject::function("add", None))]);
+    let event = session.resume(ResumeValue::Return(tools), &mut no_print).await.unwrap();
+    let TurnEvent::FunctionCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected the tool call, got {event:?}");
+    };
+    assert_eq!(function_name, "add");
+    let summands: Vec<_> = args.args().map(|arg| arg.to_owned()).collect();
+    assert_eq!(summands, vec![MontyObject::int(1), MontyObject::int(2)]);
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::int(3)), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::int(3));
+
+    let event = session
+        .feed("import nope", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_import(event), "nope");
+    let err = session.resume(ResumeValue::NotFound, &mut no_print).await.unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_snapshot!(exc.to_string(), @r#"
+    Traceback (most recent call last):
+      File "<python-input-1>", line 1, in <module>
+        import nope
+    ModuleNotFoundError: No module named 'nope'
+    "#);
+    session.finish().await.unwrap();
+}
+
+/// Host stubs are requested once per module per session, before type checking.
+#[tokio::test]
+async fn module_stubs_type_check_imports() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&type_checked()).await.unwrap();
+    let event = session
+        .feed(
+            "from tools import add\nadd('x', 2)",
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
+    let err = session
+        .resume(tools_stubs("def add(a: int, b: int) -> int: ...\n"), &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Typing(diagnostics) = err else {
+        panic!("expected Typing, got {err:?}");
+    };
+    assert_snapshot!(diagnostics, @r#"main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
+    // an import in one feed is still bound for the next feed's check
+    let event = session
+        .feed("import math as m", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::none());
+    let err = session
+        .feed("m.sqrt('4')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Typing(_)), "expected Typing, got {err:?}");
+    // the stub is kept: the next feed importing the module does not ask again
+    let event = session
+        .feed("import tools", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_import(event), "tools");
+    session.finish().await.unwrap();
+}
+
+fn type_checked() -> ReplConfig {
+    ReplConfig {
+        type_check: true,
+        type_check_config: TypeCheckingConfig {
+            format: TypeCheckingFormat::Concise,
+            color: false,
+        },
+        ..ReplConfig::default()
+    }
+}
+
+/// Retained stubs would expose one tenant's module types to the next session.
+#[tokio::test]
+async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&type_checked()).await.unwrap();
+    let first_id = session.worker_id().unwrap();
+    let event = session
+        .feed("import tools", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
+    let event = session
+        .resume(tools_stubs("def add(a: int, b: int) -> int: ...\n"), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_import(event), "tools");
+    let tools = host_module("tools", vec![]);
+    let event = session.resume(ResumeValue::Return(tools), &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::none());
+    session.finish().await.unwrap();
+
+    // the same worker, a session answering with no stubs: the import must not resolve
+    let mut session = pool.checkout(&type_checked()).await.unwrap();
+    assert_eq!(session.worker_id(), Some(first_id));
+    let event = session
+        .feed("import tools", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
+    let err = session
+        .resume(ResumeValue::NotHandled, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Typing(diagnostics) = err else {
+        panic!("expected Typing, got {err:?}");
+    };
+    assert_snapshot!(diagnostics, @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
+    session.finish().await.unwrap();
 }

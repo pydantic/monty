@@ -161,6 +161,8 @@ def test_standard_components_receive_session_tree():
     assert session.attributes['script_name'] == snapshot('calculation.py')
     assert run.attributes is not None
     assert run.attributes['code'] == snapshot("print('hello')\n1 + 2")
+    assert run.attributes['sandbox.execution.code.attribute'] == snapshot('code')
+    assert run.attributes['sandbox.execution.language'] == snapshot('python')
     assert run.attributes['output'] == snapshot(3)
     assert isinstance(run.start_time, int)
     assert isinstance(run.end_time, int)
@@ -171,15 +173,15 @@ def test_standard_components_receive_session_tree():
     assert run.context is not None
     assert log.log_record.trace_id == run.context.trace_id
     assert log.log_record.span_id == run.context.span_id
-    assert log.log_record.attributes == snapshot(
+    # `code.*` is where in the host's source the record is emitted; it moves with every edit
+    assert log.log_record.attributes is not None
+    attributes = {k: v for k, v in log.log_record.attributes.items() if not k.startswith('code.')}
+    assert attributes == snapshot(
         {
             'stream': 'stdout',
             'text': 'hello\n',
             'logfire.json_schema': '{"type":"object","properties":{"stream":{},"text":{},"length_limit_exceeded":{}}}',
             'thread.id': 1,
-            'code.file.path': 'crates/monty-pool/src/telemetry/tracing.rs',
-            'code.line.number': 289,
-            'code.module.name': 'monty_pool::telemetry::tracing',
             'logfire.null_args': ('length_limit_exceeded',),
         }
     )
@@ -321,7 +323,8 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
             raise ValueError('failed')
         return 42
 
-    code = 'try:\n    result = await fetch()\nexcept ValueError:\n    result = 0\nresult'
+    # the `é` makes byte offsets differ from character offsets
+    code = '# é\ntry:\n    result = await fetch()\nexcept ValueError:\n    result = 0\nresult'
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
             assert await session.feed_run(code, external_lookup={'fetch': fetch}) == (0 if fail else 42)
@@ -332,6 +335,13 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
     assert call.attributes is not None
     assert call.attributes['function_name'] == 'fetch'
     assert call.attributes['return_value'] == ('raise ValueError: failed' if fail else 42)
+    assert {k: v for k, v in call.attributes.items() if k.startswith('sandbox.')} == snapshot(
+        {
+            'sandbox.code.file.path': '<python-input-0>',
+            'sandbox.code.offset.start': 29,
+            'sandbox.code.offset.end': 36,
+        }
+    )
     assert call.parent is not None and run.context is not None
     assert call.parent.span_id == run.context.span_id
     assert _log_exporter.get_finished_logs() == ()

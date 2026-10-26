@@ -381,6 +381,11 @@ assert base64.a85decode(b'BOu!rD]j7BEbo7') == b'hello world'
 assert base64.a85decode('BOu!rD]j7BEbo7') == b'hello world'
 assert base64.a85decode(b'z') == b'\x00\x00\x00\x00'
 assert base64.a85decode(b'y', foldspaces=True) == b'    '
+# a short form stands for a whole word, so a run of them decodes to four
+# times its own length
+assert base64.a85decode(b'zzz') == b'\x00' * 12
+assert base64.a85decode(b'yzy', foldspaces=True) == b'    \x00\x00\x00\x00    '
+assert base64.a85decode(b'z@:E_Wz') == b'\x00\x00\x00\x00abcd\x00\x00\x00\x00'
 assert base64.a85decode(b='!!!!!') == b'\x00\x00\x00\x00'
 assert base64.a85decode(base64.a85encode(every_byte)) == every_byte
 

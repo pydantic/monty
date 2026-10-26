@@ -26,10 +26,9 @@ see [classes](classes.md#crossing-the-host-boundary-pydantic_monty-pydanticmonty
 Builtin functions and type objects outside the data-type allowlist never resolve to the host's own objects.
 Python receives a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy] with `kind` and `name`,
 JavaScript a `{ __monty_type__, value }` marker.
-The Python proxy re-enters the sandbox as the builtin it names, as does a JavaScript `Type` marker;
-a JavaScript `BuiltinFunction` marker passed back becomes its repr string.
-The allowlist is `type`, `object`, `bool`, `int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
-`frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes,
+The Python proxy and both JavaScript markers re-enter the sandbox as the builtin they name.
+The allowlist is `type`, `object`, `bool`, `int`, `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
+`frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes, `decimal.Decimal`,
 `collections.deque`, `re.Pattern`, `re.Match`, `types.GenericAlias`, `types.UnionType`,
 `pathlib.PurePosixPath` and the exception classes.
 So `open`, `functools.partial` and `type(iter([]))` reach a Python host as proxies, while `int` and `datetime.date`
@@ -56,6 +55,16 @@ Non-callable values resolved through `external_lookup` are cached in the sandbox
 Later host-side changes to that entry are not observed by reads of the cached value.
 Only undefined names trigger lookup: an entry named `len`, for example, does not override the builtin.
 Use `inputs` to bind such a name explicitly.
+
+## `decimal.Decimal`
+
+A `Decimal` crosses as its exact string form, so the value, its exponent (`1.20` stays `1.20`) and NaN payloads
+survive; the string always uses `E`, whatever the sandbox context's `capitals` is.
+A host `Decimal` subclass arrives in the sandbox, and comes back, as plain `decimal.Decimal`.
+A host `Decimal` whose coefficient exceeds 4300 digits is rejected as an invalid input
+(see [decimal.md](decimal.md)).
+A trapped decimal signal reaching a Python host is the real `decimal` exception class, but its `args` hold the
+message string rather than CPython's list of condition classes.
 
 ## Conversion failures
 

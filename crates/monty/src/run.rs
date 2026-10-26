@@ -601,7 +601,7 @@ impl Executor {
         let mut heap = Heap::new(self.namespace_size(), resource_tracker);
         let globals = self.empty_globals();
 
-        HeapReader::with(&mut heap, &mut &mut *self, |reader, executor| {
+        HeapReader::with(&mut heap, self, |reader, executor| {
             // Create VM, populate inputs, and run
             let mut vm = VM::new(
                 globals,
@@ -736,16 +736,22 @@ impl Program {
                     name_load_ip,
                     ..
                 }) => {
-                    // In non-iterative execution, an ExtFunction from LoadGlobalCallable
-                    // means the name was undefined — raise NameError.
-                    // Restore the frame IP to the load instruction so the traceback
-                    // points to the name reference, not the call expression.
+                    // In non-iterative execution no host answers, so the name was
+                    // undefined. Restore the frame IP to the load instruction so the
+                    // traceback points to the name reference, not the call expression.
                     if let Some(load_ip) = name_load_ip {
                         vm.set_instruction_ip(load_ip);
                     }
-                    let err = ExcType::name_error(function_name.as_str(vm.interns));
+                    let err = ExcType::name_error(function_name.as_str(vm.interns)).into();
                     args.drop_with(vm);
-                    frame_exit_result = vm.resume_with_exception(err.into());
+                    frame_exit_result = vm.resume_with_exception(err);
+                }
+                // An import nobody serves is a missing module.
+                Ok(FrameExit::OsCall {
+                    function_call: call @ OsFunctionCall::Import(_),
+                    ..
+                }) => {
+                    frame_exit_result = resume_with_result(vm, ExtFunctionResult::Error(call.on_no_handler()), None);
                 }
                 // Standard execution waits inline, excluding sleep from execution time.
                 Ok(FrameExit::OsCall {
@@ -796,13 +802,11 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     };
     let error: RunError = match &exit {
         FrameExit::Return(_) => unreachable!("returns are handled above"),
-        FrameExit::ExternalCall { function_name, .. } => {
-            let function_name = function_name.as_str(vm.interns);
-            ExcType::not_implemented(format!(
-                "External function '{function_name}' not implemented with standard execution"
-            ))
-            .into()
-        }
+        FrameExit::ExternalCall { function_name, .. } => ExcType::not_implemented(format!(
+            "External function '{}' not implemented with standard execution",
+            function_name.as_str(vm.interns)
+        ))
+        .into(),
         FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
             "OS function '{}' not implemented with standard execution",
             function_call.name()

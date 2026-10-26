@@ -14,8 +14,9 @@ import {
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeOsPolicy,
+  validateMaxCheckouts,
 } from './options.js'
-import { MontySession } from './session.js'
+import { enterSession, type ExternalModules, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
 /** Options for [`Monty`]. */
@@ -59,7 +60,8 @@ export interface MontyOptions {
    * `null` disables).
    */
   turnDurationLimitGrace?: number | null
-  /** Recycle a worker (kill and replace) after serving this many sessions. */
+  /** Recycle a worker after this many sessions: an integer from 0 to 4294967295.
+   *  Both 0 and 1 retire after each checkout; omitted means no recycling. */
   maxCheckoutsPerWorker?: number
 }
 
@@ -76,8 +78,14 @@ export interface CheckoutOptions {
   limits?: ResourceLimits
   /** Type-check each fed snippet before executing it (default false). */
   typeCheck?: boolean
-  /** Stub file contents used by type checking. */
+  /** Global type-checking stubs. Supply module stubs through `ExternalModule.stubs` in `externalModules`. */
   typeCheckStubs?: string
+  /**
+   * Importable host modules for every feed of the session (see [`ExternalModules`]); missing
+   * imports raise `ModuleNotFoundError`. The record is read live, each entry validated when a
+   * snippet first imports it, so modules may be added later; a factory runs once per session.
+   */
+  externalModules?: ExternalModules
   /**
    * How `MontyTypingError` diagnostics are rendered (default `'full'`).
    * Chosen here rather than on the thrown error because the checker's
@@ -169,6 +177,7 @@ export class Monty {
 
   /** Creates the pool and prewarms `minProcesses` workers. */
   static async create(options: MontyOptions = {}): Promise<Monty> {
+    validateMaxCheckouts(options.maxCheckoutsPerWorker)
     const native = new NativePool({
       binaryPath: findMontyBinary(options.binaryPath),
       minProcesses: options.minProcesses ?? 1,
@@ -193,27 +202,16 @@ export class Monty {
     if (this.closed) {
       throw new Error('the pool is closed — create a new Monty pool')
     }
-    const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
-    const osPolicy = encodeOsPolicy(options.osPolicy ?? {})
-    const native = this.native.checkout({
-      scriptName: options.scriptName ?? 'main.py',
-      ...(options.limits !== undefined ? { limits: options.limits } : {}),
-      typeCheck: options.typeCheck ?? false,
-      ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
-      ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
-      ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
-      ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
-      ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
-      ...nativeOsPolicy(osPolicy),
-    })
+    const modules = new HostModules(options.externalModules)
+    const native = this.native.checkout(nativeCheckoutOptions(options))
     const telemetryContext = captureTelemetryContext()
-    await native.enter(telemetryContext)
-    return new MontySession(native)
+    await enterSession(native, telemetryContext)
+    return new MontySession(native, modules)
   }
 
   /**
-   * Shuts the pool down: idle workers exit and no new checkouts are
-   * accepted. Sessions still checked out keep their workers until closed.
+   * Shuts the pool down: idle workers exit and pending/new checkouts reject.
+   * Sessions already checked out keep their workers until closed.
    */
   async close(): Promise<void> {
     if (this.closed) {
@@ -229,10 +227,29 @@ export class Monty {
 }
 
 /**
+ * Encodes checkout options as the native binding's fields; shared by `Monty`
+ * and `MontyWebsocket`, which add their own transport-specific fields.
+ */
+export function nativeCheckoutOptions(options: CheckoutOptions): Record<string, unknown> {
+  const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
+  return {
+    scriptName: options.scriptName ?? 'main.py',
+    ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    typeCheck: options.typeCheck ?? false,
+    ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+    ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
+    ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
+    ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
+    ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
+    ...nativeOsPolicy(encodeOsPolicy(options.osPolicy ?? {})),
+  }
+}
+
+/**
  * Renders one duration-backstop grace as the native option the pool takes:
  * `null` yields no key at all, and an absent grace falls back to 1s.
  */
-function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
+export function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
   return seconds === null ? {} : { [key]: (seconds ?? 1) * 1000 }
 }
 

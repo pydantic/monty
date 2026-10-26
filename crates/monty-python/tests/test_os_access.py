@@ -9,7 +9,7 @@ For tests of the AbstractOS interface via custom subclasses, see test_os_access_
 
 import datetime
 import time
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from unittest.mock import Mock
 
@@ -17,7 +17,7 @@ import pytest
 from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess
+from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess, ScanEntry, os_access
 
 # Alias for brevity in tests
 P = PurePosixPath
@@ -48,6 +48,21 @@ def test_file_nested_within_file_rejected():
     assert str(exc_info.value) == snapshot(
         "Cannot put file MemoryFile(path=/test/file.txt/nested.txt, content='...', permissions=420) "
         "within sub-directory of file MemoryFile(path=/test/file.txt, content='...', permissions=420)"
+    )
+
+
+def test_file_replacing_directory_rejected_in_any_order():
+    """A file cannot replace a directory that holds another file, whichever order they appear in."""
+    with pytest.raises(ValueError) as exc_info:
+        OSAccess(
+            [
+                MemoryFile('/test/dir/nested.txt', content='inner'),
+                MemoryFile('/test/dir', content='outer'),
+            ]
+        )
+    assert str(exc_info.value) == snapshot(
+        "Cannot put file MemoryFile(path=/test/dir, content='...', permissions=420) "
+        "at path of directory {'nested.txt': MemoryFile(path=/test/dir/nested.txt, content='...', permissions=420)}"
     )
 
 
@@ -482,13 +497,38 @@ def test_append_text_non_ascii_returns_char_count():
     assert fs.path_read_text(P('/test/file.txt')) == snapshot('start αβγ')
 
 
-def test_append_bytes_returns_byte_count():
-    """path_append_bytes returns the byte length (no UTF-8 transcoding involved)."""
-    fs = OSAccess([MemoryFile('/test/file.bin', content=b'start ')])
+@pytest.mark.parametrize('content', ['start ', b'start '])
+def test_append_bytes_returns_byte_count(content: str | bytes):
+    """Binary appends return the appended byte count for either storage type."""
+    fs = OSAccess([MemoryFile('/test/file.bin', content=content)])
 
     # 6 UTF-8 bytes of 'αβγ' — byte count, as documented.
     assert fs.path_append_bytes(P('/test/file.bin'), 'αβγ'.encode()) == snapshot(6)
     assert fs.path_read_bytes(P('/test/file.bin')) == snapshot('start αβγ'.encode())
+
+
+@pytest.mark.parametrize('callback', [False, True], ids=['memory', 'callback'])
+@pytest.mark.parametrize(
+    ('content', 'expected'),
+    [
+        ('start ', snapshot('start αβγ')),
+        (b'start ', snapshot(b'start \xce\xb1\xce\xb2\xce\xb3')),
+        (b'\xff', snapshot(b'\xff\xce\xb1\xce\xb2\xce\xb3')),
+    ],
+    ids=['text', 'utf8-bytes', 'non-utf8-bytes'],
+)
+def test_append_text_preserves_storage_type(callback: bool, content: str | bytes, expected: str | bytes):
+    """Text appends preserve stored bytes and the type passed to write callbacks."""
+    stored = MemoryFile('/test/file.txt', content=content)
+    file = (
+        CallbackFile(stored.path, read=lambda _: stored.content, write=lambda _, value: stored.write_content(value))
+        if callback
+        else stored
+    )
+    fs = OSAccess([file])
+
+    assert fs.path_append_text(stored.path, 'αβγ') == snapshot(3)
+    assert stored.content == expected
 
 
 # =============================================================================
@@ -1004,6 +1044,210 @@ def test_iterdir_not_found(monty_run: RunMonty):
 
 
 # =============================================================================
+# Directory Operations - os.walk / os.scandir / Path.glob (via Path.scan)
+# =============================================================================
+
+
+def scan_tree() -> OSAccess:
+    return OSAccess(
+        [
+            MemoryFile('/test/a.txt', content='a'),
+            MemoryFile('/test/b.py', content='b'),
+            MemoryFile('/test/pkg/c.py', content='c'),
+            MemoryFile('/test/pkg/sub/d.py', content='d'),
+        ]
+    )
+
+
+def test_walk_glob_and_scandir(monty_run: RunMonty):
+    """The default `path_scan` answers walks, globs and scandir from `path_iterdir`."""
+    code = """
+import os
+from pathlib import Path
+walked = [(d, sorted(n), sorted(f)) for d, n, f in os.walk('/test')]
+globbed = sorted(str(p) for p in Path('/test').glob('**/*.py'))
+scanned = sorted((e.name, e.is_dir()) for e in os.scandir('/test'))
+pruned = []
+for d, n, f in Path('/test').walk():
+    pruned.append(str(d))
+    n.clear()
+(walked, globbed, scanned, pruned)
+"""
+    assert monty_run(code, os=scan_tree()) == snapshot(
+        (
+            [
+                ('/test', ['pkg'], ['a.txt', 'b.py']),
+                ('/test/pkg', ['sub'], ['c.py']),
+                ('/test/pkg/sub', [], ['d.py']),
+            ],
+            ['/test/b.py', '/test/pkg/c.py', '/test/pkg/sub/d.py'],
+            [('a.txt', False), ('b.py', False), ('pkg', True)],
+            ['/test'],
+        )
+    )
+
+
+def test_scan_missing_directory(monty_run: RunMonty):
+    """A missing root raises from `os.scandir` and is swallowed by `Path.glob`."""
+    code = """
+import os
+from pathlib import Path
+try:
+    os.scandir('/missing')
+except FileNotFoundError as e:
+    error = str(e)
+(error, list(Path('/missing').glob('*')), list(os.walk('/missing')))
+"""
+    assert monty_run(code, os=scan_tree()) == snapshot(("[Errno 2] No such file or directory: '/missing'", [], []))
+
+
+class UnreadableOS(OSAccess):
+    """Refuses to list one directory, as a permissions error would."""
+
+    def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
+        if path == P('/test/pkg'):
+            raise PermissionError(f'[Errno 13] Permission denied: {str(path)!r}')
+        return super().path_iterdir(path)
+
+
+def test_path_scan_unreadable_descendant(monty_run: RunMonty):
+    """A directory below the root that cannot be listed reads as empty; the root itself raises."""
+    fs = UnreadableOS([MemoryFile('/test/a.py', content='a'), MemoryFile('/test/pkg/b.py', content='b')])
+    result = monty_run("from pathlib import Path; sorted(str(p) for p in Path('/test').glob('**/*.py'))", os=fs)
+    assert result == snapshot(['/test/a.py'])
+    with pytest.raises(PermissionError) as exc_info:
+        fs.path_scan(P('/test/pkg'), max_depth=None, follow_symlinks=False)
+    assert str(exc_info.value) == snapshot("[Errno 13] Permission denied: '/test/pkg'")
+
+
+class DanglingLinkOS(OSAccess):
+    """Reports one missing path as a symlink, as a dangling link is."""
+
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
+        return path == P('/test/dangling')
+
+
+def test_scan_dangling_symlink_root(monty_run: RunMonty):
+    """A dangling link cannot be listed, but a literal glob finds it, as CPython's `lexists` does."""
+    code = """
+import os
+from pathlib import Path
+errors = []
+try:
+    os.scandir('/test/dangling')
+except FileNotFoundError as e:
+    errors.append(str(e))
+list(os.walk('/test/dangling', onerror=lambda e: errors.append(f'{type(e).__name__}: {e}')))
+(errors, [str(p) for p in Path('/test').glob('dangling')])
+"""
+    fs = DanglingLinkOS([MemoryFile('/test/a.py', content='a')])
+    assert monty_run(code, os=fs) == snapshot(
+        (
+            [
+                "[Errno 2] No such file or directory: '/test/dangling'",
+                "FileNotFoundError: [Errno 2] No such file or directory: '/test/dangling'",
+            ],
+            ['/test/dangling'],
+        )
+    )
+
+
+def test_path_scan_deep_tree_without_links():
+    """Without following links, the default `path_scan` has no depth cap."""
+    deep = '/'.join(['d'] * 70)
+    fs = OSAccess([MemoryFile(f'/test/{deep}/f.txt', content='f')])
+    entries = fs.path_scan(P('/test'), max_depth=None, follow_symlinks=False)
+    assert entries[-1] == snapshot(
+        ScanEntry(
+            path='d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/f.txt',
+            is_dir=False,
+            is_file=True,
+            is_symlink=False,
+        )
+    )
+
+
+def test_path_scan_entry_limit(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(os_access, '_MAX_SCAN_ENTRIES', 8)
+    files = [MemoryFile(f'/test/{i}', content='') for i in range(8)]
+    assert len(OSAccess(files[:7]).path_scan(P('/test'), max_depth=1, follow_symlinks=False)) == 8
+    with pytest.raises(RuntimeError, match='directory scan exceeded 8 entries'):
+        OSAccess(files).path_scan(P('/test'), max_depth=1, follow_symlinks=False)
+
+
+class SymlinkCycleOS(OSAccess):
+    """Every path below `/test` is a symlinked directory holding two more, as a link cycle is."""
+
+    def path_exists(self, path: PurePosixPath) -> bool:
+        return True
+
+    def path_is_dir(self, path: PurePosixPath) -> bool:
+        return True
+
+    def path_is_file(self, path: PurePosixPath) -> bool:
+        return False
+
+    def path_is_symlink(self, path: PurePosixPath) -> bool:
+        return path != P('/test')
+
+    def path_iterdir(self, path: PurePosixPath) -> list[PurePosixPath]:
+        return [path / 'a', path / 'b']
+
+
+@pytest.mark.parametrize('max_depth', [None, 20])
+def test_path_scan_cycle_limit(monkeypatch: pytest.MonkeyPatch, max_depth: int | None):
+    monkeypatch.setattr(os_access, '_MAX_SCAN_ENTRIES', 8)
+    with pytest.raises(RuntimeError, match='directory scan exceeded 8 entries'):
+        SymlinkCycleOS().path_scan(P('/test'), max_depth=max_depth, follow_symlinks=True)
+
+
+def test_path_scan_path_data_limit(monkeypatch: pytest.MonkeyPatch):
+    fs = OSAccess([MemoryFile('/test/éé', content='')])
+    monkeypatch.setattr(os_access, '_MAX_SCAN_PATH_BYTES', 60)
+    assert len(fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False)) == 2
+    monkeypatch.setattr(os_access, '_MAX_SCAN_PATH_BYTES', 59)
+    with pytest.raises(RuntimeError, match='directory scan exceeded 59 bytes of path data'):
+        fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False)
+    monkeypatch.setattr(os_access, '_MAX_SCAN_PATH_BYTES', 19)
+    with pytest.raises(RuntimeError, match='directory scan exceeded 19 bytes of path data'):
+        fs.path_scan(P('/test'), max_depth=0, follow_symlinks=False)
+
+
+@pytest.mark.parametrize('operation', ["os.walk('/test')", "os.scandir('/test')", "Path('/test').glob('**')"])
+def test_scan_limit_propagates(monkeypatch: pytest.MonkeyPatch, monty_run: RunMonty, operation: str):
+    monkeypatch.setattr(os_access, '_MAX_SCAN_ENTRIES', 1)
+    with pytest.raises(MontyRuntimeError, match='RuntimeError: directory scan exceeded 1 entries'):
+        monty_run(f'import os\nfrom pathlib import Path\nlist({operation})', os=scan_tree())
+
+
+def test_path_scan_direct():
+    """`path_scan` returns the root and its descendants down to `max_depth`."""
+    fs = scan_tree()
+    assert sorted(fs.path_scan(P('/test'), max_depth=1, follow_symlinks=False)) == snapshot(
+        [
+            ScanEntry(path='', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='a.txt', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='b.py', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='pkg', is_dir=True, is_file=False, is_symlink=False),
+        ]
+    )
+    assert sorted(fs.path_scan(P('/test/pkg'), max_depth=None, follow_symlinks=False)) == snapshot(
+        [
+            ScanEntry(path='', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='c.py', is_dir=False, is_file=True, is_symlink=False),
+            ScanEntry(path='sub', is_dir=True, is_file=False, is_symlink=False),
+            ScanEntry(path='sub/d.py', is_dir=False, is_file=True, is_symlink=False),
+        ]
+    )
+    assert fs.path_scan(P('/test/a.txt'), max_depth=None, follow_symlinks=False) == snapshot(
+        [ScanEntry(path='', is_dir=False, is_file=True, is_symlink=False)]
+    )
+    with pytest.raises(FileNotFoundError) as exc_info:
+        fs.path_scan(P('/test/missing'), max_depth=None, follow_symlinks=False)
+    assert str(exc_info.value) == snapshot("[Errno 2] No such file or directory: '/test/missing'")
+
+
+# =============================================================================
 # File Operations - unlink (via Monty)
 # =============================================================================
 
@@ -1200,6 +1444,113 @@ def test_rename_file_direct():
     assert fs.path_read_text(P('/test/new.txt')) == 'content'
 
 
+def test_cpython_rename_paths_to_themselves(tmp_path: Path):
+    """CPython treats file and directory self-renames as no-ops."""
+    file = tmp_path / 'file.txt'
+    file.write_text('content')
+    assert (file.rename(file) == file) == snapshot(True)
+    assert file.read_text() == snapshot('content')
+
+    empty_dir = tmp_path / 'empty'
+    empty_dir.mkdir()
+    assert (empty_dir.rename(empty_dir) == empty_dir) == snapshot(True)
+    assert list(empty_dir.iterdir()) == snapshot([])
+
+    nonempty_dir = tmp_path / 'nonempty'
+    nonempty_dir.mkdir()
+    child = nonempty_dir / 'child.txt'
+    child.write_text('child')
+    assert (nonempty_dir.rename(nonempty_dir) == nonempty_dir) == snapshot(True)
+    assert child.read_text() == snapshot('child')
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+@pytest.mark.parametrize(
+    ('source', 'target'),
+    [
+        ('/test/file.txt', '/test/file.txt'),
+        ('/test//file.txt', '/test/file.txt'),
+        ('/test/./file.txt', '/test/file.txt'),
+    ],
+)
+def test_rename_file_to_itself(via_monty: bool, source: str, target: str, monty_run: RunMonty):
+    """Self-renaming a file preserves its host object and contents."""
+    file = MemoryFile('/test/file.txt', content='content')
+    fs = OSAccess([file])
+
+    if via_monty:
+        result = monty_run(
+            f"from pathlib import Path; Path('{source}').rename(Path('{target}')); "
+            "path = Path('/test/file.txt'); before = path.read_text(); "
+            "written = path.write_text('updated'); (before, written, path.read_text())",
+            os=fs,
+        )
+        assert result == snapshot(('content', 7, 'updated'))
+    else:
+        fs.path_rename(P(source), P(target))
+        assert fs.path_read_text(P('/test/file.txt')) == snapshot('content')
+        assert fs.path_write_text(P('/test/file.txt'), 'updated') == snapshot(7)
+
+    assert (file.deleted is False) == snapshot(True)
+    assert file.path.as_posix() == snapshot('/test/file.txt')
+    assert (fs.path_exists(P('/test/file.txt')) is True) == snapshot(True)
+    assert [path.as_posix() for path in fs.path_iterdir(P('/test'))] == snapshot(['/test/file.txt'])
+    assert fs.path_read_text(P('/test/file.txt')) == snapshot('updated')
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+@pytest.mark.parametrize('nonempty', [False, True])
+def test_rename_directory_to_itself(via_monty: bool, nonempty: bool, monty_run: RunMonty):
+    """Self-renaming an empty or nonempty directory preserves its tree."""
+    files = [MemoryFile('/test/keep.txt', content='keep')]
+    if nonempty:
+        files.append(MemoryFile('/test/dir/child.txt', content='child'))
+    fs = OSAccess(files)
+    if not nonempty:
+        fs.path_mkdir(P('/test/dir'), parents=False, exist_ok=False)
+
+    if via_monty:
+        result = monty_run(
+            "from pathlib import Path; Path('/test/dir').rename(Path('/test/dir')); Path('/test/dir').exists()",
+            os=fs,
+        )
+        assert result == snapshot(True)
+    else:
+        fs.path_rename(P('/test/dir'), P('/test/dir'))
+
+    assert (fs.path_is_dir(P('/test/dir')) is True) == snapshot(True)
+    assert {path.as_posix() for path in fs.path_iterdir(P('/test'))} == snapshot({'/test/dir', '/test/keep.txt'})
+    if nonempty:
+        assert [path.as_posix() for path in fs.path_iterdir(P('/test/dir'))] == snapshot(['/test/dir/child.txt'])
+    else:
+        assert fs.path_iterdir(P('/test/dir')) == snapshot([])
+    assert fs.path_read_text(P('/test/keep.txt')) == snapshot('keep')
+    if nonempty:
+        assert fs.path_read_text(P('/test/dir/child.txt')) == snapshot('child')
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+def test_rename_missing_path_to_itself_still_fails(via_monty: bool, monty_run: RunMonty):
+    """A self-rename still checks that its source exists."""
+    fs = OSAccess([MemoryFile('/test/keep.txt', content='keep')])
+
+    if via_monty:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            monty_run(
+                "from pathlib import Path; Path('/test/missing').rename(Path('/test/missing'))",
+                os=fs,
+            )
+        assert str(exc_info.value) == snapshot(
+            "FileNotFoundError: [Errno 2] No such file or directory: '/test/missing' -> '/test/missing'"
+        )
+    else:
+        with pytest.raises(FileNotFoundError):
+            fs.path_rename(P('/test/missing'), P('/test/missing'))
+
+    assert {path.as_posix() for path in fs.path_iterdir(P('/test'))} == snapshot({'/test/keep.txt'})
+    assert fs.path_read_text(P('/test/keep.txt')) == snapshot('keep')
+
+
 def test_rename_source_not_found_direct():
     """path_rename raises FileNotFoundError when source doesn't exist via direct API."""
     fs = OSAccess()
@@ -1264,6 +1615,59 @@ def test_rename_directory_updates_file_paths_direct():
     # Verify old paths no longer exist
     assert fs.path_exists(P('/old/dir')) is False
     assert fs.path_exists(P('/old/dir/file1.txt')) is False
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+@pytest.mark.parametrize(
+    ('target', 'error_type', 'message'),
+    [
+        ('/a/moved', OSError, '[Errno 22] Invalid argument'),
+        ('/a/b/moved', OSError, '[Errno 22] Invalid argument'),
+        ('/a/b/c/moved', OSError, '[Errno 22] Invalid argument'),
+        ('/a/b/c', OSError, '[Errno 22] Invalid argument'),
+        ('/a/b', OSError, '[Errno 22] Invalid argument'),
+        ('/a/file.txt', NotADirectoryError, '[Errno 20] Not a directory'),
+    ],
+)
+def test_rename_directory_into_descendant(
+    monty_run: RunMonty, target: str, error_type: type[OSError], message: str, via_monty: bool
+):
+    """A rejected move into a descendant leaves the original tree usable."""
+    files = [MemoryFile('/a/file.txt', 'root data'), MemoryFile('/a/b/nested.txt', 'nested data')]
+    fs = OSAccess([*files, MemoryFile('/keep.txt', 'keep data')])
+    fs.path_mkdir(P('/a/b/c'), parents=False, exist_ok=False)
+
+    with pytest.raises(MontyRuntimeError if via_monty else error_type) as exc_info:
+        if via_monty:
+            monty_run(f'from pathlib import Path; Path("/a").rename(Path("{target}"))', os=fs)
+        else:
+            fs.path_rename(P('/a'), P(target))
+    prefix = f'{error_type.__name__}: ' if via_monty else ''
+    assert str(exc_info.value) == f"{prefix}{message}: '/a' -> '{target}'"
+
+    assert fs.path_iterdir(P('/')) == [P('/a'), P('/keep.txt')]
+    assert fs.path_iterdir(P('/a')) == [P('/a/file.txt'), P('/a/b')]
+    assert fs.path_iterdir(P('/a/b')) == [P('/a/b/nested.txt'), P('/a/b/c')]
+    assert fs.path_iterdir(P('/a/b/c')) == []
+    assert fs.path_read_text(P('/a/file.txt')) == 'root data'
+    assert fs.path_read_text(P('/a/b/nested.txt')) == 'nested data'
+    assert fs.path_read_text(P('/keep.txt')) == 'keep data'
+    assert [(file.path, file.deleted) for file in files] == [(P('/a/file.txt'), False), (P('/a/b/nested.txt'), False)]
+    if via_monty:
+        assert monty_run('from pathlib import Path; Path("/a/b/nested.txt").read_text()', os=fs) == 'nested data'
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+def test_rename_directory_similar_prefix(monty_run: RunMonty, via_monty: bool):
+    """A shared name prefix does not make the destination a descendant."""
+    fs = OSAccess([MemoryFile('/a/file.txt', 'data'), MemoryFile('/ab/keep.txt', 'keep')])
+    if via_monty:
+        monty_run('from pathlib import Path; Path("/a").rename(Path("/ab/moved"))', os=fs)
+    else:
+        fs.path_rename(P('/a'), P('/ab/moved'))
+    assert fs.path_exists(P('/a')) is False
+    assert fs.path_read_text(P('/ab/moved/file.txt')) == 'data'
+    assert fs.path_read_text(P('/ab/keep.txt')) == 'keep'
 
 
 # =============================================================================

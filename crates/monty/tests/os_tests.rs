@@ -4,11 +4,12 @@
 //! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
 //! and that return values are correctly used by Python code.
 
-use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
-    MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceTracker, SleepMode,
-    dir_stat, file_stat,
+    MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
+    ResourceTracker, ScanArgs, SleepMode, dir_stat, file_stat,
+    scan::{EntryInfo, ScanEntry, ScanReply, scan_reply},
 };
 
 /// Expose clock and sleep calls to the mock host.
@@ -60,6 +61,7 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
         OsFunctionCall::ReadBytes(_) => MontyObject::bytes(vec![]),
         OsFunctionCall::Stat(_) => MontyObject::none(),
         OsFunctionCall::Iterdir(_) => MontyObject::list([]),
+        OsFunctionCall::Scan(_) => scan_reply([]),
         OsFunctionCall::WriteText(_)
         | OsFunctionCall::WriteBytes(_)
         | OsFunctionCall::AppendText(_)
@@ -85,6 +87,8 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
         | OsFunctionCall::SystemSleep(_)
         | OsFunctionCall::AsyncSleep(_)
         | OsFunctionCall::AsyncSystemSleep(_) => MontyObject::none(),
+        // never mocked: these tests import nothing the sandbox lacks
+        OsFunctionCall::Import(_) | OsFunctionCall::ImportStubs(_) => MontyObject::dict([]),
         OsFunctionCall::DateTimeNow(_) => MontyObject::datetime(MontyDateTime {
             year: 2023,
             month: 11,
@@ -522,8 +526,10 @@ fn repl_keeps_the_directory_across_snippets() {
     );
 }
 
+/// CPython would `fchdir` an int; the sandbox has no open fds, so it fails
+/// as a closed one without reaching the host.
 #[test]
-fn os_chdir_rejects_non_path() {
+fn os_chdir_rejects_fd() {
     let err = MontyRun::new(
         "import os\nos.chdir(1)".to_owned(),
         "test.py",
@@ -533,11 +539,8 @@ fn os_chdir_rejects_non_path() {
     .unwrap()
     .run_no_limits(vec![])
     .unwrap_err();
-    assert_eq!(err.exc_type(), ExcType::TypeError);
-    assert_eq!(
-        err.message().unwrap(),
-        "chdir: path should be string or os.PathLike, not int"
-    );
+    assert_eq!(err.exc_type(), ExcType::OSError);
+    assert_eq!(err.message().unwrap(), "[Errno 9] Bad file descriptor: 1");
 }
 
 // =============================================================================
@@ -701,6 +704,10 @@ fn filesystem_result_effects_reject_invalid_replies() {
         ("open('./file.txt')", "open"),
         ("import os\nos.listdir('.')", "os.listdir"),
         ("from pathlib import Path\nPath('.').iterdir()", "Path.iterdir"),
+        ("import os\nos.scandir('.')", "os.scandir"),
+        ("import os\nos.walk('.')", "os.walk"),
+        ("from pathlib import Path\nPath('.').walk()", "Path.walk"),
+        ("from pathlib import Path\nPath('.').glob('*')", "Path.glob"),
     ] {
         let call = run_to_oscall_start(code);
         let err = call
@@ -1114,42 +1121,29 @@ fn os_unsupported_kwargs() {
     }
 }
 
-/// `bytes` paths and integer fds are the kinds CPython accepts and Monty
-/// never will, so the converter drops them from its accepted-types phrase
-/// rather than listing the type it just rejected. CPython accepts these
-/// calls, so they cannot dual-run in test_cases (see limitations/os.md).
+/// `bytes` paths are the kind CPython accepts and Monty never will, so the
+/// converter drops them from its accepted-types phrase rather than listing
+/// the type it just rejected. CPython accepts these calls, so they cannot
+/// dual-run in test_cases (see limitations/os.md).
 #[test]
 fn os_unsupported_path_kinds() {
     let cases = [
         (
             "import os\nos.listdir(b'/x')",
-            "TypeError: listdir: path should be string, os.PathLike or None, not bytes",
-        ),
-        (
-            "import os\nos.listdir(1)",
-            "TypeError: listdir: path should be string, os.PathLike or None, not int",
+            "TypeError: listdir: path should be string, os.PathLike, integer or None, not bytes",
         ),
         (
             "import os\nos.stat(b'/x')",
-            "TypeError: stat: path should be string or os.PathLike, not bytes",
-        ),
-        (
-            "import os\nos.stat(1)",
-            "TypeError: stat: path should be string or os.PathLike, not int",
-        ),
-        // Bools fd-convert in CPython too (with a RuntimeWarning), so they are
-        // narrowed exactly like ints where the converter allows fds.
-        (
-            "import os\nos.stat(True)",
-            "TypeError: stat: path should be string or os.PathLike, not bool",
-        ),
-        (
-            "import os\nos.listdir(True)",
-            "TypeError: listdir: path should be string, os.PathLike or None, not bool",
+            "TypeError: stat: path should be string, os.PathLike or integer, not bytes",
         ),
         (
             "import os\nos.mkdir(b'/x')",
             "TypeError: mkdir: path should be string or os.PathLike, not bytes",
+        ),
+        // `os.walk` converts with `fspath`, whose phrase narrows the same way.
+        (
+            "import os\nos.walk(b'/x')",
+            "TypeError: expected str or os.PathLike object, not bytes",
         ),
         (
             "import os\nos.rename('/a', b'/b')",
@@ -1160,6 +1154,44 @@ fn os_unsupported_path_kinds() {
         (
             "import os\nos.remove(1)",
             "TypeError: remove: path should be string, bytes or os.PathLike, not int",
+        ),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(run_to_error(code), expected, "code: {code}");
+    }
+}
+
+/// Where CPython's converter takes an fd, the sandbox has none open, so the
+/// stdio fds CPython would stat fail here like any other. Fds no process has
+/// open dual-run in test_cases; these are the ones CPython would accept.
+#[test]
+fn os_open_fds_are_closed_in_the_sandbox() {
+    let cases = [
+        ("import os\nos.stat(0)", "OSError: [Errno 9] Bad file descriptor: 0"),
+        // bools fd-convert in CPython too, with only a RuntimeWarning
+        (
+            "import os\nos.stat(True)",
+            "OSError: [Errno 9] Bad file descriptor: True",
+        ),
+        // `listdir` goes through `fdopendir`, whose error names no file
+        ("import os\nos.listdir(0)", "OSError: [Errno 9] Bad file descriptor"),
+        ("import os\nos.listdir(True)", "OSError: [Errno 9] Bad file descriptor"),
+        (
+            "import os\nos.path.getsize(1)",
+            "OSError: [Errno 9] Bad file descriptor: 1",
+        ),
+        (
+            "import os\nos.path.samefile(1, '/')",
+            "OSError: [Errno 9] Bad file descriptor: 1",
+        ),
+        // the predicates answer the closed fd `False`, as CPython's `os.stat` failure makes them
+        (
+            "import os\nraise ValueError(repr(os.path.exists(1)))",
+            "ValueError: False",
+        ),
+        (
+            "import os\nraise ValueError(repr(os.path.isdir(True)))",
+            "ValueError: False",
         ),
     ];
     for (code, expected) in cases {
@@ -1255,9 +1287,7 @@ msg
     let result = run_oscall_sequence(code, vec![("open", mock_file_handle("/data/sample.txt"))]);
     assert_eq!(
         result,
-        MontyObject::string(
-            "sorted() key argument: OS function 'Path.read_text' is not yet supported in this context".to_owned()
-        )
+        MontyObject::string("OS function 'Path.read_text' cannot suspend in this synchronous context".to_owned())
     );
 }
 
@@ -1650,4 +1680,635 @@ fn asyncio_sleep_answered_with_a_failed_future_raises() {
 /// The positional arguments of a call as owned values.
 fn positional(call: &CallArgs) -> Vec<MontyObject> {
     call.args().map(|arg| arg.to_owned()).collect()
+}
+
+/// A `StatResult` whose identity fields are set, for `os.path.samefile`.
+fn stat_with_identity(ino: i64, dev: i64) -> MontyObject {
+    MontyObject::named_tuple(
+        "StatResult".to_owned(),
+        vec!["st_mode".to_owned(), "st_ino".to_owned(), "st_dev".to_owned()],
+        vec![
+            MontyObject::int(0o100_644),
+            MontyObject::int(ino),
+            MontyObject::int(dev),
+        ],
+    )
+}
+
+/// Drives `os.path.samefile(f1, f2)` through its two `Path.stat` calls.
+fn run_samefile(first: MontyObject, second: MontyObject) -> MontyObject {
+    let call = run_to_oscall_start("import os\nos.path.samefile('a', 'sub/../a')");
+    assert_eq!(call.function_call.name(), "Path.stat");
+    let RunProgress::OsCall(call) = call.resume(first, PrintWriter::Stdout).unwrap() else {
+        panic!("expected the second Path.stat");
+    };
+    assert_eq!(call.function_call.name(), "Path.stat");
+    call.resume(second, PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .expect("expected Complete after the second stat")
+}
+
+#[test]
+fn os_path_samefile_compares_identities_when_the_host_reports_them() {
+    assert_eq!(
+        run_samefile(stat_with_identity(5, 1), stat_with_identity(5, 1)),
+        MontyObject::bool(true)
+    );
+    // Same normalized path, different inode: the host's identity wins.
+    assert_eq!(
+        run_samefile(stat_with_identity(5, 1), stat_with_identity(6, 1)),
+        MontyObject::bool(false)
+    );
+}
+
+#[test]
+fn os_path_samefile_falls_back_to_paths_without_identities() {
+    // Mounts report `st_ino` and `st_dev` as 0, so 'a' and 'sub/../a' compare by normalized path.
+    assert_eq!(
+        run_samefile(file_stat(0o644, 1, 0.0), file_stat(0o644, 2, 0.0)),
+        MontyObject::bool(true)
+    );
+}
+
+// =============================================================================
+// Path.scan: os.scandir, os.walk, Path.walk, Path.glob
+// =============================================================================
+
+/// The `ScanArgs` the first OS call of `code` carries, run in `/data`.
+fn scan_args(code: &str) -> ScanArgs {
+    match run_to_oscall_in(code, "/data") {
+        OsFunctionCall::Scan(args) => args,
+        call => panic!("expected Path.scan, got {}", call.name()),
+    }
+}
+
+/// Parts of a glob pattern as `ScanArgs::pattern` carries them.
+fn parts(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|part| (*part).to_owned()).collect()
+}
+
+#[test]
+fn scandir_and_walk_scan_args() {
+    let args = scan_args("import os; os.scandir()");
+    assert_eq!(args, ScanArgs::listing("/data/.".into(), Some(1), false));
+    let args = scan_args("import os; os.walk('sub', followlinks=True)");
+    assert_eq!(args, ScanArgs::listing("/data/sub".into(), None, true));
+    let args = scan_args("from pathlib import Path; Path('/abs').walk()");
+    assert_eq!(args, ScanArgs::listing("/abs".into(), None, false));
+}
+
+#[test]
+fn glob_hoists_its_literal_prefix_into_the_scan_root() {
+    let args = scan_args("from pathlib import Path; Path('.').glob('src/pkg/*.py')");
+    assert_eq!(args.path.as_str(), "/data/src/pkg");
+    assert_eq!(args.pattern, Some(parts(&["*.py"])));
+    assert_eq!(args.max_depth, Some(1));
+    assert!(!args.follow_symlinks);
+
+    let args = scan_args("from pathlib import Path; Path('.').glob('*/x/**/*.py')");
+    assert_eq!(args.path.as_str(), "/data/.");
+    assert_eq!(args.pattern, Some(parts(&["*", "x", "**", "*.py"])));
+    assert_eq!(args.max_depth, None);
+    // a pattern-ignoring host must descend symlinks that `*` can match
+    assert!(args.follow_symlinks);
+
+    // a fully literal pattern is an existence check of the root
+    let args = scan_args("from pathlib import Path; Path('a').glob('b/c.txt')");
+    assert_eq!(args, ScanArgs::listing("/data/a/b/c.txt".into(), Some(0), false));
+
+    // an explicit `case_sensitive` lists literal parts too, as CPython does
+    let args = scan_args("from pathlib import Path; Path('.').glob('src/*.PY', case_sensitive=False)");
+    assert_eq!(args.path.as_str(), "/data/.");
+    assert_eq!(args.pattern, Some(parts(&["src", "*.PY"])));
+    assert_eq!(args.case_sensitive, Some(false));
+
+    let args = scan_args("from pathlib import Path; Path('.').rglob('*.py', recurse_symlinks=True)");
+    assert_eq!(args.pattern, Some(parts(&["**", "*.py"])));
+    assert!(args.recurse_symlinks);
+    assert!(args.follow_symlinks);
+}
+
+/// A reply entry; `kind` is `d`(ir), `f`(ile) or `l`(ink to a directory).
+fn entry(path: &str, kind: char) -> ScanEntry {
+    ScanEntry {
+        path: path.to_owned(),
+        info: EntryInfo {
+            is_dir: kind != 'f',
+            is_file: kind == 'f',
+            is_symlink: kind == 'l',
+        },
+    }
+}
+
+/// Runs `code` against a host that ignores the pattern and answers with
+/// `entries`, returning the program's result.
+fn run_with_scan_reply(code: &str, entries: Vec<ScanEntry>) -> MontyObject {
+    run_oscall_with_result(code, scan_reply(entries)).2
+}
+
+#[test]
+fn glob_filters_a_reply_that_ignores_the_pattern() {
+    let tree = || {
+        vec![
+            entry("", 'd'),
+            entry("a.py", 'f'),
+            entry("b.txt", 'f'),
+            entry("pkg", 'd'),
+            entry("pkg/c.py", 'f'),
+            entry("pkg/sub", 'd'),
+            entry("pkg/sub/d.py", 'f'),
+            entry("link", 'l'),
+            entry("link/c.py", 'f'),
+        ]
+    };
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('**/*.py'))";
+    let expected = ["r/a.py", "r/pkg/c.py", "r/pkg/sub/d.py"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(run_with_scan_reply(code, tree()), MontyObject::list(expected));
+    // `*` descends a symlinked directory where `**` does not
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('*/c.py'))";
+    let expected = ["r/link/c.py", "r/pkg/c.py"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(run_with_scan_reply(code, tree()), MontyObject::list(expected));
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('**/', recurse_symlinks=True))";
+    let expected = ["r", "r/link", "r/pkg", "r/pkg/sub"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(run_with_scan_reply(code, tree()), MontyObject::list(expected));
+}
+
+#[test]
+fn walk_lists_symlinked_directories_as_os_walk_does() {
+    let tree = || vec![entry("", 'd'), entry("real", 'd'), entry("link", 'l'), entry("f", 'f')];
+    let code = "import os\n[(d, n, f) for d, n, f in os.walk('r')]";
+    let walked = run_with_scan_reply(code, tree());
+    let tuple = |dir: &str, dirs: &[&str], files: &[&str]| {
+        let strings = |items: &[&str]| MontyObject::list(items.iter().map(|i| MontyObject::string((*i).to_owned())));
+        MontyObject::tuple([MontyObject::string(dir.to_owned()), strings(dirs), strings(files)])
+    };
+    // `os.walk` lists the link among the directories but does not descend it
+    assert_eq!(
+        walked,
+        MontyObject::list([tuple("r", &["link", "real"], &["f"]), tuple("r/real", &[], &[])])
+    );
+    // `Path.walk` lists it among the files
+    let code = "from pathlib import Path\n[(str(d), n, f) for d, n, f in Path('r').walk()]";
+    assert_eq!(
+        run_with_scan_reply(code, tree()),
+        MontyObject::list([tuple("r", &["real"], &["f", "link"]), tuple("r/real", &[], &[])])
+    );
+}
+
+#[test]
+fn os_path_realpath_strict_rejects_a_nul_in_the_resolved_path() {
+    // Without this the chained `Path.exists` would answer `False` locally and
+    // strict `realpath` would return a bool.
+    let call = run_to_oscall_start("import os\nos.path.realpath('a', strict=True)");
+    assert_eq!(call.function_call.name(), "Path.resolve");
+    let err = call
+        .resume(MontyObject::path("/mnt/a\0b".to_owned()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "ValueError: lstat: embedded null character in path"
+    );
+}
+
+#[test]
+fn os_path_expandvars_charges_its_amplified_result() {
+    // 20k two-byte references to a 1000-byte value amplify the input 500x; the
+    // expansion must stop at the memory limit rather than build the 20 MB result.
+    let runner = MontyRun::new(
+        "import os\nos.path.expandvars('$V' * 20_000)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(1 << 20));
+    let RunProgress::OsCall(call) = runner.start(vec![], tracker, PrintWriter::Stdout).unwrap() else {
+        panic!("expected the os.environ call");
+    };
+    assert_eq!(call.function_call.name(), "os.environ");
+    let environ = MontyObject::dict([(MontyObject::string("V"), MontyObject::string("x".repeat(1000)))]);
+    let err = call.resume(environ, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn empty_walk_reports_enoent_on_iteration_without_a_host_call() {
+    let code = r#"
+import os
+assert list(os.walk('')) == []
+errors = []
+walk = os.walk('', onerror=lambda e: errors.append((type(e).__name__, str(e))))
+assert errors == []
+assert list(walk) == []
+assert errors == [('FileNotFoundError', "[Errno 2] No such file or directory: ''")]
+assert list(walk) == []
+assert len(errors) == 1
+
+def fail(error):
+    raise error
+
+walk = os.walk('', onerror=fail)
+try:
+    next(walk)
+    assert False
+except FileNotFoundError:
+    pass
+assert list(walk) == []
+"#;
+    host_runner(code)
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .expect("an empty walk must not call the host");
+}
+
+#[test]
+fn scan_rejects_malformed_replies() {
+    let call = run_to_oscall_start("import os\nos.scandir('/mnt')");
+    let err = call
+        .resume(MontyObject::list([MontyObject::int(3)]), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: os.scandir: expected (path, is_dir, is_file, is_symlink) tuples, got int"
+    );
+    let call = run_to_oscall_start("import os\nos.scandir('/mnt')");
+    let reply = scan_reply([entry("../escape", 'f')]);
+    let err = call.resume(reply, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: os.scandir: scan entry path \"../escape\" is not relative to the scan root"
+    );
+}
+
+/// Bottom-up walks queue their steps on the heap, so tree depth costs no Rust stack.
+#[test]
+fn deep_bottom_up_walk_does_not_recurse() {
+    let mut tree = vec![entry("", 'd')];
+    let mut path = String::new();
+    for _ in 0..8_000 {
+        path = if path.is_empty() {
+            "d".to_owned()
+        } else {
+            format!("{path}/d")
+        };
+        tree.push(entry(&path, 'd'));
+    }
+    let code = "import os\nlen(list(os.walk('r', topdown=False)))";
+    assert_eq!(run_with_scan_reply(code, tree), MontyObject::int(8_001));
+}
+
+/// `..` after a wildcard is collapsed in the result and its target matched once,
+/// where CPython spells out `sub/deep/../c.txt`.
+#[test]
+fn glob_collapses_dot_dot_after_a_wildcard() {
+    let tree = vec![
+        entry("", 'd'),
+        entry("a", 'd'),
+        entry("b", 'd'),
+        entry("c.txt", 'f'),
+        entry("a/x", 'd'),
+        entry("a/y", 'd'),
+        entry("a/c.txt", 'f'),
+    ];
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('*/../c.txt'))";
+    let expected = [MontyObject::string("r/c.txt".to_owned())];
+    assert_eq!(run_with_scan_reply(code, tree.clone()), MontyObject::list(expected));
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r').glob('*/*/../c.txt'))";
+    let expected = [MontyObject::string("r/a/c.txt".to_owned())];
+    assert_eq!(run_with_scan_reply(code, tree), MontyObject::list(expected));
+    // the receiver's own `..` keeps its spelling: it is hoisted into the scan root
+    let code = "from pathlib import Path\nsorted(str(p) for p in Path('r/a/..').glob('c.txt'))";
+    let expected = [MontyObject::string("r/a/../c.txt".to_owned())];
+    assert_eq!(
+        run_with_scan_reply(code, vec![entry("", 'd')]),
+        MontyObject::list(expected)
+    );
+}
+
+/// A literal glob only matches when the reply actually described the root.
+#[test]
+fn literal_glob_needs_a_described_root() {
+    let code = "from pathlib import Path\nlist(Path('r').glob('a.txt'))";
+    assert_eq!(run_with_scan_reply(code, vec![]), MontyObject::list([]));
+    let code = "from pathlib import Path\n[str(p) for p in Path('r').glob('a.txt')]";
+    assert_eq!(
+        run_with_scan_reply(code, vec![entry("", 'f')]),
+        MontyObject::list([MontyObject::string("r/a.txt".to_owned())])
+    );
+}
+
+/// A host that selected a glob's matches has them used as they are, spelled
+/// as `pathlib` does; only a glob with a pattern part accepts them.
+#[test]
+fn glob_uses_matches_the_host_selected() {
+    let matches =
+        |paths: &[&str]| ScanReply::Matches(paths.iter().map(|path| (*path).to_owned()).collect()).into_object();
+    // not re-filtered: `b.txt` would fail the pattern
+    let code = "from pathlib import Path\n[str(p) for p in Path('r').glob('**/*.py')]";
+    let (.., result) = run_oscall_with_result(code, matches(&["a.py", "pkg/c.py", "b.txt"]));
+    let expected = ["r/a.py", "r/pkg/c.py", "r/b.txt"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(result, MontyObject::list(expected));
+    // a trailing `/` from a directory match is stripped where `pathlib` strips it
+    let code = "from pathlib import Path\n[str(p) for p in Path('r').glob('**/')]";
+    let (.., result) = run_oscall_with_result(code, matches(&["", "pkg/"]));
+    let expected = ["r", "r/pkg"].map(|p| MontyObject::string(p.to_owned()));
+    assert_eq!(result, MontyObject::list(expected));
+
+    let call = run_to_oscall_start("import os\nos.scandir('/mnt')");
+    let err = call.resume(matches(&["a.py"]), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: os.scandir: glob matches answer only a glob scan"
+    );
+    // an all-literal glob is sent as a listing, so `require_dir` still applies
+    let call = run_to_oscall_start("from pathlib import Path\nlist(Path('r').glob('a/'))");
+    let err = call.resume(matches(&[""]), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: Path.glob: glob matches answer only a glob scan"
+    );
+    let call = run_to_oscall_start("from pathlib import Path\nlist(Path('r').glob('*'))");
+    let err = call.resume(matches(&["../x"]), PrintWriter::Stdout).unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: Path.glob: glob match \"../x\" is not relative to the scan root"
+    );
+}
+
+#[test]
+fn path_rename_and_replace_return_the_spelled_target() {
+    for method in ["rename", "replace"] {
+        for target in ["'sub/../after.txt'", "Path('sub/../after.txt')"] {
+            let code = format!("from pathlib import Path\nPath('before.txt').{method}(target={target})");
+            let (name, args, result) = run_oscall_with_result(&code, MontyObject::none());
+            assert_eq!(name, "Path.rename");
+            assert_eq!(args.len(), 2);
+            assert_eq!(result, MontyObject::path("sub/../after.txt".to_owned()));
+        }
+        let code = format!("from pathlib import Path\nPath('/before').{method}('/after')");
+        let (_, _, result) = run_oscall_with_result(&code, MontyObject::string("ignored".to_owned()));
+        assert_eq!(result, MontyObject::path("/after".to_owned()));
+
+        let code = format!("import os\nos.{method}('/before', '/after')");
+        let (_, _, result) = run_oscall_with_result(&code, MontyObject::none());
+        assert_eq!(result, MontyObject::none());
+    }
+}
+
+fn run_with_os_reply(code: &str, reply: impl Into<ExtFunctionResult>) -> Result<MontyObject, MontyException> {
+    let progress = host_runner(code).start(vec![], ResourceTracker::default(), PrintWriter::Stdout)?;
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected OS call")
+    };
+    call.resume(reply, PrintWriter::Stdout)?
+        .into_complete()
+        .ok_or_else(|| MontyException::new(ExcType::RuntimeError, Some("expected completion".to_owned())))
+}
+
+#[test]
+fn path_unlink_suppresses_only_missing_files_when_requested() {
+    for option in ["True", "1", "'yes'", "[1]"] {
+        let code = format!("from pathlib import Path\nPath('/missing').unlink(missing_ok={option})");
+        let error = MontyException::new(ExcType::FileNotFoundError, Some("missing".to_owned()));
+        assert_eq!(run_with_os_reply(&code, error).unwrap(), MontyObject::none());
+    }
+    for args in ["", "False", "missing_ok=False", "missing_ok=[]"] {
+        let code = format!("from pathlib import Path\nPath('/missing').unlink({args})");
+        let error = MontyException::new(ExcType::FileNotFoundError, Some("missing".to_owned()));
+        assert_eq!(
+            run_with_os_reply(&code, error).unwrap_err().exc_type(),
+            ExcType::FileNotFoundError
+        );
+    }
+    for exc in [ExcType::PermissionError, ExcType::IsADirectoryError, ExcType::OSError] {
+        let error = MontyException::new(exc, Some("denied".to_owned()));
+        assert_eq!(
+            run_with_os_reply("from pathlib import Path\nPath('/bad').unlink(True)", error)
+                .unwrap_err()
+                .exc_type(),
+            exc
+        );
+    }
+    assert_eq!(
+        run_with_os_reply(
+            "from pathlib import Path\nPath('/file').unlink(True)",
+            MontyObject::int(7)
+        )
+        .unwrap(),
+        MontyObject::none()
+    );
+}
+
+#[test]
+fn path_rename_and_replace_reject_invalid_targets() {
+    for method in ["rename", "replace"] {
+        for (target, accepted, type_name) in [
+            ("None", "string, bytes or os.PathLike", "NoneType"),
+            ("42", "string, bytes or os.PathLike", "int"),
+            ("[]", "string, bytes or os.PathLike", "list"),
+            ("b'after'", "string or os.PathLike", "bytes"),
+        ] {
+            let code = format!("from pathlib import Path\nPath('/before').{method}(target={target})");
+            let error = host_runner(&code)
+                .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+                .unwrap_err();
+            assert_eq!(error.exc_type(), ExcType::TypeError);
+            assert_eq!(
+                error.message(),
+                Some(format!("{method}: dst should be {accepted}, not {type_name}").as_str())
+            );
+        }
+    }
+}
+
+#[test]
+fn path_and_os_mkdir_validate_mode_types() {
+    for expression in ["Path('/dir').mkdir", "os.mkdir"] {
+        let prefix = "from pathlib import Path\nimport os\n";
+        let path_arg = if expression == "os.mkdir" { "'/dir', " } else { "" };
+        for mode in ["True", "False"] {
+            let code = format!("{prefix}{expression}({path_arg}mode={mode})");
+            assert_eq!(run_to_oscall(&code).0, "Path.mkdir");
+        }
+        for mode in ["None", "'700'", "1.5", "[]"] {
+            let code = format!("{prefix}{expression}({path_arg}mode={mode})");
+            let error = host_runner(&code)
+                .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+                .unwrap_err();
+            assert_eq!(error.exc_type(), ExcType::TypeError);
+            assert!(error.message().unwrap().contains("cannot be interpreted as an integer"));
+        }
+        for (body, expected) in [
+            ("return 2**40", ExcType::OverflowError),
+            ("return '700'", ExcType::TypeError),
+            ("raise ValueError('invalid mode')", ExcType::ValueError),
+        ] {
+            let code = format!(
+                "{prefix}class Mode:\n    def __index__(self):\n        {body}\n{expression}({path_arg}mode=Mode())"
+            );
+            let error = host_runner(&code)
+                .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+                .unwrap_err();
+            assert_eq!(error.exc_type(), expected);
+        }
+    }
+}
+
+#[test]
+fn path_rename_host_errors_propagate() {
+    for method in ["rename", "replace"] {
+        let code = format!("from pathlib import Path\nPath('/before').{method}('/after')");
+        let error = MontyException::new(ExcType::PermissionError, Some("denied".to_owned()));
+        assert_eq!(
+            run_with_os_reply(&code, error).unwrap_err().exc_type(),
+            ExcType::PermissionError
+        );
+    }
+}
+
+#[test]
+fn path_stat_accepts_explicit_follow_symlinks() {
+    let (name, _, result) = run_oscall_with_result(
+        "from pathlib import Path\nPath('/file').stat(follow_symlinks=True).st_size",
+        file_stat(0o644, 12, 0.0),
+    );
+    assert_eq!(name, "Path.stat");
+    assert_eq!(result, MontyObject::int(12));
+    let error = host_runner("from pathlib import Path\nPath('/file').stat(follow_symlinks=False)")
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::NotImplementedError);
+}
+
+#[test]
+fn path_mutation_and_stat_arity_errors_count_self() {
+    for (call, message) in [
+        ("stat(True)", "Path.stat() takes 1 positional argument but 2 were given"),
+        (
+            "rename('target', 'extra')",
+            "Path.rename() takes 2 positional arguments but 3 were given",
+        ),
+        (
+            "replace('target', 'extra')",
+            "Path.replace() takes 2 positional arguments but 3 were given",
+        ),
+        (
+            "unlink(True, False)",
+            "Path.unlink() takes from 1 to 2 positional arguments but 3 were given",
+        ),
+    ] {
+        let error = host_runner(&format!("from pathlib import Path\nPath('/file').{call}"))
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::TypeError);
+        assert_eq!(error.message(), Some(message));
+    }
+}
+
+#[test]
+fn path_mkdir_validates_c_int_modes_and_counts_self() {
+    for mode in ["2**40", "-(2**40)", "2**100"] {
+        for code in [
+            format!("from pathlib import Path\nPath('/dir').mkdir(mode={mode})"),
+            format!("import os\nos.mkdir('/dir', mode={mode})"),
+        ] {
+            let error = host_runner(&code)
+                .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+                .unwrap_err();
+            assert_eq!(error.exc_type(), ExcType::OverflowError);
+        }
+    }
+    let error = host_runner("from pathlib import Path\nPath('/dir').mkdir(0o777, False, False, 'extra')")
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        error.message(),
+        Some("Path.mkdir() takes from 1 to 4 positional arguments but 5 were given")
+    );
+}
+
+#[test]
+fn path_result_effects_survive_a_dump() {
+    for (code, reply, expected) in [
+        (
+            "from pathlib import Path\nPath('before').rename(target='after')",
+            ExtFunctionResult::Return(MontyObject::none()),
+            MontyObject::path("after".to_owned()),
+        ),
+        (
+            "from pathlib import Path\nPath('before').replace(target='after')",
+            ExtFunctionResult::Return(MontyObject::none()),
+            MontyObject::path("after".to_owned()),
+        ),
+        (
+            "from pathlib import Path\nPath('missing').unlink(missing_ok=True)",
+            ExtFunctionResult::Error(MontyException::new(ExcType::FileNotFoundError, None)),
+            MontyObject::none(),
+        ),
+    ] {
+        let progress = host_runner(code)
+            .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap();
+        let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+        let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+            panic!("expected running session")
+        };
+        let call = restored.into_os_call().unwrap();
+        progress
+            .into_os_call()
+            .unwrap()
+            .resume(
+                match &reply {
+                    ExtFunctionResult::Return(value) => ExtFunctionResult::Return(value.clone()),
+                    ExtFunctionResult::Error(error) => ExtFunctionResult::Error(error.clone()),
+                    _ => unreachable!(),
+                },
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        assert_eq!(
+            call.resume(reply, PrintWriter::Stdout)
+                .unwrap()
+                .into_complete()
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn path_and_os_mkdir_accept_index_modes() {
+    for expression in ["Path('/dir').mkdir(mode=Mode())", "os.mkdir('/dir', mode=Mode())"] {
+        let code = format!(
+            "from pathlib import Path\nimport os\nclass Mode:\n    def __index__(self):\n        return 0o700\n{expression}"
+        );
+        assert_eq!(run_to_oscall(&code).0, "Path.mkdir");
+    }
+}
+
+#[test]
+fn mutation_effects_name_the_python_operation() {
+    for (code, operation) in [
+        (
+            "from pathlib import Path\nPath('/file').unlink(missing_ok=True)",
+            "Path.unlink",
+        ),
+        (
+            "from pathlib import Path\nPath('/before').rename('/after')",
+            "Path.rename",
+        ),
+        (
+            "from pathlib import Path\nPath('/before').replace('/after')",
+            "Path.replace",
+        ),
+    ] {
+        let error = run_with_os_reply(code, ExtFunctionResult::Future(1)).unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::RuntimeError);
+        assert_eq!(
+            error.message().unwrap(),
+            format!("{operation} cannot be answered with a future")
+        );
+    }
 }

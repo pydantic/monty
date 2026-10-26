@@ -315,6 +315,9 @@ pub enum ExcType {
     /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
     #[strum(serialize = "json.JSONDecodeError")]
     JsonDecodeError,
+    /// Subclass of ValueError for invalid TOML in `tomllib.loads()` / `tomllib.load()`.
+    #[strum(serialize = "tomllib.TOMLDecodeError")]
+    TomlDecodeError,
 
     // --- ImportError hierarchy ---
     /// Import-related errors (module not found, name not in module).
@@ -385,6 +388,60 @@ pub enum ExcType {
     /// older code. Monty exposes it for the same reason.
     #[strum(serialize = "binascii.Incomplete")]
     BinasciiIncomplete,
+
+    // --- csv module ---
+    /// `csv.Error` - raised by the `csv` readers and writers for malformed data
+    /// and unknown dialect names.
+    ///
+    /// A direct `Exception` subclass, named `_csv.Error` as in CPython.
+    #[strum(serialize = "_csv.Error")]
+    CsvError,
+
+    // --- decimal module ---
+    // CPython's decimal signals form a multiple-inheritance hierarchy under
+    // `ArithmeticError`; [`Self::decimal_ancestors`] lists each one's bases.
+    /// `decimal.DecimalException`, the base of every decimal signal.
+    #[strum(serialize = "decimal.DecimalException")]
+    DecimalException,
+    /// `decimal.Clamped`: an exponent was changed to fit the representation.
+    #[strum(serialize = "decimal.Clamped")]
+    DecimalClamped,
+    /// `decimal.InvalidOperation`: an operation with no meaningful result.
+    #[strum(serialize = "decimal.InvalidOperation")]
+    DecimalInvalidOperation,
+    /// `decimal.ConversionSyntax`: a malformed numeric string.
+    #[strum(serialize = "decimal.ConversionSyntax")]
+    DecimalConversionSyntax,
+    /// `decimal.DivisionByZero`: a finite non-zero dividend divided by zero.
+    #[strum(serialize = "decimal.DivisionByZero")]
+    DecimalDivisionByZero,
+    /// `decimal.DivisionImpossible`: an integer quotient too long for the precision.
+    #[strum(serialize = "decimal.DivisionImpossible")]
+    DecimalDivisionImpossible,
+    /// `decimal.DivisionUndefined`: zero divided by zero.
+    #[strum(serialize = "decimal.DivisionUndefined")]
+    DecimalDivisionUndefined,
+    /// `decimal.Inexact`: a result was rounded and lost non-zero digits.
+    #[strum(serialize = "decimal.Inexact")]
+    DecimalInexact,
+    /// `decimal.InvalidContext`: an invalid context setting was detected.
+    #[strum(serialize = "decimal.InvalidContext")]
+    DecimalInvalidContext,
+    /// `decimal.Rounded`: a result was rounded, perhaps without losing digits.
+    #[strum(serialize = "decimal.Rounded")]
+    DecimalRounded,
+    /// `decimal.Subnormal`: a result's exponent fell below `Emin`.
+    #[strum(serialize = "decimal.Subnormal")]
+    DecimalSubnormal,
+    /// `decimal.Overflow`: a result's exponent exceeded `Emax`.
+    #[strum(serialize = "decimal.Overflow")]
+    DecimalOverflow,
+    /// `decimal.Underflow`: a subnormal result was rounded.
+    #[strum(serialize = "decimal.Underflow")]
+    DecimalUnderflow,
+    /// `decimal.FloatOperation`: floats and Decimals were mixed.
+    #[strum(serialize = "decimal.FloatOperation")]
+    DecimalFloatOperation,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -398,7 +455,7 @@ impl ExcType {
     /// Returns true if `self` would be caught by `except handler_type:`.
     #[must_use]
     pub fn is_subclass_of(self, handler_type: Self) -> bool {
-        if self == handler_type {
+        if self == handler_type || self.decimal_ancestors().contains(&handler_type) {
             return true;
         }
         match handler_type {
@@ -423,6 +480,7 @@ impl ExcType {
                 Self::UnicodeDecodeError
                     | Self::UnicodeEncodeError
                     | Self::JsonDecodeError
+                    | Self::TomlDecodeError
                     | Self::BinasciiError
                     | Self::UnsupportedOperation
             ),
@@ -443,6 +501,52 @@ impl ExcType {
             ),
             // All other types only match exactly (handled by self == handler_type above)
             _ => false,
+        }
+    }
+
+    /// Every base of a `decimal` exception below `Exception`, in CPython's MRO order;
+    /// empty for every other type.
+    ///
+    /// The decimal signals inherit from several classes at once (`DivisionByZero` is
+    /// also a `ZeroDivisionError`, `Underflow` is `Inexact`, `Rounded` and `Subnormal`).
+    #[must_use]
+    pub fn decimal_ancestors(self) -> &'static [Self] {
+        const BASE: &[ExcType] = &[ExcType::DecimalException, ExcType::ArithmeticError];
+        const INVALID: &[ExcType] = &[
+            ExcType::DecimalInvalidOperation,
+            ExcType::DecimalException,
+            ExcType::ArithmeticError,
+        ];
+        match self {
+            Self::DecimalException => &[Self::ArithmeticError],
+            Self::DecimalClamped
+            | Self::DecimalInvalidOperation
+            | Self::DecimalInexact
+            | Self::DecimalRounded
+            | Self::DecimalSubnormal => BASE,
+            Self::DecimalConversionSyntax | Self::DecimalDivisionImpossible | Self::DecimalInvalidContext => INVALID,
+            Self::DecimalDivisionUndefined => &[
+                Self::DecimalInvalidOperation,
+                Self::DecimalException,
+                Self::ZeroDivisionError,
+                Self::ArithmeticError,
+            ],
+            Self::DecimalDivisionByZero => &[Self::DecimalException, Self::ZeroDivisionError, Self::ArithmeticError],
+            Self::DecimalOverflow => &[
+                Self::DecimalInexact,
+                Self::DecimalRounded,
+                Self::DecimalException,
+                Self::ArithmeticError,
+            ],
+            Self::DecimalUnderflow => &[
+                Self::DecimalInexact,
+                Self::DecimalRounded,
+                Self::DecimalSubnormal,
+                Self::DecimalException,
+                Self::ArithmeticError,
+            ],
+            Self::DecimalFloatOperation => &[Self::DecimalException, Self::ArithmeticError, Self::TypeError],
+            _ => &[],
         }
     }
 }
@@ -567,7 +671,8 @@ impl UnicodeErrorData {
 }
 
 /// Structured fields of a `json.JSONDecodeError`, mirroring CPython's `msg` /
-/// `doc` / `pos` / `lineno` / `colno` exception attributes.
+/// `doc` / `pos` / `lineno` / `colno` exception attributes. `tomllib.TOMLDecodeError`
+/// defines the same five attributes, so it carries this payload too.
 ///
 /// As with [`UnicodeErrorData`], the payload exists so host bindings can
 /// construct a real `json.JSONDecodeError` instead of falling back to a plain
@@ -751,6 +856,55 @@ impl CodeLoc {
         Self {
             line: line.saturating_add(1),
             column: column.saturating_add(1),
+        }
+    }
+}
+
+/// The source range of the expression that suspended execution, carried by
+/// every suspension.
+///
+/// `start` and `end` are UTF-8 byte offsets into the named source, `end`
+/// exclusive: slice the source's bytes (in Python, `source.encode()[start:end]`)
+/// rather than indexing the string. A peer that sends no position reads as
+/// [`Self::unknown`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct SourceRange {
+    /// The source the range indexes, named as a traceback frame names it: an
+    /// in-process one-shot run's script name, `<python-input-N>` for a feed,
+    /// `<string>` in `eval()` / `exec()`.
+    pub filename: String,
+    /// Byte offset where the expression starts.
+    pub start: u32,
+    /// Byte offset where the expression ends (exclusive).
+    pub end: u32,
+}
+
+impl SourceRange {
+    /// Longest `filename` a range carries, in bytes, so a peer cannot make hosts copy a huge name.
+    pub const MAX_FILENAME_LEN: usize = 256;
+
+    /// Builds a range, cutting `filename` on a char boundary.
+    #[must_use]
+    pub fn new(filename: &str, start: u32, end: u32) -> Self {
+        let mut len = filename.len().min(Self::MAX_FILENAME_LEN);
+        while !filename.is_char_boundary(len) {
+            len -= 1;
+        }
+        Self {
+            filename: filename[..len].to_owned(),
+            start,
+            end,
+        }
+    }
+
+    /// The range a host reports when its peer sent no position: an empty
+    /// filename and an empty range at offset zero.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            filename: String::new(),
+            start: 0,
+            end: 0,
         }
     }
 }

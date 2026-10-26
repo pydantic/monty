@@ -9,16 +9,17 @@ use monty_types::{
 };
 use pyo3::{
     prelude::*,
-    types::{PyBool, PyBytes, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
+    types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
 };
 
 use super::{
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, get_namedtuple, get_pure_posix_path, host_type_object, import_builtins,
+        PyMontyFileHandle, get_decimal_type, get_namedtuple, get_pure_posix_path, host_type_object, import_builtins,
         monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
+    external_module::PyExternalModule,
     std_type_proxy::{PyMontyStdTypeProxy, StdTypeRef},
 };
 
@@ -88,6 +89,7 @@ impl Decoder<'_, '_> {
             MontyNode::Int(i) => Ok(i.into_pyobject(py)?.clone().into_any().unbind()),
             MontyNode::BigInt(bi) => Ok(bi.into_pyobject(py)?.clone().into_any().unbind()),
             MontyNode::Float(f) => Ok(f.into_pyobject(py)?.clone().into_any().unbind()),
+            MontyNode::Complex(c) => Ok(PyComplex::from_doubles(py, c.real, c.imag).into_any().unbind()),
             MontyNode::String(s) => Ok(PyString::new(py, s).into_any().unbind()),
             MontyNode::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
             MontyNode::List(items) => Ok(PyList::new(py, self.children(items))?.into_any().unbind()),
@@ -175,7 +177,16 @@ impl Decoder<'_, '_> {
                     Ok(Py::new(py, proxy)?.into_any())
                 }
             }
+            // a host module comes back as an `ExternalModule` with the id it imported with
+            MontyNode::Module { id, attrs, .. } => {
+                let attrs = self.attrs_dict(attrs)?;
+                let module = PyExternalModule::new(py, attrs.bind(py), None, *id)?;
+                Ok(Py::new(py, module)?.into_any())
+            }
             MontyNode::Path(p) => Ok(get_pure_posix_path(py)?.call1((p,))?.into_any().unbind()),
+            // The child's text is untrusted; a malformed one raises from the
+            // host's own `Decimal()` rather than panicking here.
+            MontyNode::Decimal(d) => Ok(get_decimal_type(py)?.call1((d,))?.into_any().unbind()),
             // a sandbox file is not an OS file, so it decodes to a
             // `MontyFileHandle` exposing `path`, `mode` and `position`
             MontyNode::FileHandle(handle) => Ok(Py::new(py, PyMontyFileHandle::from_inner(handle.clone()))?.into_any()),

@@ -351,3 +351,103 @@ def cell_contains_closure():
 
 
 assert cell_contains_closure() == 100
+
+
+# === Assignment expressions in nested function defaults ===
+def keyword_default_nonlocal():
+    def inner(*, value=(counter := 0)):
+        nonlocal counter
+        counter += 1
+
+    inner()
+    return counter
+
+
+assert keyword_default_nonlocal() == 1
+
+
+def positional_default_nonlocal():
+    def inner(value=(counter := 0)):
+        nonlocal counter
+        counter += 1
+
+    inner()
+    return counter
+
+
+assert positional_default_nonlocal() == 1
+
+
+def explicit_outer_assignment():
+    counter = -1
+
+    def inner(*, value=(counter := 0)):
+        nonlocal counter
+        counter += 1
+
+    inner()
+    return counter
+
+
+assert explicit_outer_assignment() == 1
+
+
+def sibling_closure_reads_default_binding():
+    def writer(*, value=(shared := 0)):
+        nonlocal shared
+        shared += 1
+
+    def reader():
+        return shared
+
+    writer()
+    return reader()
+
+
+assert sibling_closure_reads_default_binding() == 1
+
+
+def module_global_is_unchanged():
+    def inner(value=(local_value := 0)):
+        return value
+
+    assert inner() == 0
+    assert local_value == 0
+
+
+local_value = 10
+module_global_is_unchanged()
+assert local_value == 10
+
+
+def default_target_global_is_preserved():
+    global module_global
+
+    def inner(value=(module_global := 0)):
+        return value
+
+    inner()
+    return module_global
+
+
+module_global = 10
+assert default_target_global_is_preserved() == 0
+assert module_global == 0
+
+
+def default_target_nonlocal_is_preserved():
+    shared = 10
+
+    def middle():
+        nonlocal shared
+
+        def inner(value=(shared := 0)):
+            return value
+
+        inner()
+        return shared
+
+    return middle()
+
+
+assert default_target_nonlocal_is_preserved() == 0

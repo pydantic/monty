@@ -12,7 +12,7 @@ so a plain `npm install` gets you everything.
 Execution happens in `monty` worker subprocesses, so a crash triggered by adversarial code kills only the worker.
 
 For browsers, or anywhere subprocesses are impossible, the same package exposes a WebAssembly build under the
-`@pydantic/monty/wasm` subpath, running in a Web Worker in browsers and in-process under Node; see
+`@pydantic/monty/wasm` subpath, running in a Web Worker in browsers and a worker thread under Node; see
 [browsers and WebAssembly](#browsers-and-webassembly).
 
 ## First run
@@ -36,6 +36,7 @@ limits.
 `externalLookup` holds the host functions it can call.
 `await using` closes the session and the pool at the end of scope.
 Without it, call `session.close()` and `pool.close()` yourself.
+`checkout({ scriptName })` names diagnostics and supplies the filename portion of the sandbox's `__file__`.
 
 ## Sessions keep state
 
@@ -76,6 +77,23 @@ Keyword arguments from the sandbox arrive as a trailing object on the call.
 An error thrown by a host function crosses into the sandbox as a Python exception, using the error's `name` when it
 matches a Python exception type and `RuntimeError` otherwise.
 
+`externalModules` on `checkout()` maps import names to `ExternalModule` values with optional type stubs, or to
+zero-argument factories returning one (a promise is awaited), run when a feed first needs the module.
+A plain object's public properties become module attributes; functions become host functions named `<module>.<attr>`:
+
+```ts
+import { ExternalModule, Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+const tools = new ExternalModule({ add: (a: number, b: number) => a + b })
+await using session = await pool.checkout({ externalModules: { tools } })
+
+const code = 'import tools\nfrom tools import add\ntools.add(1, 2) + add(3, 4)'
+console.log(await session.feedRun(code)) // 10
+```
+
+See [importing host modules](../host-functions.md#importing-host-modules).
+
 ### Value conversion
 
 | Python              | JavaScript                                      |
@@ -84,6 +102,8 @@ matches a Python exception type and `RuntimeError` otherwise.
 | `bool`              | `boolean`                                       |
 | `int`               | `number` within ±2^53, otherwise `BigInt`       |
 | `float`             | `number`                                        |
+| `complex`           | `{ __monty_type__: 'Complex', real, imag }`     |
+| `decimal.Decimal`   | `{ __monty_type__: 'Decimal', value }`          |
 | `str`               | `string`                                        |
 | `bytes`             | `Buffer`                                        |
 | `list`              | `Array`                                         |
@@ -91,9 +111,20 @@ matches a Python exception type and `RuntimeError` otherwise.
 | `dict`              | `Map`                                           |
 | `set` / `frozenset` | `Set`                                           |
 | `datetime` family   | marker objects carrying `__monty_type__`        |
+| builtin types       | `{ __monty_type__: 'Type', value }`             |
+| builtin functions   | `{ __monty_type__: 'BuiltinFunction', value }`  |
 | file handles        | `MontyFileHandle`                               |
 
+A `Decimal` marker's `value` is its exact canonical string (`'1.20'`, `'1E+5'`, `'NaN'`), never a `number`.
+That is `str(d)` under the default context; the exponent is always an uppercase `E`, whatever the context's `capitals`.
+
+Builtin type and function markers carry the builtin's name, never a JavaScript callable.
+Passing a marker back resolves it to that builtin; unrecognized names are rejected with `unknown type name` or
+`unknown builtin function`.
+
 Plain objects with string keys are accepted as `dict` inputs.
+Repeated references within one message preserve identity; see [host-value limitations](../limitations/host-values.md)
+for cycles, deeply nested values and copies between calls.
 
 ## Host objects
 
@@ -127,8 +158,7 @@ console.log(await session.feedRun('Wallet(5).balance', { inputs: { Wallet: Walle
 ```
 
 Instances defined inside the sandbox arrive as read-only `MontyClassProxy` stand-ins.
-See [host objects](../host-objects.md) and the
-[package README](https://github.com/pydantic/monty/blob/main/crates/monty-js/README.md#class-instances).
+See [host objects](../host-objects.md) for policies, identity and returned objects.
 
 ## Capturing printed output
 
@@ -145,8 +175,11 @@ console.log(collector.output) // 'from the sandbox\n'
 
 `CollectStreams` collects `(stream, text)` entries so you can tell stdout from stderr.
 A plain `(stream, text) => void` callback works too.
-Both collectors default to a 10 MiB cap (`DEFAULT_MAX_PRINT_COLLECT_BYTES`); pass `null` to disable it.
+Both collectors default to a 10 MiB cap (`DEFAULT_MAX_PRINT_COLLECT_BYTES`); `maxBytes: null` disables it for trusted hosts.
+Other `maxBytes` values must be finite and non-negative.
+Exceeding the cap rejects the feed with `MontyRuntimeError` wrapping `MemoryError`.
 The cap is host-side and separate from [`maxMemory`](../resource-limits.md).
+Without `printCallback`, Node writes to stdout/stderr; browsers send each output chunk to `console.log`/`console.error`.
 
 Output arrives in batched chunks, not one per `print()`.
 `printFlushInterval` on `checkout()` sets how long (in seconds) the worker may hold it — 0.005 by default, `0` for one
@@ -172,10 +205,20 @@ await sdk.shutdown()
 ```
 
 Instrumentation is an explicit opt-in because it records source, inputs, outputs, host calls, exceptions, and printed
-text. It also records pool and execution metrics through the SDK's meter provider. Drain Monty's callback queues with
-`instrumentation.forceFlush()` before shutting down the SDK. See the
-[package README](https://github.com/pydantic/monty/blob/main/crates/monty-js/README.md#observability) for direct
-`Tracer`, `Meter`, and `Logger` setup.
+text.
+It also records pool and execution metrics through the SDK's meter provider, without sandbox-supplied dimensions.
+Configure instrumentation before creating pools.
+`MontyInstrumentation.disable()` can stop telemetry while sessions remain active; changing providers or other signal
+settings while pools are active is unsupported.
+Drain Monty's callback queues with `instrumentation.forceFlush()` before shutting down the SDK.
+
+For already configured OTel components, import `instrumentTelemetry` from `@pydantic/monty/node` and call
+`instrumentTelemetry({ tracer, meter, logger })`; at least one component is required.
+It applies process-wide and uses the providers' IDs, sampling, resources, metric views and exporters.
+`MontyInstrumentation` obtains its logger through `@opentelemetry/api-logs`.
+Call `flushTelemetry()` before flushing providers directly.
+Worker threads wait for span creation; other records use bounded queues whose overflow disables the affected telemetry path.
+This instrumentation is native-only; WASM still preserves caller context through `snapshot.traceContext()`.
 
 ## Errors
 
@@ -183,27 +226,33 @@ text. It also records pool and execution metrics through the SDK's meter provide
 import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } from '@pydantic/monty'
 ```
 
-| Class               | Raised when                                                              | Session survives |
-| ------------------- | ------------------------------------------------------------------------ | ---------------- |
-| `MontySyntaxError`  | The snippet does not parse                                               | yes              |
-| `MontyTypingError`  | Type checking rejected the snippet                                       | yes              |
-| `MontyRuntimeError` | The code raised at runtime                                               | yes              |
-| `MontyCrashedError` | The worker died, or the watchdog killed it                               | no               |
-| `ProtocolError`     | The worker, or a caller misusing the session, violated the wire protocol | no               |
+| Class                  | Raised when                                                                           | Session survives |
+| ---------------------- | ------------------------------------------------------------------------------------- | ---------------- |
+| `MontySyntaxError`     | The snippet does not parse                                                            | yes              |
+| `MontyTypingError`     | Type checking rejected the snippet                                                    | yes              |
+| `MontyRuntimeError`    | The code raised at runtime                                                            | yes              |
+| `MontyCrashedError`    | The worker died, or the watchdog killed it                                            | no               |
+| `MontyDisconnectError` | A [remote worker's](#remote-workers) connection closed                                | no               |
+| `MontyShutdown`        | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
+| `ProtocolError`        | The worker, or a caller misusing the session, violated the wire protocol              | no               |
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
 Which formats a class accepts differs; passing one a class does not accept throws, except `MontyTypingError.display()`,
 which ignores any argument:
 
-| Class                             | `display` formats                              |
-| --------------------------------- | ---------------------------------------------- |
-| `MontyError`, `MontyCrashedError` | `'msg'` (default), `'type-msg'`                |
-| `MontySyntaxError`                | `'msg'` (default), `'type-msg'`, `'traceback'` |
-| `MontyRuntimeError`               | `'traceback'` (default), `'type-msg'`, `'msg'` |
-| `MontyTypingError`                | takes no argument; returns the diagnostics     |
+| Class                                                                      | `display` formats                              |
+| -------------------------------------------------------------------------- | ---------------------------------------------- |
+| `MontyError`, `MontyCrashedError`, `MontyDisconnectError`, `MontyShutdown` | `'msg'` (default), `'type-msg'`                |
+| `MontySyntaxError`                                                         | `'msg'` (default), `'type-msg'`, `'traceback'` |
+| `MontyRuntimeError`                                                        | `'traceback'` (default), `'type-msg'`, `'msg'` |
+| `MontyTypingError`                                                         | takes no argument; returns the diagnostics     |
 
-`MontyCrashedError` adds `timedOut` and `exitStatus`.
+`MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`.
+`checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
+refusing it.
+When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
+that fails to spawn or a refused connection rejects with a plain `Error`.
 
 ## Limits and type checking
 
@@ -222,6 +271,9 @@ await using session = await pool.checkout({
 console.log(await session.feedRun('fetch_data()', { externalLookup: { fetch_data: () => 'data' } })) // data
 ```
 
+`ExternalModule.stubs` supplies a module's `.pyi` source, fetched at its first type-checked import.
+See [type checking](../type-checking.md#declaring-what-the-host-provides).
+
 Omitted `maxMemory` / `maxFeedDurationSecs` means unlimited.
 `maxFeedDurationSecs` and `maxTurnDurationSecs` bound one execution clock over one feed
 (`feedRun` or `feedStart`) and one stretch of code between host round trips; each is unlimited when omitted.
@@ -230,7 +282,8 @@ Omitted `maxMemory` / `maxFeedDurationSecs` means unlimited.
 The pool enforces `maxSuspensions`: the first suspension over the budget ends the feed with an uncatchable
 `RuntimeError`.
 `typeCheckFormat` picks a ty diagnostic format and `typeCheckColor` colours it with ANSI escapes.
-See [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
+`assertMessageAnnotations: false` disables introspected assertion messages; an integer sets their truncation length.
+See [assertions](../limitations/assert.md), [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
 Sessions default to the worker's clock and entropy, with sleeps capped at ten seconds per call.
 For reproducible runs, `osPolicy` sets `datetime`, `timezone`, `sleep`, `sleepSystemMax` and `randomStart`:
@@ -300,6 +353,12 @@ await using pool = await Monty.create({
 })
 ```
 
+Closing a pool rejects pending/new checkouts and reaps idle workers; checked-out sessions remain usable until closed.
+`session.workerId` identifies the worker within its pool, including during turns and after the session closes.
+Replacement workers get new IDs, even if the OS reuses a PID.
+`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295; 0 and 1 both retire a worker after each checkout.
+`workerPid` is a native-only OS diagnostic and may be unavailable during a turn.
+
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform
 package, then `PATH`, and in a checkout of the Monty repository finally a cargo-built `target/` binary.
 
@@ -311,44 +370,49 @@ completion.
 captured `externalLookup` / `os`.
 A promise-returning external is awaited directly by `resumeAuto()` when the snapshot's `allowEagerAwait` is true, and
 otherwise concurrently, surfacing as an intermediate `FutureSnapshot`, exactly as under `feedRun`.
+Every snapshot's `position` is a `SourceRange` locating the suspending expression: the call, the name, or the `await`
+the main task is blocked on (see [where execution stopped](../snapshots.md#where-execution-stopped)).
 `snapshot.dump()` serializes a paused worker and `session.loadSnapshot(blob)` restores it; `session.dump()` and
 `session.loadSession(blob)` do the same for an idle session between feeds.
 Only restore unmodified snapshots from a trusted, compatible producer; the caller must establish provenance and integrity.
 See [snapshot security](../security.md#deserializing-snapshots) before accepting bytes through an untrusted channel.
 
-When answering a suspension manually, use `snapshot.traceContext()` with OpenTelemetry's `context.with()`:
+See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTelemetry context propagation.
 
-```ts
-import { context } from '@opentelemetry/api'
-import { FunctionSnapshot, Monty, MontyComplete } from '@pydantic/monty'
+## Remote workers
 
-await using pool = await Monty.create()
-await using session = await pool.checkout()
-const snapshot = await session.feedStart('greet(name)', { inputs: { name: 'Ada' } })
-if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
-const result = await context.with(snapshot.traceContext(), async () => `hello ${snapshot.args[0]}`)
-const done = await snapshot.resume(result)
-if (!(done instanceof MontyComplete)) throw new Error('expected completion')
-console.log(done.output) // hello Ada
+`MontyWebsocket` is a pool of remote workers, usually [Full Monty](../server.md): each checkout dials the URL, and no
+connection is pre-warmed or reused.
+Sessions are the same `MontySession` a local pool returns:
+
+```ts test="skip"
+import { MontyWebsocket } from '@pydantic/monty'
+
+await using pool = await MontyWebsocket.create('ws://localhost:8000/')
+await using session = await pool.checkout({ limits: { maxFeedDurationSecs: 30 } })
+console.log(await session.feedRun('1 + 1')) // 2
 ```
 
-All three snapshot types expose an OTel `Context`, preserving baggage and other entries captured at `feedStart` /
-`loadSnapshot`.
-With [Monty instrumentation](#opentelemetry-instrumentation) enabled, host tracing inside the callback belongs to the
-suspension span; without it, the method returns that captured context unchanged.
-Context is not serialized: restoring captures the restoring caller's context instead.
-Use an SDK-configured OTel context manager to propagate context across awaits.
-Calling the method does not activate the context or resume execution.
-Calling it after resume throws; contexts retrieved earlier remain usable but do not keep the suspension span open.
-`resumeAuto()` already activates the suspension span around callbacks.
+`connectHeaders` is called at each checkout, and may return a promise, for headers on that connection's upgrade request.
+`requestTimeout` defaults to 10 seconds rather than no deadline; `null` disables it.
+`checkout()` also takes `ephemeral` and `profile`, which the server interprets.
+A refused connection rejects `checkout()`.
 
-See [snapshots](../snapshots.md) for the full model.
+A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
+Either can also reject `checkout()` itself, while the session is being created.
+Against a server that stores sessions, `session.sessionId` names the session, `session.dump()` returns the ID of a
+stored record, and both load into a fresh session with `loadSession` / `loadSnapshot`.
+When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
+unless `autoResume: false` is passed to `MontyWebsocket.create()`.
+These behave as in the Python client; see [stored sessions](../api/python/websocket.md#stored-sessions).
+The transport adds no isolation of its own: see [remote workers](../security.md#remote-workers).
+`MontyWebsocket` is native-only; `@pydantic/monty/wasm` does not export it.
 
 ## Browsers and WebAssembly
 
 Anywhere subprocesses are impossible, the same public API is available under `@pydantic/monty/wasm`, backed by a
 WebAssembly build.
-In a browser it runs in a Web Worker; under Node, which has no global `Worker`, it runs in-process:
+In a browser it runs in a Web Worker; under Node it uses `node:worker_threads`:
 
 ```ts test="skip"
 import { Monty } from '@pydantic/monty/wasm'
@@ -367,15 +431,22 @@ Differences from the native path:
 - **Filesystem mounts are unsupported** — a non-empty `mount` list is rejected, because there is no host filesystem.
 - **`bytes` arrive as `Uint8Array`** wherever there is no `Buffer` global, which is every browser.
     Under Node the wasm build still hands back a `Buffer`.
-- **No crash isolation without `Worker`.** Where a real `Worker` exists, it runs off-thread and `Worker.terminate()` is
-    the watchdog's hard kill.
-    Where one does not, the same API degrades to in-process execution: no crash isolation and no preemption, so a runaway
-    turn cannot be interrupted.
-- **`maxProcesses` defaults to 4**, not the CPU count.
-- **`checkoutTimeout`, the three duration graces and `binaryPath` are accepted and ignored.** A checkout on an exhausted
-    pool waits forever rather than failing, nothing backs up the duration limits from outside the worker, and the
-    bundled wasm asset is always used.
-    `requestTimeout` does apply, wherever a real `Worker` exists.
+- **Workers are required.** There is no in-process fallback; see [isolation guarantees](../security.md#crash-isolation).
+    Startup has a separate 30-second deadline; request deadlines start after the worker is ready.
+- **Browser `maxProcesses` defaults to `navigator.hardwareConcurrency`**, or 4 when unavailable; Node uses its CPU count.
+- **`binaryPath` is ignored.** The bundled WASM asset is used instead.
+- **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
+    A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;
+    see [allocator limits](../limitations/resource_limits.md#exceeding-max_memory-in-a-worker-pools).
 - **Prints are buffered per turn** rather than streamed live.
 
-Full API documentation lives in the [package README](https://github.com/pydantic/monty/tree/main/crates/monty-js).
+## TypeScript reference
+
+The package includes declarations with option and method documentation, maintained alongside the implementation:
+[pool options](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/pool.ts),
+[remote pools](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/websocket.ts),
+[sessions and snapshots](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/session.ts),
+[host objects](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/classInstance.ts),
+[OS policies](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/options.ts) and
+[value markers](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/types.ts).
+Worker pools, channels and transports are internal; the WASM-specific public functions are `loadModule` and `createWorkerPool`.

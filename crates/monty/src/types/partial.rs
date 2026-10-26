@@ -77,7 +77,7 @@ impl Partial {
         defer_drop_mut!(keywords, vm);
 
         let func = positional.remove(0);
-        if !func.is_callable(vm.heap) {
+        if !func.is_callable(vm) {
             func.drop_with(vm);
             return Err(ExcType::partial_not_callable());
         }
@@ -484,7 +484,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Partial> {
         let copied = copied?;
         // CPython's `partial.__setstate__` rejects a non-callable too, which is
         // reachable through a `__deepcopy__` that returns something else.
-        if !copied.is_callable(vm.heap) {
+        if !copied.is_callable(vm) {
             copied.drop_with(vm);
             return Err(ExcType::partial_not_callable());
         }
@@ -529,7 +529,7 @@ fn deep_copy_args<'h>(
         let copied = deep_copy(&arg, memo, vm);
         arg.drop_with(vm);
         let copied = copied?;
-        let HeapReadOutput::Partial(mut dest) = vm.heap.read(copy_id) else {
+        let HeapReadOutput::Partial(dest) = vm.heap.read(copy_id) else {
             unreachable!("copy was allocated as a partial")
         };
         dest.get_mut(vm.heap).args.push(copied);
@@ -556,7 +556,7 @@ fn deep_copy_keywords<'h>(
         let (name, value) = &source.get(vm.heap).keywords[index];
         let (name, value) = (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap));
         let pair = deep_copy_pair(name, value, memo, vm)?;
-        let HeapReadOutput::Partial(mut dest) = vm.heap.read(copy_id) else {
+        let HeapReadOutput::Partial(dest) = vm.heap.read(copy_id) else {
             unreachable!("copy was allocated as a partial")
         };
         dest.get_mut(vm.heap).keywords.push(pair);

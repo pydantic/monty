@@ -10,18 +10,24 @@ use std::{fmt, fmt::Write, iter::Peekable, str, str::FromStr};
 
 pub use monty_types::FormatFloat;
 use monty_types::{LARGE_RESULT_THRESHOLD, ResourceTracker};
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive};
 use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::{
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::ExprLoc,
     heap::HeapData,
     intern::StringId,
+    py_value::PyValue,
     resource_checks::check_repeat_size,
     string_builder::StringBuilder,
-    types::{LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
+    types::{
+        Complex, PyTrait, Type,
+        long_int::{PyInt, check_bits_str_digits_limit},
+    },
     value::Value,
 };
 
@@ -558,6 +564,64 @@ impl ParsedFormatSpec {
     }
 }
 
+impl ParsedFormatSpec {
+    /// Renders the spec back into source form, for types such as `Decimal` that parse
+    /// their own spec grammar.
+    ///
+    /// The parse is lossy where `0` meets an explicit alignment (`<020` and `0<20` both
+    /// render as `0<20`) and in redundant spellings (`001`, ` <5`), so the compiler keeps
+    /// a static spec that does not round-trip as its source text instead.
+    pub(crate) fn to_spec_string(&self) -> String {
+        let mut out = String::new();
+        if let Some(align) = self.align {
+            if self.fill != ' ' {
+                out.push(self.fill);
+            }
+            out.push(match align {
+                Align::Left => '<',
+                Align::Right => '>',
+                Align::Center => '^',
+                Align::SignAware => '=',
+            });
+        }
+        if let Some(sign) = self.sign {
+            out.push(match sign {
+                Sign::Plus => '+',
+                Sign::Minus => '-',
+                Sign::Space => ' ',
+            });
+        }
+        if self.z {
+            out.push('z');
+        }
+        if self.alternate {
+            out.push('#');
+        }
+        if self.zero_pad {
+            out.push('0');
+        }
+        if self.width > 0 {
+            out.push_str(&self.width.to_string());
+        }
+        if let Some(grouping) = self.grouping {
+            out.push(grouping.separator());
+        }
+        if self.precision.is_some() || self.frac_grouping.is_some() {
+            out.push('.');
+            if let Some(precision) = self.precision {
+                out.push_str(&precision.to_string());
+            }
+            if let Some(grouping) = self.frac_grouping {
+                out.push(grouping.separator());
+            }
+        }
+        if let Some(type_char) = self.type_char {
+            out.push(type_char.as_char());
+        }
+        out
+    }
+}
+
 impl FromStr for ParsedFormatSpec {
     type Err = ParseFormatSpecError;
 
@@ -622,46 +686,6 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     } else {
         value
     };
-
-    // `spec.precision` on the float formats is rendered as that many decimal
-    // digits. Reject an attacker-chosen oversized result before formatting;
-    // tracker-backed builders guard the later copies at their actual size.
-    //
-    // This applies to `f`/`e`/`%` always, and to the `g`-family
-    // (`g`/`G`/`n`/type-less-with-precision) *only* under alternate form (`#`):
-    // plain `g` strips trailing zeros and caps internally, but `#g` keeps every
-    // zero so its digit count scales with precision just like `f`.
-    let precision_scales_output = matches!(
-        spec.type_char,
-        Some(TypeChar::F | TypeChar::FUpper | TypeChar::E | TypeChar::EUpper | TypeChar::Percent)
-    ) || (spec.alternate
-        && matches!(
-            spec.type_char,
-            None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)
-        ));
-    if let Some(precision) = spec.precision
-        && precision_scales_output
-    {
-        let numeric_finite = match value {
-            Value::Int(_) => true,
-            Value::Float(f) => f.is_finite(),
-            // A big integer formatted as a float is first converted to `f64`,
-            // so an attacker-chosen precision applies to it too — guard it.
-            Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
-            _ => false,
-        };
-        if numeric_finite {
-            // Fractional grouping (`f"{v:.{p}_f}"`) weaves in one separator per
-            // three emitted digits, so the native string reaches ~4/3 × precision
-            // before `allocate_string` accounts for it; budget the separators too.
-            let separators = if spec.frac_grouping.is_some() {
-                precision.saturating_sub(1) / 3
-            } else {
-                0
-            };
-            check_repeat_size(precision.saturating_add(separators), 1, &vm.heap.tracker)?;
-        }
-    }
 
     // A `str` value is formatted entirely through the string mini-language:
     // `validate_string_spec` rejects (in CPython's precedence order) every flag
@@ -762,47 +786,82 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         validate_alternate(spec.type_char, value_type)?;
     }
 
-    // Big integers (`LongInt`) live on the heap; route them through the
-    // arbitrary-precision formatter, which mirrors the `i64` integer/float
-    // paths. The validations above (grouping, precision, sign-with-`c`,
-    // alternate) already ran against `value_type == Type::Int`, so only the
-    // value dispatch remains.
+    // A complex has two checks of its own, still ahead of the precision preflight
+    // below so an invalid spec raises `ValueError` whatever its precision costs.
     if let Value::Ref(id) = value
-        && let HeapData::LongInt(li) = vm.heap.get(*id)
+        && let HeapData::Complex(_) = vm.heap.get(*id)
     {
-        return format_long_int(li, &value_type.name(vm.heap, vm.interns), spec, &vm.heap.tracker);
+        check_complex_spec(spec)?;
     }
 
-    match (value, spec.type_char) {
-        // Integer formatting. `n` (locale number) formats an integer like `d`;
-        // Monty has no locale, so the C-locale form — no grouping — applies.
-        (Value::Int(n), None | Some(TypeChar::D | TypeChar::N)) => format_int(*n, spec, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::B)) => format_int_base(*n, 2, false, spec, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::O)) => format_int_base(*n, 8, false, spec, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::X)) => format_int_base(*n, 16, false, spec, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::XUpper)) => format_int_base(*n, 16, true, spec, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::C)) => format_char(*n, spec, &vm.heap.tracker),
+    // CPython bounds a float precision by `INT_MAX - 1024` before looking at
+    // the value, so `inf`/`nan` and ints under a float presentation hit it too.
+    if spec.precision.is_some_and(|precision| precision > MAX_FLOAT_PRECISION)
+        && formats_as_float(spec.type_char, value_type)
+    {
+        return Err(ExcType::value_error_precision_too_big());
+    }
+
+    // `spec.precision` on the float formats is rendered as that many decimal
+    // digits. Reject an attacker-chosen oversized result before formatting;
+    // tracker-backed builders guard the later copies at their actual size.
+    //
+    // This applies to `f`/`e`/`%` always, and to the `g`-family
+    // (`g`/`G`/`n`/type-less-with-precision) *only* under alternate form (`#`):
+    // plain `g` strips trailing zeros and caps internally, but `#g` keeps every
+    // zero so its digit count scales with precision just like `f`.
+    let precision_scales_output = matches!(
+        spec.type_char,
+        Some(TypeChar::F | TypeChar::FUpper | TypeChar::E | TypeChar::EUpper | TypeChar::Percent)
+    ) || (spec.alternate
+        && matches!(
+            spec.type_char,
+            None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)
+        ));
+    if let Some(precision) = spec.precision
+        && precision_scales_output
+    {
+        // The number of finite components the precision expands, so the whole
+        // output is charged before any of it is built.
+        let finite_parts = match value.py_value(vm) {
+            PyValue::Int(_) => 1,
+            PyValue::Float(value) => usize::from(value.is_finite()),
+            PyValue::Complex(value) => {
+                let value = value.get(vm.heap);
+                usize::from(value.real.is_finite()) + usize::from(value.imag.is_finite())
+            }
+            _ => 0,
+        };
+        if finite_parts > 0 {
+            // Fractional grouping (`f"{v:.{p}_f}"`) weaves in one separator per
+            // three emitted digits, so the native string reaches ~4/3 × precision
+            // before `allocate_string` accounts for it; budget the separators too.
+            let separators = if spec.frac_grouping.is_some() {
+                precision.saturating_sub(1) / 3
+            } else {
+                0
+            };
+            check_repeat_size(precision.saturating_add(separators), finite_parts, &vm.heap.tracker)?;
+        }
+    }
+
+    match (value.py_value(vm), spec.type_char) {
+        (PyValue::Int(integer), _) => integer.format_spec(spec, vm),
+        (PyValue::Complex(value), _) => format_complex(*value.get(vm.heap), spec, &vm.heap.tracker),
 
         // Float formatting. A type-less spec with no precision uses the repr
         // (shortest) digits, *not* `g` — only an explicit `g`/`G` or a type-less
         // spec that carries a precision selects the `g` algorithm.
-        (Value::Float(f), None) if spec.precision.is_none() => format_float_default(*f, spec, &vm.heap.tracker),
+        (PyValue::Float(f), None) if spec.precision.is_none() => format_float_default(f, spec, &vm.heap.tracker),
         // `n` on a float behaves like `g` (locale-aware in CPython; C-locale
         // here, so plain `g`).
-        (Value::Float(f), None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)) => {
-            format_float_g(*f, spec, &vm.heap.tracker)
+        (PyValue::Float(f), None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)) => {
+            format_float_g(f, spec, &vm.heap.tracker)
         }
-        (Value::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => format_float_f(*f, spec, &vm.heap.tracker),
-        (Value::Float(f), Some(TypeChar::E)) => format_float_e(*f, spec, false, &vm.heap.tracker),
-        (Value::Float(f), Some(TypeChar::EUpper)) => format_float_e(*f, spec, true, &vm.heap.tracker),
-        (Value::Float(f), Some(TypeChar::Percent)) => format_float_percent(*f, spec, &vm.heap.tracker),
-
-        // Int to float formatting (Python allows this)
-        (Value::Int(n), Some(TypeChar::F | TypeChar::FUpper)) => format_float_f(*n as f64, spec, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::E)) => format_float_e(*n as f64, spec, false, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::EUpper)) => format_float_e(*n as f64, spec, true, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::G | TypeChar::GUpper)) => format_float_g(*n as f64, spec, &vm.heap.tracker),
-        (Value::Int(n), Some(TypeChar::Percent)) => format_float_percent(*n as f64, spec, &vm.heap.tracker),
+        (PyValue::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => format_float_f(f, spec, &vm.heap.tracker),
+        (PyValue::Float(f), Some(TypeChar::E)) => format_float_e(f, spec, false, &vm.heap.tracker),
+        (PyValue::Float(f), Some(TypeChar::EUpper)) => format_float_e(f, spec, true, &vm.heap.tracker),
+        (PyValue::Float(f), Some(TypeChar::Percent)) => format_float_percent(f, spec, &vm.heap.tracker),
 
         // No type specifier on a non-string value: convert to string and
         // format. (`str` values are handled by the short-circuit above.)
@@ -822,6 +881,31 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
             ),
         )
         .into()),
+    }
+}
+
+impl<'h> PyInt<'h> {
+    /// Formats an integer after the caller has validated its numeric presentation.
+    fn format_spec(&self, spec: &ParsedFormatSpec, vm: &VM<'h>) -> RunResult<String> {
+        let tracker = &vm.heap.tracker;
+        self.with_value(
+            vm,
+            |value| match spec.type_char {
+                None | Some(TypeChar::D | TypeChar::N) => format_int(value, spec, tracker),
+                Some(TypeChar::B) => format_int_base(value, 2, false, spec, tracker),
+                Some(TypeChar::O) => format_int_base(value, 8, false, spec, tracker),
+                Some(TypeChar::X) => format_int_base(value, 16, false, spec, tracker),
+                Some(TypeChar::XUpper) => format_int_base(value, 16, true, spec, tracker),
+                Some(TypeChar::C) => format_char(value, spec, tracker),
+                Some(TypeChar::F | TypeChar::FUpper) => format_float_f(value as f64, spec, tracker),
+                Some(TypeChar::E) => format_float_e(value as f64, spec, false, tracker),
+                Some(TypeChar::EUpper) => format_float_e(value as f64, spec, true, tracker),
+                Some(TypeChar::G | TypeChar::GUpper) => format_float_g(value as f64, spec, tracker),
+                Some(TypeChar::Percent) => format_float_percent(value as f64, spec, tracker),
+                Some(TypeChar::S) => unreachable!("integer presentation was validated"),
+            },
+            |value| format_long_int(value, "int", spec, tracker),
+        )
     }
 }
 
@@ -887,7 +971,7 @@ pub fn validate_string_spec(spec: &ParsedFormatSpec) -> Result<(), RunError> {
 /// permit grouping, everything else is string-formatted and reported as `s`.
 fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type: Type) -> Result<(), RunError> {
     let allowed = match type_char {
-        None => matches!(value_type, Type::Int | Type::Bool | Type::Float),
+        None => matches!(value_type, Type::Int | Type::Bool | Type::Float | Type::Complex),
         Some(TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper) => grouping == Grouping::Underscore,
         // `c`/`s` have nothing to group; `n` does its own locale grouping and so
         // forbids an explicit one (`Cannot specify ',' with 'n'.`).
@@ -914,12 +998,13 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
 /// format code" case.
 ///
 /// Integer codes (`b`/`c`/`d`/`o`/`x`/`X`) need an `int`/`bool`; float codes
-/// (`e`/`E`/`f`/`F`/`g`/`G`/`%`) and `n` accept any number (an `int` is widened
-/// to a float); `s` needs a `str`; a type-less spec (`None`) is valid for every
-/// value (it falls back to `str()`).
+/// (`e`/`E`/`f`/`F`/`g`/`G`/`%`) and `n` accept any real number (an `int` is
+/// widened to a float), and all but `%` a `complex` too; `s` needs a `str`; a
+/// type-less spec (`None`) is valid for every value (it falls back to `str()`).
 fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
     let is_int = matches!(value_type, Type::Int | Type::Bool);
-    let is_num = is_int || value_type == Type::Float;
+    let is_real = is_int || value_type == Type::Float;
+    let is_num = is_real || value_type == Type::Complex;
     match type_char {
         None => true,
         Some(TypeChar::D | TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper | TypeChar::C) => is_int,
@@ -930,9 +1015,9 @@ fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
             | TypeChar::FUpper
             | TypeChar::G
             | TypeChar::GUpper
-            | TypeChar::Percent
             | TypeChar::N,
         ) => is_num,
+        Some(TypeChar::Percent) => is_real,
         Some(TypeChar::S) => value_type == Type::Str,
     }
 }
@@ -942,7 +1027,7 @@ fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
 ///
 /// True for the explicit integer codes (`d`/`b`/`o`/`x`/`X`/`c`) and for a
 /// type-less spec on an `int`/`bool` value. Crucially it keys off `value_type`
-/// (not the `Value` variant) so big integers (`LongInt`, stored as a heap ref
+/// (not the `Value` variant) so big integers (interned or stored as a heap ref
 /// but typed `int`) are included. A float or string with one of those codes is
 /// *not* an integer presentation — it's a type error handled at dispatch — so
 /// this returns false there, letting the "Unknown format code" message win.
@@ -964,8 +1049,8 @@ fn formats_as_integer(type_char: Option<TypeChar>, value_type: Type) -> bool {
 ///
 /// The float codes (`e`/`E`/`f`/`F`/`g`/`G`/`%`) always format as a float
 /// (an `int` is widened); `n` and a type-less spec do so only for an actual
-/// float value. Used to gate the `z` (negative-zero coercion) flag, which is
-/// legal only for float presentations.
+/// float or complex value. Used to gate the `z` (negative-zero coercion) flag,
+/// which is legal only for float presentations, and the `MAX_FLOAT_PRECISION` cap.
 fn formats_as_float(type_char: Option<TypeChar>, value_type: Type) -> bool {
     match type_char {
         Some(
@@ -977,7 +1062,7 @@ fn formats_as_float(type_char: Option<TypeChar>, value_type: Type) -> bool {
             | TypeChar::GUpper
             | TypeChar::Percent,
         ) => true,
-        Some(TypeChar::N) | None => value_type == Type::Float,
+        Some(TypeChar::N) | None => matches!(value_type, Type::Float | Type::Complex),
         _ => false,
     }
 }
@@ -1013,7 +1098,7 @@ fn validate_alternate(type_char: Option<TypeChar>, value_type: Type) -> Result<(
     let message = match type_char {
         Some(TypeChar::C) => Some("Alternate form (#) not allowed with integer format specifier 'c'"),
         Some(TypeChar::S) => Some("Alternate form (#) not allowed in string format specifier"),
-        None if !matches!(value_type, Type::Int | Type::Bool | Type::Float) => {
+        None if !matches!(value_type, Type::Int | Type::Bool | Type::Float | Type::Complex) => {
             Some("Alternate form (#) not allowed in string format specifier")
         }
         _ => None,
@@ -1032,6 +1117,11 @@ pub const MAX_ENCODED_FILL: u32 = 0xFF;
 
 /// Maximum width that fits in the 20-bit width field of the encoded format spec.
 pub const MAX_ENCODED_WIDTH: usize = (1 << 20) - 1;
+
+/// The largest precision CPython's float-to-string conversion accepts
+/// (`DOUBLE_TO_STRING_PRECISION_MAX`, `INT_MAX - 1024`). Above it every float
+/// presentation raises `ValueError: precision too big`, finite value or not.
+pub const MAX_FLOAT_PRECISION: usize = i32::MAX as usize - 1024;
 
 /// Maximum precision that fits in the 21-bit precision field of the encoded format
 /// spec. One slot (the zero value) is reserved to mean "no precision", so the
@@ -1320,7 +1410,7 @@ pub fn format_int_base(
     pad_signed_numeric(sign, prefix, &abs_str, spec, tracker)
 }
 
-/// Formats a big integer ([`LongInt`]) through the numeric mini-language,
+/// Formats a big integer through the numeric mini-language,
 /// mirroring the `i64` paths ([`format_int`] / [`format_int_base`] /
 /// `format_float_*`) but sourcing digits from the arbitrary-precision `BigInt`.
 ///
@@ -1339,7 +1429,7 @@ pub fn format_int_base(
 /// outside the resource limit (`f"{1 << n:b}"`). Each radix render is size-checked
 /// up front against `tracker`.
 fn format_long_int(
-    li: &LongInt,
+    li: &BigInt,
     value_type: &str,
     spec: &ParsedFormatSpec,
     tracker: &ResourceTracker,
@@ -1349,7 +1439,7 @@ fn format_long_int(
     } else {
         positive_sign_prefix(spec.sign)
     };
-    let magnitude = li.abs();
+    let magnitude = li.magnitude();
     // `uppercase` (the `X` type) uppercases the hex digits and the `0x` prefix
     // (`0X`) but never the fill, so it's applied to the digits *before* padding.
     let radix = |base: u32, base_prefix: &'static str, uppercase: bool| -> Result<String, RunError> {
@@ -1363,7 +1453,7 @@ fn format_long_int(
             usize::try_from(max_digits).unwrap_or(usize::MAX).saturating_add(2),
             tracker,
         )?;
-        let mut digits = magnitude.inner().to_str_radix(base);
+        let mut digits = magnitude.to_str_radix(base);
         let prefix = if !spec.alternate {
             ""
         } else if uppercase {
@@ -1441,6 +1531,104 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -
     pad_string(&value, spec.width, align, spec.fill, tracker)
 }
 
+/// Formats a complex as CPython's `complex.__format__` does: each part goes
+/// through the float formatters with width, fill and alignment stripped, the
+/// imaginary part always carries a sign, and the assembled `re±imj` — wrapped in
+/// parentheses for a type-less spec, like `str()` — is padded as one string.
+///
+/// Every spec check, including [`check_complex_spec`], ran in `format_with_spec`.
+fn format_complex(c: Complex, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
+    // A type-less spec renders like `str()`: repr digits, parentheses, and no
+    // real part at all when it is exactly `+0.0`.
+    let str_style = spec.type_char.is_none();
+    let skip_real = str_style && c.real == 0.0 && c.real.is_sign_positive();
+    let part_spec = |sign| ParsedFormatSpec {
+        fill: ' ',
+        align: None,
+        sign,
+        alternate: spec.alternate,
+        z: spec.z,
+        zero_pad: false,
+        width: 0,
+        grouping: spec.grouping,
+        frac_grouping: spec.frac_grouping,
+        precision: spec.precision,
+        type_char: spec.type_char,
+    };
+    let real = if skip_real {
+        String::new()
+    } else {
+        format_complex_part(c.real, &part_spec(spec.sign), tracker)?
+    };
+    // The imaginary part carries an explicit sign unless it stands alone, in
+    // which case the spec's own sign convention applies.
+    let imag_sign = if skip_real { spec.sign } else { Some(Sign::Plus) };
+    let imag = format_complex_part(c.imag, &part_spec(imag_sign), tracker)?;
+    let body = if str_style && !skip_real {
+        format!("({real}{imag}j)")
+    } else {
+        format!("{real}{imag}j")
+    };
+    pad_string(
+        &body,
+        spec.width,
+        spec.align.unwrap_or(Align::Right),
+        spec.fill,
+        tracker,
+    )
+}
+
+/// Zero padding and `=` alignment have no meaning for two numbers; CPython
+/// rejects them before formatting either part.
+fn check_complex_spec(spec: &ParsedFormatSpec) -> RunResult<()> {
+    if spec.zero_pad || spec.fill == '0' {
+        Err(ExcType::value_error(
+            "Zero padding is not allowed in complex format specifier",
+        ))
+    } else if spec.align == Some(Align::SignAware) {
+        Err(ExcType::value_error(
+            "'=' alignment flag is not allowed in complex format specifier",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Formats one part of a complex. A type-less spec without precision uses the
+/// repr digits with an integral value's `.0` dropped (`(1+2j)`, not
+/// `(1.0+2.0j)`); with a precision it is `g`, never the `.0`-preserving
+/// float default; the explicit float codes format as for a float.
+fn format_complex_part(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
+    match spec.type_char {
+        None if spec.precision.is_none() => {
+            let is_negative = f.is_sign_negative() && !f.is_nan();
+            let abs_val = f.abs();
+            let repr = FormatFloat(abs_val).to_string();
+            let digits = repr.strip_suffix(".0").map_or_else(|| repr.clone(), str::to_owned);
+            let abs_str = maybe_alternate_point(digits, abs_val, spec);
+            let sign = numeric_sign(is_negative, &abs_str, spec);
+            pad_signed_numeric(sign, "", &abs_str, spec, tracker)
+        }
+        None => format_float_g(
+            f,
+            &ParsedFormatSpec {
+                type_char: Some(TypeChar::G),
+                ..*spec
+            },
+            tracker,
+        ),
+        Some(TypeChar::G | TypeChar::GUpper | TypeChar::N) => format_float_g(f, spec, tracker),
+        Some(TypeChar::F | TypeChar::FUpper) => format_float_f(f, spec, tracker),
+        Some(TypeChar::E) => format_float_e(f, spec, false, tracker),
+        Some(TypeChar::EUpper) => format_float_e(f, spec, true, tracker),
+        // `format_with_spec` has already rejected every other code for a complex.
+        Some(other) => Err(ExcType::value_error(format!(
+            "Unknown format code '{}' for object of type 'complex'",
+            other.as_char()
+        ))),
+    }
+}
+
 /// Formats a float in fixed-point notation (format types `f` and `F`).
 ///
 /// Always includes a decimal point with `precision` digits after it (default 6).
@@ -1448,12 +1636,17 @@ pub fn format_char(n: i64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -
 /// Right-aligned by default. NaN and infinity are formatted as `nan`/`inf` (or `NAN`/`INF` for `F`).
 pub fn format_float_f(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let is_negative = f.is_sign_negative() && !f.is_nan();
+    let precision = spec.precision.unwrap_or(6);
+    let abs_val = f.abs();
+    if let Some(digits) = short_float_digits(abs_val, precision, spec, |out| write!(out, "{abs_val:.precision$}")) {
+        let sign = numeric_sign(is_negative, digits.as_str(), spec);
+        return pad_signed_numeric(sign, "", digits.as_str(), spec, tracker);
+    }
     let uppercase = spec.type_char == Some(TypeChar::FUpper);
     let abs_str = if let Some(word) = non_finite_repr(f, uppercase) {
         word.to_owned()
     } else {
-        let abs_val = f.abs();
-        let abs_str = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6), tracker)?;
+        let abs_str = fmt_float_fixed(abs_val, precision, tracker)?;
         maybe_alternate_point(abs_str, abs_val, spec)
     };
     let sign = numeric_sign(is_negative, &abs_str, spec);
@@ -1649,12 +1842,19 @@ pub fn ascii_escape(s: &str) -> String {
 pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let percent_val = f * 100.0;
     let is_negative = percent_val.is_sign_negative() && !percent_val.is_nan();
+    let precision = spec.precision.unwrap_or(6);
+    let abs_val = percent_val.abs();
+    if let Some(digits) = short_float_digits(abs_val, precision, spec, |out| write!(out, "{abs_val:.precision$}%")) {
+        let sign = numeric_sign(is_negative, digits.as_str(), spec);
+        return pad_signed_numeric(sign, "", digits.as_str(), spec, tracker);
+    }
     // The `%` presentation has no uppercase variant, so `inf`/`nan` stay lower.
     let abs_str = if let Some(word) = non_finite_repr(percent_val, false) {
         format!("{word}%")
     } else {
-        let abs_val = percent_val.abs();
-        let digits = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6), tracker)?;
+        let digits = fmt_float_fixed(abs_val, precision, tracker)?;
+        // A builder rather than `push`: digits past `u16::MAX` precision fill their buffer exactly,
+        // so growing it in place would skip the soft memory check.
         let mut output = format_builder(digits.len().saturating_add(1), tracker)?;
         push_format_str(&mut output, &digits, tracker)?;
         output.push('%')?;
@@ -2103,7 +2303,23 @@ const MAX_FMT_PRECISION_EXP: usize = (u16::MAX as usize) - 1;
 /// every additional digit Python would emit is a zero anyway.
 fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION || !abs_val.is_finite() {
-        return Ok(format!("{abs_val:.precision$}"));
+        let int_digits = if abs_val >= 1.0 && abs_val.is_finite() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "`log10` of a finite value >= 1 is in 0..309"
+            )]
+            let digits = abs_val.log10() as usize;
+            digits + 1
+        } else {
+            1
+        };
+        return Ok(write_float(
+            abs_val,
+            int_digits,
+            precision,
+            format_args!("{abs_val:.precision$}"),
+        ));
     }
     let base = format!("{abs_val:.MAX_FMT_PRECISION$}");
     let extra = precision - MAX_FMT_PRECISION;
@@ -2124,9 +2340,9 @@ fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) ->
 fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION_EXP || !abs_val.is_finite() {
         return Ok(if uppercase {
-            format!("{abs_val:.precision$E}")
+            write_float(abs_val, 1, precision, format_args!("{abs_val:.precision$E}"))
         } else {
-            format!("{abs_val:.precision$e}")
+            write_float(abs_val, 1, precision, format_args!("{abs_val:.precision$e}"))
         });
     }
     let base = if uppercase {
@@ -2149,6 +2365,80 @@ fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool, tracker: &Reso
     } else {
         Ok(base)
     }
+}
+
+/// Formats a finite float's digits on the stack when they are short and need no `#` point.
+///
+/// This skips a heap allocation per float in the common case; `None` sends the caller to
+/// its general path, which handles non-finite values, `#` and long results. `write` runs only
+/// once `precision` is known to be small, since `fmt` panics on one above `u16::MAX`.
+fn short_float_digits(
+    abs_val: f64,
+    precision: usize,
+    spec: &ParsedFormatSpec,
+    write: impl FnOnce(&mut StackDigits) -> fmt::Result,
+) -> Option<StackDigits> {
+    if abs_val.is_finite() && !spec.alternate && precision < StackDigits::CAPACITY {
+        let mut digits = StackDigits::new();
+        write(&mut digits).ok().map(|()| digits)
+    } else {
+        None
+    }
+}
+
+/// A fixed-size stack buffer for a short formatted number; writes past its capacity fail.
+struct StackDigits {
+    buf: [u8; Self::CAPACITY],
+    len: usize,
+}
+
+impl StackDigits {
+    /// Bytes held; a longer result makes the write fail and the caller fall back to a `String`.
+    const CAPACITY: usize = 64;
+
+    fn new() -> Self {
+        Self {
+            buf: [0; Self::CAPACITY],
+            len: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        str::from_utf8(&self.buf[..self.len]).expect("only whole `str` fragments are written")
+    }
+}
+
+impl Write for StackDigits {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len + s.len();
+        self.buf
+            .get_mut(self.len..end)
+            .ok_or(fmt::Error)?
+            .copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Room [`write_float`] reserves beyond the digits: the point, an exponent like `e+308`,
+/// a rounding carry and an estimate of the integer digits that is off by one.
+const FLOAT_DIGITS_SLACK: usize = 9;
+
+/// Writes formatted float `args` into a buffer sized for `int_digits` before the point and
+/// `precision` after it.
+///
+/// `format!` sizes its buffer from the literal text, which is empty for a bare float, so its
+/// buffer would grow through several reallocations. The sizes only apply to finite values:
+/// non-finite ones ignore precision, which may be huge.
+fn write_float(abs_val: f64, int_digits: usize, precision: usize, args: fmt::Arguments<'_>) -> String {
+    let capacity = if abs_val.is_finite() {
+        int_digits.saturating_add(precision).saturating_add(FLOAT_DIGITS_SLACK)
+    } else {
+        3
+    };
+    let mut output = String::with_capacity(capacity);
+    output.write_fmt(args).expect("writing to a String cannot fail");
+    output
 }
 
 /// Pads a string to a given width with alignment.

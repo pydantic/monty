@@ -250,6 +250,51 @@ impl fmt::Write for StackStr {
         Ok(())
     }
 }
+
+/// A [`Display`](fmt::Display) adapter writing a complex number as CPython's
+/// `repr()`/`str()`: `(1+2j)`, `1j`, `(-0-1j)`, `(nan+infj)`.
+///
+/// Each part is the [`FormatFloat`] rendering with an integral value's `.0`
+/// dropped (`1.0` → `1`, but `1e+16` stays). A real part that is exactly `+0.0`
+/// is omitted along with the parentheses, so `complex(0, 1)` is `1j` while
+/// `complex(-0.0, 1)` is `(-0+1j)`. Allocation-free like [`FormatFloat`].
+pub struct FormatComplex {
+    /// The real part.
+    pub real: f64,
+    /// The imaginary part.
+    pub imag: f64,
+}
+
+impl fmt::Display for FormatComplex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.real == 0.0 && self.real.is_sign_positive() {
+            write_complex_part(f, self.imag, false)?;
+        } else {
+            f.write_char('(')?;
+            write_complex_part(f, self.real, false)?;
+            write_complex_part(f, self.imag, true)?;
+            f.write_str("j)")?;
+            return Ok(());
+        }
+        f.write_char('j')
+    }
+}
+
+/// Writes one component of a complex repr: the float repr without a trailing
+/// `.0`, prefixed with `+` when `signed` and the value is not negative.
+fn write_complex_part(f: &mut impl Write, value: f64, signed: bool) -> fmt::Result {
+    let mut buf = StackStr::new();
+    write!(buf, "{}", FormatFloat(value))?;
+    let text = buf.as_str();
+    let text = text.strip_suffix(".0").unwrap_or(text);
+    // `FormatFloat` already leads negative values (including `-0.0` and
+    // `-inf`) with `-`; NaN never carries a sign.
+    if signed && !text.starts_with('-') {
+        f.write_char('+')?;
+    }
+    f.write_str(text)
+}
+
 /// Classifies an invalid-UTF-8 error into CPython's reason wording, from the
 /// first unexpected byte and `Utf8Error::error_len()`.
 ///

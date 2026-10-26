@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropWithContext, HeapId, HeapRead},
+    heap::{DropWithContext, HeapId, HeapReadMut},
     types::itertools::{ItertoolsIter, step::next_source},
     value::Value,
 };
@@ -60,7 +60,7 @@ impl Cycle {
 ///
 /// Returns `None` only for an empty source: `cycle([])` is empty rather than an
 /// infinite loop, matching CPython.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let ItertoolsIter::Cycle(cycle) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Cycle")
     };

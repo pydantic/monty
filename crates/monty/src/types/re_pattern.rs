@@ -152,7 +152,7 @@ impl RePattern {
             return Ok(regex);
         }
         let compiled = compile_regex_limited(
-            &format!("\\A(?:{})", self.pattern),
+            &anchored_source(&self.pattern, ""),
             self.flags,
             self.delegate_size_limit,
         )
@@ -168,7 +168,7 @@ impl RePattern {
             return Ok(regex);
         }
         let compiled = compile_regex_limited(
-            &format!("\\A(?:{})\\z", self.pattern),
+            &anchored_source(&self.pattern, "\\z"),
             self.flags,
             self.delegate_size_limit,
         )
@@ -291,7 +291,7 @@ impl RePattern {
     /// Rust heap allocations from delegating to `fancy_regex::replace_all()`.
     pub fn sub(&self, repl: &str, text: &str, count: usize, heap: &Heap) -> RunResult<Value> {
         // Translate Python-style backreferences (\1, \2) to regex crate style ($1, $2)
-        let rust_repl = translate_replacement(repl);
+        let rust_repl = translate_replacement(repl)?;
         let effective_count = if count == 0 { usize::MAX } else { count };
 
         let mut result = String::new();
@@ -313,11 +313,15 @@ impl RePattern {
 
     /// `pattern.split(string, maxsplit=0)` — split string by pattern occurrences.
     ///
-    /// Returns a list of strings. If `maxsplit` is positive, at most `maxsplit`
+    /// Returns a list of strings, with each capture group's text (or `None`) after
+    /// the piece before its match. If `maxsplit` is positive, at most `maxsplit`
     /// splits occur and the remainder of the string is returned as the final
     /// element; if it is negative, no splits occur at all (CPython's split loop
     /// runs zero times), returning the whole subject as a single element.
     pub fn split(&self, text: &str, maxsplit: i64, heap: &Heap) -> RunResult<Value> {
+        if self.compiled.captures_len() > 1 {
+            return self.split_with_groups(text, maxsplit, heap);
+        }
         let pieces = match maxsplit.cmp(&0) {
             Ordering::Less => vec![text],
             Ordering::Equal => collect_slices(self.compiled.split(text), heap)?,
@@ -330,6 +334,32 @@ impl RePattern {
         };
 
         allocate_str_list(&pieces, heap)
+    }
+
+    /// [`RePattern::split`] for a pattern with capture groups, whose text CPython puts after
+    /// the piece before each match: one entry per group, `None` for a group that didn't take part.
+    fn split_with_groups(&self, text: &str, maxsplit: i64, heap: &Heap) -> RunResult<Value> {
+        let limit = match maxsplit.cmp(&0) {
+            Ordering::Less => 0,
+            Ordering::Equal => usize::MAX,
+            Ordering::Greater => usize::try_from(maxsplit).unwrap_or(usize::MAX),
+        };
+        let mut pieces: Vec<Option<&str>> = Vec::new();
+        let mut last_end = 0;
+        for caps in self.compiled.captures_iter(text).take(limit) {
+            let caps = caps.map_err(ExcType::re_pattern_error)?;
+            let m = caps.get(0).expect("capture group 0 always exists");
+            check_slice_growth(&pieces, heap)?;
+            pieces.push(Some(&text[last_end..m.start()]));
+            for group in caps.iter().skip(1) {
+                check_slice_growth(&pieces, heap)?;
+                pieces.push(group.map(|g| g.as_str()));
+            }
+            last_end = m.end();
+        }
+        check_slice_growth(&pieces, heap)?;
+        pieces.push(Some(&text[last_end..]));
+        allocate_optional_str_list(&pieces, heap)
     }
 
     /// `pattern.finditer(string)` — return all matches as a list.
@@ -364,11 +394,16 @@ fn check_results_growth(results: &Vec<Value>, heap: &Heap) -> RunResult<()> {
         .check_growth(results.len(), results.capacity(), VALUE_SIZE)?)
 }
 
-/// [`check_results_growth`] for a buffer of borrowed match slices.
-fn check_slice_growth(slices: &Vec<&str>, heap: &Heap) -> RunResult<()> {
+/// [`check_results_growth`] for a buffer of borrowed match slices (`&str`, or
+/// `Option<&str>` where a split's group may be missing).
+///
+/// Also polls the time limit, amortized with `check_time_every`: no instruction
+/// checkpoint can stop the scan that fills the buffer either.
+fn check_slice_growth<T>(slices: &Vec<T>, heap: &Heap) -> RunResult<()> {
+    heap.tracker.check_time_every(slices.len())?;
     Ok(heap
         .tracker
-        .check_growth(slices.len(), slices.capacity(), mem::size_of::<&str>())?)
+        .check_growth(slices.len(), slices.capacity(), mem::size_of::<T>())?)
 }
 
 /// Collects the pieces an iterator yields, preflighting the buffer as it grows.
@@ -394,6 +429,16 @@ fn collect_slices<'t>(
 fn allocate_str_list(slices: &[&str], heap: &Heap) -> RunResult<Value> {
     heap.tracker.check_allocation(slices.len().saturating_mul(VALUE_SIZE))?;
     let results = slices.iter().map(|s| allocate_string(*s, heap)).collect();
+    Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
+}
+
+/// [`allocate_str_list`] for a split with capture groups, where a missing group becomes `None`.
+fn allocate_optional_str_list(pieces: &[Option<&str>], heap: &Heap) -> RunResult<Value> {
+    heap.tracker.check_allocation(pieces.len().saturating_mul(VALUE_SIZE))?;
+    let results = pieces
+        .iter()
+        .map(|piece| piece.map_or(Value::None, |s| allocate_string(s, heap)))
+        .collect();
     Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
 }
 
@@ -532,13 +577,14 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
     // CPython processes the replacement template *before* its match loop, so
     // this check must precede the negative-count early return below: a bad
     // repl raises even when zero substitutions will run.
-    if !repl_val.is_str(vm.heap) {
+    let Ok(repl) = repl_val.to_str(vm) else {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
-    }
-
+    };
     let Some(count) = count else {
+        // Validate octal escapes even when the negative count skips matching.
+        translate_replacement(repl)?;
         // Negative count — Pattern.sub returns the input string unchanged.
         // The subject is still type-checked (`to_str` raises this method's
         // `expected string, not {t}` wording) before the refcount bump; no
@@ -547,9 +593,8 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
         return Ok(string_val.clone_with_heap(vm.heap));
     };
 
-    let repl = repl_val.to_str(vm)?.to_owned();
-    let text = string_val.to_str(vm)?.to_owned();
-    pattern.get(vm.heap).sub(&repl, &text, count, vm.heap)
+    let text = string_val.to_str(vm)?;
+    pattern.get(vm.heap).sub(repl, text, count, vm.heap)
 }
 
 /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
@@ -643,6 +688,16 @@ pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_>) -> RunResult<Op
     }
 }
 
+/// Returns `\A(?:pattern)` followed by `suffix`: the anchored source for `match()` and `fullmatch()`.
+///
+/// A `(?x)` pattern can end in a `#` comment, which runs to the next line break and would hide the closing `)`.
+/// So the group closes on a new line.
+/// If VERBOSE is off at the end of the pattern, the `(?x)` before the line break makes it whitespace, not a literal.
+/// The group's `)` ends that flag, so it does not apply to `suffix`.
+fn anchored_source(pattern: &str, suffix: &str) -> String {
+    format!("\\A(?:{pattern}(?x)\n){suffix}")
+}
+
 /// Compiles a Python regex pattern string with flags into a Rust `Regex`.
 ///
 /// Translates Python flag constants into inline regex flag prefixes:
@@ -723,10 +778,10 @@ fn is_size_limit_error(err: &RegexError) -> bool {
 /// translated as `$1` followed by literal `0`, which is wrong when 10+ groups
 /// exist. Fixing this requires passing the pattern's capture group count into
 /// this function to disambiguate.
-fn translate_replacement(repl: &str) -> Cow<'_, str> {
+pub(crate) fn translate_replacement(repl: &str) -> RunResult<Cow<'_, str>> {
     // Fast path: no backslashes and no literal `$` means nothing to translate or escape.
     if !repl.contains('\\') && !repl.contains('$') {
-        return Cow::Borrowed(repl);
+        return Ok(Cow::Borrowed(repl));
     }
 
     let mut result = String::with_capacity(repl.len());
@@ -736,12 +791,40 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
         if c == '\\' {
             match chars.peek() {
                 Some(&d) if d.is_ascii_digit() => {
-                    // TODO: This only handles single-digit backrefs (\1–\9).
-                    // Multi-digit like \10 should be ${10} when group 10 exists,
-                    // but that requires knowing the group count. See docstring.
-                    result.push('$');
-                    result.push(d);
-                    chars.next();
+                    // A leading zero or three octal digits makes this an octal escape.
+                    let octal_len = chars
+                        .clone()
+                        .take_while(|digit| matches!(digit, '0'..='7'))
+                        .take(3)
+                        .count();
+                    if d == '0' || octal_len == 3 {
+                        let mut octal = 0;
+                        for _ in 0..octal_len {
+                            let digit = chars.next().expect("octal digits were checked");
+                            octal = octal * 8 + digit.to_digit(8).expect("octal digit");
+                        }
+                        if octal > 0o377 {
+                            // The iterator has consumed the backslash and octal digits.
+                            let position = repl.chars().count() - chars.clone().count() - 1 - octal_len;
+                            return Err(ExcType::re_pattern_error(format!(
+                                "octal escape value \\{octal:03o} outside of range 0-0o377 at position {position}"
+                            )));
+                        }
+                        let decoded = char::from_u32(octal).expect("validated octal escape is a valid character");
+                        if decoded == '$' {
+                            // Keep an octal-escaped dollar literal in the regex replacement syntax.
+                            result.push_str("$$");
+                        } else {
+                            result.push(decoded);
+                        }
+                    } else {
+                        // TODO: This only handles single-digit backrefs (\1–\9).
+                        // Multi-digit like \10 should be ${10} when group 10 exists,
+                        // but that requires knowing the group count. See docstring.
+                        result.push('$');
+                        result.push(d);
+                        chars.next();
+                    }
                 }
                 Some(&'g') => {
                     chars.next(); // consume 'g'
@@ -765,7 +848,7 @@ fn translate_replacement(repl: &str) -> Cow<'_, str> {
         }
     }
 
-    Cow::Owned(result)
+    Ok(Cow::Owned(result))
 }
 
 /// Translates a `\g<...>` backreference to `fancy_regex` `${...}` syntax.

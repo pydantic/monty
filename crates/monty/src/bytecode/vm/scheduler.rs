@@ -10,12 +10,12 @@ use std::{collections::VecDeque, mem};
 use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
-use super::FrameNamespace;
+use super::{FrameNamespace, exceptions::CaughtException};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
-    intern::FunctionId,
+    intern::{FunctionId, StringId},
     value::Value,
 };
 
@@ -48,7 +48,7 @@ pub(crate) struct Task {
     /// Saved operand stack; the current task uses the VM's stack.
     pub stack: Vec<Value>,
     /// Exception stack for nested except blocks.
-    pub exception_stack: Vec<Value>,
+    pub exception_stack: Vec<CaughtException>,
     /// VM-level instruction_ip (for exception table lookup).
     pub instruction_ip: usize,
     /// Owned coroutine reference for a spawned task; the main task has none.
@@ -101,6 +101,9 @@ pub(crate) struct SerializedTaskFrame {
     pub is_initializer: bool,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,
+    /// The `from ... import` in progress, if the frame parked inside one.
+    #[serde(default)]
+    pub import_from_module: Option<StringId>,
 }
 
 impl Task {
@@ -175,6 +178,12 @@ impl Scheduler {
     /// Whether awaiting the current call can proceed without delaying other work.
     pub fn can_await_eagerly(&self) -> bool {
         self.ready_queue.is_empty() && self.pending_externals.is_empty()
+    }
+
+    /// Returns the main task, whose context is saved here whenever another
+    /// task is loaded; `None` once it has been cancelled.
+    pub fn main_task(&self) -> Option<&Task> {
+        self.tasks.get(&TaskId::default())
     }
 
     /// Returns a mutable reference to a task by ID.
@@ -392,14 +401,6 @@ impl Scheduler {
         self.tasks
             .get(&task_id)
             .is_some_and(|task| matches!(task.state, TaskState::Blocked(_)))
-    }
-
-    /// Returns true if a task with `task_id` currently exists in the
-    /// scheduler. Cancelled tasks are removed from the map, so this returning
-    /// `false` means the task is gone.
-    #[inline]
-    pub fn has_task(&self, task_id: TaskId) -> bool {
-        self.tasks.contains_key(&task_id)
     }
 
     /// Number of tasks the scheduler still holds.

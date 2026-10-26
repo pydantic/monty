@@ -30,12 +30,21 @@ use monty_types::{
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
-    modules::{random::RandomRetry, time::ClockReading},
-    types::{Path, file::FileName, random::RandomTarget},
+    modules::{
+        os::{PathArgError, check_mode},
+        os_path::{
+            StatField, expand_user_reply, expand_vars_reply, lexists_reply, realpath_strict_reply, resolved_path_reply,
+            samefile_first_reply, samefile_second_reply, stat_field_reply,
+        },
+        random::RandomRetry,
+        time::ClockReading,
+    },
+    types::{Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -65,6 +74,9 @@ pub(crate) enum PendingEffect {
     Pre(PreConversionEffect),
     /// Applies the converted value to VM state, possibly pinning a file.
     Post(PostConversionEffect),
+    /// Builds a walk, scandir or glob result from a `Path.scan` reply — or
+    /// from the `OSError` it answered with (see [`ScanEffect::absorbs`]).
+    Scan(ScanEffect),
 }
 
 impl PendingEffect {
@@ -74,7 +86,10 @@ impl PendingEffect {
     pub(crate) fn immediate_result_name(&self) -> Option<&'static str> {
         match self {
             Self::Pre(effect) => Some(effect.operation_name()),
+            Self::Scan(effect) => Some(effect.operation_name()),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
+            // The parse answers the `json.load` call; a future would hand Python the text.
+            Self::Post(PostConversionEffect::JsonLoad { .. }) => Some("json.load"),
             Self::Post(PostConversionEffect::SeedRandom { .. }) => Some("os.urandom"),
             // `time.sleep` blocks by definition, so a future would leave the
             // sandbox running before the wait it asked for finished.
@@ -82,6 +97,13 @@ impl PendingEffect {
             // The reading still has to become a `struct_time` or a string, which
             // a future defers past the point the sandbox needs it.
             Self::Post(PostConversionEffect::ClockReading { .. }) => Some("time.time"),
+            // The load answers a `ForIter` or `next()` that is waiting for the
+            // buffer; a future would land on the stack where the file is expected.
+            Self::Post(PostConversionEffect::BufferLoad { .. } | PostConversionEffect::FileNext { .. }) => {
+                Some("file iteration")
+            }
+            // The replayed call expects its argument loaded; a future would stand in for the call's result.
+            Self::Post(PostConversionEffect::LoadThenCall { .. }) => Some("file loading"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
             // `asyncio.sleep` wants the future: `resume_with_result` moves the
@@ -96,6 +118,7 @@ impl PendingEffect {
         match self {
             Self::Pre(_) => {}
             Self::Post(effect) => effect.release(heap),
+            Self::Scan(effect) => effect.release(heap),
         }
     }
 }
@@ -112,13 +135,26 @@ impl From<PostConversionEffect> for PendingEffect {
     }
 }
 
+impl From<ScanEffect> for PendingEffect {
+    fn from(effect: ScanEffect) -> Self {
+        Self::Scan(effect)
+    }
+}
+
 /// Reshapes the raw host reply before heap conversion: plain data in, plain
 /// data out, so no variant holds a heap reference and none needs cleanup.
+// TODO: Consider separating effects from caller names so functions can share result handling.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PreConversionEffect {
     /// `os.listdir`: reduce the host's `Iterdir` result (a list of child
     /// paths) to the list of bare entry names.
     ListdirNames,
+    /// Return the destination path after Path.rename succeeds.
+    RenamePath { target: String },
+    /// Return the destination path after Path.replace succeeds.
+    ReplacePath { target: String },
+    /// Suppress a missing-file exception only when requested by Path.unlink.
+    Unlink { missing_ok: bool },
     /// `os.chdir`: the target was sent to the host as a `Path.stat` call;
     /// normalize and adopt `path` once the reply proves it is a directory.
     Chdir {
@@ -133,14 +169,59 @@ pub(crate) enum PreConversionEffect {
     /// `os.urandom(size)`: the reply must be `bytes` of exactly `size`, so a
     /// handler cannot hand the sandbox more than it asked (and preflighted) for.
     UrandomLength { size: usize },
+    /// `os.path.getsize` and friends: keep one field of a `Path.stat` reply.
+    StatField(StatField),
+    /// `os.path.realpath`: the `Path.resolve` reply arrives as a path; the
+    /// function returns `str`. Under `strict` the reply is then checked with
+    /// `Path.exists` ([`RealpathStrict`](Self::RealpathStrict)).
+    ResolvedPath { strict: bool },
+    /// `os.path.realpath(strict=True)`: a `False` from `Path.exists` on the
+    /// resolved path is `FileNotFoundError`; `True` yields the path.
+    RealpathStrict { resolved: String },
+    /// `os.path.lexists`: a `False` from `Path.exists` is not final — a
+    /// dangling symlink exists too — so `Path.is_symlink` decides next.
+    Lexists { path: String },
+    /// `os.path.samefile`: the first `Path.stat` reply is in; stat `second`
+    /// next. `second` is already extracted so its converter error is raised
+    /// only now, after the first stat succeeded, in CPython's order.
+    SamefileFirst {
+        first: String,
+        second: Result<String, PathArgError>,
+    },
+    /// `os.path.samefile`: both stats are in; compare them. The identity is
+    /// `(st_ino, st_dev)` as decimal text, an equality key that fits any int.
+    SamefileSecond {
+        first: String,
+        first_identity: (String, String),
+        second: String,
+    },
+    /// `os.path.expanduser`: splice the `os.getenv('HOME')` reply in front of
+    /// `tail`, the path after its leading `~`; `None` leaves the path as written.
+    ExpandUser {
+        #[serde(with = "serde_bytes")]
+        tail: Vec<u8>,
+        /// Whether the argument was `bytes`, so the result is too.
+        is_bytes: bool,
+    },
+    /// `os.path.expandvars`: substitute `$var` / `${var}` in `path` from the
+    /// `os.environ` reply.
+    ExpandVars {
+        #[serde(with = "serde_bytes")]
+        path: Vec<u8>,
+        /// Whether the argument was `bytes`, so the result is too.
+        is_bytes: bool,
+    },
 }
 
 impl PreConversionEffect {
     /// Applies the effect to the host's reply, yielding the value the VM
-    /// imports and pushes; `Chdir` adopts the directory as a side effect.
-    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<MontyObject, RunError> {
-        match self {
+    /// imports and pushes, or the next call of a multi-step operation;
+    /// `Chdir` adopts the directory as a side effect.
+    pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<Reshaped, RunError> {
+        let reply = match self {
             Self::ListdirNames => listdir_names(value),
+            Self::RenamePath { target } | Self::ReplacePath { target } => Ok(MontyObject::path(target)),
+            Self::Unlink { .. } => Ok(MontyObject::none()),
             Self::IterdirPaths { path } => iterdir_paths(value, &path, &vm.heap.tracker),
             Self::UrandomLength { size } => urandom_reply(value, size),
             Self::Chdir { path, spelled } => {
@@ -148,18 +229,90 @@ impl PreConversionEffect {
                 vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
                 Ok(MontyObject::none())
             }
-        }
+            Self::StatField(field) => stat_field_reply(&value, field),
+            Self::ResolvedPath { strict } => return resolved_path_reply(&value, strict),
+            Self::RealpathStrict { resolved } => realpath_strict_reply(&value, resolved),
+            Self::Lexists { path } => return lexists_reply(&value, path),
+            Self::SamefileFirst { first, second } => return samefile_first_reply(&value, first, second),
+            Self::SamefileSecond {
+                first,
+                first_identity,
+                second,
+            } => samefile_second_reply(&value, &first, &first_identity, &second, &vm.env.cwd),
+            Self::ExpandUser { tail, is_bytes } => expand_user_reply(&value, &tail, is_bytes),
+            Self::ExpandVars { path, is_bytes } => expand_vars_reply(&value, &path, is_bytes, &vm.heap.tracker),
+        };
+        reply.map(Reshaped::Value)
     }
 
     /// The Python operation this effect completes, for error messages.
     fn operation_name(&self) -> &'static str {
         match self {
             Self::ListdirNames => "os.listdir",
+            Self::RenamePath { .. } => "Path.rename",
+            Self::ReplacePath { .. } => "Path.replace",
+            Self::Unlink { .. } => "Path.unlink",
             Self::Chdir { .. } => "os.chdir",
             Self::IterdirPaths { .. } => "Path.iterdir",
             Self::UrandomLength { .. } => "os.urandom",
+            Self::StatField(field) => field.function(),
+            Self::ResolvedPath { .. } | Self::RealpathStrict { .. } => "os.path.realpath",
+            Self::Lexists { .. } => "os.path.lexists",
+            Self::SamefileFirst { .. } | Self::SamefileSecond { .. } => "os.path.samefile",
+            Self::ExpandUser { .. } => "os.path.expanduser",
+            Self::ExpandVars { .. } => "os.path.expandvars",
         }
     }
+}
+
+/// What a [`PreConversionEffect`] makes of the host's reply: the value the
+/// VM pushes, or the next call of an operation that needs several (the
+/// VM suspends again instead of resuming Python, as if the function had
+/// yielded it itself).
+pub(crate) enum Reshaped {
+    /// The operation is complete; push this.
+    Value(MontyObject),
+    /// Suspend again with this call, `effect` armed for its reply.
+    Call {
+        call: OsFunctionCall,
+        effect: Option<PendingEffect>,
+    },
+}
+
+/// A `Path.stat` reply's field by name, so a host's stat result is accepted
+/// whatever its field order; `None` for anything but a named tuple with it.
+pub(crate) fn stat_result_field<'a>(value: &'a MontyObject, name: &str) -> Option<&'a MontyNode> {
+    match unstable::root_node(value) {
+        MontyNode::NamedTuple {
+            field_names, values, ..
+        } => field_names
+            .iter()
+            .position(|field| field == name)
+            .and_then(|index| values.get(index))
+            .map(|id| unstable::node(unstable::child(value.as_ref(), *id))),
+        _ => None,
+    }
+}
+
+/// A `Path.exists` / `Path.is_symlink` reply as a bool, refusing anything else.
+pub(crate) fn bool_reply(value: &MontyObject, operation: &str) -> Result<bool, RunError> {
+    match unstable::root_node(value) {
+        MontyNode::Bool(answer) => Ok(*answer),
+        _ => Err(invalid_reply(operation, "a bool", value)),
+    }
+}
+
+/// The `RuntimeError` for a host reply of the wrong shape: `invalid return
+/// type: {operation} requires the host to return {expected}, got {type}`.
+pub(crate) fn invalid_reply(operation: &str, expected: &str, value: &MontyObject) -> RunError {
+    SimpleException::new_msg(
+        ExcType::RuntimeError,
+        format!(
+            "invalid return type: {operation} requires the host to return {expected}, got {}",
+            value.as_ref().type_name()
+        ),
+    )
+    .into()
 }
 
 /// Applies the converted host value to VM state. The file variants and
@@ -172,6 +325,16 @@ pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
     /// pending read/seek slice (see `types/file.rs`).
     BufferStore { file_id: HeapId },
+    /// [`BufferStore`](Self::BufferStore), then parse the rest of the file as
+    /// JSON: `json.load(fp)` on a file whose buffer is not loaded yet.
+    JsonLoad { file_id: HeapId },
+    /// Store a full-file read result into the file buffer and push nothing:
+    /// the `ForIter` that found the file unloaded re-dispatches against it.
+    BufferLoad { file_id: HeapId },
+    /// Store a full-file read result into the file buffer, then answer
+    /// `next(file, default)`: the first line, `default` at EOF, or
+    /// `StopIteration`. Owns `default`'s reference across the yield.
+    FileNext { file_id: HeapId, default: Option<Value> },
     /// Advance the file's logical position by the successful write result.
     WritePosition {
         /// File whose position is updated.
@@ -181,9 +344,30 @@ pub(crate) enum PostConversionEffect {
         previous_position: u64,
         /// Known file length before dispatch, restored on host exception.
         previous_length: u64,
+        /// Length of the text as passed to `write()` when newline translation
+        /// lengthened the payload: CPython reports that, not what reached the file.
+        #[serde(default)]
+        text_length: Option<u64>,
+        /// Answer `None` instead of the count: `csv.writer.writerows()` writes
+        /// its lines in one host call but returns nothing.
+        #[serde(default)]
+        result_none: bool,
     },
-    /// Preserve `open()`'s filename while the returned handle supplies the I/O target.
-    OpenName { name: FileName },
+    /// Load an unread file's buffer, then replay `callable(args)`, whose first
+    /// argument the file is (`csv.reader(f)`, `tomllib.load(f)`): the consumer
+    /// never sees an unloaded file. Owns the callable and the arguments across the yield.
+    LoadThenCall {
+        file_id: HeapId,
+        callable: Value,
+        args: ArgValues,
+    },
+    /// Preserve `open()`'s filename while the returned handle supplies the I/O target,
+    /// and apply the `newline` argument, whose value CPython validates after the open.
+    OpenName {
+        name: FileName,
+        #[serde(default)]
+        newline: Option<String>,
+    },
     /// Seed a `random` generator from the host's `os.urandom` reply, then
     /// answer `None` (`seed()`) or re-run the draw that found it unseeded
     /// (`retry`, which owns the call's arguments across the yield).
@@ -212,7 +396,25 @@ impl PostConversionEffect {
     /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
-            Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => heap.heap_mut().dec_ref(file_id),
+            Self::BufferStore { file_id }
+            | Self::JsonLoad { file_id }
+            | Self::BufferLoad { file_id }
+            | Self::WritePosition { file_id, .. } => {
+                heap.heap_mut().dec_ref(file_id);
+            }
+            Self::FileNext { file_id, default } => {
+                heap.heap_mut().dec_ref(file_id);
+                default.drop_with(heap);
+            }
+            Self::LoadThenCall {
+                file_id,
+                callable,
+                args,
+            } => {
+                heap.heap_mut().dec_ref(file_id);
+                callable.drop_with(heap);
+                args.drop_with(heap);
+            }
             Self::OpenName { .. } | Self::DiscardResult | Self::ClockReading { .. } => {}
             Self::SleepResult { result } => result.drop_with(heap),
             Self::SeedRandom { target, retry } => {
@@ -261,32 +463,11 @@ pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
 pub(crate) fn check_chdir_stat(value: &MontyObject, spelled: &str) -> Result<(), RunError> {
     const S_IFMT: i64 = 0o170_000;
     const S_IFDIR: i64 = 0o040_000;
-    // Located by name so a host's stat result is accepted whatever its field
-    // order, and anything without an integer `st_mode` is refused.
-    let st_mode = match unstable::root_node(value) {
-        MontyNode::NamedTuple {
-            field_names, values, ..
-        } => field_names
-            .iter()
-            .position(|name| name == "st_mode")
-            .and_then(|index| values.get(index))
-            .and_then(|mode| match unstable::node(unstable::child(value.as_ref(), *mode)) {
-                MontyNode::Int(mode) => Some(*mode),
-                _ => None,
-            }),
-        _ => None,
-    };
-    match st_mode {
-        Some(mode) if mode & S_IFMT == S_IFDIR => Ok(()),
-        Some(_) => Err(ExcType::not_a_directory_error(spelled)),
-        None => Err(SimpleException::new_msg(
-            ExcType::RuntimeError,
-            format!(
-                "invalid return type: os.chdir requires the host to return a stat result, got {}",
-                value.as_ref().type_name()
-            ),
-        )
-        .into()),
+    // Anything without an integer `st_mode` is refused.
+    match stat_result_field(value, "st_mode") {
+        Some(MontyNode::Int(mode)) if mode & S_IFMT == S_IFDIR => Ok(()),
+        Some(MontyNode::Int(_)) => Err(ExcType::not_a_directory_error(spelled)),
+        _ => Err(invalid_reply("os.chdir", "a stat result", value)),
     }
 }
 
@@ -417,21 +598,18 @@ pub(crate) fn is_path_os_method(method: StaticStrings) -> bool {
             | StaticStrings::AppendBytes
             | StaticStrings::Mkdir
             | StaticStrings::Rename
+            | StaticStrings::Replace
     )
 }
 
-/// Builds an [`OsFunctionCall`] for a `pathlib.Path` method invocation —
-/// dispatches on `method` and pulls any extra args out of `args` into the
-/// matching typed struct.
-///
-/// Returns `Ok(None)` if `method` isn't an OS call. Owns `path`/`args` and
-/// is responsible for refcount cleanup on every code path.
+/// Builds a host request and its resume action for a `pathlib.Path` OS method.
+/// Owns `args` and cleans up its references on every error path.
 pub(crate) fn build_path_os_call(
     method: StaticStrings,
     path: MontyPath,
     args: ArgValues,
     vm: &mut VM<'_>,
-) -> RunResult<Option<OsFunctionCall>> {
+) -> RunResult<CallResult> {
     // Simple "no extra args" path operations are bundled into one arm to avoid
     // 12 near-identical case lines.
     macro_rules! path_only {
@@ -448,11 +626,30 @@ pub(crate) fn build_path_os_call(
         StaticStrings::IsSymlink => path_only!("is_symlink", IsSymlink),
         StaticStrings::ReadText => path_only!("read_text", ReadText),
         StaticStrings::ReadBytes => path_only!("read_bytes", ReadBytes),
-        StaticStrings::StatMethod => path_only!("stat", Stat),
-        StaticStrings::Iterdir => path_only!("iterdir", Iterdir),
+        StaticStrings::StatMethod => {
+            let PathStatArgs {
+                receiver,
+                follow_symlinks,
+            } = PathStatArgs::from_args(args.prepend(Value::None), vm)?;
+            receiver.drop_with(vm);
+            if !follow_symlinks.bool() {
+                return Err(ExcType::not_implemented_os_arg(Some("stat"), "follow_symlinks"));
+            }
+            OsFunctionCall::Stat(path)
+        }
+        StaticStrings::Iterdir => {
+            args.check_zero_args("iterdir", vm.heap)?;
+            return Ok(CallResult::OsCallWithEffect {
+                effect: PreConversionEffect::IterdirPaths {
+                    path: path.as_str().to_owned(),
+                }
+                .into(),
+                call: OsFunctionCall::Iterdir(path),
+            });
+        }
+        StaticStrings::Unlink => return build_path_unlink(path, args, vm),
         StaticStrings::Resolve => path_only!("resolve", Resolve),
         StaticStrings::Absolute => path_only!("absolute", Absolute),
-        StaticStrings::Unlink => path_only!("unlink", Unlink),
         StaticStrings::Rmdir => path_only!("rmdir", Rmdir),
         StaticStrings::WriteText => {
             OsFunctionCall::WriteText(extract_str_data("write_text", path, args, vm.heap, vm.interns)?)
@@ -467,16 +664,26 @@ pub(crate) fn build_path_os_call(
             OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, vm.heap, vm.interns)?)
         }
         StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, vm)?),
-        StaticStrings::Rename => OsFunctionCall::Rename(extract_rename_args(path, args, vm.heap, vm.interns)?),
+        StaticStrings::Rename | StaticStrings::Replace => {
+            let args = extract_rename_args(path, args, method == StaticStrings::Replace, vm)?;
+            let target = args.dst.as_str().to_owned();
+            let effect = if method == StaticStrings::Replace {
+                PreConversionEffect::ReplacePath { target }
+            } else {
+                PreConversionEffect::RenamePath { target }
+            };
+
+            return Ok(CallResult::OsCallWithEffect {
+                call: OsFunctionCall::Rename(args),
+                effect: effect.into(),
+            });
+        }
         _ => {
-            // Unreachable in practice — callers gate on `is_path_os_method`.
-            // Drop the owned inputs anyway so a stray call doesn't leak refs.
-            let _ = path;
             args.drop_with(vm.heap);
-            return Ok(None);
+            unreachable!("is_path_os_method gates the call");
         }
     };
-    Ok(Some(call))
+    Ok(CallResult::OsCall(call))
 }
 
 /// Extracts the `data` arg for `write_text` / `append_text`. Error wording
@@ -489,9 +696,16 @@ fn extract_str_data(
     interns: &Interns,
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
-    let data_str = value_to_owned_string(&data, heap, interns);
+    // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
+    let data_str = data.to_str_heap(heap, interns).ok().map(str::to_owned);
 
-    let py_type = data.py_type_name_heap(heap, interns);
+    // CPython names the type by its `__name__`: no module (`DirEntry`, not
+    // `posix.DirEntry`), but a class's own name (`Point` for a named tuple).
+    let type_name = data.py_type_name_heap(heap, interns);
+    let py_type = type_name
+        .rsplit_once('.')
+        .map_or(&*type_name, |(_, name)| name)
+        .to_owned();
     data.drop_with(heap);
 
     match data_str {
@@ -523,22 +737,14 @@ fn extract_bytes_data(
     }
 }
 
-/// Python-facing argument shape for `Path.mkdir(mode=0o777, parents=False, exist_ok=False)`.
-///
-/// `Path.mkdir` is a pure-Python `def` in CPython, hence `style = def` (its
-/// duplicate-arg error is `got multiple values for argument`). The
-/// too-many-positional count still diverges: CPython counts the bound `self`
-/// (`takes from 1 to 4 …`), Monty does not — see `limitations/open.md`.
-///
-/// Monty parses `mode` for signature compatibility and arity validation, but
-/// filesystem backends do not model POSIX permission bits. `parents` and
-/// `exist_ok` use [`LaxBool`] so they accept any truth-tested value (matching
-/// CPython, which evaluates them via `bool()`).
+/// Path.mkdir binds a receiver slot so arity errors include self.
 #[derive(FromArgs)]
 #[from_args(name = "Path.mkdir", style = def)]
 struct PathMkdirArgs {
-    #[from_args(default = 0o777_i64)]
-    mode: i64,
+    #[from_args(pos_only)]
+    receiver: Value,
+    #[from_args(default = Value::Int(0o777))]
+    mode: Value,
     #[from_args(default = LaxBool::new(false))]
     parents: LaxBool,
     #[from_args(default = LaxBool::new(false))]
@@ -549,11 +755,14 @@ struct PathMkdirArgs {
 /// excessive arguments before the host sees the OS call.
 fn extract_mkdir_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<MkdirCallArgs> {
     let PathMkdirArgs {
+        receiver,
         mode,
         parents,
         exist_ok,
-    } = PathMkdirArgs::from_args(args, vm)?;
-    let _ = mode;
+    } = PathMkdirArgs::from_args(args.prepend(Value::None), vm)?;
+    receiver.drop_with(vm);
+    defer_drop!(mode, vm);
+    check_mode(mode, vm)?;
     Ok(MkdirCallArgs {
         path,
         parents: parents.bool(),
@@ -561,25 +770,82 @@ fn extract_mkdir_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunR
     })
 }
 
-/// Extracts the `target` arg for `Path.rename(target)`.
-fn extract_rename_args(
-    src: MontyPath,
-    args: ArgValues,
-    heap: &mut Heap,
-    interns: &Interns,
-) -> RunResult<RenameCallArgs> {
-    let target = args.get_one_arg("rename", heap)?;
-    let dst_str = value_to_owned_string(&target, heap, interns);
-    target.drop_with(heap);
-    match dst_str {
-        Some(dst) => Ok(RenameCallArgs {
+/// Keyword-only options shared with os.stat.
+#[derive(FromArgs)]
+#[from_args(name = "Path.stat", style = def)]
+struct PathStatArgs {
+    #[from_args(pos_only)]
+    receiver: Value,
+    #[from_args(kw_only, default = LaxBool::new(true))]
+    follow_symlinks: LaxBool,
+}
+
+#[derive(FromArgs)]
+#[from_args(name = "Path.rename", style = def)]
+struct PathRenameArgs {
+    #[from_args(pos_only)]
+    receiver: Value,
+    target: Value,
+}
+
+#[derive(FromArgs)]
+#[from_args(name = "Path.replace", style = def)]
+struct PathReplaceArgs {
+    #[from_args(pos_only)]
+    receiver: Value,
+    target: Value,
+}
+
+fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut VM<'_>) -> RunResult<RenameCallArgs> {
+    let (receiver, target) = if replace {
+        let PathReplaceArgs { receiver, target } = PathReplaceArgs::from_args(args.prepend(Value::None), vm)?;
+        (receiver, target)
+    } else {
+        let PathRenameArgs { receiver, target } = PathRenameArgs::from_args(args.prepend(Value::None), vm)?;
+        (receiver, target)
+    };
+    receiver.drop_with(vm);
+    defer_drop!(target, vm);
+    if let Some(dst) = value_to_owned_string(target, vm.heap, vm.interns) {
+        Ok(RenameCallArgs {
             src,
             dst: MontyPath::new(dst),
-        }),
-        None => Err(ExcType::type_error(
-            "Path.rename() argument 'target' must be str or Path".to_owned(),
-        )),
+        })
+    } else {
+        // pathlib delegates to os.rename/replace; bytes paths remain unsupported in Monty.
+        let accepted = if target.py_type_heap(vm.heap) == Type::Bytes {
+            "string or os.PathLike"
+        } else {
+            "string, bytes or os.PathLike"
+        };
+        Err(ExcType::type_error_os_path(
+            if replace { "replace" } else { "rename" },
+            "dst",
+            accepted,
+            &target.py_type_name_heap(vm.heap, vm.interns),
+        ))
     }
+}
+
+#[derive(FromArgs)]
+#[from_args(name = "Path.unlink", style = def)]
+struct PathUnlinkArgs {
+    #[from_args(pos_only)]
+    receiver: Value,
+    #[from_args(default = LaxBool::new(false))]
+    missing_ok: LaxBool,
+}
+
+fn build_path_unlink(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let PathUnlinkArgs { receiver, missing_ok } = PathUnlinkArgs::from_args(args.prepend(Value::None), vm)?;
+    receiver.drop_with(vm);
+    Ok(CallResult::OsCallWithEffect {
+        call: OsFunctionCall::Unlink(path),
+        effect: PreConversionEffect::Unlink {
+            missing_ok: missing_ok.bool(),
+        }
+        .into(),
+    })
 }
 
 /// Pulls the single `data` arg out of `args`, raising the CPython-style
@@ -593,15 +859,22 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
     args.get_one_arg(method, heap)
 }
 
-/// Owned `String` if `value` is a `str` or `Path`, else `None`. Caller drops
+/// Owned `String` if `value` is a `str`, `Path` or `DirEntry`, else `None`. Caller drops
 /// the source value afterwards. Also used by the `os` module's path-taking
 /// functions (`modules/os.rs`).
 pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
+    value_as_path_str(value, heap, interns).map(str::to_owned)
+}
+
+/// The text of a `str`, `Path` or `DirEntry` `value`, borrowed, else `None`:
+/// what [`value_to_owned_string`] copies, for sizing the copy first.
+pub(crate) fn value_as_path_str<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match value {
-        Value::InternString(id) => Some(interns.get_str(*id).to_owned()),
+        Value::InternString(id) => Some(interns.get_str(*id)),
         Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str().to_owned()),
-            HeapData::Path(p) => Some(p.as_str().to_owned()),
+            HeapData::Str(s) => Some(s.as_str()),
+            HeapData::Path(p) => Some(p.as_str()),
+            HeapData::DirScan(scan) => scan.fspath(),
             _ => None,
         },
         _ => None,
@@ -609,7 +882,7 @@ pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Intern
 }
 
 /// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
+pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
     match value {
         Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
         Value::Ref(id) => match heap.get(*id) {

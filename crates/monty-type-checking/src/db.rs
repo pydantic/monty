@@ -1,5 +1,6 @@
 use std::{fmt, sync::Arc};
 
+use monty_types::allocate_into_baseline;
 use ruff_db::{
     Db as SourceDb,
     diagnostic::Diagnostic,
@@ -27,8 +28,8 @@ use ty_python_semantic::{
 ///
 /// ## Lifetime invariant
 ///
-/// Each `MemoryDb` owns a unique Salsa storage. The pool must never clone a pooled
-/// instance or hand out parallel live handles because Salsa setters require
+/// Each `MemoryDb` owns a unique Salsa storage. It must never be cloned or shared
+/// with another live handle because Salsa setters require
 /// exclusive access to the underlying `Arc<Zalsa>`. `MemoryDb` therefore deliberately
 /// does not implement `Clone`; the only `Db::dyn_clone` requirement is satisfied by a
 /// panicking implementation, since that hook is reached only by ty's autofix pipeline
@@ -60,8 +61,7 @@ impl fmt::Debug for MemoryDb {
 /// Virtual source root used for all in-memory type-checking files.
 ///
 /// Every public `SourceFile.path` is mapped under `/`, including nested paths such
-/// as `pkg/main.py`. Pool cleanup is responsible for removing any intermediate
-/// directories before a reused db is returned to the next caller.
+/// as `pkg/main.py`. The files and directories are released with the database.
 pub(crate) const SRC_ROOT: &str = "/";
 
 impl Default for MemoryDb {
@@ -73,14 +73,17 @@ impl Default for MemoryDb {
     /// constructor is the only sanctioned way to build a `MemoryDb`.
     fn default() -> Self {
         let src_root = SystemPathBuf::from(SRC_ROOT);
-        let vendored = monty_typeshed::file_system().clone();
+        // Typeshed and the lint registry outlive every session; the database and its caches do not.
+        let vendored = allocate_into_baseline(monty_typeshed::file_system).clone();
+        let lint_registry = allocate_into_baseline(default_lint_registry);
+
         let mut db = Self {
             storage: salsa::Storage::new(None),
             system: TestSystem::default(),
             program_settings: ProgramSettings::empty(&vendored),
             vendored,
             files: Files::default(),
-            rule_selection: Arc::new(RuleSelection::from_registry(default_lint_registry())),
+            rule_selection: Arc::new(RuleSelection::from_registry(lint_registry)),
             analysis_settings: AnalysisSettings::default().into(),
         };
 

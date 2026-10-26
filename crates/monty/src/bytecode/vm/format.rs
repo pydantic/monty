@@ -12,11 +12,13 @@ use crate::{
         validate_string_spec,
     },
     heap::HeapReadOutput,
+    intern::StringId,
     string_builder::StringBuilder,
     types::{
         PyTrait, Type,
         date::format_date_strftime,
         datetime::format_datetime_strftime,
+        decimal,
         str::allocate_string,
         time::{attached_timezone, format_time_strftime},
     },
@@ -26,15 +28,30 @@ use crate::{
 impl VM<'_> {
     /// Builds an f-string by concatenating n string parts from the stack.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
+        if count == 1 {
+            return Ok(());
+        }
         let this = self;
+        if count == 0 {
+            this.push(Value::InternString(StringId::EMPTY));
+            return Ok(());
+        }
+
         let parts = this.pop_n(count);
         defer_drop!(parts, this);
-        let mut result = String::new();
+
+        let mut total_len = 0_usize;
+        for part in parts.as_slice() {
+            let s = part.to_str_heap(this.heap, this.interns)?;
+            total_len = total_len.saturating_add(s.len());
+        }
+
+        this.heap.tracker.check_allocation(total_len)?;
+        let mut result = String::with_capacity(total_len);
 
         for part in parts.as_slice() {
-            let part_str = part.py_str(this)?;
-            defer_drop!(part_str, this);
-            result.push_str(part_str.to_str(this)?);
+            let s = part.to_str_heap(this.heap, this.interns)?;
+            result.push_str(s);
         }
 
         let value = allocate_string(result, this.heap);
@@ -97,6 +114,8 @@ impl VM<'_> {
         } else if let Some(format_spec) = format_spec {
             if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
                 Ok(formatted)
+            } else if let Some(formatted) = self.try_format_decimal(value, format_spec)? {
+                Ok(formatted)
             } else {
                 let value_type = value.py_type_name(self);
                 let spec = self.parse_runtime_spec(format_spec, &value_type)?;
@@ -121,6 +140,13 @@ impl VM<'_> {
         spec: &ParsedFormatSpec,
     ) -> Result<String, RunError> {
         if conversion == 0 {
+            // Only a `Decimal` needs the spec back as text; checking first keeps the
+            // render off every other value's path.
+            if decimal::py::as_decimal(value, self).is_some()
+                && let Some(formatted) = self.try_format_decimal(value, &spec.to_spec_string())?
+            {
+                return Ok(formatted);
+            }
             format_with_spec(value, spec, self)
         } else {
             let s = self.convert_value(value, conversion)?;
@@ -196,6 +222,22 @@ impl VM<'_> {
             _ => unreachable!("temporal-ness checked above"),
         };
         formatted.map(Some)
+    }
+
+    /// Formats a `Decimal` with its own spec grammar (`Decimal.__format__`), under the
+    /// current context's rounding and capitals; `None` for any other value.
+    fn try_format_decimal(&mut self, value: &Value, spec: &str) -> Result<Option<String>, RunError> {
+        if decimal::py::as_decimal(value, self).is_some() {
+            let ctx_id = decimal::py_context::current_context(self);
+            decimal::py::with_ctx(self, ctx_id, |ctx, vm| {
+                decimal::py::as_decimal(value, vm)
+                    .expect("checked above")
+                    .format_spec(spec, ctx)
+            })
+            .map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Parses a runtime spec without copying it onto an error path.

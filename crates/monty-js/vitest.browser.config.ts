@@ -1,6 +1,7 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
-const nodeBuiltinsStub = new URL('./test-support/node-builtins-stub.ts', import.meta.url).pathname
+const nodeBuiltinsStub = fileURLToPath(new URL('./test-support/node-builtins-stub.ts', import.meta.url))
 
 export default defineConfig({
   optimizeDeps: {
@@ -9,7 +10,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@pydantic/monty/node': new URL('./test-support/node-stubs.ts', import.meta.url).pathname,
+      '@pydantic/monty/node': fileURLToPath(new URL('./test-support/node-stubs.ts', import.meta.url)),
     },
   },
   plugins: [

@@ -1,4 +1,4 @@
-// Runs every ```ts fence in docs/ and README.md as its own module, the counterpart of the
+// Runs every ```ts fence in docs/ and the root/package READMEs as its own module, the counterpart of the
 // pytest-examples runner on the Python side: a snippet must type-check and run, its printed
 // output is not compared. `test="skip"` on the fence skips running but not type-checking.
 import { spawnSync } from 'node:child_process'
@@ -24,6 +24,7 @@ interface Snippet {
 
 function* markdownFiles(): Generator<string> {
   yield join(REPO, 'README.md')
+  yield join(PACKAGE, 'README.md')
   const docs = join(REPO, 'docs')
   for (const entry of readdirSync(docs, { recursive: true }) as string[]) {
     // docs/api/rust is generated, and the API pages hold no examples

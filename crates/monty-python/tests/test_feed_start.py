@@ -26,6 +26,7 @@ from pydantic_monty import (
     MountDir,
     NameLookupSnapshot,
     OsFunction,
+    SourceRange,
 )
 
 
@@ -206,6 +207,77 @@ def test_future_mechanism_sync(session: MontySession):
     done = nxt.resume({call_id: {'return_value': 99}})
     assert isinstance(done, MontyComplete)
     assert done.output == snapshot(99)
+
+
+def test_function_call_position(session: MontySession):
+    code = 'x = 1\ny = add(x, 2) + 1'
+    snap = session.feed_start(code)
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 10, 'end': 19})
+    assert repr(snap.position) == snapshot("SourceRange(filename='<python-input-0>', start=10, end=19)")
+    assert snap.position == SourceRange(filename='<python-input-0>', start=10, end=19)
+    # offsets are UTF-8 bytes: slice the encoded source
+    assert code.encode()[snap.position.start : snap.position.end].decode() == snapshot('add(x, 2)')
+
+
+def test_position_counts_utf8_bytes(session: MontySession):
+    # the two-byte `é` puts the call at byte 13 but character 12
+    code = "x = 'é'\ny = add(x, 2)"
+    snap = session.feed_start(code)
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position == SourceRange(filename='<python-input-0>', start=13, end=22)
+    assert code.encode()[snap.position.start : snap.position.end].decode() == snapshot('add(x, 2)')
+
+
+def test_position_inside_a_function_from_an_earlier_feed(session: MontySession):
+    session.feed_run('def helper(n):\n    return fetch(n)')
+    snap = session.feed_start('helper(3)')
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 26, 'end': 34})
+
+
+def test_position_inside_eval_indexes_the_stripped_string(session: MontySession):
+    snap = session.feed_start("eval('  1 + fetch()')")
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<string>', 'start': 4, 'end': 11})
+
+
+def test_name_lookup_position(session: MontySession):
+    snap = session.feed_start('total = 1 + missing')
+    assert isinstance(snap, NameLookupSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 12, 'end': 19})
+
+
+def test_os_call_position(session: MontySession):
+    snap = session.feed_start("from pathlib import Path\nPath('/etc/x').read_text()")
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.is_os_function == snapshot(True)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 25, 'end': 51})
+
+
+def test_future_snapshot_position_is_the_top_level_await(session: MontySession):
+    snap = session.feed_start(
+        'import asyncio\n\nasync def go():\n    return await fetch()\n\nawait asyncio.gather(go(), go())'
+    )
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 49, 'end': 56})
+    second = snap.resume({'future': ...})
+    assert isinstance(second, FunctionSnapshot)
+    futures = second.resume({'future': ...})
+    assert isinstance(futures, FutureSnapshot)
+    assert futures.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 58, 'end': 90})
+
+
+def test_position_survives_dump_and_load(pool: Monty):
+    with pool.checkout() as session:
+        snap = session.feed_start('y = fetch()\ny + 1')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 4, 'end': 11})
 
 
 def test_future_cannot_resolve_to_future(session: MontySession):
@@ -829,7 +901,8 @@ async def test_async_resume_auto_name_lookup():
             assert done.output == snapshot(42)
 
 
-async def test_async_restored_future_snapshot_resume_auto_errors():
+@pytest.mark.parametrize('restore', [False, True])
+async def test_async_future_snapshot_resume_auto_rejection_preserves_manual_resume(restore: bool):
     # a restored FutureSnapshot's coroutines lived in the previous process, so
     # resume_auto has nothing to await and errors — resolve it manually instead
     code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
@@ -842,8 +915,78 @@ async def test_async_restored_future_snapshot_resume_auto_errors():
             blob = fut.dump()
 
         async with pool.checkout() as session:
-            loaded = await session.load_snapshot(blob)
+            if restore:
+                loaded = await session.load_snapshot(blob)
+            else:
+                snap = await session.feed_start(code)
+                assert isinstance(snap, AsyncFunctionSnapshot)
+                loaded = await snap.resume({'future': ...})
             assert isinstance(loaded, AsyncFutureSnapshot)
+            (call_id,) = loaded.pending_call_ids
+            retry_blob = loaded.dump()
+            for _ in range(2):
+                with pytest.raises(RuntimeError) as exc_info:
+                    await loaded.resume_auto()
+                assert str(exc_info.value) == snapshot('No pending async tasks but ResolveFutures requested')
+                retry_blob = loaded.dump()
+
+            # Claiming manual resume takes effect before awaiting its result.
+            pending = loaded.resume({call_id: {'return_value': 40}})
             with pytest.raises(RuntimeError) as exc_info:
                 await loaded.resume_auto()
-            assert str(exc_info.value) == snapshot('No pending async tasks but ResolveFutures requested')
+            assert str(exc_info.value) == snapshot('snapshot has already been resumed')
+            done = await pending
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot(40)
+            with pytest.raises(RuntimeError) as exc_info:
+                await loaded.resume({call_id: {'return_value': 41}})
+            assert str(exc_info.value) == snapshot('snapshot has already been resumed')
+            with pytest.raises(RuntimeError) as exc_info:
+                loaded.dump()
+            assert str(exc_info.value) == snapshot('cannot dump a snapshot that has already been resumed')
+            assert await session.feed_run('1 + 1') == snapshot(2)
+
+        async with pool.checkout() as session:
+            retry = await session.load_snapshot(retry_blob)
+            assert isinstance(retry, AsyncFutureSnapshot)
+            done = await retry.resume({call_id: {'return_value': 42}})
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot(42)
+
+
+@pytest.mark.parametrize('competing_auto', [False, True])
+async def test_async_future_snapshot_resume_auto_claims_once(competing_auto: bool):
+    release = asyncio.Event()
+    calls: list[int] = []
+
+    async def go(n: int) -> int:
+        calls.append(n)
+        await release.wait()
+        return n * 10
+
+    code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(1), go(2))\nasyncio.run(main())'
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code, external_lookup={'go': go})
+            while isinstance(snap, AsyncFunctionSnapshot):
+                snap = await asyncio.wait_for(snap.resume_auto(), timeout=10)
+            assert isinstance(snap, AsyncFutureSnapshot)
+            pending = snap.resume_auto()
+            try:
+                with pytest.raises(RuntimeError) as exc_info:
+                    if competing_auto:
+                        await asyncio.wait_for(snap.resume_auto(), timeout=10)
+                    else:
+                        await asyncio.wait_for(
+                            snap.resume({snap.pending_call_ids[0]: {'return_value': 99}}), timeout=10
+                        )
+                assert str(exc_info.value) == snapshot('snapshot has already been resumed')
+            finally:
+                release.set()
+            result = await asyncio.wait_for(pending, timeout=10)
+            while isinstance(result, AsyncFutureSnapshot):
+                result = await asyncio.wait_for(result.resume_auto(), timeout=10)
+            assert isinstance(result, MontyComplete)
+            assert result.output == snapshot([10, 20])
+            assert sorted(calls) == snapshot([1, 2])
+            assert await session.feed_run('1 + 1') == snapshot(2)

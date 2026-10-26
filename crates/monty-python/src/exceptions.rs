@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use ahash::AHashMap;
 use monty_proto::python::exc_monty_to_py;
-use monty_types::{ExcType, MontyException};
+use monty_types::{ExcType, MontyException, SourceRange};
 use pyo3::{
     PyClassInitializer,
     exceptions::{self},
@@ -560,6 +560,62 @@ impl PyFrame {
             self.line,
             self.column,
             func
+        )
+    }
+}
+
+/// Where the expression that suspended execution is in the source, exposed as
+/// `snapshot.position`. `start` and `end` are UTF-8 byte offsets, `end`
+/// exclusive: slice `source.encode()`, not the string.
+#[pyclass(name = "SourceRange", module = "pydantic_monty", frozen, eq, skip_from_py_object)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct PySourceRange {
+    /// The source the range indexes, named as in a traceback frame:
+    /// `<python-input-N>` for a feed, `<string>` inside `eval()` / `exec()`.
+    #[pyo3(get)]
+    pub filename: String,
+    /// Byte offset where the expression starts.
+    #[pyo3(get)]
+    pub start: u32,
+    /// Byte offset where the expression ends (exclusive).
+    #[pyo3(get)]
+    pub end: u32,
+}
+
+impl From<&SourceRange> for PySourceRange {
+    fn from(range: &SourceRange) -> Self {
+        Self {
+            filename: range.filename.clone(),
+            start: range.start,
+            end: range.end,
+        }
+    }
+}
+
+#[pymethods]
+impl PySourceRange {
+    /// Builds a range by hand, e.g. to compare against `snapshot.position`.
+    #[new]
+    #[pyo3(signature = (*, filename, start, end))]
+    fn new(filename: String, start: u32, end: u32) -> Self {
+        Self { filename, start, end }
+    }
+
+    fn dict<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let dict = PyDict::new(py);
+        dict.set_item("filename", &self.filename).unwrap();
+        dict.set_item("start", self.start).unwrap();
+        dict.set_item("end", self.end).unwrap();
+        dict
+    }
+
+    fn __repr__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyString>> {
+        py_format!(
+            py,
+            "SourceRange(filename='{}', start={}, end={})",
+            self.filename,
+            self.start,
+            self.end
         )
     }
 }

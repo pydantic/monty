@@ -1,5 +1,7 @@
-# call-external
-# run-async
+# /// monty
+# call-external = true
+# run-async = true
+# ///
 # === Async external function exceptions ===
 # Tests for exceptions raised by awaited external async functions. Mirrors
 # `ext_call__ext_exc.py` section-by-section via `async_fail`, then appends

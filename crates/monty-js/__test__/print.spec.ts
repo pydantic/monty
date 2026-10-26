@@ -1,4 +1,4 @@
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 import { t } from './assertions.js'
 
 import { CollectString, CollectStreams, MontyRuntimeError } from '@pydantic/monty'
@@ -23,6 +23,25 @@ function makePrintCollector() {
 
   return { callback, output }
 }
+
+test('omitted printCallback uses the host output sink', async () => {
+  const stdout =
+    typeof process !== 'undefined' && process.stdout
+      ? vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+      : vi.spyOn(console, 'log').mockImplementation(() => {})
+  const stderr =
+    typeof process !== 'undefined' && process.stderr
+      ? vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      : vi.spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    t.is(await run("import sys\nprint('hello')\nprint('error', file=sys.stderr)\n42"), 42)
+    t.is(stdout.mock.calls.map(([text]) => text).join(''), 'hello\n')
+    t.is(stderr.mock.calls.map(([text]) => text).join(''), 'error\n')
+  } finally {
+    stdout.mockRestore()
+    stderr.mockRestore()
+  }
+})
 
 test('basic', async () => {
   const { output, callback } = makePrintCollector()
@@ -153,6 +172,59 @@ test('print mixed types', async () => {
 // =============================================================================
 // Throwing print callbacks: the feed rejects with the callback's error
 // =============================================================================
+
+test.each([null, undefined, false, 0, 'stopped', new Error('stopped')])(
+  'preserves a thrown print callback value: %s',
+  async (error) => {
+    let calls = 0
+    let rejected = false
+    let thrown: unknown
+    try {
+      await run('print(1); print(2); 42', {
+        printFlushInterval: 0,
+        printCallback: () => {
+          calls++
+          throw error
+        },
+      })
+    } catch (caught) {
+      rejected = true
+      thrown = caught
+    }
+    t.true(rejected)
+    t.is(thrown, error)
+    t.is(calls, 1)
+  },
+)
+
+test.each(['feedRun', 'feedStart'] as const)('rejects a null print failure before %s suspends', async (method) => {
+  const session = await pool().checkout({ printFlushInterval: 0 })
+  let hostCalls = 0
+  let calls = 0
+  try {
+    const thrown = await t.throwsAsync(() =>
+      session[method]('print(1); print(2); fetch()', {
+        printCallback: () => {
+          calls++
+          throw null
+        },
+        externalLookup: {
+          fetch: () => {
+            hostCalls++
+            return 7
+          },
+        },
+      }),
+    )
+    t.is(thrown.message, 'null')
+    t.is(calls, 1)
+    t.is(hostCalls, 0)
+    const next = await t.throwsAsync(() => session.feedRun('1 + 1'))
+    t.is(next, thrown)
+  } finally {
+    await session.close()
+  }
+})
 
 function makeErrorCallback(error: Error) {
   const callback = (stream: 'stdout' | 'stderr', _text: string) => {

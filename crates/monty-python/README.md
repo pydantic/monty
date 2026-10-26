@@ -40,8 +40,19 @@ if __name__ == '__main__':
 
 ## Usage with a local monty worker
 
+`AsyncFutureSnapshot.resume_auto()` raises without consuming the snapshot when no host coroutines remain to await,
+including after `load_snapshot()`.
+Resolve the pending calls manually with `await snapshot.resume({call_id: {'return_value': value}})` instead.
+
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.
+`external_modules` on `checkout()` maps import names to entries for every feed of the session, each either an
+`ExternalModule` or a zero-argument factory returning one; the mapping is read live and each entry validated at its
+first import, and a factory runs once, when a feed first needs it, and may be async under `AsyncMonty`.
+An `ExternalModule` copies its `attrs` dict at construction and imports as a `module` object: callables become host
+functions, nested `ExternalModule` values become importable submodules, and other values are converted normally.
+Its `id` identifies the module when it crosses back out of the sandbox.
+The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.
@@ -78,6 +89,30 @@ if __name__ == '__main__':
     import asyncio
 
     asyncio.run(main())
+```
+
+## Where a snapshot stopped
+
+Every snapshot exposes `position`, a `SourceRange` with `filename`, `start` and `end` locating the suspending
+expression: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
+blocked on for a `FutureSnapshot`.
+`start` and `end` are UTF-8 byte offsets into the source, `end` exclusive, so slice the encoded source rather than the
+string; `filename` is the traceback filename of the source (`<python-input-N>` for the session's N-th feed, `<string>`
+inside `eval()` / `exec()`).
+
+```python
+from pydantic_monty import FunctionSnapshot, Monty
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        code = 'x = 1\ny = greet(x)'
+        snapshot = session.feed_start(code)
+        assert isinstance(snapshot, FunctionSnapshot)
+        position = snapshot.position
+        print(position.start, position.end)
+        #> 10 18
+        print(code.encode()[position.start : position.end].decode())
+        #> greet(x)
 ```
 
 ## Tracing snapshot handlers

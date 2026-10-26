@@ -20,9 +20,9 @@ use monty_proto::{
     os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MONTY_VERSION,
-    MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
-    ResourceLimits, SleepMode, TypeCheckingConfig, validate_cwd,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
+    MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy,
+    PrintStream, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -75,6 +75,38 @@ pub struct ReplConfig {
     /// `CallHost` delegates to the caller's OS handler through [`TurnEvent::OsCall`].
     /// `System` sleeps set `system_sleep` for the caller to await directly; `Zero` sleeps return immediately.
     pub os_policy: OsPolicy,
+    /// Whether a serving relay may store the session; subprocess workers ignore it.
+    pub persistence: Persistence,
+    /// The serving relay's profile to run the session under; `None` takes the
+    /// relay's default. Subprocess workers ignore it.
+    pub profile: Option<String>,
+}
+
+/// How a serving relay (`monty-server`) treats a session's state.
+///
+/// A storing relay mints a session ID ([`Checkout::session_id`]) that resumes the
+/// session from any process. Local subprocess workers never store anything.
+// non_exhaustive: a relay may grow new storage policies
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Persistence {
+    /// Whatever the relay does by default.
+    #[default]
+    ServerDefault,
+    /// Never stored by the relay on its own: no session ID and never parked.
+    Ephemeral,
+    /// Parked on idle, drain or disconnect, and resumable by its session ID.
+    Stored,
+}
+
+impl From<Persistence> for pb::Persistence {
+    fn from(persistence: Persistence) -> Self {
+        match persistence {
+            Persistence::ServerDefault => Self::Unspecified,
+            Persistence::Ephemeral => Self::Ephemeral,
+            Persistence::Stored => Self::Stored,
+        }
+    }
 }
 
 impl Default for ReplConfig {
@@ -88,6 +120,8 @@ impl Default for ReplConfig {
             assert_message_annotations: AssertMessageAnnotations::default(),
             print_flush_interval: None,
             os_policy: OsPolicy::default(),
+            persistence: Persistence::default(),
+            profile: None,
         }
     }
 }
@@ -163,7 +197,7 @@ pub struct MountSpec {
 
 impl MountSpec {
     /// Opens `host_path` and creates mount configuration with the default
-    /// 100 MB memory budget and no cumulative write limit.
+    /// memory budget ([`monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`]) and no cumulative write limit.
     ///
     /// Build this once and reuse it; each call resolves the path afresh. The
     /// open is blocking filesystem I/O, so an async caller opening a directory
@@ -239,6 +273,8 @@ pub enum TurnEvent {
         object_id: Option<MontyUuid>,
         /// Coroutine results may be awaited and returned via [`Checkout::resume_futures`].
         allow_eager_await: bool,
+        /// Where the call expression is in the source.
+        position: SourceRange,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -246,6 +282,11 @@ pub enum TurnEvent {
     /// [`Checkout::resume`]. A caller with no handler should resume with
     /// [`ResumeValue::NotHandled`]; the sandbox then raises the call's own
     /// no-handler default.
+    ///
+    /// Answer host imports from the caller's modules before other handlers.
+    /// [`OsFunctionCall::Import`] takes a module value; `NotFound` / `NotHandled` raise
+    /// `ModuleNotFoundError`. [`OsFunctionCall::ImportStubs`] takes a dict of dotted
+    /// module paths to `.pyi` source or `None`, or `NotHandled` for no stubs.
     OsCall {
         function_name: String,
         /// One arena holding every positional and keyword argument.
@@ -259,6 +300,8 @@ pub enum TurnEvent {
         /// The parent caps the untrusted worker's delay and charges `max_total_sleep` before returning it.
         /// `None` delegates to the caller's OS handler.
         system_sleep: Option<Duration>,
+        /// Where the call expression is in the source.
+        position: SourceRange,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
@@ -266,10 +309,19 @@ pub enum TurnEvent {
     /// [`Checkout::resume_name_lookup`]. An `Undefined` (or `None`) answer
     /// raises `NameError` for plain lookups, `AttributeError` for attribute
     /// lookups; an `Error` answer raises the host's exception in the sandbox.
-    NameLookup { name: String, object_id: Option<MontyUuid> },
+    NameLookup {
+        name: String,
+        object_id: Option<MontyUuid>,
+        /// Where the name (or attribute access) is in the source.
+        position: SourceRange,
+    },
     /// Every sandbox task is blocked on external futures — answer with
     /// [`Checkout::resume_futures`].
-    ResolveFutures { pending_call_ids: Vec<u32> },
+    ResolveFutures {
+        pending_call_ids: Vec<u32>,
+        /// Where the main task's blocked `await` is in the source.
+        position: SourceRange,
+    },
     /// The fed snippet completed with this value; the session is ready for
     /// the next [`Checkout::feed`].
     Complete(MontyObject),
@@ -287,7 +339,7 @@ pub enum ResumeValue {
     /// other tasks; resolve later via [`Checkout::resume_futures`].
     Future,
     /// No handler exists for the called name — the sandbox raises
-    /// `NameError`.
+    /// `NameError` (`ModuleNotFoundError` for an `import`).
     NotFound,
     /// No handler accepted this OS call — the sandbox raises the call's own
     /// no-handler default (`PermissionError` naming the path for filesystem
@@ -377,6 +429,10 @@ pub struct Checkout {
     /// only by the worker echoing it). Reset at the start of each `restore` and
     /// taken by `restore` to return; unset for non-restore turns.
     restored_script_name: Option<String>,
+    /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
+    session_id: Option<Vec<u8>>,
+    /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
+    redial: Option<Box<Redial>>,
     /// Parent-side mount table for the in-flight feed, built from the
     /// [`MountSpec`]s passed to [`Checkout::feed`] / [`Checkout::restore`].
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
@@ -398,9 +454,8 @@ pub struct Checkout {
 }
 
 /// Parent-enforced limits from `Configure` or the first reply after `Load`.
-/// Restoring resets suspension and sleep totals, but keeps their limits as ceilings:
-/// untrusted worker replies can only tighten them. Duration budgets backstop the
-/// child's enforcement, so restoring adopts the dump's duration limits.
+/// Restoring resets suspension and sleep totals, but keeps every limit as a ceiling:
+/// untrusted worker replies, including the `Load` reply, can only tighten them.
 #[derive(Clone, Copy)]
 struct SessionBudget {
     /// The session's `max_feed_duration`, when configured.
@@ -447,12 +502,12 @@ impl SessionBudget {
         }
     }
 
-    /// Clears `Configure` state before adopting a dump's budget. The
-    /// suspension and sleep limits stay: they are the ceilings on the dump's.
+    /// Clears consumption before adopting a dump's budget. The limits stay:
+    /// they are the ceilings on the dump's.
     fn forget(&mut self) {
         *self = Self {
-            feed_budget: None,
-            turn_budget: None,
+            feed_budget: self.feed_budget,
+            turn_budget: self.turn_budget,
             reported_feed_execution: Duration::ZERO,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
@@ -462,22 +517,16 @@ impl SessionBudget {
         };
     }
 
-    /// Adopts unknown limits and records consumption, counting suspensions in the parent.
-    /// Untrusted replies can only increase reported time and tighten suspension or sleep limits.
+    /// Tightens limits and records consumption, counting suspensions in the parent.
+    /// Untrusted replies can only increase reported time and tighten limits.
     /// Ordinary replies echo limits; a `Load` reply reports the dump's.
     fn update_from(&mut self, event: &pb::ChildEvent) {
         self.reported_feed_execution = self
             .reported_feed_execution
             .max(Duration::from_micros(event.feed_execution_micros));
-        if self.feed_budget.is_none() {
-            self.feed_budget = event.max_feed_duration_micros.map(Duration::from_micros);
-        }
-        if self.turn_budget.is_none() {
-            self.turn_budget = event.max_turn_duration_micros.map(Duration::from_micros);
-        }
-        if let Some(reported) = event.max_total_sleep_micros.map(Duration::from_micros) {
-            self.sleep_limit = Some(self.sleep_limit.map_or(reported, |limit| limit.min(reported)));
-        }
+        self.feed_budget = tighter(self.feed_budget, event.max_feed_duration_micros);
+        self.turn_budget = tighter(self.turn_budget, event.max_turn_duration_micros);
+        self.sleep_limit = tighter(self.sleep_limit, event.max_total_sleep_micros);
         if let Some(reported) = event.max_suspensions {
             self.suspension_limit = self.suspension_limit.min(reported);
         }
@@ -543,6 +592,14 @@ impl SessionBudget {
     }
 }
 
+/// The stricter of a limit and a worker-reported one, in microseconds; `None` is unlimited.
+fn tighter(limit: Option<Duration>, reported_micros: Option<u64>) -> Option<Duration> {
+    match (limit, reported_micros.map(Duration::from_micros)) {
+        (Some(limit), Some(reported)) => Some(limit.min(reported)),
+        (limit, reported) => limit.or(reported),
+    }
+}
+
 /// The grace period configured for each of the two duration backstops.
 ///
 /// Bundled so [`SessionBudget::backstop_deadline`] takes one argument rather
@@ -568,6 +625,20 @@ impl DurationGraces {
 /// backstop.
 fn remaining_deadline(budget: Option<Duration>, consumed: Duration, grace: Option<Duration>) -> Option<Duration> {
     Some(budget?.saturating_sub(consumed).saturating_add(grace?))
+}
+
+/// Recognizes the requests that run sandbox code, whose turns are bounded by
+/// the duration backstops as well as `request_timeout`.
+fn is_execution_turn(request: &pb::ParentRequest) -> bool {
+    matches!(
+        request.kind,
+        Some(
+            pb::parent_request::Kind::Feed(_)
+                | pb::parent_request::Kind::ResumeCall(_)
+                | pb::parent_request::Kind::ResumeNameLookup(_)
+                | pb::parent_request::Kind::ResumeFutures(_)
+        )
+    )
 }
 
 /// Recognizes turn-ending events that await a host answer.
@@ -626,32 +697,65 @@ enum Pending {
         /// Accept a settled coroutine for this call via `ResumeFutures`.
         allow_eager_await: bool,
     },
-    NameLookup,
-    Futures,
+    /// The lookup's name and receiver, kept only to recognise it re-announced after a shutdown.
+    NameLookup { name: String, object_id: Option<MontyUuid> },
+    /// The ids awaited, kept only to recognise them re-announced after a shutdown.
+    Futures { pending_call_ids: Vec<u32> },
+}
+
+/// A suspension's identity, compared when a resumed session re-announces it:
+/// the call id and name, the looked-up name and receiver, or the awaited ids.
+#[derive(Debug, PartialEq, Eq)]
+enum PendingKey {
+    Call { call_id: u32, function_name: String },
+    NameLookup { name: String, object_id: Option<MontyUuid> },
+    Futures { pending_call_ids: Vec<u32> },
+}
+
+impl PendingKey {
+    fn of(pending: &Pending) -> Self {
+        match pending {
+            Pending::Call {
+                call_id, function_name, ..
+            } => Self::Call {
+                call_id: *call_id,
+                function_name: function_name.clone(),
+            },
+            Pending::NameLookup { name, object_id } => Self::NameLookup {
+                name: name.clone(),
+                object_id: *object_id,
+            },
+            Pending::Futures { pending_call_ids } => Self::Futures {
+                pending_call_ids: pending_call_ids.clone(),
+            },
+        }
+    }
+}
+
+/// What a WebSocket checkout keeps to redial its relay and reload the session
+/// after a `Shutdown` (see [`PoolConfig::auto_resume`]).
+pub(crate) struct Redial {
+    /// Re-sent as the new worker's `Configure`.
+    pub(crate) repl: ReplConfig,
+    /// The upgrade headers the checkout first dialed with.
+    pub(crate) connect_headers: Vec<(String, String)>,
+    /// Parents the new worker's session span as the first one was.
+    #[cfg(feature = "telemetry")]
+    pub(crate) telemetry: Option<TelemetryContext>,
 }
 
 impl Checkout {
     /// Sends `Configure` on a fresh worker (the worker materializes the repl
     /// lazily on the first feed, or restores one via `load_snapshot` instead).
-    pub(crate) async fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig) -> Result<Self, PoolError> {
-        let request = request(pb::parent_request::Kind::Configure(pb::Configure {
-            script_name: repl.script_name.clone(),
-            limits: repl.limits.as_ref().map(Into::into),
-            type_check: repl.type_check,
-            type_check_stubs: repl.type_check_stubs.clone(),
-            type_check_format: pb::TypeCheckFormat::from(repl.type_check_config.format).into(),
-            type_check_color: repl.type_check_config.color,
-            assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
-            // What the child actually checks: it rejects a version outside the
-            // range it serves with a `FatalError`. Relevant whenever the worker
-            // is not the binary this crate ships — a system-packaged `monty`,
-            // or a remote worker reached over a socket.
-            protocol_version: PROTOCOL_VERSION,
-            // Diagnostic only, so a rejection can report both builds.
-            monty_version: MONTY_VERSION.to_owned(),
-            print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
-            os_policy: Some((&repl.os_policy).into()),
-        }));
+    ///
+    /// `redial` is kept for [`PoolConfig::auto_resume`]; `None` disables it.
+    pub(crate) async fn create(
+        worker: Worker,
+        pool: Arc<PoolInner>,
+        repl: &ReplConfig,
+        redial: Option<Redial>,
+    ) -> Result<Self, PoolError> {
+        let request = configure_request(repl);
         let mut this = Self {
             worker: Some(worker),
             pool,
@@ -662,6 +766,8 @@ impl Checkout {
             pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
+            session_id: None,
+            redial: redial.map(Box::new),
             feed_mounts: None,
             cwd_set: false,
             request_sent: false,
@@ -692,10 +798,11 @@ impl Checkout {
     /// calls can still be answered by [`Checkout::resume_from_mounts`]. A dump
     /// taken mid-OS-call re-announces the call in full, so the returned event
     /// is that same [`TurnEvent::OsCall`] — restoring never answers it here.
-    /// The session's resource budget is taken from the dump, so the prior
-    /// `Configure` limits are dropped here and re-adopted from the worker's
-    /// reply — except that this checkout's configured `max_suspensions` stays
-    /// as a ceiling on the re-adopted one; the count restarts at zero.
+    /// The worker caps snapshot resource limits at the checkout's configured limits.
+    /// Stricter snapshot limits and elapsed execution time remain in effect.
+    /// The parent adopts these effective limits from the worker's reply, but keeps
+    /// its configured ones as ceilings, so a lying worker cannot loosen them.
+    /// The suspension count restarts at zero.
     ///
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
@@ -705,6 +812,10 @@ impl Checkout {
     /// The caller must verify the dump's provenance and integrity before restoring it.
     /// Invalid snapshots have no correctness or availability guarantees.
     /// Successful loading is not authentication or validation.
+    ///
+    /// Against a relay that stores sessions, `state` may instead be a session ID
+    /// it minted. Loading one always starts a new session, with its own
+    /// [`Checkout::session_id`], from the state last stored under that ID.
     pub async fn restore(
         &mut self,
         state: Vec<u8>,
@@ -719,12 +830,21 @@ impl Checkout {
         self.pending = None;
         self.begin_load();
         self.restored_script_name = None;
+        // a load names a new session; a storing relay's reply supplies its ID
+        let session_id = self.session_id.take();
         self.feed_mounts = feed_mounts;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
             .await;
         self.end_load();
+        // A `Runtime` error that named no session leaves the worker's as it
+        // was — a frame-size rejection before the send, or a load the worker
+        // refused — so it keeps the ID it had, which a storing relay still
+        // holds it under. (An aborted over-budget load named the new one.)
+        if matches!(outcome, Err(PoolError::Runtime(_))) && self.session_id.is_none() {
+            self.session_id = session_id;
+        }
         let event = match outcome? {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
@@ -807,11 +927,10 @@ impl Checkout {
             cwd,
         }));
         let outcome = self.expect_turn(&request, on_print).await;
-        // The worker adopts the directory after type checking and before it
-        // parses or runs the snippet, so once the request reached it every
-        // reply but a typing rejection (a `SyntaxError` included) means it
-        // took effect; a lost worker takes the session with it.
-        if self.request_sent && !matches!(outcome, Err(PoolError::Typing(_))) {
+        // The worker adopts the directory as the request arrives, before the
+        // stubs ask and type checking, so once the request reached it every
+        // reply means it took effect; a lost worker takes the session with it.
+        if self.request_sent {
             self.cwd_set = true;
         }
         outcome
@@ -953,7 +1072,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
-        if !matches!(self.pending, Some(Pending::NameLookup)) {
+        if !matches!(self.pending, Some(Pending::NameLookup { .. })) {
             return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
         let request = request(pb::parent_request::Kind::ResumeNameLookup(result.into().into()));
@@ -983,7 +1102,7 @@ impl Checkout {
                     ));
                 }
             }
-            Some(Pending::Futures) => {}
+            Some(Pending::Futures { .. }) => {}
             _ => return Err(PoolError::Protocol("no suspended futures to resume".into())),
         }
         let results = results
@@ -1118,10 +1237,24 @@ impl Checkout {
         }
     }
 
+    /// Stable identity within this pool, independent of PID reuse or transport.
+    /// Returns `None` after the worker has been released or discarded.
+    #[must_use]
+    pub fn worker_id(&self) -> Option<u64> {
+        self.worker.as_ref().map(|worker| worker.id)
+    }
+
     /// OS process id of the worker, when it is a local subprocess (`None` for a
     /// remote WebSocket worker, or a finished checkout). Diagnostics/tests.
     pub fn pid(&self) -> Option<u32> {
         self.worker.as_ref().and_then(Worker::pid)
+    }
+
+    /// The opaque session ID a storing relay minted, which [`Checkout::restore`]
+    /// resumes from any process. `None` for local workers and ephemeral sessions.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&[u8]> {
+        self.session_id.as_deref()
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -1220,6 +1353,9 @@ impl Checkout {
     /// Also enforces the cancellation contract (see the type docs): a caller
     /// that dropped a previous turn future mid-I/O left the protocol state
     /// unknowable, so the worker is discarded on the next call.
+    ///
+    /// A `Shutdown` naming what to load is resumed on a new worker (see
+    /// [`PoolConfig::auto_resume`]); any other ends the session.
     async fn request_turn(
         &mut self,
         request: &pb::ParentRequest,
@@ -1230,14 +1366,152 @@ impl Checkout {
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
         let outcome = match deadline {
-            Some(limit) => match timeout(limit, self.turn_io(request, on_print)).await {
+            Some(limit) => match timeout(limit, self.turn_io(request, &mut *on_print)).await {
                 Ok(outcome) => outcome,
                 Err(_elapsed) => Err(self.poison_timeout().await),
             },
-            None => self.turn_io(request, on_print).await,
+            None => self.turn_io(request, &mut *on_print).await,
         };
         self.turn_in_flight = false;
+        match outcome {
+            // boxed: it recurses into this turn, and its state machine must not
+            // enlarge every turn's future for a path taken once per shutdown.
+            // The other arm hands the turn's result straight back: every move
+            // of it here is a copy of the generator's state on the hot path.
+            Err(PoolError::Shutdown { dump }) => Box::pin(self.after_shutdown(dump, request, deadline, on_print)).await,
+            outcome => outcome,
+        }
+    }
+
+    /// Answers a `Shutdown`: resumes the session when the relay named what to
+    /// load and auto-resume applies, else ends it. The worker is already released.
+    async fn after_shutdown(
+        &mut self,
+        dump: Option<Vec<u8>>,
+        request: &pb::ParentRequest,
+        deadline: Option<Duration>,
+        on_print: OnPrint<'_>,
+    ) -> Result<ControlEvent, PoolError> {
+        let outcome = match dump {
+            Some(state) if self.can_resume(request) => {
+                self.resume_after_shutdown(state, request, deadline, on_print).await
+            }
+            dump => Err(PoolError::Shutdown { dump }),
+        };
+        if matches!(outcome, Err(PoolError::Shutdown { .. })) {
+            #[cfg(feature = "telemetry")]
+            self.record_finish("error");
+            self.discard_worker();
+        }
         outcome
+    }
+
+    /// Whether a `Shutdown` answering `request` may be resumed: auto-resume applies,
+    /// the relay named the session, and `request` is not session setup or teardown.
+    /// The caller also requires the shutdown to carry what to load: a relay with no
+    /// state to load sends none, and a session cannot resume from nothing.
+    #[cold]
+    fn can_resume(&self, request: &pb::ParentRequest) -> bool {
+        self.redial.is_some()
+            && self.session_id.is_some()
+            && !matches!(
+                request.kind,
+                Some(
+                    pb::parent_request::Kind::Configure(_)
+                        | pb::parent_request::Kind::Load(_)
+                        | pb::parent_request::Kind::Reset(_)
+                        | pb::parent_request::Kind::Shutdown(_)
+                )
+            )
+    }
+
+    /// Reloads the session a relay shut down from `state`, what the relay said
+    /// restores it, on a new worker and re-sends `request`, which the relay
+    /// reported it did not run. Resumes at most once per request: `redial` is
+    /// taken for the duration, so the turns this makes cannot resume again. Any
+    /// failure reloading returns the original `Shutdown`, its cause the metric's outcome.
+    async fn resume_after_shutdown(
+        &mut self,
+        state: Vec<u8>,
+        request: &pb::ParentRequest,
+        deadline: Option<Duration>,
+        on_print: OnPrint<'_>,
+    ) -> Result<ControlEvent, PoolError> {
+        let redial = self.redial.take().expect("checked by can_resume");
+        let reloaded = self.reload_session(&redial, &state).await;
+        #[cfg(feature = "telemetry")]
+        if let Some(metrics) = &self.pool.config.metrics {
+            metrics.session_resumed(reloaded.as_ref().map_or_else(resume_failure, |()| "ok"));
+        }
+        let outcome = match reloaded {
+            Ok(()) => {
+                // as `feed_with_cwd`: the child restarts its feed clock on a
+                // `Feed`, and the `Load` reply reported the dump's last feed
+                if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
+                    self.budget.begin_feed();
+                }
+                // the `Load` reply may have tightened the budget, so an
+                // execution turn's backstop is re-derived as `expect_turn` did
+                let deadline = if is_execution_turn(request) {
+                    min_deadline(self.pool.config.request_timeout, self.backstop_deadline())
+                } else {
+                    deadline
+                };
+                self.request_turn(request, deadline, on_print).await
+            }
+            Err(_) => Err(PoolError::Shutdown { dump: Some(state) }),
+        };
+        self.redial = Some(redial);
+        outcome
+    }
+
+    /// Dials a new worker, re-creates the session and loads `state` (a session
+    /// ID against a storing relay), which starts a new session under a new ID.
+    /// The reply must match the state at the shutdown: `Ok` when idle, or the
+    /// same pending suspension re-announced when mid-feed. The session's budget
+    /// is kept, not re-adopted as `restore` does: it is the same session, so the
+    /// reply can only tighten its limits, and a shutdown grants nothing.
+    async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
+        let configure = configure_request(&redial.repl);
+        let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
+        #[cfg(feature = "telemetry")]
+        let worker = worker.with_adapter_context(redial.telemetry.clone());
+        self.worker = Some(worker);
+        let expected = self.pending.as_ref().map(PendingKey::of);
+        let timeout = self.pool.config.request_timeout;
+        let mut no_print = on_print_sync(|_, _| {});
+        match self.request_turn(&configure, timeout, &mut no_print).await? {
+            ControlEvent::Ok => {}
+            other => return Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
+        }
+        // a re-announced suspension counts and charges itself again on arrival,
+        // as after `restore`: let it through on zeroed totals, then put the
+        // session's true totals back
+        let (suspensions_seen, sleep_used) = (self.budget.suspensions_seen, self.budget.sleep_used);
+        self.budget.suspensions_seen = 0;
+        self.budget.sleep_used = Duration::ZERO;
+        let load = request(pb::parent_request::Kind::Load(pb::Load {
+            state: state.to_vec().into(),
+        }));
+        let reply = self.request_turn(&load, timeout, &mut no_print).await;
+        // the session's script name is the one it already had
+        self.restored_script_name = None;
+        let matches = match reply? {
+            ControlEvent::Ok => expected.is_none(),
+            ControlEvent::Turn(_) => expected.is_some() && expected == self.pending.as_ref().map(PendingKey::of),
+            ControlEvent::Dump(_) => false,
+        };
+        self.budget.suspensions_seen = suspensions_seen;
+        self.budget.sleep_used = sleep_used;
+        if matches {
+            #[cfg(feature = "telemetry")]
+            if let Some(worker) = &mut self.worker {
+                worker.mark_resumed();
+            }
+            Ok(())
+        } else {
+            Err(self.protocol_violation("the resumed session does not match the one shut down"))
+        }
     }
 
     /// Sends `request` and returns the child's turn-ending event, as protobuf —
@@ -1249,14 +1523,15 @@ impl Checkout {
     /// actually sent. `on_event` sees each streamed `Print` before the
     /// turn-ender.
     ///
-    /// **Bypasses this checkout's suspension bookkeeping** (`pending`,
-    /// `feed_mounts`, `restored_script_name`) — never interleave with
-    /// `feed`/`resume`/`restore`. Worker lifecycle, poisoning and parent-side
+    /// **Bypasses this checkout's session bookkeeping** (`pending`,
+    /// `feed_mounts`, `restored_script_name`, `session_id`) — never interleave
+    /// with `feed`/`resume`/`restore`: the driver reads what a reply names from
+    /// the frame it forwards. Worker lifecycle, poisoning and parent-side
     /// limits work as on the typed path; a raw `Load` re-adopts its budget like
     /// [`Checkout::restore`]. A `FatalError`
     /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
-    /// [`PoolError::Finished`].
+    /// [`PoolError::Finished`]; a raw driver is never auto-resumed.
     ///
     /// # Security
     /// `request` is typically a remote client's, so it is treated as hostile:
@@ -1264,7 +1539,8 @@ impl Checkout {
     /// otherwise `Reset` away the operator-chosen resource limits and
     /// re-`Configure` its own). A `Load`'s bytes DO reach the worker's
     /// deserialiser — the driver must verify a dump is one it issued
-    /// (monty-server signs and checks them) before passing it in.
+    /// (monty-server loads only records it stored and signed) before passing
+    /// it in.
     ///
     /// # Errors
     /// As [`Checkout::feed`]: a dead worker, a protocol violation, or a turn
@@ -1420,6 +1696,12 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
+            // Only a storing relay sets this, on its reply to `Configure` or
+            // `Load`. Taken before the budget check: a re-announced suspension
+            // over budget is aborted and dropped, but the session it names lives on.
+            if let Some(session_id) = event.session_id.take() {
+                self.session_id = Some(session_id.into_inner());
+            }
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
             if self.abort_if_over_budget(&mut event).await? {
@@ -1456,7 +1738,8 @@ impl Checkout {
                         future.await;
                     }
                 }
-                Some(pb::child_event::Kind::FunctionCall(call)) => {
+                Some(pb::child_event::Kind::FunctionCall(mut call)) => {
+                    let position = suspension_position(call.position.take());
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
@@ -1470,14 +1753,16 @@ impl Checkout {
                             object_id: call.object_id,
                             allow_eager_await: call.allow_eager_await,
                             args: call.into_call_args()?,
+                            position,
                         })
                     });
                 }
-                Some(pb::child_event::Kind::OsCall(call)) => {
+                Some(pb::child_event::Kind::OsCall(mut call)) => {
                     // Every announcement (fresh or re-announced after
                     // `restore`) decodes into a typed `OsFunctionCall`; a
                     // payload the child could never legitimately produce is a
                     // protocol violation.
+                    let position = suspension_position(call.position.take());
                     let mut allow_eager_await = call.allow_eager_await;
                     let (call_id, function_call) = match os_call_from_proto(call) {
                         Ok(call) => call,
@@ -1512,11 +1797,13 @@ impl Checkout {
                         call_id,
                         allow_eager_await,
                         system_sleep,
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     // Frames from the child are untrusted — a malformed uuid
                     // is a protocol violation, not a panic.
+                    let position = suspension_position(lookup.position);
                     let object_id = match lookup.object_id {
                         None => None,
                         Some(uuid) => match MontyUuid::try_from_slice(&uuid.data) {
@@ -1526,16 +1813,25 @@ impl Checkout {
                             }
                         },
                     };
-                    self.pending = Some(Pending::NameLookup);
+                    self.pending = Some(Pending::NameLookup {
+                        name: lookup.name.clone(),
+                        object_id,
+                    });
                     return Ok(ControlEvent::Turn(TurnEvent::NameLookup {
                         name: lookup.name,
                         object_id,
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
-                    self.pending = Some(Pending::Futures);
+                    let position = suspension_position(futures.position);
+                    let pending_call_ids = futures.pending_call_ids.into_inner();
+                    self.pending = Some(Pending::Futures {
+                        pending_call_ids: pending_call_ids.clone(),
+                    });
                     return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
-                        pending_call_ids: futures.pending_call_ids.into_inner(),
+                        pending_call_ids,
+                        position,
                     }));
                 }
                 Some(pb::child_event::Kind::Complete(complete)) => {
@@ -1562,6 +1858,18 @@ impl Checkout {
                     };
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
+                    // TypingError can only end a checked feed or its pending import_stubs call.
+                    // Accepting it elsewhere would falsely mark a suspended feed complete.
+                    let type_checked = match &request.kind {
+                        Some(pb::parent_request::Kind::Feed(feed)) => !feed.skip_type_check,
+                        Some(pb::parent_request::Kind::ResumeCall(resume)) => resume.call_id == IMPORT_STUBS_CALL_ID,
+                        _ => false,
+                    };
+                    if !type_checked {
+                        return Err(
+                            self.protocol_violation("TypingError reply to a request that is not a type-checked Feed")
+                        );
+                    }
                     self.pending = None;
                     self.feed_mounts = None;
                     return Err(PoolError::Typing(typing.diagnostics));
@@ -1589,7 +1897,9 @@ impl Checkout {
                     // back through this client into `Checkout::restore`; if
                     // host-side dump signing lands it must pass the same
                     // verification there as any other dump.
-                    self.discard_worker();
+                    //
+                    // The session state stays for `request_turn` to resume or discard.
+                    self.release_worker();
                     return Err(PoolError::Shutdown {
                         dump: shutdown.dump.map(Into::into),
                     });
@@ -1793,17 +2103,25 @@ impl Checkout {
     /// wrongly) and server `Shutdown` replies. Fatal errors instead go
     /// through [`Self::fatal_error`], which reaps and classifies.
     fn discard_worker(&mut self) {
-        if let Some(worker) = self.worker.take() {
-            #[cfg(feature = "telemetry")]
+        #[cfg(feature = "telemetry")]
+        if self.worker.is_some() {
             self.record_finish("error");
-            drop(worker);
-            self.pool.count_termination("discarded");
-            self.pool.release_capacity();
         }
+        self.release_worker();
         self.pending = None;
         self.feed_mounts = None;
         self.turn_in_flight = false;
         self.abort_in_flight = false;
+    }
+
+    /// Drops the worker and frees its pool slot, leaving the session state to
+    /// the caller: a session the relay shut down may yet resume on another worker.
+    fn release_worker(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            drop(worker);
+            self.pool.count_termination("discarded");
+            self.pool.release_capacity();
+        }
     }
 }
 
@@ -1818,6 +2136,47 @@ impl Drop for Checkout {
         }
         #[cfg(feature = "telemetry")]
         self.record_finish("abandoned");
+    }
+}
+
+/// Builds the `Configure` that creates `repl`'s session on a fresh worker.
+fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
+    request(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: repl.script_name.clone(),
+        limits: repl.limits.as_ref().map(Into::into),
+        type_check: repl.type_check,
+        type_check_stubs: repl.type_check_stubs.clone(),
+        type_check_format: pb::TypeCheckFormat::from(repl.type_check_config.format).into(),
+        type_check_color: repl.type_check_config.color,
+        assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
+        // What the child actually checks: it rejects a version outside the
+        // range it serves with a `FatalError`. Relevant whenever the worker
+        // is not the binary this crate ships — a system-packaged `monty`,
+        // or a remote worker reached over a socket.
+        protocol_version: PROTOCOL_VERSION,
+        // Diagnostic only, so a rejection can report both builds.
+        monty_version: MONTY_VERSION.to_owned(),
+        print_flush_interval_ms: repl.print_flush_interval.map(flush_interval_ms),
+        os_policy: Some((&repl.os_policy).into()),
+        persistence: pb::Persistence::from(repl.persistence).into(),
+        profile: repl.profile.clone(),
+    }))
+}
+
+/// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`
+/// (no pool capacity), `disconnected` (the new connection failed), `refused`
+/// (the relay rejected the load), `shutdown` (the new relay is shutting down
+/// too), `mismatch` (the reloaded state is not the one shut down) or `timeout`.
+#[cfg(feature = "telemetry")]
+fn resume_failure(err: &PoolError) -> &'static str {
+    match err {
+        PoolError::Exhausted => "exhausted",
+        PoolError::Disconnected { .. } | PoolError::Spawn(_) => "disconnected",
+        PoolError::Crashed { .. } | PoolError::Runtime(_) | PoolError::Typing(_) => "refused",
+        PoolError::Shutdown { .. } => "shutdown",
+        PoolError::Protocol(_) => "mismatch",
+        PoolError::Timeout { .. } => "timeout",
+        PoolError::Finished => "error",
     }
 }
 
@@ -1907,4 +2266,10 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
             .map_err(|err| PoolError::Runtime(err.into_exception()))?;
     }
     Ok(table)
+}
+
+/// Decodes a suspension event's position, wire or already decoded. A child that
+/// predates the field sends none, which reads as [`SourceRange::unknown`] rather than an error.
+fn suspension_position(position: Option<impl Into<SourceRange>>) -> SourceRange {
+    position.map_or_else(SourceRange::unknown, Into::into)
 }

@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # === External calls in for loops ===
 
 # Ext call in loop body

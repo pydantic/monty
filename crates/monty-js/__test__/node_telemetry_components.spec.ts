@@ -12,12 +12,12 @@ import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '
 import { test } from 'vitest'
 
 import { t } from './assertions.js'
-import { skipIfBrowser } from './env.js'
+import { skipIfWasm } from './env.js'
 
 import { CollectString, flushTelemetry, instrumentTelemetry, Monty, MontyInstrumentation } from '@pydantic/monty/node'
 
 test('standard OpenTelemetry components receive Monty telemetry', async (ctx) => {
-  skipIfBrowser(ctx)
+  skipIfWasm(ctx)
 
   const instrumentation: Instrumentation = new MontyInstrumentation({ traces: false, metrics: false, logs: false })
   t.is(instrumentation.instrumentationName, '@pydantic/monty')

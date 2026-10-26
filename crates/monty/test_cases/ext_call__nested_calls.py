@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # External calls in nested call expressions
 
 # Nested external calls - inner first

@@ -11,8 +11,8 @@ use std::mem;
 
 use ahash::{AHashMap, AHashSet};
 use monty_types::{
-    CallArgs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta,
-    MontyTimeZone, MontyType, MontyUuid,
+    CallArgs, InvalidInputError, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
@@ -24,9 +24,11 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
-        HostClass, HostClassType, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
+        allocate_tuple,
         bytes::Bytes,
-        date as date_type, datetime as datetime_type,
+        date as date_type, datetime as datetime_type, decimal as decimal_type,
+        decimal::py as py_decimal,
         dict::Dict,
         instance::class_name,
         list::List,
@@ -321,33 +323,19 @@ impl GraphExporter {
                 // Snapshot before recursing: a nested `__repr__` may mutate this set.
                 let children: Vec<Value> = {
                     let set_ref = set.get(vm.heap);
-                    (0..set_ref.len())
-                        .map(|i| {
-                            set_ref
-                                .storage()
-                                .value_at(i)
-                                .expect("index in range")
-                                .clone_with_heap(vm.heap)
-                        })
-                        .collect()
+                    set_ref.iter().map(|v| v.clone_with_heap(vm.heap)).collect()
                 };
                 defer_drop!(children, vm);
                 MontyNode::Set(self.push_all(children, vm))
             }
             HeapReadOutput::FrozenSet(fs) => {
-                let len = fs.get(vm.heap).len();
-                let mut items = Vec::with_capacity(len);
-                for i in 0..len {
-                    let item = fs
-                        .get(vm.heap)
-                        .storage()
-                        .value_at(i)
-                        .expect("index in range")
-                        .clone_with_heap(vm.heap);
-                    defer_drop!(item, vm);
-                    items.push(self.push(item, vm));
-                }
-                MontyNode::FrozenSet(items)
+                // Snapshot like the set branch, so the walk never holds a position.
+                let children: Vec<Value> = {
+                    let storage = fs.get(vm.heap).storage();
+                    storage.iter().map(|v| v.clone_with_heap(vm.heap)).collect()
+                };
+                defer_drop!(children, vm);
+                MontyNode::FrozenSet(self.push_all(children, vm))
             }
             HeapReadOutput::Cell(_) | HeapReadOutput::HostClassType(_) => {
                 unreachable!("cells and host class types are routed by push_ref")
@@ -386,6 +374,9 @@ impl GraphExporter {
                     microseconds,
                 })
             }
+            // The canonical string, with an upper-case exponent whatever the context's
+            // `capitals`, so the host parses back the exact value.
+            HeapReadOutput::Decimal(d) => MontyNode::Decimal(d.get(vm.heap).to_sci_string(false, true)),
             HeapReadOutput::TimeZone(tz) => {
                 let tz_ref = tz.get(vm.heap);
                 MontyNode::TimeZone(MontyTimeZone {
@@ -446,15 +437,35 @@ impl GraphExporter {
             HeapReadOutput::DictValueIterator(_) => MontyNode::Repr("<dict_valueiterator object>".to_owned()),
             HeapReadOutput::SetIterator(_) => MontyNode::Repr("<set_iterator object>".to_owned()),
             HeapReadOutput::CallableIterator(_) => MontyNode::Repr("<callable_iterator object>".to_owned()),
+            HeapReadOutput::DirScan(scan) => MontyNode::Repr(scan.get(vm.heap).boundary_repr()),
             // A placeholder despite the real in-sandbox repr (`count(0)`),
             // which would recurse into `repeat`'s arbitrary object.
             HeapReadOutput::Itertools(iter) => {
                 MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
             }
             HeapReadOutput::LongInt(li) => MontyNode::BigInt(li.get(vm.heap).inner().clone()),
-            HeapReadOutput::Module(m) => {
-                MontyNode::Repr(format!("<module '{}'>", vm.interns.get_str(m.get(vm.heap).name())))
+            HeapReadOutput::Complex(c) => {
+                let c = c.get(vm.heap);
+                MontyNode::Complex(MontyComplex {
+                    real: c.real,
+                    imag: c.imag,
+                })
             }
+            // A host module crosses back with its id and attrs; a bundled one
+            // has no host identity and crosses as its repr.
+            HeapReadOutput::Module(m) => match m.get(vm.heap).id() {
+                Some(id) => {
+                    let name = m.get(vm.heap).name_str(vm.interns).to_owned();
+                    let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
+                    defer_drop!(children, vm);
+                    MontyNode::Module {
+                        name,
+                        id,
+                        attrs: self.push_pairs(children, vm),
+                    }
+                }
+                None => MontyNode::Repr(format!("<module '{}'>", m.get(vm.heap).name_str(vm.interns))),
+            },
             HeapReadOutput::Coroutine(coro) => {
                 let func_id = coro.get(vm.heap).func_id;
                 let func = vm.interns.get_function(func_id);
@@ -612,6 +623,7 @@ impl MontyTypeExt for MontyType {
             Self::Bool => Type::Bool,
             Self::Int => Type::Int,
             Self::Float => Type::Float,
+            Self::Complex => Type::Complex,
             Self::Range => Type::Range,
             Self::Slice => Type::Slice,
             Self::Date => Type::Date,
@@ -659,6 +671,7 @@ impl MontyTypeExt for MontyType {
             Self::Partial => Type::Partial,
             Self::GenericAlias => Type::GenericAlias,
             Self::Union => Type::Union,
+            Self::LruCacheWrapper => Type::LruCacheWrapper,
             Self::Tuple => Type::Tuple,
             Self::NamedTuple => Type::NamedTuple,
             Self::Dict => Type::Dict,
@@ -686,6 +699,7 @@ impl MontyTypeExt for MontyType {
             Self::ReMatch => Type::ReMatch,
             Self::Field => Type::DataclassField,
             Self::DataclassParams => Type::DataclassParams,
+            Self::Decimal => Type::Decimal,
         }
     }
 
@@ -704,6 +718,7 @@ impl MontyTypeExt for MontyType {
             Type::Bool => Self::Bool,
             Type::Int => Self::Int,
             Type::Float => Self::Float,
+            Type::Complex => Self::Complex,
             Type::Range => Self::Range,
             Type::Slice => Self::Slice,
             Type::Date => Self::Date,
@@ -754,7 +769,25 @@ impl MontyTypeExt for MontyType {
             Type::Partial => Self::Partial,
             Type::GenericAlias => Self::GenericAlias,
             Type::Union => Self::Union,
-            Type::Random => return None,
+            Type::LruCacheWrapper => Self::LruCacheWrapper,
+            Type::Random
+            | Type::HashlibHash
+            | Type::HashlibHashXof
+            | Type::Blake2b
+            | Type::Blake2s
+            | Type::MissingType
+            | Type::DirEntry
+            | Type::ScandirIterator
+            | Type::WalkGenerator
+            | Type::CsvReader
+            | Type::CsvWriter
+            | Type::CsvDictReader
+            | Type::CsvDictWriter
+            | Type::CsvDialect
+            | Type::DecimalContext
+            | Type::DecimalSignalDict
+            | Type::DecimalContextManager => return None,
+            Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,
@@ -813,6 +846,7 @@ fn import_node(
         MontyNode::Int(i) => Ok(Value::Int(i)),
         MontyNode::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)),
         MontyNode::Float(f) => Ok(Value::Float(f)),
+        MontyNode::Complex(c) => Ok(Complex::new(c.real, c.imag).into_value(vm.heap)),
         MontyNode::String(s) => Ok(allocate_string(s, vm.heap)),
         MontyNode::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b))))),
         MontyNode::List(ids) => {
@@ -928,6 +962,13 @@ fn import_node(
                 .map_err(|_| InvalidInputError::invalid_type("timedelta"))?;
             Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
         }
+        // The host's text is untrusted: it must parse as `Decimal(text)` would,
+        // a malformed literal or out-of-range exponent being rejected rather than
+        // turned into a NaN.
+        MontyNode::Decimal(text) => match decimal_type::parse::parse_str(&text) {
+            Ok(Ok(decimal)) => Ok(py_decimal::decimal_value(decimal, vm)),
+            Ok(Err(_)) | Err(_) => Err(InvalidInputError::invalid_type("Decimal")),
+        },
         MontyNode::TimeZone(tz) => {
             if tz.offset_seconds == 0 && tz.name.is_none() {
                 Ok(vm.heap.get_timezone_utc())
@@ -999,6 +1040,15 @@ fn import_node(
                 )))
             }
         },
+        // A host module is a real module object: attribute errors are raised
+        // in the sandbox, nothing routes back to the host by identity.
+        MontyNode::Module { name, id, attrs } => {
+            let pairs = clone_pairs(&attrs, built, vm);
+            let dict = Dict::from_pairs(pairs, vm)
+                .map_err(|_| InvalidInputError::invalid_type("unhashable module attr keys"))?;
+            let module = Module::host(name, id, dict);
+            Ok(Value::Ref(vm.heap.allocate(HeapData::Module(Box::new(module)))))
+        }
         MontyNode::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
         MontyNode::FileHandle(handle) => {
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
@@ -1068,7 +1118,7 @@ fn intern_host_class_type(
     match vm.heap.resolve_host_type(&type_id) {
         Some(class_id) => {
             vm.heap.inc_ref(class_id);
-            let HeapReadOutput::HostClassType(mut ty) = vm.heap.read(class_id) else {
+            let HeapReadOutput::HostClassType(ty) = vm.heap.read(class_id) else {
                 unreachable!("host_type_index points at a non-host-class-type entry");
             };
             let replaced = (!attrs.is_empty()).then_some(attrs);
@@ -1085,13 +1135,8 @@ fn intern_host_class_type(
 /// Clones every `(key, value)` pair out of a dict (or dataclass attrs) so
 /// recursive conversion cannot be invalidated by user code mutating it.
 fn snapshot_dict_pairs(dict: &Dict, heap: &Heap) -> Vec<(Value, Value)> {
-    (0..dict.len())
-        .map(|i| {
-            (
-                dict.key_at(i).expect("index in range").clone_with_heap(heap),
-                dict.value_at(i).expect("index in range").clone_with_heap(heap),
-            )
-        })
+    dict.iter()
+        .map(|(key, value)| (key.clone_with_heap(heap), value.clone_with_heap(heap)))
         .collect()
 }
 

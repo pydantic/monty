@@ -24,7 +24,8 @@ use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
-        Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        ImportName, Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, Submodule,
+        UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
@@ -34,6 +35,7 @@ use crate::{
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
     run::CompileOptions,
     source_map::{SourceMap, StackFrameExt},
+    types::Type,
     value::{EitherStr, Value},
 };
 
@@ -250,10 +252,10 @@ fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> 
 /// receive lower IDs. Those IDs become MakeFunction/MakeClosure operands.
 pub struct Compiler<'a, 'i> {
     /// Current code being built.
-    code: CodeBuilder,
+    pub(super) code: CodeBuilder,
 
     /// Compilation tables: private overlay for an existing session, direct insertion for a fresh program.
-    interns: &'a mut CompileInterns<'i>,
+    pub(super) interns: &'a mut CompileInterns<'i>,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -624,7 +626,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
-    fn compile_block(&mut self, nodes: &'a [PreparedNode]) -> Result<(), CompileError> {
+    pub(super) fn compile_block(&mut self, nodes: &'a [PreparedNode]) -> Result<(), CompileError> {
         for node in nodes {
             if self.code.is_dead() {
                 // Don't bother compiling dead code
@@ -782,19 +784,25 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 position,
             } => self.compile_class_def(name, body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
+            Node::Match {
+                subject,
+                cases,
+                position,
+            } => self.compile_match(subject, cases, *position)?,
             Node::With {
                 context, target, body, ..
             } => self.compile_with(context, target.as_ref(), body)?,
             Node::Import { names } => {
                 for import_name in names {
-                    self.compile_import(import_name.module_name, &import_name.binding)?;
+                    self.compile_import(import_name)?;
                 }
             }
             Node::ImportFrom {
                 module_name,
+                submodules,
                 names,
                 position,
-            } => self.compile_import_from(*module_name, names, *position)?,
+            } => self.compile_import_from(*module_name, submodules, names, *position)?,
             Node::Break { position } => self.compile_break(*position)?,
             Node::Continue { position } => self.compile_continue(*position)?,
             // These are handled during the prepare phase and produce no bytecode
@@ -1073,12 +1081,30 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.
-    fn compile_import(&mut self, module_name: StringId, binding: &Identifier) -> Result<(), CompileError> {
-        let position = binding.position;
+    /// Resolves every dotted component; binds the last if aliased, otherwise the top-level module.
+    fn compile_import(&mut self, import: &ImportName) -> Result<(), CompileError> {
+        let position = import.binding.position;
         self.code.set_location(position, None);
         self.code
-            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
-        self.compile_store(binding)
+            .emit_u16(Opcode::LoadModule, check_name_index_u16(import.module_name, position)?)?;
+        if import.binds_top_level {
+            self.code.emit(Opcode::Dup)?;
+        }
+        self.compile_submodules(&import.submodules, position)?;
+        if import.binds_top_level {
+            self.code.emit(Opcode::Pop)?;
+        }
+        self.compile_store(&import.binding)
+    }
+
+    /// Replaces the stack top with each successive submodule of a dotted import.
+    fn compile_submodules(&mut self, submodules: &[Submodule], position: CodeRange) -> Result<(), CompileError> {
+        for submodule in submodules {
+            let name_idx = check_name_index_u16(submodule.name, position)?;
+            let path_idx = check_name_index_u16(submodule.path, position)?;
+            self.code.emit_u16_u16(Opcode::LoadSubmodule, name_idx, path_idx)?;
+        }
+        Ok(())
     }
 
     /// Creates the module once, then loads and binds each imported attribute.
@@ -1086,18 +1112,21 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_import_from(
         &mut self,
         module_name: StringId,
+        submodules: &[Submodule],
         names: &[(StringId, Identifier)],
         position: CodeRange,
     ) -> Result<(), CompileError> {
         self.code.set_location(position, None);
-        self.code
-            .emit_u16(Opcode::LoadModule, check_name_index_u16(module_name, position)?)?;
+        let module_idx = check_name_index_u16(module_name, position)?;
+        self.code.emit_u16(Opcode::LoadModule, module_idx)?;
+        self.compile_submodules(submodules, position)?;
         for (i, (import_name, binding)) in names.iter().enumerate() {
             // Preserve the module for subsequent attributes; the last load consumes it.
             if i < names.len() - 1 {
                 self.code.emit(Opcode::Dup)?;
             }
             let name_idx = check_name_index_u16(*import_name, position)?;
+            // LoadModule or the last LoadSubmodule saved the error's module name on the frame.
             self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
             self.compile_store(binding)?;
         }
@@ -1109,7 +1138,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     // ========================================================================
 
     /// Compiles an expression, leaving its value on the stack.
-    fn compile_expr(&mut self, expr_loc: &ExprLoc) -> Result<(), CompileError> {
+    pub(super) fn compile_expr(&mut self, expr_loc: &ExprLoc) -> Result<(), CompileError> {
         // Set source location for traceback info
         self.code.set_location(expr_loc.position, None);
 
@@ -1422,26 +1451,40 @@ impl<'a, 'i> Compiler<'a, 'i> {
     // ========================================================================
 
     /// Compiles a literal value.
+    ///
+    /// This is where parse-time literals cross into runtime `Value`s: a few
+    /// have a dedicated opcode, a complex literal is built by a constructor
+    /// call, and everything else is loaded from the constant pool.
     fn compile_literal(&mut self, literal: &Literal) -> Result<(), CompileError> {
-        match literal {
-            Literal::None => self.code.emit(Opcode::LoadNone),
-            Literal::Bool(true) => self.code.emit(Opcode::LoadTrue),
-            Literal::Bool(false) => self.code.emit(Opcode::LoadFalse),
-            Literal::Int(n) => {
-                // Use LoadSmallInt for values that fit in i8
-                if let Ok(small) = i8::try_from(*n) {
-                    self.code.emit_i8(Opcode::LoadSmallInt, small)
-                } else {
-                    let idx = self.code.add_const(Value::from(*literal))?;
-                    self.code.emit_u16(Opcode::LoadConst, idx)
+        let value = match literal {
+            Literal::None => return self.code.emit(Opcode::LoadNone),
+            Literal::Bool(true) => return self.code.emit(Opcode::LoadTrue),
+            Literal::Bool(false) => return self.code.emit(Opcode::LoadFalse),
+            Literal::Int(n) if let Ok(small) = i8::try_from(*n) => {
+                return self.code.emit_i8(Opcode::LoadSmallInt, small);
+            }
+            // `Xj` is `complex(0.0, X)`: a complex value lives on the heap, so it
+            // is built by a constructor call rather than loaded from the pool.
+            Literal::Complex(imag) => {
+                for part in [0.0, *imag] {
+                    let idx = self.code.add_const(Value::Float(part))?;
+                    self.code.emit_u16(Opcode::LoadConst, idx)?;
                 }
+                let type_id = Type::Complex
+                    .callable_to_u8()
+                    .expect("complex is a callable builtin type");
+                return self.code.emit_call_builtin_type(type_id, 2);
             }
-            // For Float, Str, Bytes, Ellipsis - use LoadConst with Value::from
-            _ => {
-                let idx = self.code.add_const(Value::from(*literal))?;
-                self.code.emit_u16(Opcode::LoadConst, idx)
-            }
-        }
+            Literal::Ellipsis => Value::Ellipsis,
+            Literal::Int(n) => Value::Int(*n),
+            Literal::Float(v) => Value::Float(*v),
+            Literal::Str(string_id) => Value::InternString(*string_id),
+            Literal::Bytes(bytes_id) => Value::InternBytes(*bytes_id),
+            Literal::LongInt(long_int_id) => Value::InternLongInt(*long_int_id),
+            Literal::Marker(marker) => Value::Marker(*marker),
+        };
+        let idx = self.code.add_const(value)?;
+        self.code.emit_u16(Opcode::LoadConst, idx)
     }
 
     // ========================================================================
@@ -1530,7 +1573,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ///
     /// At module level, `Local` scope emits `StoreGlobal`
     /// because module-level locals live in the globals array.
-    fn compile_store(&mut self, target: &Identifier) -> Result<(), CompileError> {
+    pub(super) fn compile_store(&mut self, target: &Identifier) -> Result<(), CompileError> {
         let slot = target.namespace_id().as_u16();
         match target.scope {
             NameScope::Local => {
@@ -4006,9 +4049,8 @@ fn operator_to_opcode(op: &Operator) -> Opcode {
 
 /// Maps an `Operator` to its in-place (augmented assignment) `Opcode`.
 ///
-/// Returns `None` for operators that don't have an in-place opcode (currently `MatMult`,
-/// since matrix multiplication is not yet supported). Returns `Some(opcode)` for all
-/// other valid augmented assignment operators.
+/// Returns `None` for `MatMult`: ordinary `@` supports user slots, but `@=` is
+/// still rejected. Returns `Some(opcode)` for all other valid augmented assignment operators.
 ///
 /// # Panics
 ///

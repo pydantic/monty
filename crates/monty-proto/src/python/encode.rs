@@ -4,7 +4,7 @@
 use std::{collections::HashMap, vec::IntoIter};
 
 use monty_types::{
-    MontyDate, MontyException, MontyObject, MontyUuid,
+    MontyComplex, MontyDate, MontyException, MontyObject, MontyUuid,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -13,8 +13,8 @@ use pyo3::{
     intern,
     prelude::*,
     types::{
-        PyBool, PyBytes, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDict, PyFloat, PyFrozenSet, PyInt, PyList,
-        PyModule, PySet, PyString, PyTime, PyTuple, PyType,
+        PyBool, PyBytes, PyComplex, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDict, PyFloat, PyFrozenSet, PyInt,
+        PyList, PyModule, PySet, PyString, PyTime, PyTuple, PyType,
     },
 };
 
@@ -24,10 +24,11 @@ use super::{
         is_class_type_wrapper, wrapper_uuid,
     },
     convert::{
-        PyMontyFileHandle, get_datetime_timezone_type, get_docstring, get_name, get_pure_posix_path,
+        PyMontyFileHandle, get_datetime_timezone_type, get_decimal_type, get_docstring, get_name, get_pure_posix_path,
         py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
+    external_module::PyExternalModule,
     std_type_proxy::PyMontyStdTypeProxy,
 };
 
@@ -173,6 +174,11 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             }
         } else if let Ok(float) = obj.cast::<PyFloat>() {
             Ok(self.leaf(MontyNode::Float(float.extract()?)))
+        } else if let Ok(complex) = obj.cast::<PyComplex>() {
+            Ok(self.leaf(MontyNode::Complex(MontyComplex {
+                real: complex.real(),
+                imag: complex.imag(),
+            })))
         } else if let Ok(string) = obj.cast::<PyString>() {
             Ok(self.leaf(MontyNode::String(string.extract()?)))
         } else if let Ok(bytes) = obj.cast::<PyBytes>() {
@@ -215,6 +221,9 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             Ok(self.leaf(MontyNode::TimeDelta(py_timedelta_to_monty(delta))))
         } else if obj.is_instance(get_datetime_timezone_type(py)?)? {
             Ok(self.leaf(MontyNode::TimeZone(py_timezone_to_monty(obj)?)))
+        } else if obj.is_instance(get_decimal_type(py)?)? {
+            // `str(d)` is exact; the sandbox parses it back as `Decimal(str(d))`.
+            Ok(self.leaf(MontyNode::Decimal(obj.str()?.extract()?)))
         } else if let Ok(exc) = obj.cast::<PyBaseException>() {
             Ok(self.leaf(exc_to_monty_node(exc)))
         } else if is_class_type_wrapper(obj)? {
@@ -251,6 +260,11 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         } else if let Ok(proxy) = obj.cast::<PyMontyStdTypeProxy>() {
             // a proxy handed out by decode re-enters as the builtin it stands for
             Ok(self.leaf(proxy.get().inner.to_node()))
+        } else if obj.is_instance_of::<PyExternalModule>() {
+            // a module is named by its `external_modules` path, which a value has none of
+            Err(PyTypeError::new_err(
+                "an ExternalModule enters the sandbox only through external_modules, not as a value",
+            ))
         } else if obj.is_instance(get_pure_posix_path(py)?)? {
             // pathlib.PurePosixPath and thereby pathlib.PosixPath
             Ok(self.leaf(MontyNode::Path(obj.str()?.extract()?)))

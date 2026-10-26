@@ -1,139 +1,32 @@
-// The wasm worker path's public surface (`@pydantic/monty/wasm`).
-//
-// The canonical API is `Monty.create(options)`. Lower-level consumers can call
-// `createWorkerPool(modules, options)` when they need to supply the compiled
-// core modules of the component themselves.
-//
-// `createWorkerPool` picks the backend: a browser Web Worker where
-// `Worker` exists (off-thread + a hard-kill watchdog), else in-process wasm as
-// a degrade (same API, no crash isolation or preemption). Node users wanting
-// real threads import `nodeWorkerFactory` from `./nodeFactory.js` directly
-// (separate so browser bundles never pull in `node:worker_threads`).
-
+// Browser/default WASM entry. Node selects index.node.ts through package exports.
 import { browserWorkerFactory } from './browserFactory.js'
 import type { ComponentModules } from './host.js'
-import { type WorkerFactory, WorkerPool, inProcessFactory } from './pool.js'
+import { loadModule } from './loadModule.browser.js'
+import {
+  createWorkerPoolFromFactory,
+  workerChannelOptions,
+  type Monty as MontyPool,
+  type WasmPoolOptions,
+} from './poolOptions.js'
 
-export interface WasmPoolOptions {
-  /** Accepted for parity with the native API; wasm always loads the bundled asset. */
-  binaryPath?: string
-  /** Workers spawned up front by `create()` (default 1). */
-  minProcesses?: number
-  /** Worker cap; checkouts beyond it wait (default 4). */
-  maxProcesses?: number
-  /** Accepted for parity with the native API; wasm currently waits forever. */
-  checkoutTimeout?: number
-  /** Hard per-turn deadline in seconds; on expiry the worker is terminated. */
-  requestTimeout?: number
-  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
-  feedDurationLimitGrace?: number | null
-  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
-  turnDurationLimitGrace?: number | null
-  /** Recycle a worker after serving this many sessions. */
-  maxCheckoutsPerWorker?: number
-  /** Overrides the worker entry URL used by the browser backend. */
-  workerUrl?: string | URL
-}
+export * from '../shared.js'
+export { loadModule }
+export type { ComponentModules } from './host.js'
+export type { WasmPoolOptions, WasmPoolOptions as MontyOptions } from './poolOptions.js'
+export type Monty = MontyPool
 
-/** Creates a pool over the best backend for this environment. */
-export async function createWorkerPool(modules: ComponentModules, options: WasmPoolOptions = {}): Promise<WorkerPool> {
-  const requestTimeoutMs = options.requestTimeout === undefined ? undefined : options.requestTimeout * 1000
-  const factory: WorkerFactory =
-    'Worker' in globalThis
-      ? browserWorkerFactory(modules, { requestTimeoutMs }, options.workerUrl)
-      : inProcessFactory(modules)
-  return WorkerPool.create(factory, {
-    minWorkers: options.minProcesses,
-    maxWorkers: options.maxProcesses,
-    maxCheckoutsPerWorker: options.maxCheckoutsPerWorker,
-  })
-}
-
-/**
- * Loads the bundled component's core modules. The browser and Node entries
- * export their own loaders; this generic entry has no way to find the asset.
- */
-export async function loadModule(): Promise<ComponentModules> {
-  throw new Error(
-    'loadModule cannot find the monty wasm module in this environment; ' +
-      'compile it yourself and call createWorkerPool(modules) instead',
-  )
-}
-
-/** Loads the bundled wasm module and creates a browser/worker-backed pool. */
-export class Monty {
-  static async create(_options: WasmPoolOptions = {}): Promise<WorkerPool> {
-    throw new Error(
-      'Monty.create could not auto-load the monty wasm module in this environment; ' +
-        'compile it yourself and call createWorkerPool(modules) instead',
-    )
+/** Creates a Web Worker pool from precompiled modules; there is no in-process fallback. */
+export async function createWorkerPool(modules: ComponentModules, options: WasmPoolOptions = {}): Promise<Monty> {
+  if (typeof Worker === 'undefined') {
+    throw new Error('Monty requires Web Workers; in Node, import @pydantic/monty/wasm using the node export condition')
   }
+  const factory = browserWorkerFactory(modules, workerChannelOptions(options), options.workerUrl)
+  return createWorkerPoolFromFactory(factory, options, globalThis.navigator?.hardwareConcurrency || 4)
 }
 
-export { WorkerPool, inProcessFactory } from './pool.js'
-export {
-  FunctionSnapshot,
-  FutureSnapshot,
-  MontyComplete,
-  MontySession,
-  NameLookupSnapshot,
-  NOT_HANDLED,
-} from '../session.js'
-export type {
-  ExternalFunction,
-  FeedOptions,
-  FeedStartOptions,
-  FutureResolution,
-  LoadSnapshotOptions,
-  OsCallback,
-  PrintCallback,
-  PrintTargetInput,
-  Snapshot,
-} from '../session.js'
-export { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, type CollectedStreamEntry } from '../print.js'
-export {
-  ClassInstance,
-  ClassType,
-  MontyClassProxy,
-  type AttrPolicy,
-  type BaseWrapperOptions,
-  type ClassInstanceOptions,
-  type ClassTypeOptions,
-} from '../classInstance.js'
-export {
-  MontyCrashedError,
-  MontyError,
-  MontyRuntimeError,
-  MontySyntaxError,
-  MontyTypingError,
-  ProtocolError,
-  type ExceptionInfo,
-  type Frame,
-} from '../errors.js'
-export {
-  type MontyDate,
-  type MontyDateTime,
-  type MontyException,
-  MontyFileHandle,
-  type MontyFileHandleOptions,
-  type MontyTime,
-  type MontyTimeDelta,
-  type MontyTimeZone,
-} from '../types.js'
-export type { PooledWorker, WorkerFactory, WorkerPoolOptions } from './pool.js'
-export { WorkerTransport } from './transport.js'
-export type { ResourceLimits, WorkerSessionConfig } from './transport.js'
-export type {
-  AssertMessageAnnotations,
-  OsPolicy,
-  DateTimeSource,
-  RandomStart,
-  SleepMode,
-  TimeZone,
-  TypeCheckFormat,
-} from '../options.js'
-export { WasmHost, inProcessDispatcher } from './host.js'
-export type { ComponentModules, Dispatcher } from './host.js'
-export { WorkerChannel } from './channel.js'
-export type { WorkerChannelOptions, WorkerLike } from './channel.js'
-export { browserWorkerFactory } from './browserFactory.js'
+/** Loads the bundled component into hard-preemptible Web Workers. */
+export const Monty = {
+  async create(options: WasmPoolOptions = {}): Promise<Monty> {
+    return createWorkerPool(await loadModule(), options)
+  },
+}

@@ -17,7 +17,7 @@ use tokio::{
 
 use crate::{
     PoolConfig, PoolError,
-    checkout::{Checkout, CheckoutOptions, ReplConfig, request},
+    checkout::{Checkout, CheckoutOptions, Redial, ReplConfig, request},
     worker::Worker,
 };
 
@@ -56,6 +56,8 @@ struct PoolState {
     idle: Vec<Worker>,
     /// Live workers: idle + checked out + currently being spawned.
     total: usize,
+    /// Never reused, including when a spawn fails or is cancelled.
+    next_id: u64,
     /// Set by [`Pool::close`] or dropping the [`Pool`]: stops refills, and a
     /// refill landing afterwards kills its worker.
     closed: bool,
@@ -82,7 +84,9 @@ impl Pool {
         let mut idle = Vec::with_capacity(config.min_processes);
         if !config.transport.is_websocket() {
             for _ in 0..config.min_processes {
-                idle.push(Worker::new(&config, &[]).await?);
+                let mut worker = Worker::new(&config, &[]).await?;
+                worker.id = idle.len() as u64 + 1;
+                idle.push(worker);
             }
         }
         let total = idle.len();
@@ -92,6 +96,7 @@ impl Pool {
                 state: Mutex::new(PoolState {
                     idle,
                     total,
+                    next_id: total as u64 + 1,
                     closed: false,
                     refill_failures: 0,
                     retry_at: None,
@@ -127,9 +132,16 @@ impl Pool {
             options.connect_headers.splice(0..0, telemetry.propagation_headers());
         }
         let worker = self.inner.acquire_worker(&options.connect_headers).await?;
+        let config = &self.inner.config;
+        let redial = (config.auto_resume && config.transport.is_websocket()).then(|| Redial {
+            repl: repl.clone(),
+            connect_headers: options.connect_headers.clone(),
+            #[cfg(feature = "telemetry")]
+            telemetry: options.telemetry.clone(),
+        });
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(options.telemetry);
-        Checkout::create(worker, Arc::clone(&self.inner), repl).await
+        Checkout::create(worker, Arc::clone(&self.inner), repl, redial).await
     }
 
     /// Asks idle workers to exit cleanly and reaps them, capping the wait per
@@ -268,9 +280,14 @@ impl PoolInner {
                 }
                 // reserve capacity before releasing the lock to spawn/connect
                 let below_cap = reused.is_none() && state.total < self.config.max_processes;
-                if below_cap {
+                let id = if below_cap {
                     state.total += 1;
-                }
+                    let id = state.next_id;
+                    state.next_id = id.checked_add(1).expect("worker identity exhausted");
+                    Some(id)
+                } else {
+                    None
+                };
                 drop(state); // never call into the host adapter under the lock
                 for _ in 0..died_idle {
                     self.count_termination("died_idle");
@@ -284,14 +301,15 @@ impl PoolInner {
                     *outcome = if waited { "waited" } else { "idle" };
                     return Ok(worker);
                 }
-                below_cap
+                id
             };
-            if spawn {
+            if let Some(id) = spawn {
                 *outcome = if waited { "waited" } else { "spawned" };
                 // guard the reserved slot: a failed — or cancelled, for the
                 // WebSocket dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
-                let worker = Worker::new(&self.config, connect_headers).await?;
+                let mut worker = Worker::new(&self.config, connect_headers).await?;
+                worker.id = id;
                 capacity.disarm();
                 return Ok(worker);
             }
@@ -373,23 +391,26 @@ impl PoolInner {
         if self.config.transport.is_websocket() {
             return;
         }
-        let wanted = {
+        let (wanted, first_id) = {
             let mut state = lock_ignore_poison(&self.state);
             if state.closed || state.retry_at.is_some() {
-                0
+                (0, 0)
             } else {
                 let floor = self.config.min_processes.min(self.config.max_processes);
                 let wanted = floor.saturating_sub(state.total);
                 state.total += wanted;
-                wanted
+                let first_id = state.next_id;
+                state.next_id = first_id.checked_add(wanted as u64).expect("worker identity exhausted");
+                (wanted, first_id)
             }
         };
         if wanted > 0 {
             self.record_worker_delta(worker_count(wanted), 0);
-            for _ in 0..wanted {
+            for id in first_id..first_id + wanted as u64 {
                 // a task the runtime drops mid-spawn (at its shutdown) loses its
                 // slot, which only matters to a pool that is going away anyway
-                self.runtime.spawn(refill_one(self.this.clone(), self.config.clone()));
+                self.runtime
+                    .spawn(refill_one(self.this.clone(), self.config.clone(), id));
             }
         }
     }
@@ -425,15 +446,16 @@ impl PoolInner {
     }
 }
 
-/// Spawns one worker into a slot [`PoolInner::replenish`] reserved.
+/// Spawns worker `id` into a slot [`PoolInner::replenish`] reserved.
 ///
 /// Holds only a `Weak` across the spawn, so an in-flight refill never keeps a
 /// dropped pool alive; its worker is then killed on drop.
-async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig) {
+async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, id: u64) {
     let worker = Worker::new(&config, &[]).await;
     let Some(pool) = pool.upgrade() else { return };
     match worker {
-        Ok(worker) => {
+        Ok(mut worker) => {
+            worker.id = id;
             let mut state = lock_ignore_poison(&pool.state);
             if state.closed {
                 drop(state);

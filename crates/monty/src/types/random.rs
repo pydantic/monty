@@ -7,7 +7,7 @@
 //! Module functions use the VM's generator ([`RandomTarget::Global`]);
 //! `random.Random(...)` instances use the heap.
 
-use std::{fmt::Write, mem};
+use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::{RandomSeed, RandomStart, ResourceTracker};
 use num_bigint::{BigInt, BigUint};
@@ -26,6 +26,7 @@ use crate::{
         copy::{Memo, PyDeepCopy},
         random::{RandomFunctions, random_dispatch},
     },
+    py_value::PyValue,
     types::{LazyHeapSet, PyTrait, Type, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
@@ -210,7 +211,7 @@ impl RandomTarget {
         match self {
             Self::Global => vm.random.module = random,
             Self::Instance(id) => match vm.heap.read(id) {
-                HeapReadOutput::Random(mut handle) => *handle.get_mut(vm.heap) = random,
+                HeapReadOutput::Random(handle) => *handle.get_mut(vm.heap) = random,
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
             },
         }
@@ -221,7 +222,7 @@ impl RandomTarget {
         match self {
             Self::Global => mem::take(&mut vm.random.module),
             Self::Instance(id) => match vm.heap.read(id) {
-                HeapReadOutput::Random(mut handle) => mem::take(handle.get_mut(vm.heap)),
+                HeapReadOutput::Random(handle) => mem::take(handle.get_mut(vm.heap)),
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
             },
         }
@@ -240,19 +241,12 @@ impl RandomTarget {
 /// SHA-512 extended (version 2) or folded by the version 1 loop. Any other type
 /// is rejected with `random.py`'s message.
 pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> RunResult<Vec<u32>> {
-    let key = match value {
-        Value::Bool(b) => vec![u32::from(*b)],
-        Value::Int(i) => key_from_u64(i.unsigned_abs()),
-        Value::Float(f) => key_from_u64(cpython_float_hash(*f)),
-        Value::InternString(id) => key_from_text(&SeedText::Str(vm.interns.get_str(*id)), version),
-        Value::InternBytes(id) => key_from_text(&SeedText::Bytes(vm.interns.get_bytes(*id)), version),
-        Value::InternLongInt(id) => key_from_bigint(vm.interns.get_long_int(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::LongInt(li) => key_from_bigint(li.inner()),
-            HeapData::Str(s) => key_from_text(&SeedText::Str(s.as_str()), version),
-            HeapData::Bytes(b) => key_from_text(&SeedText::Bytes(b.as_slice()), version),
-            _ => return Err(ExcType::random_seed_type()),
-        },
+    let key = match value.py_value(vm) {
+        PyValue::Bool(value) => vec![u32::from(value)],
+        PyValue::Int(value) => value.with_value(vm, |value| key_from_u64(value.unsigned_abs()), key_from_bigint),
+        PyValue::Float(value) => key_from_u64(cpython_float_hash(value)),
+        PyValue::Str(value) => key_from_text(&SeedText::Str(value.as_str(vm)), version),
+        PyValue::Bytes(value) => key_from_text(&SeedText::Bytes(value.as_slice(vm)), version),
         _ => return Err(ExcType::random_seed_type()),
     };
     Ok(key)
@@ -606,6 +600,10 @@ impl HeapItem for Random {
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::Random
+    }
+
+    fn py_type_name(&self, _: &VM<'h>) -> Cow<'h, str> {
+        Cow::Borrowed("Random")
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

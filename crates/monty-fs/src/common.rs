@@ -5,19 +5,17 @@
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
 use std::{
-    ffi::OsStr,
     io::{Error as IoError, ErrorKind, Read, Write},
-    path::{Path, PathBuf},
     time::SystemTime,
 };
 
 #[cfg(unix)]
 use cap_std::fs::OpenOptionsExt;
 use cap_std::{
-    fs::{Dir, File, Metadata, OpenOptions},
+    fs::{Dir, File, Metadata, OpenOptions, ReadDir},
     time::SystemTime as CapSystemTime,
 };
-use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
+use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, scan::EntryInfo, utf8_error_reason};
 #[cfg(unix)]
 use rustix::fs::OFlags;
 
@@ -325,14 +323,14 @@ pub(super) fn host_stat(dir: &Dir, rel: &str, vpath: &str) -> Result<MontyObject
 
 /// Lists visible directory entries within the mount memory budget.
 pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
-    let names = host_list_visible_dir_entry_names(dir, rel, vpath, budget.halved())?;
-    let mut memory_usage = names.iter().fold(0_u64, |usage, name| {
+    let entries = host_list_visible_dir_entries(dir, rel, vpath, budget.halved())?;
+    let mut memory_usage = entries.iter().fold(0_u64, |usage, (name, _)| {
         usage
             .saturating_add(as_u64(name.len()))
             .saturating_add(LISTING_ENTRY_MEMORY_USAGE)
     });
     let mut result = Vec::new();
-    for name in names {
+    for (name, _) in entries {
         let path = format_child_path(vpath, &name);
         memory_usage = memory_usage
             .saturating_add(as_u64(path.len()))
@@ -361,47 +359,77 @@ pub(super) fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
     }
 }
 
-/// Returns visible real directory entry names for `iterdir()`.
+/// Returns visible real directory entries for `iterdir()` and scans, each
+/// described as [`PathInfo::from_host`] would describe it.
 ///
 /// Symlinks are only exposed when they still resolve inside the mount, so
-/// iteration does not leak the existence of outbound or broken links.
-pub(super) fn host_list_visible_dir_entry_names(
+/// iteration does not leak the existence of outbound or broken links, and
+/// names that are not UTF-8 are left out. Types come from the listing itself,
+/// so only symlinks cost a lookup.
+pub(super) fn host_list_visible_dir_entries(
     dir: &Dir,
     rel: &str,
     vpath: &str,
     budget: MemoryBudget,
-) -> Result<Vec<String>, MountError> {
+) -> Result<Vec<(String, EntryInfo)>, MountError> {
     // `read_dir` on a missing path reports ENOTDIR, but CPython raises
-    // `FileNotFoundError`, so surface the lookup failure first.
-    dir.metadata(rel).map_err(|err| map_io(err, vpath))?;
-    let read_dir = dir.read_dir(rel).map_err(|err| map_io(err, vpath))?;
-    let mut names = Vec::new();
+    // `FileNotFoundError`, so a failure reports the lookup's error if it fails too.
+    let read_dir = dir
+        .read_dir(rel)
+        .map_err(|err| map_io(dir.metadata(rel).err().unwrap_or(err), vpath))?;
+    visible_entries(read_dir, dir, rel, vpath, budget)
+}
+
+/// The visible entries of `read_dir`, a listing of mount-relative `rel`, as
+/// [`host_list_visible_dir_entries`] returns them; symlinks are resolved from
+/// `mount_dir`, the mount's own descriptor, whatever handle produced the listing.
+pub(super) fn visible_entries(
+    read_dir: ReadDir,
+    mount_dir: &Dir,
+    rel: &str,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<Vec<(String, EntryInfo)>, MountError> {
+    let mut entries = Vec::new();
     let mut memory_usage = 0_u64;
 
     for entry in read_dir {
         let entry = entry.map_err(|err| map_io(err, vpath))?;
         let file_type = entry.file_type().map_err(|err| map_io(err, vpath))?;
+        let raw_name = entry.file_name();
+        // Sandbox paths are strictly UTF-8, so a name that is not cannot be
+        // spelled there: its lossy spelling would open a different file or
+        // nothing. Such entries are left out (CPython lists them via `surrogateescape`).
+        let Some(name) = raw_name.to_str() else {
+            continue;
+        };
 
-        if file_type.is_symlink() {
-            // Join the raw name: a lossy `String` round-trip would look up a
-            // different entry and silently drop this one. The lookup must stay
-            // path-based so it runs through the descriptor's confinement check —
-            // `entry.metadata()` resolves the link without one.
-            let child = join_mount_relative_os(rel, &entry.file_name());
-            if dir.metadata(&child).is_err() {
+        let info = if file_type.is_symlink() {
+            // The lookup must stay path-based so it runs through the descriptor's
+            // confinement check — `entry.metadata()` resolves the link without one.
+            let Ok(target) = mount_dir.metadata(join_mount_relative(rel, name)) else {
                 continue;
+            };
+            EntryInfo {
+                is_dir: target.is_dir(),
+                is_file: target.is_file(),
+                is_symlink: true,
             }
-        }
-
-        let name = entry.file_name().to_string_lossy().to_string();
+        } else {
+            EntryInfo {
+                is_dir: file_type.is_dir(),
+                is_file: file_type.is_file(),
+                is_symlink: false,
+            }
+        };
         memory_usage = memory_usage
             .saturating_add(as_u64(name.len()))
             .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
         budget.check(memory_usage)?;
-        names.push(name);
+        entries.push((name.to_owned(), info));
     }
 
-    Ok(names)
+    Ok(entries)
 }
 
 /// Converts raw bytes to UTF-8 or returns the exact decode failure details
@@ -448,18 +476,6 @@ pub(super) fn host_dir_mtime(dir: &Dir, rel: &str) -> f64 {
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
-/// [`join_mount_relative`] for a raw directory-entry name: the child stays an
-/// `OsStr` so a non-UTF-8 name survives the join and the resulting lookup
-/// names the entry itself — a lossy `String` round-trip would name a
-/// different path.
-pub(super) fn join_mount_relative_os(rel: &str, child: &OsStr) -> PathBuf {
-    if rel.is_empty() || rel == "." {
-        PathBuf::from(child)
-    } else {
-        Path::new(rel).join(child)
-    }
-}
-
 /// Joins a mount-relative directory path with a child name, yielding the
 /// child's own mount-relative path — the coordinate system `Dir` operations
 /// and overlay keys share. `""` and `"."` both mean the mount root.
@@ -468,6 +484,47 @@ pub(super) fn join_mount_relative(rel: &str, child: &str) -> String {
         child.to_owned()
     } else {
         format!("{rel}/{child}")
+    }
+}
+
+/// What the four path predicates (`exists`, `is_dir`, `is_file`, `is_symlink`)
+/// say about one path, answered together for directory scans.
+///
+/// `exists`, `is_dir` and `is_file` follow a final symlink; `is_symlink` does
+/// not, so a dangling or escaping link is `is_symlink` alone with `exists` false.
+/// Not an `Option<EntryInfo>`: listings report that link, and a socket or FIFO
+/// exists with all three flags false.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PathInfo {
+    /// The entry as a scan reports it.
+    pub(super) info: EntryInfo,
+    /// Whether the path resolves to something inside the mount.
+    pub(super) exists: bool,
+}
+
+impl PathInfo {
+    /// A path that is not there, or not visible.
+    pub(super) const ABSENT: Self = Self {
+        info: EntryInfo {
+            is_dir: false,
+            is_file: false,
+            is_symlink: false,
+        },
+        exists: false,
+    };
+
+    /// Describes `rel` with one `metadata` and one `symlink_metadata` call,
+    /// where the separate predicates would cost four.
+    pub(super) fn from_host(dir: &Dir, rel: &str) -> Self {
+        let followed = dir.metadata(rel).ok();
+        Self {
+            info: EntryInfo {
+                is_dir: followed.as_ref().is_some_and(Metadata::is_dir),
+                is_file: followed.as_ref().is_some_and(Metadata::is_file),
+                is_symlink: dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_symlink()),
+            },
+            exists: followed.is_some(),
+        }
     }
 }
 

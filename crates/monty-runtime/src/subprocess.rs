@@ -107,7 +107,7 @@ fn serve() -> ExitCode {
 ///
 /// Reading the child's state rather than the request is what keeps the limit
 /// honest: a rejected `Configure` changes nothing, a `Load` brings the dump's
-/// own limits, and `Reset` ends the session. It lives in the shell rather than
+/// limits capped by the destination policy, and `Reset` ends the session. It lives in the shell rather than
 /// in the shared state machine because each entry point declares its own
 /// allocator: the wasm worker does the same thing in its own turn loop.
 fn apply_memory_limit(child: &Child) {

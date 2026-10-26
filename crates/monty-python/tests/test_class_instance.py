@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import FrozenInstanceError, dataclass
-from decimal import Decimal
+from fractions import Fraction
 from functools import cached_property
 from typing import Any, NoReturn
 from uuid import UUID, uuid4
@@ -77,8 +77,8 @@ class Vault:
         raise KeyError('boom')
 
     @property
-    def amount(self) -> Decimal:
-        return Decimal('1.5')
+    def amount(self) -> Fraction:
+        return Fraction(3, 2)
 
     @property
     def fine(self) -> int:
@@ -254,7 +254,7 @@ def test_lazy_attr_unconvertible_value_raised_in_sandbox(session: MontySession):
     inputs = {'v': ClassInstance(Vault(), lazy_attrs='all')}
     code = 'try:\n    r = v.amount\nexcept TypeError as e:\n    r = str(e)\nr'
     assert session.feed_run(code, inputs=inputs) == snapshot(
-        'Cannot convert decimal.Decimal to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+        'Cannot convert fractions.Fraction to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
     )
     assert session.feed_run('v.fine') == snapshot(1)
 
@@ -320,18 +320,28 @@ def test_private_method_not_dispatched(monty_run: RunMonty):
 
 
 def test_instance_call_method_dunder_call_rejected():
-    """`__call__` routes only to `ClassType` construction; on an instance
-    wrapper a (necessarily forged) `__call__` frame is denied even under
-    `allowed_methods='all'`, so the wrapped instance can never be invoked."""
+    """Only `ClassType` permits `__call__`, even with `allowed_methods='all'`."""
 
     class Invocable:
         def __call__(self) -> str:
             return 'invoked'
 
     wrapper = ClassInstance(Invocable(), allowed_methods='all')
-    with pytest.raises(AttributeError) as exc_info:
+    with pytest.raises(TypeError) as exc_info:
         wrapper.call_method('__call__', (), {})
-    assert str(exc_info.value) == snapshot("'Invocable' object has no attribute '__call__'")
+    assert str(exc_info.value) == snapshot("'Invocable' object is not callable")
+
+
+def test_calling_an_instance_in_the_sandbox_is_not_callable(monty_run: RunMonty):
+    """The wrapper rejects `__call__` requests from the sandbox."""
+
+    class Invocable:
+        def __call__(self) -> str:
+            return 'invoked'
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('c()', inputs={'c': ClassInstance(Invocable(), allowed_methods='all')})
+    assert str(exc_info.value) == snapshot("TypeError: 'Invocable' object is not callable")
 
 
 # === Policy validation and the scope of 'all' ===
@@ -870,7 +880,7 @@ async def test_async_lazy_attr_host_error_raised_in_sandbox():
             assert str(exc_info.value) == snapshot('KeyError: boom')
             code = 'try:\n    r = v.amount\nexcept TypeError as e:\n    r = str(e)\nr'
             assert await session.feed_run(code) == snapshot(
-                'Cannot convert decimal.Decimal to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
+                'Cannot convert fractions.Fraction to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)'
             )
             assert await session.feed_run('v.fine') == snapshot(1)
 

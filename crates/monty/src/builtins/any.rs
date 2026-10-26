@@ -8,7 +8,7 @@ use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunRes
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
 pub fn builtin_any(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let iterable = args.get_one_arg("any", vm.heap)?;
-    let iter = iterable.into_py_iter(vm)?;
+    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 

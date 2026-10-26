@@ -191,7 +191,7 @@ fn extfunction_cache_is_rebuilt_after_snapshot_load() {
             PrintWriter::Stdout,
         )
         .unwrap();
-    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
     assert_eq!(resume_snapshot_identity_test(progress), MontyObject::bool(true));
 
     let Session::Running(progress) = Dump::load(&bytes).unwrap().state else {

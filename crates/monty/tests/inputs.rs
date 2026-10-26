@@ -444,6 +444,96 @@ fn invalid_input_repr_nested_in_list() {
     assert!(result.is_err(), "Repr nested in list should be invalid");
 }
 
+// === Decimal Tests ===
+
+#[test]
+fn decimal_input_round_trips_exactly() {
+    for text in [
+        "1.20",
+        "-0",
+        "1E+5",
+        "-NaN12",
+        "sNaN",
+        "Infinity",
+        "-1.2345678901234567890123456789E-30",
+    ] {
+        let input = MontyObject::decimal(text);
+        assert_eq!(run_input(input.clone()).unwrap(), input);
+    }
+}
+
+#[test]
+fn decimal_input_is_parsed_like_decimal_str() {
+    // Any numeric string `Decimal()` accepts comes back in canonical form.
+    assert_eq!(
+        run_input(MontyObject::decimal(" 1e5 ")).unwrap(),
+        MontyObject::decimal("1E+5")
+    );
+    assert_eq!(
+        run_input(MontyObject::decimal("nan")).unwrap(),
+        MontyObject::decimal("NaN")
+    );
+}
+
+#[test]
+fn decimal_input_supports_arithmetic() {
+    let mut ex = MontyRun::new(
+        "(str(x), x > 1, type(x).__name__)".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex.run_no_limits(vec![MontyObject::decimal("19.99")]).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::tuple([
+            MontyObject::string("19.99"),
+            MontyObject::bool(true),
+            MontyObject::string("Decimal"),
+        ])
+    );
+}
+
+#[test]
+fn decimal_output_uses_canonical_exponent() {
+    // `capitals = 0` only changes the sandbox's own `str()`; the host still gets `E`.
+    let mut ex = MontyRun::new(
+        "import decimal\ndecimal.getcontext().capitals = 0\n[decimal.Decimal('1e5'), str(decimal.Decimal('1e5'))]"
+            .to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::list([MontyObject::decimal("1E+5"), MontyObject::string("1e+5")])
+    );
+}
+
+#[test]
+fn invalid_decimal_input_is_rejected() {
+    for text in ["abc", "", "1e99999999999999999999", "1.5.5", "NaNx"] {
+        assert!(
+            run_input(MontyObject::decimal(text)).is_err(),
+            "{text:?} should be rejected"
+        );
+    }
+    let long = "1".repeat(5000);
+    assert!(
+        run_input(MontyObject::decimal(long)).is_err(),
+        "over-long coefficient should be rejected"
+    );
+}
+
+#[test]
+fn invalid_decimal_input_in_list_after_heap_values() {
+    let result = run_input(MontyObject::list([heap_element(), MontyObject::decimal("bad")]));
+    assert!(result.is_err());
+}
+
 // === Error-Path Cleanup Tests ===
 // An invalid element placed *after* elements that allocate heap values: the
 // partially-built container must release the already-converted values (the

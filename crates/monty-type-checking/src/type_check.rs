@@ -1,6 +1,6 @@
-use std::{fmt, io::ErrorKind, mem};
+use std::fmt::{self, Write as _};
 
-use monty_types::{TypeCheckingConfig, TypeCheckingFormat};
+use monty_types::{ModuleStub, TypeCheckingConfig, TypeCheckingFormat};
 use ruff_db::{
     Db as _,
     diagnostic::{
@@ -9,8 +9,9 @@ use ruff_db::{
     },
     file_revision::FileRevision,
     files::{File, system_path_to_file},
-    system::{DbWithTestSystem, DbWithWritableSystem as _, SystemPath, SystemPathBuf},
+    system::{DbWithWritableSystem as _, SystemPath, SystemPathBuf},
 };
+use ruff_python_stdlib::identifiers::is_identifier;
 use ruff_text_size::{TextRange, TextSize};
 use salsa::Setter as _;
 use ty_python_semantic::{Db as _, check_file_unwrap};
@@ -18,6 +19,7 @@ use ty_python_semantic::{Db as _, check_file_unwrap};
 use crate::db::{MemoryDb, SRC_ROOT};
 
 /// Definition of a source file.
+#[derive(Debug, Clone, Copy)]
 pub struct SourceFile<'a> {
     /// source code
     pub source_code: &'a str,
@@ -33,10 +35,20 @@ impl<'a> SourceFile<'a> {
     }
 }
 
+/// Session declarations and imports for [`TypeChecker::run_with`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TypeCheckContext<'a> {
+    /// Host stubs and committed snippets, star-imported into the snippet.
+    pub stubs: Option<&'a SourceFile<'a>>,
+    /// Host module stubs, written as `.pyi` modules or packages and never star-imported.
+    pub module_stubs: &'a [ModuleStub],
+    /// Committed imports injected before the star import; see [`crate::scan_imports`].
+    pub prelude: &'a str,
+}
+
 #[derive(Debug, Default)]
 pub struct TypeChecker {
     db: MemoryDb,
-    touched_files: Vec<TouchedRootFile>,
     next_revision: u128,
 }
 
@@ -51,36 +63,66 @@ impl TypeChecker {
     /// # Returns
     /// * `Ok(None)` - If there are no typing errors.
     /// * `Ok(Some(string))` - If there are typing errors.
-    /// * `Err(String)` - If there was an unexpected/internal error during type checking.
+    /// * `Err(String)` - If there was an unexpected/internal error during type checking, or the
+    ///   script path names the stubs file.
     pub fn run<'a>(
         &'a mut self,
         python_source: &SourceFile<'_>,
         stubs_file: Option<&SourceFile<'_>>,
         config: TypeCheckingConfig,
     ) -> Result<Option<TypeCheckingDiagnostics<'a>>, String> {
+        let context = TypeCheckContext {
+            stubs: stubs_file,
+            ..TypeCheckContext::default()
+        };
+        self.run_with(python_source, &context, config)
+    }
+
+    /// [`run`](Self::run) with host module stubs and committed imports.
+    /// The prelude precedes the stubs' star import so later bindings shadow imports as at runtime.
+    /// Diagnostics use the snippet's original line numbers.
+    pub fn run_with<'a>(
+        &'a mut self,
+        python_source: &SourceFile<'_>,
+        context: &TypeCheckContext<'_>,
+        config: TypeCheckingConfig,
+    ) -> Result<Option<TypeCheckingDiagnostics<'a>>, String> {
         let src_root = SystemPathBuf::from(SRC_ROOT);
         let main_path = src_root.join(python_source.path);
         let main_source = python_source.source_code;
 
-        let (main_file, code_offset): (File, u32) = if let Some(stubs_file) = stubs_file {
-            let stubs_path = src_root.join(stubs_file.path);
-            self.write_root_file(&stubs_path, stubs_file.source_code)?;
+        for (path, source) in stub_files(context.module_stubs)? {
+            self.write_root_file(&src_root.join(path), source)?;
+        }
 
-            // prepend the stub import to the main source code
+        let mut prefix = context.prelude.to_owned();
+        if !prefix.is_empty() && !prefix.ends_with('\n') {
+            prefix.push('\n');
+        }
+        if let Some(stubs_file) = context.stubs {
+            let stubs_path = src_root.join(stubs_file.path);
+            let stubs = self.write_root_file(&stubs_path, stubs_file.source_code)?;
+            // Writing the script over its own stubs would drop them and make it import
+            // itself; compare interned files, not strings, since the db normalises paths.
+            if system_path_to_file(&self.db, &main_path).is_ok_and(|file| file == stubs) {
+                return Err(format!(
+                    "script `{}` collides with the type stubs file `{}`",
+                    python_source.path, stubs_file.path
+                ));
+            }
             let stub_stem = stubs_file
                 .path
                 .split_once('.')
                 .map_or(stubs_file.path, |(before, _)| before);
-            let mut new_source = format!("from {stub_stem} import *\n");
-            let offset = u32::try_from(new_source.len()).map_err(to_string)?;
-            new_source.push_str(main_source);
-
-            let main_file = self.write_root_file(&main_path, &new_source)?;
-            // one line offset for errors vs. the original source code since we injected the stub import
-            (main_file, offset)
+            writeln!(prefix, "from {stub_stem} import *").map_err(to_string)?;
+        }
+        // Subtract the injected prefix from diagnostic spans to preserve the original positions.
+        let (main_file, code_offset): (File, u32) = if prefix.is_empty() {
+            (self.write_root_file(&main_path, main_source)?, 0)
         } else {
-            let main_file = self.write_root_file(&main_path, main_source)?;
-            (main_file, 0)
+            let offset = u32::try_from(prefix.len()).map_err(to_string)?;
+            prefix.push_str(main_source);
+            (self.write_root_file(&main_path, &prefix)?, offset)
         };
 
         // Use `check_file_unwrap` (not `check_types` alone) so that parser errors
@@ -89,6 +131,10 @@ impl TypeChecker {
         // type-check clean.
         let mut diagnostics = check_file_unwrap(&self.db, self.db.program_file(main_file));
         diagnostics.retain(filter_diagnostics);
+        // Suppress prefix diagnostics: committed imports may have used `# type: ignore`
+        // or skipped type checking, and have no position in this snippet.
+        let prefix_offset = TextSize::new(code_offset);
+        diagnostics.retain(|diagnostic| !starts_in_prefix(diagnostic, main_file, prefix_offset));
 
         if diagnostics.is_empty() {
             Ok(None)
@@ -96,7 +142,7 @@ impl TypeChecker {
             // without all this errors would appear on the wrong line because we injected `from type_stubs import *`
 
             // if we injected the stubs import, we need to write the actual source back to the file in the database
-            self.rewrite_root_file(&main_path, main_source)?;
+            self.write_root_file(&main_path, main_source)?;
             // and then adjust each span in the error message to account for the injected stubs import
             if code_offset > 0 {
                 let offset = TextSize::new(code_offset);
@@ -125,40 +171,12 @@ impl TypeChecker {
         }
     }
 
-    /// Write one root file into the db and remember it for mandatory cleanup.
-    ///
-    /// A path already tracked from an earlier `run` is overwritten rather than
-    /// tracked twice: a session rewrites the same script path on every feed,
-    /// so the tracking list must not grow with the number of feeds.
+    /// Write a source file and invalidate cached queries for its path.
     fn write_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<File, String> {
         self.db.write_file(path, source).map_err(to_string)?;
         self.bump_revisions(path);
 
-        // The write above succeeded, so interning the path must succeed — otherwise the
-        // file would live in the db but be untracked, poisoning cleanup, hence the panic.
-        let file = system_path_to_file(&self.db, path)
-            .unwrap_or_else(|e| panic!("interning a just-written root file must succeed, DB in an unsafe state: {e}"));
-
-        if !self.touched_files.iter().any(|t| &t.path == path) {
-            self.touched_files.push(TouchedRootFile::new(path.clone(), file));
-        }
-        Ok(file)
-    }
-
-    /// Overwrite the contents of a root file that was previously written via
-    /// [`Self::write_root_file`].
-    ///
-    /// Panics if `path` is not already tracked — the caller would otherwise be
-    /// leaving an untracked write behind that cleanup would miss, so a later
-    /// [`Self::reset`] would leave the file visible to the next session.
-    fn rewrite_root_file(&mut self, path: &SystemPathBuf, source: &str) -> Result<(), String> {
-        assert!(
-            self.touched_files.iter().any(|t| &t.path == path),
-            "rewrite_root_file called for untracked path '{path}' — must call write_root_file first",
-        );
-        self.db.write_file(path, source).map_err(to_string)?;
-        self.bump_revisions(path);
-        Ok(())
+        system_path_to_file(&self.db, path).map_err(to_string)
     }
 
     /// Force a fresh Salsa revision for `path` and its ancestor directories.
@@ -166,8 +184,7 @@ impl TypeChecker {
     /// `write_file` derives the revision from an mtime, and wasm's clock only
     /// ticks once a millisecond, so two writes to one path can share a revision
     /// and the second becomes invisible. Directories need it too — module
-    /// resolution keys off them, so stubs recreated after [`Self::reset`] would
-    /// stay unresolvable.
+    /// resolution keys off them when later feeds add module stubs.
     fn bump_revisions(&mut self, path: &SystemPath) {
         let mut files = Vec::new();
         let mut current = Some(path);
@@ -182,27 +199,6 @@ impl TypeChecker {
             file.set_revision(&mut self.db)
                 .to(FileRevision::new(self.next_revision));
         }
-    }
-
-    /// Remove every file written since the last reset and sync the filesystem
-    /// changes, so the checker can be reused for unrelated code.
-    ///
-    /// Security-critical: without this a recycled worker would let one
-    /// session's modules and stubs resolve while checking the next session's
-    /// code. Each `TouchedRootFile::cleanup` removes its own file and walks its
-    /// ancestor chain up to `SRC_ROOT`, removing any directory that has become
-    /// empty. Shared parent directories collapse naturally once the last file
-    /// inside them is gone. We sync `SRC_ROOT` once at the end so the next
-    /// session cannot observe the previous root directory listing.
-    pub fn reset(&mut self) -> Result<(), String> {
-        let touched_files = mem::take(&mut self.touched_files);
-
-        for touched in touched_files.iter().rev() {
-            touched.cleanup(&mut self.db)?;
-        }
-
-        File::sync_path(&mut self.db, &SystemPathBuf::from(SRC_ROOT));
-        Ok(())
     }
 }
 
@@ -266,6 +262,50 @@ impl fmt::Display for TypeCheckingDiagnostics<'_> {
     }
 }
 
+/// Maps stubs to root-relative `.pyi` paths, creating empty ancestor packages as needed.
+/// For example, `a.b` produces `a/__init__.pyi` and `a/b.pyi`.
+/// Revalidates identifiers because deserialization bypasses `ModuleStub::new`; otherwise
+/// path components could otherwise write outside the virtual source root.
+fn stub_files(stubs: &[ModuleStub]) -> Result<Vec<(String, &str)>, String> {
+    let mut files: Vec<(String, &str)> = Vec::new();
+    let is_package = |module: &str| {
+        stubs
+            .iter()
+            .any(|stub| stub.module().starts_with(module) && stub.module()[module.len()..].starts_with('.'))
+    };
+    for stub in stubs {
+        let parts: Vec<&str> = stub.module().split('.').collect();
+        if parts.iter().any(|part| !is_identifier(part)) {
+            return Err(format!("invalid module name {:?}", stub.module()));
+        }
+        for depth in 1..parts.len() {
+            let ancestor = parts[..depth].join(".");
+            if !stubs.iter().any(|other| other.module() == ancestor) {
+                let init = format!("{}/__init__.pyi", parts[..depth].join("/"));
+                if !files.iter().any(|(path, _)| *path == init) {
+                    files.push((init, ""));
+                }
+            }
+        }
+        let dir = parts.join("/");
+        let path = if is_package(stub.module()) {
+            format!("{dir}/__init__.pyi")
+        } else {
+            format!("{dir}.pyi")
+        };
+        files.push((path, stub.source()));
+    }
+    Ok(files)
+}
+
+/// Whether the primary span starts in the injected prelude or star import.
+fn starts_in_prefix(diagnostic: &Diagnostic, main_file: File, offset: TextSize) -> bool {
+    diagnostic.primary_span().is_some_and(|span| {
+        matches!(span.file(), UnifiedFile::Ty(file) if *file == main_file)
+            && span.range().is_some_and(|range| range.start() < offset)
+    })
+}
+
 /// Filter out diagnostics we want to ignore.
 ///
 /// Should only be necessary until <https://github.com/astral-sh/ty/issues/2599> is fixed.
@@ -275,76 +315,6 @@ fn filter_diagnostics(d: &Diagnostic) -> bool {
             d.headline_message(),
             "`await` statement outside of a function" | "`await` outside of an asynchronous function"
         ))
-}
-
-/// File written into a pooled database during one type-check run.
-///
-/// The path is used to remove the file from the in-memory filesystem, and the
-/// interned `File` handle is then synced so Salsa observes the deletion before
-/// the db is returned to the pool.
-#[derive(Debug)]
-struct TouchedRootFile {
-    path: SystemPathBuf,
-    file: File,
-}
-
-impl TouchedRootFile {
-    /// Track a root file and its interned handle for mandatory cleanup.
-    fn new(path: SystemPathBuf, file: File) -> Self {
-        Self { path, file }
-    }
-
-    /// Remove the file from the in-memory filesystem, then walk its ancestor
-    /// chain and remove every directory under `SRC_ROOT` that has become empty.
-    ///
-    /// `remove_directory` requires the directory to be empty, so if two touched
-    /// files live in the same directory the first cleanup hits
-    /// `DirectoryNotEmpty` (silently swallowed) and the second succeeds once its
-    /// file is gone. This gives us correct cleanup without needing to sort paths
-    /// or coordinate across `TouchedRootFile`s.
-    fn cleanup(&self, db: &mut MemoryDb) -> Result<(), String> {
-        match db.memory_file_system().remove_file(&self.path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(format!(
-                    "Failed to remove pooled type-check file '{}': {err}",
-                    self.path
-                ));
-            }
-        }
-        self.file.sync(db);
-
-        // Walk parents up to but not including SRC_ROOT, removing each empty directory
-        // and syncing its path so Salsa invalidates any cached directory listing.
-        let src_root = SystemPathBuf::from(SRC_ROOT);
-        let mut ancestor = self.path.parent();
-        while let Some(dir) = ancestor
-            && dir != src_root.as_path()
-        {
-            match db.memory_file_system().remove_directory(dir) {
-                Ok(()) => {}
-                // Another touched file still lives in this directory; it will be
-                // removed by a later `cleanup` call. Every ancestor above this
-                // one is necessarily also non-empty (they contain this directory),
-                // so there is no point walking further up.
-                //
-                // `MemoryFileSystem::remove_directory` reports "directory not
-                // empty" as `io::Error::other(...)` (kind `Other`), so we match on
-                // the message rather than on `ErrorKind::DirectoryNotEmpty`.
-                Err(err) if err.to_string().contains("directory not empty") => break,
-                // `NotFound` at this point would mean the directory never existed
-                // or was already removed, both of which indicate a logic bug
-                // (e.g. the same path tracked twice) — fail loudly.
-                Err(err) => {
-                    return Err(format!("Failed to remove pooled type-check directory '{dir}': {err}"));
-                }
-            }
-            File::sync_path(db, dir);
-            ancestor = dir.parent();
-        }
-        Ok(())
-    }
 }
 
 /// Convert a displayable error into the string type used throughout type checking.

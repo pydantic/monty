@@ -100,16 +100,14 @@ class BaseWrapper:
         return self.convert_value(name, attr_value)
 
     def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        """Calls a method on the wrapped instance for the sandbox.
-
-        Raises `AttributeError` when `name` is not exposed by `allowed_methods`
-        or fails `method_allowed`. `__call__` is always rejected on instances —
-        only `ClassType` accepts it (as construction) — so even
-        `allowed_methods='all'` cannot invoke the instance itself. The return
-        value passes through `convert_value` before crossing back; a coroutine
-        result defers conversion until awaited.
+        """Calls an allowed method, raising `AttributeError` for disallowed names.
+        `__call__` raises `TypeError` even with `allowed_methods='all'`;
+        only `ClassType` permits construction. Results pass through `convert_value`,
+        after awaiting if the result is a coroutine.
         """
-        if name == '__call__' or not self.method_allowed(name):
+        if name == '__call__':
+            raise TypeError(f'{type(self.value).__name__!r} object is not callable')
+        if not self.method_allowed(name):
             raise self.attr_error(name)
         method = self.get_attr(name, self.allowed_methods)
         result = method(*args, **kwargs)

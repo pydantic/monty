@@ -14,7 +14,7 @@ use std::{mem, sync::Arc};
 use ahash::AHashMap;
 use monty_types::{
     CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy, PrintWriter,
-    ResourceTracker, SOURCE_SCAN_THRESHOLD,
+    ResourceTracker, SOURCE_SCAN_THRESHOLD, SourceRange,
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
@@ -100,6 +100,11 @@ pub struct MontyRepl {
 }
 
 impl MontyRepl {
+    /// The session heap and interns, for a dump upgrade of an idle session.
+    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
+        (&mut self.heap, &self.interns)
+    }
+
     /// Creates an empty REPL session with no code parsed or executed.
     ///
     /// All code execution is driven through [`feed_run`](Self::feed_run) or [`feed_start`](Self::feed_start). This separates
@@ -496,7 +501,7 @@ impl MontyRepl {
                                     vm.run_external()
                                 }
                                 Ok(exit) => {
-                                    let error = vm.unsupported_frame_exit("MontyRepl::call_function", exit);
+                                    let error = vm.unsupported_frame_exit(exit);
                                     vm.resume_with_exception(error)
                                 }
                                 Err(error) => {
@@ -583,15 +588,22 @@ impl MontyRepl {
         }
     }
 
-    /// Returns the generated filename for the next interactive execution.
+    /// The filename the next snippet will run as, which a host can name in a
+    /// [`SourceRange`] it reports ahead of that snippet.
     ///
     /// CPython labels interactive inputs as `<python-input-N>`. Snippets and
     /// host function calls share this sequence so every traceback call site
     /// can be correlated with the session's execution history.
+    #[must_use]
+    pub fn next_script_name(&self) -> String {
+        format!("<python-input-{}>", self.next_input_id)
+    }
+
+    /// Takes the next interactive execution's filename; see [`Self::next_script_name`].
     fn next_input_script_name(&mut self) -> String {
-        let input_id = self.next_input_id;
+        let name = self.next_script_name();
         self.next_input_id += 1;
-        format!("<python-input-{input_id}>")
+        name
     }
 }
 
@@ -602,6 +614,14 @@ impl MontyRepl {
 /// to that REPL (or one configured alike), as the worker does.
 #[derive(Debug, Clone, Copy)]
 pub struct CheckedSource<'a>(&'a str);
+
+impl<'a> CheckedSource<'a> {
+    /// The checked snippet, for the type checker and import scan that run before the feed.
+    #[must_use]
+    pub fn code(&self) -> &'a str {
+        self.0
+    }
+}
 
 impl Drop for MontyRepl {
     fn drop(&mut self) {
@@ -653,6 +673,22 @@ pub struct ReplStartError {
 }
 
 impl ReplProgress {
+    /// The session heap and the interns its values refer to, for a dump upgrade.
+    /// While a snippet is in flight the executor holds the session's interns.
+    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
+        match self {
+            Self::FunctionCall(ReplFunctionCall { snapshot, .. })
+            | Self::OsCall(ReplOsCall { snapshot, .. })
+            | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
+                (&mut snapshot.repl.heap, &snapshot.executor.tables.interns)
+            }
+            Self::ResolveFutures(ReplResolveFutures { repl, executor, .. }) => {
+                (&mut repl.heap, &executor.tables.interns)
+            }
+            Self::Complete { repl, .. } => repl.heap_and_interns(),
+        }
+    }
+
     /// Consumes the progress and returns the [`ReplFunctionCall`] struct.
     #[must_use]
     pub fn into_function_call(self) -> Option<ReplFunctionCall> {
@@ -721,6 +757,17 @@ impl ReplProgress {
             Self::Complete { repl, .. } => repl.tracker(),
         }
     }
+
+    /// Returns the mutable tracker so hosts can tighten restored limits before resuming execution.
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
+        match self {
+            Self::FunctionCall(call) => call.snapshot.repl.tracker_mut(),
+            Self::OsCall(call) => call.snapshot.repl.tracker_mut(),
+            Self::ResolveFutures(state) => state.repl.tracker_mut(),
+            Self::NameLookup(lookup) => lookup.snapshot.repl.tracker_mut(),
+            Self::Complete { repl, .. } => repl.tracker_mut(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -745,6 +792,8 @@ pub struct ReplFunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source.
+    pub position: SourceRange,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -764,7 +813,7 @@ impl ReplFunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.run(result, print)
+        self.snapshot.run(result.into(), print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` for async resolution.
@@ -810,6 +859,8 @@ pub struct ReplOsCall {
     /// The host may await its wait and answer with [`Self::resume_eager`];
     /// see [`OsCall::allow_eager_await`](crate::OsCall::allow_eager_await).
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source.
+    pub position: SourceRange,
     /// Internal REPL execution snapshot.
     snapshot: ReplSnapshot,
 }
@@ -883,6 +934,8 @@ impl ReplOsCall {
 pub struct ReplNameLookup {
     /// The name being looked up.
     pub name: String,
+    /// Where the name (or attribute access) is in the source.
+    pub position: SourceRange,
     /// Where the resolved value lands (namespace slot or host attribute).
     scope: LookupScope,
     /// Internal REPL execution snapshot.
@@ -918,7 +971,9 @@ impl ReplNameLookup {
     /// `AttributeError`. `Error` raises the host's exception in the sandbox,
     /// bypassing any `hasattr()` / `getattr()` default.
     pub fn resume(self, result: NameLookupResult, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
-        let Self { name, scope, snapshot } = self;
+        let Self {
+            name, scope, snapshot, ..
+        } = self;
 
         let ReplSnapshot {
             mut repl,
@@ -977,6 +1032,8 @@ pub struct ReplResolveFutures {
     vm_state: VMSnapshot,
     /// Pending call IDs expected by this snapshot.
     pending_call_ids: Vec<u32>,
+    /// Where the main task's blocked `await` is in the source.
+    position: SourceRange,
 }
 
 impl ReplResolveFutures {
@@ -1011,6 +1068,12 @@ impl ReplResolveFutures {
         &self.pending_call_ids
     }
 
+    /// Returns where the main task's blocked `await` is in the source.
+    #[must_use]
+    pub fn position(&self) -> &SourceRange {
+        &self.position
+    }
+
     /// Aborts with an uncatchable exception and abandons pending futures.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1040,6 +1103,7 @@ impl ReplResolveFutures {
             mut executor,
             vm_state,
             pending_call_ids,
+            ..
         } = self;
 
         let invalid_call_id = results
@@ -1383,32 +1447,41 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            position,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
             args,
             call_id,
             object_id,
             allow_eager_await,
+            position,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::OsCall {
             function_call,
             call_id,
             allow_eager_await,
+            position,
         } => Ok(ReplProgress::OsCall(ReplOsCall {
             function_call,
             call_id,
             allow_eager_await,
+            position,
             snapshot: new_repl_snapshot!(),
         })),
-        ConvertedExit::ResolveFutures(pending_call_ids) => Ok(ReplProgress::ResolveFutures(ReplResolveFutures {
+        ConvertedExit::ResolveFutures {
+            pending_call_ids,
+            position,
+        } => Ok(ReplProgress::ResolveFutures(ReplResolveFutures {
             repl,
             executor,
             vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
             pending_call_ids,
+            position,
         })),
-        ConvertedExit::NameLookup { name, scope } => Ok(ReplProgress::NameLookup(ReplNameLookup {
+        ConvertedExit::NameLookup { name, scope, position } => Ok(ReplProgress::NameLookup(ReplNameLookup {
             name,
+            position,
             scope,
             snapshot: new_repl_snapshot!(),
         })),

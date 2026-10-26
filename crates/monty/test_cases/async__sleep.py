@@ -1,5 +1,7 @@
-# call-external
-# run-async
+# /// monty
+# call-external = true
+# run-async = true
+# ///
 # `asyncio.sleep()`: awaited on its own, gathered, and with a `result`.
 import asyncio
 

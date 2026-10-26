@@ -15,28 +15,32 @@ export interface NativeMount {
   hostPath: string
   mode?: string
   writeBytesLimit?: number
-  memoryUsageLimit: number
+  memoryUsageLimit?: number
 }
 
 export declare class NativeMountDir {
   constructor(mount: NativeMount)
+  get memoryUsageLimit(): number
   close(): void
 }
 
 export declare class NativePool {
   constructor(options?: unknown)
+  static websocket(options?: unknown): NativePool
   start(): Promise<void>
   checkout(options?: unknown): NativeSession
   close(): Promise<void>
 }
 
 export declare class NativeSession {
+  readonly workerId?: number
   readonly workerPid?: number
-  enter(telemetryContext?: unknown): Promise<void>
+  readonly sessionId?: Uint8Array | null
+  enter(telemetryContext?: unknown, connectHeaders?: unknown): Promise<object>
   feed(...args: unknown[]): Promise<object>
   feedStart(...args: unknown[]): Promise<object>
   restore(...args: unknown[]): Promise<object>
-  dump(): Promise<Uint8Array>
+  dump(...args: unknown[]): Promise<object>
   finish(): Promise<void>
   installDependencies(...args: unknown[]): Promise<object>
   resumeReturn(...args: unknown[]): Promise<object>

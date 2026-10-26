@@ -13,7 +13,7 @@ use num_integer::div_ceil;
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
@@ -73,7 +73,8 @@ impl Range {
         self.len_i128().try_into().unwrap_or(usize::MAX)
     }
 
-    fn len_i128(&self) -> i128 {
+    /// Exact length before `len()` saturates to the target pointer width.
+    pub(crate) fn len_i128(&self) -> i128 {
         // self.stop - self.start could be up to i64::MAX - i64::MIN, which overflows i64,
         // so we use i128 for the calculation to avoid overflow.
         let start = i128::from(self.start);
@@ -220,8 +221,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
         Type::Range
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(RangeIterator::allocate(*self.get(vm.heap), vm))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(RangeIterator::allocate(*self.get(vm.heap), vm)))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -373,8 +374,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

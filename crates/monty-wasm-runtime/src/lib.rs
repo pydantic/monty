@@ -6,7 +6,7 @@
 //! component boundary or enter the TypeScript host.
 #![expect(unsafe_code, reason = "generated canonical-ABI exports require unsafe code")]
 
-use std::{cell::RefCell, io};
+use std::{cell::RefCell, collections::hash_map::RandomState, io, time::Instant};
 
 use monty_proto::{
     BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
@@ -31,12 +31,25 @@ mod value;
 use bindings::exports::pydantic::monty::worker::{
     CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent, Guest,
     NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError, RaisedException,
-    RandomSeed, RandomStart, Request, SleepMode, StackFrame, Status, TimeZone, TypeCheckFormat,
+    RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status, TimeZone,
+    TypeCheckFormat,
 };
 
 thread_local! {
     /// The session worker, retained for the lifetime of this component instance.
-    static CHILD: RefCell<Child> = RefCell::new(Child::default());
+    static CHILD: RefCell<Child> = RefCell::new(new_child());
+}
+
+/// Builds the worker after warming the WASI adapter, so the adapter's buffers
+/// join the memory baseline instead of the first session's budget.
+///
+/// The preview1 adapter allocates through the component's allocator on the
+/// first clock read and the first `random_get`, both of which the interpreter
+/// would otherwise make during its first feed, after the allocator is armed.
+fn new_child() -> Child {
+    let _ = Instant::now();
+    let _ = RandomState::new();
+    Child::default()
 }
 
 /// Counts component allocations against the session's `max_memory` limit.
@@ -66,8 +79,7 @@ impl Guest for Component {
             DispatchResult {
                 status: Status::Shutdown,
                 events: vec![Event::FatalError(error.to_owned())],
-                max_suspensions: result.max_suspensions,
-                max_total_sleep_micros: result.max_total_sleep_micros,
+                ..result
             }
         } else {
             result
@@ -87,6 +99,9 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
                 )))],
                 max_suspensions: None,
                 max_total_sleep_micros: None,
+                feed_execution_micros: 0,
+                max_feed_duration_micros: None,
+                max_turn_duration_micros: None,
             };
         }
     };
@@ -98,6 +113,9 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
             )))],
             max_suspensions: None,
             max_total_sleep_micros: None,
+            feed_execution_micros: 0,
+            max_feed_duration_micros: None,
+            max_turn_duration_micros: None,
         };
     }
 
@@ -123,6 +141,9 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
         events: sink.events,
         max_suspensions: None,
         max_total_sleep_micros: None,
+        feed_execution_micros: sink.feed_execution_micros,
+        max_feed_duration_micros: sink.max_feed_duration_micros,
+        max_turn_duration_micros: sink.max_turn_duration_micros,
     }
 }
 
@@ -130,6 +151,9 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
 #[derive(Default)]
 struct ComponentEventSink {
     events: Vec<Event>,
+    feed_execution_micros: u64,
+    max_feed_duration_micros: Option<u64>,
+    max_turn_duration_micros: Option<u64>,
 }
 
 impl EventSink for ComponentEventSink {
@@ -152,6 +176,9 @@ impl EventSink for ComponentEventSink {
             }
             Ok(())
         } else {
+            self.feed_execution_micros = event.feed_execution_micros;
+            self.max_feed_duration_micros = event.max_feed_duration_micros;
+            self.max_turn_duration_micros = event.max_turn_duration_micros;
             let mut event = event.clone();
             let component_event = match event.kind.take() {
                 Some(pb::child_event::Kind::OsCall(call)) => match PreparedOsEvent::from_proto(call) {
@@ -211,13 +238,16 @@ struct PreparedOsEvent {
     allow_eager_await: bool,
     /// System sleep duration for the host to await directly.
     system_sleep_secs: Option<f64>,
+    /// Where the call expression is in the source.
+    position: SourceRange,
 }
 
 impl PreparedOsEvent {
     /// Validates and projects a typed protocol call without building WIT
     /// arenas; the error names what was wrong with the call.
-    fn from_proto(call: pb::OsCall) -> Result<Self, String> {
+    fn from_proto(mut call: pb::OsCall) -> Result<Self, String> {
         let eager_bit = call.allow_eager_await;
+        let position = source_range_from_proto(call.position.take());
         let (call_id, call) = os_call_from_proto(call).map_err(|error| format!("invalid OS call: {error}"))?;
         Ok(Self {
             function_name: call.name().to_owned(),
@@ -231,6 +261,7 @@ impl PreparedOsEvent {
             },
             args: call.to_args(),
             call_id,
+            position,
         })
     }
 
@@ -250,8 +281,24 @@ impl PreparedOsEvent {
             args: value::raw_ids(args),
             kwargs: value::raw_pairs(kwargs),
             call_id: self.call_id,
+            position: self.position,
         })
     }
+}
+
+/// Lifts an already-validated position into the component record.
+fn component_source_range(range: monty_types::SourceRange) -> SourceRange {
+    SourceRange {
+        filename: range.filename,
+        start: range.start,
+        end: range.end,
+    }
+}
+
+/// Lifts a suspension's position; a self-produced event always carries one,
+/// and a missing one reads as an empty range, as in the pool.
+fn source_range_from_proto(position: Option<pb::SourceRange>) -> SourceRange {
+    component_source_range(position.map_or_else(monty_types::SourceRange::unknown, monty_types::SourceRange::from))
 }
 
 /// Converts a semantic component request into the child state machine's
@@ -342,6 +389,10 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         // and a print collector charges its cap per frame.
         print_flush_interval_ms: request.print_flush_interval_ms,
         os_policy: request.os_policy.map(os_policy_from_component),
+        // a relay's concern; the component is a child and never stores sessions
+        persistence: pb::Persistence::Unspecified.into(),
+        // a relay's concern; the component is a child and has no profiles
+        profile: None,
     }
 }
 
@@ -442,6 +493,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
         Some(pb::child_event::Kind::FunctionCall(call)) => {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
+            let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));
             Event::FunctionCall(FunctionCallEvent {
                 function_name: call.function_name,
                 values: value::into_component(call.values.0.into_inner()),
@@ -450,6 +502,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 call_id: call.call_id,
                 object_id,
                 allow_eager_await: call.allow_eager_await,
+                position,
             })
         }
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
@@ -460,10 +513,12 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 .object_id
                 .and_then(|uuid| MontyUuid::try_from_slice(&uuid.data))
                 .map(|uuid| uuid.to_string()),
+            position: source_range_from_proto(lookup.position),
         }),
-        Some(pb::child_event::Kind::ResolveFutures(futures)) => {
-            Event::ResolveFutures(futures.pending_call_ids.into_inner())
-        }
+        Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(ResolveFuturesEvent {
+            pending_call_ids: futures.pending_call_ids.into_inner(),
+            position: source_range_from_proto(futures.position),
+        }),
         Some(pb::child_event::Kind::Complete(complete)) => complete.values.map_or_else(
             || invalid_event("Complete event carried no values"),
             |arena| {
@@ -482,6 +537,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
         Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
+
         None => invalid_event("ChildEvent carried no kind"),
     }
 }

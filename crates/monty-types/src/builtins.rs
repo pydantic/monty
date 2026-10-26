@@ -26,7 +26,8 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
     serde::Serialize,
     serde::Deserialize,
 )]
-#[strum(serialize_all = "lowercase")]
+// `use_phf` while still below the ~100-variant threshold: it breaks even now and the enum keeps growing.
+#[strum(serialize_all = "lowercase", use_phf)]
 #[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum BuiltinsFunctions {

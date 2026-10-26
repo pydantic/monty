@@ -1,7 +1,8 @@
 // Error classes thrown by the pool client, mirroring pydantic_monty's
 // exception hierarchy: MontyError is the base, with MontySyntaxError /
 // MontyRuntimeError / MontyTypingError for sandbox failures and
-// MontyCrashedError for worker death. The full Python traceback is rendered
+// MontyCrashedError for worker death (MontyDisconnectError / MontyShutdown
+// for a remote worker's connection). The full Python traceback is rendered
 // once, in the worker (monty's `MontyException` Display), and carried across
 // as a string — never re-implemented here. Structured frames travel alongside
 // it for programmatic access via `MontyRuntimeError.traceback()`.
@@ -17,6 +18,21 @@ export interface Frame {
   endColumn: number
   functionName?: string
   sourceLine?: string
+}
+
+/**
+ * Where the expression that suspended execution is in the source, as
+ * `snapshot.position`. `start` and `end` are UTF-8 byte offsets into the
+ * source, `end` exclusive: slice `new TextEncoder().encode(source)`, not the
+ * string. `filename` names the source as a traceback frame does:
+ * `<python-input-N>` for the session's N-th feed, or `<string>` inside an
+ * `eval()` / `exec()` string. A worker that predates the field reports none:
+ * `filename` is then empty and both offsets 0.
+ */
+export interface SourceRange {
+  filename: string
+  start: number
+  end: number
 }
 
 /** Inner Python exception summary. */
@@ -179,11 +195,9 @@ export class MontyTypingError extends MontyError {
 }
 
 /**
- * Raised when a worker process died: a hard crash (segfault, allocator abort
- * — the failure mode subprocess isolation exists to contain) or a watchdog
- * kill for exceeding `requestTimeout` / the `maxFeedDurationSecs` backstop. The
- * session is lost; the pool replaces the worker, so other sessions and future
- * checkouts are unaffected.
+ * Raised when a worker fails to initialize or dies: a process crash, WASM
+ * trap, or watchdog kill for exceeding a request/duration deadline.
+ * If a session exists, it is lost; its pool can replace the worker on future checkouts.
  */
 export class MontyCrashedError extends MontyError {
   /** True when the worker was killed by a watchdog timeout. */
@@ -196,6 +210,43 @@ export class MontyCrashedError extends MontyError {
     this.name = 'MontyCrashedError'
     this.timedOut = options.timedOut ?? false
     this.exitStatus = options.exitStatus ?? null
+  }
+}
+
+/**
+ * Raised when a remote worker's connection closed mid-session (`MontyWebsocket`
+ * only; the local analogue is `MontyCrashedError`). The sandbox may have died,
+ * or the server may have dropped the session by policy — an idle, session or
+ * turn timeout, or being over capacity; the client cannot tell which. The
+ * session is lost; check out a new one.
+ */
+export class MontyDisconnectError extends MontyError {
+  constructor(message: string) {
+    super('RuntimeError', message)
+    this.name = 'MontyDisconnectError'
+  }
+}
+
+/**
+ * Raised when the remote server is shutting down (`MontyWebsocket` only). The
+ * request that raised it **did not run**, so re-running it is safe; the
+ * session is lost. Against a server that stores sessions the pool resumes the
+ * session itself first (see `MontyWebsocketOptions.autoResume`), so this is
+ * raised only when that fails or is disabled.
+ *
+ * `dump` restores the session on a fresh one, with `loadSession` (idle) or
+ * `loadSnapshot` (suspended mid-feed); `null` when the server stored nothing.
+ * Restoring a suspended call re-announces it, so a host callback the
+ * interrupted request was answering runs again.
+ */
+export class MontyShutdown extends MontyError {
+  /** What `loadSession` / `loadSnapshot` restores, or `null` when there is nothing to load. */
+  readonly dump: Buffer | null
+
+  constructor(message: string, dump: Buffer | null = null) {
+    super('RuntimeError', message)
+    this.name = 'MontyShutdown'
+    this.dump = dump
   }
 }
 
@@ -237,6 +288,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'UnicodeDecodeError',
   'UnicodeEncodeError',
   'json.JSONDecodeError',
+  'tomllib.TOMLDecodeError',
   'ImportError',
   'ModuleNotFoundError',
   'OSError',
@@ -255,6 +307,21 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   're.PatternError',
   'binascii.Error',
   'binascii.Incomplete',
+  '_csv.Error',
+  'decimal.DecimalException',
+  'decimal.Clamped',
+  'decimal.InvalidOperation',
+  'decimal.ConversionSyntax',
+  'decimal.DivisionByZero',
+  'decimal.DivisionImpossible',
+  'decimal.DivisionUndefined',
+  'decimal.Inexact',
+  'decimal.InvalidContext',
+  'decimal.Rounded',
+  'decimal.Subnormal',
+  'decimal.Overflow',
+  'decimal.Underflow',
+  'decimal.FloatOperation',
 ])
 
 /**
@@ -279,8 +346,7 @@ export function notCallableMessage(value: unknown): string {
 }
 
 /**
- * `__monty_type__` marker → the Python type its conversion produces. `Type`
- * and `BuiltinFunction` cannot round-trip and convert to reprs; a
+ * `__monty_type__` marker → the Python type its conversion produces. A
  * `ClassInstance` marker is named by its class (see [`pyTypeName`]); an
  * unknown marker converts as a plain dict.
  */
@@ -292,8 +358,8 @@ const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
   Time: 'time',
   TimeDelta: 'timedelta',
   TimeZone: 'timezone',
-  Type: 'repr',
-  BuiltinFunction: 'repr',
+  Type: 'type',
+  BuiltinFunction: 'builtin_function_or_method',
 }
 
 /** Python type name the JS value converts to (mirrors the Rust `js_to_monty`). */

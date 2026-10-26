@@ -40,7 +40,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::{check_mult_size, check_product_size},
-    types::{LongInt, Module, allocate_tuple, long_int::bigint_to_f64_checked},
+    types::{LongInt, Module, PyTrait, allocate_tuple, decimal, long_int::bigint_to_f64_checked},
     value::Value,
 };
 
@@ -359,61 +359,53 @@ pub(super) fn call(vm: &mut VM<'_>, function: MathFunctions, args: ArgValues) ->
 
 /// `math.floor(x)` — returns the largest integer less than or equal to x.
 ///
-/// Accepts int, float, or bool. Returns int.
+/// Uses `__floor__`, falling back to numeric float conversion.
 /// Raises `OverflowError` for infinity, `ValueError` for NaN.
 fn math_floor(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.floor", vm.heap)?;
     defer_drop!(value, vm);
 
-    match value {
-        Value::Float(f) => LongInt::value_from_f64(f.floor(), vm.heap),
-        Value::Int(n) => Ok(Value::Int(*n)),
-        Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-        _ if value.as_long_int(vm).is_some() => Ok(value.clone_with_heap(vm.heap)),
-        _ => Err(ExcType::type_error(format!(
-            "must be real number, not {}",
-            value.py_type_name(vm)
-        ))),
+    if let Some(result) = value.py_floor_impl(vm)? {
+        Ok(result)
+    } else {
+        let number = rounding_float(value, vm)?;
+        LongInt::value_from_f64(number.floor(), vm.heap)
     }
 }
 
 /// `math.ceil(x)` — returns the smallest integer greater than or equal to x.
 ///
-/// Accepts int, float, or bool. Returns int.
+/// Uses `__ceil__`, falling back to numeric float conversion.
 /// Raises `OverflowError` for infinity, `ValueError` for NaN.
 fn math_ceil(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.ceil", vm.heap)?;
     defer_drop!(value, vm);
 
-    match value {
-        Value::Float(f) => LongInt::value_from_f64(f.ceil(), vm.heap),
-        Value::Int(n) => Ok(Value::Int(*n)),
-        Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-        _ if value.as_long_int(vm).is_some() => Ok(value.clone_with_heap(vm.heap)),
-        _ => Err(ExcType::type_error(format!(
-            "must be real number, not {}",
-            value.py_type_name(vm)
-        ))),
+    if let Some(result) = value.py_ceil_impl(vm)? {
+        Ok(result)
+    } else {
+        let number = rounding_float(value, vm)?;
+        LongInt::value_from_f64(number.ceil(), vm.heap)
     }
 }
 
 /// `math.trunc(x)` — truncates x to the nearest integer toward zero.
 ///
-/// Accepts int, float, or bool. Returns int.
+/// Uses `__trunc__` without falling back to integer or float conversion.
 fn math_trunc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.trunc", vm.heap)?;
     defer_drop!(value, vm);
 
-    match value {
-        Value::Float(f) => LongInt::value_from_f64(f.trunc(), vm.heap),
-        Value::Int(n) => Ok(Value::Int(*n)),
-        Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-        _ if value.as_long_int(vm).is_some() => Ok(value.clone_with_heap(vm.heap)),
-        _ => Err(ExcType::type_error(format!(
-            "type {} doesn't define __trunc__ method",
-            value.py_type_name(vm)
-        ))),
-    }
+    value
+        .py_trunc_impl(vm)?
+        .ok_or_else(|| ExcType::type_error_missing_numeric_dunder(&value.py_type_name(vm), "__trunc__"))
+}
+
+/// Float fallback for floor and ceil, excluding the string parsing of `float()`.
+fn rounding_float(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
+    value
+        .py_float(vm)?
+        .ok_or_else(|| ExcType::type_error_not_real_number(&value.py_type_name(vm)))
 }
 
 // ==========================
@@ -1393,9 +1385,9 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Converts a `Value` to `f64`, raising `TypeError` if the value is not numeric.
 ///
-/// Accepts `Float`, `Int`, `Bool` and long ints, which convert like `float()` and so
-/// raise `OverflowError` beyond the float range. Other types raise a `TypeError`
-/// with a message matching CPython's format: "must be real number, not <type>".
+/// Accepts `Float`, `Int`, `Bool`, long ints and `Decimal`, which convert like `float()`,
+/// so long ints raise `OverflowError` beyond the float range. Other types raise a
+/// `TypeError` with a message matching CPython's format: "must be real number, not <type>".
 #[expect(
     clippy::cast_precision_loss,
     reason = "i64-to-f64 can lose precision for large integers (beyond 2^53), but this matches CPython's conversion semantics"
@@ -1407,10 +1399,11 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => match value.as_long_int(vm) {
             Some(n) => bigint_to_f64_checked(n),
-            None => Err(ExcType::type_error(format!(
-                "must be real number, not {}",
-                value.py_type_name(vm)
-            ))),
+            // `Decimal.__float__`, as `PyFloat_AsDouble` calls it.
+            None => match decimal::py::as_decimal(value, vm) {
+                Some(d) => d.to_f64(),
+                None => Err(ExcType::type_error_not_real_number(&value.py_type_name(vm))),
+            },
         },
     }
 }

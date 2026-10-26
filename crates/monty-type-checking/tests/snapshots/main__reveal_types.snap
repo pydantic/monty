@@ -1,6 +1,5 @@
 ---
 source: crates/monty-type-checking/tests/main.rs
-assertion_line: 359
 expression: actual
 ---
 reveal_types.py:4:13: info[revealed-type] Revealed type: `None`
@@ -49,3 +48,4 @@ reveal_types.py:64:13: info[revealed-type] Revealed type: `time`
 reveal_types.py:65:13: info[revealed-type] Revealed type: `datetime`
 reveal_types.py:66:13: info[revealed-type] Revealed type: `timedelta`
 reveal_types.py:67:13: info[revealed-type] Revealed type: `timezone`
+reveal_types.py:73:13: info[revealed-type] Revealed type: `_ContextManager`

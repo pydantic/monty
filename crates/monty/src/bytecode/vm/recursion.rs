@@ -1,7 +1,7 @@
 //! Recursion-depth tracking for the [`VM`].
 //!
 //! The recursion counter lives on the `VM` (not the heap) because every site
-//! that charges depth — function-call frames, container `repr`/`eq`/`cmp`/`hash`,
+//! that charges depth — non-frozen call frames, container `repr`/`eq`/`cmp`/`hash`,
 //! `isinstance`, json encoding — has a `&mut VM` in scope. Two primitives charge
 //! a level:
 //!
@@ -21,7 +21,19 @@ use std::ops::{Deref, DerefMut};
 use monty_types::ResourceError;
 
 use super::VM;
-use crate::heap::{ContainsHeap, DropWithContext};
+use crate::{
+    heap::{ContainsHeap, DropWithContext},
+    intern::{FunctionId, Interns},
+};
+
+/// Counts charged frames when restoring a VM or switching tasks.
+/// The first frame is the uncharged root; frozen implementation frames never contribute.
+pub(super) fn frame_recursion_depth(frames: impl Iterator<Item = Option<FunctionId>>, interns: &Interns) -> usize {
+    frames
+        .skip(1)
+        .filter(|id| id.is_none_or(|id| !interns.is_internal_function(id)))
+        .count()
+}
 
 impl<'h> VM<'h> {
     /// Enters a lexically-scoped recursive operation, returning a guard that
@@ -61,7 +73,7 @@ impl<'h> VM<'h> {
         Ok(())
     }
 
-    /// Releases one recursion level. Paired with [`charge_recursion`](Self::charge_recursion);
+    /// Releases one recursion level. Paired with [`incr_recursion`](Self::incr_recursion);
     /// called by the guard/token cleanup and by `pop_frame`.
     #[inline]
     pub(crate) fn decr_recursion(&mut self) {
@@ -156,15 +168,22 @@ impl VM<'_> {
 /// Derefs to the [`VM`] so the nested `call_function`/`run()` call runs
 /// through the guard; the reserved level is released when the guard is
 /// dropped on any code path (normal return, `?`, or early return).
+///
+/// Dropping it also restores `instruction_ip`: the nested run leaves it on the
+/// next instruction, and a suspension the outer instruction makes afterwards
+/// must report the outer instruction's position.
 pub(crate) struct RunReentryGuard<'a, 'h> {
     vm: &'a mut VM<'h>,
+    /// The outer instruction's `instruction_ip`, restored on drop.
+    instruction_ip: usize,
 }
 
 impl<'a, 'h> RunReentryGuard<'a, 'h> {
     /// Wraps a re-entry level already charged by a prior
     /// [`VM::enter_run_reentry`] call.
     pub(crate) fn new(vm: &'a mut VM<'h>) -> Self {
-        Self { vm }
+        let instruction_ip = vm.instruction_ip;
+        Self { vm, instruction_ip }
     }
 }
 
@@ -183,6 +202,7 @@ impl DerefMut for RunReentryGuard<'_, '_> {
 
 impl Drop for RunReentryGuard<'_, '_> {
     fn drop(&mut self) {
+        self.vm.instruction_ip = self.instruction_ip;
         self.vm.release_run_reentry();
     }
 }

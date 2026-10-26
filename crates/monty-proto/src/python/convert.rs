@@ -93,6 +93,7 @@ pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<
         | MontyType::Bool
         | MontyType::Int
         | MontyType::Float
+        | MontyType::Complex
         | MontyType::Str
         | MontyType::Bytes
         | MontyType::List
@@ -111,6 +112,7 @@ pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<
         MontyType::Time => cached!("datetime", "time"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
+        MontyType::Decimal => cached!("decimal", "Decimal"),
         MontyType::Deque => cached!("collections", "deque"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
@@ -356,6 +358,13 @@ fn timezone_offset_seconds(delta: &MontyTimeDelta) -> PyResult<i32> {
         .and_then(|days| days.checked_add(i64::from(delta.seconds)))
         .ok_or_else(|| PyTypeError::new_err("datetime.timezone offset is out of range"))?;
     i32::try_from(total_seconds).map_err(|_| PyTypeError::new_err("datetime.timezone offset is out of range"))
+}
+
+/// Returns Python's `decimal.Decimal` class.
+pub(super) fn get_decimal_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DECIMAL.import(py, "decimal", "Decimal")
 }
 
 /// Returns the Python `datetime.timezone` type object.

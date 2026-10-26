@@ -3,16 +3,16 @@
 //! and UTF-8 validation (one big string), mixed values (row dicts), and shared
 //! references (a DAG of small lists).
 
-#[cfg(codspeed)]
+#[cfg(feature = "codspeed")]
 use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
 use monty_types::{
     MontyObject,
     unstable::{self, MontyGraph, MontyNode},
 };
-#[cfg(all(not(codspeed), unix))]
+#[cfg(all(not(feature = "codspeed"), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
 const KIB: usize = 1024;
@@ -46,6 +46,7 @@ fn complete_frame(value: MontyObject) -> Vec<u8> {
         total_execution_micros: 0,
         max_suspensions: None,
         restored_script_name: None,
+        session_id: None,
         feed_execution_micros: 0,
         max_feed_duration_micros: None,
         max_turn_duration_micros: None,
@@ -123,7 +124,7 @@ fn size_label(bytes: usize) -> String {
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
-#[cfg(all(not(codspeed), unix))]
+#[cfg(all(not(feature = "codspeed"), unix))]
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
@@ -131,7 +132,7 @@ criterion_group!(
 );
 
 // Use default config on CodSpeed or Windows (pprof is Unix-only)
-#[cfg(any(codspeed, not(unix)))]
+#[cfg(any(feature = "codspeed", not(unix)))]
 criterion_group!(benches, decode_benchmark);
 
 criterion_main!(benches);

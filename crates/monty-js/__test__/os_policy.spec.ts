@@ -1,7 +1,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 import type { OsPolicy, MontyDate, MontyDateTime } from '@pydantic/monty'
-import { kind } from './env.js'
+import { isWasm } from './env.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -167,10 +167,9 @@ test('invalid datetime and timezone values are rejected before the checkout', as
   })
   // the native binding resolves the name before spawning; the wasm worker is the first to see it
   await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: 'Mars/Olympus' } }), {
-    message:
-      kind === 'browser'
-        ? "Configure failed: protocol violation: invalid os_policy: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
-        : "timezone: unknown timezone 'Mars/Olympus'",
+    message: isWasm
+      ? "Configure failed: protocol violation: invalid os_policy: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+      : "timezone: unknown timezone 'Mars/Olympus'",
   })
   await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
     instanceOf: TypeError,

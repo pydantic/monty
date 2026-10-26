@@ -24,7 +24,7 @@ use std::{
 };
 
 use monty_types::{
-    MontyDateTime, MontyTime, bytes_repr,
+    FormatComplex, MontyDateTime, MontyTime, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
 use num_traits::ToPrimitive;
@@ -221,8 +221,27 @@ impl Serialize for JsonEncoded<'_> {
                 )?;
                 map.end()
             }
+            // a host module: its name, id and attrs
+            MontyNode::Module { name, id, attrs } => {
+                let mut map = s.serialize_map(Some(3))?;
+                map.serialize_entry("module", name)?;
+                map.serialize_entry("id", &Displayed(id))?;
+                map.serialize_entry(
+                    "attrs",
+                    &JsonAttrs {
+                        holder: self,
+                        pairs: attrs,
+                    },
+                )?;
+                map.end()
+            }
             MontyNode::ClassType(_) => JsonClassType(Self { ..*self }).serialize(s),
             MontyNode::Type(builtin) => s.collect_str(&format_args!("<class '{builtin}'>")),
+            // JSON has no complex number, so it crosses as its Python repr.
+            MontyNode::Complex(c) => s.collect_str(&FormatComplex {
+                real: c.real,
+                imag: c.imag,
+            }),
             MontyNode::Date(d) => s.collect_str(&format_args!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
             MontyNode::DateTime(dt) => s.serialize_str(&datetime_isoformat(dt)),
             MontyNode::Time(t) => s.serialize_str(&time_isoformat(t)),
@@ -234,6 +253,8 @@ impl Serialize for JsonEncoded<'_> {
             // like logfire: `str(exc)`, which in Python is the message alone
             MontyNode::Exception { arg, .. } => s.serialize_str(arg.as_deref().unwrap_or_default()),
             MontyNode::Path(p) => s.serialize_str(p),
+            // like logfire: `str(d)`, which keeps every digit a JSON number would round
+            MontyNode::Decimal(d) => s.serialize_str(d),
             MontyNode::Cycle(_) => s.serialize_str("<circular reference>"),
             MontyNode::Repr(r) => s.serialize_str(r),
             MontyNode::Ellipsis => s.serialize_str("Ellipsis"),

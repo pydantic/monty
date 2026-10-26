@@ -45,3 +45,4 @@ mod mount_table;
 mod overlay;
 mod overlay_state;
 mod path_security;
+mod scan;

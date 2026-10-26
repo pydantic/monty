@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 # Test that exceptions in async functions propagate correctly
 
 

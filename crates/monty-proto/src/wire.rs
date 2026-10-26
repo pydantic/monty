@@ -32,8 +32,8 @@ use std::{
 };
 
 use monty_types::{
-    BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime,
-    MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyComplex, MontyDate,
+    MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, SourceRange,
     unstable::{self, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -166,6 +166,9 @@ pub struct WireFunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The worker accepts an eagerly settled coroutine via `ResumeFutures`.
     pub allow_eager_await: bool,
+    /// Where the call expression is in the source; `None` for a frame from a
+    /// child that predates the field.
+    pub position: Option<SourceRange>,
 }
 
 impl WireFunctionCall {
@@ -177,6 +180,7 @@ impl WireFunctionCall {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
+        position: SourceRange,
     ) -> Self {
         let (graph, args, kwargs) = unstable::into_call_args_parts(args);
         Self {
@@ -187,6 +191,7 @@ impl WireFunctionCall {
             call_id,
             object_id,
             allow_eager_await,
+            position: Some(position),
         }
     }
 
@@ -214,6 +219,9 @@ impl Message for WireFunctionCall {
             encoding::bool::encode(6, &true, buf);
         }
         encoding::message::encode(7, &self.values, buf);
+        if let Some(position) = &self.position {
+            encode_source_range(8, position, buf);
+        }
     }
 
     fn encoded_len(&self) -> usize {
@@ -231,6 +239,10 @@ impl Message for WireFunctionCall {
                 0
             }
             + encoding::message::encoded_len(7, &self.values)
+            + self
+                .position
+                .as_ref()
+                .map_or(0, |position| submessage_len(8, source_range_len(position)))
     }
 
     fn merge_field(
@@ -256,6 +268,18 @@ impl Message for WireFunctionCall {
             }
             6 => encoding::bool::merge(wire_type, &mut self.allow_eager_await, buf, ctx),
             7 => encoding::message::merge(wire_type, &mut self.values, buf, ctx),
+            8 => {
+                // a singular message field repeated on the wire merges, as in
+                // prost's generated decoder; the held value moves rather than
+                // clones, so repeats cost their own bytes and not the filename's
+                let mut position = self
+                    .position
+                    .take()
+                    .map_or_else(pb::SourceRange::default, pb::SourceRange::from);
+                encoding::message::merge(wire_type, &mut position, buf, ctx)?;
+                self.position = Some(SourceRange::from(position));
+                Ok(())
+            }
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -268,6 +292,7 @@ impl Message for WireFunctionCall {
         self.call_id = 0;
         self.object_id = None;
         self.allow_eager_await = false;
+        self.position = None;
     }
 }
 
@@ -313,6 +338,9 @@ mod tag {
     pub const FILE_HANDLE: u32 = 28;
     pub const REPR: u32 = 29;
     pub const CYCLE: u32 = 30;
+    pub const COMPLEX: u32 = 31;
+    pub const MODULE: u32 = 32;
+    pub const DECIMAL: u32 = 33;
 }
 
 // ============================================================================
@@ -368,6 +396,7 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
         MontyNode::Int(i) => encoding::sint64::encode(tag::INT, i, buf),
         MontyNode::BigInt(bi) => encoding::message::encode(tag::BIGINT, &bigint_to_proto(bi), buf),
         MontyNode::Float(f) => encoding::double::encode(tag::FLOAT, f, buf),
+        MontyNode::Complex(c) => encoding::message::encode(tag::COMPLEX, &complex_to_proto(c), buf),
         MontyNode::String(s) => encoding::string::encode(tag::STR, s, buf),
         MontyNode::Bytes(b) => encoding::bytes::encode(tag::BYTES, b, buf),
         MontyNode::List(ids) => encode_indexes(tag::LIST, ids, buf),
@@ -428,8 +457,17 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
             encode_message_key(3, node_pairs_len(1, attrs), buf);
             encode_node_pairs(1, attrs, buf);
         }
+        MontyNode::Module { name, id, attrs } => {
+            let id = uuid_to_pb(id);
+            encode_message_key(tag::MODULE, module_len(name, &id, attrs), buf);
+            encode_str(1, name, buf);
+            encoding::message::encode(2, &id, buf);
+            encode_message_key(3, node_pairs_len(1, attrs), buf);
+            encode_node_pairs(1, attrs, buf);
+        }
         MontyNode::BuiltinFunction(bf) => encoding::string::encode(tag::BUILTIN_FUNCTION, &bf.to_string(), buf),
         MontyNode::Path(p) => encoding::string::encode(tag::PATH, p, buf),
+        MontyNode::Decimal(d) => encoding::string::encode(tag::DECIMAL, d, buf),
         MontyNode::FileHandle(fh) => {
             encode_message_key(tag::FILE_HANDLE, file_handle_len(fh), buf);
             encode_str(1, &fh.path, buf);
@@ -461,6 +499,7 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Int(i) => encoding::sint64::encoded_len(tag::INT, i),
         MontyNode::BigInt(bi) => encoding::message::encoded_len(tag::BIGINT, &bigint_to_proto(bi)),
         MontyNode::Float(f) => encoding::double::encoded_len(tag::FLOAT, f),
+        MontyNode::Complex(c) => encoding::message::encoded_len(tag::COMPLEX, &complex_to_proto(c)),
         MontyNode::String(s) => encoding::string::encoded_len(tag::STR, s),
         MontyNode::Bytes(b) => encoding::bytes::encoded_len(tag::BYTES, b),
         MontyNode::List(ids) => submessage_len(tag::LIST, packed_ids_len(1, ids)),
@@ -492,8 +531,10 @@ fn node_len(node: &MontyNode) -> usize {
             tag::CLASS_INSTANCE,
             class_instance_len(*class_type, &uuid_to_pb(instance_id), attrs),
         ),
+        MontyNode::Module { name, id, attrs } => submessage_len(tag::MODULE, module_len(name, &uuid_to_pb(id), attrs)),
         MontyNode::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyNode::Path(p) => encoding::string::encoded_len(tag::PATH, p),
+        MontyNode::Decimal(d) => encoding::string::encoded_len(tag::DECIMAL, d),
         MontyNode::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
         MontyNode::Function { name, docstring } => {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
@@ -501,6 +542,20 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
+}
+
+/// A `SourceRange` message encoded from the borrowed domain value, so the
+/// filename is written in place rather than cloned into a `pb::SourceRange`.
+fn encode_source_range(tag: u32, range: &SourceRange, buf: &mut impl BufMut) {
+    encode_message_key(tag, source_range_len(range), buf);
+    encode_str(1, &range.filename, buf);
+    encode_uint32(2, range.start, buf);
+    encode_uint32(3, range.end, buf);
+}
+
+/// Body length of [`encode_source_range`]'s message.
+fn source_range_len(range: &SourceRange) -> usize {
+    str_len(1, &range.filename) + uint32_len(2, range.start) + uint32_len(3, range.end)
 }
 
 /// Writes the key and length prefix of a length-delimited field.
@@ -615,6 +670,11 @@ fn class_origin(class: &ClassTypeNode) -> pb::TypeOrigin {
 /// NodePairs attrs = 3`.
 fn class_instance_len(class_type: NodeId, id: &pb::Uuid, attrs: &[(NodeId, NodeId)]) -> usize {
     uint32_len(1, class_type.0) + encoding::message::encoded_len(2, id) + submessage_len(3, node_pairs_len(1, attrs))
+}
+
+/// `ModuleNode` body: `name = 1`, `id = 2`, `attrs = 3`.
+fn module_len(name: &str, id: &pb::Uuid, attrs: &[(NodeId, NodeId)]) -> usize {
+    str_len(1, name) + encoding::message::encoded_len(2, id) + submessage_len(3, node_pairs_len(1, attrs))
 }
 
 /// `DateTime` body: scalar fields 1–7 (implicit presence, skipped at
@@ -784,6 +844,7 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         Kind::Boolean(value) => MontyNode::Bool(value),
         Kind::Int(value) => MontyNode::Int(value),
         Kind::Float(value) => MontyNode::Float(value),
+        Kind::Complex(value) => MontyNode::Complex(complex_from_proto(&value).map_err(to_decode_err)?),
         Kind::Str(value) => MontyNode::String(value),
         Kind::Bytes(value) => MontyNode::Bytes(value.into_inner()),
         Kind::List(value) => MontyNode::List(value.0.into_inner()),
@@ -797,6 +858,9 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         },
         Kind::Dict(value) => MontyNode::Dict(value.0.into_inner()),
         Kind::Path(value) => MontyNode::Path(value),
+        // Validated by whoever turns the text into a `Decimal`: the sandbox parses
+        // it, the bindings call their own `Decimal` constructor.
+        Kind::Decimal(value) => MontyNode::Decimal(value),
         Kind::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
@@ -815,6 +879,19 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
             MontyNode::ClassInstance {
                 class_type: NodeId(value.class_type),
                 instance_id: pb_uuid_to_monty(&instance_id, "ClassInstanceNode.instance_id")?,
+                attrs: attrs.0.into_inner(),
+            }
+        }
+        Kind::Module(value) => {
+            let id = value
+                .id
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ModuleNode.id")))?;
+            let attrs = value
+                .attrs
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ModuleNode.attrs")))?;
+            MontyNode::Module {
+                name: value.name,
+                id: pb_uuid_to_monty(&id, "ModuleNode.id")?,
                 attrs: attrs.0.into_inner(),
             }
         }
@@ -1113,6 +1190,22 @@ fn time_from_proto(t: pb::Time) -> Result<MontyTime, ProtoConvertError> {
             .transpose()?,
         timezone_name: t.timezone_name,
         fold: ranged_u8(t.fold, 0..=1, "Time.fold")?,
+    })
+}
+
+fn complex_to_proto(c: &MontyComplex) -> pb::Complex {
+    pb::Complex {
+        real: Some(c.real),
+        imag: Some(c.imag),
+    }
+}
+
+/// Both parts are `optional` only so that `-0.0` survives the wire; a frame
+/// leaving one out is malformed.
+fn complex_from_proto(c: &pb::Complex) -> Result<MontyComplex, ProtoConvertError> {
+    Ok(MontyComplex {
+        real: c.real.ok_or(ProtoConvertError::MissingField("Complex.real"))?,
+        imag: c.imag.ok_or(ProtoConvertError::MissingField("Complex.imag"))?,
     })
 }
 

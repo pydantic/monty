@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "1.0.0-beta.2",
+  "version": "1.4.0",
   "type": "module",
   "description": "Python sandbox running in crash-isolated subprocess workers",
   "main": "dist/index.js",
@@ -8,7 +8,7 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "browser": "./dist/worker/index.browser.js",
+      "browser": "./dist/worker/index.js",
       "node": "./dist/node.js",
       "default": "./dist/node.js"
     },
@@ -19,7 +19,6 @@
     "./wasm": {
       "types": "./dist/worker/index.d.ts",
       "node": "./dist/worker/index.node.js",
-      "browser": "./dist/worker/index.browser.js",
       "default": "./dist/worker/index.js"
     }
   },
@@ -59,6 +58,7 @@
     "build:napi:debug": "napi build --platform --esm --js native-addon.js --dts native-addon.generated.d.ts",
     "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && node scripts/build-component.mjs",
     "build:ts": "tsc",
+    "check:dist-types": "tsc -p tsconfig.dist.json",
     "format": "prettier . -w",
     "lint": "run-s lint:oxlint lint:tests",
     "lint:oxlint": "oxlint .",
@@ -89,13 +89,15 @@
     "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
+    "@types/ws": "^8.18.2",
     "@vitest/browser": "^3.2.4",
     "npm-run-all2": "^8.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.2",
     "vite": "^6.3.5",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "ws": "^8.22.0"
   },
   "prettier": {
     "printWidth": 120,
@@ -103,12 +105,5 @@
     "trailingComma": "all",
     "singleQuote": true,
     "arrowParens": "always"
-  },
-  "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "1.0.0-beta.2",
-    "@pydantic/monty-darwin-arm64": "1.0.0-beta.2",
-    "@pydantic/monty-linux-x64-gnu": "1.0.0-beta.2",
-    "@pydantic/monty-linux-arm64-gnu": "1.0.0-beta.2",
-    "@pydantic/monty-win32-x64-msvc": "1.0.0-beta.2"
   }
 }

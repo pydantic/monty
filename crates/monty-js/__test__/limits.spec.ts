@@ -1,6 +1,6 @@
 import { test } from 'vitest'
 import { assertMemoryError, t } from './assertions.js'
-import { kind } from './env.js'
+import { isWasm } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { WorkerTransport } from '../ts/worker/transport.js'
@@ -72,7 +72,15 @@ len(result)
 `
   const maxMemory = 64 * 1024
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 83_812 : 67_550, maxMemory)
+  assertMemoryError(error, isWasm ? 83_812 : 67_550, maxMemory)
+})
+
+test('an allocation refused at an interpreter checkpoint leaves the session usable', async () => {
+  const maxMemory = 1024 * 1024
+  await using session = await pool().checkout({ limits: { maxMemory } })
+  const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), isRuntimeError)
+  assertMemoryError(error, isWasm ? 1_068_412 : 1_162_198, maxMemory)
+  t.is(await session.feedRun('1 + 1'), 2)
 })
 
 test('memory limit accepts values above u32 max', async () => {
@@ -93,12 +101,12 @@ test('limits with inputs', async () => {
 
 test('pow memory limit', async () => {
   const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 10_032_301 : 10_042_127, 1_000_000)
+  assertMemoryError(error, isWasm ? 10_032_301 : 10_042_127, 1_000_000)
 })
 
 test('lshift memory limit', async () => {
   const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 1_282_302 : 1_292_128, 1_000_000)
+  assertMemoryError(error, isWasm ? 1_282_302 : 1_292_128, 1_000_000)
 })
 
 test('mult memory limit', async () => {
@@ -107,7 +115,7 @@ big = 2 ** 4000000
 result = big * big
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, kind === 'browser' ? 4_032_933 : 4_042_767, 1_000_000)
+  assertMemoryError(error, isWasm ? 4_032_933 : 4_042_767, 1_000_000)
 })
 
 test('small operations within limit', async () => {
@@ -213,14 +221,15 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
       args: new Uint32Array(),
       kwargs: [],
       allowEagerAwait: false,
+      position: { filename: '<python-input-0>', start: 0, end: 7 },
     },
   })
   const requests: string[] = []
   const transport = await WorkerTransport.create(async (request) => {
     requests.push(request.tag)
     return request.tag === 'configure'
-      ? { status: 'continue', events: [{ tag: 'ok' }], maxSuspensions: 1n }
-      : { status: 'continue', events: [call(requests.length)] }
+      ? { status: 'continue', events: [{ tag: 'ok' }], maxSuspensions: 1n, feedExecutionMicros: 0n }
+      : { status: 'continue', events: [call(requests.length)], feedExecutionMicros: 0n }
   })
   let reusable: boolean | undefined
   transport.onFinish = (value) => {
@@ -234,6 +243,51 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   await transport.finish()
   t.is(reusable, false)
 })
+
+test.each([
+  { feedGrace: 100, turnGrace: 200, initial: 1000, resumed: 700, loaded: 2100 },
+  { feedGrace: null, turnGrace: 200, initial: 1000, resumed: 1000, loaded: 3200 },
+  { feedGrace: 100, turnGrace: null, initial: 1100, resumed: 700, loaded: 2100 },
+  { feedGrace: null, turnGrace: null, initial: undefined, resumed: undefined, loaded: undefined },
+])(
+  'WASM backstops retain reported time and adopt restored limits: $feedGrace/$turnGrace',
+  async ({ feedGrace, turnGrace, initial, resumed, loaded }) => {
+    const deadlines: Array<number | undefined> = []
+    const transport = await WorkerTransport.create(
+      async (request, timeoutMs) => {
+        deadlines.push(timeoutMs)
+        return {
+          status: 'continue',
+          events:
+            request.tag === 'configure' || request.tag === 'load'
+              ? [{ tag: 'ok' }]
+              : [
+                  {
+                    tag: 'name-lookup',
+                    val: { name: 'fetch', position: { filename: '<python-input-0>', start: 0, end: 5 } },
+                  },
+                ],
+          // A malicious reply cannot rewind the clock during the same feed.
+          feedExecutionMicros: request.tag === 'feed' ? 400_000n : 100_000n,
+          maxFeedDurationMicros: 2_000_000n,
+          maxTurnDurationMicros: 3_000_000n,
+        }
+      },
+      { limits: { maxFeedDurationSecs: 1, maxTurnDurationSecs: 0.8 } },
+      {
+        feedDurationLimitGraceMs: feedGrace,
+        turnDurationLimitGraceMs: turnGrace,
+      },
+    )
+    await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
+    await transport.resumeNameLookup(null, null, () => {})
+    await transport.resumeNameLookup(null, null, () => {})
+    await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
+    await transport.restore(new Uint8Array(), [], () => {})
+    await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
+    t.deepEqual(deadlines, [initial, initial, resumed, resumed, initial, undefined, loaded])
+  },
+)
 
 test('the sleep limit is a ceiling a restored dump can only tighten', async () => {
   const sleep = (secs: number) => `import time\ntime.sleep(${secs})`

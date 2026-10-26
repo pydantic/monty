@@ -126,7 +126,11 @@ test('an attr outside the eager list raises AttributeError', async () => {
 
 test('returning a host-sent instance gives the original object back', async () => {
   const g = new Greeter('hello')
-  t.is(await run('x', { inputs: { x: new ClassInstance(g, { eagerAttrs: 'all' }) } }), g)
+  const inputs = { x: new ClassInstance(g, { eagerAttrs: 'all' }) }
+  t.is(await run('x', { inputs }), g)
+  const [first, [nested]] = (await run('[x, [x]]', { inputs })) as [Greeter, [Greeter]]
+  t.is(first, g)
+  t.is(nested, g)
 })
 
 test('the same instance round-trips across feeds in one session', async () => {
@@ -155,12 +159,22 @@ test('method call allowed by "all"', async () => {
 })
 
 test('instance callMethod rejects __call__ even under allowedMethods "all"', () => {
-  // `__call__` routes only to ClassType construction; on an instance wrapper
-  // a (necessarily forged) `__call__` frame must never invoke the instance.
+  // Even a callable host value must not run through an instance wrapper.
   const invocable = Object.assign(() => 'invoked', { add: (n: number) => n })
   const wrapper = new ClassInstance(invocable, { allowedMethods: 'all' })
   const error = t.throws(() => wrapper.callMethod('__call__', [], {}))
-  t.is(error.message, "'Function' object has no attribute '__call__'")
+  t.is(error.message, "'Function' object is not callable")
+})
+
+test('calling an instance in the sandbox is not callable', async () => {
+  const c = new Calculator(5)
+  const error = await t.throwsAsync(
+    () => run('c()', { inputs: { c: new ClassInstance(c, { allowedMethods: 'all' }) } }),
+    {
+      instanceOf: MontyRuntimeError,
+    },
+  )
+  t.is(error.message, "TypeError: 'Calculator' object is not callable")
 })
 
 test('kwargs are delivered as a trailing options bag', async () => {
@@ -176,9 +190,15 @@ test('method call with args and kwargs', async () => {
   t.is(result, '1-2')
 })
 
-test('promise-returning method resolves via the future machinery', async () => {
-  const c = new Calculator(4)
-  t.is(await run('await c.fetch()', { inputs: { c: new ClassInstance(c, { allowedMethods: 'all' }) } }), 40)
+test('promise-returning methods use one suspension per call', async () => {
+  const c = new ClassInstance(new Calculator(4), { allowedMethods: 'all' })
+  t.is(
+    await run('a = await c.fetch()\nb = await c.fetch()\na + b', {
+      inputs: { c },
+      limits: { maxSuspensions: 2 },
+    }),
+    80,
+  )
 })
 
 test('denied method raises AttributeError', async () => {

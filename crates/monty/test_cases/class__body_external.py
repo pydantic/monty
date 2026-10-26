@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # A class *body* that suspends on an external call. Because the class body now
 # runs as a real, suspendable frame (Step 2), a class-variable value may call an
 # external function: the VM yields to the host mid-definition and resumes,

@@ -104,12 +104,11 @@ impl Code {
     #[must_use]
     pub fn location_for_offset(&self, offset: usize) -> Option<&LocationEntry> {
         let offset_u32 = u32::try_from(offset).ok()?;
-        // Location entries are in order by bytecode offset.
-        // Find the last entry where bytecode_offset <= offset.
-        self.location_table
-            .iter()
-            .rev()
-            .find(|entry| entry.bytecode_offset <= offset_u32)
+        // Entries are sorted by bytecode offset: take the last at or before `offset`.
+        let after = self
+            .location_table
+            .partition_point(|entry| entry.bytecode_offset <= offset_u32);
+        after.checked_sub(1).map(|index| &self.location_table[index])
     }
 
     /// Finds an exception handler for the given bytecode offset.

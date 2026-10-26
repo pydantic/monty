@@ -83,6 +83,57 @@ Instead of driving a snippet to completion it hands control back at every suspen
     `FutureSnapshot`.
 
 In JavaScript those are separate methods: `resume(value)`, `resumeError(err)` and `resumeFuture()`.
+For a `NameLookupSnapshot`, use `resumeValue(value)` to answer a variable or lazy attribute read;
+`resume(name)` resolves an external function, and `resume()` leaves the lookup unresolved.
+Both call and lookup snapshots carry `objectId`, the `ClassInstance.id` or `ClassType.id` of the wrapper involved,
+or `null` for plain host calls and name lookups.
+It is a wrapper UUID, not a memory address; routing uses the session's instance store, but the UUID can be reused across sessions.
+
+### Where execution stopped
+
+Every snapshot carries `position`, a [`SourceRange`][pydantic_monty.SourceRange] locating the expression that
+suspended: the call of a `FunctionSnapshot`, the name of a `NameLookupSnapshot`, and the `await` the main task is
+blocked on for a `FutureSnapshot`.
+`start` and `end` are UTF-8 byte offsets into the source, `end` exclusive, so slice the encoded source rather than
+the string.
+
+=== "Python"
+
+    ```python
+    from pydantic_monty import FunctionSnapshot, Monty
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            code = 'x = 1\ny = greet(x)'
+            snapshot = session.feed_start(code)
+            assert isinstance(snapshot, FunctionSnapshot)
+            position = snapshot.position
+            print(position.start, position.end)
+            #> 10 18
+            print(code.encode()[position.start : position.end].decode())
+            #> greet(x)
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { FunctionSnapshot, Monty } from '@pydantic/monty'
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    const code = 'x = 1\ny = greet(x)'
+    const snapshot = await session.feedStart(code)
+    if (!(snapshot instanceof FunctionSnapshot)) throw new Error('expected a function call')
+    const { start, end } = snapshot.position // { filename: '<python-input-0>', start: 10, end: 18 }
+    console.log(new TextDecoder().decode(new TextEncoder().encode(code).subarray(start, end))) // 'greet(x)'
+    ```
+
+`filename` names the source the range indexes the way a traceback frame does: `<python-input-N>` for the session's
+N-th feed, so a suspension inside a function defined by an earlier feed points into that feed, and `<string>` inside an
+`eval()` / `exec()` string.
+The position is part of the suspended state, so a restored snapshot reports the same one.
+A worker that predates the field (an older `monty` binary or server) reports none, and the snapshot then carries an
+empty `filename` with both offsets 0.
 
 A snapshot refers to the worker's current suspension; it does not own an independent copy of the execution state.
 Only one suspension is live per session.
@@ -293,8 +344,18 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 
 ## What restoring does and does not carry
 
-- **The dump carries its own configuration.** `script_name`, resource limits and type-check state come from the dump,
-    not from the `checkout()` that restored it.
+- **The dump carries its own configuration.** `script_name` and type-check state come from the dump, not from the
+    `checkout()` that restored it.
+    The worker caps each restored resource limit at the restoring `checkout()` limit; stricter dump limits remain in
+    effect.
+    Elapsed execution time is restored, not reset, and counts against the capped limits: a dump taken mid-feed that
+    has already used more than the restoring `max_feed_duration` raises `TimeoutError` at its next time check.
+    Module stubs are retained even when type checking is off, so a restored session requests stubs only for modules
+    it never asked about; every `import` still asks the host for the module value.
+    The restoring `checkout()`'s `external_modules` answer those imports and function calls.
+- **Host modules restore as module objects.** Their attributes, including functions named `tools.<attr>`, survive
+    restoration, and a function call resolves through the restoring `checkout()`'s `external_modules`.
+    An `import` after restoration asks the host again.
 - **The instance store does not travel.** Host objects sent before the dump are unknown to the restored session: they
     come back as [`MontyClassProxy`][pydantic_monty.MontyClassProxy] (a host class, `type(x)` included, as [`MontyClassTypeProxy`][pydantic_monty.MontyClassTypeProxy] in Python and as a plain
     `{ __monty_type__: 'Type', ... }` marker in JavaScript), method calls on them
@@ -311,7 +372,10 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.
 - **A restored [`FutureSnapshot`][pydantic_monty.FutureSnapshot] cannot be driven with `resume_auto()`.** Its pending coroutines lived in the previous
     process.
-    Resolve them by hand with `resume({call_id: ...})`.
+    In Python and JavaScript, rejecting automatic resolution when no host coroutines or promises are registered leaves
+    the snapshot and session available for manual resolution.
+    Resolve them by hand with `resume({call_id: ...})` in Python or `resume([{callId, value}])` in JavaScript.
+    The same applies to a JavaScript future created with `resumeFuture()` when no host promises were registered.
 - **A dump is your own session state, not untrusted input.** Loading checks the magic, the version, the size cap and the
     structural invariants the interpreter relies on (function metadata, for one), but it is not a security boundary:
     load only dumps this host produced.
@@ -321,8 +385,11 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     reordering named fields, keeps the version, so its builds still load dumps written by earlier releases at that
     version.
     A release that changes what stored data means, such as the bytecode, bumps the version and says so in its release
-    notes; a build then refuses dumps from before the bump as too old, and the session has to be rebuilt by replaying
-    its feeds.
+    notes.
+    Older builds then refuse the new dumps as too new.
+    Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
+    them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack.
+    Otherwise it refuses them as too old, and the session has to be rebuilt by replaying its feeds.
     The same bytes load in-process, in a subprocess and over WebSocket.
 
 ## Async
@@ -351,3 +418,5 @@ See the [Rust quickstart](quickstart/rust.md#serialization).
 - **Approval gates.** Pause at a sensitive call, store the snapshot, resume once a human approves.
 - **Forking.** One snapshot restored into several sessions explores several branches from the same state.
 - **Surviving restarts.** A remote server draining for deploy answers with a dump you can restore elsewhere.
+    A server that stores sessions instead resumes them for you; see
+    [stored sessions](api/python/websocket.md#stored-sessions).
