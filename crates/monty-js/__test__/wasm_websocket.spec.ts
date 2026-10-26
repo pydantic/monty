@@ -183,6 +183,11 @@ test('options a browser cannot honour are rejected', async () => {
     message:
       'maxProcesses is not supported by the WebAssembly MontyWebsocket: it has no connection cap; each checkout dials at once',
   })
+  await t.throwsAsync(() => MontyWebsocket.create(servers.relay, { checkoutTimeout: 1 } as never), {
+    instanceOf: TypeError,
+    message:
+      'checkoutTimeout is not supported by the WebAssembly MontyWebsocket: it has no connection cap; each checkout dials at once',
+  })
   // unset, as options shared with the native client leave them
   const shared = { connectHeaders: undefined, maxProcesses: undefined, checkoutTimeout: undefined }
   await using pool = await MontyWebsocket.create(servers.relay, shared as never)

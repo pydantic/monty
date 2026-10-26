@@ -1004,7 +1004,7 @@ The package README is an npm introduction, not a second reference.
 
 Use `make test-js`, `make test-wasm` and `make test-browser` for native Node, WASM Node and Chromium respectively.
 Vitest runs `__test__/` against public entries in `dist/`; all three targets set `MONTY_BIN` to the debug worker build.
-The WebSocket fixtures (`__test__/websocket_servers.ts`) bridge each connection to a `monty subprocess`; the wasm and
+The WebSocket relay fixtures (`__test__/websocket_servers.ts`) bridge each connection to a `monty subprocess`; the wasm and
 browser configs start them in Node from `__test__/websocket_setup.ts` and pass their URLs to specs through `inject`.
 Use `setupPool` from `__test__/helpers.ts` and put portable behavior in the shared specs, not duplicate WASM files.
 Gate only backend-specific capabilities; reserve `node_*` / `wasm_*` specs for those.

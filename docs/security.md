@@ -495,6 +495,8 @@ other end.
 
 The browser `MontyWebsocket` decodes its server's frames with the protocol codec, under the same frame cap and
 allocation budget the native clients use, and a malformed frame ends the session with `ProtocolError`.
+Those limits apply only once a message is decoded: the browser buffers each WebSocket message whole first, so a
+hostile server can still make the page allocate a large message before the session ends.
 
 ### Pin the worker binary
 

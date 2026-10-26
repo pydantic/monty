@@ -272,7 +272,7 @@ export class WorkerTransport {
     if (requirements.length === 0) return { kind: 'ok' }
     const event = await this.run({ tag: 'install-dependencies', val: requirements }, onPrint)
     if (!event) return this.crash()
-    return event.tag === 'ok' ? { kind: 'ok' } : this.toTurn(event)
+    return event.tag === 'ok' ? { kind: 'ok' } : this.failedReply(event, 'InstallDependencies', 'ok')
   }
 
   /** Delivers settled external futures to the suspended worker, their
@@ -293,7 +293,9 @@ export class WorkerTransport {
   async dump(onPrint?: OnPrint): Promise<DumpedTurn | NativeTurn> {
     const event = await this.run({ tag: 'dump' }, onPrint)
     if (!event) return this.crash()
-    return event.tag === 'dump-result' ? { kind: 'dumped', state: event.val } : this.toTurn(event)
+    return event.tag === 'dump-result'
+      ? { kind: 'dumped', state: event.val }
+      : this.failedReply(event, 'Dump', 'dump-result')
   }
 
   /** Restores a previously dumped session into this fresh worker. */
@@ -462,6 +464,22 @@ export class WorkerTransport {
     return this.dead && terminating?.tag !== 'fatal-error' && terminating?.tag !== 'shutdown' ? null : terminating
   }
 
+  /**
+   * Converts the failed reply to a request that runs no Python: a refusal, crash
+   * or drain may answer it, and any other event retires the worker.
+   */
+  private failedReply(event: ComponentEvent, what: string, expected: ComponentEvent['tag']): NativeTurn {
+    switch (event.tag) {
+      case 'error':
+      case 'fatal-error':
+      case 'shutdown':
+        return this.toTurn(event)
+      default:
+        this.dead = true
+        return { kind: 'protocol', message: `${what} expected event ${expected}, got ${event.tag}` }
+    }
+  }
+
   /** Retains crash metadata so subsequent requests cannot revive a dead component. */
   private crash(): FailureTurn {
     this.dead = true
@@ -546,11 +564,16 @@ export class WorkerTransport {
       case 'shutdown': {
         // only a serving relay drains: a local worker naming a dump would have
         // the host restore bytes it minted, as `monty-pool` refuses too
-        if (!this.remote) return { kind: 'protocol', message: 'local worker sent a ShutdownDump' }
+        if (!this.remote) {
+          this.dead = true
+          return { kind: 'protocol', message: 'local worker sent a ShutdownDump' }
+        }
         const turn: ShutdownTurn = { kind: 'shutdown', message: shutdownMessage(event.val) }
         return event.val === undefined ? turn : { ...turn, dump: event.val }
       }
       default:
+        // a protocol violation never leaves the worker reusable
+        this.dead = true
         return { kind: 'protocol', message: `unexpected event kind ${event.tag}` }
     }
   }
