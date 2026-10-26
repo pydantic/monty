@@ -145,6 +145,26 @@ test('a storing server names the session and a shutdown is resumed', async () =>
   t.is(text(session.sessionId), 'sess-3')
 })
 
+test('a resumed session keeps its suspension count', async () => {
+  // the client counts suspensions; a drain must not restart the count
+  await using pool = await MontyWebsocket.create(servers.storingMidCall)
+  await using session = await pool.checkout({ limits: { maxSuspensions: 2 } })
+  let calls = 0
+  const f = () => {
+    calls += 1
+    return null
+  }
+  // the server parks the answer to the second call; the reload re-announces
+  // that call, and the third is one past the limit
+  const error = await t.throwsAsync(() => session.feedRun('f()\nf()\nf()', { externalLookup: { f } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.display('type-msg'), 'RuntimeError: suspension limit 2 exceeded')
+  t.is(calls, 2)
+  // named by the reload's `Load`, so the session did resume
+  t.is(text(session.sessionId), 'sess-3')
+})
+
 test('with autoResume off a shutdown raises MontyShutdown naming the session', async () => {
   await using pool = await MontyWebsocket.create(servers.storingNoResume, { autoResume: false })
   {
@@ -168,6 +188,24 @@ test('a closed pool rejects checkouts', async () => {
   await pool.close()
   await t.throwsAsync(() => pool.checkout(), {
     message: 'the pool is closed — create a new MontyWebsocket pool',
+  })
+})
+
+test('a checkout still dialing when the pool closes rejects', async () => {
+  const pool = await MontyWebsocket.create(servers.relay)
+  const checkout = pool.checkout()
+  await pool.close()
+  await t.throwsAsync(() => checkout, { message: 'the pool is closed — create a new MontyWebsocket pool' })
+})
+
+test('a frame sent with no request outstanding ends the session', async () => {
+  await using pool = await MontyWebsocket.create(servers.repeating)
+  await using session = await pool.checkout()
+  // let the copy of the Configure reply arrive while the session is idle
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  await t.throwsAsync(() => session.feedRun('1'), {
+    instanceOf: ProtocolError,
+    message: 'protocol violation: monty worker sent a frame with no request outstanding',
   })
 })
 

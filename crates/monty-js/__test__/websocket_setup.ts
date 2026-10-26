@@ -5,7 +5,16 @@
 
 import type { TestProject } from 'vitest/node'
 
-import { droppingRelay, garbage, relay, serve, silent, StoringServer, type TestServer } from './websocket_servers.js'
+import {
+  droppingRelay,
+  garbage,
+  relay,
+  repeatingRelay,
+  serve,
+  silent,
+  StoringServer,
+  type TestServer,
+} from './websocket_servers.js'
 
 /** The URL of each scenario's server. */
 export interface WebsocketServers {
@@ -16,9 +25,13 @@ export interface WebsocketServers {
   dropSecond: string
   silent: string
   garbage: string
+  /** Sends each reply twice, the copy with no request outstanding. */
+  repeating: string
   /** A storing server, one per spec that drains a session. */
   storing: string
   storingNoResume: string
+  /** Parks the session at its fourth request, the answer to the feed's second call. */
+  storingMidCall: string
 }
 
 declare module 'vitest' {
@@ -34,8 +47,10 @@ export default async function setup(project: TestProject): Promise<() => Promise
     dropSecond: await serve(droppingRelay(2)),
     silent: await serve(silent),
     garbage: await serve(garbage),
+    repeating: await serve(repeatingRelay),
     storing: await serve(new StoringServer().handle),
     storingNoResume: await serve(new StoringServer().handle),
+    storingMidCall: await serve(new StoringServer(4).handle),
   }
   project.provide(
     'websocketServers',

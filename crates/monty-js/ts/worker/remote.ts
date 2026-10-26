@@ -224,22 +224,40 @@ function refused(message: string): DispatchResult {
   }
 }
 
+/** `MAX_FRAME_LEN` in crates/monty-proto/src/frame.rs, the cap `monty-pool` sets on a message. */
+const MAX_FRAME_LEN = 256 * 1024 * 1024
+const UNPROMPTED = 'protocol violation: monty worker sent a frame with no request outstanding'
+
 /**
  * One WebSocket: binary messages queue as frames until a turn reads them. A
  * text message or a close ends the link, as it does in `monty-pool`.
+ *
+ * A browser cannot apply backpressure as `monty-pool` does by not reading, so
+ * an oversized frame or one sent with no request outstanding ends the link
+ * rather than queueing: the queue never grows while nothing reads it.
  */
 class Link {
   private readonly frames: Uint8Array[] = []
   private closed = false
+  /** Whether a request awaits its reply, the only time the server may send. */
+  private awaiting = false
+  /** The protocol violation that ended the link, reported by the next request. */
+  private violation: string | null = null
   private wake: (() => void) | null = null
 
   private constructor(private readonly socket: WebSocket) {
     socket.onmessage = (message: MessageEvent) => {
-      if (message.data instanceof ArrayBuffer) {
+      if (!(message.data instanceof ArrayBuffer)) {
+        this.close()
+      } else if (!this.awaiting) {
+        this.fail(UNPROMPTED)
+      } else if (message.data.byteLength > MAX_FRAME_LEN) {
+        this.fail(
+          `protocol violation: frame of ${message.data.byteLength} bytes exceeds the maximum of ${MAX_FRAME_LEN} bytes`,
+        )
+      } else {
         this.frames.push(new Uint8Array(message.data))
         this.notify()
-      } else {
-        this.close()
       }
     }
     socket.onerror = socket.onclose = () => this.close()
@@ -286,22 +304,29 @@ class Link {
     decode: (frame: Uint8Array) => DecodedFrame,
     onPrint: OnPrint | undefined,
   ): Promise<Reply> {
-    if (this.closed) throw disconnected('sending a request')
-    this.socket.send(frame)
-    const deadline = performance.now() + timeoutMs
-    for (;;) {
-      let decoded: DecodedFrame
-      try {
-        decoded = decode(await this.next(deadline, timeoutMs))
-      } catch (error) {
-        if (!(error instanceof CodecError)) throw error
-        this.close()
-        throw new DispatchFailure({ kind: 'protocol', message: error.message })
+    if (this.closed) throw this.lost('sending a request')
+    this.awaiting = true
+    try {
+      this.socket.send(frame)
+      const deadline = performance.now() + timeoutMs
+      for (;;) {
+        let decoded: DecodedFrame
+        try {
+          decoded = decode(await this.next(deadline, timeoutMs))
+        } catch (error) {
+          if (!(error instanceof CodecError)) throw error
+          this.close()
+          throw new DispatchFailure({ kind: 'protocol', message: error.message })
+        }
+        for (const event of decoded.events) {
+          if (event.tag === 'print') onPrint?.(event.val.stderr ? 'stderr' : 'stdout', event.val.text)
+          else return { event, frame: decoded }
+        }
       }
-      for (const event of decoded.events) {
-        if (event.tag === 'print') onPrint?.(event.val.stderr ? 'stderr' : 'stdout', event.val.text)
-        else return { event, frame: decoded }
-      }
+    } finally {
+      this.awaiting = false
+      // a frame queued behind the turn-ending one was sent with no request outstanding
+      if (this.frames.length > 0) this.fail(UNPROMPTED)
     }
   }
 
@@ -318,7 +343,7 @@ class Link {
     for (;;) {
       const frame = this.frames.shift()
       if (frame !== undefined) return frame
-      if (this.closed) throw disconnected('waiting for a reply')
+      if (this.closed) throw this.lost('waiting for a reply')
       const remaining = deadline - performance.now()
       if (remaining <= 0) {
         this.close()
@@ -336,6 +361,20 @@ class Link {
         }
       })
     }
+  }
+
+  /** Ends the link on a protocol violation, dropping what it queued. */
+  private fail(violation: string): void {
+    this.violation ??= violation
+    this.frames.length = 0
+    this.close()
+  }
+
+  /** Why a closed link cannot carry a request: its violation, else the disconnect. */
+  private lost(context: string): DispatchFailure {
+    return this.violation === null
+      ? disconnected(context)
+      : new DispatchFailure({ kind: 'protocol', message: this.violation })
   }
 
   private notify(): void {

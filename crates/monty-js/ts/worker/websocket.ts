@@ -81,7 +81,7 @@ class WebsocketPool implements MontyWebsocket {
    * connection with `session.close()` (or `await using`).
    */
   async checkout(options: WebsocketCheckoutOptions = {}): Promise<MontySession> {
-    if (this.closed) throw new Error('the pool is closed — create a new MontyWebsocket pool')
+    this.ensureOpen()
     const config: ConfigureRequest = {
       ...prepareSession(options),
       ephemeral: options.ephemeral,
@@ -91,7 +91,10 @@ class WebsocketPool implements MontyWebsocket {
     const dispatcher = await RemoteDispatcher.connect(this.codec, this.remote)
     let transport: WorkerTransport
     try {
+      // a checkout still dialing or configuring when the pool closes rejects too
+      this.ensureOpen()
       transport = await WorkerTransport.configure(dispatcher.dispatch, config, this.graces, ++this.checkouts, true)
+      this.ensureOpen()
     } catch (error) {
       dispatcher.close()
       throw error
@@ -100,13 +103,17 @@ class WebsocketPool implements MontyWebsocket {
     return new MontySession(transport as unknown as SessionNative, modules)
   }
 
-  /** Rejects later checkouts; sessions already checked out keep their connections until closed. */
+  /** Rejects pending and later checkouts; sessions already checked out keep their connections until closed. */
   async close(): Promise<void> {
     this.closed = true
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close()
+  }
+
+  private ensureOpen(): void {
+    if (this.closed) throw new Error('the pool is closed — create a new MontyWebsocket pool')
   }
 }
 

@@ -66,6 +66,25 @@ export function garbage(ws: WebSocket): void {
   ws.on('message', () => ws.send(Buffer.from([0xff, 0xff, 0xff])))
 }
 
+/**
+ * A relay that sends each reply twice, so the copy arrives with no request
+ * outstanding. Only for replies of one frame, as `Configure`'s is.
+ */
+export async function repeatingRelay(ws: WebSocket): Promise<void> {
+  const child = new ChildFrames()
+  try {
+    for await (const message of messages(ws)) {
+      child.send(message)
+      const reply = await child.next()
+      if (reply === null) return
+      ws.send(reply)
+      ws.send(reply)
+    }
+  } finally {
+    child.kill()
+  }
+}
+
 /** A relay that drops the connection, without a reply, on its `dropAt`-th request. */
 export function droppingRelay(dropAt: number): (ws: WebSocket) => Promise<void> {
   return async (ws) => {
@@ -158,19 +177,22 @@ function answerConfigure(reply: Buffer): (ws: WebSocket) => Promise<void> {
 /**
  * A fake of a server that stores sessions, as `_StoringServer` in the Python
  * tests. It names the session on the reply to `Configure` and to `Load`, and
- * does not run the third request of the first connection: the child is dumped,
- * its state kept under the session's ID, and the request answered with
- * `ShutdownDump` naming that ID. A later `Load` of the ID gets the stored state.
+ * does not run request `drainAt` of the first connection: the child is dumped,
+ * idle or suspended, its state kept under the session's ID, and the request
+ * answered with `ShutdownDump` naming that ID. A later `Load` of the ID gets the
+ * stored state.
  */
 export class StoringServer {
   private readonly records = new Map<string, Buffer>()
   private minted = 0
   private connections = 0
 
+  /** `drainAt` counts from 1, `Configure`; the default parks the request after the first feed. */
+  constructor(private readonly drainAt = 3) {}
+
   readonly handle = async (ws: WebSocket): Promise<void> => {
     this.connections += 1
-    // request 1 is `Configure`, 2 the first feed; the first connection parks the next
-    const drainAt = this.connections === 1 ? 3 : null
+    const drainAt = this.connections === 1 ? this.drainAt : null
     const child = new ChildFrames()
     let sessionId: Buffer | null = null
     let requests = 0
@@ -179,7 +201,7 @@ export class StoringServer {
         requests += 1
         const fields = protoFields(message)
         if (requests === drainAt) {
-          // park: dump the idle child, keep its state under the ID, and tell
+          // park: dump the child, keep its state under the ID, and tell
           // the client the request did not run
           child.send(bytesField(REQUEST_DUMP, Buffer.alloc(0)))
           const reply = protoFields((await child.next())!)
