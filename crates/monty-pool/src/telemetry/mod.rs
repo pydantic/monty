@@ -150,6 +150,14 @@ impl TelemetryContext {
     pub fn for_logfire(logfire: Logfire) -> Self {
         Self { parent: None, logfire }
     }
+
+    /// Parents this checkout's session to `parent` while retaining its recorder.
+    /// Invalid contexts leave the existing ambient-parent behavior unchanged.
+    #[must_use]
+    pub fn with_parent(mut self, parent: SpanContext) -> Self {
+        self.parent = parent.is_valid().then_some(parent);
+        self
+    }
 }
 
 impl TelemetryContext {

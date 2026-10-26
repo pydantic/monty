@@ -1083,13 +1083,18 @@ mod tests {
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
     use monty_types::{CallArgs, MontyObject, NameLookupResult, SourceRange};
-    use opentelemetry::{logs::AnyValue, trace::SpanId};
+    use opentelemetry::{
+        logs::AnyValue,
+        trace::{SpanContext, SpanId, TraceContextExt as _, TraceFlags, TraceId, TraceState},
+    };
     use opentelemetry_sdk::{
         logs::{InMemoryLogExporter, SimpleLogProcessor},
         trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
     };
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
     use super::{ATTR_SIZE_LIMIT, PositionAttrs, Recorder, bytes_attr, render_ext_result};
+    use crate::telemetry::TelemetryContext;
 
     /// The suspension position every hand-built event carries.
     fn position() -> SourceRange {
@@ -1126,6 +1131,49 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner)
             .push(logfire.clone());
         (logfire, spans, logs)
+    }
+
+    /// Explicit parents remain checkout-local on a reused recorder.
+    #[test]
+    fn explicit_logfire_parents_are_isolated_between_sessions() {
+        let (logfire, spans, _logs) = test_logfire();
+        let mut recorder = Recorder::new(Some(42));
+        for id in [1_u64, 2] {
+            let parent = SpanContext::new(
+                TraceId::from(u128::from(id)),
+                SpanId::from(id),
+                TraceFlags::SAMPLED,
+                true,
+                TraceState::default(),
+            );
+            recorder.set_adapter_context(TelemetryContext::for_logfire(logfire.clone()).with_parent(parent));
+            recorder.begin_turn(&request(pb::parent_request::Kind::Configure(pb::Configure::default())));
+            recorder.begin_turn(&request(pb::parent_request::Kind::Reset(pb::Reset {})));
+        }
+        let spans = spans.get_finished_spans().unwrap();
+        assert_eq!(spans.len(), 2);
+        for (span, id) in spans.iter().zip([1_u64, 2]) {
+            assert_eq!(span.name, "session {script_name}");
+            assert_eq!(span.span_context.trace_id(), TraceId::from(u128::from(id)));
+            assert_eq!(span.parent_span_id, SpanId::from(id));
+        }
+    }
+
+    /// An absent or invalid explicit parent keeps the caller's ambient span.
+    #[test]
+    fn invalid_explicit_logfire_parent_retains_ambient_parenting() {
+        let (logfire, spans, _logs) = test_logfire();
+        let _guard = set_local_logfire(logfire.clone());
+        let ambient = logfire::span!("ambient");
+        let ambient_context = ambient.context();
+        let _entered = ambient.enter();
+        let mut recorder = Recorder::new(Some(42));
+        recorder.set_adapter_context(TelemetryContext::for_logfire(logfire).with_parent(SpanContext::empty_context()));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Configure(pb::Configure::default())));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Reset(pb::Reset {})));
+        let spans = spans.get_finished_spans().unwrap();
+        let session = spans.iter().find(|s| s.name == "session {script_name}").unwrap();
+        assert_eq!(session.parent_span_id, ambient_context.span().span_context().span_id());
     }
 
     fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
