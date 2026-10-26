@@ -36,22 +36,29 @@ const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 /// Runs [`serve`] on a thread with [`WORKER_STACK_SIZE`] of stack and returns
 /// its exit code. A panic there has already written its `FatalError` frame in
 /// the panic hook, so it exits with 101 like an unwound main thread.
-pub(crate) fn run() -> ExitCode {
+///
+/// `prewarm_type_checker` selects [`Child::with_prewarmed_type_checker`].
+pub(crate) fn run(prewarm_type_checker: bool) -> ExitCode {
     thread::Builder::new()
         .name("monty-worker".to_owned())
         .stack_size(WORKER_STACK_SIZE)
-        .spawn(serve)
+        .spawn(move || serve(prewarm_type_checker))
         .expect("failed to spawn the worker thread")
         .join()
         .unwrap_or(ExitCode::from(101))
 }
 
 /// The child loop: one request in, its events out, until EOF, `Shutdown` or a fatal error.
-fn serve() -> ExitCode {
+fn serve(prewarm_type_checker: bool) -> ExitCode {
     install_panic_hook();
     let mut reader = FrameReader::new(io::stdin().lock());
-    let mut child = Child::default();
+    let mut child = if prewarm_type_checker {
+        Child::with_prewarmed_type_checker()
+    } else {
+        Child::default()
+    };
     let mut sink = StdoutSink;
+    child.warm_up();
 
     loop {
         match reader.read::<pb::ParentRequest>() {
@@ -59,7 +66,9 @@ fn serve() -> ExitCode {
                 let outcome = child.handle(request, &mut sink);
                 apply_memory_limit(&child);
                 match outcome {
-                    Ok(HandleOutcome::Continue) => {}
+                    // after the re-arm, so a `Reset` that dropped the checker has
+                    // lowered the baseline before the new one is added to it
+                    Ok(HandleOutcome::Continue) => child.warm_up(),
                     Ok(HandleOutcome::Shutdown) => return ExitCode::SUCCESS,
                     // the child emitted a FatalError (e.g. version skew) and cannot
                     // keep serving — exit non-zero so the parent sees a clean cause

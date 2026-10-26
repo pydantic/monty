@@ -263,9 +263,18 @@ generate-unicode-type: ## Regenerate the str character-property tables from the 
 check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
 	git diff --exit-code crates/monty/src/types/unicode_type_data.rs
 
+.PHONY: generate-type-check-warm-up
+generate-type-check-warm-up: ## Regenerate the type checker's warm-up snippet from the vendored builtins stub
+	uv run scripts/gen_type_check_warm_up.py
+
+.PHONY: check-type-check-warm-up
+check-type-check-warm-up: generate-type-check-warm-up ## Verify the checked-in type checker warm-up snippet matches the vendored stubs
+	git diff --exit-code crates/monty-type-checking/src/warm_up.py
+
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
+	uv run scripts/gen_type_check_warm_up.py
 	uv run ruff format
 	uv run ruff check --fix --fix-only --silent
 

@@ -153,6 +153,8 @@ see [snapshot security](../security.md#deserializing-snapshots).
 - **Worker recycling** — `max_checkouts_per_worker` replaces a worker after [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`](../api/rust/monty-pool.md#default_max_checkouts_per_worker) (1000) checkouts; `None` never recycles, and with `PoolConfig::subprocess` `Some(1)` gives every session a fresh process.
     Remote checkouts are single-use, so the setting does not apply to them.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
+- **Prewarmed type checker** — `prewarm_type_checker` has subprocess workers resolve the builtins between checkouts, ahead of
+    a session's first type check, at about 6 MiB per worker outside every session's `max_memory`.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
 usable.
