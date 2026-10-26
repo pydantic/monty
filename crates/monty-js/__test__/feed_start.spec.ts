@@ -615,30 +615,76 @@ test('partial manual resolution retains other automatic futures', async () => {
   }
 })
 
-test.each([{ pendingIds: [] }, { pendingIds: [999] }])(
-  'invalid pending future ids still invalidate the session: $pendingIds',
-  async ({ pendingIds }) => {
-    const session = await pool().checkout()
-    try {
-      const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(), go())\nasyncio.run(main())'
-      let snap = await session.feedStart(code, { externalLookup: { go: async () => 5 } })
-      while (snap instanceof FunctionSnapshot) snap = await snap.resumeAuto()
-      t.true(snap instanceof FutureSnapshot)
-      const futures = snap as FutureSnapshot
-      futures.pendingCallIds.splice(0, futures.pendingCallIds.length, ...pendingIds)
-      const error = await t.throwsAsync(() => futures.resumeAuto(), {
-        instanceOf: ProtocolError,
-        message: pendingIds.length
-          ? 'worker reported unknown pending call id 999'
-          : 'worker reported ResolveFutures with no pending call ids',
-      })
-      t.throws(() => futures.resumeAuto(), { message: 'snapshot has already been resumed' })
-      t.is(await t.throwsAsync(() => session.feedRun('1 + 1')), error)
-    } finally {
-      await session.close()
+test('empty pending future ids still invalidate the session', async () => {
+  const session = await pool().checkout()
+  try {
+    const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(), go())\nasyncio.run(main())'
+    let snap = await session.feedStart(code, { externalLookup: { go: async () => 5 } })
+    while (snap instanceof FunctionSnapshot) snap = await snap.resumeAuto()
+    t.true(snap instanceof FutureSnapshot)
+    const futures = snap as FutureSnapshot
+    futures.pendingCallIds.length = 0
+    const error = await t.throwsAsync(() => futures.resumeAuto(), {
+      instanceOf: ProtocolError,
+      message: 'worker reported ResolveFutures with no pending call ids',
+    })
+    t.throws(() => futures.resumeAuto(), { message: 'snapshot has already been resumed' })
+    t.is(await t.throwsAsync(() => session.feedRun('1 + 1')), error)
+  } finally {
+    await session.close()
+  }
+})
+
+test('only untracked pending future ids reject resumeAuto without consuming the snapshot', async () => {
+  const session = await pool().checkout()
+  try {
+    const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(), go())\nasyncio.run(main())'
+    let snap = await session.feedStart(code, { externalLookup: { go: async () => 5 } })
+    while (snap instanceof FunctionSnapshot) snap = await snap.resumeAuto()
+    t.true(snap instanceof FutureSnapshot)
+    const futures = snap as FutureSnapshot
+    const pendingIds = [...futures.pendingCallIds]
+    futures.pendingCallIds.splice(0, futures.pendingCallIds.length, 999)
+    await t.throwsAsync(() => futures.resumeAuto(), {
+      message: 'no pending host promises to resume; use resume([...])',
+    })
+    futures.pendingCallIds.splice(0, futures.pendingCallIds.length, ...pendingIds)
+    t.deepEqual(((await futures.resumeAuto()) as MontyComplete).output, [5, 5])
+    t.is(await session.feedRun('1 + 1'), 2)
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto delivers automatic futures and leaves manual ones pending', async () => {
+  const session = await pool().checkout()
+  try {
+    const code =
+      'import asyncio\nasync def main():\n    return await asyncio.gather(go(), later())\nasyncio.run(main())'
+    let snap = await session.feedStart(code, { externalLookup: { go: async () => 5 } })
+    let laterId: number | undefined
+    while (snap instanceof FunctionSnapshot) {
+      if (snap.functionName === 'later') {
+        laterId = snap.callId
+        snap = await snap.resumeFuture()
+      } else {
+        snap = await snap.resumeAuto()
+      }
     }
-  },
-)
+    const mixed = snap as FutureSnapshot
+    t.is(mixed.pendingCallIds.length, 2)
+    const manual = (await mixed.resumeAuto()) as FutureSnapshot
+    t.true(manual instanceof FutureSnapshot)
+    t.deepEqual(manual.pendingCallIds, [laterId])
+    await t.throwsAsync(() => manual.resumeAuto(), {
+      message: 'no pending host promises to resume; use resume([...])',
+    })
+    t.deepEqual(((await manual.resume([{ callId: laterId!, value: 42 }])) as MontyComplete).output, [5, 42])
+    t.is(await session.feedRun('1 + 1'), 2)
+  } finally {
+    await session.close()
+  }
+})
 
 test('a rejected host promise still consumes its future snapshot', async () => {
   const session = await pool().checkout()

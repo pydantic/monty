@@ -5,11 +5,17 @@
 //! System sleeps use the same scheduling with tokio timers.
 
 use std::{
+    collections::VecDeque,
     future::{Future, ready},
     pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
+use ahash::AHashMap;
 use futures_util::future::try_join_all;
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
@@ -17,6 +23,7 @@ use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctio
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::{
+    runtime::Handle,
     task::{JoinError, JoinSet},
     time::sleep,
 };
@@ -101,16 +108,16 @@ pub(crate) type AnswerFuture = Pin<Box<dyn Future<Output = ExtFunctionResult> + 
 type ModuleFuture = Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send>>;
 
 /// Converts the coroutine a host callback answered `call_id` with, spawning it
-/// into `join_set` or handing it back to await outside the callback context.
+/// into `tasks` or handing it back to await outside the callback context.
 pub(crate) fn dispatch_coroutine(
     coro: Py<PyAny>,
     call_id: u32,
     mode: CoroutineMode,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    tasks: &mut FutureTasks,
     instances: &InstanceStore,
 ) -> PyResult<Dispatched<AnswerFuture>> {
     let future = coroutine_future(coro, instances)?;
-    Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
+    Ok(dispatch_future(Box::pin(future), call_id, mode, tasks))
 }
 
 /// Schedules module factories for the caller to await; see [`PendingModule`].
@@ -161,7 +168,7 @@ impl SettledModule {
         py: Python<'_>,
         call_id: u32,
         mode: CoroutineMode,
-        join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+        tasks: &mut FutureTasks,
         names: &HostNames,
         instances: &InstanceStore,
     ) -> PyResult<Dispatched<AnswerFuture>> {
@@ -170,7 +177,7 @@ impl SettledModule {
             .map(|modules| modules.into_iter().map(|module| module.into_bound(py)).collect());
         match ExternalLookup::new(py, names, instances).finish_after_module(&self.names, modules, &self.then) {
             Staged::Done(result) => Ok(Dispatched::AsValue(Box::pin(ready(result)))),
-            Staged::Coroutine(coro) => dispatch_coroutine(coro, call_id, mode, join_set, instances),
+            Staged::Coroutine(coro) => dispatch_coroutine(coro, call_id, mode, tasks, instances),
         }
     }
 }
@@ -180,13 +187,13 @@ pub(crate) fn dispatch_system_sleep(
     delay: Duration,
     call_id: u32,
     mode: CoroutineMode,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    tasks: &mut FutureTasks,
 ) -> Dispatched<AnswerFuture> {
     let wait = async move {
         sleep(delay).await;
         ExtFunctionResult::Return(MontyObject::none())
     };
-    dispatch_future(Box::pin(wait), call_id, mode, join_set)
+    dispatch_future(Box::pin(wait), call_id, mode, tasks)
 }
 
 /// Spawns deferred answers; returns other futures for awaiting outside the callback context.
@@ -194,12 +201,12 @@ fn dispatch_future(
     future: AnswerFuture,
     call_id: u32,
     mode: CoroutineMode,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    tasks: &mut FutureTasks,
 ) -> Dispatched<AnswerFuture> {
     match mode {
         CoroutineMode::Eager => Dispatched::Eager(future),
         CoroutineMode::Future => {
-            join_set.spawn(async move { (call_id, future.await) });
+            tasks.spawn(call_id, future);
             Dispatched::Done(ResumeValue::Future)
         }
         CoroutineMode::AsValue => Dispatched::AsValue(future),
@@ -246,29 +253,106 @@ pub(crate) enum Dispatched<F> {
     Module(PendingModule),
 }
 
-/// Waits for at least one `JoinSet` task to complete, then drains any other
-/// immediately-ready results to batch them into one worker resume. Delivering
-/// any completed task is sound: the sandbox resolves futures by `call_id` and
-/// re-emits `ResolveFutures` if it still needs a different one.
-pub(crate) async fn wait_for_futures(
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
-) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
-    let mut results = Vec::new();
+/// Coroutine externals spawned to settle later, with the call ids they still owe the sandbox.
+///
+/// A task whose id is [`retire`](Self::retire)d, because the caller answered it by hand, keeps running
+/// (cancelling would interrupt the host coroutine), but its result is dropped when it settles, so a stale
+/// answer never reaches the sandbox nor stays held by the set.
+#[derive(Default)]
+pub(crate) struct FutureTasks {
+    join_set: JoinSet<Settled>,
+    /// Ids spawned and neither delivered nor retired, each with the flag its task checks before keeping its result.
+    owed: AHashMap<u32, Arc<AtomicBool>>,
+    /// Owed results (or task failures) [`retire`](Self::retire) joined early, for the next [`wait`](Self::wait).
+    joined: VecDeque<Result<Settled, JoinError>>,
+}
 
-    // Wait for at least one task to complete
-    let first = join_set
-        .join_next()
-        .await
-        .ok_or_else(|| PyRuntimeError::new_err("No pending async tasks but ResolveFutures requested"))?
-        .map_err(join_error_to_py)?;
-    results.push(first);
+/// A task's call id and its result, `None` if the id was retired before it settled.
+type Settled = (u32, Option<ExtFunctionResult>);
 
-    // Drain any other immediately-ready results
-    while let Some(result) = join_set.try_join_next() {
-        results.push(result.map_err(join_error_to_py)?);
+impl FutureTasks {
+    /// Spawns `future` on the current runtime as the answer for `call_id`.
+    pub(crate) fn spawn(&mut self, call_id: u32, future: impl Future<Output = ExtFunctionResult> + Send + 'static) {
+        let task = self.track(call_id, future);
+        self.join_set.spawn(task);
     }
 
-    Ok(results)
+    /// As [`spawn`](Self::spawn), on `handle`'s runtime, for callers outside a runtime.
+    pub(crate) fn spawn_on(
+        &mut self,
+        call_id: u32,
+        future: impl Future<Output = ExtFunctionResult> + Send + 'static,
+        handle: &Handle,
+    ) {
+        let task = self.track(call_id, future);
+        self.join_set.spawn_on(task, handle);
+    }
+
+    /// Whether no spawned task still owes the sandbox an answer.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.owed.is_empty()
+    }
+
+    /// Whether a spawned task still owes the answer for `call_id`.
+    pub(crate) fn owes(&self, call_id: u32) -> bool {
+        self.owed.contains_key(&call_id)
+    }
+
+    /// Stops owing `call_ids`, which the caller answered by hand, and frees any of their results already settled.
+    pub(crate) fn retire(&mut self, call_ids: impl IntoIterator<Item = u32>) {
+        for call_id in call_ids {
+            if let Some(retired) = self.owed.remove(&call_id) {
+                retired.store(true, Ordering::Relaxed);
+            }
+        }
+        // A settled task's result stays in the set until joined: join now, keeping only what is still owed.
+        while let Some(joined) = self.join_set.try_join_next() {
+            if joined.as_ref().map_or(true, |(call_id, _)| self.owes(*call_id)) {
+                self.joined.push_back(joined);
+            }
+        }
+    }
+
+    /// Waits for at least one owed task to complete, then drains any other
+    /// immediately-ready results to batch them into one worker resume. Delivering
+    /// any owed result is sound: the sandbox resolves futures by `call_id` and
+    /// re-emits `ResolveFutures` if it still needs a different one.
+    pub(crate) async fn wait(&mut self) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
+        let mut results = Vec::new();
+        loop {
+            let joined =
+                match self.joined.pop_front() {
+                    Some(joined) => joined,
+                    None if results.is_empty() => self.join_set.join_next().await.ok_or_else(|| {
+                        PyRuntimeError::new_err("No pending async tasks but ResolveFutures requested")
+                    })?,
+                    None => match self.join_set.try_join_next() {
+                        Some(joined) => joined,
+                        None => break,
+                    },
+                };
+            if let (call_id, Some(result)) = joined.map_err(join_error_to_py)?
+                && self.owed.remove(&call_id).is_some()
+            {
+                results.push((call_id, result));
+            }
+        }
+        Ok(results)
+    }
+
+    /// Registers `call_id` as owed and wraps `future` to drop its result if the id is retired first.
+    fn track(
+        &mut self,
+        call_id: u32,
+        future: impl Future<Output = ExtFunctionResult> + Send + 'static,
+    ) -> impl Future<Output = Settled> + Send + 'static {
+        let retired = Arc::new(AtomicBool::new(false));
+        self.owed.insert(call_id, Arc::clone(&retired));
+        async move {
+            let result = future.await;
+            (call_id, (!retired.load(Ordering::Relaxed)).then_some(result))
+        }
+    }
 }
 
 /// Converts a `tokio::task::JoinError` to a `PyErr`.
