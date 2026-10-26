@@ -2275,6 +2275,7 @@ async fn workers_are_recycled_after_max_checkouts() {
 async fn recycled_workers_are_replaced_in_the_background() {
     let mut config = config();
     config.min_processes = 2;
+    config.max_processes = 2;
     config.max_checkouts_per_worker = Some(1);
     let pool = Pool::new(config).await.unwrap();
 

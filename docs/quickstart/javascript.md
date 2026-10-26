@@ -435,7 +435,8 @@ Differences from the native path:
     Startup has a separate 30-second deadline; request deadlines start after the worker is ready.
 - **Browser `maxProcesses` defaults to `navigator.hardwareConcurrency`**, or 4 when unavailable; Node uses its CPU count.
 - **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
-    is already waiting for it, so the pool can fall below `minProcesses` and the next checkout spawns a cold worker.
+    is already waiting for it, so the pool can fall below `minProcesses` and a checkout that finds no idle worker
+    spawns a cold one.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;

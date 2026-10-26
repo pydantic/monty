@@ -107,8 +107,8 @@ Invalid snapshots have no correctness or availability guarantees.
   worker as untrusted: wire decoding validates everything and never panics, and a worker
   that violates the protocol is discarded.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
-  the impact of any slow leak. `Some(1)` runs every session in a fresh process; with the
-  subprocess transport and `min_processes > 0`, the background refill has usually spawned it
+  the impact of any slow leak. With the subprocess transport, `Some(1)` runs every session in
+  a fresh process, which with `min_processes > 0` the background refill has usually spawned
   before the checkout asks.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator

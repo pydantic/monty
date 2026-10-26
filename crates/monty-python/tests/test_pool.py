@@ -139,7 +139,7 @@ def test_worker_pid_mid_turn_does_not_deadlock(pool: Monty):
 def test_one_checkout_per_worker_gets_a_fresh_process_each_time():
     # every session gets a fresh process; the background refill itself is covered by monty-pool's tests
     pids: set[int | None] = set()
-    with Monty(min_processes=2, max_checkouts_per_worker=1) as pool:
+    with Monty(min_processes=2, max_processes=2, max_checkouts_per_worker=1) as pool:
         for i in range(4):
             with pool.checkout() as session:
                 pids.add(session.worker_pid)
