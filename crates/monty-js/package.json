@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "type": "module",
   "description": "Python sandbox running in crash-isolated subprocess workers",
   "main": "dist/index.js",
