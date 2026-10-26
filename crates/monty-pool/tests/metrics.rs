@@ -41,7 +41,7 @@ use opentelemetry_sdk::{
     trace::SpanData,
 };
 use prost::Message;
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 
 use crate::common::wait_for_idle;
 
@@ -397,20 +397,56 @@ async fn failed_refills_back_off() {
     let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     fs::remove_file(&binary).expect("remove monty");
     checkout.finish().await.expect("finish");
+    wait_until("two failed refills", || terminations(&capture, "refill_failed") >= 2).await;
+    // the next delays are at least 200 ms and 400 ms, so a second allows two more
     sleep(Duration::from_secs(1)).await;
-    // 100 ms doubling: failures at about 0, 0.1, 0.3 and 0.7 s
-    let failures = capture
-        .last("monty.pool.worker.terminated", "reason", "refill_failed")
-        .value;
-    assert!(
-        matches!(failures, Value::U64(2..=5)),
-        "expected a handful of backed-off refills, got {failures:?}"
-    );
+    let failures = terminations(&capture, "refill_failed");
+    assert!(failures <= 5, "expected backed-off refills, got {failures}");
     let err = pool.checkout(&ReplConfig::default()).await.err();
     assert!(matches!(err, Some(PoolError::Spawn(_))), "{err:?}");
 
     fs::copy(monty_binary(), &binary).expect("restore monty");
     wait_for_idle(&pool, 1).await;
+}
+
+/// The refill a recycle starts is killed by `close`, whether it lands before or after it.
+#[tokio::test]
+async fn close_stops_refilling() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    // the termination is counted just before the live gauge drops
+    wait_until("the refill to be closed", || {
+        terminations(&capture, "closed") == 1 && capture.total("monty.pool.workers.live") == 0
+    })
+    .await;
+    assert_eq!(pool.idle_workers(), 0);
+}
+
+/// How many workers have terminated with `reason`.
+fn terminations(capture: &Capture, reason: &str) -> u64 {
+    capture
+        .named("monty.pool.worker.terminated")
+        .into_iter()
+        .rfind(|recorded| recorded.attributes.get("reason").is_some_and(|found| found == reason))
+        .map_or(0, |recorded| match recorded.value {
+            Value::U64(count) => count,
+            other => panic!("expected a counter, got {other:?}"),
+        })
+}
+
+/// Polls `done` until it holds, panicking after a few seconds: background refills land asynchronously.
+async fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// A worker that dies during a turn: the teardown path counts its termination

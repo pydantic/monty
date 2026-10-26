@@ -93,9 +93,9 @@ pub struct PoolConfig {
     /// that whole limit plus this, the turn clock starting at zero.
     pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
-    /// bound the impact of any slow leak in a long-lived child. `Some(1)` with
-    /// `min_processes > 0` gives every session a fresh process that was
-    /// spawned before it asked — the setting for mutually untrusted callers.
+    /// bound the impact of any slow leak in a long-lived child. `Some(1)` gives
+    /// every session a fresh process — the setting for mutually untrusted
+    /// callers — usually spawned before it asked when `min_processes > 0`.
     pub max_checkouts_per_worker: Option<u32>,
     /// Resume a session transparently when a relay that stores sessions answers
     /// a request with `Shutdown`: the checkout redials, reloads the state the

@@ -611,8 +611,8 @@ class Monty:
                 resolved from the `MONTY_BIN` environment variable, the
                 environment's scripts directory (where the `pydantic-monty-runtime`
                 dependency installs it), or `PATH`.
-            min_processes: Workers spawned eagerly, and replaced in the background
-                whenever one is recycled, crashes or is discarded.
+            min_processes: Workers spawned eagerly; while the pool is open, one that
+                is recycled, crashes or is discarded is replaced in the background.
             max_processes: Cap on live workers (defaults to the CPU count);
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker

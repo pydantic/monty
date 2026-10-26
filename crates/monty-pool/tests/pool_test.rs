@@ -2364,20 +2364,6 @@ async fn reuse_pool_does_not_grow_past_its_load() {
     assert_eq!(pool.idle_workers(), 3);
 }
 
-/// A refill landing after `close` kills its worker instead of pooling it.
-#[tokio::test]
-async fn close_stops_refilling() {
-    let mut config = config();
-    config.max_checkouts_per_worker = Some(1);
-    let pool = Pool::new(config).await.unwrap();
-
-    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
-    session.finish().await.unwrap();
-    pool.close().await;
-    sleep(Duration::from_millis(200)).await;
-    assert_eq!(pool.idle_workers(), 0);
-}
-
 #[tokio::test]
 async fn concurrent_checkouts_run_in_parallel() {
     let mut config = config();

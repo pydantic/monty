@@ -343,7 +343,7 @@ import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
-  minProcesses: 1, // workers spawned up front and kept warm
+  minProcesses: 1, // workers spawned up front, and replaced in the background as they leave
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
@@ -434,6 +434,8 @@ Differences from the native path:
 - **Workers are required.** There is no in-process fallback; see [isolation guarantees](../security.md#crash-isolation).
     Startup has a separate 30-second deadline; request deadlines start after the worker is ready.
 - **Browser `maxProcesses` defaults to `navigator.hardwareConcurrency`**, or 4 when unavailable; Node uses its CPU count.
+- **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
+    is already waiting for it, so the pool can fall below `minProcesses` and the next checkout spawns a cold worker.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;

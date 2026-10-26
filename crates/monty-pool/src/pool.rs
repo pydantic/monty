@@ -470,6 +470,11 @@ async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, id: u64) {
                 pool.record_worker_delta(0, 1);
             }
         }
+        // a closed pool will not refill again, so it must not arm a retry
+        Err(_) if lock_ignore_poison(&pool.state).closed => {
+            pool.count_termination("closed");
+            pool.release_capacity();
+        }
         Err(_) => pool.refill_failed(),
     }
 }

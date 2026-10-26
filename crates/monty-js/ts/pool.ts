@@ -24,8 +24,9 @@ export interface MontyOptions {
   /** Path to the `monty` binary; resolved automatically when omitted. */
   binaryPath?: string
   /**
-   * Workers spawned up front by `create()` and replaced in the background
-   * whenever one is recycled, crashes or is discarded (default 1).
+   * Workers spawned up front by `create()`, kept as a floor on live workers
+   * by background refills while the pool is open (default 1). The wasm pool
+   * only prewarms: it replaces a departed worker only for a waiting checkout.
    */
   minProcesses?: number
   /** Worker cap; checkouts beyond it wait (default: CPU count). */
