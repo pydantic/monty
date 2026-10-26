@@ -9,7 +9,7 @@ use monty_proto::{
     BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameReader, WireArena, WireFunctionCall, WireIndexes, WireNamedTuple,
     WireNodePairs,
     budgeted_prost::encoding,
-    decode_budget_remaining, decode_frame, pb,
+    decode_budget_remaining, decode_frame, decode_frame_with_budget, pb,
     test_util::{push_reserved, reserve_with_overhead},
     with_decode_budget,
 };
@@ -879,4 +879,13 @@ fn container_ids_are_charged() {
 #[test]
 fn named_tuple_field_names_are_charged() {
     assert_snapshot!(decode(&nearly_full_arena(Some(named_tuple_node(8)))).unwrap_err(), @"failed to decode Protobuf message: MontyNode.kind: frame exceeds decode memory budget");
+}
+
+/// A rejected custom-budget frame leaves the default budget intact.
+#[test]
+fn caller_can_lower_the_frame_budget_without_affecting_the_next_decode() {
+    let wire = repeated_field(1, WireType::LengthDelimited, &[], 1);
+    assert!(decode_frame_with_budget::<pb::Print>(&wire, 0).is_err());
+    assert!(decode_frame::<pb::Print>(&wire).is_ok());
+    assert_eq!(decode_budget_remaining(), None);
 }

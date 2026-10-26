@@ -3271,3 +3271,25 @@ async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
     assert_snapshot!(diagnostics, @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
     session.finish().await.unwrap();
 }
+
+/// An oversized result discards the worker; the next checkout still succeeds.
+#[tokio::test]
+async fn a_host_decode_budget_rejects_a_subprocess_result() {
+    let mut config = config();
+    config.max_decode_bytes = 4096;
+    let pool = Pool::new(config).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let result = session.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(result), MontyObject::int(42));
+    let error = session
+        .feed("[0] * 100_000", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PoolError::Protocol(_)));
+    assert!(session.worker_id().is_none());
+    drop(session);
+    let mut next = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let result = next.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(result), MontyObject::int(42));
+    next.finish().await.unwrap();
+}

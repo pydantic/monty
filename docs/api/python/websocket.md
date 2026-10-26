@@ -72,6 +72,14 @@ Those workers also install PEP 723 inline dependencies before running a feed.
 A Monty sandbox worker rejects non-empty installation requests with `MontyRuntimeError` and ignores PEP 723 comments.
 `install_dependencies([])` is a no-op on either worker.
 
+## Host decode budget
+
+`AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation
+budget for each decoded response. Values above 1 GiB do not raise the ceiling.
+The budget excludes wire buffers and Python conversion, and does not change
+sandbox memory limits. Exhaustion ends the session with a protocol error;
+the client does not replay the request.
+
 ## API
 
 ::: pydantic_monty

@@ -38,6 +38,14 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+## Host decode budget
+
+`AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation
+budget for each decoded response. Values above 1 GiB do not raise the ceiling.
+The budget excludes wire buffers and Python conversion, and does not change
+sandbox memory limits. Exhaustion ends the session with a protocol error;
+the client does not replay the request.
+
 ## Usage with a local monty worker
 
 `AsyncFutureSnapshot.resume_auto()` raises without consuming the snapshot when no host coroutines remain to await,

@@ -516,3 +516,13 @@ async def test_module_stubs_over_websocket(ws_url: str):
     async with AsyncMontyWebsocket(ws_url) as pool:
         async with pool.checkout(type_check=True, external_modules=modules) as session:
             assert await session.feed_run('import tools\ntools.add(1, 2)') == snapshot(3)
+
+
+async def test_host_decode_budget_rejects_large_results(ws_url: str):
+    async with AsyncMontyWebsocket(ws_url, max_decode_bytes=4096) as pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run('6 * 7') == snapshot(42)
+            with pytest.raises(RuntimeError, match='frame exceeds decode memory budget'):
+                await session.feed_run('[0] * 100_000')
+        async with pool.checkout() as session:
+            assert await session.feed_run('6 * 7') == snapshot(42)

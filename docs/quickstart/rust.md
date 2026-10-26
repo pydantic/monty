@@ -170,6 +170,13 @@ Those workers are single-use, never prewarmed or returned to the pool, and isola
 responsibility.
 See [the security model](../security.md#remote-workers) before using it.
 
+### Host decode budget
+
+`PoolConfig::max_decode_bytes` can lower the default 1 GiB allocation budget for
+each response from a subprocess or WebSocket worker. Values above 1 GiB do not
+raise the ceiling. The budget excludes wire buffers and host-language conversion.
+Exhaustion discards the worker without replaying the request.
+
 ## The in-process interpreter
 
 [`MontyRun`](../api/rust/monty.md#montyrun) parses and compiles code once; `run` executes it with input values and returns the value of the final

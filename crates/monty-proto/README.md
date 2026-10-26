@@ -78,6 +78,7 @@ and nothing in this crate panics on malformed wire data.
 
 Decode protocol types through `decode_frame` or `FrameReader::read`.
 These functions manage the per-frame allocation budget automatically.
+`decode_frame_with_budget` lets a host choose a smaller per-frame ceiling.
 Direct `Message::decode` calls on these types fail if they allocate payload storage without a frame budget.
 
 Frames are capped at 256 MiB, with a separate fixed 1 GiB budget for cumulative decoded allocation requests.

@@ -30,7 +30,10 @@ use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_into, encode_to_capped_vec, pb};
+use monty_proto::{
+    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, decode_frame_with_budget, encode_framed_into,
+    encode_to_capped_vec, pb,
+};
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -63,6 +66,7 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// worker so `recv` is cancel-safe (see the module docs).
 pub(crate) struct Worker {
     kind: WorkerKind,
+    max_decode_bytes: usize,
     /// Pool-assigned generation, independent of PID reuse.
     pub(crate) id: u64,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
@@ -165,6 +169,10 @@ impl Worker {
                 .await
             }
         };
+        let worker = worker.map(|mut worker| {
+            worker.max_decode_bytes = config.max_decode_bytes;
+            worker
+        });
         #[cfg(feature = "telemetry")]
         let worker = worker.map(|mut worker| {
             worker.metrics = config
@@ -207,6 +215,7 @@ impl Worker {
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         Ok(Self {
+            max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             id: 0,
             kind: WorkerKind::Subprocess(Box::new(SubprocessWorker {
                 child,
@@ -267,6 +276,7 @@ impl Worker {
         let (tx, events) = mpsc::channel(WS_EVENT_CHANNEL_DEPTH);
         let reader = tokio::spawn(read_ws_events(read_half, tx));
         Ok(Self {
+            max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             id: 0,
             kind: WorkerKind::WebSocket(Box::new(WebSocketWorker {
                 sink: Some(sink),
@@ -372,7 +382,7 @@ impl Worker {
     /// deadline.
     pub(crate) async fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
         let (event, len) = match &mut self.kind {
-            WorkerKind::Subprocess(w) => match w.recv.recv().await? {
+            WorkerKind::Subprocess(w) => match w.recv.recv(self.max_decode_bytes).await? {
                 Some(framed) => Ok(framed),
                 None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
             },
@@ -384,7 +394,7 @@ impl Worker {
                     return Err(FrameError::Truncated);
                 }
                 match w.events.recv().await {
-                    Some(Ok(data)) => decode_event(&data).map(|event| (event, data.len())),
+                    Some(Ok(data)) => decode_event(&data, self.max_decode_bytes).map(|event| (event, data.len())),
                     Some(Err(err)) => Err(err),
                     None => Err(FrameError::Truncated),
                 }
@@ -524,7 +534,7 @@ impl FrameRecv {
     /// enforcing [`MAX_FRAME_LEN`] before growing the buffer to the announced
     /// size. `Ok(None)` on EOF at a frame boundary — the peer closed between
     /// messages; EOF inside a frame is [`FrameError::Truncated`].
-    async fn recv(&mut self) -> Result<Option<(pb::ChildEvent, usize)>, FrameError> {
+    async fn recv(&mut self, max_decode_bytes: usize) -> Result<Option<(pb::ChildEvent, usize)>, FrameError> {
         // move leftover bytes from a previous coalesced read to the front so
         // the parse below always works from offset 0
         if self.consumed > 0 {
@@ -543,7 +553,7 @@ impl FrameRecv {
                 }
                 let end = 4 + len as usize;
                 if self.filled >= end {
-                    let event = decode_event(&self.buf[4..end])?;
+                    let event = decode_event(&self.buf[4..end], max_decode_bytes)?;
                     self.consumed = end;
                     // a fully drained oversize buffer is dropped rather than
                     // pinned for the worker's lifetime
@@ -584,13 +594,13 @@ impl FrameRecv {
 /// the bytes (no copy), can't outlive a cancelled turn (unlike
 /// `spawn_blocking`), and the runtime keeps its worker count. On a
 /// current-thread runtime, where `block_in_place` panics, decode is inline.
-fn decode_event(body: &[u8]) -> Result<pb::ChildEvent, FrameError> {
+fn decode_event(body: &[u8], max_decode_bytes: usize) -> Result<pb::ChildEvent, FrameError> {
     // each decode is one synchronous call, so the thread-local decode budgets
-    // (reset by every `decode_frame`) cannot interleave
+    // (scoped by `decode_frame_with_budget`) cannot interleave
     if body.len() < DECODE_OFFLOAD_MIN || Handle::current().runtime_flavor() != RuntimeFlavor::MultiThread {
-        decode_frame(body)
+        decode_frame_with_budget(body, max_decode_bytes)
     } else {
-        block_in_place(|| decode_frame(body))
+        block_in_place(|| decode_frame_with_budget(body, max_decode_bytes))
     }
 }
 

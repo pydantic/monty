@@ -106,6 +106,9 @@ Invalid snapshots have no correctness or availability guarantees.
 - **Untrusted children** — the parent treats every frame from a (possibly compromised)
   worker as untrusted: wire decoding validates everything and never panics, and a worker
   that violates the protocol is discarded.
+  `PoolConfig::max_decode_bytes` can lower the default 1 GiB per-frame decode
+  budget. This excludes wire buffers and host-language conversion; it is not a
+  process-memory limit. Exhaustion discards the worker without replaying the request.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
   the impact of any slow leak. With the subprocess transport, `Some(1)` runs every session in
   a fresh process, which with `min_processes > 0` the background refill has usually spawned

@@ -690,6 +690,7 @@ impl PyAsyncMontyWebsocket {
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
         auto_resume = true,
+        max_decode_bytes = None,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -702,20 +703,25 @@ impl PyAsyncMontyWebsocket {
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
         auto_resume: bool,
+        max_decode_bytes: Option<usize>,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
+        let mut config = parse_websocket_config(
+            url,
+            max_processes,
+            checkout_timeout,
+            request_timeout,
+            GraceArgs {
+                feed: feed_duration_limit_grace,
+                turn: turn_duration_limit_grace,
+            },
+            auto_resume,
+        )?;
+        if let Some(bytes) = max_decode_bytes {
+            config.max_decode_bytes = bytes;
+        }
         Ok(Self {
-            config: parse_websocket_config(
-                url,
-                max_processes,
-                checkout_timeout,
-                request_timeout,
-                GraceArgs {
-                    feed: feed_duration_limit_grace,
-                    turn: turn_duration_limit_grace,
-                },
-                auto_resume,
-            )?,
+            config,
             pool: Arc::new(Mutex::new(None)),
             connect_headers,
         })

@@ -1036,6 +1036,7 @@ class AsyncMontyWebsocket:
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
         auto_resume: bool = True,
+        max_decode_bytes: int | None = None,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -1060,6 +1061,10 @@ class AsyncMontyWebsocket:
                 10.0 is often too low for it — a real `uv pip install` can exceed
                 it. Raise `request_timeout` (or pass `None`) when installing
                 dependencies over the WebSocket transport.
+            max_decode_bytes: Per-frame host allocation budget in bytes. `None`
+                keeps the protocol's 1 GiB ceiling. Larger values cannot raise
+                that ceiling. Excludes wire buffers and Python conversion.
+                Exhaustion ends the session with a protocol error without replay.
             connect_headers: Called once per session, as it is entered and before
                 any wait for pool capacity, to produce extra `str` to `str`
                 headers for that connection's WebSocket upgrade request — e.g. a
