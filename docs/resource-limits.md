@@ -73,6 +73,11 @@ durations are `Duration`s named `max_feed_duration`, `max_turn_duration` and `ma
 `max_memory` budgets the bytes a worker requests from its global allocator, counted from the leanest the worker process
 has been.
 Everything the session allocates counts against it, including retained compiled code and interpreter internals.
+That includes the type checker: the first check in a type-checked session builds its database, about 7 MiB, most of
+it the resolved builtins.
+A Rust pool with [`PoolConfig::warm_type_checker`](api/rust/monty-pool.md#poolconfig) builds a checker with the builtins
+resolved, about 6 MiB, between checkouts and charges it to the worker instead, so only what the session's own checks add
+counts.
 It is not a ceiling on process RSS.
 Allocations are counted as requested, so per-allocation overhead and fragmentation sit outside the count, as does memory
 obtained without the allocator: thread stacks, the binary's mapped image, a direct `mmap`.

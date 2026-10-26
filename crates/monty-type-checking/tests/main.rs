@@ -228,6 +228,21 @@ fn same_path_rerun_does_not_see_previous_source() {
 /// Security-critical: checkers hold no shared state, so concurrent sessions
 /// (workers in one process, or just several threads) must never observe each
 /// other's files. Guards against a process-wide cache creeping back in.
+/// The warm-up snippet must stay clean against the stubs, and leave later checks
+/// reporting exactly what a fresh checker reports.
+#[test]
+fn warm_up_leaves_diagnostics_unchanged() {
+    let mut checker = TypeChecker::default();
+    checker.warm_up().unwrap();
+
+    let code = include_str!("bad_types.py");
+    let warm = checker
+        .run(&SourceFile::new(code, "bad_types.py"), None, concise())
+        .unwrap()
+        .map(|diagnostics| diagnostics.to_string());
+    assert_eq!(warm, check_concise(code, "bad_types.py"));
+}
+
 #[test]
 fn concurrent_checkers_stay_isolated() {
     thread::scope(|scope| {

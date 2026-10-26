@@ -261,6 +261,8 @@ the flag is `--type-check-format`.
     `.display()`.
 - **Rust**: [`ReplConfig`](api/rust/monty-pool.md#replconfig) on `monty-pool`, or the [`monty-type-checking`](https://crates.io/crates/monty-type-checking)
     crate directly.
+    [`PoolConfig::warm_type_checker`](api/rust/monty-pool.md#poolconfig) has workers resolve the builtins between
+    checkouts, which cuts most of a session's first check, at about 6 MiB per worker.
 - **CLI**: `monty --type-check file.py`.
     See [command line](cli.md).
 

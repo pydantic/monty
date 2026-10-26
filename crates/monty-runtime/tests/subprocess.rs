@@ -61,18 +61,24 @@ impl ChildProc {
     /// Spawns the child with its stderr inherited, so diagnostics show up in
     /// the test output.
     fn spawn() -> Self {
-        Self::spawn_with(Stdio::inherit())
+        Self::spawn_with(Stdio::inherit(), &[])
+    }
+
+    /// Spawns a child that builds its type checker while idle (`--warm-type-checker`).
+    fn spawn_warm() -> Self {
+        Self::spawn_with(Stdio::inherit(), &["--warm-type-checker"])
     }
 
     /// Spawns the child with its stderr captured, for tests asserting on the
     /// diagnostics it prints before dying (see [`Self::reap_with_stderr`]).
     fn spawn_stderr_piped() -> Self {
-        Self::spawn_with(Stdio::piped())
+        Self::spawn_with(Stdio::piped(), &[])
     }
 
-    fn spawn_with(stderr: Stdio) -> Self {
+    fn spawn_with(stderr: Stdio, args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_monty"))
             .arg("subprocess")
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
@@ -2580,7 +2586,18 @@ fn type_check_format_selects_the_rendering() {
 
 #[test]
 fn reset_releases_type_checker_memory() {
-    let mut child = ChildProc::spawn();
+    assert_reset_releases_type_checker_memory(ChildProc::spawn());
+}
+
+/// The warm checker is charged to the worker baseline, and rebuilt after each
+/// type-checked session, without ever counting against a session's `max_memory`.
+#[test]
+fn reset_releases_warm_type_checker_memory() {
+    assert_reset_releases_type_checker_memory(ChildProc::spawn_warm());
+}
+
+/// Alternates small-budget sessions with a type-checked one in a single child.
+fn assert_reset_releases_type_checker_memory(mut child: ChildProc) {
     let program = format!("def f(a: int, b: int) -> None:\n    pass\n{}", "f(1, 2)\n".repeat(900));
 
     for _ in 0..3 {
@@ -2623,6 +2640,41 @@ fn reset_releases_type_checker_memory() {
 /// Both sessions use the same child so a fresh worker cannot hide retained state.
 #[test]
 fn reset_isolates_type_check_state_from_the_next_session() {
+    assert_reset_isolates_type_check_state(ChildProc::spawn());
+}
+
+/// A warm worker hands its checker to the first type-checked session and builds a fresh one
+/// after it, so the same isolation holds.
+#[test]
+fn reset_isolates_warm_type_check_state_from_the_next_session() {
+    assert_reset_isolates_type_check_state(ChildProc::spawn_warm());
+}
+
+/// A warm checker's builtins are charged to the worker baseline, so a type-checked
+/// session runs within a 2 MB budget, which still rejects a large allocation, for
+/// the rebuilt checker too.
+#[test]
+fn warm_type_checker_is_outside_session_memory() {
+    let mut child = ChildProc::spawn_warm();
+    for _ in 0..2 {
+        child.create_repl_with(pb::Configure {
+            type_check: true,
+            ..configure_with_max_memory(2_000_000)
+        });
+        assert_eq!(
+            child.feed_complete("x = 'a b'.split()\ny = 'x' * 500_000\nlen(x)"),
+            MontyObject::int(2)
+        );
+        let (_, event) = child.feed("z = 'x' * 3_000_000");
+        assert_eq!(expect_error(event).exc_type, "MemoryError");
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+    }
+    child.shutdown();
+}
+
+/// Probes, in one child, that each session's script and stubs are gone after `Reset`.
+fn assert_reset_isolates_type_check_state(mut child: ChildProc) {
     // (script_name of session A, module path session B tries to import)
     let cases = [
         ("a.py", "a"),
@@ -2630,7 +2682,6 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         ("../escape.py", "escape"),
         ("/abs.py", "abs"),
     ];
-    let mut child = ChildProc::spawn();
     for (script_name, module) in cases {
         // Session A: commits one snippet and carries stubs.
         child.create_repl_with(pb::Configure {
@@ -2644,6 +2695,15 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         });
         assert_eq!(child.feed_complete("LEAKY = 'hunter2'"), MontyObject::none());
 
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        let pb::child_event::Kind::Ok(_) = child.recv() else {
+            panic!("expected Ok for Reset");
+        };
+
+        // An untyped session in between: a warm worker keeps its checker across one,
+        // which must not carry session A's files along.
+        child.create_repl();
+        assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
         child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
         let pb::child_event::Kind::Ok(_) = child.recv() else {
             panic!("expected Ok for Reset");

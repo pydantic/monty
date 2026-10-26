@@ -170,6 +170,8 @@ include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/
 exclude = [
     "crates/monty-type-checking/tests/bad_types.py",
     "crates/monty-type-checking/tests/reveal_types.py",
+    # the type-check warm-up is bare expression statements, unused by design
+    "crates/monty-type-checking/src/warm_up.py",
     # duplicate parameter name test intentionally has a syntax error
     "crates/monty/test_cases/function__err_duplicate_param.py",
     # repeated keyword argument test intentionally has a syntax error

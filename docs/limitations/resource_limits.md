@@ -106,6 +106,8 @@ without one is unlimited.
     and re-derives the cap for each session, always from the leanest the process
     has been, plus process-wide typeshed and lint-registry initialization.
     The session's type-checker database and caches are released on reset.
+    A worker started with `--warm-type-checker` (`PoolConfig::warm_type_checker`) instead keeps a checker with the
+    builtins resolved in its baseline, about 6 MiB, and rebuilds it after each type-checked session.
     Other memory retained between sessions therefore consumes the headroom
     rather than raising the cap, and a worker whose residue outgrows it is killed
     and replaced rather than allowed to grow indefinitely.

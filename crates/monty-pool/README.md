@@ -110,6 +110,11 @@ Invalid snapshots have no correctness or availability guarantees.
   the impact of any slow leak. With the subprocess transport, `Some(1)` runs every session in
   a fresh process, which with `min_processes > 0` the background refill has usually spawned
   before the checkout asks.
+- **Warm type checker** — `warm_type_checker` has each worker build a type checker with
+  the builtins resolved between checkouts, so a session's first type-checked feed skips that
+  work; a checkout arriving mid-build waits for it. It costs
+  about 6 MiB per worker, charged to the worker rather than any session's `max_memory`, and
+  is wasted when sessions do not type-check. Off by default; subprocess transport only.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with

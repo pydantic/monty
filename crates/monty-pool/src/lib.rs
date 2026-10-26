@@ -103,6 +103,12 @@ pub struct PoolConfig {
     /// shutdown named and re-sends the request the relay reported it did not run. The session's suspension
     /// and sleep totals carry over. WebSocket transport only; on by default.
     pub auto_resume: bool,
+    /// Have each worker build a type checker that has already resolved the builtins
+    /// between checkouts, so a session's first type-checked feed skips that work
+    /// (a checkout arriving mid-build waits for it). Costs about 6 MiB per worker,
+    /// outside every session's `max_memory`, wasted if sessions do not type-check.
+    /// Subprocess transport only; off by default.
+    pub warm_type_checker: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -140,6 +146,7 @@ impl PoolConfig {
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
             auto_resume: true,
+            warm_type_checker: false,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }

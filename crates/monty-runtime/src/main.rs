@@ -119,7 +119,12 @@ enum Command {
     /// Run as a protocol child: read framed protobuf requests on stdin and
     /// write framed events on stdout (see the monty-proto crate). Intended to
     /// be driven by a parent process such as monty-pool, not by hand.
-    Subprocess,
+    Subprocess {
+        /// Build a type checker between sessions, so a session's first type
+        /// check skips resolving builtins. Costs about 6 MiB per worker.
+        #[arg(long)]
+        warm_type_checker: bool,
+    },
 }
 
 impl Cli {
@@ -220,12 +225,12 @@ impl Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    if let Some(Command::Subprocess) = cli.subcommand {
+    if let Some(Command::Subprocess { warm_type_checker }) = cli.subcommand {
         if let Some(flag) = cli.subprocess_conflict() {
             eprintln!("error: `subprocess` cannot be combined with {flag}");
             ExitCode::FAILURE
         } else {
-            subprocess::run()
+            subprocess::run(warm_type_checker)
         }
     } else {
         run_standalone(cli)

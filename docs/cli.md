@@ -101,3 +101,7 @@ runs Monty with crash isolation.
 It is meant to be driven by a parent process, not by hand.
 Normal execution flags are rejected alongside it, because a subprocess worker reads all its configuration from the
 protocol.
+Its one flag, `--warm-type-checker`, has the worker build a type checker with the builtins resolved between sessions,
+so a session's first type check skips that work, at about 6 MiB per worker.
+A request arriving mid-build waits for it.
+`monty-pool` passes it when [`PoolConfig::warm_type_checker`](api/rust/monty-pool.md#poolconfig) is set.
