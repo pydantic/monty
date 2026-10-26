@@ -9,7 +9,7 @@ members = [
     "crates/monty-proto",
     "crates/monty-pool",
     "crates/monty-wasm-runtime",
-    "crates/monty-wasm-codec",
+    "crates/monty-wasm-proto",
     "crates/monty-wasm-types",
     "crates/monty-python",
     "crates/monty-js",

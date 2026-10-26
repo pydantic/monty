@@ -12,7 +12,7 @@ import type {
   WebsocketCheckoutOptions,
 } from '../websocket.js'
 import { type Codec, instantiateCodec } from './codec.js'
-import type { ConfigureRequest } from './component/monty-codec.component.js'
+import type { ConfigureRequest } from './component/monty-proto.component.js'
 import { timeoutOption } from './deadline.js'
 import type { ComponentModules } from './host.js'
 import { RemoteDispatcher, type RemoteOptions } from './remote.js'

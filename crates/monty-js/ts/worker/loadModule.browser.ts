@@ -19,10 +19,10 @@ export async function loadModule(): Promise<ComponentModules> {
 /** Loads the protocol codec's core modules, without the interpreter's. */
 export async function loadCodecModules(): Promise<ComponentModules> {
   const modules = await Promise.all([
-    WebAssembly.compileStreaming(fetch(new URL('./component/monty-codec.component.core.wasm', import.meta.url))),
-    WebAssembly.compileStreaming(fetch(new URL('./component/monty-codec.component.core2.wasm', import.meta.url))),
-    WebAssembly.compileStreaming(fetch(new URL('./component/monty-codec.component.core3.wasm', import.meta.url))),
-    WebAssembly.compileStreaming(fetch(new URL('./component/monty-codec.component.core4.wasm', import.meta.url))),
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty-proto.component.core.wasm', import.meta.url))),
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty-proto.component.core2.wasm', import.meta.url))),
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty-proto.component.core3.wasm', import.meta.url))),
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty-proto.component.core4.wasm', import.meta.url))),
   ])
   return Object.fromEntries(CODEC_MODULE_NAMES.map((name, index) => [name, modules[index]]))
 }

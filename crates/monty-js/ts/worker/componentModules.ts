@@ -10,10 +10,10 @@ export const COMPONENT_MODULE_NAMES = [
 
 /** The protocol codec's core modules, loaded alone by a remote (WebSocket) pool. */
 export const CODEC_MODULE_NAMES = [
-  'monty-codec.component.core.wasm',
-  'monty-codec.component.core2.wasm',
-  'monty-codec.component.core3.wasm',
-  'monty-codec.component.core4.wasm',
+  'monty-proto.component.core.wasm',
+  'monty-proto.component.core2.wasm',
+  'monty-proto.component.core3.wasm',
+  'monty-proto.component.core4.wasm',
 ] as const
 
 /** Resolves Jco's relative core-module path against the precompiled module map. */

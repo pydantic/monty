@@ -20,7 +20,7 @@ use monty_wasm_types::{EventError, convert_event, push_print, request_from_compo
 )]
 mod bindings {
     wit_bindgen::generate!({
-        world: "monty-codec",
+        world: "monty-proto",
         path: "../monty-wasm-types/wit",
         with: { "pydantic:monty/types": monty_wasm_types::types },
     });

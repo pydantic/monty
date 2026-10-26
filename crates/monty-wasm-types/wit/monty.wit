@@ -567,7 +567,7 @@ world monty-runtime {
 }
 
 /// The protocol codec alone, without an interpreter, for remote workers.
-world monty-codec {
+world monty-proto {
     export codec;
 }
 

@@ -6,7 +6,7 @@
 // mirroring `monty-pool`'s WebSocket checkout (crates/monty-pool/src/checkout.rs).
 
 import { type Codec, CodecError } from './codec.js'
-import type { ConfigureRequest, DecodedFrame, Event, Request } from './component/monty-codec.component.js'
+import type { ConfigureRequest, DecodedFrame, Event, Request } from './component/monty-proto.component.js'
 import { deadlineTimer, formatDuration } from './deadline.js'
 import { DispatchFailure, type DispatchResult, type Dispatcher } from './dispatch.js'
 

@@ -2783,7 +2783,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "monty-wasm-codec"
+name = "monty-wasm-proto"
 version = "1.4.0"
 dependencies = [
  "monty-proto",

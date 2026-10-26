@@ -24,8 +24,8 @@ const typesPath = 'interfaces/pydantic-monty-types.d.ts'
 const components = [
   { crate: 'monty_wasm_runtime', name: 'monty.component', iface: 'worker', alias: 'Worker', ownTypes: [] },
   {
-    crate: 'monty_wasm_codec',
-    name: 'monty-codec.component',
+    crate: 'monty_wasm_proto',
+    name: 'monty-proto.component',
     iface: 'codec',
     alias: 'Codec',
     ownTypes: ['DecodedFrame'],

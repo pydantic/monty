@@ -992,7 +992,7 @@ The package README is an npm introduction, not a second reference.
 - `ts/worker/` implements WASM pooling, channels and value conversion. These are internal, not package exports.
     `index.ts` is the browser/default entry; `index.node.ts` selects Node worker threads. No in-process fallback.
 - `crates/monty-wasm-runtime` wraps the shared Rust protocol child as a WIT component with flat value arenas.
-    `crates/monty-wasm-codec` is a second component with no interpreter: it encodes requests as protobuf frames and
+    `crates/monty-wasm-proto` is a second component with no interpreter: it encodes requests as protobuf frames and
     validates the frames a remote server sends, for the browser `MontyWebsocket` (`ts/worker/remote.ts`, a WebSocket
     `Dispatcher` under the same `WorkerTransport`).
     Both share the WIT (`crates/monty-wasm-types/wit/`) and its conversions through `monty-wasm-types` and wit-bindgen's `with`;

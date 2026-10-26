@@ -2,7 +2,7 @@
 //! conversions to and from `monty-proto` messages.
 //!
 //! Two components share these types: `monty-wasm-runtime` (the interpreter
-//! worker) and `monty-wasm-codec` (the protocol codec a browser uses to reach a
+//! worker) and `monty-wasm-proto` (the protocol codec a browser uses to reach a
 //! remote worker). This crate generates `pydantic:monty/types` once; each
 //! component maps the interface onto [`types`] with wit-bindgen's `with`, so a
 //! conversion written here serves both.

@@ -1,5 +1,5 @@
 [package]
-name = "monty-wasm-codec"
+name = "monty-wasm-proto"
 # Used by the monty-js build which is distributed via npm, not crates.io
 publish = false
 version = { workspace = true }
