@@ -199,6 +199,47 @@ s = 'abc'
 assert s[False] == 'a'
 assert s[True] == 'b'
 
+# === Computed heap strings: ASCII and non-ASCII ===
+# ASCII heap strings index by byte; non-ASCII ones must still count code points
+a = ''.join(['ab', 'cd', 'ef'])
+assert len(a) == 6
+assert a[0] == 'a'
+assert a[5] == 'f'
+assert a[-6] == 'a'
+assert a[1:4] == 'bcd'
+assert a[::2] == 'ace'
+assert a[::-1] == 'fedcba'
+assert a[4:1:-2] == 'ec'
+assert a[-100:100] == 'abcdef'
+assert a[5:2] == ''
+assert a.find('cd', 1) == 2
+assert a.find('cd', 3) == -1
+assert a.find('ef', 1, 6) == 4
+assert a.rfind('b', -10, 100) == 1
+assert a.index('e', 2) == 4
+assert a.count('c', 1, 3) == 1
+
+u = ''.join(['a\xe9', '日b', '🎉c'])
+assert len(u) == 6
+assert u[1] == '\xe9'
+assert u[2] == '日'
+assert u[4] == '🎉'
+assert u[-1] == 'c'
+assert u[1:5] == '\xe9日b🎉'
+assert u[::-1] == 'c🎉b日\xe9a'
+assert u[::2] == 'a日🎉'
+assert u.find('b', 1) == 3
+assert u.find('c', 2, 6) == 5
+assert u.rfind('\xe9', 0, 2) == 1
+assert u.index('🎉', 2) == 4
+
+# The same text is ASCII or not depending on the character appended
+base = 'x' * 50
+assert len(base + 'y') == 51
+assert len(base + '\xe9') == 51
+assert (base + '\xe9')[50] == '\xe9'
+assert (base + '\xe9')[-2] == 'x'
+
 # === Sorting and comparisons ===
 assert 'a' < 'b'
 assert 'b' > 'a'
