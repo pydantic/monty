@@ -15,24 +15,53 @@ use crate::{
 /// The `@dataclass(...)` options Monty implements.
 ///
 /// Small and `Copy`, so it doubles as the payload of the *configured decorator*
-/// (`dataclass(frozen=True)`) without a heap allocation. Every other CPython
-/// flag is rejected at the call, so each is either stored here or known to hold
-/// its default.
+/// (`dataclass(frozen=True)`) without a heap allocation. `slots` and
+/// `weakref_slot` are rejected at the call, so each CPython flag is either
+/// stored here or known to hold its default.
+///
+/// Dumps written before a field existed load it at CPython's default, which is
+/// what those builds required it to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one field per CPython option, which keeps the mapping checkable"
+)]
 pub(crate) struct DataclassOptions {
-    /// Synthesize a field-wise `__eq__` (CPython's `eq`, default `True`).
+    /// Generate `__init__` (CPython's `init`, default `True`).
+    pub init: bool,
+    /// Generate a field-wise `__repr__` (CPython's `repr`, default `True`).
+    pub repr: bool,
+    /// Generate a field-wise `__eq__` (CPython's `eq`, default `True`).
     pub eq: bool,
+    /// Generate `__lt__`/`__le__`/`__gt__`/`__ge__` (CPython's `order`,
+    /// default `False`).
+    pub order: bool,
+    /// Generate `__hash__` whatever `eq` and `frozen` imply (CPython's
+    /// `unsafe_hash`, default `False`).
+    pub unsafe_hash: bool,
     /// Reject attribute assignment, and hash by field values when `eq` is also
     /// set (CPython's `frozen`, default `False`).
     pub frozen: bool,
+    /// Write `__match_args__` (CPython's `match_args`, default `True`).
+    pub match_args: bool,
+    /// Make every field that does not say otherwise keyword-only in `__init__`
+    /// (CPython's `kw_only`, default `False`).
+    pub kw_only: bool,
 }
 
 impl Default for DataclassOptions {
-    /// CPython's defaults: `eq=True, frozen=False`.
+    /// CPython's defaults.
     fn default() -> Self {
         Self {
+            init: true,
+            repr: true,
             eq: true,
+            order: false,
+            unsafe_hash: false,
             frozen: false,
+            match_args: true,
+            kw_only: false,
         }
     }
 }
@@ -82,43 +111,53 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
         Ok(Some(identity_hash(self.id())))
     }
 
-    /// CPython's `_DataclassParams.__repr__`, flag for flag. The eight
-    /// unimplemented options print as constants, which cannot misreport a class
-    /// because any other value is refused at decoration.
+    /// CPython's `_DataclassParams.__repr__`, flag for flag. `slots` and
+    /// `weakref_slot` print as constants, which cannot misreport a class because
+    /// any other value is refused at decoration.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let options = self.get(vm.heap).options;
+        let o = self.get(vm.heap).options;
         Ok(write!(
             f,
-            "_DataclassParams(init=True,repr=True,eq={},order=False,unsafe_hash=False,frozen={},\
-             match_args=True,kw_only=False,slots=False,weakref_slot=False)",
-            python_bool(options.eq),
-            python_bool(options.frozen),
+            "_DataclassParams(init={},repr={},eq={},order={},unsafe_hash={},frozen={},\
+             match_args={},kw_only={},slots=False,weakref_slot=False)",
+            python_bool(o.init),
+            python_bool(o.repr),
+            python_bool(o.eq),
+            python_bool(o.order),
+            python_bool(o.unsafe_hash),
+            python_bool(o.frozen),
+            python_bool(o.match_args),
+            python_bool(o.kw_only),
         )?)
     }
 
-    /// Every flag CPython exposes; the unimplemented ones read as the defaults
-    /// the decorator insists on.
+    /// Every flag CPython exposes; the two Monty refuses read as their defaults.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let attr_str = attr.as_str(vm.interns);
-        let options = self.get(vm.heap).options;
+        let o = self.get(vm.heap).options;
         let value = match attr_str {
-            "eq" => Value::Bool(options.eq),
-            "frozen" => Value::Bool(options.frozen),
-            "init" | "repr" | "match_args" => Value::Bool(true),
-            "order" | "unsafe_hash" | "kw_only" | "slots" | "weakref_slot" => Value::Bool(false),
+            "init" => o.init,
+            "repr" => o.repr,
+            "eq" => o.eq,
+            "order" => o.order,
+            "unsafe_hash" => o.unsafe_hash,
+            "frozen" => o.frozen,
+            "match_args" => o.match_args,
+            "kw_only" => o.kw_only,
+            "slots" | "weakref_slot" => false,
             _ => return Err(ExcType::attribute_error("_DataclassParams", attr_str)),
         };
-        Ok(Some(CallResult::Value(value)))
+        Ok(Some(CallResult::Value(Value::Bool(value))))
     }
 }
 
-/// Python's spelling of a bool, for the constant flags in the repr above.
-fn python_bool(value: bool) -> &'static str {
+/// Python's spelling of a bool, for the reprs of `_DataclassParams` and `Field`.
+pub(super) fn python_bool(value: bool) -> &'static str {
     if value { "True" } else { "False" }
 }
 
 impl HeapItem for DataclassParams {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Two bools, no heap references.
+        // Bools only, no heap references.
     }
 }

@@ -115,6 +115,9 @@ struct Field {
     default: Option<DefaultExpr>,
     /// Override for the `StaticStrings` variant used in kwarg dispatch.
     static_string: Option<Ident>,
+    /// Override for the parameter name error messages show, for a `pos_only`
+    /// parameter whose Python name is not a legal Rust field (`self`).
+    name: Option<String>,
     /// 1-indexed slot in the positional region, used by "pos N" error
     /// messages. `None` for kw_only / varargs / varkwargs.
     pos_index: Option<usize>,
@@ -186,6 +189,7 @@ impl Signature {
                 kind: opts.kind,
                 default: opts.default,
                 static_string: opts.static_string,
+                name: opts.name,
                 pos_index: None,
                 slot_index: None,
             });
@@ -342,6 +346,20 @@ impl Signature {
                  paths skip the aggregated missing-keyword check, so a required \
                  keyword-only parameter would report the wrong error; extend the binder \
                  before allowing this",
+            ));
+        }
+
+        // A keyword-capable parameter is matched by its `StaticStrings` name, so
+        // renaming only its messages would let the two disagree.
+        if let Some(field) = self
+            .fields
+            .iter()
+            .find(|f| f.name.is_some() && !matches!(f.kind, FieldKind::PosOnly))
+        {
+            return Err(syn::Error::new(
+                field.ident.span(),
+                "`name` can only be applied to `pos_only` fields — a keyword-capable \
+                 parameter is matched by its `StaticStrings` name, which `static_string` sets",
             ));
         }
 
@@ -668,7 +686,7 @@ fn render_build_field(field: &Field) -> TokenStream {
 impl Field {
     /// The `Param` literal for the runtime spec.
     fn render_param(&self, never_matchable: bool) -> TokenStream {
-        let name = self.ident.to_string();
+        let name = self.name.clone().unwrap_or_else(|| self.ident.to_string());
         let keyword_name = self.keyword_name_expr(never_matchable);
         let kind = match self.kind {
             FieldKind::PosOnly => quote! { crate::args::ParamKind::PosOnly },
@@ -858,6 +876,7 @@ pub(crate) struct FieldAttrs {
     pub(crate) kind: FieldKind,
     pub(crate) default: Option<DefaultExpr>,
     pub(crate) static_string: Option<Ident>,
+    pub(crate) name: Option<String>,
 }
 
 pub(crate) fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAttrs> {
@@ -901,6 +920,10 @@ pub(crate) fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAt
             } else if meta.path.is_ident("static_string") {
                 let value: LitStr = meta.value()?.parse()?;
                 out.static_string = Some(Ident::new(&value.value(), value.span()));
+                Ok(())
+            } else if meta.path.is_ident("name") {
+                let value: LitStr = meta.value()?.parse()?;
+                out.name = Some(value.value());
                 Ok(())
             } else {
                 Err(meta.error("unknown field attribute"))
@@ -1180,6 +1203,18 @@ mod tests {
             }
         });
         assert_snapshot!(err, @"`default` and `static_string` cannot be applied to `varargs` / `varkwargs` fields — they configure a named parameter slot, which collector fields don't own");
+    }
+
+    #[test]
+    fn name_on_keyword_capable_field_rejected() {
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(name = "self")]
+                this: Value,
+            }
+        });
+        assert_snapshot!(err, @"`name` can only be applied to `pos_only` fields — a keyword-capable parameter is matched by its `StaticStrings` name, which `static_string` sets");
     }
 
     #[test]

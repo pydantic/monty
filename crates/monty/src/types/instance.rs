@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{CmpOrder, Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -929,6 +929,20 @@ pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) 
     }
 }
 
+/// Orders two instances through `@dataclass(order=True)`'s generated
+/// ordering, or reports them incomparable: a user `__lt__` is not dispatched
+/// (see `limitations/classes.md`), and a generated one declines an instance of
+/// another class.
+pub(crate) fn instance_order(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
+    let class_id = instance_class(self_id, vm);
+    match dataclasses::generated_fields(class_id, "__lt__", vm) {
+        Some(field_names) => {
+            Ok(dataclasses::dataclass_cmp(self_id, &field_names, other, vm)?.unwrap_or(CmpOrder::Incomparable))
+        }
+        None => Ok(CmpOrder::Incomparable),
+    }
+}
+
 /// Dispatches a user-defined `__hash__`, enforcing CPython's integer-return
 /// contract. Only reached once the class is known to define a non-`None`
 /// `__hash__`, so an absent member is an internal error.
@@ -1003,7 +1017,10 @@ fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut 
 /// unbound.
 fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
     match value {
-        Value::DefFunction(_) => true,
+        // CPython's `dataclasses._replace` is a plain `def`, so the
+        // `__replace__` every dataclass stores binds like one.
+        Value::DefFunction(_)
+        | Value::ModuleFunction(ModuleFunctions::Dataclasses(dataclasses::DataclassesFunctions::ReplaceDunder)) => true,
         Value::Ref(id) => matches!(
             vm.heap.get(*id),
             // `functools.partial` and the `lru_cache` wrapper are descriptors in

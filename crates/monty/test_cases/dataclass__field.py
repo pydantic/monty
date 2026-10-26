@@ -1,4 +1,4 @@
-from dataclasses import MISSING, dataclass, field
+from dataclasses import MISSING, dataclass, field, make_dataclass
 
 # === default_factory builds a fresh value per instance ===
 
@@ -95,6 +95,24 @@ try:
     assert False, 'expected both-given to raise'
 except ValueError as e:
     assert str(e) == 'cannot specify both default and default_factory'
+
+
+# === A field() bound to an unannotated name is rejected ===
+try:
+
+    @dataclass
+    class Unannotated:
+        y: int
+        x = field(default=1)
+
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'x' is a field but has no type annotation"
+try:
+    make_dataclass('Made', ['a'], namespace={'b': field()})
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'b' is a field but has no type annotation"
 
 
 # === MISSING is a singleton compared by identity ===
@@ -338,3 +356,127 @@ class Collapses:
 
 assert list(Collapses.__dataclass_fields__) == ['b']
 assert Collapses().b == 2
+
+
+# === field(init=False) keeps the field out of __init__ ===
+@dataclass
+class Derived:
+    a: int
+    plain: int = field(default=5, init=False)
+    built: list[int] = field(default_factory=list, init=False)
+
+
+d = Derived(1)
+assert d.a == 1
+assert d.plain == 5
+assert d.built == []
+# The plain default is left on the class, where CPython leaves it; only the
+# factory result is written to the instance.
+assert Derived.plain == 5
+try:
+    Derived(1, plain=2)
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == "Derived.__init__() got an unexpected keyword argument 'plain'"
+
+
+# === field(init=False) with no default leaves the attribute absent ===
+@dataclass
+class Absent:
+    a: int
+    later: int = field(init=False)
+
+
+absent = Absent(1)
+try:
+    absent.later
+    assert False, 'expected an AttributeError'
+except AttributeError as e:
+    assert str(e) == "'Absent' object has no attribute 'later'"
+
+
+# === An init=False field is exempt from the ordering rule ===
+@dataclass
+class Exempt:
+    first: int = field(default=1, init=False)
+    second: int
+
+
+assert Exempt(2).second == 2
+
+
+# === field(repr=False) hides the field, field(compare=False) ignores it ===
+@dataclass
+class Hidden:
+    shown: int = 1
+    hidden: int = field(default=2, repr=False)
+    ignored: int = field(default=3, compare=False)
+
+
+assert repr(Hidden()) == 'Hidden(shown=1, ignored=3)'
+# `repr=False` hides the field but still compares it; `compare=False` is the
+# other way round.
+assert Hidden(1, 2, 3) != Hidden(1, 9, 3)
+assert Hidden(1, 2, 3) == Hidden(1, 2, 9)
+assert Hidden(1, 2, 3) != Hidden(9, 2, 3)
+
+
+# === field(hash=...) overrides what compare decided ===
+@dataclass(frozen=True)
+class Hashes:
+    a: int
+    skipped: int = field(default=0, hash=False)
+    counted: int = field(default=0, compare=False, hash=True)
+
+
+assert hash(Hashes(1, 2, 3)) == hash((1, 3))
+# `hash` is reported as given, and stays None when it was not.
+assert Hashes.__dataclass_fields__['skipped'].hash is False
+assert Hashes.__dataclass_fields__['a'].hash is None
+
+
+# === field(kw_only=True) makes one field keyword-only ===
+@dataclass
+class OneKwOnly:
+    a: int
+    b: int = field(kw_only=True)
+
+
+assert OneKwOnly(1, b=2).b == 2
+try:
+    OneKwOnly(1, 2)
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == 'OneKwOnly.__init__() takes 2 positional arguments but 3 were given'
+
+
+# === The flags read back off the Field ===
+spec_flags = OneKwOnly.__dataclass_fields__['b']
+assert spec_flags.init is True
+assert spec_flags.repr is True
+assert spec_flags.compare is True
+assert spec_flags.kw_only is True
+assert Hidden.__dataclass_fields__['hidden'].repr is False
+assert Hidden.__dataclass_fields__['ignored'].compare is False
+assert Derived.__dataclass_fields__['plain'].init is False
+# An un-adopted spec still reports kw_only as MISSING; adoption resolves it.
+unadopted = field(default=1)
+assert unadopted.kw_only is MISSING
+
+
+# === field(doc=...) is stored and read back ===
+@dataclass
+class Documented:
+    x: int = field(default=1, doc='the x')
+    y: int = 2
+
+
+assert Documented.__dataclass_fields__['x'].doc == 'the x'
+assert Documented.__dataclass_fields__['y'].doc is None
+# Any object is accepted, as CPython stores it unchecked.
+assert field(doc=3).doc == 3
+assert repr(field(doc='d')) == (
+    f'Field(name=None,type=None,default={missing_repr},default_factory={missing_repr},'
+    f'init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({{}}),'
+    f"kw_only={missing_repr},doc='d',_field_type=None)"
+)

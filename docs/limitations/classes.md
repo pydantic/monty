@@ -89,6 +89,7 @@ order and error wording, but with these divergences:
     raises `TypeError: '<' not supported between instances of 'Foo' and 'Foo'`
     (matching CPython). A class that *defines* `__lt__` etc. still raises: those
     dunders are not dispatched (see the not-dispatched dunder list below).
+    `@dataclass(order=True)` is the exception (see [dataclasses.md](dataclasses.md)).
 - **`__repr__`/`__str__` cannot suspend**: they are run to completion
     synchronously, so a `__repr__`/`__str__` that calls an external/OS function
     raises rather than yielding to the host. `__init__` and regular methods

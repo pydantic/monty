@@ -216,6 +216,10 @@ operand is *unordered* rather than incomparable, so `float('nan') < 1` (and
 every operator/direction, including two NaNs) returns `False` without raising,
 also matching CPython, and likewise inside `sorted`/`min`/`max`.
 
+Two lists or tuples whose first differing elements cannot be ordered raise naming the containers
+(`'<' not supported between instances of 'tuple' and 'tuple'`), where CPython names the elements
+(`'NoneType' and 'int'`).
+
 One message divergence: when a **list or tuple** compares unequal only because
 an *inner element* pair is unorderable (e.g. `(1, 2) < (1, 'a')`), Monty names
 the outer container types (`'tuple' and 'tuple'`) where CPython names the inner

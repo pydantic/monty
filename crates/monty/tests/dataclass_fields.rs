@@ -64,19 +64,13 @@ fn field_repr_renders_type_as_annotation_text() {
     );
 }
 
-/// The `Field` attributes whose values need an object Monty does not have.
-/// `default`/`default_factory` are no longer among them: `MISSING` exists.
+/// `Field.metadata` needs `types.MappingProxyType`, which Monty does not have.
 #[test]
-fn unmodelled_field_attributes_are_not_implemented() {
-    for (attr, missing) in [
-        ("metadata", "types.MappingProxyType"),
-        ("_field_type", "dataclasses._FIELD"),
-    ] {
-        assert_eq!(
-            expect_error(&format!("Point.__dataclass_fields__['y'].{attr}")),
-            format!("Field.{attr} is not yet supported, {missing} is not implemented")
-        );
-    }
+fn unmodelled_field_attribute_is_not_implemented() {
+    assert_eq!(
+        expect_error("Point.__dataclass_fields__['y'].metadata"),
+        "Field.metadata is not yet supported, types.MappingProxyType is not implemented"
+    );
 }
 
 /// CPython keeps `ClassVar` entries in `__dataclass_fields__` (marked

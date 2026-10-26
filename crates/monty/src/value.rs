@@ -27,7 +27,7 @@ use crate::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
         bytes::PyBytes,
         decimal, host_class_type,
-        instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
+        instance::{class_defines, instance_getattr, instance_order, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -798,6 +798,7 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
         (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
             Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
         }
+        (HeapReadOutput::Instance(_), HeapReadOutput::Instance(_)) => instance_order(id1, &Value::Ref(id2), vm),
         _ => Ok(CmpOrder::Incomparable),
     }
 }
@@ -2042,8 +2043,10 @@ impl Marker {
     /// Writes the Python repr for this marker.
     ///
     /// System markers have special repr formats ("<stdout>", "<stderr>");
-    /// `dataclasses.MISSING` is a plain object, so it prints with its `id()`;
-    /// typing markers are prefixed with "typing." (e.g., "typing.Any").
+    /// `dataclasses.MISSING` and `KW_ONLY` are plain objects, so they print with
+    /// their `id()`; `InitVar` prints as the class it is in CPython, and the
+    /// `_FIELD` sentinels print their bare names; typing markers are prefixed
+    /// with "typing." (e.g., "typing.Any").
     pub(crate) fn py_repr_fmt(self, f: &mut impl Write) -> fmt::Result {
         let s: &'static str = self.0.into();
         match self.0 {
@@ -2054,6 +2057,13 @@ impl Marker {
                 "<dataclasses._MISSING_TYPE object at 0x{:x}>",
                 Identity::Marker(self).encoded()
             )?,
+            StaticStrings::KwOnlyMarker => write!(
+                f,
+                "<dataclasses._KW_ONLY_TYPE object at 0x{:x}>",
+                Identity::Marker(self).encoded()
+            )?,
+            StaticStrings::InitVar => f.write_str("<class 'dataclasses.InitVar'>")?,
+            StaticStrings::FieldSentinel | StaticStrings::InitVarSentinel => f.write_str(s)?,
             _ => write!(f, "typing.{s}")?,
         }
         Ok(())

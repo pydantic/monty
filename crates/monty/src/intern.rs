@@ -1009,6 +1009,25 @@ pub enum StaticStrings {
     /// `__hash__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__hash__")]
     DunderHash,
+    /// `__replace__` — written into a class namespace by `@dataclass`, and
+    /// what `copy.replace()` calls.
+    #[strum(serialize = "__replace__")]
+    DunderReplace,
+    /// `__annotations__` — written into the class `make_dataclass()` builds.
+    #[strum(serialize = "__annotations__")]
+    DunderAnnotations,
+    /// `__lt__` — written into a class namespace by `@dataclass(order=True)`.
+    #[strum(serialize = "__lt__")]
+    DunderLt,
+    /// `__le__` — written into a class namespace by `@dataclass(order=True)`.
+    #[strum(serialize = "__le__")]
+    DunderLe,
+    /// `__gt__` — written into a class namespace by `@dataclass(order=True)`.
+    #[strum(serialize = "__gt__")]
+    DunderGt,
+    /// `__ge__` — written into a class namespace by `@dataclass(order=True)`.
+    #[strum(serialize = "__ge__")]
+    DunderGe,
     /// `__init__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__init__")]
     DunderInit,
@@ -1158,6 +1177,37 @@ pub enum StaticStrings {
     Fanout,
     /// `dataclasses.field()` function, and the `Field` type name.
     Field,
+    /// `dataclasses.fields()` function.
+    Fields,
+    /// `dataclasses.make_dataclass()` function.
+    MakeDataclass,
+    /// `make_dataclass(cls_name, ...)` parameter.
+    ClsName,
+    /// `make_dataclass(bases=...)` keyword argument.
+    Bases,
+    /// `make_dataclass(namespace=...)` keyword argument.
+    Namespace,
+    /// `make_dataclass(decorator=...)` keyword argument.
+    Decorator,
+    /// `dataclasses._FIELD`, the `Field._field_type` of an ordinary field.
+    #[strum(serialize = "_FIELD")]
+    FieldSentinel,
+    /// `dataclasses._FIELD_INITVAR`, the `Field._field_type` of an `InitVar`.
+    #[strum(serialize = "_FIELD_INITVAR")]
+    InitVarSentinel,
+    /// `dataclasses.InitVar`, the annotation form for an `__init__`-only parameter.
+    #[strum(serialize = "InitVar")]
+    InitVar,
+    /// `dataclasses.asdict()` function.
+    Asdict,
+    /// `dataclasses.astuple()` function.
+    Astuple,
+    /// `dataclasses.fields(class_or_instance)` parameter.
+    ClassOrInstance,
+    /// `dataclasses.asdict(dict_factory=...)` keyword argument.
+    DictFactory,
+    /// `dataclasses.astuple(tuple_factory=...)` keyword argument.
+    TupleFactory,
     /// `namedtuple(field_names=...)` keyword argument.
     #[strum(serialize = "field_names")]
     FieldNames,
@@ -1689,6 +1739,10 @@ pub enum StaticStrings {
     Minutes,
     /// `CacheInfo.misses` field.
     Misses,
+    /// `dataclasses.KW_ONLY`, the class-body marker after which every field is
+    /// keyword-only.
+    #[strum(serialize = "KW_ONLY")]
+    KwOnlyMarker,
     /// `dataclasses.MISSING` — the sentinel for an argument not given, since
     /// `None` is a legitimate default.
     #[strum(serialize = "MISSING")]
@@ -1706,7 +1760,7 @@ pub enum StaticStrings {
     /// `<module>`, the traceback frame name for top-level code.
     #[strum(serialize = "<module>")]
     Module,
-    /// `namedtuple(..., module=...)` keyword argument.
+    /// `namedtuple(..., module=...)` and `make_dataclass(..., module=...)` keyword argument.
     #[strum(serialize = "module")]
     ModuleKwarg,
     /// Kwarg name `modulo` — `Context.power()`.
