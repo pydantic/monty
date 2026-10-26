@@ -173,7 +173,7 @@ See [the security model](../security.md#remote-workers) before using it.
 ### Host decode budget
 
 `PoolConfig::max_decode_bytes` can lower the default 1 GiB allocation budget for
-each response from a subprocess or WebSocket worker. Values above 1 GiB do not
+each protocol frame from a subprocess or WebSocket worker. Values above 1 GiB do not
 raise the ceiling. The budget excludes wire buffers and host-language conversion.
 Exhaustion discards the worker without replaying the request.
 

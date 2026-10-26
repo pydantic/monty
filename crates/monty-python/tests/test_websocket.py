@@ -526,3 +526,8 @@ async def test_host_decode_budget_rejects_large_results(ws_url: str):
                 await session.feed_run('[0] * 100_000')
         async with pool.checkout() as session:
             assert await session.feed_run('6 * 7') == snapshot(42)
+
+
+def test_decode_budget_preserves_timeout_validation():
+    with pytest.raises(ValueError, match='invalid request_timeout:'):
+        AsyncMontyWebsocket('ws://127.0.0.1:1', max_decode_bytes=4096, request_timeout=-1.0)
