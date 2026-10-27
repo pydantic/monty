@@ -596,6 +596,7 @@ class Monty:
         *,
         binary_path: str | Path | None = None,
         min_processes: int = 1,
+        min_idle: int = 0,
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
@@ -611,9 +612,14 @@ class Monty:
                 resolved from the `MONTY_BIN` environment variable, the
                 environment's scripts directory (where the `pydantic-monty-runtime`
                 dependency installs it), or `PATH`.
-            min_processes: Workers spawned eagerly, and a floor on live workers:
-                while the pool is open, background refills restore it after a
-                worker is recycled, crashes or is discarded.
+            min_processes: A floor on live workers: while the pool is open,
+                background refills restore it after a worker is recycled,
+                crashes or is discarded. Checked-out workers count towards it.
+            min_idle: A floor on ready workers, idle or being spawned: while the
+                pool is open, taking an idle worker starts a background refill,
+                so concurrent checkouts find warm workers. Capped by
+                `max_processes`; `0` disables it. Workers spawned eagerly are
+                the larger of `min_processes` and `min_idle`.
             max_processes: Cap on live workers (defaults to the CPU count);
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
@@ -951,6 +957,7 @@ class AsyncMonty:
         *,
         binary_path: str | Path | None = None,
         min_processes: int = 1,
+        min_idle: int = 0,
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,

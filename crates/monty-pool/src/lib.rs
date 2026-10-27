@@ -56,11 +56,19 @@ pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Floor on live workers: spawned at pool creation, and replaced in the
-    /// background whenever one is recycled, crashes or is discarded. Forced to
-    /// 0 for the [`MontyTransport::Websocket`] transport (connections are made
+    /// Floor on live workers (idle, checked out or spawning), replaced in the
+    /// background whenever one is recycled, crashes or is discarded. The pool
+    /// prewarms the larger of this and `min_idle`. Forced to 0 for the
+    /// [`MontyTransport::Websocket`] transport (connections are made
     /// per-checkout, not pre-warmed).
     pub min_processes: usize,
+    /// Floor on ready workers: idle ones plus background refills in flight.
+    /// Topped up whenever a checkout takes an idle worker, so concurrent
+    /// checkouts find warm workers even though checked-out ones count towards
+    /// `min_processes`. Capped by `max_processes` and independent of
+    /// `min_processes`; 0 (the default) disables it. Ignored by the
+    /// [`MontyTransport::Websocket`] transport.
+    pub min_idle: usize,
     /// Hard cap on live workers; checkouts beyond this wait.
     pub max_processes: usize,
     /// How workers are reached (spawned locally or connected to remotely).
@@ -114,8 +122,8 @@ pub struct PoolConfig {
 
 impl PoolConfig {
     /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
-    /// `max_processes =` available parallelism, no timeouts, a 1s grace on
-    /// each of the two duration backstops, no recycling.
+    /// `min_idle = 0`, `max_processes =` available parallelism, no timeouts, a
+    /// 1s grace on each of the two duration backstops, no recycling.
     pub fn subprocess(binary_path: impl Into<PathBuf>) -> Self {
         Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
     }
@@ -132,6 +140,7 @@ impl PoolConfig {
     fn with_transport(transport: MontyTransport) -> Self {
         Self {
             min_processes: 1,
+            min_idle: 0,
             max_processes: thread::available_parallelism().map_or(4, NonZero::get),
             transport,
             checkout_timeout: None,

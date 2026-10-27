@@ -370,11 +370,7 @@ async fn checkout_after_recycle_is_warm() {
     wait_for_idle(&pool, 1).await;
 
     let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
-    let spawned = capture
-        .named("monty.pool.checkout.wait")
-        .into_iter()
-        .any(|recorded| recorded.attributes.get("outcome").is_some_and(|o| o == "spawned"));
-    assert!(!spawned, "no checkout should have spawned its worker");
+    assert!(!any_spawned(&capture), "no checkout should have spawned its worker");
     assert_eq!(capture.total("monty.pool.workers.live"), 1);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
     drop(checkout);
@@ -426,6 +422,89 @@ async fn close_stops_refilling() {
     })
     .await;
     assert_eq!(pool.idle_workers(), 0);
+}
+
+/// With `min_idle`, each checkout up to `max_processes` takes a worker the
+/// pool refilled behind the previous one, so none spawns on its path.
+#[tokio::test]
+async fn min_idle_keeps_concurrent_checkouts_warm() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 0;
+    config.min_idle = 1;
+    config.max_processes = 3;
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let mut held = Vec::new();
+    for _ in 0..3 {
+        wait_for_idle(&pool, 1).await;
+        held.push(pool.checkout(&ReplConfig::default()).await.expect("checkout"));
+    }
+    assert!(!any_spawned(&capture), "no checkout should have spawned its worker");
+    // at the cap, the floor on ready workers yields to `max_processes`; a
+    // refill would count as live the moment it reserved its slot
+    assert_eq!(capture.total("monty.pool.workers.live"), 3);
+    assert_eq!(pool.idle_workers(), 0);
+    drop(held);
+}
+
+/// The idle floor never takes the pool past `max_processes`, even when it
+/// equals it: held checkouts leave no room to refill, and the slot a recycled
+/// worker frees is refilled exactly once.
+#[tokio::test]
+async fn min_idle_never_exceeds_max_processes() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 0;
+    config.min_idle = 2;
+    config.max_processes = 2;
+    config.max_checkouts_per_worker = Some(1);
+    config.checkout_timeout = Some(Duration::from_millis(50));
+    let (pool, capture) = pool_with_metrics(config).await;
+    assert_eq!(pool.idle_workers(), 2);
+
+    let first = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let second = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    assert_eq!(capture.total("monty.pool.workers.live"), 2);
+    let blocked = pool.checkout(&ReplConfig::default()).await.err();
+    assert!(matches!(blocked, Some(PoolError::Exhausted)), "{blocked:?}");
+
+    first.finish().await.expect("finish");
+    wait_for_idle(&pool, 1).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 2);
+    second.finish().await.expect("finish");
+    wait_for_idle(&pool, 2).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 2);
+}
+
+/// The refill a checkout starts under `min_idle` is killed by `close`, and the
+/// held worker leaving afterwards is not replaced.
+#[tokio::test]
+async fn close_stops_min_idle_refills() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 0;
+    config.min_idle = 1;
+    config.max_processes = 2;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    pool.close().await;
+    wait_until("the refill to be closed", || {
+        terminations(&capture, "closed") == 1 && capture.total("monty.pool.workers.live") == 1
+    })
+    .await;
+    checkout.finish().await.expect("finish");
+    assert_eq!(terminations(&capture, "recycled"), 1);
+    // a refill would count as live the moment it reserved its slot
+    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    assert_eq!(pool.idle_workers(), 0);
+}
+
+/// Whether any checkout so far spawned its worker on its own path.
+fn any_spawned(capture: &Capture) -> bool {
+    capture
+        .named("monty.pool.checkout.wait")
+        .into_iter()
+        .any(|recorded| recorded.attributes.get("outcome").is_some_and(|o| o == "spawned"))
 }
 
 /// How many workers have terminated with `reason`.

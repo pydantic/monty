@@ -421,7 +421,8 @@ from pydantic_monty import Monty
 
 pool = Monty(
     binary_path=None,  # explicit path to the `monty` worker binary
-    min_processes=1,  # workers spawned eagerly and kept warm
+    min_processes=1,  # floor on live workers, checked-out ones included
+    min_idle=0,  # floor on ready (idle or spawning) workers
     max_processes=None,  # cap on live workers; defaults to the CPU count
     checkout_timeout=None,  # seconds `checkout()` waits for a free worker
     request_timeout=None,  # hard per-turn deadline; kills the worker
@@ -433,6 +434,13 @@ pool = Monty(
 [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
 It catches hangs the in-sandbox limits cannot see, because those are only checked at interpreter checkpoints.
 A loop of quick host calls resets it each turn; set [`max_feed_duration_secs`](../resource-limits.md) as well.
+
+`min_processes` and `min_idle` are both spawned eagerly and kept by background refills while the pool is open.
+A checked-out worker counts towards `min_processes`, so with `min_processes=2` two concurrent sessions leave no idle
+worker and a third spawns cold.
+`min_idle` counts only idle workers and ones being spawned, and refills each time a checkout takes one; set it when
+concurrent sessions should each find a warm worker, for example with `max_checkouts_per_worker=1`.
+Both are capped by `max_processes`.
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] takes the same arguments.
 

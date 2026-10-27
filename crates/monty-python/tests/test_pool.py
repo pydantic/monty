@@ -148,6 +148,24 @@ def test_one_checkout_per_worker_gets_a_fresh_process_each_time():
     assert len(pids) == snapshot(4)
 
 
+def test_min_idle_serves_concurrent_sessions_from_distinct_workers():
+    # the background refill itself is covered by monty-pool's tests
+    with Monty(min_processes=0, min_idle=1, max_processes=2) as pool:
+        with pool.checkout() as first, pool.checkout() as second:
+            assert first.feed_run('1 + 1') == snapshot(2)
+            assert second.feed_run('2 + 2') == snapshot(4)
+            assert first.worker_pid != second.worker_pid
+
+
+def test_min_idle_above_max_processes_is_rejected():
+    with pytest.raises(RuntimeError) as exc_info:
+        with Monty(min_idle=3, max_processes=2):
+            pass
+    assert exc_info.value.args[0] == snapshot(
+        'failed to spawn monty worker: invalid pool size: min_processes=1 min_idle=3 max_processes=2'
+    )
+
+
 def test_request_timeout_kills_hung_worker():
     with Monty(request_timeout=0.3) as pool:
         with pool.checkout() as session:

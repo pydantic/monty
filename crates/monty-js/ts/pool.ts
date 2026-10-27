@@ -15,6 +15,7 @@ import {
   encodeAssertMessageAnnotations,
   encodeOsPolicy,
   validateMaxCheckouts,
+  validateUint32Option,
 } from './options.js'
 import { enterSession, type ExternalModules, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
@@ -24,11 +25,19 @@ export interface MontyOptions {
   /** Path to the `monty` binary; resolved automatically when omitted. */
   binaryPath?: string
   /**
-   * Workers spawned up front by `create()`, kept as a floor on live workers
-   * by background refills while the pool is open (default 1). The wasm pool
-   * only prewarms: it replaces a departed worker only for a waiting checkout.
+   * Floor on live workers, checked-out ones included, kept by background
+   * refills while the pool is open (default 1). `create()` prewarms the
+   * larger of this and `minIdle`. The wasm pool only prewarms: it replaces a
+   * departed worker only for a waiting checkout.
    */
   minProcesses?: number
+  /**
+   * Floor on ready workers, idle or being spawned (default 0). Taking an idle
+   * worker starts a background refill, so concurrent checkouts stay warm even
+   * though checked-out workers count towards `minProcesses`. Capped by
+   * `maxProcesses`. Ignored by the wasm pool.
+   */
+  minIdle?: number
   /** Worker cap; checkouts beyond it wait (default: CPU count). */
   maxProcesses?: number
   /**
@@ -176,12 +185,16 @@ export class Monty {
     this.native = native
   }
 
-  /** Creates the pool and prewarms `minProcesses` workers. */
+  /** Creates the pool and prewarms the larger of `minProcesses` and `minIdle` workers. */
   static async create(options: MontyOptions = {}): Promise<Monty> {
     validateMaxCheckouts(options.maxCheckoutsPerWorker)
+    validateUint32Option(options.minProcesses, 'minProcesses', 0)
+    validateUint32Option(options.minIdle, 'minIdle', 0)
+    validateUint32Option(options.maxProcesses, 'maxProcesses', 1)
     const native = new NativePool({
       binaryPath: findMontyBinary(options.binaryPath),
       minProcesses: options.minProcesses ?? 1,
+      ...(options.minIdle !== undefined ? { minIdle: options.minIdle } : {}),
       maxProcesses: options.maxProcesses ?? availableParallelism(),
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
