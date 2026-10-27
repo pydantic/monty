@@ -13,7 +13,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::{StaticStrings, StringId},
     modules::{ModuleFunctions, dataclasses::DataclassesFunctions},
-    types::{Class, Dict, PyTrait, iter::collect_owned_iterable, str::str_isidentifier},
+    types::{Class, Dict, PyTrait, Type, iter::collect_owned_iterable, str::str_isidentifier},
     value::{Marker, Value},
 };
 
@@ -45,7 +45,7 @@ pub(super) fn make_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
     } = MakeDataclassArgs::from_args(args, vm)?;
     let mut guard = DropGuard::new(
         (
-            [cls_name, fields, bases, namespace, module, decorator],
+            ([cls_name, fields, namespace, module, decorator], bases),
             [
                 init,
                 repr,
@@ -61,11 +61,12 @@ pub(super) fn make_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
         ),
         vm,
     );
-    let (([cls_name, fields, bases, namespace, module, _], _), vm) = guard.as_parts();
-    let class = build_class(cls_name, fields, bases, namespace, module, vm)?;
-    let ((values, options), vm) = guard.into_parts();
-    let [cls_name, fields, bases, namespace, module, decorator] = values;
-    [cls_name, fields, bases, namespace, module].drop_with(vm);
+    let ((([cls_name, fields, namespace, module, _], bases), _), vm) = guard.as_parts();
+    let class = build_class(cls_name, fields, bases.as_ref(), namespace, module, vm)?;
+    let (((values, bases), options), vm) = guard.into_parts();
+    let [cls_name, fields, namespace, module, decorator] = values;
+    [cls_name, fields, namespace, module].drop_with(vm);
+    bases.drop_with(vm);
     defer_drop!(decorator, vm);
     let kwargs = OPTION_NAMES
         .into_iter()
@@ -90,9 +91,9 @@ pub(super) fn make_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
 struct MakeDataclassArgs {
     cls_name: Value,
     fields: Value,
-    /// `MISSING` stands in for CPython's `()` default, which would need a heap tuple.
-    #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
-    bases: Value,
+    /// `None` stands in for CPython's `()` default, which would need a heap tuple.
+    #[from_args(kw_only, default = None)]
+    bases: Option<Value>,
     #[from_args(kw_only, default = Value::None)]
     namespace: Value,
     #[from_args(kw_only, default = Value::Bool(true))]
@@ -144,7 +145,7 @@ const OPTION_NAMES: [StaticStrings; 10] = [
 fn build_class(
     cls_name: &Value,
     fields: &Value,
-    bases: &Value,
+    bases: Option<&Value>,
     namespace: &Value,
     module: &Value,
     vm: &mut VM<'_>,
@@ -323,17 +324,25 @@ fn repr_of(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
 }
 
 /// Refuses any base class, as `type()` does: Monty classes cannot inherit.
-fn check_bases(bases: &Value, vm: &mut VM<'_>) -> RunResult<()> {
-    if matches!(bases, Value::Marker(Marker(StaticStrings::Missing))) {
-        return Ok(());
-    }
-    let bases = collect_owned_iterable::<Vec<Value>>(bases.clone_with_heap(vm.heap), vm)?;
-    let given = !bases.is_empty();
-    bases.drop_with(vm);
-    if given {
-        Err(ExcType::type_error("make_dataclass() bases are not supported"))
-    } else {
-        Ok(())
+///
+/// `None` is the omitted argument. A non-tuple is iterated first, as
+/// `types.new_class` does, then refused as `type.__new__` refuses it.
+fn check_bases(bases: Option<&Value>, vm: &mut VM<'_>) -> RunResult<()> {
+    match bases {
+        None => Ok(()),
+        Some(bases) if bases.py_type(vm) == Type::Tuple => {
+            if bases.py_len(vm) == Some(0) {
+                Ok(())
+            } else {
+                Err(ExcType::type_error("make_dataclass() bases are not supported"))
+            }
+        }
+        Some(bases) => {
+            let items = collect_owned_iterable::<Vec<Value>>(bases.clone_with_heap(vm.heap), vm)?;
+            items.drop_with(vm);
+            let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+            Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got))
+        }
     }
 }
 

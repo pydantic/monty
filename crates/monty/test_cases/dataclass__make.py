@@ -1,6 +1,6 @@
 # `dataclasses.make_dataclass`: a class built from a field list, then decorated.
 import typing
-from dataclasses import KW_ONLY, InitVar, dataclass, field, fields, make_dataclass
+from dataclasses import KW_ONLY, MISSING, InitVar, dataclass, field, fields, make_dataclass
 
 # === Bare names, (name, type) and (name, type, Field) entries ===
 C = make_dataclass('C', ['x', ('y', int), ('z', int, field(default=3))])
@@ -107,6 +107,25 @@ try:
     assert False, 'expected a TypeError'
 except TypeError as e:
     assert str(e) == "make_dataclass() got an unexpected keyword argument 'bogus'"
+# `bases` must be a tuple: the empty tuple is accepted, anything else refused.
+# `MISSING` is iterated like any other value, not mistaken for the omitted default.
+assert make_dataclass('X', ['a'], bases=())(1).a == 1
+try:
+    iter(MISSING)
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    missing_not_iterable = str(e)
+for bases, message in [
+    ([], 'type.__new__() argument 2 must be tuple, not list'),
+    (set(), 'type.__new__() argument 2 must be tuple, not set'),
+    (MISSING, missing_not_iterable),
+    (5, "'int' object is not iterable"),
+]:
+    try:
+        make_dataclass('X', ['a'], bases=bases)
+        assert False, 'expected a TypeError'
+    except TypeError as e:
+        assert str(e) == message
 # The decorator's own checks still apply.
 try:
     make_dataclass('X', [('a', int, [])])

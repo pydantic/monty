@@ -798,7 +798,13 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
         (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
             Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
         }
-        (HeapReadOutput::Instance(_), HeapReadOutput::Instance(_)) => instance_order(id1, &Value::Ref(id2), vm),
+        (HeapReadOutput::Instance(_), HeapReadOutput::Instance(_)) => {
+            // An owned reference, so the `Value` is released through `drop_with`.
+            vm.heap.inc_ref(id2);
+            let other = Value::Ref(id2);
+            defer_drop!(other, vm);
+            instance_order(id1, other, vm)
+        }
         _ => Ok(CmpOrder::Incomparable),
     }
 }

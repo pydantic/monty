@@ -15,7 +15,7 @@ wrap them in `ClassInstance` explicitly.
 
 Only the features listed below are missing.
 Each **raises where it is written** — at the decoration, or at the `field()` or `make_dataclass()` call — rather
-than producing a subtly wrong class.
+than producing a subtly wrong class; `Field.metadata` raises when it is read.
 
 Each raises `NotImplementedError`, marking a feature Monty has not built yet
 rather than a mistake in the calling code. CPython accepts all of them, so the
@@ -161,7 +161,8 @@ field after a defaulted one
 
 - **Every ordering consults the generated `__lt__`.** The operators, `sorted()`, `min()` and `max()` compare through
     the field list of the class's generated `__lt__` whichever operator is asked, so rebinding `C.__le__` after
-    decoration changes nothing, and replacing `C.__lt__` makes instances unorderable.
+    decoration changes nothing, and replacing `C.__lt__` makes instances unorderable, even for `<=`, where CPython
+    still calls the generated `__le__`.
     A hand-written `__lt__` is never dispatched (see [classes.md](classes.md)).
 
 - **`asdict()` / `astuple()` rebuild only lists, tuples and dicts.** Any other value is deep-copied, so a dataclass

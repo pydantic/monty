@@ -16,12 +16,9 @@ type checking as well as raising `AttributeError` at runtime.
 
 ## `copy.replace` and `__replace__`
 
-`copy.replace` calls `__replace__` from a class instance's class, as CPython does, so it works on dataclasses and on
-any class defining `__replace__`.
 Monty's built-in types have no `__replace__` attribute, so `obj.__replace__` raises `AttributeError` on them.
 `copy.replace` still accepts the ones CPython supports by calling the method CPython's `__replace__` aliases: a
 namedtuple's `_replace`, and `replace` on `date`, `datetime` and `time`.
-Their errors are those methods' own, which match CPython's.
 
 ## The reducer protocol is ignored
 

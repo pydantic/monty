@@ -599,12 +599,16 @@ pub enum StaticStrings {
     AsciiFlag,
     /// `time.asctime()` function.
     Asctime,
+    /// `dataclasses.asdict()` function.
+    Asdict,
     /// `math.asin()` function.
     Asin,
     /// `math.asinh()` function.
     Asinh,
     /// `datetime.astimezone()` method.
     Astimezone,
+    /// `dataclasses.astuple()` function.
+    Astuple,
     /// Module name for `import asyncio`.
     Asyncio,
     /// `math.atan()` function.
@@ -669,6 +673,8 @@ pub enum StaticStrings {
     BasePrefix,
     /// `os.path.basename()` function.
     Basename,
+    /// `make_dataclass(bases=...)` keyword argument.
+    Bases,
     /// `decimal.BasicContext` template context.
     #[strum(serialize = "BasicContext")]
     BasicContext,
@@ -752,6 +758,8 @@ pub enum StaticStrings {
     /// `__class_getitem__`, the classmethod behind `list[int]`.
     #[strum(serialize = "__class_getitem__")]
     ClassGetitem,
+    /// `dataclasses.fields(class_or_instance)` parameter.
+    ClassOrInstance,
     /// `typing.ClassVar` marker.
     #[strum(serialize = "ClassVar")]
     ClassVar,
@@ -768,6 +776,8 @@ pub enum StaticStrings {
     /// The class parameter of the decorator `@dataclass(...)` returns, which
     /// CPython spells `def wrap(cls)` and so accepts by keyword.
     Cls,
+    /// `make_dataclass(cls_name, ...)` parameter.
+    ClsName,
     /// `gc.collect()` function.
     Collect,
     /// Module name for `import collections`.
@@ -890,6 +900,8 @@ pub enum StaticStrings {
     /// `base64.decodebytes()` function.
     #[strum(serialize = "decodebytes")]
     Decodebytes,
+    /// `make_dataclass(decorator=...)` keyword argument.
+    Decorator,
     /// `copy.deepcopy()`. The module name and `copy.copy()` reuse [`Self::Copy`].
     Deepcopy,
     /// Kwarg name `default` — `os.getenv(default=...)`.
@@ -931,6 +943,8 @@ pub enum StaticStrings {
     /// `csv.Dialect`, the `_csv.Dialect` class.
     #[strum(serialize = "Dialect")]
     DialectClass,
+    /// `dataclasses.asdict(dict_factory=...)` keyword argument.
+    DictFactory,
     /// `csv.DictReader` class.
     #[strum(serialize = "DictReader")]
     DictReader,
@@ -990,6 +1004,9 @@ pub enum StaticStrings {
     Dump,
     /// `json.dumps()` function.
     Dumps,
+    /// `__annotations__` — written into the class `make_dataclass()` builds.
+    #[strum(serialize = "__annotations__")]
+    DunderAnnotations,
     /// `__args__` of a `types.GenericAlias`.
     #[strum(serialize = "__args__")]
     DunderArgs,
@@ -1003,37 +1020,30 @@ pub enum StaticStrings {
     /// `__eq__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__eq__")]
     DunderEq,
-    /// `__getnewargs__` — the copy/pickle hook on named tuples.
-    #[strum(serialize = "__getnewargs__")]
-    DunderGetnewargs,
-    /// `__hash__` — written into a class namespace by `@dataclass`.
-    #[strum(serialize = "__hash__")]
-    DunderHash,
-    /// `__replace__` — written into a class namespace by `@dataclass`, and
-    /// what `copy.replace()` calls.
-    #[strum(serialize = "__replace__")]
-    DunderReplace,
-    /// `__annotations__` — written into the class `make_dataclass()` builds.
-    #[strum(serialize = "__annotations__")]
-    DunderAnnotations,
-    /// `__lt__` — written into a class namespace by `@dataclass(order=True)`.
-    #[strum(serialize = "__lt__")]
-    DunderLt,
-    /// `__le__` — written into a class namespace by `@dataclass(order=True)`.
-    #[strum(serialize = "__le__")]
-    DunderLe,
-    /// `__gt__` — written into a class namespace by `@dataclass(order=True)`.
-    #[strum(serialize = "__gt__")]
-    DunderGt,
     /// `__ge__` — written into a class namespace by `@dataclass(order=True)`.
     #[strum(serialize = "__ge__")]
     DunderGe,
+    /// `__getnewargs__` — the copy/pickle hook on named tuples.
+    #[strum(serialize = "__getnewargs__")]
+    DunderGetnewargs,
+    /// `__gt__` — written into a class namespace by `@dataclass(order=True)`.
+    #[strum(serialize = "__gt__")]
+    DunderGt,
+    /// `__hash__` — written into a class namespace by `@dataclass`.
+    #[strum(serialize = "__hash__")]
+    DunderHash,
     /// `__init__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__init__")]
     DunderInit,
+    /// `__le__` — written into a class namespace by `@dataclass(order=True)`.
+    #[strum(serialize = "__le__")]
+    DunderLe,
     /// `decimal.__libmpdec_version__` attribute.
     #[strum(serialize = "__libmpdec_version__")]
     DunderLibmpdecVersion,
+    /// `__lt__` — written into a class namespace by `@dataclass(order=True)`.
+    #[strum(serialize = "__lt__")]
+    DunderLt,
     /// `__main__`, the `__name__` of the module being run.
     #[strum(serialize = "__main__")]
     DunderMain,
@@ -1055,6 +1065,10 @@ pub enum StaticStrings {
     /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
     #[strum(serialize = "__qualname__")]
     DunderQualname,
+    /// `__replace__` — written into a class namespace by `@dataclass`, and
+    /// what `copy.replace()` calls.
+    #[strum(serialize = "__replace__")]
+    DunderReplace,
     /// `__repr__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__repr__")]
     DunderRepr,
@@ -1177,44 +1191,18 @@ pub enum StaticStrings {
     Fanout,
     /// `dataclasses.field()` function, and the `Field` type name.
     Field,
-    /// `dataclasses.fields()` function.
-    Fields,
-    /// `dataclasses.make_dataclass()` function.
-    MakeDataclass,
-    /// `make_dataclass(cls_name, ...)` parameter.
-    ClsName,
-    /// `make_dataclass(bases=...)` keyword argument.
-    Bases,
-    /// `make_dataclass(namespace=...)` keyword argument.
-    Namespace,
-    /// `make_dataclass(decorator=...)` keyword argument.
-    Decorator,
-    /// `dataclasses._FIELD`, the `Field._field_type` of an ordinary field.
-    #[strum(serialize = "_FIELD")]
-    FieldSentinel,
-    /// `dataclasses._FIELD_INITVAR`, the `Field._field_type` of an `InitVar`.
-    #[strum(serialize = "_FIELD_INITVAR")]
-    InitVarSentinel,
-    /// `dataclasses.InitVar`, the annotation form for an `__init__`-only parameter.
-    #[strum(serialize = "InitVar")]
-    InitVar,
-    /// `dataclasses.asdict()` function.
-    Asdict,
-    /// `dataclasses.astuple()` function.
-    Astuple,
-    /// `dataclasses.fields(class_or_instance)` parameter.
-    ClassOrInstance,
-    /// `dataclasses.asdict(dict_factory=...)` keyword argument.
-    DictFactory,
-    /// `dataclasses.astuple(tuple_factory=...)` keyword argument.
-    TupleFactory,
     /// `namedtuple(field_names=...)` keyword argument.
     #[strum(serialize = "field_names")]
     FieldNames,
+    /// `dataclasses._FIELD`, the `Field._field_type` of an ordinary field.
+    #[strum(serialize = "_FIELD")]
+    FieldSentinel,
     /// `csv.field_size_limit()` function.
     FieldSizeLimit,
     /// `fieldnames` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
     Fieldnames,
+    /// `dataclasses.fields()` function.
+    Fields,
     /// Kwarg name `file` — `open(file=...)`.
     File,
     /// Kwarg name `filename` — `os.path.getsize(filename=...)`, `os.path.realpath(filename=...)`.
@@ -1424,6 +1412,12 @@ pub enum StaticStrings {
     Inexact,
     /// `@dataclass(init=...)`.
     Init,
+    /// `dataclasses.InitVar`, the annotation form for an `__init__`-only parameter.
+    #[strum(serialize = "InitVar")]
+    InitVar,
+    /// `dataclasses._FIELD_INITVAR`, the `Field._field_type` of an `InitVar`.
+    #[strum(serialize = "_FIELD_INITVAR")]
+    InitVarSentinel,
     /// `initial` keyword argument of `functools.reduce()` and
     /// `itertools.accumulate()`.
     Initial,
@@ -1571,6 +1565,10 @@ pub enum StaticStrings {
     Keywords,
     /// `@dataclass(kw_only=...)`.
     KwOnly,
+    /// `dataclasses.KW_ONLY`, the class-body marker after which every field is
+    /// keyword-only.
+    #[strum(serialize = "KW_ONLY")]
+    KwOnlyMarker,
     /// `lambd` parameter of `random.expovariate()`.
     Lambd,
     /// `last_node` parameter of `hashlib.blake2b()`.
@@ -1643,6 +1641,8 @@ pub enum StaticStrings {
     Lstrip,
     /// `sys.version_info.major` field.
     Major,
+    /// `dataclasses.make_dataclass()` function.
+    MakeDataclass,
     /// `os.makedirs()` function.
     Makedirs,
     /// `sys.float_info.mant_dig` field.
@@ -1739,10 +1739,6 @@ pub enum StaticStrings {
     Minutes,
     /// `CacheInfo.misses` field.
     Misses,
-    /// `dataclasses.KW_ONLY`, the class-body marker after which every field is
-    /// keyword-only.
-    #[strum(serialize = "KW_ONLY")]
-    KwOnlyMarker,
     /// `dataclasses.MISSING` — the sentinel for an argument not given, since
     /// `None` is a legitimate default.
     #[strum(serialize = "MISSING")]
@@ -1791,6 +1787,8 @@ pub enum StaticStrings {
     Name,
     /// The `collections.namedtuple` factory function.
     Namedtuple,
+    /// `make_dataclass(namespace=...)` keyword argument.
+    Namespace,
     /// Kwarg name `ndigits` — `round(ndigits=...)`.
     Ndigits,
     /// `typing.Never` marker.
@@ -2471,6 +2469,8 @@ pub enum StaticStrings {
     TrueRepr,
     /// `math.trunc()` function.
     Trunc,
+    /// `dataclasses.astuple(tuple_factory=...)` keyword argument.
+    TupleFactory,
     /// `typing.Tuple` marker.
     #[strum(serialize = "Tuple")]
     TupleType,

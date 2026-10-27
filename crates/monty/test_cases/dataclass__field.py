@@ -175,6 +175,20 @@ try:
     assert False, 'expected a non-default after a default to raise'
 except TypeError as e:
     assert str(e) == "non-default argument 'second' follows default argument 'first'"
+# A body `__init__` replaces the generated one but does not skip the order check.
+try:
+
+    @dataclass
+    class BadOrderOwnInit:
+        first: int = 1
+        second: int
+
+        def __init__(self):
+            pass
+
+    assert False, 'expected a non-default after a default to raise'
+except TypeError as e:
+    assert str(e) == "non-default argument 'second' follows default argument 'first'"
 
 
 # === A mutable default is still rejected; the factory is the way round it ===

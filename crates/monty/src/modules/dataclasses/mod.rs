@@ -477,10 +477,11 @@ fn install_generated_methods<'h>(
             .collect()
     };
 
+    // CPython checks the order whenever `init=True`, even beside a body `__init__`.
+    if options.init && installer.is_decorating() {
+        check_default_order(&specs, installer.heap(), installer.interns())?;
+    }
     if options.init && !installer.defines(class_id, "__init__") {
-        if installer.is_decorating() {
-            check_default_order(&specs, installer.heap(), installer.interns())?;
-        }
         let post_init = installer.is_decorating() && installer.defines(class_id, "__post_init__");
         let fields = init_fields(&specs, installer.heap());
         let init = DataclassMethod::init(class_name.clone(), fields, post_init, options.frozen);

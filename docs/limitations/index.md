@@ -127,7 +127,7 @@ Each links to the page that owns it, which is where the full account lives:
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
     error messages differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
-    `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic
+    `TypeError` as if undefined (`@dataclass(order=True)`'s generated ordering is the exception), while in-place arithmetic dunders are skipped in favor of binary arithmetic
     (`@=` is rejected at compile time).
     `__bool__` and the `__getattr__` family are ignored silently, so an instance is always truthy
     ([classes.md](classes.md)).

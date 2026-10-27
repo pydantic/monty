@@ -558,7 +558,7 @@ impl Signature {
                 quote! { crate::args::ArgErrCtx::BadArgPos { func_name: #func_name, pos: #pos } }
             }
             Some(BadArgStyle::Named) => {
-                let arg_name = field.ident.to_string();
+                let arg_name = field.python_name();
                 quote! { crate::args::ArgErrCtx::BadArgNamed { func_name: #func_name, arg_name: #arg_name } }
             }
         }
@@ -686,7 +686,7 @@ fn render_build_field(field: &Field) -> TokenStream {
 impl Field {
     /// The `Param` literal for the runtime spec.
     fn render_param(&self, never_matchable: bool) -> TokenStream {
-        let name = self.name.clone().unwrap_or_else(|| self.ident.to_string());
+        let name = self.python_name();
         let keyword_name = self.keyword_name_expr(never_matchable);
         let kind = match self.kind {
             FieldKind::PosOnly => quote! { crate::args::ParamKind::PosOnly },
@@ -703,6 +703,11 @@ impl Field {
                 required: #required,
             }
         }
+    }
+
+    /// The parameter name error messages show: the `name` override, else the field name.
+    fn python_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| self.ident.to_string())
     }
 
     /// Executor-independent tag used to match this parameter by keyword.
