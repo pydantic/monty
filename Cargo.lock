@@ -834,6 +834,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpu-time"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e393a7668fe1fad3075085b86c781883000b4ede868f43627b34a87c8b7ded"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2507,6 +2517,7 @@ version = "1.4.0"
 dependencies = [
  "ahash",
  "chrono",
+ "cpu-time",
  "fancy-regex 0.17.0",
  "getrandom 0.3.4",
  "hashbrown 0.16.1",
@@ -2676,6 +2687,7 @@ dependencies = [
  "monty-fs",
  "monty-proto",
  "monty-types",
+ "nix 0.31.3",
  "num-traits",
  "opentelemetry",
  "opentelemetry-proto",
@@ -2758,6 +2770,7 @@ name = "monty-types"
 version = "1.4.0"
 dependencies = [
  "chrono",
+ "cpu-time",
  "jiff",
  "minicbor-serde",
  "monty-macros",

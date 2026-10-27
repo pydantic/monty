@@ -66,6 +66,9 @@ tracing-opentelemetry = { version = "0.33", optional = true }
 # Host-neutral processors used by Python, Node, and third-party adapters.
 opentelemetry_sdk = { version = "0.32", optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31.3", features = ["process", "time", "signal", "poll"] }
+
 [dev-dependencies]
 # Snapshots of the error messages the pool reports to a host.
 insta = { workspace = true }

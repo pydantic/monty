@@ -6,7 +6,7 @@
 //! `DUMP_VERSION`, and a synthetic old/new type pair round-tripped through the
 //! codec itself.
 
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, path::PathBuf, thread, time::Duration};
 
 use insta::assert_snapshot;
 use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
@@ -618,4 +618,25 @@ fn layout_edits_load_older_encodings() {
         let bytes = minicbor_serde::to_vec(&old).unwrap();
         assert_eq!(minicbor_serde::from_slice::<RecordV2>(&bytes).unwrap(), expected);
     }
+}
+
+/// A wall-clock snapshot keeps its consumed duration and resumes with a fresh CPU baseline.
+#[test]
+fn legacy_wall_clock_snapshot_preserves_consumption() {
+    let bytes = include_bytes!("fixtures/dump_v14.bin");
+    let loaded = Dump::load(bytes).unwrap();
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("legacy fixture must be suspended");
+    };
+    let consumed = progress.tracker().elapsed();
+    // Durations encoded by the frozen version-14 fixture, before CPU accounting.
+    assert_eq!(consumed, Duration::from_nanos(10_029_209));
+    assert_eq!(progress.tracker().feed_elapsed(), Duration::from_nanos(79_167));
+    thread::sleep(Duration::from_millis(30));
+    assert_eq!(progress.tracker().elapsed(), consumed);
+    let call = progress.into_function_call().unwrap();
+    let completed = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+    let (repl, value) = completed.into_complete().unwrap();
+    assert_eq!(value, MontyObject::int(42));
+    assert!(repl.tracker().elapsed() >= consumed);
 }

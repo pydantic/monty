@@ -197,3 +197,13 @@ Return the generated values or `rng.getstate()` instead.
 
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.
+
+## Execution time
+
+Native execution duration limits count the executing thread's CPU time, sampled
+with a cache of up to 1 ms. Smaller remaining budgets shorten that interval.
+Execution boundaries take fresh samples. WebAssembly and unavailable or unusable
+CPU counters use elapsed time. The OS controls CPU counter accuracy and resolution.
+Pool backstops use the remaining execution budget plus their configured grace.
+`request_timeout` is an independent, unscaled elapsed-time deadline.
+Older snapshots retain their recorded consumption.

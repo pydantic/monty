@@ -181,6 +181,8 @@ subprocesses:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
     streamed `Print` events out, then exactly one turn-ending event.
+- Native interpreter duration budgets use sampled thread CPU time. WebAssembly and failed
+    CPU reads use elapsed time. Pool wall deadlines remain independent of the execution clock.
 - `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads
     are cancel-safe (partial-frame state lives in the worker, no pump task),

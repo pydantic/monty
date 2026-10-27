@@ -96,7 +96,7 @@ Invalid snapshots have no correctness or availability guarantees.
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
   enforcement while they run because the timer cannot be polled. When a session has a
-  `max_feed_duration` or `max_turn_duration` budget, the deadline also enforces it from outside the child,
+  `max_feed_duration` or `max_turn_duration` budget, the default deadline also enforces it from outside the child,
   each with its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`, 1s by default;
   `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
@@ -130,11 +130,55 @@ A failed restore also discards the worker.
 
 Timeouts kill the single worker PID, not a process group; the Monty sandbox must never spawn subprocesses.
 A remote CPython worker needs deployment-level process teardown instead.
-The duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
+The default elapsed-duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
 full budget plus grace, but `request_timeout` applies independently.
 Both deadlines are polled, so decoding a large reply can delay enforcement.
 Host mount I/O runs between turns and is not covered by either deadline; see
 [filesystem timeouts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md#io-timeouts-and-cancellation).
+
+## Linux subprocess CPU backstops
+
+Rust callers can set `PoolConfig::subprocess_cpu_limit_grace = Some(grace)` to enforce configured feed and turn CPU budgets from the supervisor.
+The pool reads the child's Linux process CPU clock. Live worker-reported usage cannot spend or refund this allowance.
+The process clock includes protocol and compilation CPU in each active request.
+On GNU/Linux, a pool-owned watcher arms one-shot kernel CPU timers for requests still active after 5 ms.
+Short requests use boundary samples only. Other Linux targets retain 5 ms polling.
+The pool checks a final CPU sample before accepting a turn-ending reply.
+Scheduling can delay enforcement, so neither mechanism provides a hard overshoot bound.
+The watcher receives thread-directed signals. It does not install a process-wide handler or change the caller’s signal mask.
+
+```rust
+use std::time::Duration;
+use monty_pool::PoolConfig;
+
+let mut config = PoolConfig::subprocess("monty");
+config.request_timeout = Some(Duration::from_secs(2));
+config.subprocess_cpu_limit_grace = Some(Duration::ZERO);
+```
+
+This opt-in mode requires Linux, the local subprocess transport, and a finite `request_timeout`.
+It replaces the automatic elapsed-duration backstops and ignores `feed_duration_limit_grace` and `turn_duration_limit_grace`.
+The explicit `request_timeout` remains an independent wall deadline.
+CPU exhaustion kills and reaps the worker with `PoolError::CpuLimit`; wall exhaustion retains `PoolError::Timeout`.
+A CPU-clock or kernel-timer failure also discards and reaps the worker.
+The mode does not fall back to elapsed accounting or polling if GNU/Linux timer registration fails.
+An unrepresentable CPU deadline fails instead of wrapping.
+Both timers require the host runtime to make progress. Synchronous host callbacks can delay enforcement.
+
+CPU grace is one bounded allowance per feed and per turn. Resuming does not renew the feed's grace or consumed CPU.
+A new feed resets the feed ledger. Time waiting for a host-function result or host mount I/O is outside the child CPU window.
+With CPU supervision, an error from `Checkout::turn_raw` does not prove a suspended feed ended.
+Complete its suspension or finish the checkout before starting another feed; an ambiguous runtime error can require ending the checkout.
+The VM's cooperative CPU checks remain enabled and can raise `TimeoutError` without killing the worker.
+The default `None` preserves existing elapsed-grace settings and behavior.
+The Python and JavaScript pool options do not expose this Rust-only opt-in yet.
+
+Restore seeds the consumed feed CPU from the trusted snapshot's saved VM usage, then starts a fresh OS baseline.
+This approximate carry-over does not preserve protocol CPU or CPU grace spent before the snapshot.
+It uses the existing snapshot trust contract; there is no separate durable accounting record.
+WebSocket clients keep their existing deadlines. Configure CPU supervision in the relay's local subprocess pool, beside the actual child.
+When the relay enforces CPU, a client can disable its budget-derived elapsed backstops with `feed_duration_limit_grace = None` and `turn_duration_limit_grace = None`, while retaining `request_timeout` for network waits.
+No protocol or snapshot format changes are introduced by this option.
 
 ## Observability
 

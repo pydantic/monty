@@ -1025,7 +1025,7 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
             Ok(event) => Self::Event(event),
             Err(PoolError::Runtime(exc)) => Self::Runtime(exc),
             Err(PoolError::Typing(diagnostics)) => Self::Typing(diagnostics),
-            Err(err @ PoolError::Timeout { .. }) => Self::Crashed {
+            Err(err @ (PoolError::Timeout { .. } | PoolError::CpuLimit { .. })) => Self::Crashed {
                 message: err.to_string(),
                 timed_out: true,
                 exit_status: None,

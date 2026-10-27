@@ -5,7 +5,7 @@
 use std::hint;
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 use std::time::Instant;
 use std::{
     cell::Cell,
@@ -15,13 +15,11 @@ use std::{
     time::Duration,
 };
 
-// `std::time::Instant::now()` panics ("time not implemented on this platform")
-// on `wasm32-unknown-unknown`, so any duration limit aborts there. Swap in
-// `web_time::Instant` (a `performance.now()`-backed drop-in) only for that
-// target; every other target (native, WASI) keeps std, so the `web-time`
-// dependency is pulled in only where it's needed (see Cargo.toml).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_time::Instant;
+
+mod execution_clock;
+use execution_clock::ExecutionInstant;
 
 /// Exit code a worker uses when it exceeded its memory limit or the allocator
 /// refused an allocation, so the parent can report `MemoryError` instead of an
@@ -157,11 +155,13 @@ impl Error for ResourceError {}
 pub struct ResourceLimits {
     /// Maximum execution time for a single feed (`feed_start`, `feed_run` or
     /// `call_function`), summed over the turns it takes and excluding time
-    /// suspended on the host. Bounds one snippet, not the session.
+    /// suspended on the host. Native runtimes use sampled thread CPU time.
+    /// WebAssembly and unavailable CPU clocks use elapsed time.
+    /// Bounds one snippet, not the session.
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
     /// each resume. Bounds the stretch of sandbox code between two host round
-    /// trips, so a host can bound its own response time per call.
+    /// trips. Use a separate host deadline to bound elapsed response time.
     pub max_turn_duration: Option<Duration>,
     /// Maximum allocator-backed memory in bytes.
     ///
@@ -298,7 +298,7 @@ pub struct ResourceTracker {
     /// idle. Never serialized — a snapshot is by definition taken while not
     /// executing.
     #[serde(skip)]
-    running_since: Cell<Option<Instant>>,
+    running_since: Cell<Option<ExecutionInstant>>,
     /// Optional override applied on top of `limits.max_recursion_depth`.
     ///
     /// `None` (the default — also the value any pre-`test-hooks` snapshot
@@ -364,10 +364,10 @@ impl ResourceTracker {
             .unwrap_or(self.limits.max_recursion_depth)
     }
 
-    /// Returns the cumulative execution time: bytecode-execution wall time
+    /// Returns the cumulative execution time: native thread CPU time
     /// accumulated across runs/feeds, excluding time suspended on the host
     /// or idle between feeds. Includes the in-progress window if the VM is
-    /// currently executing.
+    /// currently executing. WebAssembly and unavailable CPU clocks use elapsed time.
     ///
     /// Nothing is bounded by this — it is reported to the host for telemetry.
     /// The budgets are [`feed_elapsed`](Self::feed_elapsed) and
@@ -398,7 +398,12 @@ impl ResourceTracker {
     /// rather than two.
     #[inline]
     fn running_window(&self) -> Duration {
-        self.running_since.get().map_or(Duration::ZERO, |t| t.elapsed())
+        let Some(mut window) = self.running_since.get() else {
+            return Duration::ZERO;
+        };
+        let elapsed = window.elapsed();
+        self.running_since.set(Some(window));
+        elapsed
     }
 
     /// Returns the configured per-feed execution time limit, if any.
@@ -678,14 +683,21 @@ impl ResourceTracker {
             self.running_since.get().is_none(),
             "nested on_execution_start: VM-internal re-entry must use the raw run loop, not run_external"
         );
-        self.running_since.set(Some(Instant::now()));
+        let remaining = [
+            (self.limits.max_feed_duration, self.feed_execution_time.get()),
+            (self.limits.max_turn_duration, self.turn_execution_time.get()),
+        ]
+        .into_iter()
+        .filter_map(|(limit, used)| limit.map(|limit| limit.saturating_sub(used)))
+        .min();
+        self.running_since.set(Some(ExecutionInstant::now(remaining)));
     }
 
     /// Called when the VM leaves its execution loop — on completion, error,
     /// or suspension at an external call. See [`on_execution_start`](Self::on_execution_start).
     pub fn on_execution_stop(&self) {
-        if let Some(started) = self.running_since.take() {
-            let window = started.elapsed();
+        if let Some(mut started) = self.running_since.take() {
+            let window = started.elapsed_at_stop();
             for clock in [
                 &self.total_execution_time,
                 &self.feed_execution_time,

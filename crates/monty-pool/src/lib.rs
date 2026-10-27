@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 
 mod checkout;
+mod cpu;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod cpu_timer;
 mod pool;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
@@ -75,6 +78,13 @@ pub struct PoolConfig {
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     pub request_timeout: Option<Duration>,
+    /// Enables independent Linux subprocess CPU backstops with this CPU grace.
+    /// Replaces the automatic elapsed-duration backstops, but keeps `request_timeout`.
+    /// Requires a finite `request_timeout` and a local subprocess.
+    /// The OS clock includes protocol/compile CPU. Restore seeds usage from the trusted snapshot.
+    /// Clock or kernel-timer failures discard the worker; timer registration does not fall back to polling.
+    /// `None` preserves the legacy elapsed backstops. No CPU grace is enabled by default.
+    pub subprocess_cpu_limit_grace: Option<Duration>,
     /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
     /// Excludes wire buffers and host-language conversion, and does not change
     /// the sandbox's memory limit.
@@ -92,10 +102,12 @@ pub struct PoolConfig {
     /// itself and keep the session alive; a worker that misses it is killed and
     /// the call fails with [`PoolError::Timeout`], so too short a grace costs
     /// workers that would have recovered.
+    /// Ignored when [`subprocess_cpu_limit_grace`](Self::subprocess_cpu_limit_grace) is enabled.
     pub feed_duration_limit_grace: Option<Duration>,
     /// [`feed_duration_limit_grace`](Self::feed_duration_limit_grace) for the
     /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
     /// that whole limit plus this, the turn clock starting at zero.
+    /// Ignored when [`subprocess_cpu_limit_grace`](Self::subprocess_cpu_limit_grace) is enabled.
     pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child. With the
@@ -141,6 +153,7 @@ impl PoolConfig {
             transport,
             checkout_timeout: None,
             request_timeout: None,
+            subprocess_cpu_limit_grace: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
@@ -165,11 +178,18 @@ pub enum PoolError {
         /// How the pool learned of the death, and what it can say about it.
         cause: CrashCause,
     },
-    /// The worker was killed after its turn outlived `request_timeout` (or
-    /// one of the feed/turn duration backstop deadlines).
+    /// The worker was killed after its turn outlived `request_timeout` or,
+    /// when CPU supervision is disabled, a feed/turn elapsed backstop deadline.
     Timeout {
         /// The configured timeout that expired.
         timeout: Duration,
+    },
+    /// The supervisor killed the worker after its OS-observed CPU allowance expired.
+    CpuLimit {
+        /// The remaining CPU allowance for this turn, including any configured CPU grace.
+        limit: Duration,
+        /// CPU consumed since the supervisor's fresh per-turn OS baseline.
+        consumed: Duration,
     },
     /// The worker violated the wire protocol, or the caller violated the
     /// checkout state machine. Worker-originated protocol failures discard the
@@ -271,6 +291,12 @@ impl fmt::Display for PoolError {
                 }
                 None => f.write_str("monty server is shutting down; the request did not run"),
             },
+            Self::CpuLimit { limit, consumed } => {
+                write!(
+                    f,
+                    "monty worker exceeded CPU allowance {limit:?} (observed {consumed:?})"
+                )
+            }
         }
     }
 }

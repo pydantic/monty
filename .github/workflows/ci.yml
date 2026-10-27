@@ -163,7 +163,7 @@ jobs:
       # coverage for `make test-no-features`
       # `test-rust-os` has no Linux entry, so this is the only Linux run of
       # monty-fs: its race soaks are enabled here or they never run on Linux.
-      - run: cargo llvm-cov --no-report -p monty -p monty-fs
+      - run: cargo llvm-cov --no-report -p monty -p monty-fs -p monty-types
         env:
           MONTY_FS_SOAK: '1'
       - run: cargo llvm-cov run --no-report -p monty-datatest
@@ -175,13 +175,13 @@ jobs:
       - run: cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
       # Generating text report:
       - run: cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
-      # Generate codecov report (use `report` subcommand to avoid recompilation)
-      - run: cargo llvm-cov report --codecov --output-path=rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
+      # Generate LCOV report (use `report` subcommand to avoid recompilation)
+      - run: cargo llvm-cov report --lcov --output-path=rust-coverage.info --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-coverage-report
-          path: rust-coverage.json
+          path: rust-coverage.info
           if-no-files-found: error
 
   # The crates layered on top of the interpreter: the type checker (which does
@@ -237,13 +237,13 @@ jobs:
         run: cargo test --doc -p monty-doctest
       # Generating text report:
       - run: cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
-      # Generate codecov report (use `report` subcommand to avoid recompilation)
-      - run: cargo llvm-cov report --codecov --output-path=rust-crates-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
+      # Generate LCOV report (use `report` subcommand to avoid recompilation)
+      - run: cargo llvm-cov report --lcov --output-path=rust-crates-coverage.info --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-crates-coverage-report
-          path: rust-crates-coverage.json
+          path: rust-crates-coverage.info
           if-no-files-found: error
 
   test-python-coverage:
@@ -300,12 +300,12 @@ jobs:
           cargo test -p pydantic-monty-client --lib
           uv run --package pydantic-monty-client --only-dev pytest crates/monty-python/tests
           cargo llvm-cov report --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
-          cargo llvm-cov report --codecov --output-path=python-rust-coverage.json --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
+          cargo llvm-cov report --lcov --output-path=python-rust-coverage.info --ignore-filename-regex "$LLVM_COV_IGNORE_FILENAME_REGEX"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-rust-coverage-report
-          path: python-rust-coverage.json
+          path: python-rust-coverage.info
           if-no-files-found: error
 
   coverage-upload:
@@ -336,9 +336,18 @@ jobs:
       - name: List coverage reports
         run: ls -lh coverage-reports
 
+      - name: Merge coverage reports
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes lcov
+          lcov --add-tracefile coverage-reports/rust-coverage.info \
+            --add-tracefile coverage-reports/rust-crates-coverage.info \
+            --add-tracefile coverage-reports/python-rust-coverage.info \
+            --output-file coverage-reports/merged.info
+
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
-          files: coverage-reports/rust-coverage.json,coverage-reports/rust-crates-coverage.json,coverage-reports/python-rust-coverage.json
+          files: coverage-reports/merged.info
           disable_search: true
           token: ${{ secrets.CODECOV_TOKEN }}
           name: rust-coverage
@@ -346,9 +355,9 @@ jobs:
       - uses: getsentry/codecov-action@88418cdae07a8bac2beaec1550bcafff9ec55c8b # 0.4.3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          files: coverage-reports/rust-coverage.json,coverage-reports/rust-crates-coverage.json,coverage-reports/python-rust-coverage.json
+          files: coverage-reports/merged.info
           disable-search: true
-          coverage-format: codecov
+          coverage-format: lcov
           post-pr-comment: true
           name: rust-coverage
 

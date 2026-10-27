@@ -273,8 +273,10 @@ indistinguishable from a stack overflow.
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`
     overshoots its duration budget in proportion to its length.
-- Both budgets cover **execution time**, not wall-clock time: the clock runs
-    only while the interpreter executes bytecode, and is paused while execution
+- Native budgets use thread CPU time, with elapsed-time fallback for WebAssembly and unusable counters.
+    See [resource limits](../resource-limits.md#time) for sampling details.
+- Both budgets cover **execution time**: the clock runs
+    only while the interpreter executes bytecode or its native builtins. The clock pauses while execution
     is suspended waiting on the host (external function calls, OS callbacks)
     and between REPL feeds.
 - There is no in-sandbox way to observe either budget or the time left in it.

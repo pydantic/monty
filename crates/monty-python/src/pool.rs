@@ -2277,7 +2277,7 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
         PoolError::Crashed { status, .. } => {
             MontyCrashedError::new_err(py, message, false, status.and_then(|s| s.code()))
         }
-        PoolError::Timeout { .. } => MontyCrashedError::new_err(py, message, true, None),
+        PoolError::Timeout { .. } | PoolError::CpuLimit { .. } => MontyCrashedError::new_err(py, message, true, None),
         PoolError::Disconnected { .. } => MontyDisconnectError::new_err(py, message),
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),

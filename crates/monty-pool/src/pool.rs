@@ -18,6 +18,7 @@ use tokio::{
 use crate::{
     PoolConfig, PoolError,
     checkout::{Checkout, CheckoutOptions, Redial, ReplConfig, request},
+    cpu,
     worker::Worker,
 };
 
@@ -37,6 +38,7 @@ pub struct Pool {
 }
 
 pub(crate) struct PoolInner {
+    pub(crate) cpu_driver: Option<cpu::Driver>,
     pub(crate) config: PoolConfig,
     /// Guarded by a *synchronous* mutex: every critical section is short and
     /// await-free, and worker/checkout `Drop` impls must be able to release
@@ -73,6 +75,17 @@ impl Pool {
     /// fast if the binary cannot be spawned. Must be called within a tokio
     /// runtime (worker process and pipe I/O is driven by the runtime).
     pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
+        if config.subprocess_cpu_limit_grace.is_some()
+            && (!cfg!(target_os = "linux")
+                || config.transport.is_websocket()
+                || config
+                    .request_timeout
+                    .is_none_or(|limit| Instant::now().checked_add(limit).is_none()))
+        {
+            return Err(PoolError::Spawn(
+                "subprocess CPU supervision requires Linux, local subprocesses, and request_timeout".to_owned(),
+            ));
+        }
         if config.min_processes > config.max_processes || config.max_processes == 0 {
             return Err(PoolError::Spawn(format!(
                 "invalid pool size: min_processes={} max_processes={}",
@@ -89,9 +102,15 @@ impl Pool {
                 idle.push(worker);
             }
         }
+        let cpu_driver = config
+            .subprocess_cpu_limit_grace
+            .map(|_| cpu::Driver::new())
+            .transpose()
+            .map_err(|error| PoolError::Spawn(format!("starting CPU timer driver: {error}")))?;
         let total = idle.len();
         let pool = Self {
             inner: Arc::new_cyclic(|this| PoolInner {
+                cpu_driver,
                 config,
                 state: Mutex::new(PoolState {
                     idle,

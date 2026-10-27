@@ -26,12 +26,12 @@ use monty_types::{
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
-use tokio::{task::spawn_blocking, time::timeout};
+use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
-    CrashCause, PoolConfig, PoolError,
+    CrashCause, PoolConfig, PoolError, cpu,
     pool::{CapacityGuard, PoolInner},
     worker::Worker,
 };
@@ -469,6 +469,10 @@ struct SessionBudget {
     /// out, so a worker reporting less than it did mid-feed cannot loosen its
     /// own feed backstop.
     reported_feed_execution: Duration,
+    /// OS-observed CPU during live turns, seeded from the saved VM usage on restore.
+    observed_feed_execution: Duration,
+    /// Also tracks raw suspensions, whose payloads are not classified into `pending`.
+    cpu_feed_suspended: bool,
     /// The session's `max_suspensions` in force (the configured one, else
     /// [`DEFAULT_MAX_SUSPENSIONS`]).
     suspension_limit: u64,
@@ -491,6 +495,8 @@ impl SessionBudget {
             feed_budget: limits.and_then(|limits| limits.max_feed_duration),
             turn_budget: limits.and_then(|limits| limits.max_turn_duration),
             reported_feed_execution: Duration::ZERO,
+            observed_feed_execution: Duration::ZERO,
+            cpu_feed_suspended: false,
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
             sleep_limit: limits.and_then(|limits| limits.max_total_sleep),
@@ -509,6 +515,8 @@ impl SessionBudget {
             feed_budget: self.feed_budget,
             turn_budget: self.turn_budget,
             reported_feed_execution: Duration::ZERO,
+            observed_feed_execution: Duration::ZERO,
+            cpu_feed_suspended: false,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
             sleep_limit: self.sleep_limit,
@@ -532,6 +540,16 @@ impl SessionBudget {
         }
         if is_suspension(event) {
             self.suspensions_seen += 1;
+            self.cpu_feed_suspended = true;
+        } else if matches!(
+            event.kind,
+            Some(
+                pb::child_event::Kind::Complete(_)
+                    | pb::child_event::Kind::Error(_)
+                    | pb::child_event::Kind::TypingError(_)
+            )
+        ) {
+            self.cpu_feed_suspended = false;
         }
     }
 
@@ -539,6 +557,7 @@ impl SessionBudget {
     /// [`reported_feed_execution`](Self::reported_feed_execution).
     fn begin_feed(&mut self) {
         self.reported_feed_execution = Duration::ZERO;
+        self.observed_feed_execution = Duration::ZERO;
     }
 
     /// Reports when this event exceeds the suspension limit.
@@ -827,8 +846,8 @@ impl Checkout {
         // the dump carries its own limits/consumed time/script name — forget
         // what the worker's Configure established and re-adopt from the reply
         // (see `pending_load_budget` for when the old budget comes back)
-        self.pending = None;
         self.begin_load();
+        self.pending = None;
         self.restored_script_name = None;
         // a load names a new session; a storing relay's reply supplies its ID
         let session_id = self.session_id.take();
@@ -901,7 +920,9 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
-        if self.pending.is_some() {
+        if self.pending.is_some()
+            || (self.pool.config.subprocess_cpu_limit_grace.is_some() && self.budget.cpu_feed_suspended)
+        {
             return Err(PoolError::Protocol(
                 "feed called while a suspension is awaiting an answer".into(),
             ));
@@ -1276,8 +1297,71 @@ impl Checkout {
 
     /// The duration backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
+        if self.pool.config.subprocess_cpu_limit_grace.is_some() {
+            return None;
+        }
         self.budget
             .backstop_deadline(DurationGraces::from_config(&self.pool.config))
+    }
+
+    /// Starts a fresh kernel clock window without trusting the worker's reported consumption.
+    async fn cpu_monitor(&mut self, request: &pb::ParentRequest) -> Result<Option<cpu::Monitor>, PoolError> {
+        let Some(grace) = self.pool.config.subprocess_cpu_limit_grace else {
+            return Ok(None);
+        };
+        if !is_execution_turn(request) {
+            return Ok(None);
+        }
+        let Some(limit) = cpu::allowance(
+            self.budget.feed_budget,
+            self.budget.turn_budget,
+            self.budget.observed_feed_execution,
+            grace,
+        ) else {
+            return Ok(None);
+        };
+        let pid = self.worker.as_ref().and_then(Worker::pid).ok_or(PoolError::Finished)?;
+        match cpu::Monitor::new(pid, limit) {
+            Ok(monitor) => Ok(Some(monitor)),
+            Err(error) => Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
+        }
+    }
+
+    /// A ready reply still needs a final sample: the I/O future may have occupied a poll past the budget.
+    async fn finish_cpu_turn<T>(
+        &mut self,
+        monitor: Option<cpu::Monitor>,
+        wall_deadline: Option<DeadlineInstant>,
+        outcome: Result<Result<T, PoolError>, cpu::Failure>,
+    ) -> Result<T, PoolError> {
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(failure) => return Err(self.poison_supervision(failure).await),
+        };
+        if self.pool.config.subprocess_cpu_limit_grace.is_some()
+            && self.worker.is_some()
+            && wall_deadline.is_some_and(|deadline| DeadlineInstant::now() >= deadline)
+        {
+            return Err(self.poison_timeout().await);
+        }
+        if self.worker.is_some()
+            && let Some(monitor) = monitor
+        {
+            let consumed = match monitor.elapsed() {
+                Ok(consumed) => consumed,
+                Err(error) => return Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
+            };
+            self.budget.observed_feed_execution = self.budget.observed_feed_execution.saturating_add(consumed);
+            if consumed >= monitor.limit {
+                return Err(self
+                    .poison_supervision(cpu::Failure::Limit {
+                        limit: monitor.limit,
+                        consumed,
+                    })
+                    .await);
+            }
+        }
+        outcome
     }
 
     /// Snapshots the budget and forgets it ahead of a `Load`, so the reply can
@@ -1305,11 +1389,13 @@ impl Checkout {
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
         }
-        if !is_print
-            && let Some(saved) = self.pending_load_budget.take()
-            && !(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event))
-        {
-            self.budget = saved;
+        if !is_print && let Some(saved) = self.pending_load_budget.take() {
+            if matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event) {
+                // Restore trusts the checkpoint's saved VM usage; live turns use OS measurements.
+                self.budget.observed_feed_execution = Duration::from_micros(event.feed_execution_micros);
+            } else {
+                self.budget = saved;
+            }
         }
         self.budget.update_from(event);
         let exceeded = self
@@ -1363,15 +1449,19 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
         self.ensure_ready()?;
+        let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
+        let monitor = self.cpu_monitor(request).await?;
+        let cpu_driver = self.pool.cpu_driver.clone();
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
-        let outcome = match deadline {
-            Some(limit) => match timeout(limit, self.turn_io(request, &mut *on_print)).await {
-                Ok(outcome) => outcome,
-                Err(_elapsed) => Err(self.poison_timeout().await),
-            },
-            None => self.turn_io(request, &mut *on_print).await,
-        };
+        let outcome = cpu::run(
+            monitor,
+            cpu_driver.as_ref(),
+            wall_deadline,
+            self.turn_io(request, &mut *on_print),
+        )
+        .await;
+        let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
         match outcome {
             // boxed: it recurses into this turn, and its state machine must not
@@ -1532,6 +1622,8 @@ impl Checkout {
     /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
     /// [`PoolError::Finished`]; a raw driver is never auto-resumed.
+    /// In CPU mode, an error does not establish that a suspended feed ended.
+    /// Complete its suspension or finish the checkout before starting another feed.
     ///
     /// # Security
     /// `request` is typically a remote client's, so it is treated as hostile:
@@ -1576,20 +1668,29 @@ impl Checkout {
         // so the parent's must follow it rather than carry the last feed's
         // total into this feed's backstop.
         if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
+            if self.pool.config.subprocess_cpu_limit_grace.is_some() && self.budget.cpu_feed_suspended {
+                return Err(PoolError::Protocol(
+                    "feed called while a suspension is awaiting an answer".into(),
+                ));
+            }
             self.budget.begin_feed();
         }
+        let monitor = self.cpu_monitor(request).await?;
+        let cpu_driver = self.pool.cpu_driver.clone();
         self.turn_in_flight = true;
         // as `expect_turn`: `request_timeout` alone would drop the duration
         // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+        let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         self.armed_deadline = deadline;
-        let outcome = match deadline {
-            Some(limit) => match timeout(limit, self.turn_io_raw(request, on_event)).await {
-                Ok(outcome) => outcome,
-                Err(_elapsed) => Err(self.poison_timeout().await),
-            },
-            None => self.turn_io_raw(request, on_event).await,
-        };
+        let outcome = cpu::run(
+            monitor,
+            cpu_driver.as_ref(),
+            wall_deadline,
+            self.turn_io_raw(request, on_event),
+        )
+        .await;
+        let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
         if is_load {
             self.end_load();
@@ -1616,8 +1717,21 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
+            let was_suspended = self.pending_load_budget.unwrap_or(self.budget).cpu_feed_suspended;
+            let was_aborting = self.abort_in_flight;
             if self.abort_if_over_budget(&mut event).await? {
                 continue;
+            }
+            // An Error can reject a request without ending the child's suspended feed.
+            if self.pool.config.subprocess_cpu_limit_grace.is_some()
+                && was_suspended
+                && !was_aborting
+                && matches!(
+                    event.kind,
+                    Some(pb::child_event::Kind::Error(_) | pb::child_event::Kind::TypingError(_))
+                )
+            {
+                self.budget.cpu_feed_suspended = true;
             }
             // strict alternation: zero or more `Print`s, then exactly one
             // turn-ender — so anything that is not a print ends the turn
@@ -2082,20 +2196,36 @@ impl Checkout {
     /// future has already been dropped (safe — `Worker::recv` is cancel-safe),
     /// so this only kills, reaps, and classifies.
     async fn poison_timeout(&mut self) -> PoolError {
-        if let Some(mut worker) = self.worker.take() {
+        let error = PoolError::Timeout {
+            timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
+        };
+        self.terminate_for_limit(error, "turn_timeout").await
+    }
+
+    async fn poison_supervision(&mut self, failure: cpu::Failure) -> PoolError {
+        match failure {
+            cpu::Failure::Timeout => self.poison_timeout().await,
+            cpu::Failure::Limit { limit, consumed } => {
+                self.terminate_for_limit(PoolError::CpuLimit { limit, consumed }, "cpu_limit")
+                    .await
+            }
+            cpu::Failure::Clock(error) => self.poison(&format!("reading child CPU clock: {error}")).await,
+        }
+    }
+
+    /// The capacity guard preserves cleanup when cancellation interrupts reaping.
+    async fn terminate_for_limit(&mut self, error: PoolError, reason: &'static str) -> PoolError {
+        if let Some(worker) = self.worker.take() {
             #[cfg(feature = "telemetry")]
             self.record_finish("error");
-            // guard, not a trailing release: a caller dropping this future
-            // mid-reap must still release the slot and count the death
-            let _capacity = CapacityGuard::terminating(&self.pool, "turn_timeout");
-            let _ = worker.kill_and_reap().await;
+            let _capacity = CapacityGuard::terminating(&self.pool, reason);
+            let mut worker = worker;
+            worker.kill_and_reap().await;
             drop(worker);
         }
         self.pending = None;
         self.feed_mounts = None;
-        PoolError::Timeout {
-            timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
-        }
+        error
     }
 
     /// Discards the worker without crash classification, for turn-enders
@@ -2176,6 +2306,7 @@ fn resume_failure(err: &PoolError) -> &'static str {
         PoolError::Shutdown { .. } => "shutdown",
         PoolError::Protocol(_) => "mismatch",
         PoolError::Timeout { .. } => "timeout",
+        PoolError::CpuLimit { .. } => "cpu_limit",
         PoolError::Finished => "error",
     }
 }

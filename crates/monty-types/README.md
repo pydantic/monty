@@ -64,6 +64,14 @@ assert_eq!(value.py_repr(), "[1, 'x']");
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.
 
+## Execution time
+
+Native execution duration limits count the executing thread's CPU time, sampled
+with a cache of up to 1 ms. Smaller remaining budgets shorten that interval.
+Execution boundaries take fresh samples. WebAssembly and unavailable or unusable
+CPU counters use elapsed time. The OS controls CPU counter accuracy and resolution.
+Older snapshots retain their recorded consumption.
+
 ## License
 
 MIT

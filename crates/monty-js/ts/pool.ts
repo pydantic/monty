@@ -129,7 +129,8 @@ export interface CheckoutOptions {
  * The pool counts `maxSuspensions` per checkout and aborts an over-budget
  * feed with an uncatchable `RuntimeError`.
  *
- * Both duration limits share one clock, which runs only while sandboxed
+ * Native duration limits count sampled thread CPU time. WebAssembly and failed
+ * CPU reads use elapsed time. Both limits share one clock, which runs only while sandboxed
  * code executes, never while suspended on the host; they differ in when it
  * restarts: at each feed, at each host round trip. Exceeding either raises
  * `TimeoutError` in the sandbox.

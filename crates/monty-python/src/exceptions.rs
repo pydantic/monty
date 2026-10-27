@@ -336,7 +336,7 @@ impl MontyRuntimeError {
 }
 
 /// Raised when the sandbox is gone: the worker process died (segfault, abort,
-/// external kill), the pool killed it at the `request_timeout` deadline, or it
+/// external kill), the pool killed it at a parent-side time limit, or it
 /// announced a fatal error and exited — which a serving server also uses to
 /// report that it could not start a worker at all.
 ///
@@ -347,7 +347,7 @@ impl MontyRuntimeError {
 /// which happened.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyCrashedError {
-    /// `True` when the worker was killed at the `request_timeout` deadline.
+    /// `True` when a parent-side elapsed-time or CPU watchdog killed the worker.
     #[pyo3(get)]
     timed_out: bool,
     /// Exit code of the dead worker, when the OS reported one (signal deaths

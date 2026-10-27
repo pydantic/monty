@@ -528,7 +528,7 @@ class MontyCrashedError(MontyError):
 
     @property
     def timed_out(self) -> bool:
-        """`True` when the pool's `request_timeout` watchdog killed the worker."""
+        """`True` when a parent-side elapsed-time or CPU watchdog killed the worker."""
 
     @property
     def exit_status(self) -> int | None:

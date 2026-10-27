@@ -102,9 +102,20 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 ## Time
 
-Both duration limits count **execution time**, not wall clock:
+Both duration limits count **execution time**.
 
-- The clock runs only while the interpreter executes bytecode.
+Linux, macOS, and Windows use the executing thread's CPU counter.
+Native OS counters exclude scheduling delays, CPU throttling, and work on other threads.
+Virtualized counters can approximate CPU consumption. gVisor can still misattribute time and report coarse samples.
+WebAssembly uses elapsed time because it has no thread CPU counter.
+If a native counter read fails or reverses, Monty conservatively charges elapsed time for that window.
+
+Cooperative checks reuse a CPU sample for at most 1 ms of elapsed time.
+A smaller remaining budget shortens that interval when the execution window starts.
+The VM takes a fresh sample at every execution boundary, even for shorter windows.
+Limit detection can overshoot by the polling interval, OS counter resolution, and work between checks.
+
+- The clock runs only while the interpreter executes bytecode or its native builtins.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
     minute costs nothing, and neither does a `time.sleep()` or `asyncio.sleep()`, which the host waits out.
     Under the default `'system'` sleep mode the pool charges those sleeps to `max_total_sleep_secs` instead, refusing
@@ -132,11 +143,13 @@ the checkout yourself.
 
 `max_feed_duration_secs` is serialized into [snapshots](snapshots.md), so a restored session resumes that budget rather
 than restarting from zero.
+Older snapshots retain their recorded consumption, including previously charged elapsed time.
+New execution uses the destination runtime clock. No consumed budget is reset or estimated backwards.
 A snapshot is only ever taken between turns, so `max_turn_duration_secs` has nothing to carry.
 
 Reach for `max_feed_duration_secs` to keep a long-lived session responsive per request, and
 `max_turn_duration_secs` to bound one uninterrupted stretch of sandbox code, so a host driving the session gets control
-back within a known time.
+back after a bounded amount of execution. Use `request_timeout` for a wall deadline.
 Neither bounds how long a host callback itself may take: the clock is paused for exactly that, and a host that needs
 to bound its own waiting wants `request_timeout`.
 
@@ -156,7 +169,7 @@ Host-side deadlines cover that:
     Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
     any single timeout.
 - **A duration backstop per limit.** For each duration budget a session sets, the worker reports its consumed time on
-    every protocol turn, and the host kills the worker a grace period after the budget expires.
+    every protocol turn. The host bounds elapsed time by the remaining execution budget plus grace.
 
 The grace is what the sandbox gets to raise `TimeoutError` itself and keep the session alive; missing it costs the
 session, so set it well above how long a checkpoint may be away.
@@ -164,10 +177,29 @@ Each grace defaults to 1 second and is a pool option: `feed_duration_limit_grace
 in Python, `feedDurationLimitGrace` and `turnDurationLimitGrace` in JavaScript.
 `None` (`null` in JavaScript) disables that backstop, leaving only the in-sandbox check and `request_timeout`.
 
+CPU accounting does not extend these wall deadlines. Under heavy throttling or scheduling delays, a worker can
+reach a parent deadline before it spends its CPU budget. Hosts can increase the existing grace settings for that case.
+
 Set a duration limit for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
 These deadlines are polled: synchronous host telemetry callbacks and decoding a large reply can delay enforcement.
 Neither deadline covers [host mount I/O](filesystem.md#io-timeouts-and-cancellation).
+
+### Linux subprocess CPU supervision
+
+Rust `monty-pool` callers on Linux can opt into independent OS-observed CPU backstops with `PoolConfig::subprocess_cpu_limit_grace`.
+This mode requires a local subprocess transport and a finite `request_timeout` as an independent wall deadline.
+It replaces the budget-derived elapsed backstops.
+It keeps measured feed CPU across resumes. Live worker-reported usage does not control that total.
+The option defaults to `None`; existing Python and JavaScript pool options retain their elapsed backstops.
+GNU/Linux uses one-shot kernel timers after 5 ms. Other Linux targets poll every 5 ms.
+A clock or timer failure discards the worker. The pool does not silently change enforcement when timer registration fails.
+The process CPU window includes compilation and protocol work, but excludes time between execution turns.
+Feed CPU grace does not renew on each resume. Each configured turn budget gets a fresh per-turn CPU grace.
+The legacy elapsed-grace settings are ignored in this mode.
+Restore starts from the trusted snapshot's saved VM consumption. Earlier protocol CPU and CPU grace are not preserved.
+Remote enforcement belongs in the relay's local subprocess pool.
+See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for configuration.
 
 ## Recursion
 

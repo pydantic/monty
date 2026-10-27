@@ -2143,3 +2143,7 @@ pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, inter
         ))),
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/format_template.rs"]
+mod tests;
