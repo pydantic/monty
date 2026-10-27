@@ -34,7 +34,7 @@ class Several:
     a: InitVar[int]
     b: int
     c: InitVar[str] = 'c'
-    seen: list = field(default_factory=list)
+    seen: list[object] = field(default_factory=list)
 
     def __post_init__(self, a, c):
         self.seen.append((a, c))
@@ -62,7 +62,7 @@ assert Dropped.unused == 0
 # === An InitVar may have a mutable default, but not a factory ===
 @dataclass
 class MutableDefault:
-    items: InitVar[list] = []
+    items: InitVar[list[int]] = []
 
     def __post_init__(self, items):
         self.count = len(items)
@@ -75,7 +75,7 @@ try:
 
     @dataclass
     class FactoryInitVar:
-        x: InitVar[list] = field(default_factory=list)
+        x: InitVar[list[int]] = field(default_factory=list)
 
     assert False, 'expected a TypeError'
 except TypeError as e:

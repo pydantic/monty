@@ -117,10 +117,15 @@ fn factory_or_builtin(factory: &Value, ty: Type) -> Option<&Value> {
 /// members, and anything else is deep-copied.
 ///
 /// Charges a recursion level per step, as every Rust-side walk does, so a
-/// self-referential structure raises `RecursionError`.
+/// self-referential structure raises `RecursionError`. Each heap value also
+/// polls the limits: a shared sub-graph is rebuilt once per path, so the output
+/// can be exponentially larger than the input, with every container short.
 fn as_inner(value: &Value, shape: Shape<'_>, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
+    if matches!(value, Value::Ref(_)) {
+        vm.heap.tracker.check_memory_time()?;
+    }
     if let Some(fields_id) = instance_fields(value, vm) {
         return convert_dataclass(value, fields_id, shape, vm);
     }

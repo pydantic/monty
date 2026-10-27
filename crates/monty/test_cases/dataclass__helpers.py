@@ -18,7 +18,7 @@ class Point:
 class Line:
     start: Point
     end: Point
-    tags: list = field(default_factory=list)
+    tags: list[object] = field(default_factory=list)
 
 
 # === fields() takes a class or an instance, and returns the Field objects ===
@@ -106,7 +106,7 @@ assert replace(p) is not p
 @dataclass(frozen=True)
 class Frozen:
     a: int
-    b: list = field(default_factory=list)
+    b: list[int] = field(default_factory=list)
 
 
 f = Frozen(1)

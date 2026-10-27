@@ -374,24 +374,24 @@ assert Collapses().b == 2
 
 # === field(init=False) keeps the field out of __init__ ===
 @dataclass
-class Derived:
+class NotInit:
     a: int
     plain: int = field(default=5, init=False)
     built: list[int] = field(default_factory=list, init=False)
 
 
-d = Derived(1)
+d = NotInit(1)
 assert d.a == 1
 assert d.plain == 5
 assert d.built == []
 # The plain default is left on the class, where CPython leaves it; only the
 # factory result is written to the instance.
-assert Derived.plain == 5
+assert NotInit.plain == 5
 try:
-    Derived(1, plain=2)
+    NotInit(1, plain=2)
     assert False, 'expected a TypeError'
 except TypeError as e:
-    assert str(e) == "Derived.__init__() got an unexpected keyword argument 'plain'"
+    assert str(e) == "NotInit.__init__() got an unexpected keyword argument 'plain'"
 
 
 # === field(init=False) with no default leaves the attribute absent ===
@@ -472,7 +472,7 @@ assert spec_flags.compare is True
 assert spec_flags.kw_only is True
 assert Hidden.__dataclass_fields__['hidden'].repr is False
 assert Hidden.__dataclass_fields__['ignored'].compare is False
-assert Derived.__dataclass_fields__['plain'].init is False
+assert NotInit.__dataclass_fields__['plain'].init is False
 # An un-adopted spec still reports kw_only as MISSING; adoption resolves it.
 unadopted = field(default=1)
 assert unadopted.kw_only is MISSING

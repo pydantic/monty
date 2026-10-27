@@ -1201,6 +1201,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ),
         // The json encoder preflights each doubling of its output buffer.
         ("import json\njson.dumps(['x' * 1000] * 2000)", 1_167_196),
+        // `asdict` rebuilds a shared list once per path through it, so a doubling chain of
+        // two-item lists grows exponentially; each container converted polls the limit.
+        (
+            "from dataclasses import dataclass, asdict\n@dataclass\nclass Box:\n    value: object\nx = None\nfor _ in range(30):\n    x = [x, x]\nasdict(Box(x))",
+            1_048_614,
+        ),
         // `randbytes` charges its word buffer and the byte buffer it fills.
         ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_167),
         // A `range` population can be as long as `i64::MAX` while costing nothing,
