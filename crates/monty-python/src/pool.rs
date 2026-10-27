@@ -45,7 +45,10 @@ use monty_pool::{
     Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Persistence, Pool, PoolConfig,
     PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
-use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
+use monty_proto::{
+    DEFAULT_MAX_DECODE_BYTES,
+    python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value},
+};
 use monty_types::{
     AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NamedValues,
     OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
@@ -718,6 +721,11 @@ impl PyAsyncMontyWebsocket {
             auto_resume,
         )?;
         if let Some(bytes) = max_decode_bytes {
+            if bytes > DEFAULT_MAX_DECODE_BYTES {
+                return Err(PyValueError::new_err(format!(
+                    "max_decode_bytes must be at most {DEFAULT_MAX_DECODE_BYTES} bytes (1 GiB)"
+                )));
+            }
             config.max_decode_bytes = bytes;
         }
         Ok(Self {

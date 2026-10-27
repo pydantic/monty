@@ -81,7 +81,8 @@ These functions manage the per-frame allocation budget automatically.
 `decode_frame_with_budget` lets a host choose a smaller per-frame ceiling.
 Direct `Message::decode` calls on these types fail if they allocate payload storage without a frame budget.
 
-Frames are capped at 256 MiB, with a separate fixed 1 GiB budget for cumulative decoded allocation requests.
+Frames are capped at 256 MiB, with a separate default 1 GiB budget for cumulative decoded allocation requests.
+Hosts can lower the allocation budget; values above 1 GiB are clamped to that ceiling.
 This budget is independent of the session's `max_memory`.
 Compact messages can require much more memory when decoded.
 The budget covers arena slots, repeated-field capacity, strings, byte buffers, boxed payloads and BigInt storage.

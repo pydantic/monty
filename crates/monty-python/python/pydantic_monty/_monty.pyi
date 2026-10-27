@@ -1062,8 +1062,8 @@ class AsyncMontyWebsocket:
                 it. Raise `request_timeout` (or pass `None`) when installing
                 dependencies over the WebSocket transport.
             max_decode_bytes: Per-frame host allocation budget in bytes. `None`
-                keeps the protocol's 1 GiB ceiling. Larger values cannot raise
-                that ceiling. Excludes wire buffers and Python conversion.
+                keeps the protocol's 1 GiB ceiling. Values above 1 GiB are rejected
+                at construction. Excludes wire buffers and Python conversion.
                 Exhaustion ends the session with a protocol error without replay.
             connect_headers: Called once per session, as it is entered and before
                 any wait for pool capacity, to produce extra `str` to `str`

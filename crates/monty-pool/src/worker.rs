@@ -66,6 +66,7 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// worker so `recv` is cancel-safe (see the module docs).
 pub(crate) struct Worker {
     kind: WorkerKind,
+    /// Host-selected allocation budget for decoding each protocol frame.
     max_decode_bytes: usize,
     /// Pool-assigned generation, independent of PID reuse.
     pub(crate) id: u64,

@@ -74,8 +74,8 @@ A Monty sandbox worker rejects non-empty installation requests with `MontyRuntim
 
 ## Host decode budget
 
-`AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation
-budget for each decoded protocol frame. Values above 1 GiB do not raise the ceiling.
+`AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
+Values above 1 GiB are rejected when the client is constructed.
 The budget excludes wire buffers and Python conversion, and does not change
 sandbox memory limits. Exhaustion ends the session with a protocol error;
 the client does not replay the request.
