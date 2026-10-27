@@ -80,7 +80,7 @@ test('connectHeaders runs per checkout in the caller async context', async () =>
   const checkoutAs = (id: string) =>
     trace.run(id, async () => {
       await using session = await pool.checkout()
-      return session.feedRun('1 + 1')
+      return await session.feedRun('1 + 1')
     })
   t.deepEqual(await Promise.all([checkoutAs('00-aaa-111-01'), checkoutAs('00-bbb-222-01')]), [2, 2])
   t.is(calls, 2)

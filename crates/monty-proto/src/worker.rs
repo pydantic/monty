@@ -37,7 +37,7 @@ use monty_types::{
 use super::{
     BudgetVec, DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError,
     WireFunctionCall, check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
-    named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
+    import_stubs_from_answer, named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
 use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 
@@ -662,7 +662,7 @@ impl Child {
             }
         };
         let stubs = match result {
-            ExtFunctionResult::Return(answer) => match stubs_from_answer(&answer, &pending.asked) {
+            ExtFunctionResult::Return(answer) => match import_stubs_from_answer(&answer, &pending.asked) {
                 Ok(stubs) => stubs,
                 Err(message) => return protocol_violation(&message),
             },
@@ -1163,32 +1163,6 @@ fn error_event_from(exc: &MontyException) -> pb::ChildEvent {
     event(pb::child_event::Kind::Error(pb::Error {
         exception: Some(exc.into()),
     }))
-}
-
-/// Validates a dict of dotted module paths to `.pyi` source or `None`.
-/// Paths must belong to a requested module; errors are protocol-violation messages.
-fn stubs_from_answer(answer: &MontyObject, asked: &[String]) -> Result<Vec<ModuleStub>, String> {
-    let answer = answer.as_ref();
-    let pairs = match answer.pairs() {
-        Some(pairs) if answer.type_name() == "dict" => pairs,
-        _ => return Err("import_stubs must be answered with a dict of module to stub source".to_owned()),
-    };
-    let mut stubs = Vec::new();
-    for (key, value) in pairs {
-        let Some(module) = key.as_str() else {
-            return Err("import_stubs answer keys must be module names".to_owned());
-        };
-        let top_level = module.split('.').next().unwrap_or_default();
-        if !asked.iter().any(|name| name == top_level) {
-            return Err(format!("import_stubs answered for {module:?}, which was not asked for"));
-        }
-        if let Some(source) = value.as_str() {
-            stubs.push(ModuleStub::new(module, source).map_err(|err| format!("import_stubs: {err}"))?);
-        } else if value.type_name() != "NoneType" {
-            return Err(format!("import_stubs answer for {module:?} must be a str or None"));
-        }
-    }
-    Ok(stubs)
 }
 
 /// Stamps `tracker`'s timing and parent-enforced limits onto an event. Called

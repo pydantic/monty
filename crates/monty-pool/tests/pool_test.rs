@@ -3868,6 +3868,286 @@ while True:
         drop(checkout);
         pool.close().await;
     }
+
+    #[tokio::test]
+    async fn typed_control_errors_preserve_raw_suspension_accounting() {
+        for operation in ["dump", "restore", "install"] {
+            let pool = Pool::new(supervised(monty_binary())).await.unwrap();
+            let mut repl = limits(1000);
+            repl.type_check = operation == "dump";
+            let mut checkout = pool.checkout(&repl).await.unwrap();
+            let feed = pb::ParentRequest {
+                kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+                    code: if repl.type_check { "import tools" } else { "missing" }.to_owned(),
+                    cwd: "/".to_owned(),
+                    ..pb::Feed::default()
+                })),
+                ..pb::ParentRequest::default()
+            };
+            let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+            let event = checkout.turn_raw(&feed, &mut on_event).await.unwrap();
+            assert!(matches!(
+                event.kind,
+                Some(pb::child_event::Kind::NameLookup(_) | pb::child_event::Kind::OsCall(_))
+            ));
+            let error = match operation {
+                "dump" => checkout.dump().await.unwrap_err(),
+                "restore" => checkout.restore(vec![], vec![], &mut no_print).await.unwrap_err(),
+                "install" => checkout
+                    .install_dependencies(vec!["example-package".to_owned()])
+                    .await
+                    .unwrap_err(),
+                _ => unreachable!(),
+            };
+            assert!(matches!(error, PoolError::Runtime(_)), "{error:?}");
+            assert!(matches!(
+                checkout.turn_raw(&feed, &mut on_event).await,
+                Err(PoolError::Protocol(_))
+            ));
+            assert!(matches!(
+                checkout.feed("0", vec![], vec![], false, &mut no_print).await,
+                Err(PoolError::Protocol(_))
+            ));
+            checkout.finish().await.unwrap();
+            pool.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_dump_errors_do_not_refund_cumulative_cpu() {
+        let exception = MontyException::new(ExcType::RuntimeError, Some("dump refused".to_owned()));
+        let error = framed(&child_event(pb::child_event::Kind::Error(pb::Error {
+            exception: Some((&exception).into()),
+        })));
+        let action = format!("if count % 2 == 1: burn(15); SUSPEND\n    else: send({error:?})");
+        let (_dir, config) = stand_in(&action, 0);
+        let pool = Pool::new(config).await.unwrap();
+        let mut checkout = pool.checkout(&limits(50)).await.unwrap();
+        let pid = checkout.pid().unwrap();
+        let event = checkout
+            .feed("ignored", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+        let feed = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
+            ..pb::ParentRequest::default()
+        };
+        let resume = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall::default())),
+            ..pb::ParentRequest::default()
+        };
+        let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+        let mut completed = 1;
+        loop {
+            assert!(matches!(checkout.dump().await, Err(PoolError::Runtime(_))));
+            assert!(matches!(
+                checkout.turn_raw(&feed, &mut on_event).await,
+                Err(PoolError::Protocol(_))
+            ));
+            match checkout.turn_raw(&resume, &mut on_event).await {
+                Ok(event) => {
+                    assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+                    completed += 1;
+                    assert!(completed <= 3, "typed dump errors reset the CPU ledger");
+                }
+                Err(PoolError::CpuLimit { .. }) => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        reaped(pid);
+        drop(checkout);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_raw_abort_validates_the_exception_and_ends_the_feed() {
+        let pool = Pool::new(supervised(monty_binary())).await.unwrap();
+        let mut checkout = pool.checkout(&limits(500)).await.unwrap();
+        let feed = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+                code: "missing".to_owned(),
+                cwd: "/".to_owned(),
+                ..pb::Feed::default()
+            })),
+            ..pb::ParentRequest::default()
+        };
+        let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+        let event = checkout
+            .feed("missing", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert!(matches!(event, TurnEvent::NameLookup { .. }));
+        let exception = MontyException::new(ExcType::RuntimeError, Some("aborted by host".to_owned()));
+        let valid = pb::RaisedException::from(&exception);
+        let mut unknown_type = valid.clone();
+        unknown_type.exc_type = "UnknownException".to_owned();
+        let mut invalid_traceback = valid.clone();
+        invalid_traceback.traceback = vec![pb::StackFrame::default()].into();
+        for exception in [None, Some(unknown_type), Some(invalid_traceback)] {
+            let abort = pb::ParentRequest {
+                kind: Some(pb::parent_request::Kind::AbortFeed(pb::AbortFeed { exception })),
+                ..pb::ParentRequest::default()
+            };
+            assert!(matches!(checkout.turn_raw(&abort, &mut on_event).await,
+                Err(PoolError::Protocol(ref message)) if message == "AbortFeed requires a valid exception"));
+            assert!(matches!(
+                checkout.turn_raw(&feed, &mut on_event).await,
+                Err(PoolError::Protocol(_))
+            ));
+        }
+        let abort = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+                exception: Some(valid),
+            })),
+            ..pb::ParentRequest::default()
+        };
+        let event = checkout.turn_raw(&abort, &mut on_event).await.unwrap();
+        let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+            panic!("{event:?}")
+        };
+        assert_eq!(
+            MontyException::try_from(error.exception.unwrap()).unwrap().message(),
+            Some("aborted by host")
+        );
+        let event = checkout
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        checkout.finish().await.unwrap();
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn invalid_typed_stub_answers_keep_the_feed_suspended() {
+        let pool = Pool::new(supervised(monty_binary())).await.unwrap();
+        let answers = [
+            ResumeValue::Future,
+            ResumeValue::Return(MontyObject::int(42)),
+            ResumeValue::Return(MontyObject::dict([(MontyObject::int(1), MontyObject::none())])),
+            ResumeValue::Return(MontyObject::dict([(MontyObject::string("other"), MontyObject::none())])),
+            ResumeValue::Return(MontyObject::dict([(
+                MontyObject::string("tools"),
+                MontyObject::int(42),
+            )])),
+            ResumeValue::Return(MontyObject::dict([(
+                MontyObject::string("tools..invalid"),
+                MontyObject::string("value: int"),
+            )])),
+        ];
+        for answer in answers {
+            let mut repl = limits(1000);
+            repl.type_check = true;
+            let mut checkout = pool.checkout(&repl).await.unwrap();
+            let event = checkout
+                .feed("import tools", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap();
+            assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
+            assert!(matches!(
+                checkout.resume(answer, &mut no_print).await,
+                Err(PoolError::Protocol(_))
+            ));
+            let feed = pb::ParentRequest {
+                kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
+                ..pb::ParentRequest::default()
+            };
+            assert!(matches!(
+                checkout
+                    .turn_raw(&feed, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
+                    .await,
+                Err(PoolError::Protocol(_))
+            ));
+            let exception = MontyException::new(ExcType::RuntimeError, Some("stub provider failed".to_owned()));
+            let error = checkout
+                .resume(ResumeValue::Error(exception), &mut no_print)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, PoolError::Runtime(ref exc) if exc.message() == Some("stub provider failed")));
+            let event = checkout
+                .feed("1 + 1", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap();
+            assert_eq!(expect_complete(event), MontyObject::int(2));
+            checkout.finish().await.unwrap();
+        }
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn raw_advances_cannot_leave_a_stale_typed_resume_token() {
+        let pool = Pool::new(supervised(monty_binary())).await.unwrap();
+        let mut checkout = pool.checkout(&limits(500)).await.unwrap();
+        let event = checkout
+            .feed("f(); f()", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        let TurnEvent::FunctionCall { call_id, .. } = event else {
+            panic!("{event:?}")
+        };
+        // A non-advancing raw dump must leave the typed resume token usable.
+        let dump = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::Dump(pb::Dump::default())),
+            ..pb::ParentRequest::default()
+        };
+        let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+        let event = checkout.turn_raw(&dump, &mut on_event).await.unwrap();
+        assert!(matches!(event.kind, Some(pb::child_event::Kind::DumpResult(_))));
+        let event = checkout
+            .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+            .await
+            .unwrap();
+        let TurnEvent::FunctionCall { call_id: second, .. } = event else {
+            panic!("{event:?}")
+        };
+        assert_ne!(call_id, second);
+        let resume = |call_id| pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+                call_id,
+                result: Some(pb::ExtFunctionResult {
+                    kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
+                }),
+                values: Some(WireArena(vec![MontyNode::None].into())),
+            })),
+            ..pb::ParentRequest::default()
+        };
+        let event = checkout.turn_raw(&resume(second), &mut on_event).await.unwrap();
+        assert!(matches!(event.kind, Some(pb::child_event::Kind::Complete(_))));
+        let event = checkout
+            .feed("f(); f()", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        let TurnEvent::FunctionCall { call_id, .. } = event else {
+            panic!("{event:?}")
+        };
+        let event = checkout.turn_raw(&resume(call_id), &mut on_event).await.unwrap();
+        let Some(pb::child_event::Kind::FunctionCall(call)) = event.kind else {
+            panic!("{event:?}")
+        };
+        assert_ne!(call.call_id, call_id);
+        assert!(
+            matches!(checkout.resume(ResumeValue::Return(MontyObject::none()), &mut no_print).await,
+            Err(PoolError::Protocol(ref message)) if message == "no suspended call to resume")
+        );
+        let feed = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
+            ..pb::ParentRequest::default()
+        };
+        assert!(matches!(
+            checkout.turn_raw(&feed, &mut on_event).await,
+            Err(PoolError::Protocol(_))
+        ));
+        let event = checkout.turn_raw(&resume(call.call_id), &mut on_event).await.unwrap();
+        assert!(matches!(event.kind, Some(pb::child_event::Kind::Complete(_))));
+        let event = checkout
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        checkout.finish().await.unwrap();
+        pool.close().await;
+    }
 }
 
 /// An oversized result discards the worker; the next checkout still succeeds.

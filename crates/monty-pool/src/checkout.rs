@@ -16,8 +16,8 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
-    os_call_from_proto, pb, validate_requirement,
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, import_stubs_from_answer,
+    named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
@@ -969,6 +969,21 @@ impl Checkout {
         else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
         };
+        if self.pool.config.subprocess_cpu_limit_grace.is_some()
+            && let Some(OsFunctionCall::ImportStubs(asked)) = os_call.as_deref()
+        {
+            match &value {
+                ResumeValue::Return(answer) => {
+                    import_stubs_from_answer(answer, asked).map_err(|message| PoolError::Protocol(message.into()))?;
+                }
+                ResumeValue::Future => {
+                    return Err(PoolError::Protocol(
+                        "import_stubs cannot be answered with a future".into(),
+                    ));
+                }
+                ResumeValue::Error(_) | ResumeValue::NotFound | ResumeValue::NotHandled => {}
+            }
+        }
         let (call_id, function_name, is_os_call) = (*call_id, function_name.clone(), os_call.is_some());
         if matches!(value, ResumeValue::NotHandled) && !is_os_call {
             return Err(PoolError::Protocol(
@@ -1384,7 +1399,13 @@ impl Checkout {
     /// Invalid suspension payloads are protocol violations, even when over budget.
     /// The first non-print `Load` reply settles the budget: `Ok` or a suspension adopts the dump;
     /// any other reply restores the live session's budget.
-    async fn abort_if_over_budget(&mut self, event: &mut pb::ChildEvent) -> Result<bool, PoolError> {
+    async fn abort_if_over_budget(
+        &mut self,
+        event: &mut pb::ChildEvent,
+        preserve_suspension: bool,
+    ) -> Result<bool, PoolError> {
+        let was_suspended = self.pending_load_budget.unwrap_or(self.budget).cpu_feed_suspended;
+        let was_aborting = self.abort_in_flight;
         let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
@@ -1398,6 +1419,18 @@ impl Checkout {
             }
         }
         self.budget.update_from(event);
+        // A rejected control or raw request can leave the original feed suspended.
+        if self.pool.config.subprocess_cpu_limit_grace.is_some()
+            && was_suspended
+            && preserve_suspension
+            && !was_aborting
+            && matches!(
+                event.kind,
+                Some(pb::child_event::Kind::Error(_) | pb::child_event::Kind::TypingError(_))
+            )
+        {
+            self.budget.cpu_feed_suspended = true;
+        }
         let exceeded = self
             .budget
             .over_suspension_limit(event)
@@ -1658,6 +1691,15 @@ impl Checkout {
                 "lifecycle requests (Configure/Reset/Shutdown) cannot be driven through turn_raw".into(),
             ));
         }
+        if self.pool.config.subprocess_cpu_limit_grace.is_some()
+            && let Some(pb::parent_request::Kind::AbortFeed(abort)) = &request.kind
+            && abort
+                .exception
+                .as_ref()
+                .is_none_or(|exception| MontyException::try_from(exception.clone()).is_err())
+        {
+            return Err(PoolError::Protocol("AbortFeed requires a valid exception".into()));
+        }
         // As `restore`: forget the Configure-time budget and re-adopt the
         // dump's from the reply's budget fields (see `pending_load_budget`).
         let is_load = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)));
@@ -1717,21 +1759,18 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            let was_suspended = self.pending_load_budget.unwrap_or(self.budget).cpu_feed_suspended;
-            let was_aborting = self.abort_in_flight;
-            if self.abort_if_over_budget(&mut event).await? {
+            let preserve_suspension = !matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
+            let aborting = self.abort_in_flight || !preserve_suspension;
+            if self.abort_if_over_budget(&mut event, preserve_suspension).await? {
                 continue;
             }
-            // An Error can reject a request without ending the child's suspended feed.
             if self.pool.config.subprocess_cpu_limit_grace.is_some()
-                && was_suspended
-                && !was_aborting
-                && matches!(
-                    event.kind,
-                    Some(pb::child_event::Kind::Error(_) | pb::child_event::Kind::TypingError(_))
-                )
+                && (is_suspension(&event)
+                    || matches!(event.kind, Some(pb::child_event::Kind::Complete(_)))
+                    || (aborting && is_abort_reply(&event)))
             {
-                self.budget.cpu_feed_suspended = true;
+                // A raw advance invalidates the earlier typed resume token.
+                self.pending = None;
             }
             // strict alternation: zero or more `Print`s, then exactly one
             // turn-ender — so anything that is not a print ends the turn
@@ -1818,7 +1857,10 @@ impl Checkout {
             }
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
-            if self.abort_if_over_budget(&mut event).await? {
+            if self
+                .abort_if_over_budget(&mut event, !is_execution_turn(request))
+                .await?
+            {
                 continue;
             }
             // Only a `Load` reply carries this; it lets `restore` report the

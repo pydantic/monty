@@ -169,6 +169,8 @@ CPU grace is one bounded allowance per feed and per turn. Resuming does not rene
 A new feed resets the feed ledger. Time waiting for a host-function result or host mount I/O is outside the child CPU window.
 With CPU supervision, an error from `Checkout::turn_raw` does not prove a suspended feed ended.
 Complete its suspension or finish the checkout before starting another feed; an ambiguous runtime error can require ending the checkout.
+A valid explicit `AbortFeed` ends the suspension. Malformed abort requests leave it intact.
+Raw suspension replies invalidate earlier typed resume tokens. Invalid typed import-stub answers are rejected before the worker advances.
 The VM's cooperative CPU checks remain enabled and can raise `TimeoutError` without killing the worker.
 The default `None` preserves existing elapsed-grace settings and behavior.
 The Python and JavaScript pool options do not expose this Rust-only opt-in yet.
