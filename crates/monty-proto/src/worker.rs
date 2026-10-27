@@ -31,7 +31,7 @@ use monty_types::{
     AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
     ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
     PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD, SourceRange,
-    TypeCheckState, TypeCheckingConfig, allocate_into_baseline,
+    TypeCheckState, TypeCheckingConfig, measure_into_baseline, release_from_baseline,
 };
 
 use super::{
@@ -225,8 +225,11 @@ pub struct Child {
     /// Built by [`Self::warm_up`] between sessions. No session writes to it until
     /// it is moved into `type_checker`, so it can outlive sessions that never type-check.
     warm_checker: Option<TypeChecker>,
+    /// Bytes [`Self::warm_up`] added to the baseline for the checker now in `warm_checker`,
+    /// or in `type_checker` once a session takes it; [`Self::reset`] releases them.
+    warm_checker_cost: usize,
     /// Whether [`Self::warm_up`] builds `warm_checker`.
-    warm_type_checker: bool,
+    prewarm_type_checker: bool,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
     /// How long [`ProtoPrint`] may hold buffered output, from the session's
@@ -246,7 +249,8 @@ impl Default for Child {
             script_name: String::new(),
             type_checker: None,
             warm_checker: None,
-            warm_type_checker: false,
+            warm_checker_cost: 0,
+            prewarm_type_checker: false,
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
@@ -261,9 +265,9 @@ impl Child {
     /// Trades roughly 6 MiB of idle memory per worker for skipping most of a session's first type check.
     /// Without type-checked sessions the warm checker is never used, so the memory is wasted.
     #[must_use]
-    pub fn with_warm_type_checker() -> Self {
+    pub fn with_prewarmed_type_checker() -> Self {
         Self {
-            warm_type_checker: true,
+            prewarm_type_checker: true,
             ..Self::default()
         }
     }
@@ -274,14 +278,18 @@ impl Child {
     /// a request arriving mid-build waits for it.
     /// Its memory joins the worker baseline, so no session's `max_memory` pays for it.
     pub fn warm_up(&mut self) {
-        if self.warm_type_checker && self.warm_checker.is_none() && matches!(self.state, SessionState::Configured(None))
+        if self.prewarm_type_checker
+            && self.warm_checker.is_none()
+            && matches!(self.state, SessionState::Configured(None))
         {
-            self.warm_checker = Some(allocate_into_baseline(|| {
+            let (checker, cost) = measure_into_baseline(|| {
                 let mut type_checker = TypeChecker::default();
                 // a diagnostic means the snippet drifted from the stubs; the checker is still warm
                 let _ = type_checker.warm_up();
                 type_checker
-            }));
+            });
+            self.warm_checker = Some(checker);
+            self.warm_checker_cost = cost;
         }
     }
 
@@ -1133,6 +1141,11 @@ impl Child {
         self.state = SessionState::Configured(None);
         // Invalidating source files leaves Salsa caches and interned data allocated.
         self.type_checker = None;
+        // A warm checker the session took was just dropped with it; release its cost
+        // before the host re-arms, so the baseline returns to the floor, not floor plus residue.
+        if self.warm_checker.is_none() {
+            release_from_baseline(mem::take(&mut self.warm_checker_cost));
+        }
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;

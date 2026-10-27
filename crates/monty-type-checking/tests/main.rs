@@ -225,9 +225,6 @@ fn same_path_rerun_does_not_see_previous_source() {
     assert_snapshot!(second, @"main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined");
 }
 
-/// Security-critical: checkers hold no shared state, so concurrent sessions
-/// (workers in one process, or just several threads) must never observe each
-/// other's files. Guards against a process-wide cache creeping back in.
 /// The warm-up snippet must stay clean against the stubs, and leave later checks
 /// reporting exactly what a fresh checker reports.
 #[test]
@@ -243,6 +240,9 @@ fn warm_up_leaves_diagnostics_unchanged() {
     assert_eq!(warm, check_concise(code, "bad_types.py"));
 }
 
+/// Security-critical: checkers hold no shared state, so concurrent sessions
+/// (workers in one process, or just several threads) must never observe each
+/// other's files. Guards against a process-wide cache creeping back in.
 #[test]
 fn concurrent_checkers_stay_isolated() {
     thread::scope(|scope| {

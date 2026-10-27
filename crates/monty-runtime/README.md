@@ -63,8 +63,8 @@ requests on stdin, framed events on stdout. This is how `pydantic-monty` runs
 sandboxed code with crash isolation, and is meant to be driven by a parent
 process, not by hand.
 
-`monty subprocess --warm-type-checker` has the worker build a type checker
-with the builtins resolved between sessions, so a session's first type check
+`monty subprocess --prewarm-type-checker` has the worker build a type checker
+with the builtins resolved at startup and between sessions, so a session's first type check
 skips that work; a request arriving mid-build waits for it. It costs about 6 MiB per worker, counted in the worker's
 baseline rather than any session's `max_memory`.
 

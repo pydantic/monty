@@ -75,7 +75,7 @@ has been.
 Everything the session allocates counts against it, including retained compiled code and interpreter internals.
 That includes the type checker: the first check in a type-checked session builds its database, about 7 MiB, most of
 it the resolved builtins.
-A Rust pool with [`PoolConfig::warm_type_checker`](api/rust/monty-pool.md#poolconfig) builds a checker with the builtins
+A Rust pool of subprocess workers with [`PoolConfig::prewarm_type_checker`](api/rust/monty-pool.md#poolconfig) builds a checker with the builtins
 resolved, about 6 MiB, between checkouts and charges it to the worker instead, so only what the session's own checks add
 counts.
 It is not a ceiling on process RSS.

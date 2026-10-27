@@ -64,9 +64,9 @@ impl ChildProc {
         Self::spawn_with(Stdio::inherit(), &[])
     }
 
-    /// Spawns a child that builds its type checker while idle (`--warm-type-checker`).
+    /// Spawns a child that builds its type checker while idle (`--prewarm-type-checker`).
     fn spawn_warm() -> Self {
-        Self::spawn_with(Stdio::inherit(), &["--warm-type-checker"])
+        Self::spawn_with(Stdio::inherit(), &["--prewarm-type-checker"])
     }
 
     /// Spawns the child with its stderr captured, for tests asserting on the
@@ -2592,7 +2592,7 @@ fn reset_releases_type_checker_memory() {
 /// The warm checker is charged to the worker baseline, and rebuilt after each
 /// type-checked session, without ever counting against a session's `max_memory`.
 #[test]
-fn reset_releases_warm_type_checker_memory() {
+fn reset_releases_prewarm_type_checker_memory() {
     assert_reset_releases_type_checker_memory(ChildProc::spawn_warm());
 }
 
@@ -2654,7 +2654,7 @@ fn reset_isolates_warm_type_check_state_from_the_next_session() {
 /// session runs within a 2 MB budget, which still rejects a large allocation, for
 /// the rebuilt checker too.
 #[test]
-fn warm_type_checker_is_outside_session_memory() {
+fn prewarm_type_checker_is_outside_session_memory() {
     let mut child = ChildProc::spawn_warm();
     for _ in 0..2 {
         child.create_repl_with(pb::Configure {

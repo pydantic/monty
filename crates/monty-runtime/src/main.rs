@@ -123,7 +123,7 @@ enum Command {
         /// Build a type checker between sessions, so a session's first type
         /// check skips resolving builtins. Costs about 6 MiB per worker.
         #[arg(long)]
-        warm_type_checker: bool,
+        prewarm_type_checker: bool,
     },
 }
 
@@ -225,12 +225,12 @@ impl Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    if let Some(Command::Subprocess { warm_type_checker }) = cli.subcommand {
+    if let Some(Command::Subprocess { prewarm_type_checker }) = cli.subcommand {
         if let Some(flag) = cli.subprocess_conflict() {
             eprintln!("error: `subprocess` cannot be combined with {flag}");
             ExitCode::FAILURE
         } else {
-            subprocess::run(warm_type_checker)
+            subprocess::run(prewarm_type_checker)
         }
     } else {
         run_standalone(cli)

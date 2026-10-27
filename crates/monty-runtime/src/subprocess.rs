@@ -37,23 +37,23 @@ const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 /// its exit code. A panic there has already written its `FatalError` frame in
 /// the panic hook, so it exits with 101 like an unwound main thread.
 ///
-/// `warm_type_checker` selects [`Child::with_warm_type_checker`].
-pub(crate) fn run(warm_type_checker: bool) -> ExitCode {
+/// `prewarm_type_checker` selects [`Child::with_prewarmed_type_checker`].
+pub(crate) fn run(prewarm_type_checker: bool) -> ExitCode {
     thread::Builder::new()
         .name("monty-worker".to_owned())
         .stack_size(WORKER_STACK_SIZE)
-        .spawn(move || serve(warm_type_checker))
+        .spawn(move || serve(prewarm_type_checker))
         .expect("failed to spawn the worker thread")
         .join()
         .unwrap_or(ExitCode::from(101))
 }
 
 /// The child loop: one request in, its events out, until EOF, `Shutdown` or a fatal error.
-fn serve(warm_type_checker: bool) -> ExitCode {
+fn serve(prewarm_type_checker: bool) -> ExitCode {
     install_panic_hook();
     let mut reader = FrameReader::new(io::stdin().lock());
-    let mut child = if warm_type_checker {
-        Child::with_warm_type_checker()
+    let mut child = if prewarm_type_checker {
+        Child::with_prewarmed_type_checker()
     } else {
         Child::default()
     };

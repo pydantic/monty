@@ -2424,13 +2424,13 @@ async fn typing_error_via_pool() {
     session.finish().await.unwrap();
 }
 
-/// `warm_type_checker` reaches the worker: its pre-built checker is charged to the
+/// `prewarm_type_checker` reaches the worker: its pre-built checker is charged to the
 /// worker baseline, so a type-checked session runs within a 2 MiB budget a cold
 /// worker's first check alone exceeds.
 #[tokio::test]
-async fn warm_type_checker_runs_type_checked_sessions_in_a_small_budget() {
+async fn prewarm_type_checker_runs_type_checked_sessions_in_a_small_budget() {
     let pool = Pool::new(PoolConfig {
-        warm_type_checker: true,
+        prewarm_type_checker: true,
         max_processes: 1,
         ..config()
     })

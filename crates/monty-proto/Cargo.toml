@@ -63,10 +63,16 @@ required-features = ["generate"]
 name = "dispatch"
 required-features = ["worker"]
 
+# Installs `monty-alloc` as its global allocator, so it needs a test binary of its own.
+[[test]]
+name = "warm_baseline"
+required-features = ["worker"]
+
 [dev-dependencies]
 allocation-counter = "0.8"
 insta = { workspace = true }
 monty = { workspace = true }
+monty-alloc = { workspace = true }
 monty-types = { workspace = true, features = ["tzdb"] }
 # Self dev-dependency enables budget instrumentation for tests, not normal builds.
 # Path-only (no version) so `cargo publish` strips it: a versioned self-reference
