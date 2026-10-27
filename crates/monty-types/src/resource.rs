@@ -42,6 +42,16 @@ pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// Only accurate while no other thread changes [`LIVE_MEMORY`]. An unset baseline is
 /// left alone: the first arming counts the structure anyway.
 pub fn allocate_into_baseline<T>(build: impl FnOnce() -> T) -> T {
+    measure_into_baseline(build).0
+}
+
+/// [`allocate_into_baseline`], also returning the bytes the structure cost.
+///
+/// For a structure the worker later frees: hand the cost to [`release_from_baseline`]
+/// when it goes, or the baseline keeps it and whatever leak fills the gap is never charged.
+/// The cost includes any lifetime statics `build` initializes on first use, so releasing it
+/// undercounts the baseline by those (about 30 KB of typeshed for the warm type checker).
+pub fn measure_into_baseline<T>(build: impl FnOnce() -> T) -> (T, usize) {
     let before = LIVE_MEMORY.load(Ordering::Relaxed);
     let value = build();
     let cost = LIVE_MEMORY.load(Ordering::Relaxed).saturating_sub(before);
@@ -49,7 +59,19 @@ pub fn allocate_into_baseline<T>(build: impl FnOnce() -> T) -> T {
     let _ = BASELINE_MEMORY.try_update(Ordering::Relaxed, Ordering::Relaxed, |baseline| {
         (baseline != usize::MAX).then(|| baseline.saturating_add(cost))
     });
-    value
+    (value, cost)
+}
+
+/// Takes `cost` back out of [`BASELINE_MEMORY`] once the structure
+/// [`measure_into_baseline`] measured is freed.
+///
+/// Call it before the next arming: `fetch_min` alone would settle on the floor plus
+/// any session residue, folding that residue into the baseline.
+pub fn release_from_baseline(cost: usize) {
+    // `Err` just means the baseline is still unset
+    let _ = BASELINE_MEMORY.try_update(Ordering::Relaxed, Ordering::Relaxed, |baseline| {
+        (baseline != usize::MAX).then(|| baseline.saturating_sub(cost))
+    });
 }
 
 /// Headroom for exception machinery and work between interpreter checkpoints.

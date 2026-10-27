@@ -50,7 +50,8 @@ pub use crate::{
     resource::{
         BASELINE_MEMORY, DEFAULT_GC_INTERVAL, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS,
         LARGE_RESULT_THRESHOLD, LIVE_MEMORY, OOM_EXIT_CODE, ResourceError, ResourceLimits, ResourceTracker,
-        TimeLimitScope, allocate_into_baseline, memory_limit_with_headroom,
+        TimeLimitScope, allocate_into_baseline, measure_into_baseline, memory_limit_with_headroom,
+        release_from_baseline,
     },
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions, SOURCE_SCAN_THRESHOLD},

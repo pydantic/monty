@@ -153,7 +153,7 @@ impl Worker {
     /// WebSocket upgrade request; a subprocess makes no request and ignores them.
     pub(crate) async fn new(config: &PoolConfig, connect_headers: &[(String, String)]) -> Result<Self, PoolError> {
         let worker = match &config.transport {
-            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
+            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path, config.prewarm_type_checker),
             // Bound the dial by `request_timeout` (see `websocket`); a missing
             // one falls back to a generous fixed budget.
             MontyTransport::Websocket(url) => {
@@ -181,10 +181,13 @@ impl Worker {
     /// There is no spawn-time handshake: a wrong or broken binary surfaces as
     /// an error on the first request the worker serves (typically the
     /// `Configure` of its first checkout).
-    fn subprocess(binary_path: &PathBuf) -> Result<Self, PoolError> {
+    fn subprocess(binary_path: &PathBuf, prewarm_type_checker: bool) -> Result<Self, PoolError> {
         let mut command = Command::new(binary_path);
+        command.arg("subprocess");
+        if prewarm_type_checker {
+            command.arg("--prewarm-type-checker");
+        }
         command
-            .arg("subprocess")
             // For extra safety, spawn the worker with an empty environment.
             .env_clear()
             .stdin(Stdio::piped())
