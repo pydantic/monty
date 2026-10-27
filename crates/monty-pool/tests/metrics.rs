@@ -1,5 +1,5 @@
-//! Pool-level metrics against the real `monty` binary: the instruments a host
-//! sees for worker lifecycle, checkout saturation and session outcomes.
+//! Pool-level metrics against the real `monty` binary: worker lifecycle, checkout saturation and session outcomes,
+//! plus the spans of a first turn that sends two requests in one write.
 //!
 //! The turn-level state machine is unit-tested in `src/metrics.rs`; what needs
 //! a real worker is the plumbing — that every path which spawns, hands out or
@@ -16,13 +16,15 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, Once, PoisonError},
+    thread,
     time::Duration,
 };
 
+use futures_util::future::join;
 use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
-    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-    telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
+    CheckoutOptions, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    telemetry::{Metrics, TelemetryAdapter, TelemetryContext, configure_telemetry_adapter},
     telemetry_adapter,
 };
 use monty_proto::pb;
@@ -38,7 +40,7 @@ use opentelemetry_sdk::{
         InMemoryMetricExporter, PeriodicReader,
         data::{AggregatedMetrics, MetricData},
     },
-    trace::SpanData,
+    trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
 };
 use prost::Message;
 use tokio::time::{Instant, sleep};
@@ -304,8 +306,8 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
 
     capture.last("monty.run.duration", "outcome", "complete");
     capture.last("monty.pool.session.duration", "outcome", "ok");
-    capture.last("monty.turn.duration", "turn", "configure");
-    capture.last("monty.turn.duration", "turn", "reset");
+    // `finish` does not wait for the reset's ack, so only `Configure` is timed
+    assert_eq!(turn_kinds(&capture), ["configure"]);
     assert!(capture.has("monty.run.execution_time"));
     // `print` writes 3 bytes including its newline
     assert_eq!(
@@ -324,6 +326,123 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     );
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+}
+
+/// A reused worker's first turn reads the last session's reset ack before its
+/// own replies; the instruments record the second session as they did the first.
+#[tokio::test]
+async fn a_reused_worker_records_each_session_alike() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    for _ in 0..2 {
+        let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+        checkout
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
+        checkout.finish().await.expect("finish");
+    }
+
+    assert_eq!(turn_kinds(&capture), ["configure"]);
+    assert_eq!(capture.last("monty.turn.duration", "turn", "configure").count, 2);
+    assert_eq!(capture.last("monty.run.duration", "outcome", "complete").count, 2);
+    // each session sends `Configure`, `Feed` and `Reset`; the second also
+    // receives the first one's reset ack, which is how this proves reuse
+    assert_eq!(capture.last("monty.wire.frame.bytes", "direction", "sent").count, 6);
+    assert_eq!(capture.last("monty.wire.frame.bytes", "direction", "received").count, 5);
+}
+
+/// A first-turn restore sends `Configure` and `Load` in one write, yet each is its own turn: the `Configure` ack
+/// must not close the load span before the reply naming the restored script.
+#[tokio::test]
+async fn a_first_turn_restore_records_configure_and_load_apart() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let dumped = ReplConfig {
+        script_name: "dumped.py".to_owned(),
+        ..ReplConfig::default()
+    };
+    let mut checkout = pool.checkout(&dumped).await.expect("checkout");
+    checkout
+        .feed("x = 21", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    let dump = checkout.dump().await.expect("dump");
+    checkout.finish().await.expect("finish");
+
+    let (logfire, spans) = span_capture();
+    let options = CheckoutOptions::default().with_telemetry(Some(TelemetryContext::for_logfire(logfire)));
+    let mut checkout = pool
+        .checkout_with(&ReplConfig::default(), options)
+        .await
+        .expect("checkout");
+    let (event, script_name) = checkout.restore(dump, vec![], &mut no_print).await.expect("restore");
+    assert!(event.is_none(), "{event:?}");
+    assert_eq!(script_name.as_deref(), Some("dumped.py"));
+    let event = checkout
+        .feed("x * 2", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(
+        matches!(&event, TurnEvent::Complete(value) if *value == MontyObject::int(42)),
+        "{event:?}"
+    );
+    checkout.finish().await.expect("finish");
+
+    assert_eq!(turn_kinds(&capture), ["configure", "dump", "load"]);
+    assert_eq!(capture.last("monty.turn.duration", "turn", "configure").count, 2);
+    let spans = spans.get_finished_spans().expect("spans");
+    let names: Vec<&str> = spans.iter().map(|span| span.name.as_ref()).collect();
+    assert_eq!(names, ["load", "run code", "session {script_name}"]);
+    assert_eq!(spans[0].parent_span_id, spans[2].span_context.span_id());
+    assert_eq!(attribute(&spans[0], "script_name").as_deref(), Some("dumped.py"));
+}
+
+/// A first turn is timed from its write, not from the parent reading the `Configure` ack: a parent stalled while
+/// the worker replies still records the whole wait, as the run metric and its span.
+#[tokio::test]
+async fn a_stalled_parent_times_the_first_turn_from_its_write() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    let (pool, capture) = pool_with_metrics(config).await;
+    // a first write to a fresh worker waits for the pipe's readiness, so warm it up
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    checkout.finish().await.expect("finish");
+    let (logfire, spans) = span_capture();
+    let options = CheckoutOptions::default().with_telemetry(Some(TelemetryContext::for_logfire(logfire)));
+    let mut checkout = pool
+        .checkout_with(&ReplConfig::default(), options)
+        .await
+        .expect("checkout");
+
+    let stall = Duration::from_millis(300);
+    // `join` polls the feed first, which writes and then waits; the stall then blocks the runtime
+    let (event, ()) = join(checkout.feed("1 + 1", vec![], vec![], false, &mut no_print), async {
+        thread::sleep(stall);
+    })
+    .await;
+    assert!(matches!(event, Ok(TurnEvent::Complete(_))), "{event:?}");
+    checkout.finish().await.expect("finish");
+
+    let Value::F64(run) = capture.last("monty.run.duration", "outcome", "complete").value else {
+        panic!("expected a duration");
+    };
+    assert!(run >= stall.as_secs_f64(), "run recorded {run}s");
+    let spans = spans.get_finished_spans().expect("spans");
+    let span = spans.iter().find(|span| span.name == "run code").expect("a run span");
+    let lasted = span.end_time.duration_since(span.start_time).expect("ordered times");
+    assert!(lasted >= stall, "run span lasted {lasted:?}");
 }
 
 /// A checkout that cannot be served, and a session abandoned rather than
@@ -640,6 +759,42 @@ async fn eager_coroutine_metrics_match_sync_outcomes() {
 /// A discard-everything print callback, coercible to `OnPrint` at each callsite.
 fn no_print(_: PrintStream, _: &str) -> PrintFuture {
     Box::pin(ready(()))
+}
+
+/// The distinct `turn` kinds `monty.turn.duration` recorded, sorted.
+fn turn_kinds(capture: &Capture) -> Vec<String> {
+    let mut kinds: Vec<String> = capture
+        .named("monty.turn.duration")
+        .into_iter()
+        .filter_map(|recorded| recorded.attributes.get("turn").cloned())
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
+}
+
+/// A local Logfire exporting a traced checkout's spans to memory.
+fn span_capture() -> (Logfire, InMemorySpanExporter) {
+    let spans = InMemorySpanExporter::default();
+    let logfire = logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
+        .finish()
+        .unwrap();
+    INSTALLED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(logfire.clone());
+    (logfire, spans)
+}
+
+/// The value of `span`'s `key` attribute, as a string.
+fn attribute(span: &SpanData, key: &str) -> Option<String> {
+    span.attributes
+        .iter()
+        .find(|kv| kv.key.as_str() == key)
+        .map(|kv| kv.value.to_string())
 }
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.

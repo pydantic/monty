@@ -111,6 +111,12 @@ name, or the `await` the main task is blocked on.
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 
+A subprocess [`Pool::checkout`](../api/rust/monty-pool.md#pool) sends nothing to the worker.
+The session's `Configure` goes out with its first request, which therefore reports a `ReplConfig` the worker rejects,
+as [`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror) with the worker discarded.
+`finish()` does not wait for the worker's `Reset` reply: the worker's next checkout reads it first and replaces a worker
+whose reset failed.
+
 [`ReplConfig`](../api/rust/monty-pool.md#replconfig) carries the per-session sandbox [`ResourceLimits`](../api/rust/monty-types.md#resourcelimits) and type-checking options.
 A host module's `.pyi` reaches the checker through the `import_stubs` OS call below.
 `Checkout::worker_id()` identifies the worker within its pool, independent of PID reuse and transport;
