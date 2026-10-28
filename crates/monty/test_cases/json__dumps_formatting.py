@@ -65,3 +65,37 @@ assert json.dumps('\x7f', ensure_ascii=False) == '"\x7f"'
 assert json.dumps('😀') == '"\\ud83d\\ude00"'
 assert json.dumps('😀', ensure_ascii=False) == '"😀"'
 assert json.dumps('ascii😀"\\\x01z') == '"ascii\\ud83d\\ude00\\"\\\\\\u0001z"'
+
+# === default= ===
+# the callable sees each value no JSON type covers, and its result is encoded in place
+assert json.dumps({'a': {1, 2}}, default=sorted) == '{"a": [1, 2]}'
+assert json.dumps({1, 2}, default=str) == '"{1, 2}"'
+assert json.dumps({1}, indent=2, default=lambda o: sorted(o)) == '[\n  1\n]'
+assert json.dumps([len], default=repr) == '["<built-in function len>"]'
+assert json.dumps({1}, default=lambda o: float('nan')) == 'NaN'
+assert json.dumps('s', default=5) == '"s"'
+assert json.dumps(1, default=lambda o: 1 / 0) == '1'
+
+
+class _Thing:
+    def __init__(self, name):
+        self.name = name
+
+
+assert json.dumps(_Thing('x'), default=lambda o: type(o).__name__) == '"_Thing"'
+assert json.dumps({'k': _Thing('y')}, default=lambda o: {'name': o.name}, sort_keys=True) == '{"k": {"name": "y"}}'
+# the replacement is encoded recursively, so it may itself need `default`
+assert json.dumps([_Thing(_Thing('z'))], default=lambda o: o.name) == '["z"]'
+
+
+class _Writer:
+    def __init__(self):
+        self.chunks = []
+
+    def write(self, text):
+        self.chunks.append(text)
+
+
+_w = _Writer()
+assert json.dump({1}, _w, default=sorted) is None
+assert ''.join(_w.chunks) == '[1]'

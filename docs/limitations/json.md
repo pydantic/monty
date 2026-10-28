@@ -7,7 +7,7 @@ hand-written encoder matching CPython byte-for-byte for the supported keyword se
 ## What's NOT in the module
 
 `json.JSONEncoder` and `json.JSONDecoder` are not implemented, and the `cls=`
-keyword is rejected.
+keyword is rejected. Fallback encoding is available through `dumps(default=...)`.
 
 ## `json.loads(s, **kwargs)`
 
@@ -77,13 +77,17 @@ has its `write` attribute called synchronously, under the same restrictions as
 ## `json.dumps(obj, **kwargs)`
 
 Supported kwargs, with CPython semantics: `indent`, `sort_keys`,
-`ensure_ascii`, `allow_nan`, `separators`, `skipkeys`.
+`ensure_ascii`, `allow_nan`, `separators`, `skipkeys`, `default`.
+
+`default` is called synchronously, with the restrictions of a synchronous call (see [classes.md](classes.md)): a
+callback that calls an external function or does host I/O raises `NotImplementedError`.
+A `default` that returns its own argument raises `ValueError: Circular reference detected` for a heap value, as in
+CPython, but for a value without a heap identity (a builtin function, say) the recursion limit is what stops it, with
+`RecursionError`.
 
 Rejected with `TypeError` if passed:
 
 - `cls` — custom encoder classes are not supported.
-- `default` — there is no fallback encoder callback. Non-serializable
-    values raise `TypeError` instead of routing through one.
 - `check_circular` — circular reference detection is always on.
 
 ## `JSONDecodeError`

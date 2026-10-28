@@ -169,3 +169,45 @@ try:
     assert False, 'should raise ValueError for -inf key'
 except ValueError as exc:
     assert str(exc) == 'Out of range float values are not JSON compliant: -inf'
+
+# === default= errors ===
+# a `default` that returns its argument is a circular reference, as in CPython
+for _default in [lambda o: o, lambda o: [o]]:
+    try:
+        json.dumps({1, 2}, default=_default)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == 'Circular reference detected'
+
+# `default` is only called when needed, so a non-callable passes until then
+try:
+    json.dumps({1}, default=5)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not callable"
+
+try:
+    json.dumps([{1}], default=lambda o: 1 / 0)
+    assert False, 'expected ZeroDivisionError'
+except ZeroDivisionError as exc:
+    assert str(exc) == 'division by zero'
+
+# `default=None` is the default: unserializable values raise
+try:
+    json.dumps({1}, default=None)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'Object of type set is not JSON serializable'
+
+# dict keys never go through `default`
+try:
+    json.dumps({(1, 2): 1}, default=str)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'keys must be str, int, float, bool or None, not tuple'
+
+try:
+    json.dumps({1}, default=lambda o: float('nan'), allow_nan=False)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Out of range float values are not JSON compliant: nan'
