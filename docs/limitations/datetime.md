@@ -50,13 +50,15 @@ Constructor: `date(year, month, day)`.
 Attributes: `year`, `month`, `day`.
 Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`.
 
-Class methods supported: `today()`, `fromisoformat()`.
-`fromisocalendar()`, `fromtimestamp()`, `fromordinal()` are not
-implemented. `strptime()`, added in CPython 3.14, is not implemented
+Class methods supported: `today()`, `fromisoformat()`, `fromtimestamp()`.
+`fromisocalendar()` and `fromordinal()` are not implemented. `strptime()`, added in CPython 3.14, is not implemented
 either.
 
 `today()` reads the clock, so it depends on the embedder granting one —
 see "Reading the clock" below.
+`fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
+A timestamp the platform's `localtime()` rejects raises `OSError` in CPython (`date.fromtimestamp(1e18)`); Monty raises
+`OverflowError: timestamp out of range for platform time_t` for every instant it cannot represent.
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
 through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
@@ -91,7 +93,7 @@ and with the offset from before a DST gap: CPython's `fold=0` reading, since `fo
 `fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
 `AttributeError`, where CPython returns `1`.
 
-Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
+Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `strptime(date_string, format)`,
 `fromisoformat(date_string)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
 - `now()` reads the clock — see "Reading the clock" below.
@@ -111,8 +113,11 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
     where CPython distinguishes trailing input with `ValueError: unconverted data remains: ...`.
 - `utcnow()` (the deprecated class method) and `today()` are not
     implemented.
-- `fromtimestamp()`, `fromordinal()` and `utcfromtimestamp()` are not
-    implemented.
+- A naive `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
+    Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython, except that an instant
+    the platform's `localtime()` rejects raises `OSError` there (`fromtimestamp(1e18)`) and
+    `OverflowError: timestamp out of range for platform time_t` here.
+- `fromordinal()` and `utcfromtimestamp()` (deprecated in CPython) are not implemented.
 - `time()` and `timetz()` return a `time` whose `fold` is always 0, since
     `datetime` does not store the flag (above). `combine()` likewise
     discards the `fold` of the `time` it is given, where CPython carries it
