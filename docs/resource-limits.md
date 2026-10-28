@@ -207,7 +207,7 @@ A supervisor clock or timer failure discards the worker instead of weakening enf
 OS counter resolution and scheduling can delay detection. This is approximate accounting, not a hard overshoot guarantee.
 
 Restore starts from the trusted snapshot's saved VM consumption and takes a fresh OS baseline.
-Earlier protocol CPU and spent CPU grace are not preserved by the snapshot.
+Snapshots do not store protocol CPU or spent CPU grace separately.
 For WebSocket sessions, the server's pool or profile selects the clock beside the actual child.
 Clients do not select or override it. The server reports its clock with the configuration reply.
 The client uses that metadata to avoid deriving wall deadlines from CPU budgets.

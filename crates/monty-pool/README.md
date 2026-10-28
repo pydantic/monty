@@ -171,7 +171,7 @@ Both mechanisms require the host runtime to make progress.
 
 Snapshots store their clock. A load with another clock fails without consuming the configured session.
 Restore seeds consumption from trusted saved VM usage and takes a fresh OS baseline.
-Earlier protocol CPU and spent CPU grace do not survive restore.
+Snapshots do not store protocol CPU or spent CPU grace separately.
 Clients use protocol version 7, so older workers reject the configuration instead of ignoring it.
 WebSocket servers select the clock through their pool or profile and report it in the configuration reply.
 Clients adopt that clock for deadlines; CPU mode requires a finite client `request_timeout`.

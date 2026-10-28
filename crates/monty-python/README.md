@@ -210,6 +210,8 @@ Execution boundaries take fresh samples. WebAssembly workers support wall time o
 An unavailable or unusable VM CPU counter uses elapsed time for that window. The OS controls CPU counter accuracy and resolution.
 Native pool backstops use the selected clock and configured grace.
 CPU mode uses an independent OS process counter and requires a finite wall-clock `request_timeout`.
-Snapshots retain their clock and recorded consumption.
+Snapshots retain their clock and VM consumption.
+CPU restore approximates prior supervisor usage from saved VM consumption.
+The snapshot does not record protocol CPU or supervisor grace separately.
 Load them through a pool with the same execution clock.
 Snapshots without a clock use wall time.

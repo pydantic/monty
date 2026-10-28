@@ -2,7 +2,10 @@
 
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
-use std::{env, future::ready, path::PathBuf, process::Command, sync::OnceLock, thread, time::Duration};
+use std::{env, future::ready, path::PathBuf, sync::OnceLock, thread, time::Duration};
+
+#[path = "binary/build.rs"]
+mod build;
 
 use monty_pool::{Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
 use monty_types::{ExecutionClock, MontyObject, PrintStream, ResourceLimits};
@@ -13,35 +16,13 @@ fn no_print(_: PrintStream, _: &str) -> PrintFuture {
 
 fn worker() -> PathBuf {
     static WORKER: OnceLock<PathBuf> = OnceLock::new();
+
+    // Prebuilt test bundles supply a fixture without a native Cargo installation.
+    if let Some(path) = env::var_os("MONTY_CPU_TEST_BIN") {
+        return PathBuf::from(path);
+    }
     WORKER
-        .get_or_init(|| {
-            let executable = env::current_exe().unwrap();
-            let profile_dir = executable.parent().unwrap().parent().unwrap();
-            let path = profile_dir
-                .join("examples")
-                .join(format!("cpu-test-worker{}", env::consts::EXE_SUFFIX));
-            if !path.is_file() {
-                let profile = profile_dir.file_name().unwrap().to_str().unwrap();
-                let profile = if profile == "debug" { "dev" } else { profile };
-                let status = Command::new(env!("CARGO"))
-                    .args([
-                        "build",
-                        "-p",
-                        "monty-pool",
-                        "--example",
-                        "cpu-test-worker",
-                        "--profile",
-                        profile,
-                        "--target-dir",
-                    ])
-                    .arg(profile_dir.parent().unwrap())
-                    .status()
-                    .expect("build the CPU supervision fixture");
-                assert!(status.success(), "building the CPU supervision fixture failed");
-            }
-            assert!(path.is_file(), "CPU supervision fixture missing at {}", path.display());
-            path
-        })
+        .get_or_init(|| build::binary(&["-p", "monty-pool", "--example", "cpu-test-worker"], "cpu-test-worker"))
         .clone()
 }
 

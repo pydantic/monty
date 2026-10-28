@@ -397,5 +397,6 @@ async def test_async_pool_fixes_the_clock_for_different_session_budgets():
         for budget in [0.05, 0.1]:
             async with pool.checkout(limits={'max_feed_duration_secs': budget}) as session:
                 assert await session.feed_run('sum(range(1000))') == 499_500
-                with pytest.raises(MontyRuntimeError, match='TimeoutError'):
+                with pytest.raises(MontyRuntimeError) as exc_info:
                     await session.feed_run('while True: pass')
+                assert isinstance(exc_info.value.exception(), TimeoutError)

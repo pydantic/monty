@@ -81,6 +81,7 @@ name = "cpu-test-worker"
 path = "tests/support/cpu_worker.rs"
 
 [dev-dependencies]
+serde_json = { workspace = true }
 cpu-time = { workspace = true }
 # Snapshots of the error messages the pool reports to a host.
 insta = { workspace = true }
