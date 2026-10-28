@@ -31,37 +31,14 @@ fn expect_message(code: &str) -> String {
 }
 
 #[test]
-fn initvar_is_rejected() {
-    // Annotations are stringized and never evaluated, so `InitVar` need not be
-    // imported to appear here — it would silently become an ordinary field.
-    let err = expect_error(
-        r"
-from dataclasses import dataclass
-
-@dataclass
-class Q:
-    x: int
-    tmp: InitVar[int]
-",
-    );
-    assert_snapshot!(err, @r#"
-    Traceback (most recent call last):
-      File "test.py", line 4, in <module>
-        @dataclass
-         ~~~~~~~~~
-    NotImplementedError: dataclass() does not yet support InitVar (field tmp), which would become an ordinary field
-    "#);
-}
-
-#[test]
 fn unimplemented_option_names_itself() {
-    // `eq` and `frozen` are implemented; the rest are refused by name rather
-    // than accepted and ignored.
+    // Every option but the two needing `__slots__` and weakrefs is implemented;
+    // those are refused by name rather than accepted and ignored.
     let err = expect_error(
         r"
 from dataclasses import dataclass
 
-@dataclass(order=True)
+@dataclass(slots=True)
 class F:
     x: int
 ",
@@ -69,16 +46,18 @@ class F:
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
       File "test.py", line 4, in <module>
-        @dataclass(order=True)
+        @dataclass(slots=True)
          ~~~~~~~~~~~~~~~~~~~~~
-    NotImplementedError: dataclass() does not yet support the order option
+    NotImplementedError: dataclass() does not yet support the slots option
     "#);
+
+    let err =
+        expect_message("from dataclasses import dataclass\n@dataclass(weakref_slot=True)\nclass F:\n    x: int\n");
+    assert_eq!(err, "dataclass() does not yet support the weakref_slot option");
 }
 
-/// `field()` refuses each argument it cannot honour, by name and at the call
-/// itself. `init`/`repr`/`compare` are among them: nothing consults them when
-/// the dunders are synthesized, so accepting `init=False` would silently give
-/// the field an `__init__` parameter anyway.
+/// `field()` refuses the argument it cannot honour, by name and at the call
+/// itself: `metadata` needs `types.MappingProxyType`, which Monty does not have.
 #[test]
 fn unimplemented_field_argument_names_itself() {
     let err = expect_error(
@@ -87,31 +66,27 @@ from dataclasses import dataclass, field
 
 @dataclass
 class F:
-    x: int = field(init=False, default=1)
+    x: int = field(metadata={}, default=1)
 ",
     );
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
       File "test.py", line 5, in <module>
         class F:
-            x: int = field(init=False, default=1)
+            x: int = field(metadata={}, default=1)
       File "test.py", line 6, in F
-        x: int = field(init=False, default=1)
-                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    NotImplementedError: field() does not yet support the init argument
+        x: int = field(metadata={}, default=1)
+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: field() does not yet support the metadata argument
     "#);
+}
 
-    for (arg, value) in [
-        ("repr", "False"),
-        ("hash", "True"),
-        ("compare", "False"),
-        ("metadata", "{}"),
-        ("kw_only", "True"),
-        ("doc", "'what it is'"),
-    ] {
-        let err = expect_message(&format!("from dataclasses import field\nfield({arg}={value})\n"));
-        assert_eq!(err, format!("field() does not yet support the {arg} argument"));
-    }
+/// The decorator keys fields by interned name, and Monty cannot intern new text
+/// at runtime, so `make_dataclass` refuses a field name the source never spells.
+#[test]
+fn make_dataclass_refuses_a_name_built_at_runtime() {
+    let err = expect_message("from dataclasses import make_dataclass\nmake_dataclass('C', [''.join(['q', 'zz'])])\n");
+    assert_snapshot!(err, @"make_dataclass() does not yet support the field name 'qzz', which appears nowhere in the source code");
 }
 
 /// CPython raises `ValueError` before it builds the `Field` at all, so it never

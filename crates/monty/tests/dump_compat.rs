@@ -325,9 +325,12 @@ f = Frozen(1)
 p = Plain([1])
 ";
 
-/// Run against the upgraded classes: each behaves as its decoration said, and a
-/// `__post_init__` attached after decoration still never runs.
-const LEGACY_DATACLASS_CHECK: &str = r#"assert f == Frozen(1, 2)
+/// Run against the upgraded classes: each behaves as its decoration said, a
+/// `__post_init__` attached after decoration still never runs, and each gains
+/// the `__replace__` `copy.replace()` calls.
+const LEGACY_DATACLASS_CHECK: &str = r#"import copy
+assert f == Frozen(1, 2)
+assert copy.replace(f, y=7) == Frozen(1, 7)
 assert hash(f) == hash((1, 2))
 assert repr(f) == 'Frozen(x=1, y=2)'
 try:

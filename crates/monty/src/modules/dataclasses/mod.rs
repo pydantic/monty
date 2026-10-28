@@ -9,7 +9,9 @@
 //! See `limitations/dataclasses.md` for divergences from CPython.
 
 mod field;
+mod helpers;
 mod legacy;
+mod make;
 mod method;
 mod options;
 
@@ -17,19 +19,19 @@ pub(crate) use self::{
     field::DataclassField,
     legacy::{LEGACY_DUMP_VERSION, upgrade_legacy_classes},
     method::{
-        DataclassMethod, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error, generated_fields,
-        is_generated_init, run_init,
+        DataclassMethod, dataclass_cmp, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error,
+        generated_fields, is_generated_init, run_init,
     },
     options::{DataclassOptions, DataclassParams},
 };
 use self::{
-    field::{adoptable_field, field_at_id},
-    method::{FieldInit, MethodKind},
+    field::{FieldFlags, FieldKind, adoptable_field, field_at_id},
+    method::{FieldInit, InitField, InitRole, MethodKind},
 };
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadMut, HeapReadOutput, HeapReader},
@@ -54,6 +56,20 @@ pub(crate) enum DataclassesFunctions {
     /// `field(...)` — builds the `Field` a class body binds and the decorator
     /// then adopts.
     Field,
+    /// `fields(class_or_instance)` — the real fields, as a tuple of `Field`s.
+    Fields,
+    /// `asdict(obj)` — an instance as a dict, recursively.
+    Asdict,
+    /// `astuple(obj)` — an instance as a tuple, recursively.
+    Astuple,
+    /// `replace(obj, /, **changes)` — a new instance with some fields replaced.
+    Replace,
+    /// `make_dataclass(cls_name, fields, ...)` — builds a class, then decorates it.
+    MakeDataclass,
+    /// CPython's private `_replace(self, /, **changes)`: not a module attribute,
+    /// but the one function every dataclass stores as `__replace__`.
+    #[strum(serialize = "_replace")]
+    ReplaceDunder,
     /// The decorator `@dataclass(...)` returns while it waits for the class,
     /// carrying the bound options so `d = dataclass(frozen=True)` then `@d`
     /// works. Named for the user-visible decorator, not the variant.
@@ -79,11 +95,16 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::ExcType(ExcType::FrozenInstanceError)),
         vm,
     );
-    module.set_attr(
-        StaticStrings::Field,
-        Value::ModuleFunction(ModuleFunctions::Dataclasses(DataclassesFunctions::Field)),
-        vm,
-    );
+    for (name, function) in [
+        (StaticStrings::Field, DataclassesFunctions::Field),
+        (StaticStrings::Fields, DataclassesFunctions::Fields),
+        (StaticStrings::Asdict, DataclassesFunctions::Asdict),
+        (StaticStrings::Astuple, DataclassesFunctions::Astuple),
+        (StaticStrings::Replace, DataclassesFunctions::Replace),
+        (StaticStrings::MakeDataclass, DataclassesFunctions::MakeDataclass),
+    ] {
+        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Dataclasses(function)), vm);
+    }
     // `MISSING` is a bare sentinel compared by identity, so it needs no state
     // beyond its name — a `Marker` like `sys.stdout`, with a type of its own.
     module.set_attr(
@@ -91,21 +112,35 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Marker(Marker(StaticStrings::Missing)),
         vm,
     );
+    // Likewise `KW_ONLY` and `InitVar`, which are only ever written in
+    // annotations, and annotations are never evaluated: the decorator matches
+    // them by text. They exist so `from dataclasses import KW_ONLY` resolves.
+    for marker in [StaticStrings::KwOnlyMarker, StaticStrings::InitVar] {
+        module.set_attr(marker, Value::Marker(Marker(marker)), vm);
+    }
     vm.heap.allocate_as(module).into_id()
 }
 
-/// Dispatches a `dataclasses` module function call.
-pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues) -> RunResult<Value> {
-    match func {
+/// Dispatches a `dataclasses` module function call. `make_dataclass` and the
+/// two `replace` functions tail-call (the decorator, the class), so can push a frame.
+pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues) -> RunResult<CallResult> {
+    let value = match func {
         DataclassesFunctions::Dataclass => dataclass_decorator(vm, args),
         DataclassesFunctions::IsDataclass => is_dataclass(vm, args),
         DataclassesFunctions::Field => field::field(vm, args),
+        DataclassesFunctions::Fields => helpers::fields(vm, args),
+        DataclassesFunctions::Asdict => helpers::asdict(vm, args),
+        DataclassesFunctions::Astuple => helpers::astuple(vm, args),
+        DataclassesFunctions::Replace => return helpers::replace(vm, args),
+        DataclassesFunctions::ReplaceDunder => return helpers::replace_dunder(vm, args),
+        DataclassesFunctions::MakeDataclass => return make::make_dataclass(vm, args),
         // The options are already bound; this call supplies the class.
         DataclassesFunctions::Configured(options) => {
             let ConfiguredArgs { cls } = ConfiguredArgs::from_args(args, vm)?;
             apply_dataclass(vm, cls, options)
         }
-    }
+    };
+    value.map(CallResult::Value)
 }
 
 /// The `@dataclass` decorator, in both spellings: applied bare the class
@@ -161,28 +196,28 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         slots,
         weakref_slot,
     ] = truthy;
-    let options = DataclassOptions { eq, frozen };
-    // Options Monty does not implement are refused when set away from their
-    // CPython default, rather than accepted and ignored.
-    let unimplemented = [
-        ("init", init, true),
-        ("repr", repr, true),
-        ("order", order, false),
-        ("unsafe_hash", unsafe_hash, false),
-        ("match_args", match_args, true),
-        ("kw_only", kw_only, false),
-        ("slots", slots, false),
-        ("weakref_slot", weakref_slot, false),
-    ]
-    .into_iter()
-    .find(|&(_, given, default)| given != default);
+    let options = DataclassOptions {
+        init,
+        repr,
+        eq,
+        order,
+        unsafe_hash,
+        frozen,
+        match_args,
+        kw_only,
+    };
+    // Monty has neither `__slots__` nor weakrefs, so these two are refused when
+    // set rather than accepted and ignored.
+    let unimplemented = [("slots", slots), ("weakref_slot", weakref_slot)]
+        .into_iter()
+        .find(|&(_, given)| given);
     // Only truthiness is kept, so the flags are released here; `cls` alone lives
     // on, into the return value.
     let (values, vm) = guard.into_parts();
     let [cls, flags @ ..] = values;
     flags.drop_with(vm);
     match unimplemented {
-        Some((name, _, _)) => {
+        Some((name, _)) => {
             cls.drop_with(vm);
             Err(ExcType::not_implemented(format!("dataclass() does not yet support the {name} option")).into())
         }
@@ -256,7 +291,7 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     let HeapReadOutput::Class(class) = vm.heap.read(*class_id) else {
         return Err(non_class_error(cls, vm));
     };
-    let fields = build_dataclass_fields(&class, vm)?;
+    let fields = build_dataclass_fields(&class, options, vm)?;
     let Value::Ref(fields_id) = fields else {
         unreachable!("the fields mapping is a dict")
     };
@@ -268,7 +303,9 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     rewrite_field_attributes(&class, fields_id, vm)?;
     store_dataclass_params(&class, options, vm)?;
     install_generated_methods(*class_id, &class, fields_id, options, &mut Installer::Decorate(vm))?;
-    store_match_args(&class, fields_id, vm)?;
+    if options.match_args {
+        store_match_args(&class, fields_id, vm)?;
+    }
     Ok(guard.into_inner())
 }
 
@@ -283,22 +320,46 @@ fn non_class_error(cls: &Value, vm: &VM<'_>) -> RunError {
 }
 
 /// Builds the `name -> Field` mapping for `class` from its `__annotations__`:
-/// the annotated names in definition order, minus `ClassVar` entries, each
-/// owning the default the class namespace bound for it (`y: int = 5`).
+/// the annotated names in definition order, minus `ClassVar` entries and the
+/// `KW_ONLY` marker, each owning the default the class namespace bound for it
+/// (`y: int = 5`).
 ///
 /// Also where a class body Monty cannot yet honour is rejected, so an
 /// unimplemented feature raises rather than producing a subtly wrong class
 /// (see `limitations/dataclasses.md`). The fields are guarded throughout, so a
 /// rejection releases the defaults already captured.
-fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> RunResult<Value> {
-    let fields = collect_annotated_fields(class, vm);
+fn build_dataclass_fields<'h>(
+    class: &HeapRead<'h, Class>,
+    options: DataclassOptions,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let fields = collect_annotated_fields(class, options.kw_only, vm)?;
     let mut guard = DropGuard::new(fields, vm);
     let (fields, vm) = guard.as_parts();
-    // Field validation runs first, so a class CPython would reject reports
-    // CPython's own message and the Monty-only guards can only fire after.
     validate_fields(vm, fields)?;
+    reject_unannotated_fields(class, vm)?;
     let (fields, vm) = guard.into_parts();
     allocate_fields_dict(vm, fields)
+}
+
+/// Rejects a `field()` the class body bound to a name it never annotated,
+/// which CPython raises after collecting the fields rather than ignoring.
+fn reject_unannotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &VM<'h>) -> RunResult<()> {
+    let annotations = annotations_dict(class, vm);
+    let unannotated = class.get(vm.heap).namespace().iter().find_map(|(key, value)| {
+        let Value::InternString(name_id) = key else {
+            return None;
+        };
+        let name = vm.interns.get_str(*name_id);
+        let annotated = annotations.is_some_and(|a| a.get_by_str(name, vm.heap, vm.interns).is_some());
+        (!annotated && adoptable_field(Some(value), vm).is_some()).then_some(name)
+    });
+    match unannotated {
+        Some(name) => Err(ExcType::type_error(format!(
+            "'{name}' is a field but has no type annotation"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Allocates the dict `__dataclass_fields__` holds, consuming the collected
@@ -356,18 +417,19 @@ fn store_dataclass_params<'h>(
     Ok(())
 }
 
-/// Writes `__match_args__` into the class namespace: the field names in
-/// definition order, so `case Point(x, y):` binds positionally. A class that
-/// defines its own `__match_args__` keeps it, as in CPython.
+/// Writes `__match_args__` into the class namespace: the positional `__init__`
+/// parameters in definition order, so `case Point(x, y):` binds positionally.
+/// A class that defines its own `__match_args__` keeps it, as in CPython.
 fn store_match_args<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapId, vm: &mut VM<'h>) -> RunResult<()> {
     let name_id = vm.interns.intern_static(StaticStrings::MatchArgsDunder);
     let namespace = class.get(vm.heap).namespace();
     if namespace.get_by_str("__match_args__", vm.heap, vm.interns).is_some() {
         return Ok(());
     }
-    let names: TupleVec = adopted_field_ids(fields_id, vm.heap)
+    let names: TupleVec = field_specs(fields_id, vm.heap)
         .into_iter()
-        .map(|(name, _)| Value::InternString(name))
+        .filter(|spec| spec.flags.init && !spec.flags.is_kw_only())
+        .map(|spec| Value::InternString(spec.name))
         .collect();
     let match_args = allocate_tuple(names, vm.heap);
     let replaced = class.set_attr(Value::InternString(name_id), match_args, vm)?;
@@ -376,12 +438,13 @@ fn store_match_args<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapId, vm: &
 }
 
 /// Writes the dunders CPython's `_process_class` generates, each a
-/// [`DataclassMethod`] built from the fields just stored.
+/// [`DataclassMethod`] built from the fields just stored, in CPython's order.
 ///
-/// `__init__`, `__repr__` and `__eq__` are only added when the class body did
-/// not define them. Frozen classes refuse a body `__setattr__`/`__delattr__`
-/// with CPython's `TypeError`. `__hash__` follows CPython's `_hash_action`
-/// table and overwrites whatever the body left, as CPython assigns it outright.
+/// `__init__`, `__repr__` and `__eq__` are only added when the option asks and
+/// the class body did not define them. A body ordering dunder, or a frozen
+/// class's body `__setattr__`/`__delattr__`, is refused with CPython's
+/// `TypeError`. `__hash__` follows CPython's `_hash_action` table and
+/// overwrites whatever the body left, as CPython assigns it outright.
 /// [`Installer::Upgrade`] changes three of those choices; see its docs.
 fn install_generated_methods<'h>(
     class_id: HeapId,
@@ -395,34 +458,63 @@ fn install_generated_methods<'h>(
         .name()
         .as_str(installer.interns())
         .to_owned();
-    let names: Vec<StringId> = adopted_field_ids(fields_id, installer.heap())
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
     // Read before anything is added: CPython's `has_explicit_hash` sees the body
     // alone. A `__hash__ = None` beside a body `__eq__` is the opt-out `type`
     // inserted, not one the author wrote, so a generated hash replaces it.
     let explicit_hash = installer
         .member(class_id, "__hash__")
         .is_some_and(|hash| !(matches!(hash, Value::None) && installer.defines(class_id, "__eq__")));
-    let post_init = installer.is_decorating() && installer.defines(class_id, "__post_init__");
+    if options.order && !options.eq {
+        return Err(ExcType::value_error("eq must be true if order is true"));
+    }
+    let specs = field_specs(fields_id, installer.heap());
+    // The real fields, without the `InitVar`s, filtered by a `field()` switch.
+    let names = |keep: fn(FieldFlags) -> bool| -> Vec<StringId> {
+        specs
+            .iter()
+            .filter(|spec| spec.kind == FieldKind::Field && keep(spec.flags))
+            .map(|spec| spec.name)
+            .collect()
+    };
 
-    if !installer.defines(class_id, "__init__") {
-        let init = DataclassMethod::init(
-            class_name.clone(),
-            init_fields(fields_id, installer.heap()),
-            post_init,
-            options.frozen,
-        );
+    // CPython checks the order whenever `init=True`, even beside a body `__init__`.
+    if options.init && installer.is_decorating() {
+        check_default_order(&specs, installer.heap(), installer.interns())?;
+    }
+    if options.init && !installer.defines(class_id, "__init__") {
+        let post_init = installer.is_decorating() && installer.defines(class_id, "__post_init__");
+        let fields = init_fields(&specs, installer.heap());
+        let init = DataclassMethod::init(class_name.clone(), fields, post_init, options.frozen);
         installer.set_method(class, init)?;
     }
-    if !installer.defines(class_id, "__repr__") {
-        let repr = DataclassMethod::new(class_name.clone(), MethodKind::Repr(names.clone()));
+    // Unconditional, as CPython's `_set_new_attribute` is: only a body
+    // `__replace__` keeps it out.
+    if !installer.defines(class_id, "__replace__") {
+        let replace = Value::ModuleFunction(ModuleFunctions::Dataclasses(DataclassesFunctions::ReplaceDunder));
+        installer.set_member(class, StaticStrings::DunderReplace, replace)?;
+    }
+    if options.repr && !installer.defines(class_id, "__repr__") {
+        let repr = DataclassMethod::new(class_name.clone(), MethodKind::Repr(names(|flags| flags.repr)));
         installer.set_method(class, repr)?;
     }
+    let compared = names(|flags| flags.compare);
     if options.eq && !installer.defines(class_id, "__eq__") {
-        let eq = DataclassMethod::new(class_name.clone(), MethodKind::Eq(names.clone()));
+        let eq = DataclassMethod::new(class_name.clone(), MethodKind::Eq(compared.clone()));
         installer.set_method(class, eq)?;
+    }
+    if options.order {
+        let kinds: [fn(Vec<StringId>) -> MethodKind; 4] =
+            [MethodKind::Lt, MethodKind::Le, MethodKind::Gt, MethodKind::Ge];
+        for kind in kinds {
+            let kind = kind(compared.clone());
+            let dunder: &'static str = kind.dunder().into();
+            if installer.defines(class_id, dunder) {
+                return Err(ExcType::type_error(format!(
+                    "Cannot overwrite attribute {dunder} in class {class_name} Consider using functools.total_ordering"
+                )));
+            }
+            installer.set_method(class, DataclassMethod::new(class_name.clone(), kind))?;
+        }
     }
     if options.frozen {
         for kind in [MethodKind::FrozenSetattr, MethodKind::FrozenDelattr] {
@@ -435,30 +527,66 @@ fn install_generated_methods<'h>(
             installer.set_method(class, DataclassMethod::new(class_name.clone(), kind))?;
         }
     }
-    // CPython's `_hash_action` rows for `unsafe_hash=False`, which Monty requires.
-    match (options.eq, options.frozen, explicit_hash) {
-        (true, true, false) => {
-            let hash = DataclassMethod::new(class_name, MethodKind::Hash(names));
+    // CPython's `_hash_action`, keyed on `unsafe_hash`, `eq`, `frozen` and
+    // whether the body set its own `__hash__`.
+    match (options.unsafe_hash, options.eq, options.frozen, explicit_hash) {
+        (true, _, _, true) => Err(ExcType::type_error(format!(
+            "Cannot overwrite attribute __hash__ in class {class_name}"
+        ))),
+        (true, _, _, false) | (false, true, true, false) => {
+            let hash = DataclassMethod::new(class_name, MethodKind::Hash(names(FieldFlags::hashed)));
             installer.set_method(class, hash)
         }
-        (true, false, false) => installer.set_member(class, StaticStrings::DunderHash, Value::None),
+        (false, true, false, false) => installer.set_member(class, StaticStrings::DunderHash, Value::None),
         _ => Ok(()),
     }
 }
 
-/// Each field's `__init__` parameter: its name and the default or factory
-/// captured at decoration, as owned references for the method to hold.
-fn init_fields(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, FieldInit)> {
-    adopted_field_ids(fields_id, heap)
-        .into_iter()
-        .map(|(name, field_id)| {
-            let field = field_at_id(heap, field_id).expect("adopted ids name fields");
+/// CPython's `_init_fn` check: no positional parameter without a default may
+/// follow one with a default. Keyword-only and `init=False` fields are exempt,
+/// and a `default_factory` counts as a default.
+fn check_default_order(specs: &[FieldSpec], heap: &Heap, interns: &Interns) -> RunResult<()> {
+    let mut last_default = None;
+    for spec in specs.iter().filter(|spec| spec.flags.init && !spec.flags.is_kw_only()) {
+        let has_default = field_at_id(heap, spec.field_id).is_some_and(DataclassField::has_default);
+        match (has_default, last_default) {
+            (true, _) => last_default = Some(spec.name),
+            (false, Some(prev)) => {
+                let (prev, field) = (interns.get_str(prev), interns.get_str(spec.name));
+                return Err(ExcType::type_error(format!(
+                    "non-default argument '{field}' follows default argument '{prev}'"
+                )));
+            }
+            (false, None) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The fields a generated `__init__` handles, each with the default or factory
+/// captured at decoration as owned references for the method to hold.
+///
+/// An `init=False` field without a factory is left out: CPython's `__init__`
+/// never touches it, leaving the class attribute to answer. So is an
+/// `init=False` `InitVar`, which is not a parameter either.
+fn init_fields(specs: &[FieldSpec], heap: &Heap) -> Vec<InitField> {
+    specs
+        .iter()
+        .filter_map(|spec| {
+            let field = field_at_id(heap, spec.field_id).expect("specs name fields");
+            let role = match (spec.kind, spec.flags.init) {
+                (FieldKind::InitVar, true) => InitRole::InitVar,
+                (FieldKind::InitVar, false) => return None,
+                (FieldKind::Field, true) => InitRole::Stored,
+                (FieldKind::Field, false) if field.default_factory().is_some() => InitRole::Computed,
+                (FieldKind::Field, false) => return None,
+            };
             let init = match (field.default(), field.default_factory()) {
                 (Some(default), _) => FieldInit::Default(default.clone_with_heap(heap)),
                 (None, Some(factory)) => FieldInit::Factory(factory.clone_with_heap(heap)),
                 (None, None) => FieldInit::Unsupplied,
             };
-            (name, init)
+            Some(InitField::new(spec.name, init, spec.flags.is_kw_only(), role))
         })
         .collect()
 }
@@ -516,7 +644,7 @@ impl<'h> Installer<'_, 'h> {
 
     /// Stores `value` in the class namespace under `name`, releasing what it
     /// replaces. Only the decorator's write can fail, on its memory preflight;
-    /// an upgrade adds at most six entries to a class and skips it.
+    /// an upgrade adds at most seven entries to a class and skips it.
     fn set_member(&mut self, class: &HeapReadMut<'h, Class>, name: StaticStrings, value: Value) -> RunResult<()> {
         match self {
             Self::Decorate(vm) => {
@@ -561,6 +689,33 @@ fn rewrite_field_attributes<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapI
     Ok(())
 }
 
+/// One entry of a `__dataclass_fields__` dict, read out of the heap.
+#[derive(Debug, Clone, Copy)]
+struct FieldSpec {
+    /// The mapping key; see [`adopted_field_ids`] for why not `Field.name`.
+    name: StringId,
+    field_id: HeapId,
+    flags: FieldFlags,
+    kind: FieldKind,
+}
+
+/// Every entry of a `__dataclass_fields__` dict as a [`FieldSpec`], in
+/// definition order.
+fn field_specs(fields_id: HeapId, heap: &Heap) -> Vec<FieldSpec> {
+    adopted_field_ids(fields_id, heap)
+        .into_iter()
+        .map(|(name, field_id)| {
+            let field = field_at_id(heap, field_id).expect("adopted ids name fields");
+            FieldSpec {
+                name,
+                field_id,
+                flags: field.flags(),
+                kind: field.kind(),
+            }
+        })
+        .collect()
+}
+
 /// The `(name, field_id)` of every field in a `__dataclass_fields__` dict.
 ///
 /// The name is the mapping **key**, not the live `Field.name`: adoption writes
@@ -589,12 +744,13 @@ fn adopted_field_ids(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, HeapId)> 
 /// gets a fresh `Field` built around it.
 ///
 /// The returned references are owned, so a caller that discards them must
-/// release them (`drop_with`).
-fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> Vec<Value> {
-    let names = annotated_field_names(class, vm);
+/// release them (`drop_with`). A second `KW_ONLY` marker is the one error this
+/// walk raises, before a single field is collected.
+fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, kw_only: bool, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
+    let names = annotated_field_names(class, kw_only, vm)?;
     let mut guard = DropGuard::new(Vec::with_capacity(names.len()), vm);
     let (fields, vm) = guard.as_parts_mut();
-    for name_id in names {
+    for (name_id, kw_only, kind) in names {
         let namespace = class.get(vm.heap).namespace();
         // Captured now, as CPython bakes it into the generated `__init__`:
         // rebinding the class attribute later must not change it.
@@ -609,32 +765,88 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) ->
             let HeapReadOutput::DataclassField(field) = vm.heap.read(field_id) else {
                 unreachable!("adoptable_field matched the variant")
             };
-            let replaced = field.get_mut(vm.heap).adopt(name_id, annotation);
+            let replaced = field.get_mut(vm.heap).adopt(name_id, annotation, kw_only, kind);
             replaced.drop_with(vm);
             fields.push(bound.expect("adoptable_field matched a bound value"));
         } else {
-            let field = DataclassField::new(name_id, annotation, bound);
+            let field = DataclassField::new(name_id, annotation, bound, kw_only, kind);
             fields.push(vm.heap.allocate_as(field).into_value());
         }
     }
-    guard.into_parts().0
+    Ok(guard.into_parts().0)
 }
 
-/// The annotated field names in definition order, minus `ClassVar` entries.
+/// The annotated field names in definition order, each with its class-level
+/// `kw_only` (the decorator's, or set by an earlier `KW_ONLY` marker) and its
+/// kind. `ClassVar` entries and the marker itself are dropped.
 ///
 /// Names alone, so the collection loop can take the heap mutably instead of
 /// holding a borrow of the annotations dict across an allocation.
-fn annotated_field_names<'h>(class: &HeapRead<'h, Class>, vm: &VM<'h>) -> Vec<StringId> {
+fn annotated_field_names<'h>(
+    class: &HeapRead<'h, Class>,
+    mut kw_only: bool,
+    vm: &VM<'h>,
+) -> RunResult<Vec<(StringId, bool, FieldKind)>> {
     let Some(annotations) = annotations_dict(class, vm) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    annotations
-        .into_iter()
-        .filter_map(|(key, annotation)| match key {
-            Value::InternString(name_id) if !is_classvar(&annotation_text(annotation, vm)) => Some(*name_id),
-            _ => None,
-        })
-        .collect()
+    let mut seen_marker = false;
+    let mut names = Vec::new();
+    for (key, annotation) in annotations {
+        let Value::InternString(name_id) = key else {
+            continue;
+        };
+        match AnnotationRole::of(annotation, vm) {
+            AnnotationRole::KwOnly if seen_marker => {
+                let name = vm.interns.get_str(*name_id);
+                return Err(ExcType::type_error(format!(
+                    "'{name}' is KW_ONLY, but KW_ONLY has already been specified"
+                )));
+            }
+            AnnotationRole::KwOnly => {
+                seen_marker = true;
+                kw_only = true;
+            }
+            AnnotationRole::ClassVar => {}
+            AnnotationRole::Field(kind) => names.push((*name_id, kw_only, kind)),
+        }
+    }
+    Ok(names)
+}
+
+/// What an annotation makes the name it annotates.
+#[derive(Debug, Clone, Copy)]
+enum AnnotationRole {
+    /// A field, or an `InitVar` pseudo-field.
+    Field(FieldKind),
+    /// `ClassVar`: not a field at all.
+    ClassVar,
+    /// The `KW_ONLY` marker, after which every field is keyword-only.
+    KwOnly,
+}
+
+impl AnnotationRole {
+    /// A class body's annotations are source text, matched textually;
+    /// `make_dataclass` passes the marker objects themselves, matched by identity.
+    fn of(annotation: &Value, vm: &VM<'_>) -> Self {
+        match annotation {
+            Value::Marker(Marker(StaticStrings::KwOnlyMarker)) => Self::KwOnly,
+            Value::Marker(Marker(StaticStrings::ClassVar)) => Self::ClassVar,
+            Value::Marker(Marker(StaticStrings::InitVar)) => Self::Field(FieldKind::InitVar),
+            _ => {
+                let text = annotation_text(annotation, vm);
+                if is_kw_only_marker(&text) {
+                    Self::KwOnly
+                } else if is_classvar(&text) {
+                    Self::ClassVar
+                } else if is_initvar(&text) {
+                    Self::Field(FieldKind::InitVar)
+                } else {
+                    Self::Field(FieldKind::Field)
+                }
+            }
+        }
+    }
 }
 
 /// One field's annotation, cloned as an owned reference for the `Field` to hold.
@@ -659,8 +871,8 @@ fn annotations_dict<'a, 'h>(class: &HeapRead<'h, Class>, vm: &'a VM<'h>) -> Opti
     }
 }
 
-/// A stringized annotation as text, or `""` for the non-string annotations
-/// Monty never produces (it always stores annotations as source text).
+/// A stringized annotation as text, or `""` for a non-string annotation, which
+/// only `make_dataclass` produces.
 fn annotation_text(annotation: &Value, vm: &VM<'_>) -> String {
     annotation
         .as_either_str(vm.heap)
@@ -668,23 +880,25 @@ fn annotation_text(annotation: &Value, vm: &VM<'_>) -> String {
         .unwrap_or_default()
 }
 
-/// Rejects field lists Monty cannot honour, in CPython's checking order.
-///
-/// CPython validates defaults per field as it collects them, so a mutable
-/// default is reported before the whole-list non-default-after-default check.
+/// Rejects the fields CPython's `_get_field` rejects, in its order: an
+/// `InitVar` with a `default_factory`, then a mutable default on a real field.
+/// (The argument-order check needs the `__init__` options, so it runs when the
+/// method is built.)
 fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
     for field_value in fields {
         // Read out first: hashing a default needs the heap mutably.
-        let Some((name, annotation_text, default)) = read_field(field_value, vm) else {
+        let Some((name, kind, has_factory, default)) = read_field(field_value, vm) else {
             continue;
         };
         defer_drop!(default, vm);
         let name = vm.interns.get_str(name).to_owned();
-        if is_initvar(&annotation_text) {
-            return Err(ExcType::not_implemented(format!(
-                "dataclass() does not yet support InitVar (field {name}), which would become an ordinary field"
-            ))
-            .into());
+        if kind == FieldKind::InitVar {
+            if has_factory {
+                return Err(ExcType::type_error(format!(
+                    "field {name} cannot have a default factory"
+                )));
+            }
+            continue;
         }
         if let Some(default) = default {
             // CPython's rule is hashability, not a list/dict/set type check, so
@@ -698,49 +912,20 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
             }
         }
     }
-    // CPython rejects the class outright rather than failing at construction.
-    if let Some((prev, field)) = first_non_default_after_default(fields, vm) {
-        let (prev, field) = (vm.interns.get_str(prev), vm.interns.get_str(field));
-        return Err(ExcType::type_error(format!(
-            "non-default argument '{field}' follows default argument '{prev}'"
-        )));
-    }
     Ok(())
 }
 
-/// A collected field's name, annotation text, and a **cloned** default — the
-/// three things validation needs, read before it takes the heap mutably.
-fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, String, Option<Value>)> {
+/// A collected field's name, kind, whether it has a factory, and a **cloned**
+/// default — what validation needs, read before it takes the heap mutably.
+fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, FieldKind, bool, Option<Value>)> {
     let Value::Ref(id) = field else { return None };
     let field = field_at_id(vm.heap, *id)?;
-    let annotation = field.annotation().map_or_else(String::new, |a| annotation_text(a, vm));
     Some((
         field.name().expect("collection adopts every field"),
-        annotation,
+        field.kind(),
+        field.default_factory().is_some(),
         field.default().map(|d| d.clone_with_heap(vm.heap)),
     ))
-}
-
-/// The first `(defaulted, non_defaulted)` field pair that would produce an
-/// invalid `__init__` signature, or `None` when the order is valid.
-///
-/// A `default_factory` counts as a default, as it does in CPython's generated
-/// signature.
-fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(StringId, StringId)> {
-    let mut last_default = None;
-    fields.iter().find_map(|field| {
-        let Value::Ref(id) = field else { return None };
-        let field = field_at_id(vm.heap, *id)?;
-        let name = field.name().expect("collection adopts every field");
-        match (field.has_default(), last_default) {
-            (true, _) => {
-                last_default = Some(name);
-                None
-            }
-            (false, Some(prev)) => Some((prev, name)),
-            (false, None) => None,
-        }
-    })
 }
 
 /// Whether a stringized annotation denotes `typing.ClassVar`, so the field is
@@ -751,6 +936,13 @@ fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(Str
 /// checked — both divergences are in `limitations/dataclasses.md`.
 fn is_classvar(annotation: &str) -> bool {
     annotation_head(annotation, "ClassVar")
+}
+
+/// Whether a stringized annotation is the `KW_ONLY` marker, which is not a
+/// field: every field after it is keyword-only. Matched the same way as
+/// [`is_classvar`], with the same textual-only caveats.
+fn is_kw_only_marker(annotation: &str) -> bool {
+    annotation_head(annotation, "KW_ONLY")
 }
 
 /// Whether a stringized annotation denotes `dataclasses.InitVar`. Matched the

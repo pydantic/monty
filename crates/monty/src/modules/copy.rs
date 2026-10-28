@@ -4,17 +4,18 @@
 //! Monty has no pickle, so both functions dispatch on the heap type directly:
 //! immutable values are shared, containers are rebuilt, and anything else
 //! raises the `TypeError` CPython's pickler would. `__copy__`/`__deepcopy__`
-//! are still honoured. Divergences are listed in `limitations/copy.md`.
+//! are still honoured, and `replace` defers to `__replace__`. Divergences are
+//! listed in `limitations/copy.md`.
 
 use crate::{
-    args::{ArgValues, FromArgs},
-    bytecode::VM,
+    args::{ArgValues, FromArgs, KwargsValues},
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
+    types::{Dict, List, Module, hash_table::TableCursor, instance::namespace_member, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -25,12 +26,15 @@ pub(crate) enum CopyFunctions {
     Copy,
     #[strum(serialize = "deepcopy")]
     Deepcopy,
+    #[strum(serialize = "replace")]
+    Replace,
 }
 
 /// Static mapping of attribute names to functions for module creation.
 const COPY_FUNCTIONS: &[(StaticStrings, CopyFunctions)] = &[
     (StaticStrings::Copy, CopyFunctions::Copy),
     (StaticStrings::Deepcopy, CopyFunctions::Deepcopy),
+    (StaticStrings::Replace, CopyFunctions::Replace),
 ];
 
 /// Creates the `copy` module on the heap.
@@ -44,11 +48,13 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
-/// Dispatches a call to a `copy` module function.
-pub(super) fn call(vm: &mut VM<'_>, function: CopyFunctions, args: ArgValues) -> RunResult<Value> {
+/// Dispatches a call to a `copy` module function. Only `replace` can push a
+/// frame, by tail-calling a Python `__replace__`.
+pub(super) fn call(vm: &mut VM<'_>, function: CopyFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
-        CopyFunctions::Copy => call_copy(vm, args),
-        CopyFunctions::Deepcopy => call_deepcopy(vm, args),
+        CopyFunctions::Copy => call_copy(vm, args).map(CallResult::Value),
+        CopyFunctions::Deepcopy => call_deepcopy(vm, args).map(CallResult::Value),
+        CopyFunctions::Replace => call_replace(vm, args),
     }
 }
 
@@ -87,6 +93,69 @@ fn call_deepcopy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let mut guard = DropGuard::new(memo, vm);
     let (memo, vm) = guard.as_parts_mut();
     deep_copy(x, memo, vm)
+}
+
+/// `copy.replace()` arguments, mirroring CPython's `def replace(obj, /, **changes)`.
+#[derive(FromArgs)]
+#[from_args(name = "replace", style = def)]
+struct ReplaceArgs {
+    #[from_args(pos_only)]
+    obj: Value,
+    #[from_args(varkwargs)]
+    changes: KwargsValues,
+}
+
+/// `copy.replace(obj, /, **changes)`: calls `type(obj).__replace__(obj,
+/// **changes)`, as CPython does.
+///
+/// Monty's built-in types have no `__replace__` attribute, so the ones that
+/// have one in CPython are routed to the method it aliases: a namedtuple's
+/// `_replace`, and `replace` on `date`, `datetime` and `time`.
+fn call_replace(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let ReplaceArgs { obj, changes } = ReplaceArgs::from_args(args, vm)?;
+    let changes = ArgValues::Kwargs(changes);
+    let method = match &obj {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Instance(instance) => ReplaceMethod::Member(
+                namespace_member(instance.class(), "__replace__", vm.heap, vm.interns)
+                    .filter(|member| !matches!(member, Value::None))
+                    .map(|member| member.clone_with_heap(vm.heap)),
+            ),
+            HeapData::NamedTuple(_) => ReplaceMethod::Method(StaticStrings::UnderReplace),
+            HeapData::Date(_) | HeapData::DateTime(_) | HeapData::Time(_) => {
+                ReplaceMethod::Method(StaticStrings::Replace)
+            }
+            _ => ReplaceMethod::Member(None),
+        },
+        _ => ReplaceMethod::Member(None),
+    };
+    match method {
+        // Read off the class, so it is unbound and takes `obj` explicitly.
+        ReplaceMethod::Member(Some(func)) => {
+            defer_drop!(func, vm);
+            vm.call_function(func, changes.prepend(obj))
+        }
+        ReplaceMethod::Member(None) => {
+            let type_name = obj.py_type_name(vm).into_owned();
+            obj.drop_with(vm);
+            changes.drop_with(vm);
+            Err(ExcType::type_error(format!(
+                "replace() does not support {type_name} objects"
+            )))
+        }
+        ReplaceMethod::Method(name) => {
+            let name = vm.interns.intern_static(name);
+            vm.call_attr(obj, name, changes)
+        }
+    }
+}
+
+/// What `copy.replace` calls for a given object.
+enum ReplaceMethod {
+    /// The class's `__replace__` member, if it has one that is not `None`.
+    Member(Option<Value>),
+    /// The built-in method CPython's `__replace__` aliases.
+    Method(StaticStrings),
 }
 
 // ===========================================================================
@@ -475,6 +544,12 @@ pub(crate) struct Memo {
 }
 
 impl Memo {
+    /// A memo of its own, as a bare `copy.deepcopy(obj)` call starts —
+    /// `dataclasses.asdict()` deep-copies each leaf that way.
+    pub(crate) fn fresh(vm: &mut VM<'_>) -> RunResult<Self> {
+        Self::new(Value::None, vm)
+    }
+
     /// `None` allocates a fresh dict; a caller's dict is adopted, so they see
     /// what the pass recorded.
     fn new(memo: Value, vm: &mut VM<'_>) -> RunResult<Self> {

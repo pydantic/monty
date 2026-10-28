@@ -10,7 +10,7 @@ The compile-time `SyntaxError`s match CPython's wording and location: duplicate
 captures, alternatives binding different names, an unguarded irrefutable pattern
 before the last case, duplicate constant mapping keys, repeated class-pattern attributes and
 two starred names.
-`@dataclass` classes get `__match_args__` (the field names, in order) and
+`@dataclass` classes get `__match_args__` (the positional `__init__` parameters, in order) and
 `collections.namedtuple` classes expose it too, so positional class patterns work on
 both.
 

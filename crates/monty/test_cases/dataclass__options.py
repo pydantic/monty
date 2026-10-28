@@ -1,6 +1,6 @@
-# The `@dataclass(...)` keyword form, for the options Monty implements:
-# `eq` and `frozen`. All behaviour here matches CPython.
-from dataclasses import FrozenInstanceError, dataclass
+# The `@dataclass(...)` keyword form, for every option Monty implements: all
+# but `slots` and `weakref_slot`. All behaviour here matches CPython.
+from dataclasses import FrozenInstanceError, dataclass, field
 
 
 # === The empty call form behaves like the bare decorator ===
@@ -412,3 +412,230 @@ except TypeError as e:
 Rebound = dataclass(frozen=True)(Rebound)
 assert Rebound.__dataclass_params__.frozen is True
 assert list(Rebound.__dataclass_fields__) == ['x']
+
+
+# === init=False leaves construction to the class body ===
+@dataclass(init=False)
+class NoInit:
+    x: int = 1
+
+    def __init__(self):
+        self.x = 99
+
+
+assert NoInit().x == 99
+assert repr(NoInit()) == 'NoInit(x=99)'
+assert NoInit.__dataclass_params__.init is False
+
+
+# === init=False without a body __init__ constructs like a plain class ===
+@dataclass(init=False)
+class PlainInit:
+    x: int = 1
+
+
+assert PlainInit().x == 1
+assert repr(PlainInit()) == 'PlainInit(x=1)'
+
+
+# === repr=False leaves the default object repr in place ===
+@dataclass(repr=False)
+class NoRepr:
+    x: int = 1
+
+
+# The default object repr, which CPython qualifies with the module and Monty
+# does not (see limitations/classes.md), so only the class name is compared.
+assert repr(NoRepr()).split(' object at ')[0].endswith('NoRepr')
+assert NoRepr.__dataclass_params__.repr is False
+# Equality is untouched by the repr option.
+assert NoRepr() == NoRepr()
+
+
+# === order=True compares the fields as a tuple ===
+@dataclass(order=True)
+class Ordered:
+    a: int
+    b: int = 0
+
+
+assert Ordered(1) < Ordered(2)
+assert Ordered(1, 2) > Ordered(1, 1)
+assert Ordered(1, 2) >= Ordered(1, 2)
+assert Ordered(1, 2) <= Ordered(1, 2)
+assert not Ordered(1) > Ordered(1)
+assert sorted([Ordered(2), Ordered(1), Ordered(1, 5)]) == [Ordered(1), Ordered(1, 5), Ordered(2)]
+assert min(Ordered(2), Ordered(1)) == Ordered(1)
+# Ordering a dataclass against anything else is the ordinary TypeError.
+try:
+    Ordered(1) < 3
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == "'<' not supported between instances of 'Ordered' and 'int'"
+
+
+# === order=True only compares the fields eq compares ===
+@dataclass(order=True)
+class PartlyOrdered:
+    a: int
+    b: int = field(default=0, compare=False)
+
+
+assert not PartlyOrdered(1, 9) > PartlyOrdered(1, 0)
+assert PartlyOrdered(1, 9) == PartlyOrdered(1, 0)
+
+
+# === order=True requires eq, and refuses to overwrite a body dunder ===
+try:
+
+    @dataclass(order=True, eq=False)
+    class BadOrder:
+        x: int
+
+    assert False, 'expected a ValueError'
+except ValueError as e:
+    assert str(e) == 'eq must be true if order is true'
+
+try:
+
+    @dataclass(order=True)
+    class OwnLt:
+        x: int
+
+        def __lt__(self, other):
+            return True
+
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == 'Cannot overwrite attribute __lt__ in class OwnLt Consider using functools.total_ordering'
+
+
+# === unsafe_hash=True hashes by field values whatever eq and frozen say ===
+@dataclass(unsafe_hash=True)
+class UnsafeHash:
+    a: int
+    b: int = 0
+
+
+assert hash(UnsafeHash(1, 2)) == hash((1, 2))
+# Still mutable, and still equal by fields — which is what makes it unsafe.
+u = UnsafeHash(1, 2)
+u.a = 5
+assert hash(u) == hash((5, 2))
+
+try:
+
+    @dataclass(unsafe_hash=True)
+    class OwnHash:
+        x: int
+
+        def __hash__(self):
+            return 1
+
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == 'Cannot overwrite attribute __hash__ in class OwnHash'
+
+
+# === kw_only=True makes every field keyword-only ===
+@dataclass(kw_only=True)
+class KwOnly:
+    a: int
+    b: int = 2
+
+
+assert KwOnly(a=1) == KwOnly(a=1, b=2)
+assert KwOnly.__dataclass_params__.kw_only is True
+try:
+    KwOnly(1)
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == 'KwOnly.__init__() takes 1 positional argument but 2 were given'
+try:
+    KwOnly()
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == "KwOnly.__init__() missing 1 required keyword-only argument: 'a'"
+
+
+# === kw_only=True lifts the non-default-after-default ordering rule ===
+@dataclass(kw_only=True)
+class AnyOrder:
+    a: int = 1
+    b: int
+
+
+assert AnyOrder(b=2) == AnyOrder(a=1, b=2)
+
+
+# === The generated ordering methods decline another class ===
+@dataclass(order=True)
+class OtherOrdered:
+    a: int
+
+
+assert Ordered.__lt__(Ordered(1), Ordered(2)) is True
+assert Ordered.__ge__(Ordered(1), OtherOrdered(2)) is NotImplemented
+assert Ordered.__le__(Ordered(1), 5) is NotImplemented
+try:
+    Ordered(1) < OtherOrdered(1)
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == "'<' not supported between instances of 'Ordered' and 'OtherOrdered'"
+
+
+# === Ordering compares the field tuples, equal fields first ===
+@dataclass(order=True)
+class Loose:
+    a: object
+    b: int = 0
+
+
+# `None` fields compare equal, so the tuples are equal and `<` is false.
+assert not Loose(None) < Loose(None)
+assert Loose(None, 1) < Loose(None, 2)
+# A field that is itself an ordered dataclass orders by its own fields.
+assert Loose(Ordered(1)) < Loose(Ordered(2))
+assert Ordered.__dataclass_params__.order is True
+
+
+# === match_args=False writes no __match_args__ ===
+@dataclass(match_args=False)
+class NoMatchArgs:
+    x: int
+
+
+assert not hasattr(NoMatchArgs, '__match_args__')
+assert NoMatchArgs.__dataclass_params__.match_args is False
+
+
+# === unsafe_hash=True without eq hashes but compares by identity ===
+@dataclass(eq=False, unsafe_hash=True)
+class HashNoEq:
+    x: int
+
+
+assert hash(HashNoEq(3)) == hash((3,))
+assert HashNoEq(1) != HashNoEq(1)
+
+
+# === Keyword-only arity errors count the keyword-only arguments given ===
+try:
+    KwOnly(1, 2, a=3)
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert (
+        str(e)
+        == 'KwOnly.__init__() takes 1 positional argument but 3 positional arguments (and 1 keyword-only argument) were given'
+    )
+
+
+# === init=False skips the default-ordering rule along with __init__ ===
+@dataclass(init=False)
+class Unordered:
+    a: int = 1
+    b: int
+
+
+assert Unordered().a == 1
+assert Unordered.__dataclass_params__.init is False

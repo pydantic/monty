@@ -70,7 +70,7 @@ excluded because they would breach the sandbox. Others (`enum`, `operator`)
 are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `functools`
-implements only `reduce`, `partial`, `lru_cache`, and `cache`, `copy` only `copy()` and `deepcopy()`,
+implements only `reduce`, `partial`, `lru_cache`, and `cache`, `copy` only `copy()`, `deepcopy()` and `replace()`,
 `time` everything but `tzset` and the `clock_*` family, `hashlib` everything but `file_digest()` and `scrypt()`,
 and `collections` only the four types above; `tomllib` all three of its names, with the argument and exception differences listed in [tomllib.md](tomllib.md).
 The absent names are missing from

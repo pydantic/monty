@@ -1,4 +1,5 @@
 import copy
+import datetime
 import random
 from collections import Counter, defaultdict, deque, namedtuple
 from dataclasses import dataclass
@@ -596,3 +597,16 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "cannot pickle 'module' object"
+
+
+# === copy.replace() on the built-in types that support it ===
+Pair = namedtuple('Pair', 'x y')
+assert copy.replace(Pair(1, 2), y=5) == Pair(1, 5)
+assert copy.replace(datetime.date(2020, 1, 2), day=9) == datetime.date(2020, 1, 9)
+assert copy.replace(datetime.time(1, 2), hour=3) == datetime.time(3, 2)
+assert copy.replace(datetime.datetime(2020, 1, 2, 3), year=2021) == datetime.datetime(2021, 1, 2, 3)
+try:
+    copy.replace(Pair(1, 2), z=1)
+    assert False, 'expected a TypeError'
+except TypeError as e:
+    assert str(e) == "Got unexpected field names: ['z']"

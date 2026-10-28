@@ -890,7 +890,7 @@ impl<'h> HeapReadMut<'h, Dict> {
     ///
     /// For dict sources, uses HeapReader::read() to access the source dict through
     /// the heap, enabling self-referential updates like `d.update(d)`.
-    fn merge_from_value(&self, other_value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    pub(crate) fn merge_from_value(&self, other_value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut guard = DropGuard::new(other_value, vm);
         let (other_value, vm) = guard.as_parts_mut();
         if let Value::Ref(id) = other_value {

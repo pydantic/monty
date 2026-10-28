@@ -662,19 +662,15 @@ def test_is_dataclass_in_sandbox(monty_run: RunMonty):
 
 
 def test_dataclass_helpers_raise_on_host_instance(monty_run: RunMonty):
-    """`fields()` / `asdict()` are not importable in the sandbox, so neither
-    works on a host instance (see `limitations/dataclasses.md`)."""
+    """`fields()` / `asdict()` reject a host instance: it is not a native
+    dataclass (see `limitations/dataclasses.md`)."""
     p = ClassInstance(Person(name='Alice', age=30), eager_attrs='all')
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('from dataclasses import fields\nfields(p)', inputs={'p': p})
-    assert str(exc_info.value) == snapshot(
-        "ImportError: cannot import name 'fields' from 'dataclasses' (unknown location)"
-    )
+    assert str(exc_info.value) == snapshot('TypeError: must be called with a dataclass type or instance')
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('from dataclasses import asdict\nasdict(p)', inputs={'p': p})
-    assert str(exc_info.value) == snapshot(
-        "ImportError: cannot import name 'asdict' from 'dataclasses' (unknown location)"
-    )
+    assert str(exc_info.value) == snapshot('TypeError: asdict() should be called on dataclass instances')
 
 
 def test_type_names_the_real_class(monty_run: RunMonty):

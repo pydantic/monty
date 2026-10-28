@@ -2,8 +2,8 @@
 //! behind each of them.
 //!
 //! CPython's decorator generates `__init__`, `__repr__`, `__eq__`, `__hash__`
-//! and the frozen `__setattr__`/`__delattr__` as real functions with the
-//! decoration's choices built in. A [`DataclassMethod`] is Monty's equivalent:
+//! the ordering dunders and the frozen `__setattr__`/`__delattr__` as real
+//! functions with the decoration's choices built in. A [`DataclassMethod`] is Monty's equivalent:
 //! a callable holding a snapshot of what the class was decorated with, so
 //! rebinding `__dataclass_fields__` or `__dataclass_params__` afterwards changes
 //! nothing, as in CPython. The VM's dunder paths recognise these objects and call
@@ -21,11 +21,12 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    expressions::CmpOperator,
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     types::{
-        LazyHeapSet, PyTrait, Type,
+        CmpOrder, LazyHeapSet, PyTrait, TupleVec, Type, allocate_tuple,
         host_class::write_dataclass_repr,
         instance::{class_dunder, class_name, instance_attr},
         py_trait::PyObjectIdentity,
@@ -62,29 +63,43 @@ pub(crate) enum MethodKind {
     Repr(Vec<StringId>),
     /// `__eq__`: field-wise, against an instance of the same class only.
     Eq(Vec<StringId>),
-    /// `__hash__` for `eq=True, frozen=True`: the hash of the field tuple.
+    /// `__hash__` (`eq=True, frozen=True`, or `unsafe_hash=True`): the hash of
+    /// the field tuple.
     Hash(Vec<StringId>),
     /// `frozen=True`'s `__setattr__`: refuses every assignment.
     FrozenSetattr,
     /// `frozen=True`'s `__delattr__`: refuses every deletion.
     FrozenDelattr,
+    /// `order=True`'s `__lt__`: the field tuples compared with `<`.
+    Lt(Vec<StringId>),
+    /// `order=True`'s `__le__`.
+    Le(Vec<StringId>),
+    /// `order=True`'s `__gt__`.
+    Gt(Vec<StringId>),
+    /// `order=True`'s `__ge__`.
+    Ge(Vec<StringId>),
 }
 
 impl MethodKind {
-    /// Every parameter, `self` first, with whether each is optional, as the
-    /// generated `def` declares them.
-    fn params<'a>(&self, interns: &'a Interns) -> Vec<(&'a str, bool)> {
-        let mut params = vec![(self.self_param(interns), false)];
+    /// Every parameter, `self` first, as the generated `def` declares them: an
+    /// `__init__`'s positional fields, then its keyword-only ones.
+    fn params<'a>(&self, interns: &'a Interns) -> Vec<Param<'a>> {
+        let mut params = vec![Param::required(self.self_param(interns))];
         match self {
-            Self::Init(plan) => params.extend(
-                plan.fields
-                    .iter()
-                    .map(|field| (interns.get_str(field.name), field.init.is_optional())),
-            ),
+            Self::Init(plan) => params.extend(plan.param_order().into_iter().map(|idx| {
+                let field = &plan.fields[idx];
+                Param {
+                    name: interns.get_str(field.name),
+                    optional: field.init.is_optional(),
+                    kw_only: field.kw_only,
+                }
+            })),
             Self::Repr(_) | Self::Hash(_) => {}
-            Self::Eq(_) => params.push(("other", false)),
-            Self::FrozenSetattr => params.extend([("name", false), ("value", false)]),
-            Self::FrozenDelattr => params.push(("name", false)),
+            Self::Eq(_) | Self::Lt(_) | Self::Le(_) | Self::Gt(_) | Self::Ge(_) => {
+                params.push(Param::required("other"));
+            }
+            Self::FrozenSetattr => params.extend([Param::required("name"), Param::required("value")]),
+            Self::FrozenDelattr => params.push(Param::required("name")),
         }
         params
     }
@@ -109,6 +124,56 @@ impl MethodKind {
             Self::Hash(_) => StaticStrings::DunderHash,
             Self::FrozenSetattr => StaticStrings::DunderSetattr,
             Self::FrozenDelattr => StaticStrings::DunderDelattr,
+            Self::Lt(_) => StaticStrings::DunderLt,
+            Self::Le(_) => StaticStrings::DunderLe,
+            Self::Gt(_) => StaticStrings::DunderGt,
+            Self::Ge(_) => StaticStrings::DunderGe,
+        }
+    }
+
+    /// The field names a repr/eq/hash/ordering method reads, in order.
+    fn field_names(&self) -> Option<&[StringId]> {
+        match self {
+            Self::Repr(names)
+            | Self::Eq(names)
+            | Self::Hash(names)
+            | Self::Lt(names)
+            | Self::Le(names)
+            | Self::Gt(names)
+            | Self::Ge(names) => Some(names),
+            Self::Init(_) | Self::FrozenSetattr | Self::FrozenDelattr => None,
+        }
+    }
+
+    /// The operator an ordering method applies to the field tuples.
+    fn order_operator(&self) -> Option<CmpOperator> {
+        match self {
+            Self::Lt(_) => Some(CmpOperator::Lt),
+            Self::Le(_) => Some(CmpOperator::LtE),
+            Self::Gt(_) => Some(CmpOperator::Gt),
+            Self::Ge(_) => Some(CmpOperator::GtE),
+            _ => None,
+        }
+    }
+}
+
+/// One parameter of a generated method's signature.
+#[derive(Debug, Clone, Copy)]
+struct Param<'a> {
+    name: &'a str,
+    /// Whether the parameter has a default (or a factory standing in for one).
+    optional: bool,
+    /// Whether the parameter follows the `*` and can only be passed by keyword.
+    kw_only: bool,
+}
+
+impl<'a> Param<'a> {
+    /// A required positional-or-keyword parameter.
+    fn required(name: &'a str) -> Self {
+        Self {
+            name,
+            optional: false,
+            kw_only: false,
         }
     }
 }
@@ -116,7 +181,8 @@ impl MethodKind {
 /// What a generated `__init__` was decorated with.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InitPlan {
-    /// One entry per field, in signature order.
+    /// One entry per field the body handles, in definition order — the order
+    /// the body stores them and `__post_init__` receives the `InitVar`s.
     fields: Vec<InitField>,
     /// Whether the class defined `__post_init__` when decorated. CPython's
     /// generated `__init__` calls `self.__post_init__()` only if so, looking the
@@ -128,13 +194,63 @@ pub(crate) struct InitPlan {
     frozen: bool,
 }
 
-/// One parameter of a generated `__init__`.
+impl InitPlan {
+    /// The indices of the parameter fields in signature order: CPython's
+    /// positional fields, then the keyword-only ones, each in definition order.
+    fn param_order(&self) -> Vec<usize> {
+        let params = || {
+            self.fields
+                .iter()
+                .enumerate()
+                .filter(|(_, field)| field.role != InitRole::Computed)
+        };
+        params()
+            .filter(|(_, field)| !field.kw_only)
+            .chain(params().filter(|(_, field)| field.kw_only))
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+}
+
+/// One field a generated `__init__` handles.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InitField {
     name: StringId,
     /// The default or factory captured at decoration; [`FieldInit::Unsupplied`]
     /// for a required field.
     init: FieldInit,
+    /// Whether the parameter is keyword-only.
+    #[serde(default)]
+    kw_only: bool,
+    /// What the body does with the field.
+    #[serde(default)]
+    role: InitRole,
+}
+
+/// What a generated `__init__` does with one [`InitField`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum InitRole {
+    /// An ordinary field: a parameter, stored on the instance.
+    #[default]
+    Stored,
+    /// An `InitVar`: a parameter passed on to `__post_init__`, never stored.
+    InitVar,
+    /// An `init=False` field with a `default_factory`: not a parameter, but
+    /// stored from a fresh factory call. Other `init=False` fields are not in
+    /// the plan at all, since CPython's `__init__` never touches them.
+    Computed,
+}
+
+impl InitField {
+    /// A field for [`DataclassMethod::init`], taking ownership of `init`.
+    pub fn new(name: StringId, init: FieldInit, kw_only: bool, role: InitRole) -> Self {
+        Self {
+            name,
+            init,
+            kw_only,
+            role,
+        }
+    }
 }
 
 /// What a generated `__init__` supplies for a field the call left unbound.
@@ -188,11 +304,7 @@ impl<C: ContainsHeap> DropWithContext<C> for FieldInit {
 
 impl DataclassMethod {
     /// A generated `__init__` taking ownership of the captured defaults in `fields`.
-    pub fn init(class_name: String, fields: Vec<(StringId, FieldInit)>, post_init: bool, frozen: bool) -> Self {
-        let fields = fields
-            .into_iter()
-            .map(|(name, init)| InitField { name, init })
-            .collect();
+    pub fn init(class_name: String, fields: Vec<InitField>, post_init: bool, frozen: bool) -> Self {
         Self::new(
             class_name,
             MethodKind::Init(InitPlan {
@@ -304,6 +416,7 @@ fn call_method(method_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult
     let params = method.kind.params(interns);
     // Binding leaves every required slot filled, `self` among them; only an
     // `__init__` field with a default can still be empty.
+    let order_op = method.kind.order_operator();
     let mut slots = bind_def(&qualname, &params, false, args, vm)?.into_iter();
     let this = slots.next().flatten().expect("binding fills the required self");
     let rest: Vec<Option<Value>> = slots.collect();
@@ -334,7 +447,18 @@ fn call_method(method_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         }
         StaticStrings::DunderSetattr => Err(frozen_field_error("assign to", required(rest, 0), vm)?),
         StaticStrings::DunderDelattr => Err(frozen_field_error("delete", required(rest, 0), vm)?),
-        _ => unreachable!("MethodKind::dunder names one of the six generated methods"),
+        _ => {
+            let op = order_op.expect("the remaining generated methods are the ordering ones");
+            let names = field_names(method_id, vm);
+            let other = required(rest, 0).clone_with_heap(vm.heap);
+            defer_drop!(other, vm);
+            let Some((lhs, rhs)) = order_operands(self_id, &names, other, vm)? else {
+                return Ok(Value::NotImplemented);
+            };
+            defer_drop!(lhs, vm);
+            defer_drop!(rhs, vm);
+            Ok(Value::Bool(vm.cmp_values(op, lhs, rhs)?))
+        }
     }
 }
 
@@ -355,13 +479,13 @@ fn method_at<'a>(method_id: HeapId, vm: &'a VM<'_>) -> &'a DataclassMethod {
     }
 }
 
-/// A repr/eq/hash method's field names, cloned out so the heap is free while
-/// the fields are read (which can run user `__eq__`/`__repr__`).
+/// A repr/eq/hash/ordering method's field names, cloned out so the heap is
+/// free while the fields are read (which can run user `__eq__`/`__repr__`).
 fn field_names(method_id: HeapId, vm: &VM<'_>) -> Vec<StringId> {
-    match &method_at(method_id, vm).kind {
-        MethodKind::Repr(names) | MethodKind::Eq(names) | MethodKind::Hash(names) => names.clone(),
-        _ => Vec::new(),
-    }
+    method_at(method_id, vm)
+        .kind
+        .field_names()
+        .map_or_else(Vec::new, <[_]>::to_vec)
 }
 
 /// The instance `self` names, or the `TypeError` Monty raises for any other `self`.
@@ -388,7 +512,8 @@ pub(crate) fn generated_method(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> O
     }
 }
 
-/// [`generated_method`] for a repr/eq/hash dunder, returning its field names.
+/// [`generated_method`] for a repr/eq/hash/ordering dunder, returning its field
+/// names.
 pub(crate) fn generated_fields(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> Option<Vec<StringId>> {
     generated_method(class_id, dunder, vm).map(|id| field_names(id, vm))
 }
@@ -441,37 +566,55 @@ pub(crate) fn run_init(vm: &mut VM<'_>, init: &Value, instance: Value, args: Arg
     let qualname = method.qualname();
     let params = method.kind.params(vm.interns);
     // `self` is the new instance, already bound; its slot holds a placeholder.
-    let slots = bind_def(&qualname, &params, true, args, vm)?;
-    init_instance(method_id, instance_id, slots.into_iter().skip(1).collect(), vm)?;
+    let mut slots = bind_def(&qualname, &params, true, args, vm)?.into_iter();
+    slots.next().flatten().drop_with(vm);
+    init_instance(method_id, instance_id, slots.collect(), vm)?;
     Ok(guard.into_inner())
 }
 
-/// The body of a generated `__init__`, given its bound field arguments:
-/// supplies the defaults and factories for the unbound ones, stores one
-/// attribute per field, then calls `__post_init__` if the class had one when
-/// decorated.
+/// The body of a generated `__init__`, given its bound arguments in signature
+/// order: supplies the defaults and factories for the unbound fields, stores
+/// one attribute per stored field, then calls `__post_init__` with the
+/// `InitVar`s if the class had one when decorated.
 ///
 /// Runs through [`VM::evaluate_function`] for factories and the hook, so neither
 /// can suspend on an external or OS call — see `limitations/dataclasses.md`.
-fn init_instance(method_id: HeapId, instance_id: HeapId, slots: Vec<Option<Value>>, vm: &mut VM<'_>) -> RunResult<()> {
-    let mut guard = DropGuard::new(slots, vm);
-    let (slots, vm) = guard.as_parts_mut();
+fn init_instance(method_id: HeapId, instance_id: HeapId, params: Vec<Option<Value>>, vm: &mut VM<'_>) -> RunResult<()> {
     let MethodKind::Init(plan) = &method_at(method_id, vm).kind else {
         unreachable!("init_instance on a non-__init__ method")
     };
     let (post_init, frozen) = (plan.post_init, plan.frozen);
-    let names: Vec<StringId> = plan.fields.iter().map(|field| field.name).collect();
+    let fields: Vec<(StringId, InitRole)> = plan.fields.iter().map(|field| (field.name, field.role)).collect();
+    // Back into definition order, which is how the body walks the fields; a
+    // `Computed` field has no parameter and starts unbound.
+    let mut slots: Vec<Option<Value>> = (0..fields.len()).map(|_| None).collect();
+    for (field_idx, value) in plan.param_order().into_iter().zip(params) {
+        slots[field_idx] = value;
+    }
+    let mut guard = DropGuard::new(slots, vm);
+    let (slots, vm) = guard.as_parts_mut();
     fill_unbound_fields(method_id, slots, vm)?;
     let (slots, vm) = guard.into_parts();
-    let values = slots
-        .into_iter()
-        .map(|v| v.expect("every field is bound or filled"))
-        .collect();
-    store_fields(instance_id, &names, values, frozen, vm)?;
-    if post_init {
-        run_post_init(instance_id, vm)?;
+    let mut stored = Vec::with_capacity(fields.len());
+    let mut init_vars = Vec::new();
+    for ((name, role), value) in fields.into_iter().zip(slots) {
+        let value = value.expect("every field is bound or filled");
+        match role {
+            InitRole::InitVar => init_vars.push(value),
+            InitRole::Stored | InitRole::Computed => stored.push((name, value)),
+        }
     }
-    Ok(())
+    let mut init_vars = DropGuard::new(init_vars, vm);
+    let (_, vm) = init_vars.as_parts_mut();
+    store_fields(instance_id, stored, frozen, vm)?;
+    let (init_vars, vm) = init_vars.into_parts();
+    if post_init {
+        run_post_init(instance_id, init_vars, vm)
+    } else {
+        // CPython's generated `__init__` accepts them and lets them go.
+        init_vars.drop_with(vm);
+        Ok(())
+    }
 }
 
 /// Fills each unbound slot from the field's captured default, or by calling its
@@ -521,39 +664,46 @@ fn snapshot_field_inits(method_id: HeapId, slots: &[Option<Value>], vm: &VM<'_>)
         .collect()
 }
 
-/// Calls `self.__post_init__()`, as CPython's generated `__init__` ends by
-/// doing. A hook removed since decoration raises `AttributeError`; its return
-/// value is discarded.
-fn run_post_init(instance_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
+/// Calls `self.__post_init__(*init_vars)`, as CPython's generated `__init__`
+/// ends by doing, passing the `InitVar`s positionally in field order. A hook
+/// removed since decoration raises `AttributeError`; its return value is
+/// discarded.
+fn run_post_init(instance_id: HeapId, init_vars: Vec<Value>, vm: &mut VM<'_>) -> RunResult<()> {
+    let mut args = DropGuard::new(init_vars, vm);
+    let (_, vm) = args.as_parts_mut();
     let Some(post_init) = instance_attr(instance_id, "__post_init__", vm) else {
         let class_name = class_name(instance_class(instance_id, vm), vm.heap, vm.interns).into_owned();
         return Err(ExcType::attribute_error(&class_name, "__post_init__"));
     };
+    let (init_vars, vm) = args.into_parts();
     defer_drop!(post_init, vm);
-    let result = vm.evaluate_function(post_init, ArgValues::Empty)?;
+    let args = if init_vars.is_empty() {
+        ArgValues::Empty
+    } else {
+        ArgValues::ArgsKargs {
+            args: init_vars,
+            kwargs: KwargsValues::Empty,
+        }
+    };
+    let result = vm.evaluate_function(post_init, args)?;
     result.drop_with(vm);
     Ok(())
 }
 
-/// Stores one bound value per field on the instance, consuming `values`.
+/// Stores each `(name, value)` on the instance, consuming `fields`.
 ///
 /// A frozen `__init__` writes straight to `__dict__` (CPython's
 /// `object.__setattr__`); any other goes through the class's assignment check,
 /// so a frozen `__setattr__` installed by a later decoration refuses it.
-fn store_fields(
-    instance_id: HeapId,
-    names: &[StringId],
-    values: Vec<Value>,
-    frozen: bool,
-    vm: &mut VM<'_>,
-) -> RunResult<()> {
+fn store_fields(instance_id: HeapId, fields: Vec<(StringId, Value)>, frozen: bool, vm: &mut VM<'_>) -> RunResult<()> {
+    let (names, values): (Vec<StringId>, Vec<Value>) = fields.into_iter().unzip();
+    let values = values.into_iter();
     defer_drop_mut!(values, vm);
     let HeapReadOutput::Instance(instance) = vm.heap.read(instance_id) else {
         unreachable!("init_instance runs on an instance")
     };
-    for i in 0..values.len() {
-        let value = mem::replace(&mut values[i], Value::None);
-        let name = Value::InternString(names[i]);
+    for (name, value) in names.into_iter().zip(values.by_ref()) {
+        let name = Value::InternString(name);
         let replaced = if frozen {
             instance.set_attr_unchecked(name, value, vm)?
         } else {
@@ -571,7 +721,8 @@ fn store_fields(
 /// a constructor binds the new instance: its slot holds a `None` placeholder,
 /// and CPython's arity messages and `self=` duplicate error count it. Errors
 /// follow CPython's order: keywords first, then too many positionals, then
-/// missing ones. Bound arguments are guarded, so every error releases them.
+/// missing positional, then missing keyword-only ones. Bound arguments are
+/// guarded, so every error releases them.
 ///
 /// Every key is a string here: `**` unpacking is the only way a non-string one
 /// could arrive, and `DictMerge` raises `keywords must be strings` while
@@ -579,19 +730,19 @@ fn store_fields(
 ///
 /// TODO(dataclass-keywords): a third binder alongside `args::bind_native` and
 /// `args::bind_python`, all three reproducing CPython's error wording and able
-/// to drift. Fold into `Signature::bind` when the `@dataclass(...)` keyword form
-/// lands — not a drop-in, as that needs a static name and spec where this binds
-/// a signature known only at decoration.
+/// to drift. Fold into `Signature::bind` — not a drop-in, as that needs a
+/// static name and spec where this binds a signature known only at decoration.
 fn bind_def(
     qualname: &str,
-    params: &[(&str, bool)],
+    params: &[Param<'_>],
     self_bound: bool,
     args: ArgValues,
     vm: &mut VM<'_>,
 ) -> RunResult<Vec<Option<Value>>> {
-    let n_params = params.len();
+    // Keyword-only parameters always follow the positional ones.
+    let n_positional = params.iter().take_while(|param| !param.kw_only).count();
     let (pos_iter, kwargs) = args.into_parts();
-    let mut slots: Vec<Option<Value>> = (0..n_params).map(|_| None).collect();
+    let mut slots: Vec<Option<Value>> = (0..params.len()).map(|_| None).collect();
     let first = usize::from(self_bound);
     if self_bound {
         slots[0] = Some(Value::None);
@@ -599,37 +750,60 @@ fn bind_def(
     let mut guard = DropGuard::new(slots, vm);
     let (slots, vm) = guard.as_parts_mut();
 
-    // Positionals fill the leftmost free slots; one beyond the last parameter is
-    // dropped here and only counted, since CPython binds keywords first: `P(1,
-    // 2, 3, y=4)` is "multiple values for argument 'y'", not an arity error.
+    // Positionals fill the leftmost free slots; one beyond the last positional
+    // parameter is dropped here and only counted, since CPython binds keywords
+    // first: `P(1, 2, 3, y=4)` is "multiple values for argument 'y'", not an
+    // arity error.
     let mut n_pos = first;
     for (slot, value) in (first..).zip(pos_iter) {
         n_pos += 1;
-        match slots.get_mut(slot) {
-            Some(unbound) => *unbound = Some(value),
-            None => value.drop_with(vm),
+        if slot < n_positional {
+            slots[slot] = Some(value);
+        } else {
+            value.drop_with(vm);
         }
     }
 
     bind_keyword_args(slots, params, kwargs, qualname, vm)?;
 
-    if n_pos > n_params {
-        let required = params.iter().filter(|(_, optional)| !optional).count();
+    let (positional, keyword) = params.split_at(n_positional);
+    if n_pos > n_positional {
+        let required = positional.iter().filter(|param| !param.optional).count();
+        let kwonly_given = slots[n_positional..].iter().filter(|slot| slot.is_some()).count();
         return Err(ExcType::type_error_too_many_positional_range(
-            qualname, required, n_params, n_pos, 0,
+            qualname,
+            required,
+            n_positional,
+            n_pos,
+            kwonly_given,
         ));
     }
 
-    let missing: Vec<&str> = params
-        .iter()
-        .zip(slots.iter())
-        .filter(|((_, optional), slot)| !optional && slot.is_none())
-        .map(|((name, _), _)| *name)
-        .collect();
-    if !missing.is_empty() {
-        return Err(ExcType::type_error_missing_positional_with_names(qualname, &missing));
+    let missing_positional = missing_names(positional, &slots[..n_positional]);
+    if !missing_positional.is_empty() {
+        return Err(ExcType::type_error_missing_positional_with_names(
+            qualname,
+            &missing_positional,
+        ));
+    }
+    let missing_keyword = missing_names(keyword, &slots[n_positional..]);
+    if !missing_keyword.is_empty() {
+        return Err(ExcType::type_error_missing_kwonly_with_names(
+            qualname,
+            &missing_keyword,
+        ));
     }
     Ok(guard.into_inner())
+}
+
+/// The required parameters among `params` whose slot the call left unbound.
+fn missing_names<'a>(params: &[Param<'a>], slots: &[Option<Value>]) -> Vec<&'a str> {
+    params
+        .iter()
+        .zip(slots)
+        .filter(|(param, slot)| !param.optional && slot.is_none())
+        .map(|(param, _)| param.name)
+        .collect()
 }
 
 /// Fills the named slots from the keyword arguments.
@@ -639,7 +813,7 @@ fn bind_def(
 /// the caller rejects a non-string one before any binding happens.
 fn bind_keyword_args(
     slots: &mut [Option<Value>],
-    params: &[(&str, bool)],
+    params: &[Param<'_>],
     kwargs: KwargsValues,
     qualname: &str,
     vm: &mut VM<'_>,
@@ -654,7 +828,7 @@ fn bind_keyword_args(
             .as_str(vm.interns)
             .to_owned();
         // Resolved before the value is guarded, which borrows the VM.
-        let slot = params.iter().position(|(param, _)| *param == name);
+        let slot = params.iter().position(|param| param.name == name);
         let value = DropGuard::new(value, vm);
         match slot {
             Some(idx) if slots[idx].is_none() => slots[idx] = Some(value.into_inner()),
@@ -712,6 +886,71 @@ pub(crate) fn dataclass_eq(
         }
     }
     Ok(Some(true))
+}
+
+/// Three-way comparison for `order=True`, as `sorted()`, `min()` and the
+/// operators see it: `None` when `other` is not an instance of the same class,
+/// which is CPython's `NotImplemented`.
+///
+/// CPython's generated `__lt__` compares `(self.a, ...)` with `(other.a, ...)`,
+/// so the field values are gathered into two tuples and compared as tuples are.
+pub(crate) fn dataclass_cmp(
+    self_id: HeapId,
+    field_names: &[StringId],
+    other: &Value,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<CmpOrder>> {
+    let Some((lhs, rhs)) = order_operands(self_id, field_names, other, vm)? else {
+        return Ok(None);
+    };
+    defer_drop!(lhs, vm);
+    defer_drop!(rhs, vm);
+    lhs.py_cmp(rhs, vm).map(Some)
+}
+
+/// The two field tuples an ordering method compares, or `None` when `other` is
+/// not an instance of `self`'s class.
+///
+/// Charges a recursion level, as `dataclass_eq` does: a field holding another
+/// ordered instance re-enters here per level.
+fn order_operands(
+    self_id: HeapId,
+    field_names: &[StringId],
+    other: &Value,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<(Value, Value)>> {
+    let class_id = instance_class(self_id, vm);
+    let &Value::Ref(other_id) = other else {
+        return Ok(None);
+    };
+    if !matches!(vm.heap.get(other_id), HeapData::Instance(inst) if inst.class() == class_id) {
+        return Ok(None);
+    }
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
+    let lhs = field_tuple(self_id, class_id, field_names, vm)?;
+    let mut lhs = DropGuard::new(lhs, vm);
+    let (_, vm) = lhs.as_parts_mut();
+    let rhs = field_tuple(other_id, class_id, field_names, vm)?;
+    Ok(Some((lhs.into_inner(), rhs)))
+}
+
+/// `(self.a, self.b, ...)` for `field_names`, raising `AttributeError` for a
+/// field the instance does not have.
+fn field_tuple(self_id: HeapId, class_id: HeapId, field_names: &[StringId], vm: &mut VM<'_>) -> RunResult<Value> {
+    let mut items = DropGuard::new(TupleVec::with_capacity(field_names.len()), vm);
+    for name_id in field_names {
+        let (items, vm) = items.as_parts_mut();
+        let interns = vm.interns;
+        let field_name = interns.get_str(*name_id);
+        let Some(value) = instance_attr(self_id, field_name, vm) else {
+            let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
+            return Err(ExcType::attribute_error(&class_name, field_name));
+        };
+        items.push(value);
+    }
+    let (items, vm) = items.into_parts();
+    Ok(allocate_tuple(items, vm.heap))
 }
 
 /// Generated `__hash__` for `eq=True, frozen=True`: the hash of the field values

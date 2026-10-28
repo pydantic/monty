@@ -116,7 +116,9 @@ keyword-only params are rejected at derive time), `varargs` (must be
 `Vec<Value>` — elements are handed over unconverted), `varkwargs`,
 `default[ = expr]`, `static_string = "..."` (override the `StaticStrings`
 variant used for kwarg matching; neither applies to `varargs`/`varkwargs`
-fields). All are documented inline in
+fields), `name = "..."` (the parameter name error messages show, for a
+`pos_only` field whose Python name is not a legal Rust identifier, such as
+`self`). All are documented inline in
 [`src/from_args.rs`](src/from_args.rs), which also carries `#[cfg(test)]`
 unit tests for every attribute-validation error.
 

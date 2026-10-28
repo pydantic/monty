@@ -1,6 +1,6 @@
 # `copy`
 
-Monty implements `copy.copy` and `copy.deepcopy`. Both walk the object graph
+Monty implements `copy.copy`, `copy.deepcopy` and `copy.replace`. The first two walk the object graph
 themselves, dispatching on the type in front of them, because there is no
 pickle protocol behind them: CPython's `copy` reaches everything it does not
 special-case through `__reduce_ex__`, and Monty has no `pickle`, `copyreg` or
@@ -8,12 +8,17 @@ special-case through `__reduce_ex__`, and Monty has no `pickle`, `copyreg` or
 
 ## Missing from the module
 
-- `copy.replace()` (3.13's `__replace__` protocol).
 - `copy.Error` / `copy.error`. Nothing in Monty raises it — the objects that
     cannot be copied raise the `TypeError` CPython's pickler raises for them.
 
-Both are absent from the module namespace rather than stubbed, so they fail
+It is absent from the module namespace rather than stubbed, so it fails
 type checking as well as raising `AttributeError` at runtime.
+
+## `copy.replace` and `__replace__`
+
+Monty's built-in types have no `__replace__` attribute, so `obj.__replace__` raises `AttributeError` on them.
+`copy.replace` still accepts the ones CPython supports by calling the method CPython's `__replace__` aliases: a
+namedtuple's `_replace`, and `replace` on `date`, `datetime` and `time`.
 
 ## The reducer protocol is ignored
 

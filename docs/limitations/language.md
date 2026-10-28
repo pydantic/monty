@@ -219,8 +219,8 @@ also matching CPython, and likewise inside `sorted`/`min`/`max`.
 One message divergence: when a **list or tuple** compares unequal only because
 an *inner element* pair is unorderable (e.g. `(1, 2) < (1, 'a')`), Monty names
 the outer container types (`'tuple' and 'tuple'`) where CPython names the inner
-element pair (`'int' and 'str'`). Both raise `TypeError`; only the message text
-differs.
+element pair (`'int' and 'str'`, or `'NoneType' and 'int'` for `(None,) < (1,)`).
+Both raise `TypeError`; only the message text differs.
 
 One value divergence: whenever CPython compares elements *inside* a container it
 shortcuts equality by **object identity** (`x is x` ⇒ equal) before falling back
