@@ -3,7 +3,7 @@
 import { validateMaxCheckouts } from '../options.js'
 import { HostModules, MontySession } from '../session.js'
 import { deadlineTimer, timeoutOption, type DeadlineTimer } from './deadline.js'
-import type { Dispatcher } from './host.js'
+import type { Dispatcher } from './dispatch.js'
 import { WorkerTransport, prepareSession, type WorkerSessionConfig, type DurationGraces } from './transport.js'
 
 /** The transport seam consumed by the shared session drive loop. */

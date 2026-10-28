@@ -5,6 +5,9 @@ EXE_EXT := .exe
 else
 EXE_EXT :=
 endif
+# the debug worker the JS suites run, absolute since the recipes `cd` first and
+# cargo resolves a relative CARGO_TARGET_DIR from the repo root
+MONTY_DEBUG_BIN := $(abspath $(or $(CARGO_TARGET_DIR),target))/debug/monty$(EXE_EXT)
 
 .PHONY: .cargo
 .cargo: ## Check that cargo is installed
@@ -61,7 +64,7 @@ lint-js: install-js ## Lint JS code with oxlint and type-check the tests
 .PHONY: test-js
 test-js: build-js ## Test the JS package (builds the monty binary the workers run)
 	cargo build -p monty-runtime
-	cd crates/monty-js && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty$(EXE_EXT)" npm test
+	cd crates/monty-js && MONTY_BIN="$(MONTY_DEBUG_BIN)" npm test
 
 .PHONY: build-wasm
 build-wasm: install-js ## Build the WASI 0.2 worker component (requires the wasm32-wasip1 target)
@@ -78,11 +81,13 @@ check-wasm-types: build-wasm ## Verify checked-in component declarations match t
 
 .PHONY: test-wasm
 test-wasm: install-js ## Test the wasm worker component from node, with no browser
-	cd crates/monty-js && npm run build:wasm && npm run build:ts && npm run test:wasm
+	cargo build -p monty-runtime
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && MONTY_BIN="$(MONTY_DEBUG_BIN)" npm run test:wasm
 
 .PHONY: test-browser
 test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
-	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser
+	cargo build -p monty-runtime
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && MONTY_BIN="$(MONTY_DEBUG_BIN)" npm run test:browser
 
 .PHONY: dev-py-pgo
 dev-py-pgo: install-py ## Install the Python package with a PGO-optimized Monty interpreter

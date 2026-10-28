@@ -56,7 +56,7 @@
     "build:debug": "run-s build:napi:debug build:ts",
     "build:napi": "napi build --platform --release --esm --js native-addon.js --dts native-addon.generated.d.ts",
     "build:napi:debug": "napi build --platform --esm --js native-addon.js --dts native-addon.generated.d.ts",
-    "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && node scripts/build-component.mjs",
+    "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && cargo build -p monty-wasm-proto --target wasm32-wasip1 --release && node scripts/build-component.mjs",
     "build:ts": "tsc",
     "check:dist-types": "tsc -p tsconfig.dist.json",
     "format": "prettier . -w",
