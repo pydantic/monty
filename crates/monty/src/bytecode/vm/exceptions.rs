@@ -8,7 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
@@ -143,6 +143,111 @@ impl VM<'_> {
             snippet_frame: None,
             hide_caret: false,
         })
+    }
+
+    /// Runs `raise exc from cause`.
+    ///
+    /// `exc` is checked first, as in CPython, then `cause` must be `None`, an
+    /// exception or an exception class (instantiated without a message). The
+    /// raised object records the cause and suppresses its context; a bare class
+    /// is instantiated here so there is an object to record it on.
+    pub(super) fn raise_with_cause(&mut self, exc: Value, cause: Value) -> Option<RunError> {
+        let error = self.make_exception(&exc, true);
+        let raised = match exc {
+            Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Value::Ref(id),
+            Value::Builtin(Builtins::ExcType(exc_type)) => self.allocate_exception(exc_type),
+            other => {
+                // `error` is the `exceptions must derive from BaseException` TypeError.
+                other.drop_with(self);
+                cause.drop_with(self);
+                return self.handle_exception_with_value(error, None);
+            }
+        };
+        let cause = match cause {
+            Value::None => None,
+            Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Some(id),
+            Value::Builtin(Builtins::ExcType(exc_type)) => {
+                let Value::Ref(id) = self.allocate_exception(exc_type) else {
+                    unreachable!("exceptions are heap values")
+                };
+                Some(id)
+            }
+            other => {
+                other.drop_with(self);
+                raised.drop_with(self);
+                let error = ExcType::type_error("exception causes must derive from BaseException");
+                return self.handle_exception_with_value(error, None);
+            }
+        };
+        let Value::Ref(raised_id) = &raised else {
+            unreachable!("exceptions are heap values")
+        };
+        self.set_exception_cause(*raised_id, cause);
+        self.handle_exception_with_value(error, Some(raised))
+    }
+
+    /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
+    fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
+        Value::Ref(
+            self.heap
+                .allocate(HeapData::Exception(SimpleException::new_none(exc_type))),
+        )
+    }
+
+    /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
+    /// releasing any previous cause, and sets `__suppress_context__`.
+    fn set_exception_cause(&mut self, id: HeapId, cause: Option<HeapId>) {
+        let previous = match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_cause(cause),
+            _ => unreachable!("set_exception_cause is only called on exceptions"),
+        };
+        previous.map(Value::Ref).drop_with(self);
+    }
+
+    /// Records the exception being handled as `__context__` of the newly raised
+    /// `raised`, as CPython's `_PyErr_SetObject` does: a bare `raise` of the handled
+    /// exception itself gets none, and a link that would make the chain circular is
+    /// cut first. Exceptions caught by an internal (frozen) handler are not context,
+    /// since the equivalent CPython code is C.
+    fn attach_context(&mut self, raised: &Value) {
+        let Some(CaughtException::Value(Value::Ref(handled_id))) = self.exception_stack.last() else {
+            return;
+        };
+        let handled_id = *handled_id;
+        let Value::Ref(raised_id) = raised else {
+            return;
+        };
+        if *raised_id == handled_id {
+            return;
+        }
+        let mut cursor = handled_id;
+        while let Some(next) = self.exception_context(cursor) {
+            if next == *raised_id {
+                self.set_exception_context(cursor, None);
+                break;
+            }
+            cursor = next;
+        }
+        self.heap.inc_ref(handled_id);
+        self.set_exception_context(*raised_id, Some(handled_id));
+    }
+
+    /// The `__context__` of the exception `id`, borrowed.
+    fn exception_context(&self, id: HeapId) -> Option<HeapId> {
+        match self.heap.get(id) {
+            HeapData::Exception(exc) => exc.context(),
+            _ => None,
+        }
+    }
+
+    /// Stores `context` (an owned reference) as `__context__` of the exception
+    /// `id`, releasing any previous context.
+    fn set_exception_context(&mut self, id: HeapId, context: Option<HeapId>) {
+        let previous = match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_context(context),
+            _ => unreachable!("set_exception_context is only called on exceptions"),
+        };
+        previous.map(Value::Ref).drop_with(self);
     }
 
     /// Re-raises the active exception without replacing a user traceback with an internal handler.
@@ -341,6 +446,7 @@ impl VM<'_> {
             };
             self.create_exception_value(exc)
         };
+        self.attach_context(&exc_value);
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)

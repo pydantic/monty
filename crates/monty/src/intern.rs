@@ -1027,6 +1027,15 @@ pub enum StaticStrings {
     /// `__name__` attribute of a type.
     #[strum(serialize = "__name__")]
     DunderName,
+    /// `__cause__` of an exception, set by `raise ... from`.
+    #[strum(serialize = "__cause__")]
+    DunderCause,
+    /// `__context__` of an exception: the one being handled when it was raised.
+    #[strum(serialize = "__context__")]
+    DunderContext,
+    /// `__suppress_context__` of an exception, set by `raise ... from`.
+    #[strum(serialize = "__suppress_context__")]
+    DunderSuppressContext,
     /// `__origin__` of a `types.GenericAlias`.
     #[strum(serialize = "__origin__")]
     DunderOrigin,

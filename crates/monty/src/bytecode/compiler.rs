@@ -767,14 +767,19 @@ impl<'a, 'i> Compiler<'a, 'i> {
             } => self.compile_for(target, iter, body, or_else)?,
             Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
             Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
-            Node::Raise(expr) => {
-                if let Some(exc) = expr {
+            Node::Raise { exc, cause } => match (exc, cause) {
+                (Some(exc), Some(cause)) => {
+                    self.compile_expr(exc)?;
+                    self.compile_expr(cause)?;
+                    self.code.emit(Opcode::RaiseFrom)?;
+                }
+                (Some(exc), None) => {
                     self.compile_expr(exc)?;
                     self.code.emit(Opcode::Raise)?;
-                } else {
-                    self.code.emit(Opcode::Reraise)?;
                 }
-            }
+                // The parser rejects `raise from cause` without an exception.
+                (None, _) => self.code.emit(Opcode::Reraise)?,
+            },
             Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,

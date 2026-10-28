@@ -405,7 +405,6 @@ pub enum Opcode {
     // Note: No SetupTry/PopExceptHandler - we use static exception_table
     /// Raise TOS as exception.
     Raise = 97,
-    // NOTE: RaiseFrom removed - `raise ... from ...` not supported by parser
     /// Re-raise current exception (bare `raise`).
     Reraise = 98,
     /// Clear current_exception when exiting except block.
@@ -598,6 +597,9 @@ pub enum Opcode {
     /// becomes `[v, a, b, c]`. Operand: u8 n. The inverse of `LiftToTop`; the
     /// pattern compiler uses it to park a capture under the pattern's temporaries.
     SinkTop = 129,
+    /// `raise exc from cause`: stack `[exc, cause] -> []`. The cause becomes the
+    /// raised exception's `__cause__` and suppresses its `__context__`.
+    RaiseFrom = 130,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -695,6 +697,7 @@ impl Opcode {
             | Self::StoreSubscr
             | Self::GetIter
             | Self::Raise
+            | Self::RaiseFrom
             | Self::Reraise
             | Self::ClearException
             | Self::CheckExcMatch
@@ -962,6 +965,7 @@ impl Opcode {
             (StoreSubscr, Operand::None) => -3,
             (GetIter | Await, Operand::None) => 0,
             (Raise, Operand::None) => -1,
+            (RaiseFrom, Operand::None) => -2,
             (Reraise | ClearException | CheckExcMatch, Operand::None) => 0,
             (ReturnValue, Operand::None) => -1,
             (Nop, Operand::None) => 0,

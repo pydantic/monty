@@ -47,25 +47,40 @@ not supported; passing more than one argument raises an internal error.
 
 - `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
     empty.
+
 - `str(exc)` — returns the single message string, or `""` if none.
+
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
     `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
     `bytes` key gives `KeyError("b'a'")`.
+
 - `repr(exc)` — `ClassName('message')` matching CPython, **except**
     `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
     real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty
     doesn't track, so Monty's
     `repr()` uses the generic single-message form instead.
+
 - The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
     `binascii.Error`, `binascii.Incomplete`, `_csv.Error` — repr under their qualified name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 
-**Not implemented:** `__cause__`, `__context__`, `__suppress_context__`,
-`__traceback__`, `__notes__`, `add_note()`. The `raise X from Y` syntax
-parses, but the `from Y` cause is **silently dropped**: chained
-tracebacks are not preserved across `raise from`.
+- `exc.__cause__`, `exc.__context__` and `exc.__suppress_context__` follow CPython: `raise X from Y` records
+    `Y` (a bare class is instantiated) and suppresses the context, `raise X from None` suppresses it alone, and an
+    exception raised while another is handled records that one as its context, cutting a link that would loop.
+    The three attributes are read-only: `exc.__cause__ = other` raises `AttributeError`, where CPython accepts an
+    exception or `None`.
+
+- An exception rebuilt from a copy loses its chain: one that escapes a nested synchronous call (a `sorted()` key,
+    `json.dumps(default=...)`, a `__repr__`) reaches the outer handler with `__cause__` and `__context__` reset to
+    `None`.
+
+- A chain that forms a cycle (`raise e from e`) is only reclaimed when the session ends, since exceptions are not
+    cycle-collected.
+
+**Not implemented:** `__traceback__`, `__notes__`, `add_note()`. A traceback printed for an exception with a
+`__cause__` or `__context__` shows that exception alone: CPython's chained output (`The above exception was the direct cause of the following exception:`) is not produced, inside the sandbox or at the host boundary.
 
 ## Custom subclasses
 
