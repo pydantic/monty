@@ -286,6 +286,36 @@ test('exceeding maxMemory in the allocator raises MemoryError and the pool recov
   await next.close()
 })
 
+test('minIdle serves concurrent sessions from distinct workers', async () => {
+  // the background refill itself is covered by monty-pool's tests; wasm ignores minIdle
+  await using pool = await Monty.create({ minProcesses: 0, minIdle: 1, maxProcesses: 2 })
+  await using first = await pool.checkout()
+  await using second = await pool.checkout()
+  t.not(first.workerId, second.workerId)
+  t.is(await first.feedRun('1 + 1'), 2)
+  t.is(await second.feedRun('2 + 2'), 4)
+})
+
+test('minIdle above maxProcesses is rejected', async (ctx) => {
+  skipIfWasm(ctx)
+  const error = await t.throwsAsync(() => Monty.create({ minIdle: 3, maxProcesses: 2 }))
+  t.is(error.message, 'minIdle cannot exceed maxProcesses')
+})
+
+test.for([
+  ['minProcesses', -1, 0],
+  ['minProcesses', 1.5, 0],
+  ['minIdle', -1, 0],
+  ['minIdle', 1.5, 0],
+  ['maxProcesses', 0, 1],
+  ['maxProcesses', 2 ** 32, 1],
+] as const)('rejects invalid %s %s', async ([option, value, minimum], ctx) => {
+  // napi would coerce these to a u32; the wasm pool validates with its own message
+  skipIfWasm(ctx)
+  const error = await t.throwsAsync(() => Monty.create({ [option]: value }))
+  t.is(error.message, `${option} must be an integer between ${minimum} and 4294967295`)
+})
+
 test('concurrent sessions run in distinct workers', async () => {
   await using pool = await Monty.create()
   const a = await pool.checkout()

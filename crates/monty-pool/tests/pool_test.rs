@@ -2365,6 +2365,44 @@ async fn reuse_pool_does_not_grow_past_its_load() {
     assert_eq!(pool.idle_workers(), 3);
 }
 
+/// `min_idle` floors ready workers: taking the idle worker refills one behind
+/// the checkout, up to `max_processes`.
+#[tokio::test]
+async fn min_idle_refills_behind_a_held_checkout() {
+    let mut config = config();
+    config.min_processes = 0;
+    config.min_idle = 1;
+    config.max_processes = 3;
+    let pool = Pool::new(config).await.unwrap();
+    assert_eq!(pool.idle_workers(), 1);
+
+    let first = pool.checkout(&ReplConfig::default()).await.unwrap();
+    wait_for_idle(&pool, 1).await;
+    let second = pool.checkout(&ReplConfig::default()).await.unwrap();
+    wait_for_idle(&pool, 1).await;
+    assert_ne!(pool.idle_worker_pids(), vec![first.pid().unwrap()]);
+    assert_ne!(pool.idle_worker_pids(), vec![second.pid().unwrap()]);
+    first.finish().await.unwrap();
+    second.finish().await.unwrap();
+    assert_eq!(pool.idle_workers(), 3);
+}
+
+/// Pool sizes that cannot be honoured are rejected up front.
+#[tokio::test]
+async fn invalid_pool_sizes_are_rejected() {
+    let mut idle = config();
+    idle.min_idle = 3;
+    idle.max_processes = 2;
+    let err = Pool::new(idle).await.err().unwrap();
+    assert_snapshot!(err, @"failed to spawn monty worker: invalid pool size: min_processes=1 min_idle=3 max_processes=2");
+
+    let mut live = config();
+    live.min_processes = 3;
+    live.max_processes = 2;
+    let err = Pool::new(live).await.err().unwrap();
+    assert_snapshot!(err, @"failed to spawn monty worker: invalid pool size: min_processes=3 min_idle=0 max_processes=2");
+}
+
 #[tokio::test]
 async fn concurrent_checkouts_run_in_parallel() {
     let mut config = config();

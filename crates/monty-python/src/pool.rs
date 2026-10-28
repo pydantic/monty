@@ -131,6 +131,7 @@ impl PyMonty {
         *,
         binary_path = None,
         min_processes = 1,
+        min_idle = 0,
         max_processes = None,
         checkout_timeout = None,
         request_timeout = None,
@@ -143,6 +144,7 @@ impl PyMonty {
         py: Python<'_>,
         binary_path: Option<PathBuf>,
         min_processes: usize,
+        min_idle: usize,
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
@@ -155,6 +157,7 @@ impl PyMonty {
                 py,
                 binary_path,
                 min_processes,
+                min_idle,
                 max_processes,
                 checkout_timeout,
                 request_timeout,
@@ -530,6 +533,7 @@ impl PyAsyncMonty {
         *,
         binary_path = None,
         min_processes = 1,
+        min_idle = 0,
         max_processes = None,
         checkout_timeout = None,
         request_timeout = None,
@@ -542,6 +546,7 @@ impl PyAsyncMonty {
         py: Python<'_>,
         binary_path: Option<PathBuf>,
         min_processes: usize,
+        min_idle: usize,
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
@@ -554,6 +559,7 @@ impl PyAsyncMonty {
                 py,
                 binary_path,
                 min_processes,
+                min_idle,
                 max_processes,
                 checkout_timeout,
                 request_timeout,
@@ -1145,6 +1151,7 @@ fn parse_pool_config(
     py: Python<'_>,
     binary_path: Option<PathBuf>,
     min_processes: usize,
+    min_idle: usize,
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
@@ -1157,6 +1164,7 @@ fn parse_pool_config(
     };
     let mut config = PoolConfig::subprocess(binary_path);
     config.min_processes = min_processes;
+    config.min_idle = min_idle;
     if let Some(max) = max_processes {
         config.max_processes = max;
     }

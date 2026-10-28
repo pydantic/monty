@@ -138,6 +138,7 @@ see [snapshot security](../security.md#deserializing-snapshots).
     a protocol violation discards the worker.
 - **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak; with `PoolConfig::subprocess`, `Some(1)` runs every session in a fresh process.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
+    `min_processes` floors live workers, checked-out ones included; `min_idle` floors ready (idle or spawning) workers, refilling each time a checkout takes one, so concurrent checkouts stay warm too.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
 usable.

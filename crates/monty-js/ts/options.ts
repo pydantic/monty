@@ -271,8 +271,16 @@ function encodeRandomSeed(start: RandomStart): EncodedRandomSeed {
 
 /** Rejects recycle counts that native integer conversion would truncate or wrap. */
 export function validateMaxCheckouts(value: number | undefined): void {
-  if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 0xffffffff)) {
-    throw new TypeError('maxCheckoutsPerWorker must be an integer between 0 and 4294967295')
+  validateUint32Option(value, 'maxCheckoutsPerWorker', 0)
+}
+
+/**
+ * Rejects a count the native addon would otherwise coerce: napi reads it as a
+ * `u32`, truncating fractions and wrapping negatives.
+ */
+export function validateUint32Option(value: number | undefined, name: string, minimum: number): void {
+  if (value !== undefined && (!Number.isInteger(value) || value < minimum || value > 0xffffffff)) {
+    throw new TypeError(`${name} must be an integer between ${minimum} and 4294967295`)
   }
 }
 

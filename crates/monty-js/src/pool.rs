@@ -98,9 +98,13 @@ where
 pub struct NativePoolOptions {
     /// Resolved path to the `monty` binary.
     pub binary_path: String,
-    /// Workers spawned eagerly by `start()`, and replaced in the background
-    /// whenever one is recycled, crashes or is discarded.
+    /// Floor on live workers, replaced in the background whenever one is
+    /// recycled, crashes or is discarded. `start()` prewarms the larger of
+    /// this and `min_idle`.
     pub min_processes: u32,
+    /// Floor on idle-or-spawning workers, refilled in the background as
+    /// checkouts take them. Absent: 0.
+    pub min_idle: Option<u32>,
     /// Hard cap on live workers; checkouts beyond it wait.
     pub max_processes: u32,
     /// How long `enter()` waits for a free worker (ms). Absent: forever.
@@ -299,6 +303,7 @@ impl NativePool {
     pub fn new(options: NativePoolOptions) -> Result<Self> {
         let mut config = PoolConfig::subprocess(&options.binary_path);
         config.min_processes = options.min_processes as usize;
+        config.min_idle = options.min_idle.unwrap_or(0) as usize;
         config.max_processes = options.max_processes as usize;
         apply_timeouts(
             &mut config,
@@ -310,6 +315,9 @@ impl NativePool {
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
         if config.min_processes > config.max_processes {
             return Err(invalid("minProcesses cannot exceed maxProcesses"));
+        }
+        if config.min_idle > config.max_processes {
+            return Err(invalid("minIdle cannot exceed maxProcesses"));
         }
         Self::from_config(config, "Monty")
     }

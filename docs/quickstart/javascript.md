@@ -343,7 +343,8 @@ import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
-  minProcesses: 1, // workers spawned up front, and replaced in the background as they leave
+  minProcesses: 1, // floor on live workers, checked-out ones included
+  minIdle: 0, // floor on ready (idle or spawning) workers
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
@@ -353,10 +354,17 @@ await using pool = await Monty.create({
 })
 ```
 
+`minProcesses` and `minIdle` are both spawned up front and kept by background refills while the pool is open.
+A checked-out worker counts towards `minProcesses`, so concurrent sessions can leave no idle worker.
+`minIdle` counts only idle workers and ones being spawned, and refills each time a checkout takes one, so concurrent
+sessions keep finding warm workers.
+Both are capped by `maxProcesses`.
+
 Closing a pool rejects pending/new checkouts and reaps idle workers; checked-out sessions remain usable until closed.
 `session.workerId` identifies the worker within its pool, including during turns and after the session closes.
 Replacement workers get new IDs, even if the OS reuses a PID.
 `maxCheckoutsPerWorker` accepts integers from 0 to 4294967295; 0 and 1 both retire a worker after each checkout.
+`minProcesses`, `minIdle` and `maxProcesses` must be integers too, up to 4294967295; `maxProcesses` must be at least 1.
 `workerPid` is a native-only OS diagnostic and may be unavailable during a turn.
 
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform
@@ -437,6 +445,7 @@ Differences from the native path:
 - **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
     is already waiting for it, so the pool can fall below `minProcesses` and a checkout that finds no idle worker
     spawns a cold one.
+- **`minIdle` is ignored.** The wasm pool keeps no idle floor.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;

@@ -12,7 +12,7 @@ use monty_proto::pb;
 use tokio::{
     runtime::Handle,
     sync::Notify,
-    time::{Instant, sleep_until, timeout_at},
+    time::{Instant, timeout_at},
 };
 
 use crate::{
@@ -23,10 +23,10 @@ use crate::{
 
 /// An elastic pool of `monty subprocess` workers.
 ///
-/// `min_processes` workers spawn eagerly so the first checkout is fast, and
-/// are replaced in the background whenever one is recycled, crashes or is
-/// discarded; further workers spawn on demand up to `max_processes`. See the
-/// crate docs for the full lifecycle.
+/// The larger of `min_processes` and `min_idle` workers spawn eagerly so the
+/// first checkout is fast. Background refills keep `min_processes` workers live
+/// and `min_idle` idle or spawning; further workers spawn on demand up to
+/// `max_processes`. See the crate docs for the full lifecycle.
 ///
 /// `Pool` is safe to share across tasks and threads. [`Pool::close`] asks idle
 /// workers to exit cleanly; merely dropping the pool kills them instead (via
@@ -56,6 +56,9 @@ struct PoolState {
     idle: Vec<Worker>,
     /// Live workers: idle + checked out + currently being spawned.
     total: usize,
+    /// Background refills in flight, counted towards `min_idle` alongside
+    /// `idle`; a checkout's own spawn is not one, as its worker is taken.
+    spawning: usize,
     /// Never reused, including when a spawn fails or is cancelled.
     next_id: u64,
     /// Set by [`Pool::close`] or dropping the [`Pool`]: stops refills, and a
@@ -63,27 +66,31 @@ struct PoolState {
     closed: bool,
     /// Consecutive failed refills, sizing the backoff before the next one.
     refill_failures: u32,
-    /// Refills are suspended until this deadline; `Some` also means the one
-    /// retry task is armed.
-    retry_at: Option<Instant>,
+    /// `Some` while the one retry task is armed and refills are suspended;
+    /// notifying it ends the backoff early.
+    retry: Option<Arc<Notify>>,
 }
 
 impl Pool {
-    /// Creates the pool and eagerly spawns `min_processes` workers, failing
-    /// fast if the binary cannot be spawned. Must be called within a tokio
-    /// runtime (worker process and pipe I/O is driven by the runtime).
+    /// Creates the pool and eagerly spawns `max(min_processes, min_idle)`
+    /// workers, failing fast if the binary cannot be spawned. Must be called
+    /// within a tokio runtime (worker process and pipe I/O is driven by the runtime).
     pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
-        if config.min_processes > config.max_processes || config.max_processes == 0 {
+        if config.min_processes > config.max_processes
+            || config.min_idle > config.max_processes
+            || config.max_processes == 0
+        {
             return Err(PoolError::Spawn(format!(
-                "invalid pool size: min_processes={} max_processes={}",
-                config.min_processes, config.max_processes
+                "invalid pool size: min_processes={} min_idle={} max_processes={}",
+                config.min_processes, config.min_idle, config.max_processes
             )));
         }
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).
-        let mut idle = Vec::with_capacity(config.min_processes);
+        let prewarm = config.min_processes.max(config.min_idle);
+        let mut idle = Vec::with_capacity(prewarm);
         if !config.transport.is_websocket() {
-            for _ in 0..config.min_processes {
+            for _ in 0..prewarm {
                 let mut worker = Worker::new(&config, &[]).await?;
                 worker.id = idle.len() as u64 + 1;
                 idle.push(worker);
@@ -96,10 +103,11 @@ impl Pool {
                 state: Mutex::new(PoolState {
                     idle,
                     total,
+                    spawning: 0,
                     next_id: total as u64 + 1,
                     closed: false,
                     refill_failures: 0,
-                    retry_at: None,
+                    retry: None,
                 }),
                 available: Notify::new(),
                 this: this.clone(),
@@ -294,7 +302,8 @@ impl PoolInner {
                 }
                 let spawned = i64::from(below_cap);
                 self.record_worker_delta(spawned - worker_count(died_idle), -worker_count(removed_idle));
-                if died_idle > 0 {
+                // taking an idle worker may leave fewer than `min_idle` ready
+                if died_idle > 0 || reused.is_some() {
                     self.replenish();
                 }
                 if let Some(worker) = reused {
@@ -311,6 +320,7 @@ impl PoolInner {
                 let mut worker = Worker::new(&self.config, connect_headers).await?;
                 worker.id = id;
                 capacity.disarm();
+                self.spawn_succeeded();
                 return Ok(worker);
             }
             waited = true;
@@ -376,7 +386,7 @@ impl PoolInner {
     }
 
     /// Records the death/retirement of a worker, freeing capacity for a
-    /// future spawn, and refills towards `min_processes`.
+    /// future spawn, and refills towards `min_processes` and `min_idle`.
     pub(crate) fn release_capacity(&self) {
         lock_ignore_poison(&self.state).total -= 1;
         self.available.notify_one();
@@ -384,21 +394,30 @@ impl PoolInner {
         self.replenish();
     }
 
-    /// Spawns background workers until `min_processes` are live, reserving
-    /// their capacity first so a racing checkout can never overshoot
-    /// `max_processes`. Does nothing once closed or while refills back off.
+    /// Spawns background workers until `min_processes` are live and `min_idle`
+    /// are idle or spawning, reserving their capacity first so a racing
+    /// checkout can never overshoot `max_processes`. Does nothing once closed
+    /// or while refills back off.
     fn replenish(&self) {
         if self.config.transport.is_websocket() {
             return;
         }
         let (wanted, first_id) = {
             let mut state = lock_ignore_poison(&self.state);
-            if state.closed || state.retry_at.is_some() {
+            if state.closed || state.retry.is_some() {
                 (0, 0)
             } else {
-                let floor = self.config.min_processes.min(self.config.max_processes);
-                let wanted = floor.saturating_sub(state.total);
+                let max = self.config.max_processes;
+                let live_floor = self.config.min_processes.min(max).saturating_sub(state.total);
+                let ready = state.idle.len() + state.spawning;
+                let idle_floor = self
+                    .config
+                    .min_idle
+                    .saturating_sub(ready)
+                    .min(max.saturating_sub(state.total));
+                let wanted = live_floor.max(idle_floor);
                 state.total += wanted;
+                state.spawning += wanted;
                 let first_id = state.next_id;
                 state.next_id = first_id.checked_add(wanted as u64).expect("worker identity exhausted");
                 (wanted, first_id)
@@ -415,28 +434,44 @@ impl PoolInner {
         }
     }
 
-    /// Records a failed refill and arms the one retry task, whose delay
+    /// Records that a checkout spawned its own worker, proving the binary
+    /// works again: the next failure backs off from the minimum, and a pending
+    /// retry fires now rather than after up to [`REFILL_BACKOFF_MAX`].
+    fn spawn_succeeded(&self) {
+        let retry = {
+            let mut state = lock_ignore_poison(&self.state);
+            state.refill_failures = 0;
+            state.retry.clone()
+        };
+        if let Some(retry) = retry {
+            retry.notify_one();
+        }
+    }
+
+    /// Records a failed refill (whose `spawning` count the caller has already
+    /// dropped, under `state`) and arms the one retry task, whose delay
     /// doubles with each consecutive failure so a broken binary cannot become
     /// a spawn loop. Must run before the failed slot is released, since that
     /// release would otherwise start the next refill at once.
-    fn refill_failed(&self) {
-        let retry_at = {
-            let mut state = lock_ignore_poison(&self.state);
-            state.refill_failures = state.refill_failures.saturating_add(1);
-            if state.retry_at.is_some() {
-                None
-            } else {
-                let at = Instant::now() + refill_backoff(state.refill_failures);
-                state.retry_at = Some(at);
-                Some(at)
-            }
+    fn refill_failed(&self, mut state: MutexGuard<'_, PoolState>) {
+        state.refill_failures = state.refill_failures.saturating_add(1);
+        let retry = if state.retry.is_some() {
+            None
+        } else {
+            let at = Instant::now() + refill_backoff(state.refill_failures);
+            // a fresh `Notify` per arm, so an early wake can never leave a
+            // stored permit that cuts a later backoff short
+            let wake = Arc::new(Notify::new());
+            state.retry = Some(Arc::clone(&wake));
+            Some((at, wake))
         };
-        if let Some(at) = retry_at {
+        drop(state);
+        if let Some((at, wake)) = retry {
             let pool = self.this.clone();
             self.runtime.spawn(async move {
-                sleep_until(at).await;
+                let _ = timeout_at(at, wake.notified()).await;
                 if let Some(pool) = pool.upgrade() {
-                    lock_ignore_poison(&pool.state).retry_at = None;
+                    lock_ignore_poison(&pool.state).retry = None;
                     pool.replenish();
                 }
             });
@@ -453,29 +488,27 @@ impl PoolInner {
 async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, id: u64) {
     let worker = Worker::new(&config, &[]).await;
     let Some(pool) = pool.upgrade() else { return };
+    // the `spawning` slot becomes idle (or is released) under the same lock,
+    // so `replenish` never sees the worker in neither or both
+    let mut state = lock_ignore_poison(&pool.state);
+    state.spawning -= 1;
     match worker {
-        Ok(mut worker) => {
-            worker.id = id;
-            let mut state = lock_ignore_poison(&pool.state);
-            if state.closed {
-                drop(state);
-                drop(worker);
-                pool.count_termination("closed");
-                pool.release_capacity();
-            } else {
-                state.refill_failures = 0;
-                state.idle.push(worker);
-                drop(state);
-                pool.available.notify_one();
-                pool.record_worker_delta(0, 1);
-            }
-        }
         // a closed pool will not refill again, so it must not arm a retry
-        Err(_) if lock_ignore_poison(&pool.state).closed => {
+        _ if state.closed => {
+            drop(state);
+            drop(worker);
             pool.count_termination("closed");
             pool.release_capacity();
         }
-        Err(_) => pool.refill_failed(),
+        Ok(mut worker) => {
+            worker.id = id;
+            state.refill_failures = 0;
+            state.idle.push(worker);
+            drop(state);
+            pool.available.notify_one();
+            pool.record_worker_delta(0, 1);
+        }
+        Err(_) => pool.refill_failed(state),
     }
 }
 
