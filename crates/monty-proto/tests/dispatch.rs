@@ -44,6 +44,33 @@ fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::Future
     }
 }
 
+#[test]
+fn error_replies_report_the_remaining_suspension() {
+    let mut child = Child::default();
+    let call = start_external_call(&mut child, "f(); 1 / 0");
+    let resume = |call_id| {
+        frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
+            }),
+            values: Some(arena(MontyObject::none())),
+        }))
+    };
+    for (call_id, suspended) in [(call.call_id + 1, true), (call.call_id, false)] {
+        let (bytes, outcome) = dispatch_frame(&mut child, &resume(call_id));
+        assert_eq!(outcome, HandleOutcome::Continue);
+        let event = FrameReader::new(bytes.as_slice())
+            .read::<pb::ChildEvent>()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.kind, Some(pb::child_event::Kind::Error(_))));
+        assert_eq!(event.feed_suspended, Some(suspended));
+    }
+    let (_, event) = feed(&mut child, "1 + 1");
+    assert_eq!(expect_complete(event), MontyObject::int(2));
+}
+
 /// A `ResumeFutures` whose arena holds `value` at index 0, the root every
 /// `ReturnValue(0)` reply names.
 fn resume_futures(results: Vec<pb::FutureResult>, value: MontyObject) -> pb::ResumeFutures {

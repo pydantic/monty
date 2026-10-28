@@ -825,6 +825,11 @@ message ChildEvent {
   // reply's kind. Unset for ephemeral sessions or for remotes that don't
   // support persistence.
   optional bytes session_id = 28;
+
+  // On Error or TypingError, whether the feed still awaits a host answer.
+  // Absent for older workers or errors generated outside the session state
+  // machine. Parents must preserve an outstanding suspension when unknown.
+  optional bool feed_suspended = 29;
 }
 
 enum PrintStream {

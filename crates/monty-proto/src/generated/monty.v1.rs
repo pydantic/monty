@@ -1022,6 +1022,11 @@ pub struct ChildEvent {
     /// support persistence.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
+    /// On Error or TypingError, whether the feed still awaits a host answer.
+    /// Absent for older workers or errors generated outside the session state
+    /// machine. Parents must preserve an outstanding suspension when unknown.
+    #[prost(bool, optional, tag = "29")]
+    pub feed_suspended: ::core::option::Option<bool>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }

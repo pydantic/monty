@@ -3272,6 +3272,41 @@ async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
     session.finish().await.unwrap();
 }
 
+#[tokio::test]
+async fn invalid_stub_answers_without_cpu_supervision_remain_resumable() {
+    let pool = Pool::new(config()).await.unwrap();
+    for answer in [ResumeValue::Future, ResumeValue::Return(MontyObject::int(42))] {
+        let mut session = pool
+            .checkout(&ReplConfig {
+                type_check: true,
+                ..ReplConfig::default()
+            })
+            .await
+            .unwrap();
+        let event = session
+            .feed("import tools", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
+        assert!(matches!(
+            session.resume(answer, &mut no_print).await,
+            Err(PoolError::Protocol(_))
+        ));
+        let error = MontyException::new(ExcType::RuntimeError, Some("stub provider failed".to_owned()));
+        let result = session.resume(ResumeValue::Error(error), &mut no_print).await;
+        assert!(
+            matches!(result, Err(PoolError::Runtime(ref error)) if error.message() == Some("stub provider failed"))
+        );
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        session.finish().await.unwrap();
+    }
+    pool.close().await;
+}
+
 #[cfg(not(target_os = "linux"))]
 #[tokio::test]
 async fn cpu_supervision_is_rejected_on_unsupported_operating_systems() {
@@ -3916,9 +3951,12 @@ while True:
     #[tokio::test]
     async fn typed_dump_errors_do_not_refund_cumulative_cpu() {
         let exception = MontyException::new(ExcType::RuntimeError, Some("dump refused".to_owned()));
-        let error = framed(&child_event(pb::child_event::Kind::Error(pb::Error {
+        let mut error = child_event(pb::child_event::Kind::Error(pb::Error {
             exception: Some((&exception).into()),
-        })));
+        }));
+        // A control error cannot declare the suspended execution complete.
+        error.feed_suspended = Some(false);
+        let error = framed(&error);
         let action = format!("if count % 2 == 1: burn(15); SUSPEND\n    else: send({error:?})");
         let (_dir, config) = stand_in(&action, 0);
         let pool = Pool::new(config).await.unwrap();
@@ -4017,6 +4055,182 @@ while True:
         assert_eq!(expect_complete(event), MontyObject::int(2));
         checkout.finish().await.unwrap();
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn raw_errors_without_suspension_metadata_do_not_refund_cpu() {
+        let exception = MontyException::new(ExcType::RuntimeError, Some("legacy error".to_owned()));
+        let error = framed(&child_event(pb::child_event::Kind::Error(pb::Error {
+            exception: Some((&exception).into()),
+        })));
+        let action = format!("if count % 2 == 1: burn(15); SUSPEND\n    else: send({error:?})");
+        let (_dir, config) = stand_in(&action, 0);
+        let pool = Pool::new(config).await.unwrap();
+        let mut checkout = pool.checkout(&limits(50)).await.unwrap();
+        let pid = checkout.pid().unwrap();
+        let feed = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
+            ..pb::ParentRequest::default()
+        };
+        let resume = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall::default())),
+            ..pb::ParentRequest::default()
+        };
+        let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+        checkout.turn_raw(&feed, &mut on_event).await.unwrap();
+        let mut completed = 1;
+        loop {
+            let event = checkout.turn_raw(&resume, &mut on_event).await.unwrap();
+            assert!(matches!(event.kind, Some(pb::child_event::Kind::Error(_))));
+            assert_eq!(event.feed_suspended, None);
+            assert!(matches!(
+                checkout.turn_raw(&feed, &mut on_event).await,
+                Err(PoolError::Protocol(_))
+            ));
+            match checkout.turn_raw(&resume, &mut on_event).await {
+                Ok(event) => {
+                    assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+                    completed += 1;
+                    assert!(completed <= 3, "legacy errors reset the CPU ledger");
+                }
+                Err(PoolError::CpuLimit { .. }) => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        reaped(pid);
+        drop(checkout);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn raw_terminal_errors_clear_suspensions_in_both_modes() {
+        for cpu in [false, true] {
+            for raw_start in [false, true] {
+                for code in ["f(); 1 / 0", "f(); raise RuntimeError('protocol violation: synthetic')"] {
+                    let mut config = supervised(monty_binary());
+                    if !cpu {
+                        config.subprocess_cpu_limit_grace = None;
+                    }
+                    let pool = Pool::new(config).await.unwrap();
+                    let mut checkout = pool.checkout(&limits(1000)).await.unwrap();
+                    let feed = |code: &str| pb::ParentRequest {
+                        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+                            code: code.to_owned(),
+                            skip_type_check: true,
+                            ..pb::Feed::default()
+                        })),
+                        ..pb::ParentRequest::default()
+                    };
+                    let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+                    let call_id = if raw_start {
+                        let event = checkout.turn_raw(&feed(code), &mut on_event).await.unwrap();
+                        let Some(pb::child_event::Kind::FunctionCall(call)) = event.kind else {
+                            panic!("{event:?}")
+                        };
+                        call.call_id
+                    } else {
+                        let event = checkout.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+                        let TurnEvent::FunctionCall { call_id, .. } = event else {
+                            panic!("{event:?}")
+                        };
+                        call_id
+                    };
+                    let invalid_abort = pb::ParentRequest {
+                        kind: Some(pb::parent_request::Kind::AbortFeed(pb::AbortFeed::default())),
+                        ..pb::ParentRequest::default()
+                    };
+                    assert!(matches!(
+                        checkout.turn_raw(&invalid_abort, &mut on_event).await,
+                        Err(PoolError::Protocol(_))
+                    ));
+                    let resume = |call_id| pb::ParentRequest {
+                        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+                            call_id,
+                            result: Some(pb::ExtFunctionResult {
+                                kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
+                            }),
+                            values: Some(WireArena(vec![MontyNode::None].into())),
+                        })),
+                        ..pb::ParentRequest::default()
+                    };
+                    let rejected = checkout.turn_raw(&resume(call_id + 1), &mut on_event).await.unwrap();
+                    assert!(matches!(rejected.kind, Some(pb::child_event::Kind::Error(_))));
+                    assert_eq!(rejected.feed_suspended, Some(true));
+                    let event = checkout.turn_raw(&resume(call_id), &mut on_event).await.unwrap();
+                    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+                        panic!("{event:?}")
+                    };
+                    let error = MontyException::try_from(error.exception.unwrap()).unwrap();
+                    assert_eq!(
+                        error.message(),
+                        Some(if code.contains("1 / 0") {
+                            "division by zero"
+                        } else {
+                            "protocol violation: synthetic"
+                        })
+                    );
+                    assert_eq!(event.feed_suspended, Some(false));
+                    assert!(
+                        matches!(checkout.resume(ResumeValue::Return(MontyObject::none()), &mut no_print).await,
+                        Err(PoolError::Protocol(ref message)) if message == "no suspended call to resume")
+                    );
+                    let event = checkout
+                        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+                        .await
+                        .unwrap();
+                    assert_eq!(expect_complete(event), MontyObject::int(2));
+                    let event = checkout.turn_raw(&feed("2 + 2"), &mut on_event).await.unwrap();
+                    let Some(pb::child_event::Kind::Complete(complete)) = event.kind else {
+                        panic!("{event:?}")
+                    };
+                    assert_eq!(MontyObject::try_from(complete).unwrap(), MontyObject::int(4));
+                    checkout.finish().await.unwrap();
+                    pool.close().await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_typing_errors_end_the_feed() {
+        for cpu in [false, true] {
+            let mut config = supervised(monty_binary());
+            if !cpu {
+                config.subprocess_cpu_limit_grace = None;
+            }
+            let pool = Pool::new(config).await.unwrap();
+            let mut repl = limits(1000);
+            repl.type_check = true;
+            let mut checkout = pool.checkout(&repl).await.unwrap();
+            let event = checkout
+                .feed("import tools\nx: int = 'bad'", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap();
+            assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
+            let resume = pb::ParentRequest {
+                kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+                    call_id: monty_types::IMPORT_STUBS_CALL_ID,
+                    result: Some(pb::ExtFunctionResult {
+                        kind: Some(pb::ext_function_result::Kind::NotHandled(pb::Unit {})),
+                    }),
+                    values: None,
+                })),
+                ..pb::ParentRequest::default()
+            };
+            let event = checkout
+                .turn_raw(&resume, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
+                .await
+                .unwrap();
+            assert!(matches!(event.kind, Some(pb::child_event::Kind::TypingError(_))));
+            assert_eq!(event.feed_suspended, Some(false));
+            let event = checkout
+                .feed("1 + 1", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap();
+            assert_eq!(expect_complete(event), MontyObject::int(2));
+            checkout.finish().await.unwrap();
+            pool.close().await;
+        }
     }
 
     #[tokio::test]

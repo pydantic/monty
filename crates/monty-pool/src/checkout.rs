@@ -969,9 +969,7 @@ impl Checkout {
         else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
         };
-        if self.pool.config.subprocess_cpu_limit_grace.is_some()
-            && let Some(OsFunctionCall::ImportStubs(asked)) = os_call.as_deref()
-        {
+        if let Some(OsFunctionCall::ImportStubs(asked)) = os_call.as_deref() {
             match &value {
                 ResumeValue::Return(answer) => {
                     import_stubs_from_answer(answer, asked).map_err(|message| PoolError::Protocol(message.into()))?;
@@ -1422,7 +1420,7 @@ impl Checkout {
         // A rejected control or raw request can leave the original feed suspended.
         if self.pool.config.subprocess_cpu_limit_grace.is_some()
             && was_suspended
-            && preserve_suspension
+            && (preserve_suspension || event.feed_suspended == Some(true))
             && !was_aborting
             && matches!(
                 event.kind,
@@ -1655,7 +1653,7 @@ impl Checkout {
     /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
     /// [`PoolError::Finished`]; a raw driver is never auto-resumed.
-    /// In CPU mode, an error does not establish that a suspended feed ended.
+    /// An error from an older worker does not establish that a suspended feed ended.
     /// Complete its suspension or finish the checkout before starting another feed.
     ///
     /// # Security
@@ -1691,8 +1689,7 @@ impl Checkout {
                 "lifecycle requests (Configure/Reset/Shutdown) cannot be driven through turn_raw".into(),
             ));
         }
-        if self.pool.config.subprocess_cpu_limit_grace.is_some()
-            && let Some(pb::parent_request::Kind::AbortFeed(abort)) = &request.kind
+        if let Some(pb::parent_request::Kind::AbortFeed(abort)) = &request.kind
             && abort
                 .exception
                 .as_ref()
@@ -1759,15 +1756,22 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            let preserve_suspension = !matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
-            let aborting = self.abort_in_flight || !preserve_suspension;
+            let explicit_abort = matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
+            let aborting = self.abort_in_flight || explicit_abort;
+            let feed_ended = is_execution_turn(request)
+                && event.feed_suspended == Some(false)
+                && matches!(
+                    event.kind,
+                    Some(pb::child_event::Kind::Error(_) | pb::child_event::Kind::TypingError(_))
+                );
+            let preserve_suspension = !explicit_abort && !feed_ended;
             if self.abort_if_over_budget(&mut event, preserve_suspension).await? {
                 continue;
             }
-            if self.pool.config.subprocess_cpu_limit_grace.is_some()
-                && (is_suspension(&event)
-                    || matches!(event.kind, Some(pb::child_event::Kind::Complete(_)))
-                    || (aborting && is_abort_reply(&event)))
+            if is_suspension(&event)
+                || matches!(event.kind, Some(pb::child_event::Kind::Complete(_)))
+                || feed_ended
+                || (aborting && is_abort_reply(&event))
             {
                 // A raw advance invalidates the earlier typed resume token.
                 self.pending = None;
@@ -2001,7 +2005,9 @@ impl Checkout {
                     // an error reply to `Dump` (e.g. an oversize dump) does not
                     // end the in-flight feed — the child stays suspended and
                     // resumable, so keep the pending call and mounts
-                    if !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_))) {
+                    if event.feed_suspended != Some(true)
+                        && !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_)))
+                    {
                         self.pending = None;
                         self.feed_mounts = None;
                     }

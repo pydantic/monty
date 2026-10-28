@@ -438,6 +438,15 @@ impl Child {
     /// Reported timing drives the parent's backstop. Fields are absent without
     /// a session.
     fn stamp_session_budget(&self, event: &mut pb::ChildEvent) {
+        if matches!(
+            event.kind,
+            Some(pb::child_event::Kind::Error(_) | pb::child_event::Kind::TypingError(_))
+        ) {
+            event.feed_suspended = Some(matches!(
+                self.state,
+                SessionState::Suspended(_) | SessionState::AwaitingStubs(_)
+            ));
+        }
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
             SessionState::Suspended(progress) => progress.tracker(),
