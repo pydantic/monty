@@ -38,3 +38,13 @@ bad_types.py:161:21: error[too-many-positional-arguments] Too many positional ar
 bad_types.py:162:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`
 bad_types.py:165:17: error[invalid-argument-type] Argument to `Context.__init__` is incorrect: Expected `dict[type[DecimalException], bool] | list[type[DecimalException]] | None`, found `tuple[<class 'Inexact'>]`
 bad_types.py:166:22: error[invalid-argument-type] Argument to function `localcontext` is incorrect: Expected `dict[type[DecimalException], bool] | list[type[DecimalException]] | None`, found `tuple[<class 'Rounded'>]`
+bad_types.py:173:1: error[no-matching-overload] No overload of function `open` matches arguments
+bad_types.py:174:1: error[no-matching-overload] No overload of function `open` matches arguments
+bad_types.py:175:27: error[invalid-argument-type] Argument to function `open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:176:38: error[invalid-argument-type] Argument to bound method `_TextIOBase.write` is incorrect: Expected `str`, found `Literal[b"hello"]`
+bad_types.py:177:39: error[invalid-argument-type] Argument to bound method `BufferedWriter.write` is incorrect: Expected `Buffer`, found `Literal["hello"]`
+bad_types.py:178:1: error[invalid-assignment] Cannot assign to read-only property `closed` on object of type `TextIOWrapper[_WrappedBuffer]`: Attempted assignment to `TextIOWrapper[_WrappedBuffer].closed` here
+bad_types.py:181:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:182:11: error[invalid-argument-type] Argument to bound method `Path.open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:183:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:184:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
