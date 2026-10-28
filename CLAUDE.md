@@ -183,8 +183,9 @@ subprocesses:
     streamed `Print` events out, then exactly one turn-ending event.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
     A WebSocket server selects its own clock and reports it to clients; session limits cannot override it.
-    Native subprocess pools independently supervise CPU mode with the child's OS process clock.
-    CPU mode requires a finite local pool wall deadline. WebAssembly workers accept wall mode only.
+    Local subprocess pools supervise CPU with the child's OS process clock on Linux, macOS and Windows.
+    CPU mode requires a finite `PoolConfig::request_timeout`; WebSocket clients do not supervise CPU locally.
+    WebAssembly workers accept wall mode only.
     Snapshots retain their clock; the worker rejects a load configured with another clock.
 - `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads

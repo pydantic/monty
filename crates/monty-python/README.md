@@ -200,8 +200,12 @@ more details.
 
 ## Execution time
 
-Execution duration limits use wall time by default. CPU mode uses the executing
-thread's CPU time, sampled with a cache of up to 1 ms. Smaller remaining budgets shorten that interval.
+Execution duration limits use wall time by default.
+Both clocks charge bytecode and native builtin execution, excluding host suspension.
+Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
+The clock applies to the whole pool; checkouts cannot override it.
+CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.
+Smaller remaining budgets shorten that interval.
 Execution boundaries take fresh samples. WebAssembly workers support wall time only.
 An unavailable or unusable VM CPU counter uses elapsed time for that window. The OS controls CPU counter accuracy and resolution.
 Native pool backstops use the selected clock and configured grace. CPU mode requires

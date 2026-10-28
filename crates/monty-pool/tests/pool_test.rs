@@ -2,26 +2,25 @@
 //! headline scenarios: a worker dying mid-execution (kill, crash, timeout)
 //! must surface as a clean error and never poison the pool.
 
+mod binary;
 mod common;
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
+#[cfg(target_os = "linux")]
+use std::{env, ffi::OsStr, os::unix::ffi::OsStrExt};
 use std::{
-    env,
     fmt::Write as _,
     fs,
     future::ready,
     io,
     path::{Path, PathBuf},
     process::Command,
-    sync::Once,
     thread,
     time::Duration,
 };
-#[cfg(target_os = "linux")]
-use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
 use insta::assert_snapshot;
 use monty_pool::{
@@ -43,33 +42,7 @@ use tokio::time::sleep;
 #[cfg(unix)]
 use tokio::time::timeout;
 
-use crate::common::wait_for_idle;
-
-/// Locates (building once if needed) the `monty` CLI binary for tests.
-fn monty_binary() -> PathBuf {
-    static BUILD: Once = Once::new();
-    if let Ok(path) = env::var("MONTY_TEST_BIN") {
-        return PathBuf::from(path);
-    }
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root")
-        .to_owned();
-    let target = env::var_os("CARGO_TARGET_DIR").map_or_else(|| workspace.join("target"), PathBuf::from);
-    let path = target.join("debug").join(format!("monty{}", env::consts::EXE_SUFFIX));
-    BUILD.call_once(|| {
-        if !path.exists() {
-            let status = Command::new(env!("CARGO"))
-                .args(["build", "-p", "monty-runtime"])
-                .status()
-                .expect("failed to run cargo build -p monty-runtime");
-            assert!(status.success(), "building the monty binary failed");
-        }
-    });
-    assert!(path.exists(), "monty binary missing at {}", path.display());
-    path
-}
+use crate::{binary::monty_binary, common::wait_for_idle};
 
 fn config() -> PoolConfig {
     PoolConfig::subprocess(monty_binary())
@@ -3440,6 +3413,13 @@ while True:
         .expect("stand-in startup did not finish");
     }
 
+    async fn stand_in_pool(mut config: PoolConfig, dir: &Path) -> Pool {
+        config.min_processes = 1;
+        let pool = Pool::new(config).await.unwrap();
+        await_stand_in_ready(dir).await;
+        pool
+    }
+
     #[tokio::test]
     async fn cpu_mode_requires_a_finite_wall_deadline() {
         for deadline in [None, Some(Duration::MAX)] {
@@ -3496,8 +3476,8 @@ while True:
             (100, true, "exec('while True: pass')"),
             (100, true, "PARTIAL; exec('while True: pass')"),
         ] {
-            let (_dir, config) = stand_in(action, 0);
-            let pool = Pool::new(config).await.unwrap();
+            let (dir, config) = stand_in(action, 0);
+            let pool = stand_in_pool(config, dir.path()).await;
             let mut checkout = pool.checkout(&limits(budget_ms)).await.unwrap();
             let pid = checkout.pid().unwrap();
             let error = if raw {
@@ -3532,10 +3512,8 @@ while True:
     #[tokio::test]
     async fn blocked_child_is_killed_by_wall_time_instead_of_cpu() {
         let (dir, mut config) = stand_in("time.sleep(60)", 0);
-        config.min_processes = 1;
         config.request_timeout = Some(Duration::from_millis(150));
-        let pool = Pool::new(config).await.unwrap();
-        await_stand_in_ready(dir.path()).await;
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(100)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let error = checkout
@@ -3554,10 +3532,10 @@ while True:
     #[tokio::test]
     async fn worker_reports_cannot_spend_or_refund_the_supervisors_allowance() {
         for reported in [0, u64::MAX] {
-            let (_dir, mut config) = stand_in("burn(15); SUSPEND", reported);
+            let (dir, mut config) = stand_in("burn(15); SUSPEND", reported);
             config.feed_duration_limit_grace = Some(Duration::from_millis(10));
             config.turn_duration_limit_grace = Some(Duration::from_millis(10));
-            let pool = Pool::new(config).await.unwrap();
+            let pool = stand_in_pool(config, dir.path()).await;
             let mut checkout = pool.checkout(&limits(50)).await.unwrap();
             let pid = checkout.pid().unwrap();
             let mut event = checkout.feed("ignored", vec![], vec![], false, &mut no_print).await;
@@ -3585,8 +3563,8 @@ while True:
 
     #[tokio::test]
     async fn a_stopped_child_does_not_spend_cpu_while_it_waits_to_be_scheduled() {
-        let (_dir, config) = stand_in("burn(5); COMPLETE", 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in("burn(5); COMPLETE", 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let pid = checkout.pid().unwrap();
         assert!(
@@ -3615,8 +3593,8 @@ while True:
 
     #[tokio::test]
     async fn a_ready_reply_cannot_bypass_the_final_cpu_sample() {
-        let (_dir, config) = stand_in("PRINT; COMPLETE; burn(80)", 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in("PRINT; COMPLETE; burn(80)", 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let mut callback = on_print_sync(|_, _| thread::sleep(Duration::from_millis(300)));
@@ -3633,10 +3611,8 @@ while True:
     #[tokio::test]
     async fn a_ready_reply_cannot_bypass_the_independent_wall_deadline() {
         let (dir, mut config) = stand_in("PRINT; COMPLETE", 0);
-        config.min_processes = 1;
         config.request_timeout = Some(Duration::from_millis(100));
-        let pool = Pool::new(config).await.unwrap();
-        await_stand_in_ready(dir.path()).await;
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let mut callback = on_print_sync(|_, _| thread::sleep(Duration::from_millis(200)));
@@ -3687,8 +3663,8 @@ while True:
     #[tokio::test]
     async fn restore_seeds_remaining_cpu_from_the_saved_vm_usage() {
         for raw in [false, true] {
-            let (_dir, config) = stand_in("if count == 1: SUSPEND\n    else: burn(25); COMPLETE", 35_000);
-            let pool = Pool::new(config).await.unwrap();
+            let (dir, config) = stand_in("if count == 1: SUSPEND\n    else: burn(25); COMPLETE", 35_000);
+            let pool = stand_in_pool(config, dir.path()).await;
             let mut checkout = pool.checkout(&limits(50)).await.unwrap();
             let state = vec![0];
             if raw {
@@ -3732,8 +3708,8 @@ while True:
 
     #[tokio::test]
     async fn new_feeds_get_fresh_cpu_allowances() {
-        let (_dir, config) = stand_in("burn(15); COMPLETE", 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in("burn(15); COMPLETE", 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         for _ in 0..5 {
             assert_eq!(
@@ -3752,8 +3728,8 @@ while True:
 
     #[tokio::test]
     async fn cancellation_discards_the_worker_before_any_resume() {
-        let (_dir, config) = stand_in("time.sleep(60)", 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in("time.sleep(60)", 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let pid = checkout.pid().unwrap();
         assert!(
@@ -3769,7 +3745,19 @@ while True:
             Err(PoolError::Protocol(_))
         ));
         timeout(Duration::from_secs(2), async {
-            while Path::new(&format!("/proc/{pid}")).exists() {
+            loop {
+                #[cfg(target_os = "linux")]
+                let alive = Path::new(&format!("/proc/{pid}")).exists();
+                #[cfg(target_os = "macos")]
+                let alive = Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success();
+                if !alive {
+                    break;
+                }
                 sleep(Duration::from_millis(5)).await;
             }
         })
@@ -3782,8 +3770,8 @@ while True:
 
     #[tokio::test]
     async fn a_child_exit_keeps_its_original_exit_status() {
-        let (_dir, config) = stand_in("sys.exit(64)", 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in("sys.exit(64)", 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let error = checkout
@@ -3805,8 +3793,8 @@ while True:
             exception: Some((&exception).into()),
         })));
         let action = format!("if count == 1: SUSPEND\n    elif count == 2: send({error:?})\n    else: COMPLETE");
-        let (_dir, config) = stand_in(&action, 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in(&action, 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut repl = limits(500);
         repl.limits.as_mut().unwrap().max_suspensions = 0;
         let mut checkout = pool.checkout(&repl).await.unwrap();
@@ -3878,8 +3866,8 @@ while True:
 
     #[tokio::test]
     async fn raw_suspensions_cannot_mint_allowance_through_an_invalid_feed() {
-        let (_dir, config) = stand_in("burn(15); SUSPEND", 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in("burn(15); SUSPEND", 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let feed = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
@@ -3976,8 +3964,8 @@ while True:
         error.feed_suspended = Some(false);
         let error = framed(&error);
         let action = format!("if count % 2 == 1: burn(15); SUSPEND\n    else: send({error:?})");
-        let (_dir, config) = stand_in(&action, 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in(&action, 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let event = checkout
@@ -4082,8 +4070,8 @@ while True:
             exception: Some((&exception).into()),
         })));
         let action = format!("if count % 2 == 1: burn(15); SUSPEND\n    else: send({error:?})");
-        let (_dir, config) = stand_in(&action, 0);
-        let pool = Pool::new(config).await.unwrap();
+        let (dir, config) = stand_in(&action, 0);
+        let pool = stand_in_pool(config, dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let feed = pb::ParentRequest {
@@ -4214,8 +4202,10 @@ while True:
             let mut config = supervised(monty_binary());
             config.execution_clock = if cpu { ExecutionClock::Cpu } else { ExecutionClock::Wall };
             let pool = Pool::new(config).await.unwrap();
-            let mut repl = limits(1000);
-            repl.type_check = true;
+            let repl = ReplConfig {
+                type_check: true,
+                ..ReplConfig::default()
+            };
             let mut checkout = pool.checkout(&repl).await.unwrap();
             let event = checkout
                 .feed("import tools\nx: int = 'bad'", vec![], vec![], false, &mut no_print)

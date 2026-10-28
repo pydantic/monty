@@ -1,5 +1,7 @@
 //! Real process supervision on Linux, macOS and Windows, independent of interpreter polling.
 
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
+
 use std::{env, future::ready, path::PathBuf, thread, time::Duration};
 
 use monty_pool::{Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent};

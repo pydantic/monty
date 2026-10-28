@@ -832,7 +832,8 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
-    /// Local supervisor policy. WebSocket clients leave this absent; the server selects it.
+    /// Local VM and supervisor clock; absent defaults to wall time in the child.
+    /// WebSocket clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
 }

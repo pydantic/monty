@@ -1074,10 +1074,11 @@ fn load_requires_the_saved_clock_for_idle_and_suspended_sessions() {
                 let (bytes, _) = dispatch_frame(&mut child, &load);
                 let event = split_turn(&bytes).1;
                 if saved_clock == destination {
-                    assert!(matches!(
-                        event,
-                        pb::child_event::Kind::Ok(_) | pb::child_event::Kind::FunctionCall(_)
-                    ));
+                    if suspended {
+                        assert!(matches!(event, pb::child_event::Kind::FunctionCall(_)), "{event:?}");
+                    } else {
+                        assert!(matches!(event, pb::child_event::Kind::Ok(_)), "{event:?}");
+                    }
                 } else {
                     assert_eq!(
                         expect_error_message(event),

@@ -53,7 +53,9 @@ carry no API compatibility guarantee.
     Use it when you control the code being run, or when subprocesses are impossible.
 
 Execution limits use wall time by default. Native CPU mode uses sampled thread CPU time.
-In CPU mode, `monty-pool` independently measures process CPU and requires `PoolConfig::request_timeout` as a wall deadline.
+CPU-mode [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) pools independently measure child process CPU.
+They require a finite `PoolConfig::request_timeout` as a wall deadline.
+Remote deployments enable CPU enforcement in the server's local subprocess pool; WebSocket clients adopt its clock.
 See [resource limits](../resource-limits.md#time) for sampling, fallback, and snapshot behavior.
 See [CPU execution clocks](../resource-limits.md#cpu-execution-clock) for Linux, macOS and Windows support.
 

@@ -371,6 +371,24 @@ test('WASM pool refuses CPU configuration before spawning workers', () => {
   t.false(spawned)
 })
 
+test('WASM pool validates unknown execution clocks before spawning workers', () => {
+  let spawned = false
+  t.throws(
+    () =>
+      createWorkerPoolFromFactory(
+        () => {
+          spawned = true
+          throw new Error('must not spawn')
+        },
+        // @ts-expect-error Verify the runtime boundary for untyped callers.
+        { executionClock: 'processor' },
+        1,
+      ),
+    { message: "executionClock must be 'wall' or 'cpu'" },
+  )
+  t.false(spawned)
+})
+
 test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', async () => {
   const { Monty } = await import('@pydantic/monty')
   const invalid = await t.throwsAsync(() =>

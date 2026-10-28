@@ -70,8 +70,9 @@ pub struct PoolConfig {
     pub max_processes: usize,
     /// How workers are reached (spawned locally or connected to remotely).
     pub transport: MontyTransport,
-    /// Clock for every local worker session. Defaults to wall time.
-    /// WebSocket pools learn the server's clock instead; this field does not override it.
+    /// Clock for local worker sessions (default wall time). CPU mode requires Linux,
+    /// macOS or Windows subprocesses and finite [`Self::request_timeout`].
+    /// WebSocket pools adopt the server's clock without local CPU supervision.
     pub execution_clock: ExecutionClock,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.

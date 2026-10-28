@@ -3,13 +3,15 @@
 //! session. This exercises `Worker::websocket` (the async dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod binary;
+
 #[cfg(feature = "telemetry")]
 use std::sync::Arc;
 use std::{
-    env, fs,
+    fs,
     future::ready,
     net::{TcpListener, TcpStream},
-    path::PathBuf,
     sync::mpsc,
     thread,
     time::Duration,
@@ -3013,7 +3015,9 @@ async fn a_host_decode_limit_rejects_a_result_and_discards_the_connection() {
 
 /// The server selects CPU mode and enforces it beside the child.
 #[tokio::test]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 async fn server_selects_cpu_clock_and_enforces_it_beside_the_remote_child() {
+    let binary = binary::monty_binary();
     let (listener, mut config) = ws_pool_config();
     let (tx, rx) = mpsc::channel();
     let server = thread::spawn(move || {
@@ -3024,18 +3028,6 @@ async fn server_selects_cpu_clock_and_enforces_it_beside_the_remote_child() {
         assert_eq!(configure.execution_clock, None);
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let binary = env::var_os("MONTY_TEST_BIN").map_or_else(
-                || {
-                    env::current_exe()
-                        .unwrap()
-                        .parent()
-                        .unwrap()
-                        .parent()
-                        .unwrap()
-                        .join(format!("monty{}", env::consts::EXE_SUFFIX))
-                },
-                PathBuf::from,
-            );
             let mut config = PoolConfig::subprocess(binary);
             config.execution_clock = ExecutionClock::Cpu;
             config.min_processes = 0;

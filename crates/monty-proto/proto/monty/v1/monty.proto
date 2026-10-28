@@ -635,7 +635,8 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
-  // Local supervisor policy. WebSocket clients leave this absent; the server selects it.
+  // Local VM and supervisor clock; absent defaults to wall time in the child.
+  // WebSocket clients leave this absent. The server selects the worker's clock.
   optional ExecutionClock execution_clock = 14;
 }
 

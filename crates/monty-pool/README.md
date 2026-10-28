@@ -175,6 +175,8 @@ Earlier protocol CPU and spent CPU grace do not survive restore.
 Clients use protocol version 7, so older workers reject the configuration instead of ignoring it.
 WebSocket servers select the clock through their pool or profile and report it in the configuration reply.
 Clients adopt that clock for deadlines; CPU mode requires a finite client `request_timeout`.
+CPU profiles need protocol-7 clients to avoid premature wall backstops under contention.
+The server does not enforce this requirement; protocol-5/6 clients remain accepted.
 A missing clock means legacy wall time. The server's local subprocess pool enforces CPU beside the child.
 WebAssembly workers support wall mode only.
 

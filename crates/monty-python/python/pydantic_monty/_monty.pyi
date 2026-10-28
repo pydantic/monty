@@ -628,9 +628,9 @@ class Monty:
             max_checkouts_per_worker: Recycle a worker after this many sessions.
                 `1` runs every session in a fresh process.
             feed_duration_limit_grace: Seconds beyond `max_feed_duration_secs` on
-                the selected clock (`None` disables). CPU mode uses an independent
-                OS counter. Resuming does not renew feed grace. Exhaustion kills the worker.
-                `request_timeout` remains independent.
+                the selected clock (`None` disables). CPU mode uses an independent OS counter.
+                This lets the sandbox raise `TimeoutError` before the worker is killed.
+                Resuming does not renew feed grace. `request_timeout` remains independent.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
         """
 

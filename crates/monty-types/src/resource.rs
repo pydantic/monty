@@ -165,10 +165,9 @@ pub enum ExecutionClock {
 /// custom limits with the builder pattern.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResourceLimits {
-    /// Maximum execution time for a single feed (`feed_start`, `feed_run` or
-    /// `call_function`), summed over the turns it takes and excluding time
-    /// suspended on the host.
-    /// Bounds one snippet, not the session.
+    /// Maximum execution time per feed (`feed_start`, `feed_run` or `call_function`),
+    /// summed across turns, excluding host suspension. Uses the tracker's clock
+    /// (wall time by default, or [`ExecutionClock::Cpu`]). Bounds a snippet, not the session.
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
     /// each resume. Bounds the stretch of sandbox code between two host round

@@ -218,7 +218,7 @@ A CPU-mode server requires a finite client `request_timeout`, independent of its
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
 Local CPU pools require the child to acknowledge CPU mode before executing code.
 A WebSocket client cannot independently measure a remote process.
-See the [pool contract](https://github.com/pydantic/monty/blob/main/crates/monty-pool/README.md#execution-clocks).
+See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for the pool settings.
 
 ## Recursion
 
