@@ -8,7 +8,8 @@ use std::{env, future::ready, path::PathBuf, sync::OnceLock, thread, time::Durat
 mod build;
 
 use monty_pool::{Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
-use monty_types::{ExecutionClock, MontyObject, PrintStream, ResourceLimits};
+use monty_proto::pb;
+use monty_types::{ExecutionClock, IMPORT_STUBS_CALL_ID, MontyObject, PrintStream, ResourceLimits};
 
 fn no_print(_: PrintStream, _: &str) -> PrintFuture {
     Box::pin(ready(()))
@@ -114,6 +115,57 @@ async fn suspensions_and_zero_reports_cannot_refund_the_feed_budget() {
         assert!(matches!(outcome, Err(PoolError::CpuLimit { .. })), "{outcome:?}");
         assert_eq!(child.pid(), None);
         drop(child);
+        pool.close().await;
+    }
+}
+
+#[tokio::test]
+async fn raw_typing_errors_end_the_feed() {
+    for clock in [ExecutionClock::Wall, ExecutionClock::Cpu] {
+        let mut config = config();
+        config.execution_clock = clock;
+        let pool = Pool::new(config).await.unwrap();
+        let mut child = pool
+            .checkout(&ReplConfig {
+                type_check: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let event = child
+            .feed("typing-error", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert!(matches!(
+            event,
+            TurnEvent::OsCall {
+                call_id: IMPORT_STUBS_CALL_ID,
+                ..
+            }
+        ));
+        let resume = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+                call_id: IMPORT_STUBS_CALL_ID,
+                result: Some(pb::ExtFunctionResult {
+                    kind: Some(pb::ext_function_result::Kind::NotHandled(pb::Unit {})),
+                }),
+                values: None,
+            })),
+            ..Default::default()
+        };
+        let event = child
+            .turn_raw(&resume, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
+            .await
+            .unwrap();
+        assert!(matches!(event.kind, Some(pb::child_event::Kind::TypingError(ref error))
+            if error.diagnostics == "synthetic typing rejection"));
+        assert_eq!(event.feed_suspended, Some(false));
+        let event = child
+            .feed("complete", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert!(matches!(event, TurnEvent::Complete(ref result) if *result == MontyObject::int(42)));
+        child.finish().await.unwrap();
         pool.close().await;
     }
 }

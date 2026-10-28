@@ -215,6 +215,9 @@ fn decode_events(bytes: &[u8]) -> Vec<pb::child_event::Kind> {
     let mut reader = FrameReader::new(bytes);
     let mut events = Vec::new();
     while let Some(event) = reader.read::<pb::ChildEvent>().expect("reply frames decode") {
+        if matches!(event.kind, Some(pb::child_event::Kind::TypingError(_))) {
+            assert_eq!(event.feed_suspended, Some(false));
+        }
         events.push(event.kind.expect("event has a kind"));
     }
     events

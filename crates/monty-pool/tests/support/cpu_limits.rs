@@ -929,48 +929,6 @@ async fn raw_terminal_errors_clear_suspensions_in_both_modes() {
 }
 
 #[tokio::test]
-async fn raw_typing_errors_end_the_feed() {
-    for cpu in [false, true] {
-        let mut config = supervised(monty_binary());
-        config.execution_clock = if cpu { ExecutionClock::Cpu } else { ExecutionClock::Wall };
-        let pool = Pool::new(config).await.unwrap();
-        let repl = ReplConfig {
-            type_check: true,
-            ..ReplConfig::default()
-        };
-        let mut checkout = pool.checkout(&repl).await.unwrap();
-        let event = checkout
-            .feed("import tools\nx: int = 'bad'", vec![], vec![], false, &mut no_print)
-            .await
-            .unwrap();
-        assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
-        let resume = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
-                call_id: monty_types::IMPORT_STUBS_CALL_ID,
-                result: Some(pb::ExtFunctionResult {
-                    kind: Some(pb::ext_function_result::Kind::NotHandled(pb::Unit {})),
-                }),
-                values: None,
-            })),
-            ..pb::ParentRequest::default()
-        };
-        let event = checkout
-            .turn_raw(&resume, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
-            .await
-            .unwrap();
-        assert!(matches!(event.kind, Some(pb::child_event::Kind::TypingError(_))));
-        assert_eq!(event.feed_suspended, Some(false));
-        let event = checkout
-            .feed("1 + 1", vec![], vec![], false, &mut no_print)
-            .await
-            .unwrap();
-        assert_eq!(expect_complete(event), MontyObject::int(2));
-        checkout.finish().await.unwrap();
-        pool.close().await;
-    }
-}
-
-#[tokio::test]
 async fn invalid_typed_stub_answers_keep_the_feed_suspended() {
     let pool = Pool::new(supervised(monty_binary())).await.unwrap();
     let answers = [
