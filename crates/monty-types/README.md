@@ -66,11 +66,13 @@ assert_eq!(value.py_repr(), "[1, 'x']");
 
 ## Execution time
 
-Native execution duration limits count the executing thread's CPU time, sampled
-with a cache of up to 1 ms. Smaller remaining budgets shorten that interval.
-Execution boundaries take fresh samples. WebAssembly and unavailable or unusable
-CPU counters use elapsed time. The OS controls CPU counter accuracy and resolution.
-Older snapshots retain their recorded consumption.
+Execution duration limits use `ExecutionClock::Wall` by default. Native callers can
+select `ExecutionClock::Cpu` with `ResourceTracker::with_execution_clock`.
+Subprocess hosts set `PoolConfig::execution_clock` once for the pool. CPU mode samples the executing
+thread with a cache of up to 1 ms and reads exact execution boundaries.
+Unavailable or unusable counters use conservative elapsed time for that window.
+The OS controls counter accuracy and resolution. Snapshots preserve clock selection
+and recorded consumption. WebAssembly workers accept wall mode only.
 
 ## License
 

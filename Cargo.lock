@@ -2385,6 +2385,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "mach2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1b95cd5421ec55b445b5ae102f5ea0e768de1f82bd3001e11f426c269c3aea"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "manyhow"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2681,9 +2690,12 @@ dependencies = [
 name = "monty-pool"
 version = "1.4.0"
 dependencies = [
+ "cpu-time",
  "futures-util",
  "insta",
+ "libc",
  "logfire",
+ "mach2",
  "monty-fs",
  "monty-proto",
  "monty-types",
@@ -2702,6 +2714,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tungstenite",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

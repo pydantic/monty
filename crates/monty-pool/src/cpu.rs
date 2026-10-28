@@ -1,13 +1,12 @@
-//! Linux child-process CPU supervision, independent of worker telemetry.
+//! Native child-process CPU supervision, independent of worker telemetry.
 
 use std::{future::Future, io, pin::pin, time::Duration};
 
-#[cfg(target_os = "linux")]
-use nix::{time::ClockId, unistd::Pid};
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use tokio::time::sleep;
 use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout_at};
 
+use crate::cpu_clock::Clock;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use crate::cpu_timer::Driver as KernelDriver;
 
@@ -32,10 +31,8 @@ impl Driver {
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-#[derive(Clone, Copy)]
 pub(crate) struct Monitor {
-    #[cfg(target_os = "linux")]
-    clock: ClockId,
+    clock: Clock,
     started: Duration,
     pub(crate) limit: Duration,
 }
@@ -47,54 +44,19 @@ pub(crate) enum Failure {
 }
 
 impl Monitor {
-    pub(crate) fn new(pid: u32, limit: Duration) -> io::Result<Self> {
-        #[cfg(target_os = "linux")]
-        {
-            let pid = i32::try_from(pid).map_err(io::Error::other)?;
-            let clock = ClockId::pid_cpu_clock_id(Pid::from_raw(pid)).map_err(io::Error::from)?;
-            let mut monitor = Self {
-                clock,
-                started: Duration::ZERO,
-                limit,
-            };
-            monitor.started = monitor.read()?;
-            Ok(monitor)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (pid, limit);
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "child CPU supervision requires Linux",
-            ))
-        }
+    pub(crate) fn new(clock: Clock, limit: Duration) -> io::Result<Self> {
+        let started = clock.read()?;
+        Ok(Self { clock, started, limit })
     }
 
-    fn read(self) -> io::Result<Duration> {
-        #[cfg(target_os = "linux")]
-        {
-            let time = self.clock.now().map_err(io::Error::from)?;
-            let seconds = u64::try_from(time.tv_sec()).map_err(io::Error::other)?;
-            let nanos = u32::try_from(time.tv_nsec()).map_err(io::Error::other)?;
-            Ok(Duration::new(seconds, nanos))
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = self;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "child CPU supervision requires Linux",
-            ))
-        }
-    }
-
-    pub(crate) fn elapsed(self) -> io::Result<Duration> {
-        self.read()?
+    pub(crate) fn elapsed(&self) -> io::Result<Duration> {
+        self.clock
+            .read()?
             .checked_sub(self.started)
             .ok_or_else(|| io::Error::other("child CPU clock moved backwards"))
     }
 
-    fn check(self) -> Result<(), Failure> {
+    fn check(&self) -> Result<(), Failure> {
         let consumed = self.elapsed().map_err(Failure::Clock)?;
         if consumed >= self.limit {
             Err(Failure::Limit {
@@ -109,7 +71,7 @@ impl Monitor {
 
 /// Bounds either protocol path with independent CPU and wall limits. Cancellation drops the I/O future.
 pub(crate) async fn run<F: Future>(
-    monitor: Option<Monitor>,
+    monitor: Option<&Monitor>,
     driver: Option<&Driver>,
     deadline: Option<Instant>,
     future: F,
@@ -134,7 +96,7 @@ pub(crate) async fn run<F: Future>(
     }
 }
 
-async fn until_exhausted(monitor: Monitor, driver: Option<&Driver>) -> Result<(), Failure> {
+async fn until_exhausted(monitor: &Monitor, driver: Option<&Driver>) -> Result<(), Failure> {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     if let Some(driver) = driver {
         // Short replies need only boundary samples, not cross-thread timer registration.
@@ -147,7 +109,7 @@ async fn until_exhausted(monitor: Monitor, driver: Option<&Driver>) -> Result<()
                 .ok_or_else(|| Failure::Clock(io::Error::new(io::ErrorKind::InvalidInput, "CPU deadline overflow")))?;
             driver
                 .kernel
-                .expired(monitor.clock, deadline)
+                .expired(monitor.clock.id, deadline)
                 .await
                 .map_err(Failure::Clock)?;
         }
@@ -166,10 +128,13 @@ pub(crate) fn allowance(
     feed: Option<Duration>,
     turn: Option<Duration>,
     consumed: Duration,
-    grace: Duration,
+    feed_grace: Option<Duration>,
+    turn_grace: Option<Duration>,
 ) -> Option<Duration> {
-    let feed = feed.map(|limit| limit.saturating_add(grace).saturating_sub(consumed));
-    let turn = turn.map(|limit| limit.saturating_add(grace));
+    let feed = feed
+        .zip(feed_grace)
+        .map(|(limit, grace)| limit.saturating_add(grace).saturating_sub(consumed));
+    let turn = turn.zip(turn_grace).map(|(limit, grace)| limit.saturating_add(grace));
     match (feed, turn) {
         (Some(feed), Some(turn)) => Some(feed.min(turn)),
         (feed, turn) => feed.or(turn),

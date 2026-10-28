@@ -11,6 +11,8 @@ use cpu_time::ThreadTime;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_time::Instant;
 
+use super::ExecutionClock;
+
 /// Maximum interval between cooperative CPU samples. Boundaries always read directly.
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(1);
 
@@ -23,13 +25,13 @@ pub(super) struct ExecutionInstant {
     sample_interval: Duration,
     last_elapsed: Duration,
     #[cfg(any(unix, windows))]
-    thread: ThreadId,
+    thread: Option<ThreadId>,
 }
 
 impl ExecutionInstant {
     /// Capture a fresh baseline on the executing thread, including after a resume or restore.
-    pub(super) fn now(remaining: Option<Duration>) -> Self {
-        let cpu = thread_cpu();
+    pub(super) fn now(clock: ExecutionClock, remaining: Option<Duration>) -> Self {
+        let cpu = (clock == ExecutionClock::Cpu).then(thread_cpu).flatten();
         let wall = Instant::now();
         Self {
             wall,
@@ -38,7 +40,7 @@ impl ExecutionInstant {
             sample_interval: remaining.map_or(SAMPLE_INTERVAL, |budget| budget.min(SAMPLE_INTERVAL)),
             last_elapsed: Duration::ZERO,
             #[cfg(any(unix, windows))]
-            thread: current().id(),
+            thread: cpu.map(|_| current().id()),
         }
     }
 
@@ -55,7 +57,7 @@ impl ExecutionInstant {
     /// A failed, reversed, or cross-thread clock uses elapsed time for the rest of this window.
     fn measure(&mut self, exact: bool) -> Duration {
         #[cfg(any(unix, windows))]
-        if current().id() != self.thread {
+        if self.cpu.is_some() && Some(current().id()) != self.thread {
             self.cpu = None;
         }
         if let Some(started) = self.cpu {

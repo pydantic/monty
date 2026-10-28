@@ -200,10 +200,11 @@ more details.
 
 ## Execution time
 
-Native execution duration limits count the executing thread's CPU time, sampled
-with a cache of up to 1 ms. Smaller remaining budgets shorten that interval.
-Execution boundaries take fresh samples. WebAssembly and unavailable or unusable
-CPU counters use elapsed time. The OS controls CPU counter accuracy and resolution.
-Pool backstops use the remaining execution budget plus their configured grace.
+Execution duration limits use wall time by default. CPU mode uses the executing
+thread's CPU time, sampled with a cache of up to 1 ms. Smaller remaining budgets shorten that interval.
+Execution boundaries take fresh samples. WebAssembly workers support wall time only.
+An unavailable or unusable VM CPU counter uses elapsed time for that window. The OS controls CPU counter accuracy and resolution.
+Native pool backstops use the selected clock and configured grace. CPU mode requires
+a finite `request_timeout` and uses an independent OS process counter.
 `request_timeout` is an independent, unscaled elapsed-time deadline.
 Older snapshots retain their recorded consumption.

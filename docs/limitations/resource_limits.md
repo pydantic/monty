@@ -273,7 +273,7 @@ indistinguishable from a stack overflow.
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`
     overshoots its duration budget in proportion to its length.
-- Native budgets use thread CPU time, with elapsed-time fallback for WebAssembly and unusable counters.
+- Budgets use wall time by default. Native CPU mode uses thread CPU time, with elapsed-time fallback for unusable counters.
     See [resource limits](../resource-limits.md#time) for sampling details.
 - Both budgets cover **execution time**: the clock runs
     only while the interpreter executes bytecode or its native builtins. The clock pauses while execution

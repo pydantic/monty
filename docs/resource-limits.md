@@ -44,7 +44,7 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
     }
     ```
 
-## The six settings
+## Settings
 
 | Key                      | Meaning                                                                                                               |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
@@ -104,10 +104,11 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 Both duration limits count **execution time**.
 
-Linux, macOS, and Windows use the executing thread's CPU counter.
+Wall mode counts elapsed time while the VM runs. It is the default.
+CPU mode on Linux, macOS and Windows uses the executing thread's CPU counter.
 Native OS counters exclude scheduling delays, CPU throttling, and work on other threads.
 Virtualized counters can approximate CPU consumption. gVisor can still misattribute time and report coarse samples.
-WebAssembly uses elapsed time because it has no thread CPU counter.
+WebAssembly workers require wall mode because they have no thread CPU counter.
 If a native counter read fails or reverses, Monty conservatively charges elapsed time for that window.
 
 Cooperative checks reuse a CPU sample for at most 1 ms of elapsed time.
@@ -144,7 +145,8 @@ the checkout yourself.
 `max_feed_duration_secs` is serialized into [snapshots](snapshots.md), so a restored session resumes that budget rather
 than restarting from zero.
 Older snapshots retain their recorded consumption, including previously charged elapsed time.
-New execution uses the destination runtime clock. No consumed budget is reset or estimated backwards.
+The snapshot stores its clock. Loading with a different configured clock fails.
+Snapshots without a clock field use wall time. No consumed budget is reset or estimated backwards.
 A snapshot is only ever taken between turns, so `max_turn_duration_secs` has nothing to carry.
 
 Reach for `max_feed_duration_secs` to keep a long-lived session responsive per request, and
@@ -169,7 +171,8 @@ Host-side deadlines cover that:
     Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
     any single timeout.
 - **A duration backstop per limit.** For each duration budget a session sets, the worker reports its consumed time on
-    every protocol turn. The host bounds elapsed time by the remaining execution budget plus grace.
+    every protocol turn. The host uses the selected execution clock for the remaining budget plus grace.
+    Local CPU supervision reads the child's OS counter rather than trusting its reported time.
 
 The grace is what the sandbox gets to raise `TimeoutError` itself and keep the session alive; missing it costs the
 session, so set it well above how long a checkpoint may be away.
@@ -177,29 +180,45 @@ Each grace defaults to 1 second and is a pool option: `feed_duration_limit_grace
 in Python, `feedDurationLimitGrace` and `turnDurationLimitGrace` in JavaScript.
 `None` (`null` in JavaScript) disables that backstop, leaving only the in-sandbox check and `request_timeout`.
 
-CPU accounting does not extend these wall deadlines. Under heavy throttling or scheduling delays, a worker can
-reach a parent deadline before it spends its CPU budget. Hosts can increase the existing grace settings for that case.
+The explicit `request_timeout` always uses wall time. CPU mode does not derive wall deadlines from CPU budgets.
 
 Set a duration limit for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
 These deadlines are polled: synchronous host telemetry callbacks and decoding a large reply can delay enforcement.
 Neither deadline covers [host mount I/O](filesystem.md#io-timeouts-and-cancellation).
 
-### Linux subprocess CPU supervision
+### CPU execution clock
 
-Rust `monty-pool` callers on Linux can opt into independent OS-observed CPU backstops with `PoolConfig::subprocess_cpu_limit_grace`.
-This mode requires a local subprocess transport and a finite `request_timeout` as an independent wall deadline.
-It replaces the budget-derived elapsed backstops.
-It keeps measured feed CPU across resumes. Live worker-reported usage does not control that total.
-The option defaults to `None`; existing Python and JavaScript pool options retain their elapsed backstops.
-GNU/Linux uses one-shot kernel timers after 5 ms. Other Linux targets poll every 5 ms.
-A clock or timer failure discards the worker. The pool does not silently change enforcement when timer registration fails.
-The process CPU window includes compilation and protocol work, but excludes time between execution turns.
-Feed CPU grace does not renew on each resume. Each configured turn budget gets a fresh per-turn CPU grace.
-The legacy elapsed-grace settings are ignored in this mode.
-Restore starts from the trusted snapshot's saved VM consumption. Earlier protocol CPU and CPU grace are not preserved.
-Remote enforcement belongs in the relay's local subprocess pool.
-See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for configuration.
+Select `Monty(execution_clock='cpu', request_timeout=2)` in Python,
+`Monty.create({executionClock: 'cpu', requestTimeout: 2})` in JavaScript,
+or `PoolConfig::execution_clock = ExecutionClock::Cpu` in Rust.
+The pool applies this policy to every session. Session limits select numeric budgets, not clocks.
+Wall time remains the default. CPU mode requires a native worker and a finite local pool `request_timeout`.
+WebAssembly workers reject CPU mode.
+
+The subprocess pool independently measures child process CPU, including compilation and protocol work during execution turns.
+It stops measuring at each completion or suspension. Host callback time is outside the window.
+The existing feed and turn grace settings use CPU time in this mode.
+Feed consumption and grace do not renew on resume.
+
+GNU/Linux uses one-shot kernel timers after 5 ms. Other Linux targets, macOS and Windows poll every 5 ms.
+CPU exhaustion kills and reaps the worker. The explicit wall deadline handles blocked workers.
+A supervisor clock or timer failure discards the worker instead of weakening enforcement.
+OS counter resolution and scheduling can delay detection. This is approximate accounting, not a hard overshoot guarantee.
+
+Restore starts from the trusted snapshot's saved VM consumption and takes a fresh OS baseline.
+Earlier protocol CPU and spent CPU grace are not preserved by the snapshot.
+For WebSocket sessions, the server's pool or profile selects the clock beside the actual child.
+Clients do not select or override it. The server reports its clock with the configuration reply.
+The client uses that metadata to avoid deriving wall deadlines from CPU budgets.
+Use protocol 7 clients with CPU-mode server profiles for this noisy-neighbor protection.
+Protocol 5 and 6 clients ignore the clock metadata and can retain premature wall-time backstops under contention.
+Default wall-mode servers remain compatible with those clients.
+A CPU-mode server requires a finite client `request_timeout`, independent of its own supervisor deadline.
+A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
+Local CPU pools require the child to acknowledge CPU mode before executing code.
+A WebSocket client cannot independently measure a remote process.
+See the [pool contract](https://github.com/pydantic/monty/blob/main/crates/monty-pool/README.md#execution-clocks).
 
 ## Recursion
 

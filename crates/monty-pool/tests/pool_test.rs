@@ -34,9 +34,9 @@ use monty_proto::{encode_framed_into, pb};
 #[cfg(unix)]
 use monty_types::SourceRange;
 use monty_types::{
-    CallArgs, DateTimeSource, ExcType, IMPORT_CALL, IMPORT_STUBS_CALL, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, OsPolicy, PrintStream, RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig,
-    TypeCheckingFormat,
+    CallArgs, DateTimeSource, ExcType, ExecutionClock, IMPORT_CALL, IMPORT_STUBS_CALL, MontyException, MontyObject,
+    MontyUuid, NameLookupResult, OsPolicy, PrintStream, RandomSeed, RandomStart, ResourceLimits, SleepMode,
+    TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
@@ -3307,19 +3307,10 @@ async fn invalid_stub_answers_without_cpu_supervision_remain_resumable() {
     pool.close().await;
 }
 
-#[cfg(not(target_os = "linux"))]
-#[tokio::test]
-async fn cpu_supervision_is_rejected_on_unsupported_operating_systems() {
-    let mut config = PoolConfig::subprocess("must-not-spawn");
-    config.request_timeout = Some(Duration::from_secs(2));
-    config.subprocess_cpu_limit_grace = Some(Duration::ZERO);
-    let error = Pool::new(config).await.err().expect("unsupported CPU supervision");
-    assert!(matches!(error, PoolError::Spawn(ref message) if message.contains("requires Linux")));
-}
-
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cpu_limits {
     use monty_proto::{WireArena, WireFunctionCall};
+    #[cfg(target_os = "linux")]
     use nix::{
         errno::Errno,
         sys::wait::{WaitPidFlag, waitpid},
@@ -3330,11 +3321,11 @@ mod cpu_limits {
 
     fn supervised(binary: PathBuf) -> PoolConfig {
         let mut config = PoolConfig::subprocess(binary);
+        config.execution_clock = ExecutionClock::Cpu;
         config.min_processes = 0;
         config.max_processes = 1;
         config.request_timeout = Some(Duration::from_secs(2));
-        config.subprocess_cpu_limit_grace = Some(Duration::ZERO);
-        // The legacy wall backstops must not remain armed in CPU mode.
+        // Zero grace exposes any wall deadline incorrectly derived from a CPU budget.
         config.feed_duration_limit_grace = Some(Duration::ZERO);
         config.turn_duration_limit_grace = Some(Duration::ZERO);
         config
@@ -3351,6 +3342,7 @@ mod cpu_limits {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn reaped(pid: u32) {
         assert_eq!(
             waitpid(Pid::from_raw(i32::try_from(pid).unwrap()), Some(WaitPidFlag::WNOHANG)),
@@ -3358,10 +3350,24 @@ mod cpu_limits {
         );
     }
 
-    /// No protobuf dependency in the stand-in: it consumes frames and emits test-owned frames.
+    #[cfg(target_os = "macos")]
+    fn reaped(pid: u32) {
+        assert!(
+            !Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+
+    /// Emits chosen protocol frames without interpreting their contents.
     fn stand_in(action: &str, reported: u64) -> (tempfile::TempDir, PoolConfig) {
         let dir = tempfile::tempdir().unwrap();
-        let ok = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+        let mut configured = child_event(pb::child_event::Kind::Ok(pb::Ok {}));
+        configured.execution_clock = Some(pb::ExecutionClock::Cpu as i32);
+        let ok = framed(&configured);
         let mut suspended = child_event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
             function_name: "pause".to_owned(),
             ..WireFunctionCall::default()
@@ -3381,7 +3387,7 @@ mod cpu_limits {
         })));
         let script = format!(
             r"#!/usr/bin/env python3
-import signal, struct, sys, time
+import os, signal, struct, sys, time
 signal.alarm(15)
 def read():
     header = sys.stdin.buffer.read(4)
@@ -3399,6 +3405,7 @@ def send(data):
 def burn(ms):
     start = time.process_time_ns()
     while time.process_time_ns() - start < ms * 1000000: pass
+open(os.path.join(os.path.dirname(__file__), 'ready'), 'w').close()
 read()
 send({ok:?})
 count = 0
@@ -3423,24 +3430,30 @@ while True:
         (dir, supervised(binary))
     }
 
+    async fn await_stand_in_ready(dir: &Path) {
+        timeout(Duration::from_secs(5), async {
+            while !dir.join("ready").exists() {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("stand-in startup did not finish");
+    }
+
     #[tokio::test]
-    async fn cpu_mode_requires_a_wall_deadline_and_local_transport() {
-        let mut config = supervised(monty_binary());
-        config.request_timeout = None;
-        assert!(matches!(Pool::new(config).await, Err(PoolError::Spawn(_))));
-        let mut config = supervised(monty_binary());
-        config.request_timeout = Some(Duration::MAX);
-        assert!(matches!(Pool::new(config).await, Err(PoolError::Spawn(_))));
-        let mut config = PoolConfig::websocket("ws://127.0.0.1:1");
-        config.subprocess_cpu_limit_grace = Some(Duration::ZERO);
-        config.request_timeout = Some(Duration::from_secs(2));
-        assert!(matches!(Pool::new(config).await, Err(PoolError::Spawn(_))));
+    async fn cpu_mode_requires_a_finite_wall_deadline() {
+        for deadline in [None, Some(Duration::MAX)] {
+            let mut config = supervised(monty_binary());
+            config.request_timeout = deadline;
+            assert!(matches!(Pool::new(config).await, Err(PoolError::Spawn(_))));
+        }
     }
 
     #[tokio::test]
     async fn healthy_native_worker_keeps_its_cooperative_limits() {
         let mut config = supervised(monty_binary());
-        config.subprocess_cpu_limit_grace = Some(Duration::from_millis(100));
+        config.feed_duration_limit_grace = Some(Duration::from_millis(100));
+        config.turn_duration_limit_grace = Some(Duration::from_millis(100));
         let pool = Pool::new(config).await.unwrap();
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         assert_eq!(
@@ -3518,9 +3531,11 @@ while True:
 
     #[tokio::test]
     async fn blocked_child_is_killed_by_wall_time_instead_of_cpu() {
-        let (_dir, mut config) = stand_in("time.sleep(60)", 0);
+        let (dir, mut config) = stand_in("time.sleep(60)", 0);
+        config.min_processes = 1;
         config.request_timeout = Some(Duration::from_millis(150));
         let pool = Pool::new(config).await.unwrap();
+        await_stand_in_ready(dir.path()).await;
         let mut checkout = pool.checkout(&limits(100)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let error = checkout
@@ -3540,7 +3555,8 @@ while True:
     async fn worker_reports_cannot_spend_or_refund_the_supervisors_allowance() {
         for reported in [0, u64::MAX] {
             let (_dir, mut config) = stand_in("burn(15); SUSPEND", reported);
-            config.subprocess_cpu_limit_grace = Some(Duration::from_millis(10));
+            config.feed_duration_limit_grace = Some(Duration::from_millis(10));
+            config.turn_duration_limit_grace = Some(Duration::from_millis(10));
             let pool = Pool::new(config).await.unwrap();
             let mut checkout = pool.checkout(&limits(50)).await.unwrap();
             let pid = checkout.pid().unwrap();
@@ -3550,7 +3566,7 @@ while True:
                 assert!(matches!(event, Ok(TurnEvent::FunctionCall { .. })));
                 completed_turns += 1;
                 assert!(completed_turns < 6, "suspensions reset the feed CPU allowance");
-                // Host CPU is outside each child window and must not spend its allowance.
+                // Host wait must not consume the child's CPU allowance.
                 thread::sleep(Duration::from_millis(60));
                 event = checkout
                     .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
@@ -3616,9 +3632,11 @@ while True:
 
     #[tokio::test]
     async fn a_ready_reply_cannot_bypass_the_independent_wall_deadline() {
-        let (_dir, mut config) = stand_in("PRINT; COMPLETE", 0);
+        let (dir, mut config) = stand_in("PRINT; COMPLETE", 0);
+        config.min_processes = 1;
         config.request_timeout = Some(Duration::from_millis(100));
         let pool = Pool::new(config).await.unwrap();
+        await_stand_in_ready(dir.path()).await;
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let mut callback = on_print_sync(|_, _| thread::sleep(Duration::from_millis(200)));
@@ -4108,11 +4126,10 @@ while True:
             for raw_start in [false, true] {
                 for code in ["f(); 1 / 0", "f(); raise RuntimeError('protocol violation: synthetic')"] {
                     let mut config = supervised(monty_binary());
-                    if !cpu {
-                        config.subprocess_cpu_limit_grace = None;
-                    }
+                    config.execution_clock = if cpu { ExecutionClock::Cpu } else { ExecutionClock::Wall };
                     let pool = Pool::new(config).await.unwrap();
-                    let mut checkout = pool.checkout(&limits(1000)).await.unwrap();
+                    let repl = limits(1000);
+                    let mut checkout = pool.checkout(&repl).await.unwrap();
                     let feed = |code: &str| pb::ParentRequest {
                         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
                             code: code.to_owned(),
@@ -4195,9 +4212,7 @@ while True:
     async fn raw_typing_errors_end_the_feed() {
         for cpu in [false, true] {
             let mut config = supervised(monty_binary());
-            if !cpu {
-                config.subprocess_cpu_limit_grace = None;
-            }
+            config.execution_clock = if cpu { ExecutionClock::Cpu } else { ExecutionClock::Wall };
             let pool = Pool::new(config).await.unwrap();
             let mut repl = limits(1000);
             repl.type_check = true;

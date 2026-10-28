@@ -821,6 +821,9 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<::prost::alloc::string::String>,
+    /// Local supervisor policy. WebSocket clients leave this absent; the server selects it.
+    #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
+    pub execution_clock: ::core::option::Option<i32>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -1000,6 +1003,9 @@ pub struct ChildEvent {
     /// machine. Parents must preserve an outstanding suspension when unknown.
     #[prost(bool, optional, tag = "29")]
     pub feed_suspended: ::core::option::Option<bool>,
+    /// Configure acknowledgment. Local CPU-mode parents require this before execution.
+    #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
+    pub execution_clock: ::core::option::Option<i32>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
@@ -1482,6 +1488,33 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
+}
+/// One clock for VM budgets and subprocess supervision. Wall time is the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ExecutionClock {
+    Wall = 0,
+    Cpu = 1,
+}
+impl ExecutionClock {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Wall => "WALL",
+            Self::Cpu => "CPU",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "WALL" => Some(Self::Wall),
+            "CPU" => Some(Self::Cpu),
             _ => None,
         }
     }

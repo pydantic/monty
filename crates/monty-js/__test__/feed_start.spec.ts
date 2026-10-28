@@ -6,6 +6,7 @@ import {
   FunctionSnapshot,
   FutureSnapshot,
   MontyComplete,
+  Monty,
   MontyRuntimeError,
   NameLookupSnapshot,
   ProtocolError,
@@ -708,3 +709,38 @@ test('loadSnapshot captures externalLookup for resumeAuto', async () => {
     await session.close()
   }
 })
+
+for (const suspended of [false, true]) {
+  test.skipIf(isWasm)(`CPU snapshot clock round trip and mismatch: suspended=${suspended}`, async () => {
+    await using owned = await Monty.create({ requestTimeout: 2, executionClock: 'cpu' })
+    const limits = { maxFeedDurationSecs: 0.5 }
+    let state: Uint8Array
+    {
+      await using source = await owned.checkout({ limits })
+      if (suspended) {
+        const pending = (await source.feedStart('result = fetch()\nresult + 1')) as FunctionSnapshot
+        state = await pending.dump()
+      } else {
+        await source.feedRun('kept = 41')
+        state = await source.dump()
+      }
+    }
+    {
+      await using destination = await owned.checkout({ limits })
+      if (suspended) {
+        const loaded = (await destination.loadSnapshot(state)) as FunctionSnapshot
+        const result = (await loaded.resume(41)) as MontyComplete
+        t.is(result.output, 42)
+      } else {
+        await destination.loadSession(state)
+        t.is(await destination.feedRun('kept + 1'), 42)
+      }
+    }
+    await using wallPool = await Monty.create()
+    await using incompatible = await wallPool.checkout()
+    const error = await t.throwsAsync(() =>
+      suspended ? incompatible.loadSnapshot(state) : incompatible.loadSession(state),
+    )
+    t.true(String(error).includes('snapshot execution clock differs'))
+  })
+}

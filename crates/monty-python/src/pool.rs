@@ -134,6 +134,7 @@ impl PyMonty {
         max_processes = None,
         checkout_timeout = None,
         request_timeout = None,
+        execution_clock = "wall",
         max_checkouts_per_worker = None,
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
@@ -146,6 +147,7 @@ impl PyMonty {
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
+        execution_clock: &str,
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
@@ -158,6 +160,7 @@ impl PyMonty {
                 max_processes,
                 checkout_timeout,
                 request_timeout,
+                execution_clock,
                 max_checkouts_per_worker,
                 GraceArgs {
                     feed: feed_duration_limit_grace,
@@ -533,6 +536,7 @@ impl PyAsyncMonty {
         max_processes = None,
         checkout_timeout = None,
         request_timeout = None,
+        execution_clock = "wall",
         max_checkouts_per_worker = None,
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
@@ -545,6 +549,7 @@ impl PyAsyncMonty {
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
+        execution_clock: &str,
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
@@ -557,6 +562,7 @@ impl PyAsyncMonty {
                 max_processes,
                 checkout_timeout,
                 request_timeout,
+                execution_clock,
                 max_checkouts_per_worker,
                 GraceArgs {
                     feed: feed_duration_limit_grace,
@@ -1148,6 +1154,7 @@ fn parse_pool_config(
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
+    execution_clock: &str,
     max_checkouts_per_worker: Option<u32>,
     graces: GraceArgs,
 ) -> PyResult<PoolConfig> {
@@ -1156,6 +1163,11 @@ fn parse_pool_config(
         None => binary_finder(py)?.call0(py)?.extract(py)?,
     };
     let mut config = PoolConfig::subprocess(binary_path);
+    config.execution_clock = match execution_clock {
+        "wall" => monty_types::ExecutionClock::Wall,
+        "cpu" => monty_types::ExecutionClock::Cpu,
+        _ => return Err(PyValueError::new_err("execution_clock must be 'wall' or 'cpu'")),
+    };
     config.min_processes = min_processes;
     if let Some(max) = max_processes {
         config.max_processes = max;

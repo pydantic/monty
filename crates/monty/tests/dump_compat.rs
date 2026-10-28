@@ -620,7 +620,7 @@ fn layout_edits_load_older_encodings() {
     }
 }
 
-/// A wall-clock snapshot keeps its consumed duration and resumes with a fresh CPU baseline.
+/// Legacy wall-clock snapshots retain consumed time across a resume.
 #[test]
 fn legacy_wall_clock_snapshot_preserves_consumption() {
     let bytes = include_bytes!("fixtures/dump_v14.bin");

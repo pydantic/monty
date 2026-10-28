@@ -48,7 +48,7 @@ pub use crate::{
         UnknownTimeZone, ZoneConstants, local_wall_clock, unix_seconds,
     },
     resource::{
-        BASELINE_MEMORY, DEFAULT_GC_INTERVAL, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS,
+        BASELINE_MEMORY, DEFAULT_GC_INTERVAL, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, ExecutionClock,
         LARGE_RESULT_THRESHOLD, LIVE_MEMORY, OOM_EXIT_CODE, ResourceError, ResourceLimits, ResourceTracker,
         TimeLimitScope, allocate_into_baseline, memory_limit_with_headroom,
     },

@@ -12,8 +12,8 @@ use monty_proto::{
     write_frame,
 };
 use monty_types::{
-    CompileOptions, ExcType, IMPORT_STUBS_CALL_ID, MONTY_VERSION, MontyException, MontyObject, MontyUuid, NamedValues,
-    PrintWriter, ResourceLimits, ResourceTracker, unstable,
+    CompileOptions, ExcType, ExecutionClock, IMPORT_STUBS_CALL_ID, MONTY_VERSION, MontyException, MontyObject,
+    MontyUuid, NamedValues, PrintWriter, ResourceLimits, ResourceTracker, unstable,
 };
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
@@ -1036,4 +1036,97 @@ fn a_committed_import_carries_into_the_next_feed() {
     assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
     let (_, event) = feed(&mut child, "m.sqrt('4')");
     insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:1:8: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
+}
+
+#[test]
+fn load_requires_the_saved_clock_for_idle_and_suspended_sessions() {
+    for saved_clock in [ExecutionClock::Wall, ExecutionClock::Cpu] {
+        for suspended in [false, true] {
+            let repl = MontyRepl::new(
+                "saved.py",
+                ResourceTracker::new(ResourceLimits::default()).with_execution_clock(saved_clock),
+                CompileOptions::default(),
+            );
+            let state = if suspended {
+                let progress = repl
+                    .feed_start(
+                        "pause()",
+                        vec![("pause".to_owned(), MontyObject::function("pause".to_owned(), None))],
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap();
+                dump("saved.py", None, &[], SessionRef::Suspended(&progress)).unwrap()
+            } else {
+                dump("saved.py", None, &[], SessionRef::Idle(&repl)).unwrap()
+            };
+            for destination in [ExecutionClock::Wall, ExecutionClock::Cpu] {
+                let mut child = Child::default();
+                let configure = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+                    execution_clock: Some(pb::ExecutionClock::from(destination) as i32),
+                    protocol_version: PROTOCOL_VERSION,
+                    ..Default::default()
+                }));
+                let (bytes, _) = dispatch_frame(&mut child, &configure);
+                assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+                let load = frame_request(pb::parent_request::Kind::Load(pb::Load {
+                    state: state.clone().into(),
+                }));
+                let (bytes, _) = dispatch_frame(&mut child, &load);
+                let event = split_turn(&bytes).1;
+                if saved_clock == destination {
+                    assert!(matches!(
+                        event,
+                        pb::child_event::Kind::Ok(_) | pb::child_event::Kind::FunctionCall(_)
+                    ));
+                } else {
+                    assert_eq!(
+                        expect_error_message(event),
+                        "protocol violation: snapshot execution clock differs from Configure"
+                    );
+                    let (_, event) = feed(&mut child, "2 + 2");
+                    assert!(
+                        matches!(event, pb::child_event::Kind::Complete(_)),
+                        "failed load consumed the configured session"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unknown_execution_clock_is_rejected_before_configuration() {
+    let mut child = Child::default();
+    let configure = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        execution_clock: Some(42),
+        protocol_version: PROTOCOL_VERSION,
+        ..Default::default()
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &configure);
+    assert_eq!(
+        expect_error_message(split_turn(&bytes).1),
+        "protocol violation: invalid execution_clock"
+    );
+    create_repl(&mut child);
+    let (_, event) = feed(&mut child, "2 + 2");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)));
+}
+
+#[test]
+fn configuration_acknowledges_the_selected_execution_clock() {
+    for clock in [pb::ExecutionClock::Wall, pb::ExecutionClock::Cpu] {
+        let mut child = Child::default();
+        let configure = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+            execution_clock: Some(clock as i32),
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        }));
+        let (bytes, _) = dispatch_frame(&mut child, &configure);
+        let event = FrameReader::new(bytes.as_slice())
+            .read::<pb::ChildEvent>()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))));
+        assert_eq!(event.execution_clock, Some(clock as i32));
+    }
 }

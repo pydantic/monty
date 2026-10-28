@@ -136,52 +136,47 @@ Both deadlines are polled, so decoding a large reply can delay enforcement.
 Host mount I/O runs between turns and is not covered by either deadline; see
 [filesystem timeouts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md#io-timeouts-and-cancellation).
 
-## Linux subprocess CPU backstops
+## Execution clocks
 
-Rust callers can set `PoolConfig::subprocess_cpu_limit_grace = Some(grace)` to enforce configured feed and turn CPU budgets from the supervisor.
-The pool reads the child's Linux process CPU clock. Live worker-reported usage cannot spend or refund this allowance.
-The process clock includes protocol and compilation CPU in each active request.
-On GNU/Linux, a pool-owned watcher arms one-shot kernel CPU timers for requests still active after 5 ms.
-Short requests use boundary samples only. Other Linux targets retain 5 ms polling.
-The pool checks a final CPU sample before accepting a turn-ending reply.
-Scheduling can delay enforcement, so neither mechanism provides a hard overshoot bound.
-The watcher receives thread-directed signals. It does not install a process-wide handler or change the caller’s signal mask.
+`PoolConfig::execution_clock` selects `Wall` (default) or `Cpu` for VM budgets and supervisor backstops.
+CPU mode uses the VM's thread counter and an independent OS process counter during active turns.
+It requires a finite `request_timeout`, which remains a separate wall deadline.
+The feed and turn graces use the selected clock and default to one second.
+For tight CPU budgets, set graces that allow for compilation and protocol CPU.
 
 ```rust
 use std::time::Duration;
 use monty_pool::PoolConfig;
-
-let mut config = PoolConfig::subprocess("monty");
-config.request_timeout = Some(Duration::from_secs(2));
-config.subprocess_cpu_limit_grace = Some(Duration::ZERO);
+use monty_types::ExecutionClock;
+let mut pool = PoolConfig::subprocess("monty");
+pool.execution_clock = ExecutionClock::Cpu;
+pool.request_timeout = Some(Duration::from_secs(2));
+pool.feed_duration_limit_grace = Some(Duration::from_millis(10));
+pool.turn_duration_limit_grace = Some(Duration::from_millis(10));
 ```
 
-This opt-in mode requires Linux, the local subprocess transport, and a finite `request_timeout`.
-It replaces the automatic elapsed-duration backstops and ignores `feed_duration_limit_grace` and `turn_duration_limit_grace`.
-The explicit `request_timeout` remains an independent wall deadline.
-CPU exhaustion kills and reaps the worker with `PoolError::CpuLimit`; wall exhaustion retains `PoolError::Timeout`.
-A CPU-clock or kernel-timer failure also discards and reaps the worker.
-The mode does not fall back to elapsed accounting or polling if GNU/Linux timer registration fails.
-An unrepresentable CPU deadline fails instead of wrapping.
-Both timers require the host runtime to make progress. Synchronous host callbacks can delay enforcement.
+CPU mode replaces budget-derived wall deadlines.
+GNU/Linux uses one-shot CPU timers after a 5 ms delay; shorter requests use boundary samples only.
+Other Linux targets, macOS and Windows poll every 5 ms.
+The pool checks a final sample before accepting a reply. Scheduling and OS counter resolution can delay enforcement.
+The Linux watcher receives thread-directed signals without changing the caller's signal mask or process-wide handlers.
+Wall-only pools do not start this watcher.
 
-CPU grace is one bounded allowance per feed and per turn. Resuming does not renew the feed's grace or consumed CPU.
-A new feed resets the feed ledger. Time waiting for a host-function result or host mount I/O is outside the child CPU window.
-Error replies report whether the feed remains suspended. A terminal execution error permits a new feed.
-Older workers omit this state. CPU supervision preserves their outstanding suspension after an ambiguous error.
-Complete that suspension or finish the checkout before starting another feed.
-A valid explicit `AbortFeed` ends the suspension. Malformed abort requests leave it intact.
-Raw suspension replies invalidate earlier typed resume tokens. Invalid typed import-stub answers are rejected before the worker advances.
-The VM's cooperative CPU checks remain enabled and can raise `TimeoutError` without killing the worker.
-The default `None` preserves existing elapsed-grace settings and behavior.
-The Python and JavaScript pool options do not expose this Rust-only opt-in yet.
+Live worker reports cannot spend or refund the supervisor's CPU allowance.
+Resuming preserves observed feed CPU and its single grace allowance. A new feed resets both.
+Host work between turns is outside the measurement window.
+CPU exhaustion returns `PoolError::CpuLimit`; the wall deadline returns `PoolError::Timeout`.
+Both kill and reap the worker. Clock or timer failures also discard it without weakening enforcement.
+Both mechanisms require the host runtime to make progress.
 
-Restore seeds the consumed feed CPU from the trusted snapshot's saved VM usage, then starts a fresh OS baseline.
-This approximate carry-over does not preserve protocol CPU or CPU grace spent before the snapshot.
-It uses the existing snapshot trust contract; there is no separate durable accounting record.
-WebSocket clients keep their existing deadlines. Configure CPU supervision in the relay's local subprocess pool, beside the actual child.
-When the relay enforces CPU, a client can disable its budget-derived elapsed backstops with `feed_duration_limit_grace = None` and `turn_duration_limit_grace = None`, while retaining `request_timeout` for network waits.
-No protocol or snapshot format changes are introduced by this option.
+Snapshots store their clock. A load with another clock fails without consuming the configured session.
+Restore seeds consumption from trusted saved VM usage and takes a fresh OS baseline.
+Earlier protocol CPU and spent CPU grace do not survive restore.
+Clients use protocol version 7, so older workers reject the configuration instead of ignoring it.
+WebSocket servers select the clock through their pool or profile and report it in the configuration reply.
+Clients adopt that clock for deadlines; CPU mode requires a finite client `request_timeout`.
+A missing clock means legacy wall time. The server's local subprocess pool enforces CPU beside the child.
+WebAssembly workers support wall mode only.
 
 ## Observability
 

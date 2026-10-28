@@ -309,8 +309,9 @@ export class MontySession {
    * taken mid-execution.
    *
    * Valid only on a fresh session, before any feed or load (it replaces the
-   * whole session); throws otherwise. The dump restores its own resource limits
-   * and type-check state. Throws if the dump is actually a suspended snapshot.
+   * whole session); throws otherwise. Checkout limits cap the restored limits.
+   * The execution clock must match the dump. Type-check state comes from the dump.
+   * Throws if the dump is actually a suspended snapshot.
    *
    * Only load unmodified bytes from a trusted, compatible Monty producer.
    * The caller must establish provenance and integrity; Monty does not authenticate
@@ -343,7 +344,8 @@ export class MontySession {
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
    * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
-   * also apply here.
+   * also apply here. Checkout limits cap the restored limits, and the execution
+   * clock must match the dump.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not

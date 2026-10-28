@@ -2,6 +2,7 @@
 
 mod checkout;
 mod cpu;
+mod cpu_clock;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod cpu_timer;
 mod pool;
@@ -16,7 +17,7 @@ use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::Exi
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 pub use monty_proto::DEFAULT_PRINT_FLUSH_INTERVAL;
-use monty_types::MontyException;
+use monty_types::{ExecutionClock, MontyException};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Metrics;
@@ -69,6 +70,9 @@ pub struct PoolConfig {
     pub max_processes: usize,
     /// How workers are reached (spawned locally or connected to remotely).
     pub transport: MontyTransport,
+    /// Clock for every local worker session. Defaults to wall time.
+    /// WebSocket pools learn the server's clock instead; this field does not override it.
+    pub execution_clock: ExecutionClock,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
@@ -78,36 +82,16 @@ pub struct PoolConfig {
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     pub request_timeout: Option<Duration>,
-    /// Enables independent Linux subprocess CPU backstops with this CPU grace.
-    /// Replaces the automatic elapsed-duration backstops, but keeps `request_timeout`.
-    /// Requires a finite `request_timeout` and a local subprocess.
-    /// The OS clock includes protocol/compile CPU. Restore seeds usage from the trusted snapshot.
-    /// Clock or kernel-timer failures discard the worker; timer registration does not fall back to polling.
-    /// `None` preserves the legacy elapsed backstops. No CPU grace is enabled by default.
-    pub subprocess_cpu_limit_grace: Option<Duration>,
     /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
     /// Excludes wire buffers and host-language conversion, and does not change
     /// the sandbox's memory limit.
     pub max_decode_bytes: usize,
-    /// Grace period for the automatic `ResourceLimits::max_feed_duration`
-    /// backstop.
-    ///
-    /// When a session has a feed budget, the worker reports the running feed's
-    /// execution time on every turn-ending event (the sandbox clock is the
-    /// single source of truth: it runs only while the interpreter executes,
-    /// never during suspensions waiting on the host or between feeds), and the
-    /// parent bounds each turn by what that budget has left plus this grace.
-    ///
-    /// The grace is the window in which the sandbox may raise `TimeoutError`
-    /// itself and keep the session alive; a worker that misses it is killed and
-    /// the call fails with [`PoolError::Timeout`], so too short a grace costs
-    /// workers that would have recovered.
-    /// Ignored when [`subprocess_cpu_limit_grace`](Self::subprocess_cpu_limit_grace) is enabled.
+    /// Extra feed allowance in the pool's clock. CPU mode grants it once per feed.
+    /// Wall mode uses reported time; CPU mode uses OS CPU. Exhaustion kills with `Timeout` or `CpuLimit`, respectively.
+    /// `None` disables this backstop. `request_timeout` remains independent.
     pub feed_duration_limit_grace: Option<Duration>,
-    /// [`feed_duration_limit_grace`](Self::feed_duration_limit_grace) for the
-    /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
-    /// that whole limit plus this, the turn clock starting at zero.
-    /// Ignored when [`subprocess_cpu_limit_grace`](Self::subprocess_cpu_limit_grace) is enabled.
+    /// Extra allowance for `ResourceLimits::max_turn_duration`, in the pool's clock.
+    /// Each feed or resume starts a new turn allowance. `None` disables this backstop.
     pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child. With the
@@ -151,9 +135,9 @@ impl PoolConfig {
             min_processes: 1,
             max_processes: thread::available_parallelism().map_or(4, NonZero::get),
             transport,
+            execution_clock: ExecutionClock::Wall,
             checkout_timeout: None,
             request_timeout: None,
-            subprocess_cpu_limit_grace: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
@@ -178,8 +162,7 @@ pub enum PoolError {
         /// How the pool learned of the death, and what it can say about it.
         cause: CrashCause,
     },
-    /// The worker was killed after its turn outlived `request_timeout` or,
-    /// when CPU supervision is disabled, a feed/turn elapsed backstop deadline.
+    /// The worker exceeded `request_timeout` or a wall-mode feed/turn backstop.
     Timeout {
         /// The configured timeout that expired.
         timeout: Duration,

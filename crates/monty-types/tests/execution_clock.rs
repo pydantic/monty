@@ -8,7 +8,7 @@ use std::{
 };
 
 use cpu_time::ThreadTime;
-use monty_types::{ResourceError, ResourceLimits, ResourceTracker, TimeLimitScope};
+use monty_types::{ExecutionClock, ResourceError, ResourceLimits, ResourceTracker, TimeLimitScope};
 
 /// Spend measured CPU rather than assuming a particular machine's instruction rate.
 fn burn_cpu(duration: Duration) {
@@ -20,10 +20,10 @@ fn burn_cpu(duration: Duration) {
     }
 }
 
-/// A parked execution thread must not consume the CPU used by another sandbox thread.
 #[test]
 fn parked_thread_excludes_elapsed_time_and_other_threads_cpu() {
-    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(50)));
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(50)))
+        .with_execution_clock(ExecutionClock::Cpu);
     tracker.on_execution_start();
     thread::spawn(|| burn_cpu(Duration::from_millis(100))).join().unwrap();
     tracker.on_execution_stop();
@@ -35,10 +35,10 @@ fn parked_thread_excludes_elapsed_time_and_other_threads_cpu() {
     tracker.check_time().unwrap();
 }
 
-/// Boundary reads must charge work even when no cooperative check refreshed the cache.
 #[test]
 fn execution_boundary_charges_cpu_without_polling() {
-    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(20)));
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(20)))
+        .with_execution_clock(ExecutionClock::Cpu);
     tracker.on_execution_start();
     burn_cpu(Duration::from_millis(40));
     tracker.on_execution_stop();
@@ -55,7 +55,8 @@ fn execution_boundary_charges_cpu_without_polling() {
 /// A restored feed keeps its consumption while a new turn gets a fresh thread baseline.
 #[test]
 fn restored_feed_accumulates_cpu_across_threads_and_host_work() {
-    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(50)));
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(50)))
+        .with_execution_clock(ExecutionClock::Cpu);
     tracker.on_execution_start();
     burn_cpu(Duration::from_millis(30));
     tracker.on_execution_stop();
@@ -93,7 +94,7 @@ fn restored_feed_accumulates_cpu_across_threads_and_host_work() {
 /// Moving an idle tracker cannot subtract another thread's absolute CPU counter.
 #[test]
 fn idle_tracker_resumes_on_a_different_thread() {
-    let tracker = ResourceTracker::default();
+    let tracker = ResourceTracker::new(ResourceLimits::default()).with_execution_clock(ExecutionClock::Cpu);
     tracker.on_execution_start();
     burn_cpu(Duration::from_millis(20));
     tracker.on_execution_stop();
@@ -111,10 +112,10 @@ fn idle_tracker_resumes_on_a_different_thread() {
     .unwrap();
 }
 
-/// Cooperative polling must stop CPU-bound work before an independent generous deadline.
 #[test]
 fn cooperative_checks_enforce_cpu_limit() {
-    let tracker = ResourceTracker::new(ResourceLimits::default().max_turn_duration(Duration::from_millis(20)));
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_turn_duration(Duration::from_millis(20)))
+        .with_execution_clock(ExecutionClock::Cpu);
     tracker.on_execution_start();
     let deadline = Instant::now();
     loop {
@@ -128,10 +129,11 @@ fn cooperative_checks_enforce_cpu_limit() {
     assert!(tracker.turn_elapsed() > Duration::from_millis(20));
 }
 
-/// An incorrectly moved active window must charge elapsed time instead of subtracting unrelated counters.
+/// An active window moved to another thread must not subtract unrelated CPU counters.
 #[test]
 fn active_thread_change_uses_conservative_elapsed_time() {
-    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(20)));
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(20)))
+        .with_execution_clock(ExecutionClock::Cpu);
     tracker.on_execution_start();
     let tracker = thread::spawn(move || {
         thread::sleep(Duration::from_millis(40));
@@ -148,11 +150,23 @@ fn active_thread_change_uses_conservative_elapsed_time() {
 /// Many short windows still accumulate CPU when every window ends before the polling interval.
 #[test]
 fn short_execution_windows_charge_their_final_cpu_sample() {
-    let tracker = ResourceTracker::default();
+    let tracker = ResourceTracker::new(ResourceLimits::default()).with_execution_clock(ExecutionClock::Cpu);
     for _ in 0..20 {
         tracker.on_execution_start();
         burn_cpu(Duration::from_micros(50));
         tracker.on_execution_stop();
     }
     assert!(tracker.elapsed() >= Duration::from_millis(1));
+}
+
+#[test]
+fn snapshot_clock_is_explicit_and_older_snapshots_default_to_wall() {
+    let tracker = ResourceTracker::new(ResourceLimits::default()).with_execution_clock(ExecutionClock::Cpu);
+    let mut saved = serde_json::to_value(tracker).unwrap();
+    let restored: ResourceTracker = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(restored.execution_clock(), ExecutionClock::Cpu);
+    saved.as_object_mut().unwrap().remove("execution_clock");
+    let legacy: ResourceTracker = serde_json::from_value(saved).unwrap();
+    assert_eq!(legacy.execution_clock(), ExecutionClock::Wall);
+    assert_eq!(ResourceTracker::default().execution_clock(), ExecutionClock::Wall);
 }

@@ -52,9 +52,10 @@ carry no API compatibility guarantee.
 - **[`monty`](../api/rust/monty.md)** is the in-process interpreter.
     Use it when you control the code being run, or when subprocesses are impossible.
 
-Native execution limits count sampled thread CPU time. With `monty-pool`, use `PoolConfig::request_timeout` for an independent wall deadline.
+Execution limits use wall time by default. Native CPU mode uses sampled thread CPU time.
+In CPU mode, `monty-pool` independently measures process CPU and requires `PoolConfig::request_timeout` as a wall deadline.
 See [resource limits](../resource-limits.md#time) for sampling, fallback, and snapshot behavior.
-Linux subprocess pools can also enable [independent supervisor CPU backstops](../resource-limits.md#linux-subprocess-cpu-supervision).
+See [CPU execution clocks](../resource-limits.md#cpu-execution-clock) for Linux, macOS and Windows support.
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort
 takes the whole process down.

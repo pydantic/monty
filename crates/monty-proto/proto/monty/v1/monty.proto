@@ -394,6 +394,12 @@ message StackFrame {
 // Configuration
 // ============================================================================
 
+// One clock for VM budgets and subprocess supervision. Wall time is the default.
+enum ExecutionClock {
+  WALL = 0;
+  CPU = 1;
+}
+
 // Sandbox resource limits. Absent fields are unlimited except recursion depth
 // and `max_suspensions`, which both default to 1000. The parent enforces
 // `max_suspensions`; the child only retains it for dumps and echoes it on
@@ -629,6 +635,8 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
+  // Local supervisor policy. WebSocket clients leave this absent; the server selects it.
+  optional ExecutionClock execution_clock = 14;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -830,6 +838,9 @@ message ChildEvent {
   // Absent for older workers or errors generated outside the session state
   // machine. Parents must preserve an outstanding suspension when unknown.
   optional bool feed_suspended = 29;
+
+  // Configure acknowledgment. Local CPU-mode parents require this before execution.
+  optional ExecutionClock execution_clock = 30;
 }
 
 enum PrintStream {

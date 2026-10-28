@@ -20,9 +20,9 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
-    MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy,
-    PrintStream, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExecutionClock, ExtFunctionResult,
+    IMPORT_STUBS_CALL_ID, MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues,
+    OsFunctionCall, OsPolicy, PrintStream, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
@@ -458,6 +458,7 @@ pub struct Checkout {
 /// untrusted worker replies, including the `Load` reply, can only tighten them.
 #[derive(Clone, Copy)]
 struct SessionBudget {
+    execution_clock: ExecutionClock,
     /// The session's `max_feed_duration`, when configured.
     feed_budget: Option<Duration>,
     /// The session's `max_turn_duration`, when configured.
@@ -492,6 +493,7 @@ impl SessionBudget {
     fn from_config(repl: &ReplConfig) -> Self {
         let limits = repl.limits.as_ref();
         Self {
+            execution_clock: ExecutionClock::Wall,
             feed_budget: limits.and_then(|limits| limits.max_feed_duration),
             turn_budget: limits.and_then(|limits| limits.max_turn_duration),
             reported_feed_execution: Duration::ZERO,
@@ -512,6 +514,7 @@ impl SessionBudget {
     /// they are the ceilings on the dump's.
     fn forget(&mut self) {
         *self = Self {
+            execution_clock: self.execution_clock,
             feed_budget: self.feed_budget,
             turn_budget: self.turn_budget,
             reported_feed_execution: Duration::ZERO,
@@ -774,14 +777,16 @@ impl Checkout {
         repl: &ReplConfig,
         redial: Option<Redial>,
     ) -> Result<Self, PoolError> {
-        let request = configure_request(repl);
+        let request = configure_request(repl, &pool.config);
+        let mut budget = SessionBudget::from_config(repl);
+        budget.execution_clock = pool.config.execution_clock;
         let mut this = Self {
             worker: Some(worker),
             pool,
             pending: None,
             turn_in_flight: false,
             abort_in_flight: false,
-            budget: SessionBudget::from_config(repl),
+            budget,
             pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
@@ -921,7 +926,7 @@ impl Checkout {
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
         if self.pending.is_some()
-            || (self.pool.config.subprocess_cpu_limit_grace.is_some() && self.budget.cpu_feed_suspended)
+            || (self.budget.execution_clock == ExecutionClock::Cpu && self.budget.cpu_feed_suspended)
         {
             return Err(PoolError::Protocol(
                 "feed called while a suspension is awaiting an answer".into(),
@@ -1310,18 +1315,18 @@ impl Checkout {
 
     /// The duration backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
-        if self.pool.config.subprocess_cpu_limit_grace.is_some() {
+        if self.budget.execution_clock == ExecutionClock::Cpu {
             return None;
         }
         self.budget
             .backstop_deadline(DurationGraces::from_config(&self.pool.config))
     }
 
-    /// Starts a fresh kernel clock window without trusting the worker's reported consumption.
+    /// Takes a fresh OS CPU baseline for this turn, independent of worker reports.
     async fn cpu_monitor(&mut self, request: &pb::ParentRequest) -> Result<Option<cpu::Monitor>, PoolError> {
-        let Some(grace) = self.pool.config.subprocess_cpu_limit_grace else {
+        if self.budget.execution_clock != ExecutionClock::Cpu || self.pool.config.transport.is_websocket() {
             return Ok(None);
-        };
+        }
         if !is_execution_turn(request) {
             return Ok(None);
         }
@@ -1329,18 +1334,19 @@ impl Checkout {
             self.budget.feed_budget,
             self.budget.turn_budget,
             self.budget.observed_feed_execution,
-            grace,
+            self.pool.config.feed_duration_limit_grace,
+            self.pool.config.turn_duration_limit_grace,
         ) else {
             return Ok(None);
         };
-        let pid = self.worker.as_ref().and_then(Worker::pid).ok_or(PoolError::Finished)?;
-        match cpu::Monitor::new(pid, limit) {
+        let clock = self.worker.as_ref().ok_or(PoolError::Finished)?.cpu_clock();
+        match clock.and_then(|clock| cpu::Monitor::new(clock, limit)) {
             Ok(monitor) => Ok(Some(monitor)),
             Err(error) => Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
         }
     }
 
-    /// A ready reply still needs a final sample: the I/O future may have occupied a poll past the budget.
+    /// Checks a final sample because a ready I/O future can run past the CPU budget.
     async fn finish_cpu_turn<T>(
         &mut self,
         monitor: Option<cpu::Monitor>,
@@ -1351,7 +1357,7 @@ impl Checkout {
             Ok(outcome) => outcome,
             Err(failure) => return Err(self.poison_supervision(failure).await),
         };
-        if self.pool.config.subprocess_cpu_limit_grace.is_some()
+        if self.budget.execution_clock == ExecutionClock::Cpu
             && self.worker.is_some()
             && wall_deadline.is_some_and(|deadline| DeadlineInstant::now() >= deadline)
         {
@@ -1410,7 +1416,7 @@ impl Checkout {
         }
         if !is_print && let Some(saved) = self.pending_load_budget.take() {
             if matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event) {
-                // Restore trusts the checkpoint's saved VM usage; live turns use OS measurements.
+                // Restore seeds saved VM usage. Live turns use OS measurements.
                 self.budget.observed_feed_execution = Duration::from_micros(event.feed_execution_micros);
             } else {
                 self.budget = saved;
@@ -1418,7 +1424,7 @@ impl Checkout {
         }
         self.budget.update_from(event);
         // A rejected control or raw request can leave the original feed suspended.
-        if self.pool.config.subprocess_cpu_limit_grace.is_some()
+        if self.budget.execution_clock == ExecutionClock::Cpu
             && was_suspended
             && (preserve_suspension || event.feed_suspended == Some(true))
             && !was_aborting
@@ -1486,7 +1492,7 @@ impl Checkout {
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
         let outcome = cpu::run(
-            monitor,
+            monitor.as_ref(),
             cpu_driver.as_ref(),
             wall_deadline,
             self.turn_io(request, &mut *on_print),
@@ -1593,7 +1599,7 @@ impl Checkout {
     /// is kept, not re-adopted as `restore` does: it is the same session, so the
     /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
-        let configure = configure_request(&redial.repl);
+        let configure = configure_request(&redial.repl, &self.pool.config);
         let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
@@ -1707,7 +1713,7 @@ impl Checkout {
         // so the parent's must follow it rather than carry the last feed's
         // total into this feed's backstop.
         if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
-            if self.pool.config.subprocess_cpu_limit_grace.is_some() && self.budget.cpu_feed_suspended {
+            if self.budget.execution_clock == ExecutionClock::Cpu && self.budget.cpu_feed_suspended {
                 return Err(PoolError::Protocol(
                     "feed called while a suspension is awaiting an answer".into(),
                 ));
@@ -1723,7 +1729,7 @@ impl Checkout {
         let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         self.armed_deadline = deadline;
         let outcome = cpu::run(
-            monitor,
+            monitor.as_ref(),
             cpu_driver.as_ref(),
             wall_deadline,
             self.turn_io_raw(request, on_event),
@@ -1853,6 +1859,30 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
+            if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)))
+                && matches!(event.kind, Some(pb::child_event::Kind::Ok(_)))
+            {
+                let clock = match pb::ExecutionClock::try_from(event.execution_clock.unwrap_or_default()) {
+                    Ok(clock) => ExecutionClock::from(clock),
+                    Err(_) => return Err(self.protocol_violation("worker reported an unknown execution clock")),
+                };
+                if self.pool.config.transport.is_websocket() {
+                    if clock == ExecutionClock::Cpu
+                        && self
+                            .pool
+                            .config
+                            .request_timeout
+                            .is_none_or(|limit| DeadlineInstant::now().checked_add(limit).is_none())
+                    {
+                        return Err(
+                            self.protocol_violation("CPU execution clock requires a finite client request_timeout")
+                        );
+                    }
+                    self.budget.execution_clock = clock;
+                } else if clock != self.pool.config.execution_clock {
+                    return Err(self.protocol_violation("worker did not acknowledge the configured execution clock"));
+                }
+            }
             // Only a storing relay sets this, on its reply to `Configure` or
             // `Load`. Taken before the budget check: a re-announced suspension
             // over budget is aborted and dropped, but the session it names lives on.
@@ -2318,9 +2348,11 @@ impl Drop for Checkout {
 }
 
 /// Builds the `Configure` that creates `repl`'s session on a fresh worker.
-fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
+fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: repl.script_name.clone(),
+        execution_clock: (!pool.transport.is_websocket())
+            .then(|| pb::ExecutionClock::from(pool.execution_clock) as i32),
         limits: repl.limits.as_ref().map(Into::into),
         type_check: repl.type_check,
         type_check_stubs: repl.type_check_stubs.clone(),

@@ -4,6 +4,7 @@ import { isWasm } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { WorkerTransport } from '../ts/worker/transport.js'
+import { createWorkerPoolFromFactory } from '../ts/worker/poolOptions.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -331,4 +332,54 @@ test('restored session keeps its suspension limit with a fresh count', async () 
   t.is(await restored.feedRun("fetch('y')", { externalLookup: { fetch } }), 'ok')
   const error = await t.throwsAsync(() => restored.feedRun("fetch('z')", { externalLookup: { fetch } }), isRuntimeError)
   t.is(error.display('msg'), 'suspension limit 1 exceeded')
+})
+
+test('execution clock is fixed by the pool', async () => {
+  const { Monty } = await import('@pydantic/monty')
+  await using wall = await Monty.create({ executionClock: 'wall' })
+  await using session = await wall.checkout()
+  t.is(await session.feedRun('1 + 1'), 2)
+  if (isWasm) {
+    await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }), {
+      message: 'WebAssembly workers require executionClock: wall',
+    })
+  } else {
+    await using bounded = await Monty.create({ requestTimeout: 2, executionClock: 'cpu' })
+    for (const budget of [0.05, 0.1]) {
+      await using session = await bounded.checkout({ limits: { maxFeedDurationSecs: budget } })
+      t.is(await session.feedRun('sum(range(1000))'), 499_500)
+    }
+  }
+})
+
+test('WASM pool refuses CPU configuration before spawning workers', () => {
+  let spawned = false
+  t.throws(
+    () =>
+      createWorkerPoolFromFactory(
+        () => {
+          spawned = true
+          throw new Error('must not spawn')
+        },
+        { executionClock: 'cpu' },
+        1,
+      ),
+    {
+      message: 'WebAssembly workers require executionClock: wall',
+    },
+  )
+  t.false(spawned)
+})
+
+test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', async () => {
+  const { Monty } = await import('@pydantic/monty')
+  const invalid = await t.throwsAsync(() =>
+    Monty.create({
+      // @ts-expect-error Verify the runtime boundary for untyped callers.
+      executionClock: 'processor',
+    }),
+  )
+  t.true(String(invalid).includes("executionClock must be 'wall' or 'cpu'"))
+  const unbounded = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }))
+  t.true(String(unbounded).includes('finite request_timeout'))
 })

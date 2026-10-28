@@ -19,7 +19,7 @@
 //! is cancel-safe.
 
 use std::{
-    env,
+    env, io,
     path::PathBuf,
     process::{ExitStatus, Stdio},
     sync::Once,
@@ -56,7 +56,7 @@ use tokio_tungstenite::{
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
-use crate::{MontyTransport, PoolConfig, PoolError};
+use crate::{MontyTransport, PoolConfig, PoolError, cpu_clock::Clock};
 
 /// The async WebSocket stream type for a remote worker.
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -423,6 +423,16 @@ impl Worker {
         match &self.kind {
             WorkerKind::Subprocess(w) => w.child.id(),
             WorkerKind::WebSocket(_) => None,
+        }
+    }
+
+    pub(crate) fn cpu_clock(&self) -> io::Result<Clock> {
+        match &self.kind {
+            WorkerKind::Subprocess(worker) => Clock::new(&worker.child),
+            WorkerKind::WebSocket(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "remote child CPU clock is unavailable",
+            )),
         }
     }
 

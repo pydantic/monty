@@ -69,7 +69,19 @@ opentelemetry_sdk = { version = "0.32", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.31.3", features = ["process", "time", "signal", "poll"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+mach2 = "0.5"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[[example]]
+name = "cpu-test-worker"
+path = "tests/support/cpu_worker.rs"
+
 [dev-dependencies]
+cpu-time = { workspace = true }
 # Snapshots of the error messages the pool reports to a host.
 insta = { workspace = true }
 tempfile = { workspace = true }

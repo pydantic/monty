@@ -181,8 +181,11 @@ subprocesses:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
     streamed `Print` events out, then exactly one turn-ending event.
-- Native interpreter duration budgets use sampled thread CPU time. WebAssembly and failed
-    CPU reads use elapsed time. Pool wall deadlines remain independent of the execution clock.
+- `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
+    A WebSocket server selects its own clock and reports it to clients; session limits cannot override it.
+    Native subprocess pools independently supervise CPU mode with the child's OS process clock.
+    CPU mode requires a finite local pool wall deadline. WebAssembly workers accept wall mode only.
+    Snapshots retain their clock; the worker rejects a load configured with another clock.
 - `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads
     are cancel-safe (partial-frame state lives in the worker, no pump task),

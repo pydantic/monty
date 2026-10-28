@@ -142,6 +142,18 @@ impl fmt::Display for ResourceError {
 
 impl Error for ResourceError {}
 
+/// Clock used for execution budgets and execution-time telemetry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionClock {
+    /// Elapsed time while the interpreter executes, including descheduling.
+    #[default]
+    Wall,
+    /// Thread CPU time. A failed native clock uses conservative elapsed time.
+    /// CPU accounting is approximate and does not bound response latency.
+    Cpu,
+}
+
 /// Configuration for resource limits.
 ///
 /// The time/memory/GC limits are optional — set to `None` to disable — but
@@ -155,8 +167,7 @@ impl Error for ResourceError {}
 pub struct ResourceLimits {
     /// Maximum execution time for a single feed (`feed_start`, `feed_run` or
     /// `call_function`), summed over the turns it takes and excluding time
-    /// suspended on the host. Native runtimes use sampled thread CPU time.
-    /// WebAssembly and unavailable CPU clocks use elapsed time.
+    /// suspended on the host.
     /// Bounds one snippet, not the session.
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
@@ -279,6 +290,9 @@ impl ResourceLimits {
 /// that budget rather than restarting from zero.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResourceTracker {
+    /// Clock paired with the accumulated execution time. Legacy dumps use wall time.
+    #[serde(default)]
+    execution_clock: ExecutionClock,
     limits: ResourceLimits,
     /// Execution time accumulated by completed `on_execution_start`/`stop`
     /// windows. Bounds nothing — it is what [`elapsed`](Self::elapsed) reports
@@ -319,8 +333,8 @@ impl Default for ResourceTracker {
 }
 
 impl ResourceTracker {
-    /// Tightens restored limits to the destination policy without resetting execution clocks.
-    /// A snapshot can retain stricter limits but cannot increase the destination's allowance.
+    /// Caps restored limits without resetting consumption or relaxing stricter saved limits.
+    /// Callers must check clock compatibility first. This retains the saved clock.
     pub fn tighten_limits(&mut self, ceiling: &ResourceLimits) {
         self.limits.max_memory = tighter_limit(self.limits.max_memory, ceiling.max_memory);
         self.limits.max_feed_duration = tighter_limit(self.limits.max_feed_duration, ceiling.max_feed_duration);
@@ -346,6 +360,7 @@ impl ResourceTracker {
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {
+            execution_clock: ExecutionClock::Wall,
             limits,
             total_execution_time: Cell::new(Duration::ZERO),
             feed_execution_time: Cell::new(Duration::ZERO),
@@ -353,6 +368,13 @@ impl ResourceTracker {
             running_since: Cell::new(None),
             recursion_limit_override: Cell::new(None),
         }
+    }
+
+    /// Selects the execution clock before the tracker starts running.
+    #[must_use]
+    pub fn with_execution_clock(mut self, clock: ExecutionClock) -> Self {
+        self.execution_clock = clock;
+        self
     }
 
     /// Returns the live recursion ceiling: the override if one is in effect,
@@ -364,10 +386,8 @@ impl ResourceTracker {
             .unwrap_or(self.limits.max_recursion_depth)
     }
 
-    /// Returns the cumulative execution time: native thread CPU time
-    /// accumulated across runs/feeds, excluding time suspended on the host
-    /// or idle between feeds. Includes the in-progress window if the VM is
-    /// currently executing. WebAssembly and unavailable CPU clocks use elapsed time.
+    /// Returns cumulative execution time using the configured clock, excluding
+    /// time suspended on the host or idle between feeds. Includes the running window.
     ///
     /// Nothing is bounded by this — it is reported to the host for telemetry.
     /// The budgets are [`feed_elapsed`](Self::feed_elapsed) and
@@ -404,6 +424,12 @@ impl ResourceTracker {
         let elapsed = window.elapsed();
         self.running_since.set(Some(window));
         elapsed
+    }
+
+    /// Returns the clock saved with this tracker's accumulated consumption.
+    #[must_use]
+    pub fn execution_clock(&self) -> ExecutionClock {
+        self.execution_clock
     }
 
     /// Returns the configured per-feed execution time limit, if any.
@@ -690,7 +716,8 @@ impl ResourceTracker {
         .into_iter()
         .filter_map(|(limit, used)| limit.map(|limit| limit.saturating_sub(used)))
         .min();
-        self.running_since.set(Some(ExecutionInstant::now(remaining)));
+        self.running_since
+            .set(Some(ExecutionInstant::now(self.execution_clock, remaining)));
     }
 
     /// Called when the VM leaves its execution loop — on completion, error,

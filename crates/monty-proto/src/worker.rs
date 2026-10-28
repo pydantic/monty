@@ -470,6 +470,14 @@ impl Child {
             self.print_flush_interval = configure
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
+            if let Some(clock) = configure.execution_clock {
+                let Ok(clock) = pb::ExecutionClock::try_from(clock) else {
+                    return protocol_violation("invalid execution_clock");
+                };
+                if clock == pb::ExecutionClock::Cpu && !cfg!(any(unix, windows)) {
+                    return protocol_violation("CPU execution clock requires a native worker");
+                }
+            }
             // Reject invalid settings on the Configure turn.
             self.os_policy = match configure.os_policy.clone().map(OsPolicy::try_from) {
                 None => OsPolicy::default(),
@@ -482,8 +490,11 @@ impl Child {
             {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
+            let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
             self.state = SessionState::Configured(Some(Box::new(configure)));
-            ok_event()
+            let mut event = ok_event();
+            event.execution_clock = Some(clock);
+            event
         } else {
             protocol_violation("Configure while a session already exists")
         }
@@ -509,6 +520,7 @@ impl Child {
         let pb::Configure {
             script_name,
             limits,
+            execution_clock,
             type_check,
             type_check_stubs,
             assert_message_annotations,
@@ -547,8 +559,16 @@ impl Child {
             // Not on the wire: every host gets the default.
             source_scan_threshold: SOURCE_SCAN_THRESHOLD,
         };
-        let repl = MontyRepl::new(&self.script_name, ResourceTracker::new(limits), options)
-            .with_os_policy(self.os_policy.clone());
+        let repl = MontyRepl::new(
+            &self.script_name,
+            ResourceTracker::new(limits).with_execution_clock(
+                pb::ExecutionClock::try_from(execution_clock.unwrap_or_default())
+                    .expect("validated clock")
+                    .into(),
+            ),
+            options,
+        )
+        .with_os_policy(self.os_policy.clone());
         self.state = SessionState::Ready(Box::new(repl));
         Ok(())
     }
@@ -933,9 +953,14 @@ impl Child {
     /// session), the repl exists and `Load` is rejected rather than silently
     /// discarding it.
     fn handle_load(&mut self, load: &pb::Load) -> pb::ChildEvent {
-        let limits = match &self.state {
+        let (limits, clock) = match &self.state {
             SessionState::Configured(config) => {
-                ResourceLimits::from(config.as_ref().and_then(|config| config.limits).unwrap_or_default())
+                let configured = config.as_ref();
+                let clock = configured.and_then(|config| config.execution_clock).unwrap_or_default();
+                (
+                    ResourceLimits::from(configured.and_then(|config| config.limits).unwrap_or_default()),
+                    pb::ExecutionClock::try_from(clock).expect("validated clock").into(),
+                )
             }
             _ => return protocol_violation("Load requires a session that has not started (a feed has already run)"),
         };
@@ -949,6 +974,14 @@ impl Child {
             module_stubs,
             mut state,
         } = restored;
+        let tracker = match &state {
+            Session::Idle(repl) => Some(repl.tracker()),
+            Session::Suspended(progress) => Some(progress.tracker()),
+            Session::Running(_) => None,
+        };
+        if tracker.is_some_and(|tracker| tracker.execution_clock() != clock) {
+            return protocol_violation("snapshot execution clock differs from Configure");
+        }
         // Retain snapshot clocks and stricter limits across both idle and suspended restores.
         match &mut state {
             Session::Idle(repl) => repl.tracker_mut().tighten_limits(&limits),

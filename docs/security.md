@@ -438,7 +438,7 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     Neither accumulates across feeds — there is no session-lifetime budget, so bounding what a session costs in total is
     the host's job.
 - The in-sandbox time check only runs at interpreter checkpoints.
-    By default, host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
+    In wall mode, host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
     resets it), and one grace per duration limit — `feed_duration_limit_grace` and `turn_duration_limit_grace` — each firing only if the
     session also set the limit it backs.
     Set `request_timeout` and at least one duration limit for untrusted code.
@@ -451,7 +451,7 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
     `request_timeout` to no deadline; only the WebSocket pools ([`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket],
     JavaScript `MontyWebsocket.create()`) set one, at 10 seconds.
-    Rust callers can enable [Linux subprocess CPU supervision](resource-limits.md#linux-subprocess-cpu-supervision).
+    Native callers can enable [CPU execution clocks](resource-limits.md#cpu-execution-clock) on Linux, macOS and Windows.
     This replaces the elapsed grace backstops with an independent process CPU limit.
     It requires a finite `monty-pool` `PoolConfig::request_timeout` as its wall deadline.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
@@ -459,7 +459,7 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     The pool does not do this for you, and neither limit stops you: the duration budgets restart at the next feed, and
     after a `max_memory` trip a later feed may quietly succeed against a corrupted heap.
 - The VM duration budgets do not charge compilation of the fed source.
-    The optional Linux supervisor CPU limit includes compilation and protocol CPU during each execution request.
+    The supervisor CPU limit includes compilation and protocol CPU during each execution request.
     Compilation has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
     a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
     The parser grows its native stack outside the allocator's accounting, so a source longer than

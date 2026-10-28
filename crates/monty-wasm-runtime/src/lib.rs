@@ -368,6 +368,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
 fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
     pb::Configure {
         script_name: request.script_name,
+        execution_clock: Some(pb::ExecutionClock::Wall as i32),
         limits: request.limits.map(|limits| pb::ResourceLimits {
             max_feed_duration_micros: limits.max_feed_duration_micros,
             max_turn_duration_micros: limits.max_turn_duration_micros,

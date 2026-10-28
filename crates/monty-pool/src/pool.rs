@@ -9,6 +9,7 @@ use std::{
 
 use futures_util::future::join_all;
 use monty_proto::pb;
+use monty_types::ExecutionClock;
 use tokio::{
     runtime::Handle,
     sync::Notify,
@@ -75,23 +76,26 @@ impl Pool {
     /// fast if the binary cannot be spawned. Must be called within a tokio
     /// runtime (worker process and pipe I/O is driven by the runtime).
     pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
-        if config.subprocess_cpu_limit_grace.is_some()
-            && (!cfg!(target_os = "linux")
-                || config.transport.is_websocket()
-                || config
-                    .request_timeout
-                    .is_none_or(|limit| Instant::now().checked_add(limit).is_none()))
-        {
-            return Err(PoolError::Spawn(
-                "subprocess CPU supervision requires Linux, local subprocesses, and request_timeout".to_owned(),
-            ));
-        }
         if config.min_processes > config.max_processes || config.max_processes == 0 {
             return Err(PoolError::Spawn(format!(
                 "invalid pool size: min_processes={} max_processes={}",
                 config.min_processes, config.max_processes
             )));
         }
+        let cpu_driver = if config.execution_clock == ExecutionClock::Cpu && !config.transport.is_websocket() {
+            if !cfg!(any(target_os = "linux", target_os = "macos", windows))
+                || config
+                    .request_timeout
+                    .is_none_or(|limit| Instant::now().checked_add(limit).is_none())
+            {
+                return Err(PoolError::Spawn(
+                    "CPU execution clock requires a supported native subprocess and finite request_timeout".to_owned(),
+                ));
+            }
+            Some(cpu::Driver::new().map_err(|error| PoolError::Spawn(format!("starting CPU timer driver: {error}")))?)
+        } else {
+            None
+        };
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
@@ -102,11 +106,6 @@ impl Pool {
                 idle.push(worker);
             }
         }
-        let cpu_driver = config
-            .subprocess_cpu_limit_grace
-            .map(|_| cpu::Driver::new())
-            .transpose()
-            .map_err(|error| PoolError::Spawn(format!("starting CPU timer driver: {error}")))?;
         let total = idle.len();
         let pool = Self {
             inner: Arc::new_cyclic(|this| PoolInner {
@@ -144,7 +143,9 @@ impl Pool {
     /// `options.telemetry`) while below `max_processes`, and otherwise waits
     /// up to `checkout_timeout` (forever when `None`) before failing with
     /// [`PoolError::Exhausted`].
-    pub async fn checkout_with(&self, repl: &ReplConfig, mut options: CheckoutOptions) -> Result<Checkout, PoolError> {
+    pub async fn checkout_with(&self, repl: &ReplConfig, options: CheckoutOptions) -> Result<Checkout, PoolError> {
+        #[cfg(feature = "telemetry")]
+        let mut options = options;
         // ahead of the caller's headers, which stay last-wins
         #[cfg(feature = "telemetry")]
         if let Some(telemetry) = &options.telemetry {
