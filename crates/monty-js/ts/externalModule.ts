@@ -140,4 +140,5 @@ const SANDBOX_MODULES = new Set([
   'tomllib',
   'typing',
   'unicodedata',
+  'urllib',
 ])

@@ -37,7 +37,10 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
+    modules::{
+        copy::{Memo, PyDeepCopy, deep_copy_slots},
+        urllib,
+    },
     resource_checks::check_repeat_size,
     types::{
         Dict, Type, Union, allocate_tuple,
@@ -558,7 +561,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         if matches!(
             attr.static_string(vm.interns),
             Some(StaticStrings::UnderFields | StaticStrings::MatchArgsDunder)
-        ) && self.get(vm.heap).class_id().is_some()
+        ) && self.has_namedtuple_api(vm)
         {
             return Ok(Some(CallResult::Value(self.fields_tuple(vm))));
         }
@@ -586,6 +589,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
             };
             return Ok(Some(CallResult::Value(value)));
         }
+        // The `urllib.parse` results are class-less named tuples with netloc properties.
+        if self.get(vm.heap).class_id().is_none()
+            && let Some(value) = urllib::result_attr(self, attr, vm)?
+        {
+            return Ok(Some(CallResult::Value(value)));
+        }
         if let Some(value) = self.get(vm.heap).get_by_name(attr_name, vm.interns) {
             Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))
         } else {
@@ -598,7 +607,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         // The `_`-prefixed namedtuple methods. Field names cannot start with `_`,
         // so these never collide with a real field. Only instances built from a
         // `collections.namedtuple` class have them — see the note in `py_getattr`.
-        let from_factory = self.get(vm.heap).class_id().is_some();
+        let from_factory = self.has_namedtuple_api(vm);
         // `count`/`index` are inherited from `tuple`, so unlike the `_`-prefixed
         // methods they are available on structseqs too (`sys.version_info.count(0)`
         // works in CPython).
@@ -607,6 +616,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
             Some(StaticStrings::Index) => return self.method_index(vm, args).map(CallResult::Value),
             Some(StaticStrings::DunderGetnewargs) => {
                 return self.method_getnewargs(vm, args, from_factory).map(CallResult::Value);
+            }
+            // `geturl()` of the `urllib.parse` results, which have no class object.
+            Some(StaticStrings::Geturl) => {
+                if let Some(url) = urllib::result_geturl(self, args, vm)? {
+                    return Ok(CallResult::Value(url));
+                }
+                return Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), "geturl"));
             }
             _ => {}
         }
@@ -655,6 +671,14 @@ impl HeapItem for NamedTuple {
 
 impl<'h> HeapRead<'h, NamedTuple> {
     /// `p._fields` — a tuple of the field names, in order.
+    /// Whether the `collections.namedtuple` API applies: instances built from a
+    /// factory class, and the `urllib.parse` results, which have no class object
+    /// here but are namedtuples in CPython.
+    fn has_namedtuple_api(&self, vm: &VM<'h>) -> bool {
+        let data = self.get(vm.heap);
+        data.class_id().is_some() || urllib::is_result(data, vm)
+    }
+
     fn fields_tuple(&self, vm: &mut VM<'h>) -> Value {
         let names = self.get(vm.heap).field_names.clone();
         fields_tuple_from(&names, vm)
