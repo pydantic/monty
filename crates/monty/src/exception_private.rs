@@ -821,6 +821,12 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("Can't mix strings and bytes in path components")
     }
 
+    /// `object of type '{type}' has no len()`
+    #[must_use]
+    fn type_error_no_len(type_name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("object of type '{type_name}' has no len()")).into()
+    }
+
     /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
     /// functions that call `fspath` internally (e.g. `os.makedirs`):
     /// `expected str, bytes or os.PathLike object, not {type}`.

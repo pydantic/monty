@@ -124,6 +124,7 @@ const SANDBOX_MODULES = new Set([
   'dataclasses',
   'datetime',
   'decimal',
+  'fnmatch',
   'functools',
   'gc',
   'hashlib',

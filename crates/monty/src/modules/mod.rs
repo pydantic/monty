@@ -24,6 +24,7 @@ pub(crate) mod csv;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
 pub(crate) mod decimal;
+pub(crate) mod fnmatch;
 pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
@@ -101,6 +102,8 @@ pub(crate) enum StandardLib {
     Tomllib,
     /// The `decimal` module: `Decimal`, `Context` and the signals.
     Decimal,
+    /// The `fnmatch` module: shell-style pattern matching.
+    Fnmatch,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -137,6 +140,7 @@ impl StandardLib {
             StaticStrings::Csv => Some(Self::Csv),
             StaticStrings::Tomllib => Some(Self::Tomllib),
             StaticStrings::DecimalMod => Some(Self::Decimal),
+            StaticStrings::Fnmatch => Some(Self::Fnmatch),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -179,6 +183,7 @@ impl StandardLib {
             Self::Csv => csv::create_module(vm),
             Self::Tomllib => tomllib::create_module(vm),
             Self::Decimal => decimal::create_module(vm),
+            Self::Fnmatch => fnmatch::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -214,6 +219,7 @@ pub(crate) enum ModuleFunctions {
     Csv(csv::CsvFunctions),
     Tomllib(tomllib::TomllibFunctions),
     Decimal(decimal::DecimalFunctions),
+    Fnmatch(fnmatch::FnmatchFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -252,6 +258,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Csv(func) => write!(f, "{func}"),
             Self::Tomllib(func) => write!(f, "{func}"),
             Self::Decimal(func) => write!(f, "{func}"),
+            Self::Fnmatch(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -289,6 +296,7 @@ impl ModuleFunctions {
             Self::Csv(functions) => csv::call(vm, functions, args),
             Self::Tomllib(functions) => tomllib::call(vm, functions, args),
             Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
+            Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

@@ -82,6 +82,7 @@ The following modules are present:
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
 | `decimal`     | [decimal.md](decimal.md)         |
+| `fnmatch`     | [fnmatch.md](fnmatch.md)         |
 | `functools`   | [functools.md](functools.md)     |
 | `hashlib`     | [hashlib.md](hashlib.md)         |
 | `itertools`   | [itertools.md](itertools.md)     |
@@ -100,8 +101,8 @@ The following modules are present:
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
 Each covers only part of its CPython surface — often a small part. `itertools`,
-`hashlib` and `tomllib` are the exceptions: `itertools` implements every name it exports, `hashlib` every guaranteed
-algorithm, and `tomllib` its whole three-name surface.
+`hashlib`, `tomllib` and `fnmatch` are the exceptions: `itertools` implements every name it exports, `hashlib` every
+guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 

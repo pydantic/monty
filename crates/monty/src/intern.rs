@@ -1171,6 +1171,8 @@ pub enum StaticStrings {
     Filename,
     /// `zip_longest(fillvalue=...)` keyword.
     Fillvalue,
+    /// `fnmatch.filter()` function.
+    Filter,
     /// `itertools.filterfalse()` function.
     Filterfalse,
     /// Value of `sys.version_info.releaselevel`.
@@ -1201,6 +1203,10 @@ pub enum StaticStrings {
     Fma,
     /// `math.fmod()` function.
     Fmod,
+    /// Module name for `import fnmatch`, and its `fnmatch()` function.
+    Fnmatch,
+    /// `fnmatch.fnmatchcase()` function.
+    Fnmatchcase,
     /// `datetime` / `time` `fold` attribute and constructor kwarg.
     Fold,
     /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
@@ -1735,6 +1741,8 @@ pub enum StaticStrings {
     MultilineFlag,
     /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
     Name,
+    /// `names` parameter of `fnmatch.filter()`.
+    Names,
     /// The `collections.namedtuple` factory function.
     Namedtuple,
     /// Kwarg name `ndigits` — `round(ndigits=...)`.
@@ -1856,6 +1864,8 @@ pub enum StaticStrings {
     Partition,
     /// `Path.parts` property.
     Parts,
+    /// `pat` parameter of the `fnmatch` functions.
+    Pat,
     /// `password` parameter of `hashlib.pbkdf2_hmac()`.
     Password,
     /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
@@ -2408,6 +2418,8 @@ pub enum StaticStrings {
     Total,
     /// `timedelta.total_seconds()` method.
     TotalSeconds,
+    /// `fnmatch.translate()` function.
+    Translate,
     /// Kwarg name `traps` — `decimal.Context()`.
     Traps,
     /// `random.triangular()` function.
