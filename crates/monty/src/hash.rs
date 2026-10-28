@@ -156,7 +156,8 @@ pub(crate) fn hash_one(value: impl Hash) -> HashValue {
 /// a user `__hash__`). Keeps the `DefaultHasher` boilerplate in one place.
 #[inline]
 pub(crate) fn identity_hash(id: HeapId) -> HashValue {
-    hash_one(id)
+    // Dumps persist key hashes; keep the usize input used before HeapId stored a u32.
+    hash_one(id.index())
 }
 
 /// Hashes a value with no heap identity (a builtin, type, marker or singleton)

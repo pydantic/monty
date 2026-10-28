@@ -619,3 +619,22 @@ fn layout_edits_load_older_encodings() {
         assert_eq!(minicbor_serde::from_slice::<RecordV2>(&bytes).unwrap(), expected);
     }
 }
+
+/// Written by dad2fa66 on a 64-bit host, where HeapId stored and hashed a usize.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn heap_identity_keys_survive_restore() {
+    let bytes = include_bytes!("fixtures/heap_identity_v13.bin");
+    let loaded = Dump::load(bytes).expect("baseline dump loads");
+    let Session::Idle(mut repl) = loaded.state else {
+        panic!("fixture must contain an idle session");
+    };
+    repl.feed_run(
+        "assert keys[key] == 'instance'\nassert keys[Key] == 'class'\n\
+         assert key in members\nassert Key in members\n\
+         assert nested[(key, Key)] == 'tuple'",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+}
